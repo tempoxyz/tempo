@@ -9,21 +9,32 @@
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
-use alloy_primitives::{B256, Bytes};
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
+use alloy_primitives::{Address, B256, Bytes};
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::DecodeExt as _;
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use eyre::{OptionExt as _, WrapErr as _, ensure};
-use reth_basic_payload_builder::{PayloadBuilder as _, PayloadConfig};
-use reth_node_builder::BuiltPayload as _;
-use reth_primitives_traits::SealedHeader;
-use reth_provider::{BlockHashReader as _, HeaderProvider as _};
+use reth_chain_state::ExecutedBlock;
+use reth_evm::{
+    ConfigureEvm as _, NextBlockEnvAttributes,
+    database::StateProviderDatabase,
+    execute::{BlockBuilder as _, BlockBuilderOutcome},
+};
+use reth_execution_types::BlockExecutionOutput;
+use reth_primitives_traits::{RecoveredBlock, SealedHeader, SealedOrRecoveredBlock};
+use reth_provider::{
+    BlockHashReader as _, BlockNumReader, ChangeSetReader, DatabaseProviderFactory,
+    HeaderProvider as _, HistoryReader, PruneCheckpointReader, StageCheckpointReader,
+    StorageChangeSetReader, StorageSettingsCache,
+};
+use reth_storage_api::{DatabaseProviderROFactory as _, StateProvider as _};
+use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
+use reth_trie_common::SortedTrieData;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::TempoFullNode;
-use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
-use tempo_payload_types::{Estimator, EstimatorConfig, TempoPayloadAttributes};
-use tempo_primitives::{TempoConsensusContext, TempoHeader};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+use tempo_node::{TempoExecutionData, TempoFullNode};
+use tempo_primitives::{Block, TempoConsensusContext, TempoHeader, TempoPrimitives};
 use tracing::{info, instrument};
 
 use crate::consensus::Digest;
@@ -137,85 +148,53 @@ impl Recovery {
             finalized.number,
         );
 
-        let mut parent = node
+        let parent = node
             .provider
             .sealed_header(self.finalized_height.get())
             .wrap_err("failed reading the recovery's finalized header")?
             .ok_or_eyre("execution layer does not have the recovery's finalized header")?;
 
-        let builder = TempoPayloadBuilder::new(
-            node.pool.clone(),
-            node.provider.clone(),
-            node.task_executor.clone(),
-            node.evm_config.clone(),
-            // Node-local settings must not change the blocks: keep the parent's gas limit and
-            // always compute the state root.
-            TempoPayloadBuilderConfig {
-                desired_gas_limit: None,
-                is_dev: false,
-                state_provider_metrics: false,
-                enable_prewarming: false,
-                skip_state_root: false,
-                enable_parallel: false,
-            },
-            Estimator::new(EstimatorConfig::default()),
-        );
-        let engine = node.add_ons_handle.beacon_engine_handle.clone();
-
         info!("filling the halted epoch with empty blocks");
-        while parent.number() < self.boundary.get() {
-            let extra_data = if parent.number() + 1 == self.boundary.get() {
-                self.encoded_outcome.clone()
-            } else {
-                Bytes::new()
-            };
-            let attributes = fill_attributes(&parent, extra_data);
-
-            let builder = builder.clone();
-            let config = PayloadConfig {
-                parent_header: Arc::new(parent),
-                parent_block_info: None,
-                attributes,
-                payload_id: PayloadId::default(),
-            };
-            // The builder blocks on its state-root task.
-            let payload = tokio::task::spawn_blocking(move || builder.build_empty_payload(config))
-                .await
-                .wrap_err("fill block build task panicked")?
-                .wrap_err("failed building fill block")?;
-            parent = payload.block().sealed_header().clone();
-
-            let status = engine
-                .new_payload(payload.into_execution_data())
-                .await
-                .wrap_err_with(|| format!("failed submitting fill block `{}`", parent.number()))?;
-            ensure!(
-                status.is_valid(),
-                "execution layer rejected fill block `{}`: {status:?}",
-                parent.number(),
-            );
-            // Zero leaves the safe and finalized blocks unchanged.
-            engine
-                .fork_choice_updated(
-                    ForkchoiceState {
-                        head_block_hash: parent.hash(),
-                        safe_block_hash: B256::ZERO,
-                        finalized_block_hash: B256::ZERO,
-                    },
-                    None,
-                )
-                .await
-                .wrap_err_with(|| {
-                    format!("failed making fill block `{}` canonical", parent.number())
-                })?;
-        }
-
+        let factory = node.provider.clone();
+        let evm_config = node.evm_config.clone();
+        let chain_spec = node.chain_spec();
+        let (boundary, outcome) = (self.boundary, self.encoded_outcome.clone());
+        let blocks = tokio::task::spawn_blocking(move || {
+            build_fill_blocks(
+                factory,
+                &evm_config,
+                &chain_spec,
+                parent,
+                boundary,
+                &outcome,
+            )
+        })
+        .await
+        .wrap_err("fill block build task panicked")??;
+        let built = blocks
+            .last()
+            .expect("a recovery fills at least one block")
+            .hash();
         ensure!(
-            parent.hash() == self.boundary_hash,
-            "this node built boundary `{}`, but the recovery pins `{}`",
-            parent.hash(),
+            built == self.boundary_hash,
+            "this node built boundary `{built}`, but the recovery pins `{}`",
             self.boundary_hash,
         );
+
+        let engine = node.add_ons_handle.beacon_engine_handle.clone();
+        for block in blocks {
+            let number = block.number();
+            let status = engine
+                .new_payload(TempoExecutionData {
+                    block: SealedOrRecoveredBlock::recovered_arc(Arc::new(block)),
+                })
+                .await
+                .wrap_err_with(|| format!("failed submitting fill block `{number}`"))?;
+            ensure!(
+                status.is_valid(),
+                "execution layer rejected fill block `{number}`: {status:?}",
+            );
+        }
 
         let response = engine
             .fork_choice_updated(
@@ -238,31 +217,103 @@ impl Recovery {
     }
 }
 
-/// Attributes of the empty block after `parent`, identical on every node.
+/// Builds the empty blocks after `parent` up to `boundary`, writing `outcome` into the boundary.
 ///
-/// Each block advances the timestamp by one millisecond so the epoch's next block does not wait
-/// for a timestamp in the future, and continues the parent's views with no proposer reward.
-fn fill_attributes(
-    parent: &SealedHeader<TempoHeader>,
-    extra_data: Bytes,
-) -> TempoPayloadAttributes {
-    let timestamp_millis = parent.timestamp_millis() + 1;
-    let consensus_context = parent
-        .consensus_context
-        .map(|context| TempoConsensusContext {
-            view: context.view + 1,
-            parent_view: context.view,
-            ..context
-        });
-    let mut attributes = TempoPayloadAttributes::new(
-        None,
-        timestamp_millis / 1000,
-        timestamp_millis % 1000,
-        extra_data,
-        consensus_context,
-    );
-    attributes.target_gas_limit = Some(parent.gas_limit());
-    attributes
+/// `factory` must have the state after `parent`. Every node and `xtask recover` call this to get
+/// the same blocks: each block advances the timestamp by one millisecond, continues the parent's
+/// views, keeps its gas limit and pays no proposer.
+pub fn build_fill_blocks<TFactory>(
+    factory: TFactory,
+    evm_config: &TempoEvmConfig,
+    chain_spec: &TempoChainSpec,
+    mut parent: SealedHeader<TempoHeader>,
+    boundary: Height,
+    outcome: &Bytes,
+) -> eyre::Result<Vec<RecoveredBlock<Block>>>
+where
+    TFactory: DatabaseProviderFactory + Clone,
+    TFactory::Provider: HistoryReader
+        + StorageSettingsCache
+        + StageCheckpointReader
+        + PruneCheckpointReader
+        + ChangeSetReader
+        + StorageChangeSetReader
+        + BlockNumReader,
+{
+    let mut overlay = OverlayManager::<TempoPrimitives>::default().overlay_builder(parent.hash());
+    let mut blocks = Vec::new();
+    while parent.number() < boundary.get() {
+        let number = parent.number() + 1;
+        let state = OverlayStateProviderFactory::new(factory.clone(), overlay.clone())
+            .database_provider_ro()
+            .wrap_err_with(|| format!("failed opening the state before fill block `{number}`"))?;
+
+        let timestamp_millis = parent.timestamp_millis() + 1;
+        let timestamp = timestamp_millis / 1000;
+        let gas_limit = parent.gas_limit();
+        let attributes = TempoNextBlockEnvAttributes {
+            inner: NextBlockEnvAttributes {
+                timestamp,
+                suggested_fee_recipient: Address::ZERO,
+                prev_randao: B256::ZERO,
+                gas_limit,
+                parent_beacon_block_root: Some(B256::ZERO),
+                withdrawals: Some(Default::default()),
+                extra_data: if number == boundary.get() {
+                    outcome.clone()
+                } else {
+                    Bytes::new()
+                },
+                slot_number: None,
+            },
+            general_gas_limit: chain_spec.general_gas_limit_at(timestamp, gas_limit, 0),
+            shared_gas_limit: 0,
+            timestamp_millis_part: timestamp_millis % 1000,
+            consensus_context: parent
+                .consensus_context
+                .map(|context| TempoConsensusContext {
+                    view: context.view + 1,
+                    parent_view: context.view,
+                    ..context
+                }),
+        };
+
+        let mut builder = evm_config
+            .builder_for_next_block(
+                StateProviderDatabase::new((&state).into_evm_state_provider()),
+                &parent,
+                attributes,
+            )
+            .wrap_err_with(|| format!("failed configuring fill block `{number}`"))?;
+        builder.apply_pre_execution_changes().wrap_err_with(|| {
+            format!("failed applying pre-execution changes of block `{number}`")
+        })?;
+        let BlockBuilderOutcome {
+            execution_result,
+            execution_state,
+            hashed_state,
+            trie_updates,
+            block,
+            ..
+        } = builder
+            .finish(&state, None)
+            .wrap_err_with(|| format!("failed building fill block `{number}`"))?;
+
+        parent = block.sealed_header().clone();
+        overlay = overlay.with_appended_block(ExecutedBlock::new(
+            Arc::new(block.clone()),
+            Arc::new(BlockExecutionOutput {
+                result: execution_result,
+                state: execution_state,
+            }),
+            SortedTrieData::new(
+                Arc::new(hashed_state.into_sorted()),
+                Arc::new(trie_updates.into_sorted()),
+            ),
+        ));
+        blocks.push(block);
+    }
+    Ok(blocks)
 }
 
 #[cfg(test)]
@@ -342,5 +393,54 @@ mod tests {
                 "{error}"
             );
         });
+    }
+
+    #[test]
+    fn fill_blocks_are_deterministic_and_end_with_the_outcome() {
+        let chain = tempo_chainspec::spec::DEV.clone();
+        let factory = reth_provider::test_utils::create_test_provider_factory_with_node_types::<
+            tempo_node::TempoNode,
+        >(chain.clone());
+        reth_db_common::init::init_genesis(&factory).unwrap();
+        let genesis = factory.sealed_header(0).unwrap().unwrap();
+        let evm_config = TempoEvmConfig::new(chain.clone());
+        let outcome = Bytes::from_static(b"recovery outcome");
+
+        let build = || {
+            build_fill_blocks(
+                factory.clone(),
+                &evm_config,
+                &chain,
+                genesis.clone(),
+                Height::new(3),
+                &outcome,
+            )
+            .unwrap()
+        };
+        let blocks = build();
+
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| block.number())
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(
+            blocks[..2]
+                .iter()
+                .all(|block| block.extra_data().is_empty())
+        );
+        assert_eq!(blocks[2].extra_data(), &outcome);
+        for (parent, child) in std::iter::once(genesis.hash())
+            .chain(blocks.iter().map(|block| block.hash()))
+            .zip(&blocks)
+        {
+            assert_eq!(child.parent_hash(), parent);
+        }
+        assert_eq!(
+            build().iter().map(|block| block.hash()).collect::<Vec<_>>(),
+            blocks.iter().map(|block| block.hash()).collect::<Vec<_>>(),
+        );
     }
 }

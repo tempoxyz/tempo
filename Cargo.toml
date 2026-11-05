@@ -240,6 +240,7 @@ reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905
 reth-codecs = { version = "0.8.1", default-features = false, features = ["account-ext"] }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }
+reth-db-common = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }
 reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }

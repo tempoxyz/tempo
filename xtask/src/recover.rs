@@ -2,11 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use alloy::{
-    eips::BlockNumberOrTag,
-    primitives::{B256, Bytes},
-    providers::{Provider, ProviderBuilder},
-};
+use alloy::primitives::Bytes;
 use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
@@ -15,9 +11,16 @@ use commonware_cryptography::{
 };
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use eyre::{OptionExt as _, WrapErr as _, ensure};
+use reth_provider::{
+    BlockHashReader as _, ChainStateBlockReader as _, HeaderProvider as _,
+    providers::{ProviderFactoryBuilder, ReadOnlyConfig},
+};
 use tempo_chainspec::{Recovery, spec::TempoChainSpec};
+use tempo_consensus::recovery::build_fill_blocks;
 use tempo_consensus_config::SigningShare;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_evm::TempoEvmConfig;
+use tempo_node::TempoNode;
 
 /// Writes the chainspec `recovery` entry and the recovery member's share.
 ///
@@ -29,19 +32,13 @@ pub(crate) struct Recover {
     #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Arc<TempoChainSpec>,
 
-    /// RPC endpoint of a node of the halted chain.
+    /// Datadir of a node of the halted chain. It is opened read-only.
     #[arg(long)]
-    rpc_url: String,
+    datadir: PathBuf,
 
     /// Hex-encoded ed25519 public key of the validator that runs the recovery epoch alone.
     #[arg(long)]
     member: String,
-
-    /// Pins the boundary hash the recovery member logged into the existing `recovery.json` in
-    /// `--output`, without dealing again. Omit it on the first run, which deals the recovery key:
-    /// the member then refuses to start and logs the boundary hash it built.
-    #[arg(long)]
-    boundary_hash: Option<B256>,
 
     /// Directory to write `recovery.json` and the member's `signing.share` into.
     #[arg(long)]
@@ -52,39 +49,10 @@ impl Recover {
     pub(crate) async fn run(self) -> eyre::Result<()> {
         let Self {
             chain,
-            rpc_url,
+            datadir,
             member,
-            boundary_hash,
             output,
         } = self;
-
-        let recovery_path = output.join("recovery.json");
-        if let Some(boundary_hash) = boundary_hash {
-            // Dealing again would change the outcome, and with it the boundary: only pin the hash.
-            let mut recovery: Recovery = serde_json::from_str(
-                &std::fs::read_to_string(&recovery_path).wrap_err_with(|| {
-                    format!(
-                        "failed reading `{}`; run without --boundary-hash first",
-                        recovery_path.display()
-                    )
-                })?,
-            )
-            .wrap_err("recovery.json is not a valid recovery")?;
-            recovery.boundary_hash = boundary_hash;
-            std::fs::write(&recovery_path, serde_json::to_string_pretty(&recovery)?)
-                .wrap_err("failed writing recovery.json")?;
-            println!(
-                "pinned boundary hash {boundary_hash} in `{}`",
-                recovery_path.display()
-            );
-            return Ok(());
-        }
-        ensure!(
-            !recovery_path.exists(),
-            "`{}` already exists; pass --boundary-hash to pin its boundary, or remove it to deal a \
-            new recovery key",
-            recovery_path.display(),
-        );
 
         let member = PublicKey::decode(commonware_codec::Copying(
             &const_hex::decode(&member).wrap_err("member is not hex")?[..],
@@ -98,17 +66,25 @@ impl Recover {
                 .ok_or_eyre("epochLength not found in chainspec")?,
         );
 
-        let provider = ProviderBuilder::new()
-            .connect(&rpc_url)
-            .await
-            .wrap_err("failed to connect to RPC")?;
+        let factory = ProviderFactoryBuilder::<TempoNode>::default()
+            .open_read_only(
+                chain.clone(),
+                ReadOnlyConfig::from_datadir(&datadir),
+                reth_tasks::Runtime::test(),
+            )
+            .wrap_err_with(|| format!("failed opening datadir `{}`", datadir.display()))?;
 
-        let finalized = provider
-            .get_block_by_number(BlockNumberOrTag::Finalized)
-            .await
-            .wrap_err("failed fetching the finalized block")?
-            .ok_or_eyre("node has no finalized block")?;
-        let finalized_height = Height::new(finalized.header.number);
+        let finalized_height = Height::new(
+            factory
+                .provider()?
+                .last_finalized_block_number()
+                .wrap_err("failed reading the finalized block number")?
+                .ok_or_eyre("datadir has no finalized block")?,
+        );
+        let finalized = factory
+            .sealed_header(finalized_height.get())
+            .wrap_err("failed reading the finalized header")?
+            .ok_or_eyre("datadir does not have the finalized header")?;
         let epoch_info = epocher
             .containing(finalized_height)
             .expect("fixed epocher is valid for all heights");
@@ -126,12 +102,14 @@ impl Recover {
                 .expect("fixed epocher is valid for all epochs")
                 .get()
         });
-        let halted_header = provider
-            .get_block_by_number(halted_boundary.into())
-            .await
-            .wrap_err_with(|| format!("failed fetching boundary block `{halted_boundary}`"))?
-            .ok_or_eyre("node does not have the halted epoch's boundary block")?
-            .header;
+        let halted_header = factory
+            .header(
+                factory
+                    .block_hash(halted_boundary)?
+                    .ok_or_eyre("datadir does not have the halted epoch's boundary block")?,
+            )
+            .wrap_err_with(|| format!("failed reading boundary block `{halted_boundary}`"))?
+            .ok_or_eyre("datadir does not have the halted epoch's boundary block")?;
         let halted = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
             halted_header.inner.extra_data.as_ref(),
         ))
@@ -145,7 +123,7 @@ impl Recover {
         let (dkg_output, shares) = feldman_desmedt::deal::<_, _, N3f1>(
             &mut rng,
             Mode::NonZeroCounter,
-            ordered::Set::try_from_iter([member.clone()]).expect("a single player is unique"),
+            ordered::Set::try_from_iter([member]).expect("a single player is unique"),
         )
         .wrap_err("failed dealing the recovery share")?;
         let (_, share) = shares
@@ -160,32 +138,46 @@ impl Recover {
             is_next_full_dkg: false,
         };
 
+        let encoded_outcome = Bytes::from(outcome.encode().to_vec());
+
+        let blocks = build_fill_blocks(
+            factory,
+            &TempoEvmConfig::new(chain.clone()),
+            &chain,
+            finalized.clone(),
+            epoch_info.last(),
+            &encoded_outcome,
+        )
+        .wrap_err("failed building the fill blocks")?;
+        let boundary_hash = blocks
+            .last()
+            .expect("a recovery fills at least one block")
+            .hash();
+
         let recovery = Recovery {
             finalized_height: finalized_height.get(),
-            finalized_hash: finalized.header.hash,
-            // Unknown until the member builds the boundary from this entry.
-            boundary_hash: B256::ZERO,
-            outcome: Bytes::from(outcome.encode().to_vec()),
+            finalized_hash: finalized.hash(),
+            boundary_hash,
+            outcome: encoded_outcome,
         };
 
         std::fs::create_dir_all(&output)
             .wrap_err_with(|| format!("failed creating `{}`", output.display()))?;
-        std::fs::write(&recovery_path, serde_json::to_string_pretty(&recovery)?)
-            .wrap_err("failed writing recovery.json")?;
+        std::fs::write(
+            output.join("recovery.json"),
+            serde_json::to_string_pretty(&recovery)?,
+        )
+        .wrap_err("failed writing recovery.json")?;
         SigningShare::from(share)
             .write_to_file(output.join("signing.share"))
             .wrap_err("failed writing signing.share")?;
 
         println!(
-            "wrote recovery for epoch {} (finalized height {finalized_height}, boundary {}) to `{}`",
+            "wrote recovery for epoch {} (finalized height {finalized_height}, boundary {} at \
+            {boundary_hash}) to `{}`",
             outcome.epoch,
             epoch_info.last(),
             output.display(),
-        );
-        println!(
-            "boundaryHash is unset: add recovery.json under `config.recovery` in the chainspec, \
-            start the member with signing.share, read the boundary hash from its `this node built \
-            boundary` error, and rerun with --boundary-hash"
         );
         Ok(())
     }
