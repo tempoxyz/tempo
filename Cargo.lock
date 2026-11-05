@@ -14379,6 +14379,7 @@ version = "1.17.0"
 dependencies = [
  "age",
  "alloy-consensus",
+ "alloy-genesis",
  "alloy-primitives",
  "alloy-provider",
  "alloy-rlp",
@@ -14416,6 +14417,7 @@ dependencies = [
  "rand 0.10.3",
  "rand 0.8.8",
  "rand_core 0.10.1",
+ "reth-basic-payload-builder",
  "reth-consensus",
  "reth-consensus-common",
  "reth-engine-primitives",
@@ -14437,6 +14439,7 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-node",
+ "tempo-payload-builder",
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",

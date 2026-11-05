@@ -23,6 +23,7 @@ tempo-dkg-onchain-artifacts = { workspace = true, features = ["commonware-consen
 tempo-evm.workspace = true
 tempo-node.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
+tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
 tempo-telemetry-util.workspace = true
@@ -67,6 +68,7 @@ prometheus-client.workspace = true
 rand.workspace = true
 rand_08.workspace = true
 
+reth-basic-payload-builder.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-engine-primitives.workspace = true
@@ -99,7 +101,9 @@ tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 reth-ethereum-engine-primitives.workspace = true
 
 age.workspace = true
+alloy-genesis.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
+serde_json.workspace = true
 tempfile.workspace = true
 
 # `commonware_macros::test_traced` requires `tracing_subscriber` to be in scope.

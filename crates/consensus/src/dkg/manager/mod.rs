@@ -78,6 +78,10 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TBlocker> {
     /// boundary block that seeds the initial DKG state.
     pub(crate) last_finalized_height: Height,
 
+    /// The recovery boundary that the execution layer finalized ahead of marshal at startup, or
+    /// `None` without a chain recovery. Raises [`Self::last_finalized_height`] to it.
+    pub(crate) recovery_boundary: Option<Height>,
+
     /// Archive height and certificate to authenticate during initialization.
     /// `None` only at genesis.
     pub(crate) finalized_tip: Option<(Height, Certificate)>,

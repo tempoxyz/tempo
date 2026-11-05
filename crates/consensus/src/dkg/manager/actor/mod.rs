@@ -160,7 +160,7 @@ where
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
 {
     pub(super) async fn new(
-        config: super::Config<TExecutionLayer, TMarshal, TBlocker>,
+        mut config: super::Config<TExecutionLayer, TMarshal, TBlocker>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -190,6 +190,12 @@ where
             config.last_finalized_height,
             &config.scheme_provider,
         )?;
+
+        // The recovery boundary has no certificate, so marshal's floor stays below it until
+        // the next epoch finalizes a block. Seed the DKG state from the boundary's outcome.
+        if let Some(boundary) = config.recovery_boundary {
+            config.last_finalized_height = config.last_finalized_height.max(boundary);
+        }
 
         Ok(Self {
             config,

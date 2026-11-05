@@ -3,6 +3,7 @@ pub use tempo_hardfork::constants::gas::*;
 use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
     network_identity::NetworkIdentity,
+    recovery::Recovery,
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
@@ -41,6 +42,9 @@ macro_rules! tempo_genesis_info {
                 /// Optional override for the general (non-payment) gas limit.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 general_gas_limit: Option<u64>,
+                /// Restarts consensus after an epoch lost its signing key.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                recovery: Option<Recovery>,
                 $(
                     #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,6 +85,11 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
+    }
+
+    /// Returns the chain recovery, or `None` when the chain never recovered from a lost epoch key.
+    pub fn recovery(&self) -> Option<&Recovery> {
+        self.recovery.as_ref()
     }
 }
 
@@ -461,7 +470,7 @@ mod tests {
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
     };
     use alloy_genesis::Genesis;
-    use alloy_primitives::hex;
+    use alloy_primitives::{B256, hex};
     use commonware_codec::Encode as _;
     use reth_chainspec::EthChainSpec;
     #[cfg(feature = "cli")]
@@ -582,6 +591,35 @@ mod tests {
 
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
         assert!(chainspec.network_identity.is_none());
+    }
+
+    #[test]
+    fn recovery_is_read_from_genesis_config() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "epochLength": 10,
+                "recovery": {
+                    "finalizedHeight": 13,
+                    "finalizedHash": B256::repeat_byte(1),
+                    "boundaryHash": B256::repeat_byte(2),
+                    "outcome": "0x0102",
+                },
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(
+            chainspec.info.recovery(),
+            Some(&crate::Recovery {
+                finalized_height: 13,
+                finalized_hash: B256::repeat_byte(1),
+                boundary_hash: B256::repeat_byte(2),
+                outcome: alloy_primitives::bytes!("0102"),
+            })
+        );
     }
 
     #[test]
