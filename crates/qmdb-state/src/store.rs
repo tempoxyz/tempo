@@ -12,7 +12,7 @@ use alloy_primitives::B256;
 use commonware_cryptography::{Hasher, Sha256};
 use commonware_parallel::Rayon;
 use commonware_runtime::{
-    Runner as _, Strategizer as _, Supervisor as _,
+    Runner as _, Spawner as _, Strategizer as _, Supervisor as _,
     buffer::paged::CacheRef,
     tokio::{Config as RuntimeConfig, Context, Runner},
 };
@@ -34,6 +34,7 @@ use commonware_storage::{
 };
 use commonware_utils::sequence::FixedBytes;
 use futures::{StreamExt as _, channel::mpsc as async_mpsc, try_join};
+use tokio::sync::{RwLock, RwLockReadGuard};
 use tracing::{debug, error, warn};
 
 use crate::layout::{self, ACCOUNT_LEN, AccountValue, Key, SLOT_LEN, SlotValue, Write, Writes};
@@ -64,6 +65,9 @@ type Batch<const N: usize> = Arc<
     MerkleizedBatch<Family, <Sha256 as Hasher>::Digest, Update<Key, FixedBytes<N>>, CHUNK, Rayon>,
 >;
 type Commits = fixed::Journal<Context, FixedBytes<COMMIT_LEN>>;
+/// A database shared between the store thread, which alone writes it, and concurrent reads.
+/// `None` only after a failed apply, import or rewind consumed it.
+type Shared<D> = Arc<RwLock<Option<D>>>;
 type Reply<T> = Box<dyn FnOnce(Result<T, Error>) + Send>;
 
 /// Configuration of a [`Store`].
@@ -226,7 +230,10 @@ impl Store {
     pub fn open(config: Config) -> Result<Self, Error> {
         let (commands, receiver) = async_mpsc::unbounded();
         let (opened_tx, opened_rx) = mpsc::channel();
-        let runtime = RuntimeConfig::new().with_storage_directory(config.directory.clone());
+        // State reads run as concurrent tasks, so the runtime gets a worker per configured thread.
+        let runtime = RuntimeConfig::new()
+            .with_storage_directory(config.directory.clone())
+            .with_worker_threads(config.threads.get());
         let thread = std::thread::Builder::new()
             .name("qmdb-state".into())
             .spawn(move || {
@@ -505,10 +512,12 @@ enum Command {
 }
 
 struct Actor {
-    /// Always `Some` between commands: applying and committing consume the databases.
-    accounts: Option<AccountsDb>,
-    /// Always `Some` between commands, like `accounts`.
-    slots: Option<SlotsDb>,
+    context: Context,
+    /// Always `Some` between commands: applying and committing consume the databases. Reads
+    /// share it; the actor locks it exclusively only to apply, import or rewind.
+    accounts: Shared<AccountsDb>,
+    /// Shared and locked like `accounts`.
+    slots: Shared<SlotsDb>,
     /// Applied blocks in ascending order. Always `Some` between commands, like `accounts`.
     commits: Option<Commits>,
     applied: Option<u64>,
@@ -603,8 +612,9 @@ impl Actor {
             .map(|commit| commit.hash);
 
         Ok(Self {
-            accounts: Some(accounts),
-            slots: Some(slots),
+            context,
+            accounts: Arc::new(RwLock::new(Some(accounts))),
+            slots: Arc::new(RwLock::new(Some(slots))),
             commits: Some(commits),
             applied,
             base,
@@ -638,21 +648,19 @@ impl Actor {
                 Command::Import { writes, end, reply } => reply(self.import(writes, end).await),
                 Command::RewindTo { number, reply } => reply(self.rewind_to(number).await),
                 Command::GetAccounts { keys, reply } => {
-                    let keys: Vec<&Key> = keys.iter().collect();
-                    reply(self.accounts().get_many(&keys).await.map_err(Error::from));
+                    self.spawn_read(self.accounts.clone(), keys, reply);
                 }
                 Command::GetSlots { keys, reply } => {
-                    let keys: Vec<&Key> = keys.iter().collect();
-                    reply(self.slots().get_many(&keys).await.map_err(Error::from));
+                    self.spawn_read(self.slots.clone(), keys, reply)
                 }
             }
         }
-        if let Some(db) = self.accounts.take()
+        if let Some(db) = self.accounts.write().await.take()
             && let Err(err) = db.sync().await
         {
             error!(%err, "failed syncing the QMDB accounts on shutdown");
         }
-        if let Some(db) = self.slots.take()
+        if let Some(db) = self.slots.write().await.take()
             && let Err(err) = db.sync().await
         {
             error!(%err, "failed syncing the QMDB slots on shutdown");
@@ -664,14 +672,30 @@ impl Actor {
         }
     }
 
-    fn accounts(&self) -> &AccountsDb {
-        self.accounts
-            .as_ref()
-            .expect("restored after every command")
+    fn accounts(&self) -> RwLockReadGuard<'_, AccountsDb> {
+        read_shared(&self.accounts)
     }
 
-    fn slots(&self) -> &SlotsDb {
-        self.slots.as_ref().expect("restored after every command")
+    fn slots(&self) -> RwLockReadGuard<'_, SlotsDb> {
+        read_shared(&self.slots)
+    }
+
+    /// Serves a read of `keys` in `db`'s applied state on its own task, so reads run
+    /// concurrently with one another and with commands that only read the databases. A read waits
+    /// while the actor applies, imports or rewinds, and then sees the new state.
+    fn spawn_read<D: Readable>(
+        &self,
+        db: Shared<D>,
+        keys: Vec<Key>,
+        reply: Reply<Vec<Option<D::Value>>>,
+    ) {
+        self.context.child("read").spawn(move |_| async move {
+            let db = db.read().await;
+            reply(match db.as_ref() {
+                Some(db) => db.read_many(&keys).await,
+                None => Err(Error::Stopped),
+            });
+        });
     }
 
     fn applied_root(&self) -> B256 {
@@ -739,15 +763,16 @@ impl Actor {
                 parent_hash,
             })?)
         };
+        let (accounts_db, slots_db) = (self.accounts(), self.slots());
         let (accounts, slots) = try_join!(
             merkleize_db(
-                self.accounts(),
+                &accounts_db,
                 parent.map(|parent| &parent.accounts),
                 writes.accounts,
                 Some(number),
             ),
             merkleize_db(
-                self.slots(),
+                &slots_db,
                 parent.map(|parent| &parent.slots),
                 writes.slots,
                 Some(number),
@@ -797,16 +822,21 @@ impl Actor {
                     .map(|parent| (pending.parent_hash, parent))
             };
         }
-        let accounts = self.accounts.take().expect("restored after every command");
-        let slots = self.slots.take().expect("restored after every command");
+        let (mut accounts_lock, mut slots_lock) = (
+            self.accounts.clone().write_owned().await,
+            self.slots.clone().write_owned().await,
+        );
+        let accounts = accounts_lock.take().expect("restored after every command");
+        let slots = slots_lock.take().expect("restored after every command");
         // Applying consumes the databases: on failure they are gone and the store must be
         // reopened, so every later command fails until then.
         let (accounts, slots) = try_join!(
             apply_db(accounts, accounts_batch),
             apply_db(slots, slots_batch),
         )?;
-        self.accounts = Some(accounts);
-        self.slots = Some(slots);
+        *accounts_lock = Some(accounts);
+        *slots_lock = Some(slots);
+        drop((accounts_lock, slots_lock));
         self.applied = Some(number);
         self.base = Some(hash);
         self.record(applied.into_iter().rev()).await?;
@@ -842,7 +872,7 @@ impl Actor {
             async {
                 match writes.accounts.is_empty() && end.is_none() {
                     true => Ok(None),
-                    false => merkleize_db(self.accounts(), None, writes.accounts, number)
+                    false => merkleize_db(&self.accounts(), None, writes.accounts, number)
                         .await
                         .map(Some),
                 }
@@ -850,14 +880,18 @@ impl Actor {
             async {
                 match writes.slots.is_empty() && end.is_none() {
                     true => Ok(None),
-                    false => merkleize_db(self.slots(), None, writes.slots, number)
+                    false => merkleize_db(&self.slots(), None, writes.slots, number)
                         .await
                         .map(Some),
                 }
             },
         )?;
-        let accounts = self.accounts.take().expect("restored after every command");
-        let slots = self.slots.take().expect("restored after every command");
+        let (mut accounts_lock, mut slots_lock) = (
+            self.accounts.clone().write_owned().await,
+            self.slots.clone().write_owned().await,
+        );
+        let accounts = accounts_lock.take().expect("restored after every command");
+        let slots = slots_lock.take().expect("restored after every command");
         // Committing every chunk flushes the Merkle nodes the chunk added out of memory, which
         // otherwise stay resident until the import ends: about 64 bytes per imported key.
         let (accounts, slots) = try_join!(
@@ -875,8 +909,8 @@ impl Actor {
             },
         )?;
         let Some((number, hash)) = end else {
-            self.accounts = Some(accounts);
-            self.slots = Some(slots);
+            *accounts_lock = Some(accounts);
+            *slots_lock = Some(slots);
             return Ok(());
         };
         let (accounts, slots) = try_join!(accounts.sync(), slots.sync())?;
@@ -886,8 +920,9 @@ impl Actor {
             accounts_size: *accounts.bounds().end,
             slots_size: *slots.bounds().end,
         };
-        self.accounts = Some(accounts);
-        self.slots = Some(slots);
+        *accounts_lock = Some(accounts);
+        *slots_lock = Some(slots);
+        drop((accounts_lock, slots_lock));
         self.applied = Some(number);
         self.base = Some(hash);
         self.record([commit]).await
@@ -903,15 +938,20 @@ impl Actor {
             .ok_or(Error::UnknownCommit(number))?;
         // Batches built on the current state cannot apply to the rewound one.
         self.pending.clear();
-        let accounts = self.accounts.take().expect("restored after every command");
-        let slots = self.slots.take().expect("restored after every command");
+        let (mut accounts_lock, mut slots_lock) = (
+            self.accounts.clone().write_owned().await,
+            self.slots.clone().write_owned().await,
+        );
+        let accounts = accounts_lock.take().expect("restored after every command");
+        let slots = slots_lock.take().expect("restored after every command");
         // Like applying, a failed rewind consumes the databases until the store is reopened.
         let (accounts, slots) = try_join!(
             rewind_db(accounts, commit.accounts_size),
             rewind_db(slots, commit.slots_size),
         )?;
-        self.accounts = Some(accounts);
-        self.slots = Some(slots);
+        *accounts_lock = Some(accounts);
+        *slots_lock = Some(slots);
+        drop((accounts_lock, slots_lock));
         self.applied = Some(commit.number);
         self.base = Some(commit.hash);
         let commits = self.commits.take().expect("restored after every command");
@@ -985,6 +1025,36 @@ async fn apply_db<const N: usize, const P: usize>(
 ) -> Result<Db<N, P>, Error> {
     let (db, _) = db.apply_batch(batch).await?;
     Ok(db.commit().await?)
+}
+
+/// Locks `shared` for reading from the actor, which never waits: only the actor writes, and
+/// never while it reads.
+fn read_shared<D>(shared: &Shared<D>) -> RwLockReadGuard<'_, D> {
+    RwLockReadGuard::map(
+        shared
+            .try_read()
+            .expect("only the actor writes the databases, never while it reads them"),
+        |db| db.as_ref().expect("restored after every command"),
+    )
+}
+
+/// A database whose applied state [`Actor::spawn_read`] reads.
+trait Readable: Send + Sync + 'static {
+    type Value: Send + 'static;
+
+    fn read_many(
+        &self,
+        keys: &[Key],
+    ) -> impl Future<Output = Result<Vec<Option<Self::Value>>, Error>> + Send;
+}
+
+impl<const N: usize, const P: usize> Readable for Db<N, P> {
+    type Value = FixedBytes<N>;
+
+    async fn read_many(&self, keys: &[Key]) -> Result<Vec<Option<FixedBytes<N>>>, Error> {
+        let keys: Vec<&Key> = keys.iter().collect();
+        Ok(self.get_many(&keys).await?)
+    }
 }
 
 /// Returns the configuration of the commit journal.

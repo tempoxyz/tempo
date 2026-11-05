@@ -34,6 +34,7 @@ reth-trie.workspace = true
 reth-trie-common.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
