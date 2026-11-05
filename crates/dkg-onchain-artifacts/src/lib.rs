@@ -20,14 +20,8 @@ use commonware_utils::{NZU32, ordered};
 
 const MAX_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
-/// Reads the output of a DKG ceremony with the bounds of [`OnchainDkgOutcome`]. Like
-/// `OnchainDkgOutcome::read`, it ignores trailing bytes.
-pub fn read_output(bytes: &[u8]) -> Result<Output<MinSig, PublicKey>, commonware_codec::Error> {
-    Output::read_cfg(
-        &mut commonware_codec::Copying(bytes),
-        &(MAX_VALIDATORS, ModeVersion::v0()),
-    )
-}
+/// The output of a DKG ceremony, as [`OnchainDkgOutcome::output`] carries it.
+pub type CeremonyOutput = Output<MinSig, PublicKey>;
 
 /// The outcome of a DKG ceremony as it is written to the chain.
 ///
@@ -153,15 +147,6 @@ mod tests {
     use super::OnchainDkgOutcome;
     use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
     use commonware_consensus::types::Epoch;
-
-    #[test]
-    fn read_output_ignores_trailing_bytes() {
-        let output = OnchainDkgOutcome::dealt(1, 3).output;
-        let mut bytes = output.encode().to_vec();
-        assert_eq!(super::read_output(&bytes).unwrap(), output);
-        bytes.push(0);
-        assert_eq!(super::read_output(&bytes).unwrap(), output);
-    }
 
     #[test]
     fn onchain_dkg_outcome_roundtrip() {

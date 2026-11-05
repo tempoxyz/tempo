@@ -31,7 +31,7 @@ mod ingress;
 pub(crate) use actor::Actor;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::channel::mpsc;
-pub(crate) use ingress::{DeferredExtraData, Mailbox};
+pub(crate) use ingress::Mailbox;
 
 use crate::consensus::{Digest, block::Block};
 

@@ -17,7 +17,6 @@ workspace = true
 
 [dependencies]
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true

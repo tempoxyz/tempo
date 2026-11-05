@@ -2436,10 +2436,6 @@ async fn execute_forkchoice(
 
 /// Owns the execution slot while fetching and delivering the parent, then
 /// starts the payload build if the parent is VALID.
-///
-/// A build with [`Build::deferred_extra_data`] resolves that extra data
-/// between the VALID answer and the forkchoice update. The wait counts against
-/// the build budget.
 #[instrument(skip_all, parent = &cause, fields(
     round = %build.context.round,
     parent = %build.context.parent.1,
@@ -2455,10 +2451,9 @@ async fn execute_build(
     let Build {
         context,
         attributes,
-        deferred_extra_data,
         mut response,
     } = *build;
-    let mut attributes = *attributes;
+    let attributes = *attributes;
     let parent_digest = context.parent.1;
     let parent_round = Round::new(context.round.epoch(), context.parent.0);
     let block = select! {
@@ -2501,29 +2496,6 @@ async fn execute_build(
         return BuildOutcome::Aborted {
             delivery_attempted: true,
         };
-    }
-    if let Some(deferred) = deferred_extra_data {
-        let extra_data = select! {
-            biased;
-
-            () = response.cancellation() => {
-                info!("build subscriber went away while the build waited for extra data");
-                return BuildOutcome::Aborted {
-                    delivery_attempted: true,
-                };
-            },
-            extra_data = deferred.resolve(block) => extra_data,
-        };
-        let extra_data = match extra_data {
-            Ok(extra_data) => extra_data,
-            Err(error) => {
-                warn!(%error, "failed to get the extra data of the proposal");
-                return BuildOutcome::Aborted {
-                    delivery_attempted: true,
-                };
-            }
-        };
-        attributes = attributes.with_extra_data(extra_data);
     }
     BuildOutcome::Forkchoice(
         execute_forkchoice(
