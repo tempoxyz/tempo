@@ -55,11 +55,11 @@ fn pipeline(c: &mut Criterion) {
 
     macro_rules! stage {
         ($name:literal, |$s:ident| $run:expr) => {
-            group.bench_function(BenchmarkId::new($name, "1-core"), |b| {
+            group.bench_function(BenchmarkId::new($name, "sequential"), |b| {
                 let $s = &Sequential;
                 b.iter(|| $run)
             });
-            group.bench_function(BenchmarkId::new($name, format!("{cores}-core")), |b| {
+            group.bench_function(BenchmarkId::new($name, format!("rayon-{cores}")), |b| {
                 let $s = &rayon;
                 b.iter(|| $run)
             });

@@ -183,3 +183,45 @@ fn substituted_key_ciphertext_does_not_open_body() {
 
     assert!(matches!(encrypted.decrypt(&keys[0]), Err(Error::Decrypt)));
 }
+
+#[test]
+fn missing_key_shares_are_rejected() {
+    let mut rng = StdRng::seed_from_u64(9);
+    let network = Network::new(&mut rng);
+    let ids = [B256::repeat_byte(1), B256::repeat_byte(2)];
+    let signer = &network.shares[0];
+    let shares = key_shares(signer, &ids[..1], &Sequential);
+
+    assert!(matches!(
+        verify_key_shares(
+            &mut rng,
+            &network.sharing,
+            signer.index,
+            &ids,
+            &shares,
+            &Sequential
+        ),
+        Err(Error::LengthMismatch {
+            expected: 2,
+            actual: 1
+        })
+    ));
+}
+
+#[test]
+fn recovery_below_quorum_is_rejected() {
+    let mut rng = StdRng::seed_from_u64(10);
+    let network = Network::new(&mut rng);
+    let ids = [B256::repeat_byte(1)];
+    let too_few: Vec<_> = network.shares[..network.sharing.required() as usize - 1]
+        .iter()
+        .map(|share| key_shares(share, &ids, &Sequential))
+        .collect();
+
+    assert!(matches!(
+        recover_keys(&network.sharing, &too_few, &Sequential),
+        Err(Error::Threshold(
+            commonware_cryptography::bls12381::primitives::Error::NotEnoughPartialSignatures(3, 2)
+        ))
+    ));
+}
