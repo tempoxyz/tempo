@@ -1647,6 +1647,7 @@ mod tests {
         // building a block, nothing is checked.
         let checks = BoundaryOutcomeChecks::default();
         let block_hash = B256::repeat_byte(0xB0);
+        let _registration = checks.register(block_hash);
         let run = |db: InMemoryDB, block_number, extra_data: Bytes, enforce: Option<bool>| {
             let mut builder = TestExecutorBuilder::default()
                 .with_block_number(block_number)
@@ -1767,6 +1768,7 @@ mod tests {
 
         // Blocks other than the boundary carry no outcome and record nothing.
         let fresh = BoundaryOutcomeChecks::default();
+        let _fresh_registration = fresh.register(block_hash);
         assert_eq!(
             TestExecutorBuilder::default()
                 .with_block_number(3)
@@ -1841,6 +1843,7 @@ mod tests {
         let chainspec = system_calls_chainspec();
         let checks = BoundaryOutcomeChecks::default();
         let block_hash = B256::repeat_byte(0xB0);
+        let _registration = checks.register(block_hash);
         let run = |enforce| {
             TestExecutorBuilder::default()
                 .with_block_number(4)

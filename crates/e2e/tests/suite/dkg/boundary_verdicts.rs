@@ -1,5 +1,5 @@
-//! Validators vote on a boundary block whose DKG outcome verdict was pushed out
-//! of the execution layer's record before consensus read it.
+//! Validators keep their verdicts on the boundary blocks they verify while
+//! execution records verdicts on many other blocks, as RPC re-executions do.
 
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use super::common::wait_for_validators_to_reach_epoch;
 use crate::{Setup, metrics::MetricsExt, setup_validators};
 
 #[test_traced]
-fn validators_check_boundary_outcomes_again_after_their_verdicts_are_evicted() {
+fn other_executions_do_not_displace_boundary_verdicts() {
     let _ = tempo_eyre::install();
 
     let how_many_signers = 4;
@@ -29,9 +29,9 @@ fn validators_check_boundary_outcomes_again_after_their_verdicts_are_evicted() {
         let (mut validators, _execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
-        // Keep filling every validator's record with other blocks, as
-        // re-executions of unrelated boundary blocks would, so the verdicts of
-        // real proposals are gone by the time consensus reads them.
+        // Keep recording verdicts on other blocks in every validator, as RPC
+        // re-executions of made-up boundary blocks would. Without registration,
+        // these pushed the verdicts of real proposals out of a bounded record.
         let records: Vec<_> = validators
             .iter()
             .map(|v| v.execution().evm_config.boundary_outcome_checks().clone())

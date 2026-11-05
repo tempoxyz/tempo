@@ -15,8 +15,8 @@ pub struct TempoBlockExecutionCtx<'a> {
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
     /// Checks a boundary block's DKG outcome against the parent state and records the verdict in
-    /// [`crate::BoundaryOutcomeChecks`]. Set for every block executed from a sealed block, `None`
-    /// when building one.
+    /// [`crate::BoundaryOutcomeChecks`] if consensus registered the block. Set for every block
+    /// executed from a sealed block, `None` when building one.
     pub check_boundary_outcome: Option<BoundaryOutcomeCheck>,
 }
 
