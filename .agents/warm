@@ -43,7 +43,15 @@ prune_artifacts() {
   local dir=target/debug sub keep
   [ -s "$units" ] && [ -d "$dir" ] || return 0
   keep=$(mktemp)
-  grep -oE '/debug/(deps|build|examples)/[^"/]*-[0-9a-f]{16}' "$units" | grep -oE '[0-9a-f]{16}$' | sort -u >"$keep"
+  {
+    grep -oE '/debug/(deps|build|examples)/[^"/]*-[0-9a-f]{16}' "$units" | grep -oE '[0-9a-f]{16}$'
+    # Bins and examples are reported by their unhashed uplifted copy (target/debug/tempo), a hard
+    # link to the hashed output whose hash names the unit.
+    grep -oE '"[^"]*/debug/(examples/)?[^"/]+"' "$units" | tr -d '"' | sort -u | while read -r f; do
+      [ -f "$f" ] && find "$dir/deps" "$dir/examples" -maxdepth 1 -samefile "$f" -printf '%f
+' 2>/dev/null
+    done | grep -oE -- '-[0-9a-f]{16}$' | cut -c2-
+  } | sort -u >"$keep"
   # Too few to be a whole build's: keep everything rather than guess.
   if [ "$(wc -l <"$keep")" -lt 50 ]; then rm -f "$keep"; return 0; fi
   for sub in deps build .fingerprint examples; do
