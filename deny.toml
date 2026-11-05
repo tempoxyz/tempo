@@ -33,6 +33,8 @@ ignore = [
   "RUSTSEC-2026-0398",
   # https://rustsec.org/advisories/RUSTSEC-2026-0403
   "RUSTSEC-2026-0403",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0441 pin-utils is unmaintained (archived)
+  "RUSTSEC-2026-0441",
 ]
 
 # This section is considered when running `cargo deny check bans`.
