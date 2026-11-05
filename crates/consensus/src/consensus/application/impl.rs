@@ -289,6 +289,17 @@ impl Inner {
             );
         }
 
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_sometimes!(
+            round.view().get().saturating_sub(parent_view.get()) > 1,
+            "Proposal builds on a parent from before a nullified view",
+            &serde_json::json!({
+                "epoch": round.epoch().get(),
+                "view": round.view().get(),
+                "parent_view": parent_view.get(),
+            })
+        );
+
         Ok(proposal)
     }
 
