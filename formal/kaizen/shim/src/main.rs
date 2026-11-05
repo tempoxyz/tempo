@@ -99,6 +99,8 @@ struct Candidate {
 struct Rpc {
     client: reqwest::Client,
     url: String,
+    /// Retry transient errors forever (follow mode) instead of giving up after a few attempts.
+    retry_forever: bool,
 }
 
 impl Rpc {
@@ -122,8 +124,8 @@ impl Rpc {
                 }
                 let mut v: serde_json::Value = serde_json::from_slice(&bytes)?;
                 if let Some(err) = v.get("error") {
-                    // 204: the upstream does not have it (yet).
-                    if err.get("code").and_then(|c| c.as_i64()) == Some(204) {
+                    // 204 (NotReady) and 503 (Missing): the upstream does not have it (yet).
+                    if matches!(err.get("code").and_then(|c| c.as_i64()), Some(204 | 503)) {
                         return Ok(None);
                     }
                     bail!("rpc error: {err}");
@@ -133,9 +135,9 @@ impl Rpc {
             .await;
             match res {
                 Ok(r) => return Ok(r),
-                Err(e) if attempt < 8 => {
+                Err(e) if self.retry_forever || attempt < 8 => {
                     eprintln!("retrying {query} after error: {e:#}");
-                    tokio::time::sleep(Duration::from_millis(250 * attempt)).await;
+                    tokio::time::sleep(Duration::from_millis((250 * attempt).min(5_000))).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -249,6 +251,7 @@ async fn main() -> eyre::Result<()> {
             .timeout(Duration::from_secs(30))
             .build()?,
         url: args.rpc.clone(),
+        retry_forever: args.count == 0,
     };
 
     let start = match args.from.as_str() {
