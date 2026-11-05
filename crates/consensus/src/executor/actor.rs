@@ -26,9 +26,8 @@
 //!
 //! Builds fetch and deliver their parent, then issue the forkchoice update
 //! with payload attributes on VALID, using the finalized state captured when
-//! the build was scheduled. A proposal whose extra data depends on the
-//! post-state of its parent, such as the DKG outcome of a boundary block,
-//! first waits for that data. The build holds the slot while it waits, so no
+//! the build was scheduled. A boundary proposal first waits for the DKG
+//! ceremony output, which consensus produces while the parent is delivered. The build holds the slot while it waits, so no
 //! other forkchoice update can move the finalized state that it captured.
 //!
 //! # Block verification
@@ -2436,6 +2435,10 @@ async fn execute_forkchoice(
 
 /// Owns the execution slot while fetching and delivering the parent, then
 /// starts the payload build if the parent is VALID.
+///
+/// A build with [`Build::deferred_ceremony_output`] resolves the DKG ceremony
+/// output between the VALID answer and the forkchoice update. The wait counts
+/// against the build budget.
 #[instrument(skip_all, parent = &cause, fields(
     round = %build.context.round,
     parent = %build.context.parent.1,
@@ -2451,9 +2454,10 @@ async fn execute_build(
     let Build {
         context,
         attributes,
+        deferred_ceremony_output,
         mut response,
     } = *build;
-    let attributes = *attributes;
+    let mut attributes = *attributes;
     let parent_digest = context.parent.1;
     let parent_round = Round::new(context.round.epoch(), context.parent.0);
     let block = select! {
@@ -2496,6 +2500,29 @@ async fn execute_build(
         return BuildOutcome::Aborted {
             delivery_attempted: true,
         };
+    }
+    if let Some(deferred) = deferred_ceremony_output {
+        let output = select! {
+            biased;
+
+            () = response.cancellation() => {
+                info!("build subscriber went away while the build waited for the DKG ceremony output");
+                return BuildOutcome::Aborted {
+                    delivery_attempted: true,
+                };
+            },
+            output = deferred.resolve(block) => output,
+        };
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                warn!(%error, "failed to get the DKG ceremony output of the proposal");
+                return BuildOutcome::Aborted {
+                    delivery_attempted: true,
+                };
+            }
+        };
+        attributes = attributes.with_dkg_ceremony_output(output);
     }
     BuildOutcome::Forkchoice(
         execute_forkchoice(

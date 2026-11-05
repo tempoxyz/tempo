@@ -46,7 +46,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{Config, ExecutionLayer, Mailbox, Marshal, init},
+    executor::{Config, DeferredCeremonyOutput, ExecutionLayer, Mailbox, Marshal, init},
 };
 
 /// The genesis digest all harness chains hang off.
@@ -1313,7 +1313,19 @@ where
         parent: Digest,
         attributes: TempoPayloadAttributes,
     ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
-        self.request_build(round, parent, attributes)
+        self.request_build(round, parent, attributes, None)
+    }
+
+    /// Requests a build with a deferred DKG ceremony output, which the executor resolves
+    /// after `parent` returned VALID.
+    pub(super) fn build_with_deferred_ceremony_output(
+        &self,
+        round: Round,
+        parent: Digest,
+        attributes: TempoPayloadAttributes,
+        deferred_ceremony_output: DeferredCeremonyOutput,
+    ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
+        self.request_build(round, parent, attributes, Some(deferred_ceremony_output))
     }
 
     fn request_build(
@@ -1321,6 +1333,7 @@ where
         round: Round,
         parent: Digest,
         attributes: TempoPayloadAttributes,
+        deferred_ceremony_output: Option<DeferredCeremonyOutput>,
     ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
         let parent_view = if parent == GENESIS {
             0
@@ -1335,6 +1348,7 @@ where
                     parent: (View::new(parent_view), parent),
                 },
                 attributes,
+                deferred_ceremony_output,
             )
             .expect("actor should accept the build request")
     }
@@ -1353,6 +1367,7 @@ where
                     parent: (View::new(parent_view), parent),
                 },
                 attributes(),
+                None,
             )
             .expect("actor should accept the build request")
     }

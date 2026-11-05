@@ -7,8 +7,12 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{Digested, ed25519::PublicKey};
 use eyre::WrapErr as _;
-use futures::channel::{mpsc, oneshot};
+use futures::{
+    channel::{mpsc, oneshot},
+    future::BoxFuture,
+};
 use std::time::Duration;
+use tempo_dkg_onchain_artifacts::CeremonyOutput;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tracing::Span;
 
@@ -73,18 +77,22 @@ impl Mailbox {
     /// the executor logs the cause.
     ///
     /// Fetches and delivers the parent, then starts the build if it is VALID.
+    /// If `deferred_ceremony_output` is set, the executor resolves it after the
+    /// VALID answer and puts the result into `attributes`.
     /// A newer request can replace a queued build. Once started, the build
     /// continues until it finishes, fails, or its receiver is dropped.
     pub(crate) fn build_proposal(
         &self,
         context: Context<Digest, PublicKey>,
         attributes: TempoPayloadAttributes,
+        deferred_ceremony_output: Option<DeferredCeremonyOutput>,
     ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(Build {
                 context,
                 attributes: Box::new(attributes),
+                deferred_ceremony_output,
                 response,
             }))
             .wrap_err(
@@ -128,7 +136,51 @@ pub(super) enum Command {
 pub(super) struct Build {
     pub(super) context: Context<Digest, PublicKey>,
     pub(super) attributes: Box<TempoPayloadAttributes>,
+    /// Set for a boundary proposal, which carries the DKG ceremony output.
+    pub(super) deferred_ceremony_output: Option<DeferredCeremonyOutput>,
     pub(super) response: oneshot::Sender<TempoBuiltPayload>,
+}
+
+/// The DKG ceremony output of a boundary proposal, which consensus produces
+/// while the executor delivers the parent.
+///
+/// The executor resolves it once, after the engine returned VALID for the
+/// parent, puts it into the payload attributes and waits for it before the
+/// forkchoice update that starts the build. The build holds the execution slot
+/// while it waits.
+///
+/// It must be `Sync` because it travels in the executor's mailbox messages.
+pub(crate) struct DeferredCeremonyOutput(
+    Box<
+        dyn FnOnce(Digested<Block>) -> BoxFuture<'static, eyre::Result<CeremonyOutput>>
+            + Send
+            + Sync,
+    >,
+);
+
+impl DeferredCeremonyOutput {
+    pub(crate) fn new<F>(make: F) -> Self
+    where
+        F: FnOnce(Digested<Block>) -> BoxFuture<'static, eyre::Result<CeremonyOutput>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self(Box::new(make))
+    }
+
+    pub(super) fn resolve(
+        self,
+        parent: Digested<Block>,
+    ) -> BoxFuture<'static, eyre::Result<CeremonyOutput>> {
+        (self.0)(parent)
+    }
+}
+
+impl std::fmt::Debug for DeferredCeremonyOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeferredCeremonyOutput")
+    }
 }
 
 #[derive(Debug)]
