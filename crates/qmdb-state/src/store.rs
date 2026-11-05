@@ -41,8 +41,13 @@ use crate::layout::{self, ACCOUNT_LEN, AccountValue, Key, SLOT_LEN, SlotValue, W
 type Family = mmb::Family;
 /// Bitmap chunk size in bytes of the `current` layer.
 const CHUNK: usize = 32;
-/// Index partitions are selected by the first two key bytes (65,536 partitions).
-const PARTITION_BYTES: usize = 2;
+/// Index partitions of the accounts database: the first two key bytes (65,536 partitions).
+const ACCOUNT_PARTITION_BYTES: usize = 2;
+/// Index partitions of the slots database: the first three key bytes (16.8M partitions, about
+/// 0.8 GB of fixed memory). A partition that outgrows 512 entries converts to a `BTreeMap` with
+/// a heap `Vec` per key, about 85 bytes per key against 16 inline, which two-byte partitions do
+/// for every partition past about 33M keys; three-byte ones only past about 8.5B.
+const SLOT_PARTITION_BYTES: usize = 3;
 const PAGE_SIZE: NonZeroU16 = NonZeroU16::new(16_384).expect("non-zero");
 const ITEMS_PER_BLOB: NonZeroU64 = NonZeroU64::new(1 << 23).expect("non-zero");
 const IO_BUFFER: NonZeroUsize = NonZeroUsize::new(2 << 20).expect("non-zero");
@@ -51,17 +56,10 @@ const COMMIT_LEN: usize = 56;
 const COMMITS_PER_BLOB: NonZeroU64 = NonZeroU64::new(1 << 16).expect("non-zero");
 const COMMITS_WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(4096).expect("non-zero");
 
-type Db<const N: usize> = partitioned::Db<
-    Family,
-    Context,
-    Key,
-    FixedBytes<N>,
-    Sha256,
-    EightCap,
-    PARTITION_BYTES,
-    CHUNK,
-    Rayon,
->;
+type Db<const N: usize, const P: usize> =
+    partitioned::Db<Family, Context, Key, FixedBytes<N>, Sha256, EightCap, P, CHUNK, Rayon>;
+type AccountsDb = Db<ACCOUNT_LEN, ACCOUNT_PARTITION_BYTES>;
+type SlotsDb = Db<SLOT_LEN, SLOT_PARTITION_BYTES>;
 type Batch<const N: usize> = Arc<
     MerkleizedBatch<Family, <Sha256 as Hasher>::Digest, Update<Key, FixedBytes<N>>, CHUNK, Rayon>,
 >;
@@ -452,9 +450,9 @@ enum Command {
 
 struct Actor {
     /// Always `Some` between commands: applying and committing consume the databases.
-    accounts: Option<Db<ACCOUNT_LEN>>,
+    accounts: Option<AccountsDb>,
     /// Always `Some` between commands, like `accounts`.
-    slots: Option<Db<SLOT_LEN>>,
+    slots: Option<SlotsDb>,
     /// Applied blocks in ascending order. Always `Some` between commands, like `accounts`.
     commits: Option<Commits>,
     applied: Option<u64>,
@@ -497,8 +495,8 @@ impl Actor {
             replay_buffer: IO_BUFFER,
         };
         let (mut accounts, mut slots) = try_join!(
-            Db::<ACCOUNT_LEN>::init(context.child("accounts"), db_config("accounts")),
-            Db::<SLOT_LEN>::init(context.child("slots"), db_config("slots")),
+            AccountsDb::init(context.child("accounts"), db_config("accounts")),
+            SlotsDb::init(context.child("slots"), db_config("slots")),
         )?;
         let mut commits = Commits::init(context.child("commits"), commits_config).await?;
         let accounts_applied = applied_block(&accounts).await?;
@@ -616,13 +614,13 @@ impl Actor {
         }
     }
 
-    fn accounts(&self) -> &Db<ACCOUNT_LEN> {
+    fn accounts(&self) -> &AccountsDb {
         self.accounts
             .as_ref()
             .expect("restored after every command")
     }
 
-    fn slots(&self) -> &Db<SLOT_LEN> {
+    fn slots(&self) -> &SlotsDb {
         self.slots.as_ref().expect("restored after every command")
     }
 
@@ -900,7 +898,9 @@ impl Actor {
 }
 
 /// Returns the block a database's last commit ended at, `None` before the import.
-async fn applied_block<const N: usize>(db: &Db<N>) -> Result<Option<u64>, Error> {
+async fn applied_block<const N: usize, const P: usize>(
+    db: &Db<N, P>,
+) -> Result<Option<u64>, Error> {
     Ok(db
         .get_metadata()
         .await?
@@ -910,8 +910,8 @@ async fn applied_block<const N: usize>(db: &Db<N>) -> Result<Option<u64>, Error>
 
 /// Merkleizes `writes` on `parent`, or on the database's applied state, committing to block
 /// `number` as metadata when given.
-async fn merkleize_db<const N: usize>(
-    db: &Db<N>,
+async fn merkleize_db<const N: usize, const P: usize>(
+    db: &Db<N, P>,
     parent: Option<&Batch<N>>,
     writes: Vec<Write<FixedBytes<N>>>,
     number: Option<u64>,
@@ -929,13 +929,19 @@ async fn merkleize_db<const N: usize>(
 }
 
 /// Applies `batch` to `db` and commits it, which also flushes its Merkle nodes out of memory.
-async fn apply_db<const N: usize>(db: Db<N>, batch: Batch<N>) -> Result<Db<N>, Error> {
+async fn apply_db<const N: usize, const P: usize>(
+    db: Db<N, P>,
+    batch: Batch<N>,
+) -> Result<Db<N, P>, Error> {
     let (db, _) = db.apply_batch(batch).await?;
     Ok(db.commit().await?)
 }
 
 /// Rewinds `db` to `size` operations and commits the rewind.
-async fn rewind_db<const N: usize>(db: Db<N>, size: u64) -> Result<Db<N>, Error> {
+async fn rewind_db<const N: usize, const P: usize>(
+    db: Db<N, P>,
+    size: u64,
+) -> Result<Db<N, P>, Error> {
     Ok(db.rewind(Location::new(size)).await?.commit().await?)
 }
 
