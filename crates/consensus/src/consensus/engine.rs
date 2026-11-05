@@ -168,6 +168,9 @@ where
             .and_then(NonZeroUsize::new)
             .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")?;
 
+        // Boxed because marshal's init future is deeply nested: inlining it into
+        // callers such as tempo-e2e's `TestingNode::start_inner` makes computing
+        // their layout exceed rustc's default query depth (recursion limit 128).
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,

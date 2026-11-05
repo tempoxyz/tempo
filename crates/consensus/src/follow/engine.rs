@@ -116,7 +116,7 @@ impl<TUpstream> Config<TUpstream> {
             finalized_floor: last_finalized_height,
             finalized_tip,
             finalized_tip_certificate,
-        } = Box::pin(alias::marshal::init(
+        } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref,
             self.execution_node.clone(),
@@ -129,7 +129,7 @@ impl<TUpstream> Config<TUpstream> {
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
-        ))
+        )
         .await
         .wrap_err("failed to initialize marshal")?;
 
