@@ -157,6 +157,18 @@ mod tests {
     use commonware_consensus::types::Epoch;
 
     #[test]
+    fn decode_output_rejects_trailing_bytes() {
+        let output = OnchainDkgOutcome::dealt(1, 3).output;
+        let mut bytes = output.encode().to_vec();
+        assert_eq!(super::decode_output(&bytes).unwrap(), output);
+        bytes.push(0);
+        assert!(matches!(
+            super::decode_output(&bytes),
+            Err(commonware_codec::Error::ExtraData(1))
+        ));
+    }
+
+    #[test]
     fn onchain_dkg_outcome_roundtrip() {
         let mut on_chain = OnchainDkgOutcome::dealt(42, 10);
         // Preserve Commonware Epoch's wire encoding, including varint boundaries.

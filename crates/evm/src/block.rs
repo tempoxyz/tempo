@@ -7,7 +7,7 @@ use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::ReadExt;
+use commonware_codec::{DecodeExt as _, ReadExt};
 use evm2::{
     EvmTypes, TxResult, TxResultWithState,
     bytecode::Bytecode,
@@ -755,8 +755,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if self.evm().config_spec_id().is_t15()
             && block_number.saturating_add(1).is_multiple_of(epoch_length)
         {
-            use commonware_codec::DecodeExt as _;
-
             let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
                 commonware_codec::Copying(self.extra_data.as_ref()),
             )
@@ -1116,6 +1114,7 @@ mod tests {
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use commonware_utils::ordered;
     use evm2::{
         evm::{
             AccountInfo,
@@ -1571,8 +1570,6 @@ mod tests {
 
     #[test]
     fn test_t15_checks_boundary_dkg_outcome_against_parent_state() {
-        use commonware_utils::ordered;
-
         let chainspec = system_calls_chainspec();
         let validator = PrivateKey::from_seed(1);
         let players = ordered::Set::from_iter_dedup([validator.public_key()]);
