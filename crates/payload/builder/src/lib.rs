@@ -346,25 +346,31 @@ where
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
-        // From T15 consensus passes only the DKG ceremony output for a boundary block, and the
-        // builder fills in the rest of the outcome from the parent state. Executors check it.
+        // Consensus passes only the DKG ceremony output for a boundary block, and the builder
+        // fills in the rest of the outcome from the parent state. Executors check it.
         let block_number = parent_header.number() + 1;
         let epoch_length = chain_spec
             .info
             .epoch_length()
             .unwrap_or(NonZeroU64::MIN)
             .get();
-        let extra_data =
-            if hardfork.is_t15() && block_number.saturating_add(1).is_multiple_of(epoch_length) {
-                let output = tempo_dkg_onchain_artifacts::decode_output(attributes.extra_data())
-                    .map_err(PayloadBuilderError::other)?;
-                let outcome = db
-                    .boundary_dkg_outcome(hardfork, block_number / epoch_length + 1, output)
-                    .map_err(PayloadBuilderError::other)?;
-                Bytes::from(commonware_codec::Encode::encode(&outcome))
-            } else {
-                attributes.extra_data().clone()
-            };
+        let extra_data = if block_number.saturating_add(1).is_multiple_of(epoch_length) {
+            let output = tempo_dkg_onchain_artifacts::decode_output(attributes.extra_data())
+                .map_err(PayloadBuilderError::other)?;
+            let outcome = db
+                .dkg_ceremony_config(hardfork, block_number)
+                .map_err(PayloadBuilderError::other)?
+                .ok_or_else(|| {
+                    PayloadBuilderError::Other(
+                        "ValidatorConfigV2 is not initialized as of the boundary block's parent"
+                            .into(),
+                    )
+                })?
+                .boundary_outcome(block_number / epoch_length + 1, output);
+            Bytes::from(commonware_codec::Encode::encode(&outcome))
+        } else {
+            attributes.extra_data().clone()
+        };
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;

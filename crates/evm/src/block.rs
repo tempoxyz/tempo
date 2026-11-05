@@ -748,42 +748,41 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             }
         }
 
-        // From T15 the payload builder fills in the boundary block's DKG outcome from the parent
-        // state; consensus checks only the ceremony output it carries.
+        // The payload builder fills in the boundary block's DKG outcome from the parent state, and
+        // consensus checks only the ceremony output it carries. Every boundary since
+        // ValidatorConfigV2 was initialized satisfies this, so it needs no fork.
         let epoch_length = self.evm().block().ext.epoch_length.get();
         let block_number = self.evm().block().number.saturating_to::<u64>();
-        if self.evm().config_spec_id().is_t15()
-            && block_number.saturating_add(1).is_multiple_of(epoch_length)
-        {
-            let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
-                commonware_codec::Copying(self.extra_data.as_ref()),
-            )
-            .map_err(|err| {
-                BlockValidationError::msg(format!(
-                    "failed decoding boundary block extra data as DKG outcome: {err}"
-                ))
-            })?;
+        if block_number.saturating_add(1).is_multiple_of(epoch_length) {
             let spec = self.evm().config_spec_id();
-            let expected = crate::TempoStateAccess::boundary_dkg_outcome(
-                self.evm_mut(),
-                spec,
-                block_number / epoch_length + 1,
-                proposed.output.clone(),
-            )
-            .map_err(BlockExecutionError::other)?;
-            if proposed != expected {
-                return Err(BlockValidationError::msg(format!(
-                    "boundary block DKG outcome does not match the parent state: \
-                    epoch {} (expected {}), next players {:?} (expected {:?}), \
-                    full DKG {} (expected {})",
-                    proposed.epoch,
-                    expected.epoch,
-                    proposed.next_players(),
-                    expected.next_players(),
-                    proposed.is_next_full_dkg,
-                    expected.is_next_full_dkg,
-                ))
-                .into());
+            if let Some(config) =
+                crate::TempoStateAccess::dkg_ceremony_config(self.evm_mut(), spec, block_number)
+                    .map_err(BlockExecutionError::other)?
+            {
+                let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+                    commonware_codec::Copying(self.extra_data.as_ref()),
+                )
+                .map_err(|err| {
+                    BlockValidationError::msg(format!(
+                        "failed decoding boundary block extra data as DKG outcome: {err}"
+                    ))
+                })?;
+                let expected = config
+                    .boundary_outcome(block_number / epoch_length + 1, proposed.output.clone());
+                if proposed != expected {
+                    return Err(BlockValidationError::msg(format!(
+                        "boundary block DKG outcome does not match the parent state: \
+                        epoch {} (expected {}), next players {:?} (expected {:?}), \
+                        full DKG {} (expected {})",
+                        proposed.epoch,
+                        expected.epoch,
+                        proposed.next_players(),
+                        expected.next_players(),
+                        proposed.is_next_full_dkg,
+                        expected.is_next_full_dkg,
+                    ))
+                    .into());
+                }
             }
         }
 
@@ -1569,7 +1568,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t15_checks_boundary_dkg_outcome_against_parent_state() {
+    fn test_checks_boundary_dkg_outcome_against_parent_state() {
         let chainspec = system_calls_chainspec();
         let validator = PrivateKey::from_seed(1);
         let players = ordered::Set::from_iter_dedup([validator.public_key()]);
@@ -1581,78 +1580,91 @@ mod tests {
             ..OnchainDkgOutcome::dealt(1, 3)
         };
 
-        let pre_execution = |fork, block_number, rotation_epoch, extra_data: Bytes| {
-            let db = db_with_accounts(&validator_config_v2_accounts(
-                &validator,
-                Address::ZERO,
-                rotation_epoch,
-            ));
+        // V2 is initialized at height 0 unless db is empty.
+        let pre_execution = |db, fork, block_number, extra_data: Bytes| {
             TestExecutorBuilder::default()
                 .with_block_number(block_number)
                 .with_epoch_length(5)
                 .with_extra_data(extra_data)
+                .with_parent_beacon_block_root(B256::ZERO)
                 .with_spec(fork)
                 .build(db, &chainspec)
                 .apply_pre_execution_changes()
                 .map_err(|e| e.to_string())
         };
-        let check = |rotation_epoch, outcome: &OnchainDkgOutcome| {
-            pre_execution(
-                TempoHardfork::T15,
-                4,
+        let config = |rotation_epoch| {
+            db_with_accounts(&validator_config_v2_accounts(
+                &validator,
+                Address::ZERO,
                 rotation_epoch,
-                outcome.encode().into(),
-            )
+            ))
+        };
+        let check = |rotation_epoch, fork, outcome: &OnchainDkgOutcome| {
+            pre_execution(config(rotation_epoch), fork, 4, outcome.encode().into())
         };
 
-        assert_eq!(check(None, &correct), Ok(()));
         let full_dkg = OnchainDkgOutcome {
             is_next_full_dkg: true,
             ..correct.clone()
         };
-        assert_eq!(check(Some(1), &full_dkg), Ok(()));
+        // The check applies at every fork.
+        for fork in [TempoHardfork::T8, TempoHardfork::T14, TempoHardfork::T15] {
+            assert_eq!(check(None, fork, &correct), Ok(()));
+            assert_eq!(check(Some(1), fork, &full_dkg), Ok(()));
 
-        for (rotation_epoch, wrong) in [
-            (Some(1), correct.clone()),
-            (None, full_dkg),
-            (
-                None,
-                OnchainDkgOutcome {
-                    epoch: 2,
-                    ..correct.clone()
-                },
-            ),
-            (
-                None,
-                OnchainDkgOutcome {
-                    next_players: OnchainDkgOutcome::dealt(1, 3).next_players,
-                    ..correct.clone()
-                },
-            ),
-        ] {
-            let err = check(rotation_epoch, &wrong).unwrap_err();
-            assert!(
-                err.starts_with("boundary block DKG outcome does not match the parent state"),
-                "{err}"
-            );
+            for (rotation_epoch, wrong) in [
+                (Some(1), correct.clone()),
+                (None, full_dkg.clone()),
+                (
+                    None,
+                    OnchainDkgOutcome {
+                        epoch: 2,
+                        ..correct.clone()
+                    },
+                ),
+                (
+                    None,
+                    OnchainDkgOutcome {
+                        next_players: OnchainDkgOutcome::dealt(1, 3).next_players,
+                        ..correct.clone()
+                    },
+                ),
+            ] {
+                let err = check(rotation_epoch, fork, &wrong).unwrap_err();
+                assert!(
+                    err.starts_with("boundary block DKG outcome does not match the parent state"),
+                    "{err}"
+                );
+            }
         }
 
         let mut trailing = correct.encode().to_vec();
         trailing.push(0);
-        let err = pre_execution(TempoHardfork::T15, 4, None, trailing.into()).unwrap_err();
+        let err = pre_execution(config(None), TempoHardfork::T15, 4, trailing.clone().into())
+            .unwrap_err();
         assert!(
             err.starts_with("failed decoding boundary block extra data as DKG outcome"),
             "{err}"
         );
 
-        // Before T15 the outcome is not checked against the state, and blocks other than the
-        // boundary carry no outcome.
+        // Before ValidatorConfigV2 is initialized, boundaries are not checked, not even decoded.
+        let wrong_players = OnchainDkgOutcome {
+            next_players: OnchainDkgOutcome::dealt(1, 3).next_players,
+            ..correct
+        };
+        for extra_data in [
+            wrong_players.encode().into(),
+            trailing.into(),
+            Bytes::from_static(&[0xff]),
+        ] {
+            assert_eq!(
+                pre_execution(InMemoryDB::default(), TempoHardfork::T15, 4, extra_data),
+                Ok(())
+            );
+        }
+        // Blocks other than the boundary carry no outcome.
         assert_eq!(
-            pre_execution(TempoHardfork::T14, 4, Some(1), correct.encode().into()),
-            Ok(())
-        );
-        assert_eq!(
-            pre_execution(TempoHardfork::T15, 3, None, Bytes::new()),
+            pre_execution(config(None), TempoHardfork::T15, 3, Bytes::new()),
             Ok(())
         );
     }
@@ -1670,8 +1682,10 @@ mod tests {
 
         let pre_execution = |fork, proposer: B256, beneficiary| {
             let db = db_with_accounts(&accounts);
+            // Keep block 2 off an epoch boundary, which must carry a DKG outcome.
             let mut executor = TestExecutorBuilder::default()
                 .with_block_number(2)
+                .with_epoch_length(100)
                 .with_spec(fork)
                 .build(db, &chainspec);
             let mut block = *executor.evm().block();

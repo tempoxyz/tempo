@@ -240,12 +240,11 @@ async fn check_boundary<P: Provider>(
             )
         })?;
 
-    let expected = tempo_evm::boundary_dkg_outcome(
-        epoch + 1,
-        proposed.output.clone(),
-        validators,
+    let expected = tempo_evm::DkgCeremonyConfig {
+        active_validators: validators,
         next_full_dkg_epoch,
-    );
+    }
+    .boundary_outcome(epoch + 1, proposed.output.clone());
     if proposed.epoch != expected.epoch {
         reasons.push(format!(
             "epoch is {}, expected {}",

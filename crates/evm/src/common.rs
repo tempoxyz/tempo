@@ -28,35 +28,46 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
 
-/// Returns the DKG outcome that the boundary block before `epoch` carries for the ceremony
-/// `output`, given the `ValidatorConfigV2` active `validators` and next network identity rotation
-/// epoch in the pre-state of that block.
-///
-/// The players of the ceremony in `epoch` are the active validators. Like consensus
-/// (`read_active_peers` in tempo-consensus), this skips validators whose public key or endpoints
-/// do not decode, and counts each public key once.
-pub fn boundary_dkg_outcome(
-    epoch: u64,
-    output: Output<MinSig, PublicKey>,
-    validators: impl IntoIterator<Item = IValidatorConfigV2::Validator>,
-    next_full_dkg_epoch: u64,
-) -> OnchainDkgOutcome {
-    let next_players = ordered::Set::from_iter_dedup(
-        validators
-            .into_iter()
-            .filter(|validator| {
-                validator.ingress.parse::<SocketAddr>().is_ok()
-                    && validator.egress.parse::<IpAddr>().is_ok()
-            })
-            .filter_map(|validator| {
-                PublicKey::decode(commonware_codec::Copying(validator.publicKey.as_slice())).ok()
-            }),
-    );
-    OnchainDkgOutcome {
-        epoch,
-        output,
-        next_players,
-        is_next_full_dkg: next_full_dkg_epoch == epoch,
+/// The part of `ValidatorConfigV2` in the pre-state of a boundary block that sets the next DKG
+/// ceremony.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DkgCeremonyConfig {
+    /// The active validators, who are the players of the next ceremony.
+    pub active_validators: Vec<IValidatorConfigV2::Validator>,
+    /// The epoch of the next full DKG ceremony.
+    pub next_full_dkg_epoch: u64,
+}
+
+impl DkgCeremonyConfig {
+    /// Returns the DKG outcome that the boundary block before `epoch` carries for the ceremony
+    /// `output`.
+    ///
+    /// The players of the ceremony in `epoch` are the active validators. Like consensus
+    /// (`read_active_peers` in tempo-consensus), this skips validators whose public key or
+    /// endpoints do not decode, and counts each public key once.
+    pub fn boundary_outcome(
+        self,
+        epoch: u64,
+        output: Output<MinSig, PublicKey>,
+    ) -> OnchainDkgOutcome {
+        let next_players = ordered::Set::from_iter_dedup(
+            self.active_validators
+                .into_iter()
+                .filter(|validator| {
+                    validator.ingress.parse::<SocketAddr>().is_ok()
+                        && validator.egress.parse::<IpAddr>().is_ok()
+                })
+                .filter_map(|validator| {
+                    PublicKey::decode(commonware_codec::Copying(validator.publicKey.as_slice()))
+                        .ok()
+                }),
+        );
+        OnchainDkgOutcome {
+            epoch,
+            output,
+            next_players,
+            is_next_full_dkg: self.next_full_dkg_epoch == epoch,
+        }
     }
 }
 
@@ -297,35 +308,33 @@ pub trait TempoStateAccess<M = ()> {
         })
     }
 
-    /// Returns the DKG outcome that the boundary block before `epoch` carries for the ceremony
-    /// `output`, filling in from `ValidatorConfigV2` the players of the ceremony in `epoch` (its
-    /// active validators) and whether that ceremony is a full DKG.
+    /// Returns the configuration of the DKG ceremony that the boundary block `block_number`
+    /// starts, from `ValidatorConfigV2` in its pre-state.
+    ///
+    /// Returns `None` when V2 is not initialized as of the parent block. Such boundaries took
+    /// their players from ValidatorConfig V1, so their outcomes are not derived from V2.
     ///
     /// Reads bypass the journal, so this must be called before any changes of the boundary block
     /// are committed to see the parent state.
-    fn boundary_dkg_outcome(
+    fn dkg_ceremony_config(
         &mut self,
         spec: TempoHardfork,
-        epoch: u64,
-        output: Output<MinSig, PublicKey>,
-    ) -> TempoResult<OnchainDkgOutcome>
+        block_number: u64,
+    ) -> TempoResult<Option<DkgCeremonyConfig>>
     where
         Self: Sized,
     {
-        let (validators, next_full_dkg_epoch) =
-            self.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
-                let config = ValidatorConfigV2::default();
-                Ok::<_, TempoPrecompileError>((
-                    config.get_active_validators()?,
-                    config.get_next_network_identity_rotation_epoch()?,
-                ))
-            })?;
-        Ok(boundary_dkg_outcome(
-            epoch,
-            output,
-            validators,
-            next_full_dkg_epoch,
-        ))
+        let parent_number = block_number.saturating_sub(1);
+        self.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
+            let config = ValidatorConfigV2::default();
+            if !config.is_initialized()? || config.get_initialized_at_height()? > parent_number {
+                return Ok(None);
+            }
+            Ok(Some(DkgCeremonyConfig {
+                active_validators: config.get_active_validators()?,
+                next_full_dkg_epoch: config.get_next_network_identity_rotation_epoch()?,
+            }))
+        })
     }
 }
 

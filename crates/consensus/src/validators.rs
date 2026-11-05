@@ -1,27 +1,20 @@
-use std::{
-    collections::HashMap,
-    net::{IpAddr, SocketAddr},
-};
+use std::net::{IpAddr, SocketAddr};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, B256};
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::Ingress;
-use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_evm::{ConfigureEvm as _, database::StateProviderDatabase};
 use reth_provider::{
     EvmStateProviderBox, HeaderProvider as _, StateProvider as _, StateProviderFactory as _,
 };
 use tempo_node::{TempoFullNode, evm::TempoEvm};
-use tempo_precompiles::{
-    storage::StorageCtx,
-    validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
-};
+use tempo_precompiles::{storage::StorageCtx, validator_config_v2::IValidatorConfigV2};
 use tempo_primitives::TempoHeader;
 
-use tracing::{Level, debug, instrument, warn};
+use tracing::{Level, debug, instrument};
 
 /// Minimal execution-node interface needed to read validator config state.
 ///
@@ -87,32 +80,6 @@ where
     ) -> eyre::Result<TempoEvm<'static>> {
         (*self).evm_for_block(db, header)
     }
-}
-
-/// Returns the validators that are `active` in the validator config v2
-/// contract, with their p2p addresses. Entries that fail to decode are
-/// skipped.
-pub(crate) fn read_active_peers(
-    config: &ValidatorConfigV2,
-) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
-    let mut all = HashMap::new();
-    for raw in config
-        .get_active_validators()
-        .wrap_err("failed getting active validator set")?
-    {
-        if let Ok(decoded) = DecodedValidatorV2::decode_from_contract(raw)
-            && all
-                .insert(decoded.public_key.clone(), decoded.to_p2p_address())
-                .is_some()
-        {
-            warn!(
-                duplicate = %decoded.public_key,
-                "found duplicate public keys",
-            );
-        }
-    }
-    debug!(active_validators = ?all, "read active validators from contract");
-    Ok(ordered::Map::try_from_iter(all).expect("hashmaps don't contain duplicates"))
 }
 
 /// Reads the validator state at the given block hash.

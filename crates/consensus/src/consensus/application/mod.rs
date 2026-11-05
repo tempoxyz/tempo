@@ -12,11 +12,9 @@
 //! them.
 
 mod r#impl;
-mod parent_state;
 
 pub(super) use r#impl::Config;
 pub(crate) use r#impl::Inner;
-pub(super) use parent_state::TempoParentState;
 
 use std::sync::Arc;
 
