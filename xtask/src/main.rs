@@ -6,7 +6,7 @@ use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_hardfork::AddHardfork, generate_localnet::GenerateLocalnet,
     generate_shadowfork::GenerateShadowfork, get_dkg_outcome::GetDkgOutcome,
-    identity_transitions::GetIdentityTransitions,
+    identity_transitions::GetIdentityTransitions, recover::Recover,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -27,6 +27,7 @@ mod genesis_args;
 mod get_dkg_outcome;
 mod get_verifier_pcrs;
 mod identity_transitions;
+mod recover;
 mod shadowfork;
 
 #[tokio::main]
@@ -62,6 +63,10 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to generate state bloat file"),
         Action::GetVerifierPcrs(args) => args.run().await.wrap_err("failed to get verifier PCRs"),
+        Action::Recover(args) => args
+            .run()
+            .await
+            .wrap_err("failed to generate chain recovery"),
     }
 }
 
@@ -89,6 +94,8 @@ enum Action {
     GenerateAddPeer(GenerateAddPeer),
     GenerateStateBloat(GenerateStateBloat),
     GetVerifierPcrs(get_verifier_pcrs::GetVerifierPcrs),
+    /// Generate the chainspec recovery for an epoch that lost its threshold signing key.
+    Recover(Recover),
 }
 
 #[derive(Debug, clap::Args)]
