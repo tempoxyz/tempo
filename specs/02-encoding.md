@@ -192,20 +192,19 @@ TempoConsensusContext = rlp([
 
 All four fields are required (no optionals). `proposer` MUST be exactly 32 bytes that decode as an Ed25519 public key under [commonware/cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding): the bytes are the compressed encoding of a curve point, with non-canonical encodings accepted per ZIP-215. A context whose `proposer` fails this check is decode-invalid, which makes the whole header decode-invalid.
 
-Presence by fork, as observed on mainnet:
+Presence by fork is a header-validity rule ([§2.5](#25-standalone-header-validity) check 9). Every node checks it on every header, including a follower replaying finalized blocks:
 
-- The genesis header does not contain `consensus_context`.
-- Every pre-T4 mainnet header omits it.
-- Every post-T4 non-genesis mainnet header contains it.
+- A header whose timestamp is before T4 MUST NOT contain `consensus_context`.
+- A header whose timestamp is at or after T4 MUST contain it.
 
-What is checked today:
+The genesis header of mainnet and Moderato has no `consensus_context`. Mainnet and Moderato history satisfy the rule: every header before T4 omits the field, and every header from T4 carries it.
 
-- Header validation and block execution do not check whether `consensus_context` is present, at any fork. A header that contains one MUST decode as above; its contents are not compared with anything during execution.
-- A validator voting on a proposal requires the context to be present and equal to the Context the block was **first proposed under** ([07-consensus.md §5.1](07-consensus.md#header-consensus-context)): the epoch and view of that proposal's round, the view of its parent, and that round's leader. No rule compares it with the round of the certificate that notarizes or finalizes it. A boundary block that is re-proposed ([07-consensus.md §5.3](07-consensus.md#53-epoch-scoped-instances)) keeps the header, and so the context, of its first proposal, and may be certified in a later view.
+Beyond presence and decoding:
 
-Whether presence by fork (absent before T4, present from T4) is also a header-validity rule that every node enforces when replaying finalized blocks is undecided.
+- Header validation and block execution do not compare the context's contents with anything.
+- A validator voting on a proposal also requires the context to equal the Context the block was **first proposed under** ([07-consensus.md §5.1](07-consensus.md#header-consensus-context)): the epoch and view of that proposal's round, the view of its parent, and that round's leader. No rule compares it with the round of the certificate that notarizes or finalizes it. A boundary block that is re-proposed ([07-consensus.md §5.3](07-consensus.md#53-epoch-scoped-instances)) keeps the header, and so the context, of its first proposal, and may be certified in a later view.
 
-> **Open conflict C-FORKS-05**: TIP-1031 and t4.mdx gate `consensus_context` presence by fork (absent before T4, required from T4), but code has no fork gate: the execution layer never checks presence by fork, and consensus requires it on every new proposal. See [conflicts](conflicts.md#c-forks-05).
+> **Resolved conflict C-FORKS-05**: TIP-1031 and t4.mdx gate `consensus_context` presence by fork (absent before T4, required from T4), but the implementation has no fork gate: the execution layer never checks presence by fork, and consensus requires it on every new proposal. Decided: this spec adopts TIP-1031's rule as a header-validity rule. The implementation does not yet enforce the gate, and that is tracked as a code issue. Mainnet and Moderato history satisfy the rule. See [conflicts](conflicts.md#c-forks-05).
 
 ### 2.4 Header hash
 
@@ -228,7 +227,7 @@ A non-genesis header `h` is valid on its own iff all of the following hold. Let 
 6. `h.timestamp_millis_part < 1000`.
 7. `h.shared_gas_limit == expected_shared_gas_limit(F, h.inner.gas_limit)`.
 8. `h.general_gas_limit == expected_general_gas_limit(F, h.inner.gas_limit, h.shared_gas_limit)`.
-9. If `consensus_context` is present, it decodes as in [§2.3](#23-tempoconsensuscontext). Its presence by fork is not part of this check (open conflict C-FORKS-05, [§2.3](#23-tempoconsensuscontext)).
+9. If `F < T4`, `consensus_context` is absent. If `F >= T4`, `consensus_context` is present. When present, it decodes as in [§2.3](#23-tempoconsensuscontext).
 
 ```python
 def expected_shared_gas_limit(F, gas_limit):

@@ -1,23 +1,12 @@
 # Open conflicts
 
-Each entry is a place where Tempo's docs or TIPs disagree with the implementation at commit `37dc7833023927f49fd0aa81ae84dbd43790f70c`. Each chapter marks the conflict inline with an **Open conflict** marker. The chapters describe what the implementation does until a decision is recorded here. Every TIP conflict except C-FORKS-05 is decided: the spec follows the implementation, and one PR per TIP (tempoxyz/tempo#8940 to #8974) amends them. The conflicts that touch only docs.tempo.xyz pages are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). Only C-FORKS-05 is open.
+Each entry is a place where Tempo's docs or TIPs disagree with the implementation at commit `37dc7833023927f49fd0aa81ae84dbd43790f70c`. Each chapter marks the conflict inline with a **Resolved conflict** marker that states the decision recorded here. Every conflict is decided. For every TIP conflict except C-FORKS-05, the spec follows the implementation, and one PR per TIP (tempoxyz/tempo#8940 to #8974) amends them. For C-FORKS-05 the spec adopts TIP-1031's rule, and the implementation's missing fork gate is tracked as a code issue. The conflicts that touch only docs.tempo.xyz pages are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 
 Groups:
 
-- **A. Affects block validity, gas or state (72).** Mainnet blocks were produced by the implementation, so a spec that follows the doc would reject real blocks or execute them incorrectly. The only open question is how to fix the TIP or doc.
+- **A. Affects block validity, gas or state (73).** Mainnet blocks were produced by the implementation, so a spec that follows the doc would reject real blocks or execute them incorrectly. The only open question is how to fix the TIP or doc.
 - **B. Doc-only (18).** The doc is stale, incomplete or out of scope, and block validity is not affected.
-- **C. Needs a decision (1).**
-
-## C. Needs a decision
-
-### C-FORKS-05 (also C-CONS-01)
-<a id="c-forks-05"></a><a id="c-cons-01"></a>
-
-TIP-1031 and docs upgrades/t4.mdx require consensus_context exactly from T4 and absent before; the code applies no fork gate to its presence (proposers always set it, consensus verification always requires it, execution never checks it by fork).
-
-- Where: [01-chain-and-forks.md (T4)](01-chain-and-forks.md#t4), [02-encoding.md §2.3](02-encoding.md#23-tempoconsensuscontext), [07-consensus.md (Header consensus context)](07-consensus.md#header-consensus-context)
-- Recommendation: Mainnet blocks before T4 carry no consensus_context and blocks from T4 do, which matches TIP-1031, but the code enforces no fork gate. Recommended: the spec adopts TIP-1031's rule (absent before T4, required from T4), and the missing gate is filed as a code issue.
-- Decision: _open_
+- **C. Needs a decision (0).**
 
 ## A. Affects block validity, gas or state
 
@@ -56,6 +45,15 @@ TIP-1036 §3 says the StablecoinDEX internal-balance swap pause check is gated a
 - Where: [01-chain-and-forks.md (T3)](01-chain-and-forks.md#t3), [precompiles/stablecoin-dex.md §11.2](precompiles/stablecoin-dex.md#112-route-validation)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
 - Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
+
+### C-FORKS-05 (also C-CONS-01)
+<a id="c-forks-05"></a><a id="c-cons-01"></a>
+
+TIP-1031 and docs upgrades/t4.mdx require consensus_context exactly from T4 and absent before; the implementation applies no fork gate to its presence (proposers always set it, consensus verification always requires it, execution never checks it by fork).
+
+- Where: [01-chain-and-forks.md (T4)](01-chain-and-forks.md#t4), [02-encoding.md §2.3](02-encoding.md#23-tempoconsensuscontext), [07-consensus.md (Header consensus context)](07-consensus.md#header-consensus-context)
+- Recommendation: Mainnet blocks before T4 carry no consensus_context and blocks from T4 do, which matches TIP-1031, but the implementation enforces no fork gate. Recommended: the spec adopts TIP-1031's rule (absent before T4, required from T4), and the missing gate is filed as a code issue.
+- Decision: adopt TIP-1031: absent before T4, required from T4; the implementation's missing fork gate is tracked as a code issue. Mainnet and Moderato history satisfy the rule.
 
 ### C-ENC-04
 <a id="c-enc-04"></a>

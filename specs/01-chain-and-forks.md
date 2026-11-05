@@ -377,7 +377,7 @@ Mainnet: 1779112800. Scope: [TIP-1031](../tips/tip-1031.md), meta [TIP-1046](../
 
 | # | Change | Specified in | TIP |
 |---|---|---|---|
-| T4-1 | From T4, block headers carry the trailing `consensus_context` field `[epoch, view, parent_view, proposer]`, set by the proposer. C-FORKS-05 covers how its presence is gated. | [02-encoding.md](02-encoding.md) | [TIP-1031](../tips/tip-1031.md) |
+| T4-1 | From T4, block headers MUST carry the trailing `consensus_context` field `[epoch, view, parent_view, proposer]`, set by the proposer. Before T4 they MUST NOT carry it. Every node checks this as a header-validity rule. | [02-encoding.md](02-encoding.md) | [TIP-1031](../tips/tip-1031.md) |
 | T4-2 | From T4 blocks must contain zero end-of-block system txs (MissingEndOfBlockSystemTxs otherwise) and a subblocks-metadata system tx (to=0x0) is rejected ('subblocks are disabled in T4+'); before, exactly one such tx was required, last in the block. | [05-block-execution.md](05-block-execution.md) | [TIP-1046](../tips/tip-1046.md) |
 | T4-3 | From T4 shared_gas_limit is 0 and any incentive-section gas fails the block ('incentive gas limit exceeded'); before, shared gas limit was block_gas_limit/10. | [05-block-execution.md](05-block-execution.md) | [TIP-1046](../tips/tip-1046.md) |
 | T4-4 | From T4 key_authorization gas counts only storage-creating scope rows (1+2/target+1+2/selector+1/non-empty selector set+1/constrained selector+2/recipient) and adds 5,000+7,000/target+7,000/selector+5,000/recipient scope surcharge; before, T3 row counting and no surcharge. | [06-transactions-and-fees.md](06-transactions-and-fees.md) | [TIP-1046](../tips/tip-1046.md) |
@@ -391,7 +391,7 @@ Mainnet: 1779112800. Scope: [TIP-1031](../tips/tip-1031.md), meta [TIP-1046](../
 | T4-12 | From T4, a selector rule with empty recipients no longer issues a delete() of the nested recipients set; before, the redundant delete touches storage (affects gas/warmness only). | [precompiles/account-keychain.md](precompiles/account-keychain.md) | [TIP-1046](../tips/tip-1046.md) |
 | T4-13 | From T4, recipient-constrained selector rules require only that target has the TIP-20 address prefix; before, target must be an initialized TIP-20 per TIP20Factory.isTIP20 (storage read). | [precompiles/account-keychain.md](precompiles/account-keychain.md) | [TIP-1046](../tips/tip-1046.md) |
 
-> **Open conflict C-FORKS-05**: TIP-1031 and docs upgrades/t4.mdx require consensus_context exactly from T4 and absent before; the code applies no fork gate to its presence (proposers always set it, consensus verification always requires it, execution never checks it by fork). See [conflicts](conflicts.md#c-forks-05).
+> **Resolved conflict C-FORKS-05**: TIP-1031 and docs upgrades/t4.mdx require consensus_context exactly from T4 and absent before; the implementation applies no fork gate to its presence (proposers always set it, consensus verification always requires it, execution never checks it by fork). Decided: this spec adopts TIP-1031's rule as a header-validity rule (T4-1). The implementation does not yet enforce the gate, and that is tracked as a code issue. Mainnet and Moderato history satisfy the rule. See [conflicts](conflicts.md#c-forks-05).
 
 ### T5
 

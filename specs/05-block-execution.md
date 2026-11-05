@@ -252,6 +252,7 @@ For every non-genesis header `h`:
 8. `h.requests_hash` is present (Prague).
 9. `h.block_access_list_hash` and `h.slot_number` are absent (Amsterdam is not active).
 10. `h.shared_gas_limit == shared_gas_limit(fork, h.gas_limit)` and `h.general_gas_limit == general_gas_limit(fork, h.gas_limit, h.shared_gas_limit)` (§2.3).
+11. `h.consensus_context` is absent before T4 and present from T4 ([02-encoding.md §2.5](02-encoding.md#25-standalone-header-validity) check 9).
 
 There is no check of the header timestamp against wall-clock time in the execution layer.
 

@@ -102,11 +102,11 @@ Phases drive DKG timing (§9.4). They do not affect block validity.
 
 #### Header consensus context
 
-Every block a validator proposes carries `header.consensus_context = {epoch, view, parent_view, proposer}` (TIP-1031; encoding in [02-encoding.md §2.3](02-encoding.md#23-tempoconsensuscontext)), equal to the Context the block was **first proposed under**: `epoch` and `view` of that proposal's round, `parent_view` of its parent, and `proposer` = that round's leader as 32 raw Ed25519 bytes. No rule compares it with the round of the certificate that notarizes or finalizes it; a re-proposed boundary block keeps its first proposal's context (§5.3). On mainnet the genesis header and every header before T4 have no `consensus_context`, and every non-genesis header from T4 has one.
+Every block a validator proposes carries `header.consensus_context = {epoch, view, parent_view, proposer}` (TIP-1031; encoding in [02-encoding.md §2.3](02-encoding.md#23-tempoconsensuscontext)), equal to the Context the block was **first proposed under**: `epoch` and `view` of that proposal's round, `parent_view` of its parent, and `proposer` = that round's leader as 32 raw Ed25519 bytes. No rule compares it with the round of the certificate that notarizes or finalizes it; a re-proposed boundary block keeps its first proposal's context (§5.3). On mainnet and Moderato the genesis header and every header before T4 have no `consensus_context`, and every non-genesis header from T4 has one.
 
-A validator voting on a new proposal MUST require that the context is present and equal to the engine's Context for it (§13 step 5). This check has no fork gate. The execution layer does not check whether the field is present.
+Presence by fork is a header-validity rule ([02-encoding.md §2.5](02-encoding.md#25-standalone-header-validity) check 9): a header MUST NOT contain the context before T4 and MUST contain it from T4, by block timestamp. Every node checks it, including followers replaying finalized blocks. A validator voting on a new proposal from T4 MUST also require that the context equals the engine's Context for it (§13 step 5).
 
-> **Open conflict C-CONS-01**: TIP-1031 requires the context to be absent before T4 and the check to depend on activation, but the implementation has no T4 gate: it always builds and requires a context. See [conflicts](conflicts.md#c-cons-01).
+> **Resolved conflict C-CONS-01**: TIP-1031 requires the context to be absent before T4 and the check to depend on activation, but the implementation has no T4 gate: it always builds and requires a context. Decided: this spec adopts TIP-1031's rule, and every node checks presence by fork as a header-validity rule. The implementation does not yet enforce the gate, and that is tracked as a code issue. Mainnet and Moderato history satisfy the rule. See [conflicts](conflicts.md#c-cons-01).
 
 Every mainnet block a validator votes on under T13 rules has its timestamp after T4, so the rule above (present and equal) applies to them. A block whose header has no context MUST fail the check: a validator rejects it, whatever placeholder Context it uses internally.
 
@@ -523,7 +523,7 @@ For a proposal `(E, v, pv, pd, D)` with leader `ℓ`, a validator runs these che
 | 2 | `epoch_of(B.number) == E` | reject |
 | 3 | If `D == pd` (re-proposal): accept iff `B.number == last(E)`, and skip steps 4–10 | reject if not at `last(E)` |
 | 4 | Obtain parent `P = block(pd)` and require `B.parent_hash == hash(P) == pd` and `B.number == P.number + 1` | parent unavailable: the node keeps waiting for it; if the fetch is abandoned, the verification request closes without an answer, which Simplex treats as an ignored proposal and nullifies early like a reject; mismatch: reject |
-| 5 | From T4: `B.consensus_context` is present and equals `{E, v, pv, ℓ}` | reject |
+| 5 | From T4 (by `B.timestamp`): `B.consensus_context` is present and equals `{E, v, pv, ℓ}`. Presence is also a header-validity rule every node checks (02-encoding.md §2.5) | reject |
 | 6 | If `is_boundary(B.number)`: `B.extra_data` decodes as an `OnchainDkgOutcome` (§10.2) | reject |
 | 7 | Else, if `B.extra_data` is not empty: if the local DKG state is not at epoch `E`, abstain. Otherwise it MUST decode and check as a `SignedDealerLog` and its dealer MUST equal `ℓ` (§10.1) | abstain / reject |
 | 8 | Execute `B` on `P` with the full execution-layer rules (05-block-execution.md, including the header rules: `timestamp_ms > P.timestamp_ms`, `timestamp_millis_part < 1000`, `len(extra_data) ≤ 10240`), by the *verification probe* below | `INVALID`: reject; no verdict: abstain |
@@ -567,7 +567,7 @@ A validator that sees votes for an epoch later than its own SHOULD fetch the fin
 |---|---|---|
 | T0 (mainnet genesis) | — | Everything in this chapter except the rows below: elector V0, reveal V0, no header `consensus_context`, immediate verification. |
 | T2 | block timestamp (EL) | The ValidatorConfigV2 precompile appears (precompiles/validator-config-and-zones.md). The consensus layer reads next players from it once it is initialized (§11.2, C-CONS-02). |
-| T4 | block timestamp | Header `consensus_context` present on every block and checked by voters (§5.1, C-CONS-01). |
+| T4 | block timestamp | Header `consensus_context` absent before T4 and present on every block from T4, a header-validity rule every node checks. Voters also check its contents (§5.1, C-CONS-01). |
 | T8 | block timestamp (EL) | Block execution decodes the boundary `OnchainDkgOutcome` and writes `(outcome.epoch, outcome.output.players)` to CurrentCommittee. An undecodable boundary outcome makes the block invalid (05-block-execution.md). |
 | T12 | `boundary_timestamp(E)` | Leader election version V1 (§6) and DKG Reveal V1 (§9.2) for epoch `E` and its ceremony. |
 | T14 (out of scope) | `boundary_timestamp(E)` | Deferred verification by default, and beneficiary validation. Not part of T13. |
