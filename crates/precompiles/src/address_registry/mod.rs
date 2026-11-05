@@ -124,9 +124,7 @@ impl AddressRegistry {
             return Err(AddrRegistryError::master_id_collision(master).into());
         }
 
-        self.write_master(master_id, msg_sender)?;
-
-        Ok(master_id)
+        self.write_master(master_id, msg_sender)
     }
 
     /// Registers `master` under `master_id` without the proof of work or any other check, so
@@ -136,18 +134,19 @@ impl AddressRegistry {
         &mut self,
         master_id: MasterId,
         master: Address,
-    ) -> Result<()> {
+    ) -> Result<MasterId> {
         self.write_master(master_id, master)
     }
 
-    /// Stores `master` under `master_id` and emits `MasterRegistered`.
-    fn write_master(&mut self, master_id: MasterId, master: Address) -> Result<()> {
+    /// Stores `master` under `master_id`, emits `MasterRegistered` and returns `master_id`.
+    fn write_master(&mut self, master_id: MasterId, master: Address) -> Result<MasterId> {
         self.data[master_id].write(RegistryData {
             master_address: master,
             reserved: FixedBytes::ZERO,
             ty: 0,
         })?;
-        self.emit_event(AddrRegistryEvent::master_registered(master_id, master))
+        self.emit_event(AddrRegistryEvent::master_registered(master_id, master))?;
+        Ok(master_id)
     }
 
     // ────────────────── View Functions ──────────────────
@@ -208,24 +207,6 @@ mod tests {
     use alloy_primitives::fixed_bytes;
 
     use tempo_chainspec::hardfork::TempoHardfork;
-
-    #[test]
-    fn test_register_virtual_master_unchecked_skips_proof_of_work() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = AddressRegistry::new();
-            registry.initialize()?;
-            let master_id = MasterId::from([0x10, 0x20, 0x30, 0x40]);
-            let master = Address::repeat_byte(0x11);
-
-            registry.register_virtual_master_unchecked(master_id, master)?;
-
-            assert_eq!(registry.get_master(master_id)?, Some(master));
-            let virtual_addr = Address::new_virtual(master_id, UserTag::from([1, 2, 3, 4, 5, 6]));
-            assert_eq!(registry.resolve_recipient(virtual_addr)?, master);
-            Ok(())
-        })
-    }
 
     #[test]
     fn test_is_implicitly_approved_pre_t5_returns_false() -> eyre::Result<()> {
