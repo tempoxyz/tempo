@@ -355,7 +355,7 @@ where
             .unwrap_or(NonZeroU64::MIN)
             .get();
         let extra_data = if block_number.saturating_add(1).is_multiple_of(epoch_length) {
-            let output = tempo_dkg_onchain_artifacts::decode_output(attributes.extra_data())
+            let output = tempo_dkg_onchain_artifacts::read_output(attributes.extra_data())
                 .map_err(PayloadBuilderError::other)?;
             let outcome = db
                 .dkg_ceremony_config(hardfork, block_number)

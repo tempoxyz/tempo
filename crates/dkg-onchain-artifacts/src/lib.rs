@@ -3,9 +3,7 @@
 use std::num::NonZeroU32;
 
 use bytes::BufMut;
-use commonware_codec::{
-    Buf, Decode as _, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt,
-};
+use commonware_codec::{Buf, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
 #[cfg(feature = "commonware-consensus")]
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -22,11 +20,11 @@ use commonware_utils::{NZU32, ordered};
 
 const MAX_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
-/// Decodes the output of a DKG ceremony with the bounds of [`OnchainDkgOutcome`], rejecting
-/// trailing bytes.
-pub fn decode_output(bytes: &[u8]) -> Result<Output<MinSig, PublicKey>, commonware_codec::Error> {
-    Output::decode_cfg(
-        commonware_codec::Copying(bytes),
+/// Reads the output of a DKG ceremony with the bounds of [`OnchainDkgOutcome`]. Like
+/// [`OnchainDkgOutcome::read`], it ignores trailing bytes.
+pub fn read_output(bytes: &[u8]) -> Result<Output<MinSig, PublicKey>, commonware_codec::Error> {
+    Output::read_cfg(
+        &mut commonware_codec::Copying(bytes),
         &(MAX_VALIDATORS, ModeVersion::v0()),
     )
 }
@@ -157,15 +155,12 @@ mod tests {
     use commonware_consensus::types::Epoch;
 
     #[test]
-    fn decode_output_rejects_trailing_bytes() {
+    fn read_output_ignores_trailing_bytes() {
         let output = OnchainDkgOutcome::dealt(1, 3).output;
         let mut bytes = output.encode().to_vec();
-        assert_eq!(super::decode_output(&bytes).unwrap(), output);
+        assert_eq!(super::read_output(&bytes).unwrap(), output);
         bytes.push(0);
-        assert!(matches!(
-            super::decode_output(&bytes),
-            Err(commonware_codec::Error::ExtraData(1))
-        ));
+        assert_eq!(super::read_output(&bytes).unwrap(), output);
     }
 
     #[test]
