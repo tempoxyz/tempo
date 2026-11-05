@@ -289,7 +289,8 @@ mod fast_path {
 
         let point = fast::network_point(&network.identity()).unwrap();
         fast::verify_keys(&mut rng, &point, &prepared, &keys, &Sequential).unwrap();
-        let body_keys = fast::open_keys(&mut rng, &prepared, &keys, &Sequential).unwrap();
+        let sigmas = fast::decrypt_sigmas(&prepared, &keys, &Sequential).unwrap();
+        let body_keys = fast::verify_openings(&mut rng, &prepared, &sigmas, &Sequential).unwrap();
         let opened: Vec<_> = fast::open_bodies(&bodies, &body_keys, &Sequential)
             .into_iter()
             .map(Option::unwrap)
@@ -347,8 +348,9 @@ mod fast_path {
         let prepared = fast::prepare(&bodies, &Sequential).unwrap();
         let keys = fast::recover(&quorum(&network, &prepared), &Sequential).unwrap();
 
-        let body_keys = fast::open_keys(&mut rng, &prepared, &keys, &Sequential).unwrap();
+        let sigmas = fast::decrypt_sigmas(&prepared, &keys, &Sequential).unwrap();
 
+        let body_keys = fast::verify_openings(&mut rng, &prepared, &sigmas, &Sequential).unwrap();
         let opened: Vec<_> = body_keys.iter().map(Option::is_some).collect();
         assert_eq!(opened, [true, true, false, true]);
     }
@@ -370,4 +372,34 @@ mod fast_path {
             })
         ));
     }
+}
+
+#[test]
+fn wrong_sigma_does_not_open() {
+    use crate::fast;
+    use commonware_parallel::Sequential;
+
+    let mut rng = StdRng::seed_from_u64(25);
+    let network = Network::new(&mut rng);
+    let bodies: Vec<_> = (0..3)
+        .map(|i| {
+            let (body, id) =
+                EncryptedBody::encrypt(&mut rng, network.identity(), &envelope(i), b"secret")
+                    .unwrap();
+            (id, body)
+        })
+        .collect();
+    let prepared = fast::prepare(&bodies, &Sequential).unwrap();
+    let quorum: Vec<_> = network.shares[..network.sharing.required() as usize]
+        .iter()
+        .map(|share| (share.index, fast::sign(share, &prepared, &Sequential)))
+        .collect();
+    let keys = fast::recover(&quorum, &Sequential).unwrap();
+    let mut sigmas = fast::decrypt_sigmas(&prepared, &keys, &Sequential).unwrap();
+    sigmas[1][0] ^= 1;
+
+    let body_keys = fast::verify_openings(&mut rng, &prepared, &sigmas, &Sequential).unwrap();
+
+    let opened: Vec<_> = body_keys.iter().map(Option::is_some).collect();
+    assert_eq!(opened, [true, false, true]);
 }

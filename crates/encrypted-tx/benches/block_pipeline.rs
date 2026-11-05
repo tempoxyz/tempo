@@ -55,9 +55,9 @@ fn main() {
     let quorum_size = sharing.required() as usize;
     println!("validators={validators} quorum={quorum_size} threads={cores} runs={runs}");
     println!(
-        "| txs | prepare | sign | decode 48B | decode 96B | recover | verify keys | pair+FO | AEAD | critical (96B) | reference critical |"
+        "| txs | prepare | sign | decode 48B | decode 96B | recover | verify keys | pairing | openings | AEAD | critical (96B) | distributed | reference critical |"
     );
-    println!("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    println!("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
 
     for &count in &sizes {
         let bodies: Vec<(B256, EncryptedBody)> = all.map_collect_vec(0..count, |i| {
@@ -110,11 +110,27 @@ fn main() {
         let verify = median_ms(runs, || {
             fast::verify_keys(&mut rng, &network_point, &prepared, &keys, &all).unwrap();
         });
-        let open = median_ms(runs, || {
-            black_box(fast::open_keys(&mut rng, &prepared, &keys, &all).unwrap());
+        let pair = median_ms(runs, || {
+            black_box(fast::decrypt_sigmas(&prepared, &keys, &all).unwrap());
         });
-        let body_keys = fast::open_keys(&mut rng, &prepared, &keys, &all).unwrap();
+        let sigmas = fast::decrypt_sigmas(&prepared, &keys, &all).unwrap();
+        let openings = median_ms(runs, || {
+            black_box(fast::verify_openings(&mut rng, &prepared, &sigmas, &all).unwrap());
+        });
+        let body_keys = fast::verify_openings(&mut rng, &prepared, &sigmas, &all).unwrap();
         assert!(body_keys.iter().all(Option::is_some));
+
+        // Distributed: each validator recovers and decrypts its slice (every body assigned to two
+        // validators), then checks every sigma it receives. Excludes the network hop.
+        let slice = (count * 2).div_ceil(validators as usize);
+        let slice_quorum: Vec<_> = quorum_shares
+            .iter()
+            .map(|(index, s)| (*index, s[..slice].to_vec()))
+            .collect();
+        let slice_work = median_ms(runs, || {
+            let keys = fast::recover(&slice_quorum, &all).unwrap();
+            black_box(fast::decrypt_sigmas(&prepared[..slice], &keys, &all).unwrap());
+        });
         let aead = median_ms(runs, || {
             black_box(fast::open_bodies(&bodies, &body_keys, &all));
         });
@@ -135,9 +151,10 @@ fn main() {
             );
         });
 
-        let critical = decode_96 + recover + verify + open + aead;
+        let critical = decode_96 + recover + verify + pair + openings + aead;
+        let distributed = decode_96 + slice_work + openings + aead;
         println!(
-            "| {count} | {prepare:.1} | {sign:.1} | {decode_48:.1} | {decode_96:.1} | {recover:.1} | {verify:.1} | {open:.1} | {aead:.1} | {critical:.1} | {reference:.1} |"
+            "| {count} | {prepare:.1} | {sign:.1} | {decode_48:.1} | {decode_96:.1} | {recover:.1} | {verify:.1} | {pair:.1} | {openings:.1} | {aead:.1} | {critical:.1} | {distributed:.1} | {reference:.1} |"
         );
     }
 
@@ -195,12 +212,16 @@ fn main() {
     let verify = median_ms(runs, || {
         fast::verify_keys(&mut rng, &network_point, &prepared, &keys, seq).unwrap();
     });
-    let open = median_ms(runs, || {
-        black_box(fast::open_keys(&mut rng, &prepared, &keys, seq).unwrap());
+    let pair = median_ms(runs, || {
+        black_box(fast::decrypt_sigmas(&prepared, &keys, seq).unwrap());
+    });
+    let sigmas = fast::decrypt_sigmas(&prepared, &keys, seq).unwrap();
+    let openings = median_ms(runs, || {
+        black_box(fast::verify_openings(&mut rng, &prepared, &sigmas, seq).unwrap());
     });
     println!();
     println!(
-        "one core, us per tx: encrypt(sender) {:.1} | prepare {:.1} | sign {:.1} | decode 48B {:.1} | decode 96B {:.2} | recover {:.1} | verify keys {:.1} | pair+FO {:.1}",
+        "one core, us per tx: encrypt(sender) {:.1} | prepare {:.1} | sign {:.1} | decode 48B {:.1} | decode 96B {:.2} | recover {:.1} | verify keys {:.1} | pairing {:.1} | openings {:.1}",
         encrypt * 1e3,
         per_tx(prepare),
         per_tx(sign),
@@ -208,6 +229,7 @@ fn main() {
         per_tx(decode_96),
         per_tx(recover),
         per_tx(verify),
-        per_tx(open)
+        per_tx(pair),
+        per_tx(openings)
     );
 }

@@ -318,22 +318,23 @@ pub fn verify_keys(
     }
 }
 
-/// Recovers each body's 32-byte body key with its verified decryption key: one Miller loop over
-/// precomputed lines and one final exponentiation per body, then a single batched
-/// Fujisaki-Okamoto check. `None` marks a body whose ciphertext does not decrypt under its key.
-pub fn open_keys(
-    rng: &mut impl CryptoRng,
+/// Recovers each body's sigma, the opening that [`verify_openings`] checks, with its verified
+/// decryption key: one Miller loop over precomputed lines and one final exponentiation per body.
+///
+/// Validators can split a block between them by body, decrypt only their slice and exchange
+/// sigmas, since checking an opening costs far less than producing it.
+pub fn decrypt_sigmas(
     prepared: &[Prepared],
     keys: &[Key],
     strategy: &impl Strategy,
-) -> Result<Vec<Option<[u8; 32]>>, Error> {
+) -> Result<Vec<[u8; 32]>, Error> {
     if prepared.len() != keys.len() {
         return Err(Error::LengthMismatch {
             expected: prepared.len(),
             actual: keys.len(),
         });
     }
-    let openings: Vec<([u8; 32], [u8; 32], Scalar)> =
+    Ok(
         strategy.map_collect_vec(prepared.iter().zip(keys), |(p, key)| {
             let mut gt = blst_fp12::default();
             let mut gt_bytes = [0u8; 576];
@@ -343,14 +344,39 @@ pub fn open_keys(
                 blst_final_exp(&mut gt, &gt);
                 blst_bendian_from_fp12(gt_bytes.as_mut_ptr(), &gt);
             }
-            let sigma = xor(
+            xor(
                 &p.v,
                 &Sha256::new()
                     .chain_update(b"h2")
                     .chain_update(gt_bytes)
                     .finalize()
                     .into(),
-            );
+            )
+        }),
+    )
+}
+
+/// Checks each body's sigma against its ciphertext and returns its body key, with one random
+/// linear combination for the whole batch in place of a G2 multiplication per body. `None`
+/// marks a sigma that does not open its ciphertext.
+///
+/// A sigma that passes is the only one that opens an honestly built ciphertext: it fixes
+/// r = H3(sigma, M) with U = rG. A sender that builds U and W from a sigma but masks it wrongly in
+/// V can open its own body here although decryption with the key fails.
+pub fn verify_openings(
+    rng: &mut impl CryptoRng,
+    prepared: &[Prepared],
+    sigmas: &[[u8; 32]],
+    strategy: &impl Strategy,
+) -> Result<Vec<Option<[u8; 32]>>, Error> {
+    if prepared.len() != sigmas.len() {
+        return Err(Error::LengthMismatch {
+            expected: prepared.len(),
+            actual: sigmas.len(),
+        });
+    }
+    let openings: Vec<([u8; 32], Scalar)> =
+        strategy.map_collect_vec(prepared.iter().zip(sigmas), |(p, sigma)| {
             let body_key = xor(
                 &p.w,
                 &Sha256::new()
@@ -360,12 +386,12 @@ pub fn open_keys(
                     .into(),
             );
             let mut h3_input = [0u8; 64];
-            h3_input[..32].copy_from_slice(&sigma);
+            h3_input[..32].copy_from_slice(sigma);
             h3_input[32..].copy_from_slice(&body_key);
-            (sigma, body_key, Scalar::map(H3_DST, &h3_input))
+            (body_key, Scalar::map(H3_DST, &h3_input))
         });
 
-    // U_i = r_i G for every i iff, with overwhelming probability over random 128-bit rho_i,
+    // U_i = r_i G for every i iff, except with probability 2^-128 over random 128-bit rho_i,
     // sum rho_i U_i = (sum rho_i r_i) G.
     let rhos: Vec<SmallScalar> = (0..openings.len())
         .map(|_| SmallScalar::random(&mut *rng))
@@ -373,19 +399,19 @@ pub fn open_keys(
     let us: Vec<G2> = prepared.iter().map(|p| p.u).collect();
     let lhs = G2::msm(&us, &rhos, strategy);
     let mut combined = Scalar::zero();
-    for (rho, (_, _, r)) in rhos.iter().zip(&openings) {
+    for (rho, (_, r)) in rhos.iter().zip(&openings) {
         combined += &(Scalar::from(rho.clone()) * r);
     }
     if lhs == G2::generator() * &combined {
         return Ok(openings
             .into_iter()
-            .map(|(_, body_key, _)| Some(body_key))
+            .map(|(body_key, _)| Some(body_key))
             .collect());
     }
-    // Some body does not decrypt: check each on its own, which only the sender's bad ciphertext
-    // causes and the sender pays for.
+    // Some body does not open: check each on its own. Only a sender's malformed ciphertext or a
+    // wrong sigma causes this.
     Ok(
-        strategy.map_collect_vec(us.iter().zip(openings), |(u, (_, body_key, r))| {
+        strategy.map_collect_vec(us.iter().zip(openings), |(u, (body_key, r))| {
             (*u == G2::generator() * &r).then_some(body_key)
         }),
     )
