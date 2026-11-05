@@ -288,6 +288,7 @@ mod tests {
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
     use super::*;
+    use commonware_codec::Copying;
 
     fn execution_block_with_block_access_list_hash(
         block_access_list_hash: B256,
@@ -357,8 +358,7 @@ mod tests {
             .expect("test block should be valid");
         let block_bytes = alloy_rlp::encode(&execution_block);
 
-        let decoded =
-            Block::read_cfg(&mut commonware_codec::Copying(block_bytes.as_ref()), &()).unwrap();
+        let decoded = Block::read_cfg(&mut Copying(block_bytes.as_ref()), &()).unwrap();
         assert_eq!(decoded, expected);
         assert_eq!(decoded.encode_size(), block_bytes.len());
 
@@ -389,8 +389,7 @@ mod tests {
         });
         let encoded = alloy_rlp::encode(&execution_block);
 
-        let err =
-            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
+        let err = Block::read_cfg(&mut Copying(encoded.as_slice()), &()).unwrap_err();
 
         assert!(
             matches!(
@@ -434,8 +433,7 @@ mod tests {
         alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
         block_access_list.write(&mut encoded);
 
-        let err =
-            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_ref()), &()).unwrap_err();
+        let err = Block::read_cfg(&mut Copying(encoded.as_ref()), &()).unwrap_err();
 
         let commonware_codec::Error::Wrapped("validating execution block", error) = err else {
             panic!("unexpected error: {err:?}");

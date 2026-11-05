@@ -7,7 +7,6 @@ use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::ReadExt;
 use evm2::{
     EvmTypes, TxResult, TxResultWithState,
     bytecode::Bytecode,
@@ -458,8 +457,8 @@ impl<'a> TempoBlockExecutor<'a> {
             return Ok(());
         }
 
-        let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-            &mut commonware_codec::Copying(self.extra_data.as_ref()),
+        let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::from_extra_data(
+            self.extra_data.as_ref(),
         )
         .map_err(|err| {
             BlockValidationError::msg(format!(

@@ -457,6 +457,7 @@ mod tests {
         },
         init_finalizations_archive,
     };
+    use commonware_codec::Copying;
 
     async fn fresh_archives(
         context: &deterministic::Context,
@@ -492,7 +493,7 @@ mod tests {
                 digest,
             ),
             certificate: VrfCertificate {
-                signature: Lazy::deferred(&mut commonware_codec::Copying(&signature_bytes[..]), ()),
+                signature: Lazy::deferred(&mut Copying(&signature_bytes[..]), ()),
             },
         }
     }

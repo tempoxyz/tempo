@@ -6,7 +6,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use alloy_primitives::{Address, B256, Keccak256};
-use commonware_codec::DecodeExt as _;
+use commonware_codec::{Copying, DecodeExt as _};
 use commonware_cryptography::{Verifier as _, ed25519};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
@@ -86,10 +86,9 @@ impl ValidatorConfig {
         message: &B256,
         signature: &[u8],
     ) -> Result<(), ValidatorConfigError> {
-        let public_key =
-            ed25519::PublicKey::decode(commonware_codec::Copying(self.public_key.as_slice()))
-                .map_err(|_| ValidatorConfigError::InvalidPublicKey)?;
-        let sig = ed25519::Signature::decode(commonware_codec::Copying(signature))
+        let public_key = ed25519::PublicKey::decode(Copying(self.public_key.as_slice()))
+            .map_err(|_| ValidatorConfigError::InvalidPublicKey)?;
+        let sig = ed25519::Signature::decode(Copying(signature))
             .map_err(|_| ValidatorConfigError::InvalidSignature)?;
         if !public_key.verify(namespace, message.as_slice(), &sig) {
             return Err(ValidatorConfigError::SignatureVerificationFailed);

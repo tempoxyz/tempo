@@ -1,5 +1,5 @@
 use alloy_primitives::{FixedBytes, hex};
-use commonware_codec::ReadExt as _;
+use commonware_codec::{Copying, ReadExt as _};
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use std::str::FromStr;
 
@@ -21,7 +21,7 @@ impl FromStr for NetworkIdentity {
         let bytes = s.parse::<FixedBytes<96>>()?;
 
         let bytes = bytes.as_slice();
-        let key = <MinSig as Variant>::Public::read(&mut commonware_codec::Copying(bytes))?;
+        let key = <MinSig as Variant>::Public::read(&mut Copying(bytes))?;
 
         Ok(Self(key))
     }

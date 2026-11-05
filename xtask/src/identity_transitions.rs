@@ -7,7 +7,7 @@ use alloy::{
     primitives::hex,
     providers::{Provider, ProviderBuilder},
 };
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::Encode as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use eyre::{Context as _, OptionExt as _, eyre};
@@ -259,8 +259,8 @@ impl<'a, P: Provider + ?Sized> OutcomeCache<'a, P> {
             "block {height} has empty extraData (not an epoch boundary?)"
         );
 
-        let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
-            .wrap_err_with(|| {
+        let outcome =
+            OnchainDkgOutcome::from_extra_data(extra_data.as_ref()).wrap_err_with(|| {
                 format!("failed to parse DKG outcome from block {height} extraData")
             })?;
 

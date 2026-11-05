@@ -24,8 +24,6 @@ tempo-payload-types = { workspace = true, optional = true }
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 
-commonware-codec.workspace = true
-
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-chainspec.workspace = true
@@ -68,6 +66,7 @@ alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer.workspace = true
 alloy-sol-types.workspace = true
 base64.workspace = true
+commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 criterion.workspace = true

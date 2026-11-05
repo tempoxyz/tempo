@@ -105,7 +105,7 @@ impl<F: Future> FusedFuture for OptionFuture<F> {
 mod tests {
     use std::task::Poll;
 
-    use commonware_codec::ReadExt as _;
+    use commonware_codec::{Copying, ReadExt as _};
     use commonware_cryptography::ed25519::PublicKey as CommonwarePublicKey;
     use futures::{channel::oneshot, executor::block_on, pin_mut};
     use tempo_primitives::ed25519::PublicKey as TempoPublicKey;
@@ -117,7 +117,7 @@ mod tests {
         let tempo_key = TempoPublicKey::from_seed(42);
         let tempo_public = tempo_key.to_inner();
         let bytes = tempo_public.as_ref();
-        let cw_key = CommonwarePublicKey::read(&mut commonware_codec::Copying(bytes)).unwrap();
+        let cw_key = CommonwarePublicKey::read(&mut Copying(bytes)).unwrap();
         assert_eq!(public_key_to_tempo_primitive(&cw_key), tempo_key);
         assert_eq!(tempo_public.as_ref(), cw_key.as_ref());
     }

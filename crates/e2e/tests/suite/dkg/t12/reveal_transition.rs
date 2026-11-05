@@ -2,7 +2,7 @@
 
 use std::time::{Duration, UNIX_EPOCH};
 
-use commonware_codec::Read as _;
+use commonware_codec::{Copying, Read as _};
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
     bls12381::{
@@ -112,7 +112,7 @@ fn validators_switch_dkg_reveal_version_at_t12() {
                 }
 
                 let signed = SignedDealerLog::<MinSig, PublicKey>::read_cfg(
-                    &mut commonware_codec::Copying(extra_data.as_ref()),
+                    &mut Copying(extra_data.as_ref()),
                     &NZU32!(input.next_players.len() as u32),
                 )
                 .unwrap();

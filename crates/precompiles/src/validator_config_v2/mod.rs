@@ -16,7 +16,7 @@ use crate::{
     validator_config::ValidatorConfig,
 };
 use alloy::primitives::{Address, B256, Keccak256};
-use commonware_codec::DecodeExt;
+use commonware_codec::{Copying, DecodeExt};
 use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
@@ -468,7 +468,7 @@ impl ValidatorConfigV2 {
         ingress: IpAddrWithPort<'_>,
         egress: IpAddr<'_>,
     ) -> Result<()> {
-        let sig = Signature::decode(commonware_codec::Copying(signature))
+        let sig = Signature::decode(Copying(signature))
             .map_err(|_| ValidatorConfigV2Error::invalid_signature_format())?;
 
         let mut hasher = Keccak256::new();
@@ -489,7 +489,7 @@ impl ValidatorConfigV2 {
         };
         let message = hasher.finalize();
 
-        let public_key = PublicKey::decode(commonware_codec::Copying(pubkey.as_slice()))
+        let public_key = PublicKey::decode(Copying(pubkey.as_slice()))
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
         if !public_key.verify(namespace, message.as_slice(), &sig) {
             Err(ValidatorConfigV2Error::invalid_signature())?
@@ -942,7 +942,7 @@ impl ValidatorConfigV2 {
         };
 
         // Skip if public key decoding fails
-        if PublicKey::decode(commonware_codec::Copying(v1_val.publicKey.as_slice())).is_err() {
+        if PublicKey::decode(Copying(v1_val.publicKey.as_slice())).is_err() {
             return skip(self);
         }
 

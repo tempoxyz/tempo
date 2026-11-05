@@ -3,7 +3,7 @@ use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::BufMut;
-use commonware_codec::{Decode as _, Encode as _, EncodeSize, Read, ReadExt as _, Write};
+use commonware_codec::{Copying, Decode as _, Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _,
     marshal::{Update, core::DigestFallback},
@@ -715,7 +715,7 @@ where
             return;
         }
         let res = SignedDealerLog::<MinSig, PublicKey>::read_cfg(
-            &mut commonware_codec::Copying(&bytes[..]),
+            &mut Copying(&bytes[..]),
             &NZU32!(round.players().len() as u32),
         )
         .wrap_err("failed reading dealer log from header")
@@ -850,9 +850,8 @@ where
 
         info!("reached last block of epoch; reading DKG outcome from header");
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
-                .expect("the last block of an epoch must contain the DKG outcome");
+        let onchain_outcome = OnchainDkgOutcome::from_extra_data(header.extra_data().as_ref())
+            .expect("the last block of an epoch must contain the DKG outcome");
 
         info!("reading validator from contract");
 
@@ -1653,9 +1652,8 @@ where
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
 
-    let outcome =
-        OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
-            .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
+    let outcome = OnchainDkgOutcome::from_extra_data(header.extra_data().as_ref())
+        .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
     ensure!(
         outcome.epoch() == expected_epoch,
         "boundary outcome at height `{boundary}` is for epoch `{}`, expected epoch `{expected_epoch}`",
@@ -1836,7 +1834,7 @@ fn read_dealer_log(
     round: &Round,
 ) -> eyre::Result<(PublicKey, DealerLog<MinSig, PublicKey>)> {
     let signed_log = SignedDealerLog::<MinSig, PublicKey>::read_cfg(
-        &mut commonware_codec::Copying(bytes),
+        &mut Copying(bytes),
         &NZU32!(round.players().len() as u32),
     )
     .wrap_err("could not decode as signed dealer log")?;

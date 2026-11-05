@@ -17,7 +17,6 @@ use alloy_primitives::B256;
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::{BlockNumHash, BlockNumberOrTag};
 use alloy_transport::TransportError;
-use commonware_codec::ReadExt as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use futures::{Stream, StreamExt as _, TryStreamExt as _, stream};
 use rand::rngs::StdRng;
@@ -391,8 +390,8 @@ where
     let boundary_header = headers
         .first()
         .expect("a non-empty inclusive range always returns a header");
-    let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-        &mut commonware_codec::Copying(boundary_header.extra_data().as_ref()),
+    let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::from_extra_data(
+        boundary_header.extra_data().as_ref(),
     )
     .map_err(|error| Error::MalformedBoundary {
         height: boundary_header.number(),

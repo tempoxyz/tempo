@@ -109,7 +109,7 @@ impl Read for StoredIdentity {
 mod tests {
     use super::*;
     use crate::test_utils::dkg_fixture;
-    use commonware_codec::{DecodeExt as _, Encode as _};
+    use commonware_codec::{Copying, DecodeExt as _, Encode as _};
     use commonware_consensus::types::Epoch;
     use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
 
@@ -170,20 +170,15 @@ mod tests {
                 let encoded = value.encode();
                 assert_eq!(StoredIdentity::decode(encoded.clone()).unwrap().0, value.0);
                 for length in 0..encoded.len() {
-                    assert!(
-                        StoredIdentity::decode(commonware_codec::Copying(&encoded[..length]))
-                            .is_err()
-                    );
+                    assert!(StoredIdentity::decode(Copying(&encoded[..length])).is_err());
                 }
                 let mut trailing = encoded.to_vec();
                 trailing.push(0);
-                assert!(
-                    StoredIdentity::decode(commonware_codec::Copying(trailing.as_slice())).is_err()
-                );
+                assert!(StoredIdentity::decode(Copying(trailing.as_slice())).is_err());
                 let mut wrong_version = encoded.to_vec();
                 wrong_version[0] = 2;
                 assert!(matches!(
-                    StoredIdentity::decode(commonware_codec::Copying(wrong_version.as_slice())),
+                    StoredIdentity::decode(Copying(wrong_version.as_slice())),
                     Err(commonware_codec::Error::InvalidEnum(2))
                 ));
             }

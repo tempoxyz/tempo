@@ -4,7 +4,7 @@ use std::{
 };
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
+use commonware_codec::{Copying, EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
     Block as _, CertifiableBlock as _, Heightable as _,
     types::{Epoch, Height},
@@ -1193,7 +1193,7 @@ impl ReducedBlock {
             None
         } else {
             dkg::SignedDealerLog::<MinSig, PublicKey>::read_cfg(
-                &mut commonware_codec::Copying(block.header().extra_data().as_ref()),
+                &mut Copying(block.header().extra_data().as_ref()),
                 &NZU32!(round.players.len() as u32),
             )
             .inspect(|_| {
@@ -1304,11 +1304,8 @@ mod tests {
 
             state.is_full_dkg.write(&mut bytes);
 
-            let decoded = State::read_cfg(
-                &mut commonware_codec::Copying(bytes.as_slice()),
-                &NZU32!(u32::MAX),
-            )
-            .unwrap();
+            let decoded =
+                State::read_cfg(&mut Copying(bytes.as_slice()), &NZU32!(u32::MAX)).unwrap();
             assert_eq!(state, decoded);
         });
     }
@@ -1316,8 +1313,7 @@ mod tests {
     #[track_caller]
     fn assert_roundtrip(original: &ShareState) {
         let encoded = original.encode();
-        let decoded =
-            ShareState::read_cfg(&mut commonware_codec::Copying(encoded.as_ref()), &()).unwrap();
+        let decoded = ShareState::read_cfg(&mut Copying(encoded.as_ref()), &()).unwrap();
         assert_eq!(original, &decoded);
     }
 

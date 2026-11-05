@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::Encode as _;
 use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
@@ -381,13 +381,11 @@ impl Inner {
         );
 
         if self.is_boundary(block.height()) {
-            let proposed_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
-                block.header().extra_data().as_ref(),
-            ))
-            .wrap_err(
-                "failed decoding extra data header as DKG ceremony \
+            let proposed_outcome =
+                OnchainDkgOutcome::from_extra_data(block.header().extra_data().as_ref()).wrap_err(
+                    "failed decoding extra data header as DKG ceremony \
                     outcome; cannot verify end of epoch block",
-            )?;
+                )?;
             return Ok(Some(proposed_outcome));
         }
 

@@ -3,7 +3,7 @@
 use std::num::NonZeroU32;
 
 use bytes::BufMut;
-use commonware_codec::{Buf, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
+use commonware_codec::{Buf, Copying, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
 #[cfg(feature = "commonware-consensus")]
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -69,6 +69,13 @@ impl OnchainDkgOutcome {
 
     pub fn network_identity(&self) -> &<MinSig as Variant>::Public {
         self.sharing().public()
+    }
+
+    /// Reads the outcome from the start of a boundary block's `extra_data`.
+    ///
+    /// Bytes after the outcome are ignored.
+    pub fn from_extra_data(extra_data: &[u8]) -> Result<Self, commonware_codec::Error> {
+        Self::read(&mut Copying(extra_data))
     }
 }
 
@@ -142,7 +149,7 @@ impl OnchainDkgOutcome {
 #[cfg(test)]
 mod tests {
     use super::OnchainDkgOutcome;
-    use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
+    use commonware_codec::{Encode as _, EncodeSize as _};
     use commonware_consensus::types::Epoch;
 
     #[test]
@@ -160,7 +167,7 @@ mod tests {
             assert_eq!(&bytes[prefix.len()..], payload);
             assert_eq!(bytes.len(), on_chain.encode_size());
             assert_eq!(
-                OnchainDkgOutcome::read(&mut commonware_codec::Copying(bytes.as_ref())).unwrap(),
+                OnchainDkgOutcome::from_extra_data(bytes.as_ref()).unwrap(),
                 on_chain
             );
         }

@@ -6,7 +6,7 @@ use alloy::{
     primitives::{B256, Bytes},
     providers::{Provider, ProviderBuilder},
 };
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::Encode as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
@@ -129,7 +129,7 @@ impl GetDkgOutcome {
             block_number
         );
 
-        let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+        let outcome = OnchainDkgOutcome::from_extra_data(extra_data.as_ref())
             .wrap_err("failed to parse DKG outcome from extra_data")?;
 
         let sharing = outcome.sharing();

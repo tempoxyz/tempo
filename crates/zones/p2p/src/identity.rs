@@ -2,7 +2,7 @@ use std::path::Path;
 
 use alloy_primitives::Address;
 use alloy_signer_local::PrivateKeySigner;
-use commonware_codec::DecodeExt as _;
+use commonware_codec::{Copying, DecodeExt as _};
 use commonware_cryptography::{
     Signer as _,
     ed25519::{PrivateKey, PublicKey},
@@ -27,8 +27,7 @@ impl Ed25519Identity {
     /// Parses an unencrypted, hex-encoded identity.
     pub(crate) fn from_hex(encoded: &str) -> Result<Self, Ed25519IdentityError> {
         let bytes = const_hex::decode(encoded).map_err(Ed25519IdentityError::Hex)?;
-        let key = PrivateKey::decode(commonware_codec::Copying(&bytes[..]))
-            .map_err(Ed25519IdentityError::Decode)?;
+        let key = PrivateKey::decode(Copying(&bytes[..])).map_err(Ed25519IdentityError::Decode)?;
         Ok(Self(key))
     }
 

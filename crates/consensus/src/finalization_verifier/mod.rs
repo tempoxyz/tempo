@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::DecodeExt as _;
 use commonware_consensus::{
     Epochable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
@@ -73,7 +73,7 @@ impl FinalizationVerifier {
         &self,
         extra_data: &[u8],
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
-        let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data))?;
+        let outcome = OnchainDkgOutcome::from_extra_data(extra_data)?;
         self.scheme_provider.register(
             outcome.epoch(),
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),

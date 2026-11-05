@@ -3,7 +3,7 @@
 //! The protocol has one message, `NewFinalization`.
 
 use alloy_primitives::bytes::{BufMut as _, BytesMut};
-use commonware_codec::{DecodeExt as _, Encode as _, Read};
+use commonware_codec::{Copying, DecodeExt as _, Encode as _, Read};
 use commonware_consensus::simplex::types::Finalization;
 use commonware_cryptography::{Digest, certificate::Scheme};
 use reth_ethereum::network::eth_wire::{Capability, protocol::Protocol};
@@ -86,8 +86,7 @@ where
         return Err(FrameError::UnknownMessage(id));
     }
 
-    Finalization::decode(commonware_codec::Copying(payload))
-        .map_err(FrameError::InvalidFinalization)
+    Finalization::decode(Copying(payload)).map_err(FrameError::InvalidFinalization)
 }
 
 #[cfg(test)]

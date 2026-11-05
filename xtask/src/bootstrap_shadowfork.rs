@@ -650,7 +650,7 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
 fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcome> {
     let bytes = const_hex::decode(hex.trim_start_matches("0x"))
         .wrap_err("failed decoding shadow_dkg_outcome hex")?;
-    OnchainDkgOutcome::read(&mut commonware_codec::Copying(bytes.as_slice()))
+    OnchainDkgOutcome::from_extra_data(bytes.as_slice())
         .wrap_err("failed decoding shadow_dkg_outcome payload")
 }
 
@@ -1022,10 +1022,8 @@ where
         "patched boundary block `{block_number}` has canonical hash `{canonical_hash}`, expected `{expected_hash}`",
     );
 
-    let decoded = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
-        header.inner.extra_data.as_ref(),
-    ))
-    .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
+    let decoded = OnchainDkgOutcome::from_extra_data(header.inner.extra_data.as_ref())
+        .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
     ensure!(
         decoded.players() == expected_outcome.players()
             && decoded.next_players() == expected_outcome.next_players()

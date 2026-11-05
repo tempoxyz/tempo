@@ -11,7 +11,7 @@ use std::{
 
 use alloy_consensus::Header;
 use bytes::Bytes;
-use commonware_codec::{Encode as _, FixedSize, types::lazy::Lazy};
+use commonware_codec::{Copying, Encode as _, FixedSize, types::lazy::Lazy};
 use commonware_consensus::{
     simplex::{
         scheme::bls12381_threshold::vrf::{
@@ -57,7 +57,7 @@ pub(super) fn make_certified_block(height: Height) -> (CertifiedBlock, Bytes) {
             digest,
         ),
         certificate: VrfCertificate {
-            signature: Lazy::deferred(&mut commonware_codec::Copying(&signature_bytes[..]), ()),
+            signature: Lazy::deferred(&mut Copying(&signature_bytes[..]), ()),
         },
     };
     let value = (finalization.clone(), block.clone()).encode();

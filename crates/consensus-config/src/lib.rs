@@ -10,7 +10,7 @@ use std::{
     path::Path,
 };
 
-use commonware_codec::{DecodeExt as _, Encode as _, FixedSize as _, Write as CodecWrite};
+use commonware_codec::{Copying, DecodeExt as _, Encode as _, FixedSize as _, Write as CodecWrite};
 use commonware_cryptography::{
     Signer,
     bls12381::primitives::group::Share,
@@ -133,10 +133,8 @@ impl SigningKey {
             return Err(SigningKeyErrorKind::Read(err).into());
         }
 
-        let inner = PrivateKey::decode(commonware_codec::Copying(
-            plaintext.expose_secret().as_ref(),
-        ))
-        .map_err(SigningKeyErrorKind::Parse)?;
+        let inner = PrivateKey::decode(Copying(plaintext.expose_secret().as_ref()))
+            .map_err(SigningKeyErrorKind::Parse)?;
         Ok(Self { inner })
     }
 
@@ -191,8 +189,7 @@ impl SigningKey {
 
     pub fn try_from_hex(hex: &str) -> Result<Self, SigningKeyError> {
         let bytes = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
-        let inner = PrivateKey::decode(commonware_codec::Copying(&bytes[..]))
-            .map_err(SigningKeyErrorKind::Parse)?;
+        let inner = PrivateKey::decode(Copying(&bytes[..])).map_err(SigningKeyErrorKind::Parse)?;
         Ok(Self { inner })
     }
 
@@ -258,8 +255,7 @@ impl SigningShare {
 
     pub fn try_from_hex(hex: &str) -> Result<Self, SigningShareError> {
         let bytes = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
-        let inner = Share::decode(commonware_codec::Copying(&bytes[..]))
-            .map_err(SigningShareErrorKind::Parse)?;
+        let inner = Share::decode(Copying(&bytes[..])).map_err(SigningShareErrorKind::Parse)?;
         Ok(Self { inner })
     }
 
