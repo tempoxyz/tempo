@@ -450,6 +450,11 @@ where
                 .epoch_sync_target
                 .is_some_and(|target| self.current_epoch >= target)
             {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Follower catches up across epochs after its network identity fallback failed",
+                    &serde_json::json!({ "epoch": self.current_epoch.get() })
+                );
                 self.epoch_sync_target = None;
             } else if self.epoch_sync_target.is_some() {
                 // Advance one boundary at a time. Each processed boundary

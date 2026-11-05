@@ -33,6 +33,7 @@ tempo-precompiles.workspace = true
 tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-evm.workspace = true
+antithesis_sdk = { workspace = true, optional = true }
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
@@ -142,7 +143,16 @@ required-features = ["localnet"]
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
-fuzz = ["tempo-precompiles/fuzz", "reth-db/dst", "reth-trie/dst"]
+# Report Antithesis SDK assertions. Without it the assertions and their details are compiled out.
+fuzz = [
+	"dep:antithesis_sdk",
+	"antithesis_sdk/full",
+	"tempo-consensus/fuzz",
+	"tempo-node/fuzz",
+	"tempo-precompiles/fuzz",
+	"reth-db/dst",
+	"reth-trie/dst",
+]
 
 # Links the Antithesis coverage runtime. Use with the `antithesis` profile and
 # `--config .cargo/antithesis.toml`, which instrument the code.

@@ -225,6 +225,19 @@ pub trait PrecompileStorageProvider {
     /// as a no-op.
     fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
 
+    /// Makes subsequent TIP-1028 receive-policy blocks revert with `PolicyForbids` instead of
+    /// diverting the funds to `ReceivePolicyGuard`.
+    ///
+    /// Zones enable this, since a recovery authority without a zone key could never claim diverted
+    /// funds. Implementations that never run zone precompiles may treat this as a no-op.
+    fn set_revert_blocked_inbound(&mut self, _enabled: bool) {}
+
+    /// Returns whether receive-policy blocks revert instead of diverting the funds. See
+    /// [`set_revert_blocked_inbound`](Self::set_revert_blocked_inbound).
+    fn revert_blocked_inbound(&self) -> bool {
+        false
+    }
+
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.

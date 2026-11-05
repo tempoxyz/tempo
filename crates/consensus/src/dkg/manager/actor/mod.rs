@@ -868,6 +868,12 @@ where
                 self.conclude_ceremony(round, state, player_state.take(), logs)
             };
 
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            local_output == onchain_outcome.output,
+            "Local DKG ceremony output matches the finalized boundary outcome",
+            &serde_json::json!({ "epoch": state.epoch.get(), "height": height.get() })
+        );
         if local_output != onchain_outcome.output {
             let am_player = onchain_outcome
                 .next_players
@@ -888,8 +894,18 @@ where
         // if the on-chain output is the same as the input into the loop (which
         // is just state.output), then we know the DKG failed.
         if onchain_outcome.output == state.output {
+            #[cfg(feature = "fuzz")]
+            antithesis_sdk::assert_reachable!(
+                "DKG ceremony failed and the previous epoch's output carried forward",
+                &serde_json::json!({ "epoch": state.epoch.get(), "is_full_dkg": state.is_full_dkg })
+            );
             self.metrics.failures.metric().inc();
         } else {
+            #[cfg(feature = "fuzz")]
+            antithesis_sdk::assert_reachable!(
+                "DKG ceremony produced a new output at the epoch boundary",
+                &serde_json::json!({ "epoch": state.epoch.get(), "is_full_dkg": state.is_full_dkg })
+            );
             self.metrics.successes.metric().inc();
         }
 
