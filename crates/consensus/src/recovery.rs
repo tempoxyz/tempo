@@ -11,9 +11,18 @@ use std::sync::Arc;
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_codec::{DecodeExt as _, Encode as _};
+use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
+use commonware_cryptography::{
+    bls12381::{
+        dkg::feldman_desmedt,
+        primitives::{group::Share, sharing::Mode},
+    },
+    ed25519::PublicKey,
+};
+use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use eyre::{OptionExt as _, WrapErr as _, ensure};
+use rand_core::CryptoRng;
 use reth_chain_state::ExecutedBlock;
 use reth_evm::{
     ConfigureEvm as _, NextBlockEnvAttributes,
@@ -23,9 +32,9 @@ use reth_evm::{
 use reth_execution_types::BlockExecutionOutput;
 use reth_primitives_traits::{RecoveredBlock, SealedHeader, SealedOrRecoveredBlock};
 use reth_provider::{
-    BlockHashReader as _, BlockNumReader, ChangeSetReader, DatabaseProviderFactory,
-    HeaderProvider as _, HistoryReader, PruneCheckpointReader, StageCheckpointReader,
-    StorageChangeSetReader, StorageSettingsCache,
+    BlockHashReader as _, BlockNumReader, ChainStateBlockReader, ChangeSetReader,
+    DatabaseProviderFactory, HeaderProvider, HistoryReader, PruneCheckpointReader,
+    StageCheckpointReader, StorageChangeSetReader, StorageSettingsCache,
 };
 use reth_storage_api::{DatabaseProviderROFactory as _, StateProvider as _};
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
@@ -108,8 +117,8 @@ impl Recovery {
     /// then finalizes the boundary in the execution layer.
     ///
     /// Does nothing if the execution layer already finalized the boundary. Fails if the boundary
-    /// this node builds does not match the pinned hash, or if the execution layer finalized
-    /// neither the boundary nor the recovery's finalized block.
+    /// this node builds does not match the pinned hash, or if the execution layer lacks the
+    /// recovery's finalized block or finalized past it without reaching the boundary.
     #[instrument(skip_all, fields(last_finalized = %self.last_finalized.0, boundary = %self.boundary.0), err)]
     pub(crate) async fn fill_to_boundary(&self, node: &TempoFullNode) -> eyre::Result<()> {
         let ((finalized_height, Digest(finalized_hash)), (boundary, Digest(boundary_hash))) =
@@ -135,21 +144,25 @@ impl Recovery {
             return Ok(());
         }
 
+        // Nodes can lag the network's last finalized block, but must have it.
         ensure!(
-            finalized.number == finalized_height.get() && finalized.hash == finalized_hash,
-            "recovery starts at block `{}` at height `{}`, but the execution layer finalized \
-            `{}` at height `{}`; sync the execution layer to the recovery block first",
-            finalized_hash,
-            finalized_height,
+            finalized.number <= finalized_height.get(),
+            "recovery starts at height `{finalized_height}`, but the execution layer finalized \
+            `{}` at height `{}` past it",
             finalized.hash,
             finalized.number,
         );
-
         let parent = node
             .provider
             .sealed_header(finalized_height.get())
             .wrap_err("failed reading the recovery's finalized header")?
-            .ok_or_eyre("execution layer does not have the recovery's finalized header")?;
+            .filter(|header| header.hash() == finalized_hash)
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "execution layer does not have the recovery's finalized block \
+                    `{finalized_hash}` at height `{finalized_height}`; sync it first"
+                )
+            })?;
 
         info!("filling the halted epoch with empty blocks");
         // Nothing can proceed until the boundary exists, so block on the build.
@@ -205,6 +218,119 @@ impl Recovery {
         info!(boundary_hash = %boundary_hash, "finalized the recovery boundary");
         Ok(())
     }
+}
+
+/// Prepares the recovery of a chain halted inside an epoch whose threshold signing key was lost.
+///
+/// `factory` must have the halted chain up to its last finalized block. Returns the chainspec
+/// `recovery` entry and `member`'s 1-of-1 share for the epoch after the halted one; that epoch's
+/// ceremony then reshares to the halted epoch's next players.
+pub fn prepare<TFactory>(
+    factory: TFactory,
+    chain_spec: &Arc<TempoChainSpec>,
+    member: PublicKey,
+    rng: impl CryptoRng,
+) -> eyre::Result<(tempo_chainspec::Recovery, Share)>
+where
+    TFactory: DatabaseProviderFactory + HeaderProvider<Header = TempoHeader> + Clone,
+    TFactory::Provider: HistoryReader
+        + StorageSettingsCache
+        + StageCheckpointReader
+        + PruneCheckpointReader
+        + ChangeSetReader
+        + StorageChangeSetReader
+        + BlockNumReader
+        + ChainStateBlockReader,
+{
+    let epocher = FixedEpocher::new(
+        chain_spec
+            .info
+            .epoch_length()
+            .ok_or_eyre("epochLength not found in chainspec")?,
+    );
+
+    let finalized_height = Height::new(
+        factory
+            .database_provider_ro()
+            .wrap_err("failed opening the database")?
+            .last_finalized_block_number()
+            .wrap_err("failed reading the finalized block number")?
+            .ok_or_eyre("datadir has no finalized block")?,
+    );
+    let finalized = factory
+        .sealed_header(finalized_height.get())
+        .wrap_err("failed reading the finalized header")?
+        .ok_or_eyre("datadir does not have the finalized header")?;
+    let epoch_info = epocher
+        .containing(finalized_height)
+        .expect("fixed epocher is valid for all heights");
+    ensure!(
+        epoch_info.last() != finalized_height,
+        "the finalized block `{finalized_height}` is the boundary of epoch `{}`; the next         epoch can start from it without recovery",
+        epoch_info.epoch(),
+    );
+
+    // The halted epoch's outcome names the players its ceremony would have dealt to.
+    let halted_boundary = epoch_info.epoch().previous().map_or(0, |previous| {
+        epocher
+            .last(previous)
+            .expect("fixed epocher is valid for all epochs")
+            .get()
+    });
+    let halted_header = factory
+        .header_by_number(halted_boundary)
+        .wrap_err_with(|| format!("failed reading boundary block `{halted_boundary}`"))?
+        .ok_or_eyre("datadir does not have the halted epoch's boundary block")?;
+    let halted = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+        halted_header.extra_data().as_ref(),
+    ))
+    .wrap_err("halted epoch's boundary block has no DKG outcome")?;
+    ensure!(
+        halted.next_players().position(&member).is_some(),
+        "member `{member}` is not among the halted epoch's next players",
+    );
+
+    let (output, shares) = feldman_desmedt::deal::<_, _, N3f1>(
+        rng,
+        Mode::NonZeroCounter,
+        ordered::Set::try_from_iter([member]).expect("a single player is unique"),
+    )
+    .wrap_err("failed dealing the recovery share")?;
+    let (_, share) = shares
+        .into_iter()
+        .next()
+        .expect("dealing to one player yields one share");
+
+    let outcome = OnchainDkgOutcome {
+        epoch: epoch_info.epoch().next().get(),
+        output,
+        next_players: halted.next_players,
+        is_next_full_dkg: false,
+    };
+
+    let blocks = build_fill_blocks(
+        factory,
+        &TempoEvmConfig::new(chain_spec.clone()),
+        chain_spec,
+        finalized.clone(),
+        epoch_info.last(),
+        &outcome,
+    )
+    .wrap_err("failed building the fill blocks")?;
+    let boundary_hash = blocks
+        .last()
+        .expect("a recovery fills at least one block")
+        .hash();
+
+    Ok((
+        tempo_chainspec::Recovery {
+            finalized_height: finalized_height.get(),
+            finalized_hash: finalized.hash(),
+            boundary_hash,
+            outcome: Bytes::from(outcome.encode().to_vec()),
+        },
+        share,
+    ))
 }
 
 /// Builds the empty blocks after `parent` up to `boundary`, writing `outcome` into the boundary.

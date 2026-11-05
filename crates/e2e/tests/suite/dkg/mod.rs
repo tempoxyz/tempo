@@ -1,5 +1,6 @@
 //! Tests on chain DKG and epoch transition
 
+mod chain_recovery;
 pub(crate) mod common;
 mod current_committee;
 mod dynamic;

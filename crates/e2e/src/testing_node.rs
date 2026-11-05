@@ -548,20 +548,27 @@ where
     pub fn execution_provider_offline(
         &self,
     ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
-        // Open a read-only provider to the database
-        // Note: MDBX allows multiple readers, so this is safe even if another process
-        // has the database open for reading
-        let database = open_db_read_only(self.execution_node_datadir.join("db"), test_db_args())
-            .expect("failed to open execution node database")
-            .with_metrics();
+        assert!(
+            self.execution_node.is_none(),
+            "execution node must be stopped to read it offline for {}",
+            self.uid
+        );
+        // A node that ran keeps its databases open, and they cannot be opened twice.
+        let database = self.execution_database.clone().unwrap_or_else(|| {
+            open_db_read_only(self.execution_node_datadir.join("db"), test_db_args())
+                .expect("failed to open execution node database")
+                .with_metrics()
+        });
 
         let static_file_provider =
             StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"))
                 .expect("failed to open static files");
 
-        let rocksdb = RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))
-            .build()
-            .unwrap();
+        let rocksdb = self.execution_rocksdb.clone().unwrap_or_else(|| {
+            RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))
+                .build()
+                .unwrap()
+        });
 
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             database,
