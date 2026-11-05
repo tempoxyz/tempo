@@ -262,7 +262,11 @@ pub(crate) fn bench_env(hardfork: TempoHardfork, block_timestamp: u64) -> TempoE
             timestamp: U256::from(block_timestamp),
             basefee: U256::from(TEMPO_T1_BASE_FEE),
             gas_limit: U256::from(10_000_000_000u64),
-            ext: TempoBlockExt::default(),
+            // Block 1 must not be an epoch boundary, which carries a DKG outcome.
+            ext: TempoBlockExt {
+                epoch_length: NonZeroU64::new(21_600).expect("non-zero"),
+                ..Default::default()
+            },
             ..Default::default()
         },
     }
