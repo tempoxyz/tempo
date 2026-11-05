@@ -46,6 +46,8 @@ pub(crate) struct Recovery {
     last_finalized: (Height, Digest),
     /// The last block of the halted epoch, carrying `outcome`.
     boundary: (Height, Digest),
+    /// The DKG outcome for the epoch after the halted one: a single member's 1-of-1 output,
+    /// whose ceremony reshares to the halted epoch's next players.
     outcome: OnchainDkgOutcome,
 }
 
