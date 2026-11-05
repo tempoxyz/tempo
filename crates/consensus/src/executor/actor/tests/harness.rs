@@ -31,6 +31,7 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
+use commonware_cryptography::Digested;
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{OptionExt as _, Report, WrapErr as _};
@@ -882,7 +883,7 @@ impl ExecutionLayer for FakeExecution {
 struct MarshalSubscription {
     digest: Digest,
     notarized_in: Round,
-    senders: Vec<oneshot::Sender<Arc<Block>>>,
+    senders: Vec<oneshot::Sender<Digested<Block>>>,
 }
 
 struct MarshalSubscriptions(Mutex<Vec<MarshalSubscription>>);
@@ -898,7 +899,7 @@ impl MarshalSubscriptions {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> (oneshot::Receiver<Arc<Block>>, bool) {
+    ) -> (oneshot::Receiver<Digested<Block>>, bool) {
         let (sender, receiver) = oneshot::channel();
         let mut subscriptions = self.0.lock();
         Self::prune(&mut subscriptions);
@@ -950,6 +951,8 @@ impl MarshalSubscriptions {
         let Some(subscription) = self.take(digest) else {
             return false;
         };
+        let block_digest = block.digest();
+        let block = Digested::precomputed(block, block_digest);
         let mut delivered = false;
         for sender in subscription.senders {
             delivered |= sender.send(block.clone()).is_ok();
@@ -1097,7 +1100,7 @@ impl Marshal for FakeMarshal {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         let (receiver, opened) = self.inner.subscriptions.subscribe(digest, notarized_in);
         if opened {
             self.inner.subscribe_log.lock().push((digest, notarized_in));

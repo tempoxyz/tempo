@@ -27,6 +27,7 @@ eyre.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
+tempo-p2p-upgrader.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

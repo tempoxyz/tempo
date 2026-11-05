@@ -29,12 +29,16 @@ pub(crate) mod validators;
 use std::sync::Arc;
 
 use commonware_consensus::types::FixedEpocher;
-use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
+use commonware_cryptography::{
+    ChaCha20Poly1305,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
+use tempo_p2p_upgrader::{Accept, MultiVersion, Version};
 use tracing::info;
 
 pub use crate::config::{
@@ -236,15 +240,25 @@ async fn instantiate_network(
     config: &Args,
     signing_key: PrivateKey,
 ) -> eyre::Result<(
-    lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
+    lookup::Network<commonware_runtime::tokio::Context, MultiVersion<PrivateKey, ChaCha20Poly1305>>,
     lookup::Oracle<PublicKey>,
 )> {
     // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
+    // First step of the move to V1: dial V0, the wire protocol of commonware
+    // v2026.9.0, so older peers still accept us, and accept V1 so peers can
+    // dial it once every validator runs this.
+    let handshake = MultiVersion::new(
+        signing_key,
+        config.synchrony_bound.into_duration(),
+        config.handshake_stale_after.into_duration(),
+        Version::V0,
+        Accept::new(vec![Version::V0, Version::V1]).expect("accepts at least one version"),
+    );
     let cfg = lookup::Config {
+        handshake,
         namespace,
-        crypto: signing_key,
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
@@ -254,8 +268,6 @@ async fn instantiate_network(
         allow_dns: config.allow_dns,
         tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
         max_peers_per_set: config.max_peers_per_set,
-        synchrony_bound: config.synchrony_bound.into_duration(),
-        max_handshake_age: config.handshake_stale_after.into_duration(),
         handshake_timeout: config.handshake_timeout.into_duration(),
         dial_timeout: config.dial_timeout.into_duration(),
         max_concurrent_handshakes: config.max_concurrent_handshakes,

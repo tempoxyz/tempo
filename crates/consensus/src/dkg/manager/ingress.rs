@@ -8,7 +8,7 @@ use commonware_cryptography::{
         dkg::feldman_desmedt::{Output, SignedDealerLog},
         primitives::variant::MinSig,
     },
-    ed25519::{PrivateKey, PublicKey},
+    ed25519::PublicKey,
 };
 use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
@@ -38,7 +38,7 @@ impl Mailbox {
     pub(crate) async fn get_dealer_log(
         &self,
         epoch: Epoch,
-    ) -> eyre::Result<Option<SignedDealerLog<MinSig, PrivateKey>>> {
+    ) -> eyre::Result<Option<SignedDealerLog<MinSig, PublicKey>>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(GetDealerLog { epoch, response }))
@@ -145,7 +145,7 @@ impl From<SubscribeDkgCeremony> for Command {
 
 pub(super) struct GetDealerLog {
     pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Option<SignedDealerLog<MinSig, PrivateKey>>>,
+    pub(super) response: oneshot::Sender<Option<SignedDealerLog<MinSig, PublicKey>>>,
 }
 
 pub(super) struct SubscribeDkgCeremony {

@@ -2,13 +2,14 @@ use std::{net::SocketAddr, num::NonZeroUsize, time::Duration};
 
 use alloy_primitives::Address as EthereumAddress;
 use commonware_cryptography::{
-    Signer as _,
+    ChaCha20Poly1305, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableTrackedPeers, authenticated::lookup};
 use commonware_runtime::{Quota, Supervisor as _};
 use commonware_utils::{NZU32, NZUsize, ordered::Map};
 use eyre::WrapErr as _;
+use tempo_p2p_upgrader::{Accept, MultiVersion, Version};
 
 use crate::ZoneManifest;
 
@@ -69,7 +70,10 @@ impl P2pNetworkId {
     }
 }
 
-pub(crate) type Network = lookup::Network<commonware_runtime::tokio::Context, PrivateKey>;
+/// Authenticates and encrypts Zone P2P connections.
+type Upgrader = MultiVersion<PrivateKey, ChaCha20Poly1305>;
+
+pub(crate) type Network = lookup::Network<commonware_runtime::tokio::Context, Upgrader>;
 pub(crate) type Oracle = lookup::Oracle<PublicKey>;
 
 /// Builds the synchronized Commonware configuration for the Zone's small, trusted peer set.
@@ -82,13 +86,25 @@ fn setup_commonware_config(
     listen: SocketAddr,
     max_peers: NonZeroUsize,
     bypass_ip_check: bool,
-) -> lookup::Config<PrivateKey> {
-    let mut config = lookup::Config::recommended(
+) -> lookup::Config<Upgrader> {
+    // First step of the move to V1: dial V0, the wire protocol of earlier releases (with
+    // commonware v2026.9.0's recommended timing), so older peers still accept us, and accept V1 so
+    // peers can dial it once every sequencer runs this.
+    let handshake = MultiVersion::new(
         ed25519_private_key,
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+        Version::V0,
+        Accept::new(vec![Version::V0, Version::V1]).expect("accepts at least one version"),
+    );
+    let mut config = lookup::Config::recommended(
+        handshake,
         namespace,
         listen,
         max_peers,
         MAX_MESSAGE_SIZE,
+        // Commonware's capacity before the mailbox size became a parameter.
+        NZUsize!(1_000),
     );
 
     // Zone membership is fixed by the manifest and registered at a single peer-set index.

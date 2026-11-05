@@ -1265,6 +1265,7 @@ where
                     self.record_finalized_tip(round, height, digest);
                 }
                 Update::Block(block, acknowledgement) => {
+                    let block = block.inner_shared();
                     // Marshal reports a tip before the blocks up to it, except
                     // after a crash: its block archive can keep a finalized
                     // block whose finalization was lost, and marshal delivers
@@ -1787,7 +1788,11 @@ async fn fetch_block(
 ) -> Option<Arc<Block>> {
     match look_up_block(execution_node, marshal.clone(), digest).await {
         Some(block) => Some(block),
-        None => marshal.subscribe_by_digest(digest, round).await.ok(),
+        None => marshal
+            .subscribe_by_digest(digest, round)
+            .await
+            .ok()
+            .map(|block| block.inner_shared()),
     }
 }
 
@@ -2153,7 +2158,9 @@ impl AncestryWalk {
         }
         let receiver = marshal.subscribe_by_digest(digest, round);
         self.step = WalkStep::FetchParent {
-            _aborter: fetches.push(async move { (owner, receiver.await.ok()) }),
+            _aborter: fetches.push(async move {
+                (owner, receiver.await.ok().map(|block| block.inner_shared()))
+            }),
         };
     }
 

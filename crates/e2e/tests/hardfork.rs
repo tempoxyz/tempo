@@ -1,4 +1,5 @@
 //! Verification follows T14 at epoch boundaries without restarting validators.
+#![recursion_limit = "256"]
 
 use std::time::{Duration, UNIX_EPOCH};
 

@@ -1,0 +1,30 @@
+[package]
+name = "tempo-p2p-upgrader"
+description = "Multi-version SAKE/CUPS stream upgrader for rolling p2p protocol upgrades"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+commonware-codec.workspace = true
+commonware-cryptography = { workspace = true, features = ["std"] }
+commonware-runtime.workspace = true
+commonware-stream.workspace = true
+commonware-utils.workspace = true
+rand_core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+commonware-runtime = { workspace = true, features = ["test-utils"] }

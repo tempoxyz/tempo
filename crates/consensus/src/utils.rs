@@ -116,7 +116,7 @@ mod tests {
     fn commonware_public_key_to_tempo_primitive_conversion() {
         let tempo_key = TempoPublicKey::from_seed(42);
         let tempo_public = tempo_key.to_inner();
-        let mut bytes = tempo_public.as_ref();
+        let mut bytes = commonware_codec::Copying(tempo_public.as_ref());
         let cw_key = CommonwarePublicKey::read(&mut bytes).unwrap();
         assert_eq!(public_key_to_tempo_primitive(&cw_key), tempo_key);
         assert_eq!(tempo_public.as_ref(), cw_key.as_ref());
