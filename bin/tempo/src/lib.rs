@@ -256,6 +256,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     // Without enough parallelism reth builds with the fallback state root instead of the sparse trie.
     if let Commands::Node(node_cmd) = &cli.command
+        && !node_cmd.dev.dev
         && node_cmd.ext.follow.is_none()
         && node_cmd.chain.genesis_hash() == PRESTO.genesis_hash()
         && !node_cmd.engine.tree_config().has_enough_parallelism()
