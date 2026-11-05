@@ -14,7 +14,11 @@ use evm2::{
     evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    collections::VecDeque,
+    net::{IpAddr, SocketAddr},
+    sync::{Arc, Mutex, PoisonError},
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
@@ -27,6 +31,40 @@ use tempo_precompiles::{
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2, ValidatorConfigV2Error},
 };
 use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
+
+/// Boundary blocks whose DKG outcome passed the check a validator asked for when verifying them
+/// (see [`crate::TempoBlockExecutionCtx::check_boundary_outcome`]).
+///
+/// The execution layer reports a block it already knows as valid without executing it again, so
+/// a validator reads this after a boundary block is reported valid to confirm the check ran.
+/// Clones share their contents.
+#[derive(Clone, Debug, Default)]
+pub struct BoundaryOutcomeChecks(Arc<Mutex<VecDeque<B256>>>);
+
+impl BoundaryOutcomeChecks {
+    /// Boundary blocks come once per epoch, so only the latest few are kept.
+    const CAPACITY: usize = 64;
+
+    /// Records that the outcome of the boundary block `block_hash` passed the check.
+    pub fn record(&self, block_hash: B256) {
+        let mut passed = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if passed.contains(&block_hash) {
+            return;
+        }
+        if passed.len() == Self::CAPACITY {
+            passed.pop_front();
+        }
+        passed.push_back(block_hash);
+    }
+
+    /// Whether the outcome of the boundary block `block_hash` passed the check.
+    pub fn passed(&self, block_hash: B256) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&block_hash)
+    }
+}
 
 /// The part of `ValidatorConfigV2` in the pre-state of a boundary block that sets the next DKG
 /// ceremony.

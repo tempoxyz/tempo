@@ -40,6 +40,7 @@ impl TempoBlockAssembler {
                     general_gas_limit,
                     shared_gas_limit,
                     consensus_context,
+                    check_boundary_outcome: _,
                 },
             parent,
             transactions,
@@ -196,6 +197,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             consensus_context: None,
+            check_boundary_outcome: None,
         };
 
         let tx = create_legacy_tx();
@@ -301,6 +303,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             consensus_context: Some(ctx),
+            check_boundary_outcome: None,
         };
 
         let transactions = vec![create_legacy_tx()];
@@ -377,6 +380,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             consensus_context: None,
+            check_boundary_outcome: None,
         };
 
         let transactions = vec![create_legacy_tx()];

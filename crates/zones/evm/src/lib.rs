@@ -358,6 +358,7 @@ where
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: block.header().consensus_context,
+            check_boundary_outcome: None,
         })
     }
 

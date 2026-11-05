@@ -111,7 +111,7 @@ impl TempoBuiltPayload {
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
         let (block, _) = self.into_consensus_execution_payload();
-        TempoExecutionData { block }
+        TempoExecutionData::new(block)
     }
 }
 
@@ -141,6 +141,20 @@ pub struct TempoExecutionData {
     /// The built block.
     #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
+    /// Set by a validator verifying a proposal: execution also checks the boundary block's DKG
+    /// outcome against the parent state. Never sent over the wire.
+    #[serde(skip)]
+    pub check_boundary_outcome: bool,
+}
+
+impl TempoExecutionData {
+    /// Execution data for `block`, without the boundary DKG outcome check.
+    pub fn new(block: impl Into<SealedOrRecoveredBlock<Block>>) -> Self {
+        Self {
+            block: block.into(),
+            check_boundary_outcome: false,
+        }
+    }
 }
 
 /// Serde helper for preserving the legacy plain block JSON shape.
@@ -251,9 +265,7 @@ impl PayloadTypes for TempoPayloadTypes {
     type PayloadAttributes = TempoPayloadAttributes;
 
     fn block_to_payload(block: SealedBlock<Block>, _bal: Option<Bytes>) -> Self::ExecutionData {
-        TempoExecutionData {
-            block: block.into(),
-        }
+        TempoExecutionData::new(block)
     }
 }
 

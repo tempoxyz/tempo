@@ -328,7 +328,7 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
         serde_json::json!({ "height": block.height().get(), "digest": block.digest().to_string() });
     let block = block.inner().execution_block();
     let payload_status = execution_engine
-        .new_payload(TempoExecutionData { block })
+        .new_payload(TempoExecutionData::new(block))
         .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed sending finalized payload")?;

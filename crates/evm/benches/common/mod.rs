@@ -431,6 +431,7 @@ pub(crate) fn execute_txs(
         general_gas_limit: 10_000_000_000,
         shared_gas_limit: 0,
         consensus_context: None,
+        check_boundary_outcome: None,
     };
     let mut executor = config.create_executor(evm, ctx);
     executor

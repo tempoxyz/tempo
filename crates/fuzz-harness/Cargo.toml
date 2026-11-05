@@ -40,11 +40,9 @@ tempo-primitives = { workspace = true, features = ["reth"] }
 
 [dev-dependencies]
 commonware-codec.workspace = true
-commonware-cryptography = { workspace = true, features = ["std"] }
-commonware-utils.workspace = true
 criterion.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
-tempo-precompiles = { workspace = true, features = ["test-utils"] }
+tempo-precompiles.workspace = true
 
 [[bench]]
 name = "execute"

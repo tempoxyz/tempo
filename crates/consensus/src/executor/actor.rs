@@ -1719,12 +1719,15 @@ where
         if let Some(active) = &mut self.active_verification
             && matches!(active.walk.step, WalkStep::Probe)
         {
+            // Only the proposal itself is verified, not the ancestors its walk delivers.
+            let is_proposal = active.walk.cursor.digest() == active.walk.target.digest();
             let block = active.walk.probe();
             let fut = execute_delivery(
                 self.execution_node.clone(),
                 WalkOwner::Verification(active.round),
                 active.walk.cause.clone(),
                 block,
+                is_proposal,
             );
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Verify, fut));
             return;
@@ -1739,6 +1742,7 @@ where
                 WalkOwner::Convergence,
                 walk.cause.clone(),
                 block,
+                false,
             );
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Deliver, fut));
         }
@@ -2479,7 +2483,7 @@ async fn execute_build(
         };
     };
     target.head = (block.height(), parent_digest);
-    let status = match deliver_block(&execution_node, block.clone())
+    let status = match deliver_block(&execution_node, block.clone(), false)
         .await
         .wrap_err("failed delivering build parent")
     {
@@ -2547,11 +2551,14 @@ async fn execute_finalization(
     execution_node: impl ExecutionLayer,
     request: FinalizedBlockRequest,
 ) -> ExecutionTaskOutcome {
-    let status = deliver_block(&execution_node, request.block.clone()).await;
+    let status = deliver_block(&execution_node, request.block.clone(), false).await;
     ExecutionTaskOutcome::FinalizedDelivered { request, status }
 }
 
 /// Delivers a walk's cursor through a bare new-payload request.
+///
+/// `check_boundary_outcome` asks execution to check a boundary block's DKG outcome against the
+/// parent state, see [`TempoExecutionData::check_boundary_outcome`].
 #[instrument(
     skip_all,
     parent = &cause,
@@ -2569,10 +2576,11 @@ async fn execute_delivery(
     owner: WalkOwner,
     cause: Span,
     block: Digested<Block>,
+    check_boundary_outcome: bool,
 ) -> ExecutionTaskOutcome {
     let digest = block.digest();
     let started = Instant::now();
-    let status = deliver_block(&execution_node, block)
+    let status = deliver_block(&execution_node, block, check_boundary_outcome)
         .await
         .map(|status| (status, started.elapsed()));
     ExecutionTaskOutcome::Delivered {
@@ -2587,10 +2595,14 @@ async fn execute_delivery(
 async fn deliver_block(
     execution_node: &impl ExecutionLayer,
     block: Digested<Block>,
+    check_boundary_outcome: bool,
 ) -> eyre::Result<PayloadStatusEnum> {
     let block = block.inner().execution_block();
     let payload_status = execution_node
-        .new_payload(TempoExecutionData { block })
+        .new_payload(TempoExecutionData {
+            block,
+            check_boundary_outcome,
+        })
         .await
         .wrap_err("failed sending new-payload request to execution layer")?;
     if payload_status.is_valid() {

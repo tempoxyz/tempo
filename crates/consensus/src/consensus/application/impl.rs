@@ -27,6 +27,7 @@ use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_evm::BoundaryOutcomeChecks;
 use tempo_payload_types::{
     Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
 };
@@ -56,6 +57,9 @@ pub(in crate::consensus) struct Config<TContext> {
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
+
+    /// Boundary blocks whose DKG outcome execution checked against the parent state.
+    pub(in crate::consensus) boundary_outcome_checks: BoundaryOutcomeChecks,
 }
 
 /// Tempo's block builder and verifier, see the module documentation.
@@ -68,6 +72,7 @@ pub(crate) struct Inner {
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
+    boundary_outcome_checks: BoundaryOutcomeChecks,
 
     metrics: Metrics,
 }
@@ -82,6 +87,7 @@ impl Inner {
             estimator: config.estimator,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
+            boundary_outcome_checks: config.boundary_outcome_checks,
             metrics: Metrics::init(&config.context),
         }
     }
@@ -328,7 +334,7 @@ impl Inner {
     ///
     /// For a boundary block, this only decodes the DKG outcome and returns it.
     /// [`Self::verify_boundary_output`] compares its ceremony output after
-    /// execution, and the executor checks the rest of it.
+    /// execution, and execution checks the rest of it at this node's request.
     #[instrument(skip_all, err(Display))]
     async fn verify_header(
         &self,
@@ -393,8 +399,8 @@ impl Inner {
     }
 
     /// Checks that a boundary block contains the DKG ceremony output that this
-    /// node calculates for the block's `parent`. The executor checks the rest of
-    /// the outcome against the parent state when it executes the block.
+    /// node calculates for the block's `parent`. Execution checks the rest of
+    /// the outcome against the parent state when this node asks it to.
     ///
     /// If this node cannot calculate the output, that says nothing about the
     /// block. The future then stays pending and the vote is not cast.
@@ -533,11 +539,19 @@ where
             }
         }
 
-        // Only a boundary block carries a DKG outcome. The executor has
-        // checked all of it but the ceremony output against the parent state.
+        // Only a boundary block carries a DKG outcome. Execution checked all
+        // of it but the ceremony output against the parent state, unless the
+        // execution layer already knew the block and did not execute it again.
         match proposed_outcome {
             None => true,
             Some(outcome) => {
+                if !self.boundary_outcome_checks.passed(block.digest().0) {
+                    warn!(
+                        "execution did not check the boundary block's DKG outcome \
+                        against the parent state; abstaining"
+                    );
+                    return std::future::pending().await;
+                }
                 let ceremony =
                     ceremony.expect("`verify_header` decodes an outcome only for a boundary block");
                 self.verify_boundary_output(ceremony, &outcome)

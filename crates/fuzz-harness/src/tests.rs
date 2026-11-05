@@ -474,63 +474,8 @@ fn a_created_account_reads_its_unwritten_slots_as_zero_on_an_exact_pre_state() {
 
 #[test]
 fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
-    use alloy_primitives::Keccak256;
-    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-    use tempo_contracts::precompiles::{IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS};
-    use tempo_precompiles::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        validator_config_v2::{VALIDATOR_NS_ADD, ValidatorConfigV2},
-    };
-
     // From T8 on, the last block of an epoch carries the DKG outcome that the
-    // committee is set from. The executor checks its players against
-    // ValidatorConfigV2, which the dev genesis initializes without validators, so
-    // register one.
-    let validator = PrivateKey::from_seed(1);
-    let mut storage = HashMapStorageProvider::new(1);
-    StorageCtx::enter(&mut storage, || -> tempo_precompiles::error::Result<()> {
-        let owner = Address::repeat_byte(0xAA);
-        let validator_address = Address::repeat_byte(0x11);
-        let (ingress, egress) = ("192.168.1.1:8000", "192.168.1.1");
-        let mut hasher = Keccak256::new();
-        hasher.update(1u64.to_be_bytes());
-        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        hasher.update(validator_address.as_slice());
-        hasher.update([ingress.len() as u8]);
-        hasher.update(ingress.as_bytes());
-        hasher.update([egress.len() as u8]);
-        hasher.update(egress.as_bytes());
-        hasher.update(Address::ZERO.as_slice());
-        let signature = validator.sign(VALIDATOR_NS_ADD, hasher.finalize().as_slice());
-        let mut config = ValidatorConfigV2::new();
-        config.initialize(owner)?;
-        config.add_validator(
-            owner,
-            IValidatorConfigV2::addValidatorCall {
-                validatorAddress: validator_address,
-                publicKey: B256::from_slice(&validator.public_key()),
-                ingress: ingress.to_string(),
-                egress: egress.to_string(),
-                feeRecipient: Address::ZERO,
-                signature: signature.encode().to_vec().into(),
-            },
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let mut config_account = genesis_state().accounts[&VALIDATOR_CONFIG_V2_ADDRESS].clone();
-    config_account.storage = storage
-        .into_storage()
-        .filter(|(address, ..)| *address == VALIDATOR_CONFIG_V2_ADDRESS)
-        .map(|(_, slot, value)| (slot, value))
-        .collect();
-    let pre_state = || {
-        PreState::Genesis(one_account(
-            VALIDATOR_CONFIG_V2_ADDRESS,
-            config_account.clone(),
-        ))
-    };
-
+    // committee is set from.
     let spec = chain::chain_spec(&ChainSpecInput::default()).unwrap();
     let epoch_length = spec.info.epoch_length().expect("the dev chain has epochs");
     let boundary = |extra_data: Bytes| {
@@ -538,14 +483,9 @@ fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
         context.block_number = epoch_length.get() - 1;
         context.extra_data = extra_data;
         let block = block(BlockHeaderInput::Context(context), Vec::new());
-        run(pre_state(), vec![block])
+        run(genesis(), vec![block])
     };
-    let dealt = OnchainDkgOutcome::dealt(1, 3);
-    let matching = OnchainDkgOutcome {
-        next_players: commonware_utils::ordered::Set::from_iter_dedup([validator.public_key()]),
-        ..dealt.clone()
-    };
-    let outcome = boundary(matching.encode().to_vec().into());
+    let outcome = boundary(OnchainDkgOutcome::dealt(1, 3).encode().to_vec().into());
     assert_eq!(outcome.error, ErrorClass::None);
     let committee = |changes| {
         storage_at(changes, CURRENT_COMMITTEE_ADDRESS)
@@ -557,11 +497,6 @@ fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
     assert!(!committee(&steps.pre_block));
     assert!(committee(&outcome.state_diff.total));
 
-    // Players that differ from ValidatorConfigV2 are rejected, like a missing outcome.
-    assert_eq!(
-        boundary(dealt.encode().to_vec().into()).error,
-        ErrorClass::Rejected
-    );
     assert_eq!(boundary(Bytes::new()).error, ErrorClass::Rejected);
 }
 

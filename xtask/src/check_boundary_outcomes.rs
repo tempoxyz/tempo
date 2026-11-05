@@ -1,5 +1,5 @@
 //! Check every epoch-boundary DKG outcome against the validator config in the pre-state of its
-//! block, as the payload builder fills it in and the block executor checks it.
+//! block, as the payload builder fills it in and verifying validators check it.
 
 use std::sync::Arc;
 

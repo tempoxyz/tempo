@@ -14,6 +14,10 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub shared_gas_limit: u64,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
+    /// The block's hash when a validator verifying it asked for its boundary DKG outcome to be
+    /// checked against the parent state, see [`crate::BoundaryOutcomeChecks`]. `None` when
+    /// syncing, following, replaying or building blocks.
+    pub check_boundary_outcome: Option<alloy_primitives::B256>,
 }
 
 /// Context required for next block environment.

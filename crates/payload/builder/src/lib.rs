@@ -347,7 +347,7 @@ where
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
         // Consensus passes only the DKG ceremony output for a boundary block, and the builder
-        // fills in the rest of the outcome from the parent state. Executors check it.
+        // fills in the rest of the outcome from the parent state. Verifying validators check it.
         let block_number = parent_header.number() + 1;
         let epoch_length = chain_spec
             .info

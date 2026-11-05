@@ -294,6 +294,7 @@ where
             dkg_manager: dkg_manager_mailbox.clone(),
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
+            boundary_outcome_checks: execution_node.evm_config.boundary_outcome_checks().clone(),
         });
         let application = application::Factory::new(
             &context,
