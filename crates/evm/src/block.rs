@@ -7,7 +7,7 @@ use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::{DecodeExt as _, ReadExt};
+use commonware_codec::ReadExt;
 use evm2::{
     EvmTypes, TxResult, TxResultWithState,
     bytecode::Bytecode,
@@ -759,8 +759,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                 crate::TempoStateAccess::dkg_ceremony_config(self.evm_mut(), spec, block_number)
                     .map_err(BlockExecutionError::other)?
             {
-                let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
-                    commonware_codec::Copying(self.extra_data.as_ref()),
+                // Trailing bytes are not rejected yet, matching the committee system call.
+                let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+                    &mut commonware_codec::Copying(self.extra_data.as_ref()),
                 )
                 .map_err(|err| {
                     BlockValidationError::msg(format!(
@@ -1640,11 +1641,10 @@ mod tests {
 
         let mut trailing = correct.encode().to_vec();
         trailing.push(0);
-        let err = pre_execution(config(None), TempoHardfork::T15, 4, trailing.clone().into())
-            .unwrap_err();
-        assert!(
-            err.starts_with("failed decoding boundary block extra data as DKG outcome"),
-            "{err}"
+        // Trailing bytes are not enforced yet.
+        assert_eq!(
+            pre_execution(config(None), TempoHardfork::T15, 4, trailing.clone().into()),
+            Ok(())
         );
 
         // Before ValidatorConfigV2 is initialized, boundaries are not checked, not even decoded.

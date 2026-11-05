@@ -7,7 +7,7 @@ use alloy::{
     eips::{BlockId, BlockNumberOrTag},
     providers::{Provider, ProviderBuilder},
 };
-use commonware_codec::{DecodeExt as _, ReadExt as _};
+use commonware_codec::ReadExt as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
@@ -200,16 +200,8 @@ async fn check_boundary<P: Provider>(
     let extra_data = block.header.inner.extra_data.as_ref();
 
     let mut reasons = Vec::new();
-    // The executor decodes strictly; report trailing bytes but still compare the fields.
-    let proposed = match OnchainDkgOutcome::decode(commonware_codec::Copying(extra_data)) {
-        Ok(outcome) => outcome,
-        Err(strict) => {
-            let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data))
-                .wrap_err_with(|| format!("failed to decode the DKG outcome of block {height}"))?;
-            reasons.push(format!("extra data does not decode strictly: {strict}"));
-            outcome
-        }
-    };
+    let proposed = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data))
+        .wrap_err_with(|| format!("failed to decode the DKG outcome of block {height}"))?;
 
     let parent = BlockId::number(height - 1);
     let config = IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider);
