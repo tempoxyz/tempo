@@ -748,6 +748,47 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             }
         }
 
+        // From T15 the payload builder fills in the boundary block's DKG outcome from the parent
+        // state; consensus checks only the ceremony output it carries.
+        let epoch_length = self.evm().block().ext.epoch_length.get();
+        let block_number = self.evm().block().number.saturating_to::<u64>();
+        if self.evm().config_spec_id().is_t15()
+            && block_number.saturating_add(1).is_multiple_of(epoch_length)
+        {
+            use commonware_codec::DecodeExt as _;
+
+            let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+                commonware_codec::Copying(self.extra_data.as_ref()),
+            )
+            .map_err(|err| {
+                BlockValidationError::msg(format!(
+                    "failed decoding boundary block extra data as DKG outcome: {err}"
+                ))
+            })?;
+            let spec = self.evm().config_spec_id();
+            let expected = crate::TempoStateAccess::boundary_dkg_outcome(
+                self.evm_mut(),
+                spec,
+                block_number / epoch_length + 1,
+                proposed.output.clone(),
+            )
+            .map_err(BlockExecutionError::other)?;
+            if proposed != expected {
+                return Err(BlockValidationError::msg(format!(
+                    "boundary block DKG outcome does not match the parent state: \
+                    epoch {} (expected {}), next players {:?} (expected {:?}), \
+                    full DKG {} (expected {})",
+                    proposed.epoch,
+                    expected.epoch,
+                    proposed.next_players(),
+                    expected.next_players(),
+                    proposed.is_next_full_dkg,
+                    expected.is_next_full_dkg,
+                ))
+                .into());
+            }
+        }
+
         if self.evm().config_spec_id().is_t13() {
             if self.prague_active && !self.evm().block().number.is_zero() {
                 let parent_hash = self.inner.context().parent_hash;
@@ -1463,16 +1504,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_t14_rejects_beneficiary_not_matching_proposer_fee_recipient() {
-        let chainspec = system_calls_chainspec();
-        let registered = PrivateKey::from_seed(1);
-        let registered_key = B256::from_slice(&registered.public_key());
-        let unregistered_key = B256::from_slice(&PrivateKey::from_seed(2).public_key());
-        let fee_recipient = Address::repeat_byte(0xFE);
-        let attacker = Address::repeat_byte(0xBA);
+    type Accounts = HashMap<Address, HashMap<U256, U256>>;
 
-        // Registers `registered` in ValidatorConfigV2 at height 0 with `fee_recipient`.
+    /// Returns the storage of a ValidatorConfigV2 initialized at height 0 with `validator` as its
+    /// only active validator, and the next network identity rotation at `rotation_epoch`.
+    fn validator_config_v2_accounts(
+        validator: &PrivateKey,
+        fee_recipient: Address,
+        rotation_epoch: Option<u64>,
+    ) -> Accounts {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let owner = Address::repeat_byte(0xAA);
@@ -1487,7 +1527,7 @@ mod tests {
             hasher.update([egress.len() as u8]);
             hasher.update(egress.as_bytes());
             hasher.update(fee_recipient.as_slice());
-            let signature = registered.sign(VALIDATOR_NS_ADD, hasher.finalize().as_slice());
+            let signature = validator.sign(VALIDATOR_NS_ADD, hasher.finalize().as_slice());
 
             let mut config = ValidatorConfigV2::new();
             config.initialize(owner)?;
@@ -1495,29 +1535,144 @@ mod tests {
                 owner,
                 IValidatorConfigV2::addValidatorCall {
                     validatorAddress: validator_address,
-                    publicKey: registered_key,
+                    publicKey: B256::from_slice(&validator.public_key()),
                     ingress: ingress.to_string(),
                     egress: egress.to_string(),
                     feeRecipient: fee_recipient,
                     signature: signature.encode().to_vec().into(),
                 },
             )?;
+            if let Some(epoch) = rotation_epoch {
+                config.set_network_identity_rotation_epoch(
+                    owner,
+                    IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch },
+                )?;
+            }
             Ok(())
         })
         .unwrap();
-        let mut accounts = HashMap::<Address, HashMap<U256, U256>>::new();
+        let mut accounts = Accounts::new();
         for (address, slot, value) in storage.into_storage() {
             accounts.entry(address).or_default().insert(slot, value);
         }
+        accounts
+    }
+
+    fn db_with_accounts(accounts: &Accounts) -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        for (address, storage) in accounts {
+            db.insert_account_info(address, AccountInfo::default());
+            for (slot, value) in storage {
+                db.insert_account_storage(address, slot, value);
+            }
+        }
+        db
+    }
+
+    #[test]
+    fn test_t15_checks_boundary_dkg_outcome_against_parent_state() {
+        use commonware_utils::ordered;
+
+        let chainspec = system_calls_chainspec();
+        let validator = PrivateKey::from_seed(1);
+        let players = ordered::Set::from_iter_dedup([validator.public_key()]);
+        // With an epoch length of 5, block 4 is the boundary before epoch 1.
+        let correct = OnchainDkgOutcome {
+            epoch: 1,
+            next_players: players,
+            is_next_full_dkg: false,
+            ..OnchainDkgOutcome::dealt(1, 3)
+        };
+
+        let pre_execution = |fork, block_number, rotation_epoch, extra_data: Bytes| {
+            let db = db_with_accounts(&validator_config_v2_accounts(
+                &validator,
+                Address::ZERO,
+                rotation_epoch,
+            ));
+            TestExecutorBuilder::default()
+                .with_block_number(block_number)
+                .with_epoch_length(5)
+                .with_extra_data(extra_data)
+                .with_spec(fork)
+                .build(db, &chainspec)
+                .apply_pre_execution_changes()
+                .map_err(|e| e.to_string())
+        };
+        let check = |rotation_epoch, outcome: &OnchainDkgOutcome| {
+            pre_execution(
+                TempoHardfork::T15,
+                4,
+                rotation_epoch,
+                outcome.encode().into(),
+            )
+        };
+
+        assert_eq!(check(None, &correct), Ok(()));
+        let full_dkg = OnchainDkgOutcome {
+            is_next_full_dkg: true,
+            ..correct.clone()
+        };
+        assert_eq!(check(Some(1), &full_dkg), Ok(()));
+
+        for (rotation_epoch, wrong) in [
+            (Some(1), correct.clone()),
+            (None, full_dkg),
+            (
+                None,
+                OnchainDkgOutcome {
+                    epoch: 2,
+                    ..correct.clone()
+                },
+            ),
+            (
+                None,
+                OnchainDkgOutcome {
+                    next_players: OnchainDkgOutcome::dealt(1, 3).next_players,
+                    ..correct.clone()
+                },
+            ),
+        ] {
+            let err = check(rotation_epoch, &wrong).unwrap_err();
+            assert!(
+                err.starts_with("boundary block DKG outcome does not match the parent state"),
+                "{err}"
+            );
+        }
+
+        let mut trailing = correct.encode().to_vec();
+        trailing.push(0);
+        let err = pre_execution(TempoHardfork::T15, 4, None, trailing.into()).unwrap_err();
+        assert!(
+            err.starts_with("failed decoding boundary block extra data as DKG outcome"),
+            "{err}"
+        );
+
+        // Before T15 the outcome is not checked against the state, and blocks other than the
+        // boundary carry no outcome.
+        assert_eq!(
+            pre_execution(TempoHardfork::T14, 4, Some(1), correct.encode().into()),
+            Ok(())
+        );
+        assert_eq!(
+            pre_execution(TempoHardfork::T15, 3, None, Bytes::new()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn test_t14_rejects_beneficiary_not_matching_proposer_fee_recipient() {
+        let chainspec = system_calls_chainspec();
+        let registered = PrivateKey::from_seed(1);
+        let registered_key = B256::from_slice(&registered.public_key());
+        let unregistered_key = B256::from_slice(&PrivateKey::from_seed(2).public_key());
+        let fee_recipient = Address::repeat_byte(0xFE);
+        let attacker = Address::repeat_byte(0xBA);
+
+        let accounts = validator_config_v2_accounts(&registered, fee_recipient, None);
 
         let pre_execution = |fork, proposer: B256, beneficiary| {
-            let mut db = InMemoryDB::default();
-            for (address, storage) in &accounts {
-                db.insert_account_info(address, AccountInfo::default());
-                for (slot, value) in storage {
-                    db.insert_account_storage(address, slot, value);
-                }
-            }
+            let db = db_with_accounts(&accounts);
             let mut executor = TestExecutorBuilder::default()
                 .with_block_number(2)
                 .with_spec(fork)

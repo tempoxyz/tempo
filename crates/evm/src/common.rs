@@ -2,13 +2,21 @@ use crate::{TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
+use commonware_codec::DecodeExt as _;
+use commonware_cryptography::{
+    bls12381::{dkg::feldman_desmedt::Output, primitives::variant::MinSig},
+    ed25519::PublicKey,
+};
+use commonware_utils::ordered;
 use core::marker::PhantomData;
 use evm2::{
     DatabaseError, Evm,
     evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
+use std::net::{IpAddr, SocketAddr};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{
@@ -254,6 +262,51 @@ pub trait TempoStateAccess<M = ()> {
                 )) => Ok(None),
                 Err(err) => Err(err),
             }
+        })
+    }
+
+    /// Returns the DKG outcome that the boundary block before `epoch` carries for the ceremony
+    /// `output`, filling in from `ValidatorConfigV2` the players of the ceremony in `epoch` (its
+    /// active validators) and whether that ceremony is a full DKG.
+    ///
+    /// Reads bypass the journal, so this must be called before any changes of the boundary block
+    /// are committed to see the parent state.
+    fn boundary_dkg_outcome(
+        &mut self,
+        spec: TempoHardfork,
+        epoch: u64,
+        output: Output<MinSig, PublicKey>,
+    ) -> TempoResult<OnchainDkgOutcome>
+    where
+        Self: Sized,
+    {
+        let (validators, next_full_dkg_epoch) =
+            self.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
+                let config = ValidatorConfigV2::default();
+                Ok::<_, TempoPrecompileError>((
+                    config.get_active_validators()?,
+                    config.get_next_network_identity_rotation_epoch()?,
+                ))
+            })?;
+        // Consensus skips active validators whose entries it cannot decode, so they are no
+        // players either (`read_active_peers` in tempo-consensus).
+        let next_players = ordered::Set::from_iter_dedup(
+            validators
+                .into_iter()
+                .filter(|validator| {
+                    validator.ingress.parse::<SocketAddr>().is_ok()
+                        && validator.egress.parse::<IpAddr>().is_ok()
+                })
+                .filter_map(|validator| {
+                    PublicKey::decode(commonware_codec::Copying(validator.publicKey.as_slice()))
+                        .ok()
+                }),
+        );
+        Ok(OnchainDkgOutcome {
+            epoch,
+            output,
+            next_players,
+            is_next_full_dkg: next_full_dkg_epoch == epoch,
         })
     }
 }

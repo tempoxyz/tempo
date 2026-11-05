@@ -20,7 +20,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
-use alloy_primitives::{Address, B256, Bloom, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -51,6 +51,7 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::{
+    num::NonZeroU64,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -345,6 +346,26 @@ where
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
+        // From T15 consensus passes only the DKG ceremony output for a boundary block, and the
+        // builder fills in the rest of the outcome from the parent state. Executors check it.
+        let block_number = parent_header.number() + 1;
+        let epoch_length = chain_spec
+            .info
+            .epoch_length()
+            .unwrap_or(NonZeroU64::MIN)
+            .get();
+        let extra_data =
+            if hardfork.is_t15() && block_number.saturating_add(1).is_multiple_of(epoch_length) {
+                let output = tempo_dkg_onchain_artifacts::decode_output(attributes.extra_data())
+                    .map_err(PayloadBuilderError::other)?;
+                let outcome = db
+                    .boundary_dkg_outcome(hardfork, block_number / epoch_length + 1, output)
+                    .map_err(PayloadBuilderError::other)?;
+                Bytes::from(commonware_codec::Encode::encode(&outcome))
+            } else {
+                attributes.extra_data().clone()
+            };
+
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
@@ -354,7 +375,7 @@ where
             .map(|w| w.length())
             .unwrap_or(0)
             + NON_TRANSACTION_SIZE_ESTIMATE
-            + attributes.extra_data().length();
+            + extra_data.length();
         let mut payment_transactions = 0u64;
         let mut reverted_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
@@ -370,7 +391,7 @@ where
                 gas_limit: block_gas_limit,
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 withdrawals: attributes.withdrawals.clone().map(Into::into),
-                extra_data: attributes.extra_data().clone(),
+                extra_data,
                 slot_number: attributes.slot_number,
             },
             general_gas_limit,
@@ -1195,7 +1216,6 @@ pub(crate) struct RootsTaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Bytes;
 
     #[test]
     fn test_extra_data_flow_in_attributes() {

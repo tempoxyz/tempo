@@ -17,10 +17,13 @@ workspace = true
 
 [dependencies]
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
+
+commonware-codec.workspace = true
 
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true

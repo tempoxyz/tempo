@@ -26,6 +26,7 @@ use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
+use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_payload_types::{
     Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -121,7 +122,7 @@ impl Inner {
             parent: (parent_view, parent_digest),
         } = context;
 
-        let (extra_data, deferred_extra_data) = if self.is_boundary(parent.height().next()) {
+        let (extra_data, ceremony) = if self.is_boundary(parent.height().next()) {
             // The boundary block carries the DKG outcome.
             //
             // Part of it is read from the post-state of the parent,
@@ -129,10 +130,9 @@ impl Inner {
             //
             // The DKG actor reads no chain state, so it starts on the
             // ceremony output now, while the executor works on the parent.
-            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
             (
                 Bytes::default(),
-                Some(self.boundary_dkg_outcome(round.epoch(), parent.digest(), ceremony)),
+                Some(self.dkg_manager.subscribe_dkg_ceremony(parent.clone())),
             )
         } else {
             // Regular block: try to include DKG dealer log.
@@ -173,6 +173,14 @@ impl Inner {
         // Match the stamped header so a lagging local clock does not inflate network samples.
         let window_opened_millis = epoch_millis;
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
+        let deferred_extra_data = ceremony.map(|ceremony| {
+            self.boundary_dkg_outcome(
+                round.epoch(),
+                parent.digest(),
+                ceremony,
+                self.builder_fills_dkg_outcome(timestamp),
+            )
+        });
 
         let consensus_context = Some(TempoConsensusContext {
             epoch: round.epoch().get(),
@@ -293,12 +301,14 @@ impl Inner {
     /// returned VALID, so the post-state of the parent is available.
     ///
     /// `ceremony` is the request for the ceremony output on the parent
-    /// `parent_digest`.
+    /// `parent_digest`. If `builder_fills`, the extra data is only the ceremony
+    /// output, and the payload builder fills in the rest of the outcome.
     fn boundary_dkg_outcome(
         &self,
         epoch: Epoch,
         parent_digest: Digest,
         ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
+        builder_fills: bool,
     ) -> DeferredExtraData {
         let parent_state = self.parent_state.clone();
         let epoch_strategy = self.epoch_strategy.clone();
@@ -313,6 +323,15 @@ impl Inner {
                 let output = ceremony
                     .await
                     .wrap_err("failed getting public dkg ceremony outcome")?;
+                if builder_fills {
+                    info!(
+                        output.network_identity = %output.public().public(),
+                        output.dealers = ?output.dealers(),
+                        output.players = ?output.players(),
+                        "received DKG ceremony output; will include in payload builder attributes",
+                    );
+                    return Ok(output.encode().into());
+                }
                 let outcome =
                     parent_state.boundary_outcome(&epoch_strategy, parent.inner(), output)?;
                 ensure!(
@@ -334,6 +353,17 @@ impl Inner {
             }
             .boxed()
         })
+    }
+
+    /// Returns whether the payload builder fills in the DKG outcome of a
+    /// boundary block with `timestamp` from the parent state, so consensus
+    /// supplies and checks only the ceremony output.
+    fn builder_fills_dkg_outcome(&self, timestamp: u64) -> bool {
+        self.parent_state
+            .node
+            .chain_spec()
+            .tempo_hardfork_at(timestamp)
+            .is_t15()
     }
 
     /// Returns whether the block at `height` is the last block of its epoch,
@@ -425,13 +455,16 @@ impl Inner {
     /// nothing about the block. The future then stays pending and the vote is
     /// not cast.
     ///
-    /// `ceremony` is the request for the ceremony output on `parent`.
+    /// `ceremony` is the request for the ceremony output on `parent`. If
+    /// `builder_fills`, the executor has already checked the rest of the outcome
+    /// against the parent state, so only the ceremony output is compared.
     #[instrument(skip_all, err(Display))]
     async fn verify_boundary_outcome(
         &self,
         parent: &Block,
         ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
         proposed_outcome: &OnchainDkgOutcome,
+        builder_fills: bool,
     ) -> eyre::Result<()> {
         info!("verifying that the boundary block contains the correct DKG outcome");
         let output = match ceremony.await {
@@ -441,6 +474,14 @@ impl Inner {
                 return std::future::pending().await;
             }
         };
+        if builder_fills {
+            ensure!(
+                output == proposed_outcome.output,
+                "our DKG ceremony output does not match the one stored in the \
+                block header extra_data field",
+            );
+            return Ok(());
+        }
         let our_outcome =
             match self
                 .parent_state
@@ -596,9 +637,14 @@ where
             Some(outcome) => {
                 let (parent, ceremony) =
                     boundary.expect("`verify_header` decodes an outcome only for a boundary block");
-                self.verify_boundary_outcome(parent.inner(), ceremony, &outcome)
-                    .await
-                    .is_ok()
+                self.verify_boundary_outcome(
+                    parent.inner(),
+                    ceremony,
+                    &outcome,
+                    self.builder_fills_dkg_outcome(block.inner().header().timestamp()),
+                )
+                .await
+                .is_ok()
             }
         }
     }
