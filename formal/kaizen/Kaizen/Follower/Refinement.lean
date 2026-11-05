@@ -137,6 +137,10 @@ theorem implStep_refines (verify : Verify) (verifyExec : VerifyExec) (s : ImplSt
     by_cases he0 : fc.epoch ≠ c.height / s.epochLength
     · rw [if_pos he0, if_pos (he.mp he0)]; exact ⟨rfl, rfl⟩
     rw [if_neg he0, if_neg (fun h => he0 (he.mpr h))]
+    by_cases hr0 : 2 ^ 64 < fc.epoch.toNat * s.epochLength.toNat + s.epochLength.toNat
+    · rw [if_pos hr0, if_pos (by simpa [Cert.toSpec, ImplState.abs] using hr0)]
+      exact ⟨rfl, rfl⟩
+    rw [if_neg hr0, if_neg (by simpa [Cert.toSpec, ImplState.abs] using hr0)]
     have htc : s.abs.tip = s.tip.map ImplTip.abs := rfl
     rw [htc, ← tipCheck_refines]
     cases implTipCheck s.tip c fc with

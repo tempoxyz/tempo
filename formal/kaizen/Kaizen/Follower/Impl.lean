@@ -80,6 +80,8 @@ def implStep (verify : Verify) (verifyExec : VerifyExec) (s : ImplState) (c : Im
   | some fc =>
     if fc.payload ≠ c.blockDigest then (Code.digestMismatch, s) else
     if fc.epoch ≠ c.height / s.epochLength then (Code.epochMismatch, s) else
+    if 2 ^ 64 < fc.epoch.toNat * s.epochLength.toNat + s.epochLength.toNat then
+      (Code.epochMismatch, s) else
     match implTipCheck s.tip c fc with
     | some code => (code, s)
     | none =>

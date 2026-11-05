@@ -83,8 +83,9 @@ theorem step_accept_shape {verify : Verify} {verifyExec : VerifyExec} {s s' : St
   split at h
   · simp [Code.malformed, Code.accepted] at h
   rename_i fc hdec
-  split_ifs at h with hp he
+  split_ifs at h with hp he hr
   · simp [Code.digestMismatch, Code.accepted] at h
+  · simp [Code.epochMismatch, Code.accepted] at h
   · simp [Code.epochMismatch, Code.accepted] at h
   split at h
   · rename_i code htc
@@ -369,6 +370,7 @@ theorem step_progress (verify : Verify) (verifyExec : VerifyExec) (s : State) (c
     (hcert : c.cert.data.toList = specEncode fc) (hwf : fc.WF)
     (hpay : fc.payload = c.blockDigest.data.toList)
     (hep : fc.epoch = c.height / s.epochLength)
+    (hrep : fc.epoch * s.epochLength + s.epochLength ≤ 2 ^ 64)
     (hlink : ∀ t, s.tip = some t → c.height = t.height + 1 ∧ c.parentDigest = t.digest ∧
       roundLt t.epoch t.view fc.epoch fc.view)
     (hdkg : c.height % s.epochLength = s.epochLength - 1 → ∃ k, c.dkg = some (fc.epoch + 1, k))
@@ -399,10 +401,13 @@ theorem step_progress (verify : Verify) (verifyExec : VerifyExec) (s : State) (c
     · simp [hb]
   have hv' : verify key fc.epoch.toUInt64 fc.view.toUInt64 fc.parent.toUInt64
       ⟨fc.payload.toArray⟩ ⟨fc.sig.toArray⟩ = true := by rw [payload_eq hpay]; exact hv
+  have hr : ¬ (2 ^ 64 < fc.epoch * s.epochLength + s.epochLength) := Nat.not_lt.mpr hrep
   unfold step
-  rw [hcert, specDecode_specEncode fc hwf]
-  simp only [hep, hpay] at hid hv'
-  simp [hL, hpay, hep, htc, hdk, hid, hv', accept, hx']
+  rw [hcert, specDecode_specEncode fc hwf, if_neg hL]
+  simp only [hep, hpay] at hid hv' hr
+  have hr' : ¬ (18446744073709551616 < c.height / s.epochLength * s.epochLength + s.epochLength) :=
+    hr
+  simp [hpay, hep, hr', htc, hdk, hid, hv', accept, hx']
 
 /-- Execution chain of a sequence of accepted candidates, starting from an optional anchor state
 root: each candidate's block executes from the previous candidate's state root to its own. -/

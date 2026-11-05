@@ -124,6 +124,9 @@ def step (verify : Verify) (verifyExec : VerifyExec) (s : State) (c : Candidate)
   | some fc =>
     if fc.payload ≠ c.blockDigest.data.toList then (Code.digestMismatch, s) else
     if fc.epoch ≠ c.height / s.epochLength then (Code.epochMismatch, s) else
+    -- Tempo's FixedEpocher represents no epoch whose last height exceeds u64::MAX.
+    if 2 ^ 64 < fc.epoch * s.epochLength + s.epochLength then
+      (Code.epochMismatch, s) else
     match tipCheck s.tip c fc with
     | some code => (code, s)
     | none =>

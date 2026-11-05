@@ -12,7 +12,7 @@ The reference ([`src/reference.rs`](src/reference.rs)) is written from Tempo's a
 - the epoch comes from `FixedEpocher::containing`, rounds from commonware's `Ord` on `Round`, and the boundary test from `EpochInfo::last`
 - identity selection follows `FinalizationVerifier::verify_certificate` (the scheme provider first, then the network identity if `epoch >= from_epoch`, with the fallback scheme registered after it verifies)
 
-Check order and codes follow `Kaizen/Follower/Spec.lean`. Inputs that Tempo's code cannot process (epoch length 1 panics in `FixedEpocher::new`, and heights in the final partial epoch near `u64::MAX` make `containing` return `None`, so Tempo's `expect` panics) are counted as *unsupported*, and the sequence stops there.
+Check order and codes follow `Kaizen/Follower/Spec.lean`. Epoch length 1 (a local configuration that panics in `FixedEpocher::new`) is counted as *unsupported*, and the sequence stops there. Heights in the final partial epoch near `u64::MAX` used to panic Tempo's verifier before the signature check; that was a bug, fixed in tempoxyz/tempo#8977, and both sides now reject them with `epochMismatch`.
 
 Both sides call the same oracles ([`src/oracle.rs`](src/oracle.rs)):
 

@@ -39,7 +39,7 @@ These are the assumptions of the theorems, as Kaizen lists its own:
 - a 20-minute libFuzzer run with SanitizerCoverage on the Lean-generated C (7.4M inputs)
 - 4,800 real testnet blocks across two epoch boundaries, with real BLS, plus 14,394 mutations
 
-The only inputs left uncompared are ones Tempo itself panics on: epoch length 1, and heights in the final partial epoch below `u64::MAX`.
+The only input left uncompared is epoch length 1, a local configuration Tempo panics on. Heights in the final partial epoch are compared: the fuzzer used to skip them because Tempo panicked on them before checking the signature, which was a bug (fixed in tempoxyz/tempo#8977).
 
 Execution is checked against Tempo's own nodes: every re-executed block must reach the state root in the header that validators finalized. All 1,203 testnet blocks re-executed in two live runs matched, with none failing.
 

@@ -131,10 +131,9 @@ impl RefState {
         if f.proposal.payload.0.as_slice() != c.digest.as_slice() {
             return Outcome::Code(DIGEST_MISMATCH);
         }
+        // Tempo rejects these with HeightOutOfRange (tempoxyz/tempo#8977; it panicked before).
         let Some(info) = epocher.containing(Height::new(c.height)) else {
-            return Outcome::Unsupported(
-                "FixedEpocher::containing is None (last epoch overflows u64); Tempo's expect() panics",
-            );
+            return Outcome::Code(EPOCH_MISMATCH);
         };
         if f.epoch() != info.epoch() {
             return Outcome::Code(EPOCH_MISMATCH);
