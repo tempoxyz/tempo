@@ -1085,12 +1085,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" or $ctx.general_gas_limit != "" {
+        # Regenesis rebinds an imported QMDB to the new genesis hash; the state is unchanged.
         for datadir in [$ctx.a.datadir $ctx.b.datadir] {
-            let rewritten = (e2e-regenesis $ctx.regenesis_tempo $genesis $datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit)
-            # Regenesis changes the genesis hash the imported QMDB is bound to.
-            if $rewritten and (qmdb-state-backend $side_args) {
-                qmdb-import $run.tempo $genesis $datadir
-            }
+            e2e-regenesis $ctx.regenesis_tempo $genesis $datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit | ignore
         }
     }
     for role_info in [

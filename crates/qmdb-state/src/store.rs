@@ -178,6 +178,14 @@ pub enum Error {
     /// [`Config::max_pending`] unapplied batches are held already.
     #[error("{0} unapplied batches are held, the configured bound")]
     TooManyPending(usize),
+    /// The commit journal's latest record is not of the block being rebound.
+    #[error("the latest recorded block is {latest:?}, not block {number}")]
+    NotLatestRecord {
+        /// Block being rebound.
+        number: u64,
+        /// Block of the latest record, `None` when the journal is empty.
+        latest: Option<u64>,
+    },
     /// A snapshot was imported into a database that already holds state.
     #[error("the database already holds state up to block {0}")]
     NotEmpty(u64),
@@ -244,6 +252,54 @@ impl Store {
             commands,
             thread: Some(thread),
         })
+    }
+
+    /// Rebinds block `number`, the latest recorded block, to `hash` in the commit journal of the
+    /// closed store in [`Config::directory`], without opening the databases.
+    ///
+    /// For when the block's header changed but its state did not, such as a regenesis that only
+    /// rewrites the genesis header: once reopened, the store serves blocks that build on `hash`.
+    /// Returns whether the record changed. Fails with [`Error::NotLatestRecord`] when the latest
+    /// record is of another block.
+    pub fn rebind_recorded(config: &Config, number: u64, hash: B256) -> Result<bool, Error> {
+        let runtime = RuntimeConfig::new().with_storage_directory(config.directory.clone());
+        let page_cache_pages = config.page_cache_pages;
+        // Its own thread, like `Self::open`'s, since a runtime cannot start inside the caller's.
+        let rebind = move || {
+            Runner::new(runtime).start(|context| async move {
+                let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, page_cache_pages);
+                let commits =
+                    Commits::init(context.child("commits"), commits_config(page_cache)).await?;
+                let size = commits.size();
+                let latest = if size > commits.bounds().start {
+                    Some(Commit::decode(&commits.read(size - 1).await?))
+                } else {
+                    None
+                };
+                let Some(latest) = latest.filter(|commit| commit.number == number) else {
+                    return Err(Error::NotLatestRecord {
+                        number,
+                        latest: latest.map(|commit| commit.number),
+                    });
+                };
+                if latest.hash == hash {
+                    return Ok(false);
+                }
+                let (commits, _) = commits
+                    .rewind(size - 1)
+                    .await?
+                    .append(&Commit { hash, ..latest }.encode())
+                    .await?;
+                commits.commit().await?;
+                Ok(true)
+            })
+        };
+        std::thread::Builder::new()
+            .name("qmdb-rebind".into())
+            .spawn(rebind)
+            .expect("spawning a thread only fails when the OS is out of resources")
+            .join()
+            .map_err(|_| Error::Stopped)?
     }
 
     /// Returns the applied block, its root and the number of unapplied batches.
@@ -487,18 +543,12 @@ impl Actor {
             init_buffer: IO_BUFFER,
             init_concurrency: config.threads,
         };
-        let commits_config = JournalConfig {
-            partition: "state-commits".into(),
-            items_per_blob: COMMITS_PER_BLOB,
-            page_cache: page_cache.clone(),
-            write_buffer: COMMITS_WRITE_BUFFER,
-            replay_buffer: IO_BUFFER,
-        };
         let (mut accounts, mut slots) = try_join!(
             AccountsDb::init(context.child("accounts"), db_config("accounts")),
             SlotsDb::init(context.child("slots"), db_config("slots")),
         )?;
-        let mut commits = Commits::init(context.child("commits"), commits_config).await?;
+        let mut commits =
+            Commits::init(context.child("commits"), commits_config(page_cache.clone())).await?;
         let accounts_applied = applied_block(&accounts).await?;
         let slots_applied = applied_block(&slots).await?;
         let applied = accounts_applied.min(slots_applied);
@@ -937,6 +987,17 @@ async fn apply_db<const N: usize, const P: usize>(
     Ok(db.commit().await?)
 }
 
+/// Returns the configuration of the commit journal.
+fn commits_config(page_cache: CacheRef) -> JournalConfig {
+    JournalConfig {
+        partition: "state-commits".into(),
+        items_per_blob: COMMITS_PER_BLOB,
+        page_cache,
+        write_buffer: COMMITS_WRITE_BUFFER,
+        replay_buffer: IO_BUFFER,
+    }
+}
+
 /// Rewinds `db` to `size` operations and commits the rewind.
 async fn rewind_db<const N: usize, const P: usize>(
     db: Db<N, P>,
@@ -1176,6 +1237,57 @@ mod tests {
         let store = Store::open(config(dir.path(), 8)).unwrap();
         assert_eq!(store.status().unwrap().base, Some(B256::ZERO));
         store.build(block(1, 1, 0), Writes::default()).unwrap();
+    }
+
+    #[test]
+    fn rebinding_the_latest_record_moves_the_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = {
+            let store = imported(dir.path(), 8);
+            store.status().unwrap().root
+        };
+        let config = config(dir.path(), 8);
+        assert!(Store::rebind_recorded(&config, 0, B256::repeat_byte(9)).unwrap());
+        assert!(!Store::rebind_recorded(&config, 0, B256::repeat_byte(9)).unwrap());
+        assert!(matches!(
+            Store::rebind_recorded(&config, 1, B256::ZERO),
+            Err(Error::NotLatestRecord {
+                number: 1,
+                latest: Some(0)
+            })
+        ));
+        let store = Store::open(config).unwrap();
+        assert_eq!(
+            store.status().unwrap(),
+            Status {
+                applied: Some(0),
+                base: Some(B256::repeat_byte(9)),
+                root,
+                pending: 0
+            }
+        );
+        assert!(matches!(
+            store.build(block(1, 1, 0), Writes::default()),
+            Err(Error::UnknownParent { number: 1, .. })
+        ));
+        store.build(block(1, 1, 9), Writes::default()).unwrap();
+        store.finalize(B256::repeat_byte(1)).unwrap();
+        // Block 0 keeps a single record, bound to the new hash.
+        store.rewind_to(0).unwrap();
+        assert_eq!(store.status().unwrap().base, Some(B256::repeat_byte(9)));
+    }
+
+    #[test]
+    fn rebinding_needs_a_record() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Store::open(config(dir.path(), 8)).unwrap());
+        assert!(matches!(
+            Store::rebind_recorded(&config(dir.path(), 8), 0, B256::ZERO),
+            Err(Error::NotLatestRecord {
+                number: 0,
+                latest: None
+            })
+        ));
     }
 
     #[test]
