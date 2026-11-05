@@ -265,8 +265,9 @@ fn role_binding_order_matches_solidity_role_enum() {
             u8::from(Role::Sequencer),
             u8::from(Role::Account),
             u8::from(Role::CallbackGateway),
+            u8::from(Role::PauseGuardian),
         ],
-        [0, 1, 2, 3]
+        [0, 1, 2, 3, 4]
     );
 }
 
