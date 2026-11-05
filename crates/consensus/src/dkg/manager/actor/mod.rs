@@ -1403,13 +1403,12 @@ where
         &mut self,
         share_candidate: ShareState,
     ) -> eyre::Result<State> {
-        let (latest_boundary, outcome_epoch) = latest_boundary_at_or_before(
-            &self.config.epoch_strategy,
-            self.config.initial_state_height(),
-        );
+        let initial_state_height = self.config.initial_state_height();
+        let (latest_boundary, outcome_epoch) =
+            latest_boundary_at_or_before(&self.config.epoch_strategy, initial_state_height);
         info!(
             %latest_boundary,
-            last_finalized = %self.config.initial_state_height(),
+            last_finalized = %initial_state_height,
             "marshal reported finalized floor at startup, reading on-chain DKG \
             outcome from last boundary height"
         );
