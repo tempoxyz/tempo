@@ -198,7 +198,7 @@ All DEX state is ordinary account storage of `STABLECOIN_DEX_ADDRESS`. Slot deri
 
 - `map_slot(key, s) = keccak256(pad32(key) || uint256(s))` where `pad32` **left-pads the key's own big-endian bytes with zero bytes** to 32 bytes. For `address`, `uint128`, `bytes32` this equals Solidity. For `int16` keys (ticks and bitmap word indices) the 2-byte two's-complement value is zero-extended, **not** sign-extended: tick `-10` (`0xfff6`) has key `0x00…00fff6`. Solidity's `abi.encode` would give `0xff…fff6`; implementations MUST use the zero-extended form.
 - Within a slot, a field at byte offset `o` with size `n` occupies bits `[8o, 8(o+n))` counted from the least-significant bit (Solidity packing). Signed integers are stored as `n`-byte two's complement.
-- Writing one packed field is a read-modify-write of its slot (one SLOAD, one SSTORE). A field that is alone in its slot (`nextOrderId`, mapping values) is written with one SSTORE. Whole-struct reads load each slot the struct occupies (mappings inside a struct occupy a slot but are not read). Whole-struct writes store each non-mapping slot; before T4 each packed slot group is first loaded, from T4 it is composed from zero ([00-framework.md](00-framework.md)).
+- Writing one packed field is a read-modify-write of its slot (one SLOAD, one SSTORE). A field that is alone in its slot (`nextOrderId`, mapping values) is written with one SSTORE. Whole-struct reads load each slot the struct occupies (mappings inside a struct occupy a slot but are not read). Whole-struct writes store each non-mapping slot in member order. Before T4, each slot holding a run of packable members (`bool`, `intN`/`uintN` with N < 256, `address`, `bytesN` with N < 32), including a run of a single member such as a lone `address` or `uint128`, is read with SLOAD immediately before its SSTORE; a slot holding only a `bytes32` is stored without a load. From T4 no slot is loaded: each is composed from zero ([00-framework.md §6.3](00-framework.md#63-structs)). The resulting pre-T4 sequences are listed with each record (§6.2, §6.3, §6.5.2).
 
 ### 6.1 Top-level slots
 
@@ -229,7 +229,7 @@ Base slot `B = map_slot(bookKey, 0)`:
 | `B+5` | `bidBitmap`: `mapping(int16 word => uint256)` |
 | `B+6` | `askBitmap`: `mapping(int16 word => uint256)` |
 
-A book is *initialized* iff `base != 0`. `read_orderbook(key)` loads `B+0`, `B+1`, `B+4` (three SLOADs). `write_orderbook(...)` stores those three slots. `field_write(bestBidTick | bestAskTick | bookId, v)` is a packed read-modify-write of `B+4`. `bookId` is 1-based: `0` means no index; otherwise the book's index in `bookKeys` is `bookId - 1`. Books created before T8 have `bookId = 0` until `setBookIndex` sets it (§14). A new book has `bestBidTick = NO_BID`, `bestAskTick = NO_ASK`.
+A book is *initialized* iff `base != 0`. `read_orderbook(key)` loads `B+0`, `B+1`, `B+4` (three SLOADs). `write_orderbook(...)` stores those three slots in the order `B+0`, `B+1`, `B+4`; the mapping slots are never accessed. From T4 that is three SSTOREs. Before T4 each of the three slots holds a packable run (`base` alone, `quote` alone, the three `B+4` fields) and is loaded first: `SLOAD B+0`, `SSTORE B+0`, `SLOAD B+1`, `SSTORE B+1`, `SLOAD B+4`, `SSTORE B+4`. `field_write(bestBidTick | bestAskTick | bookId, v)` is a packed read-modify-write of `B+4`. `bookId` is 1-based: `0` means no index; otherwise the book's index in `bookKeys` is `bookId - 1`. Books created before T8 have `bookId = 0` until `setBookIndex` sets it (§14). A new book has `bestBidTick = NO_BID`, `bestAskTick = NO_ASK`.
 
 ### 6.3 TickLevel
 
@@ -242,7 +242,7 @@ A book is *initialized* iff `base != 0`. `read_orderbook(key)` loads `B+0`, `B+1
 
 Access rules (`read_level`, `write_level`, `delete_level` in the pseudocode):
 
-- **Before T12**: read = load `L+0` and `L+1`; write = store both; delete = zero both. `totalLiquidity` equals the sum of `remaining` of the orders in the queue and every operation maintains it with checked arithmetic (over/underflow → `Panic(0x11)`).
+- **Before T12**: read = load `L+0` and `L+1`; write = store `L+0` then `L+1`; delete = zero both (no loads). Both slots hold packable runs (`head`/`tail`, and `totalLiquidity` alone), so before T4 a write loads each slot immediately before storing it: `SLOAD L+0`, `SSTORE L+0`, `SLOAD L+1`, `SSTORE L+1`. From T4 a write is two SSTOREs. `totalLiquidity` equals the sum of `remaining` of the orders in the queue and every operation maintains it with checked arithmetic (over/underflow → `Panic(0x11)`).
 - **From T12**: read = load `L+0` only (`totalLiquidity` is taken as 0 in memory); write = store `L+0` only; delete = zero `L+0` only. `L+1` is never accessed again and keeps whatever value it had at T12 activation (stale). Implementations MUST NOT clear or update it.
 
 ### 6.4 Tick bitmaps
@@ -366,7 +366,7 @@ From T8 the full-layout load re-reads `O+0` after the version SLOAD. `read_in_bo
 ```python
 def order_write(o: Order, book_id: uint32):       # book_id = the owning Orderbook.bookId
     if not fork(T8):
-        store all six legacy slots from o          # struct store, see §6 packing note
+        store legacy slots O+0..O+5 from o         # struct store; pre-T4 loads below
         return
     old_v = version(o.orderId)                     # SLOAD O+0 (value s0)
     old_slots = {0: 6, 1: 4, 2: 3}[old_v]
@@ -380,6 +380,8 @@ def order_write(o: Order, book_id: uint32):       # book_id = the owning Orderbo
         for k in range(new_slots, old_slots):
             sstore(O+k, 0)
 ```
+
+Before T8 the legacy store writes `O+0` to `O+5` in order. Before T4 every slot except `O+2` (`bookKey`, a lone `bytes32`) holds a packable run and is read with SLOAD immediately before its SSTORE: `SLOAD O+0`, `SSTORE O+0`, `SLOAD O+1`, `SSTORE O+1`, `SSTORE O+2`, `SLOAD O+3`, `SSTORE O+3`, `SLOAD O+4`, `SSTORE O+4`, `SLOAD O+5`, `SSTORE O+5` (five SLOADs, six SSTOREs). From T4 until T8 it is the six SSTOREs alone. V1 and V2 records are written only from T8 and are composed from zero, with no loads.
 
 A fresh id has `s0 == 0`, so nothing is cleared (it decodes as legacy, `old_slots = 6`, but no clearing runs). Upgrades clear: legacy→V2 clears `O+3..O+5`; legacy→V1 clears `O+4, O+5`; V1→V2 clears `O+3`. The record version written depends only on the owning book's `bookId` at the time of the write; the existing record's `bookIndex` is not consulted and no consistency check against `bookKeys` is performed.
 
@@ -416,8 +418,8 @@ The DEX uses these operations, defined in [tip20.md](tip20.md) and [tip403.md](t
 | `has_tip20_prefix(a)` | The prefix test alone (no error). |
 | `quote_token(a)` | SLOAD of token `a`'s `quoteToken` field (zero for pathUSD and for undeployed addresses). |
 | `is_paused(a)` / `check_not_paused(a)` | Read token `a`'s `paused` flag; `check_not_paused` fails with `ContractPaused()` if set. |
-| `ensure_transfer_authorized(a, from, to)` | Token `a`'s TIP-403 transfer authorization of `from → to`; fails with `PolicyForbids()` if not authorized. |
-| `transfer_policy_id(a)` | Read token `a`'s `transferPolicyId`. |
+| `ensure_transfer_authorized(a, from, to)` | Token `a`'s `ensure_transfer_authorized(from, to)` ([tip20.md §6.4](tip20.md#64-tip-403-authorization)): `transfer_policy_id(a)`, then the SENDER check of `from` and, before T2 always and from T2 only if the sender passed, the RECIPIENT check of `to`; fails with `PolicyForbids()` if not authorized. |
+| `transfer_policy_id(a)` | Token `a`'s effective transfer policy, [tip20.md §5.1](tip20.md#51-effective-transfer-policy-t9-binding): from T9 the TIP403Registry binding lookup first, and the token's legacy `transferPolicyId` slot only when no binding exists; before T9 the legacy slot alone. |
 | `is_authorized_as(policy, user, role)` | TIP-403 registry check of `user` for `role` (sender or recipient). |
 | `is_policy_lookup_error(e)` | Before T2: `e == Panic(0x11)`. From T2: `e` is TIP-403 `InvalidPolicyType()` or `PolicyNotFound()`. |
 | `validate_usd_currency(a)` | `tip20(a)`, then read `currency`; fails with TIP-20 `InvalidCurrency()` unless it equals `"USD"`. |
@@ -487,12 +489,14 @@ def create_pair(base) -> bytes32:
     key = book_key(base, quote)
     ob = read_orderbook(key)
     if ob.base != 0: raise PairAlreadyExists
-    book_id = (len(bookKeys) + 1) if fork(T8) else 0      # len = SLOAD slot 4
-    write_orderbook(key, base, quote, NO_BID, NO_ASK, book_id)
-    bookKeys.push(key)                         # element at keccak(pad32(4)) + len, length := len + 1
+    book_id = (len(bookKeys) + 1) if fork(T8) else 0      # T8+: SLOAD slot 4
+    write_orderbook(key, base, quote, NO_BID, NO_ASK, book_id)   # §6.2
+    bookKeys.push(key)                         # SLOAD slot 4 again; element at keccak(pad32(4)) + len; length := len + 1
     emit PairCreated(key, base, quote)
     return key
 ```
+
+`bookKeys.push` performs its own length read ([00-framework.md §6.6](00-framework.md#66-dynamic-arrays-t), [§6.10](00-framework.md#610-pseudocode-conventions)), so from T8 slot 4 is loaded twice. After the `PairAlreadyExists` check the accesses are, from T8: `SLOAD 4`, `SSTORE B+0`, `SSTORE B+1`, `SSTORE B+4`, `SLOAD 4`, `SSTORE` of the element, `SSTORE 4`. Before T8 the first `SLOAD 4` is absent; before T4, `write_orderbook` also loads each of its three slots first (§6.2). A stored length above `2^32 − 1` raises `Panic(0x11)` at the length read.
 
 `bookKeys` is append-only; its order is pair-creation order. Every initialized book has exactly one entry.
 
@@ -726,6 +730,8 @@ def validate_route(path) -> list[(bytes32, bool)]:
 
 `is_bid == True` for a hop means the taker gives base and receives quote, walking bids from the best (highest) tick down. `is_bid == False` means the taker gives quote and receives base, walking asks from the best (lowest) tick up. The final `tokenOut` is not pause-checked here (its TIP-20 transfer to the taker checks it). TIP-403 policy is enforced only on the taker's input pull and output transfer, not on intermediate tokens, which never leave the DEX.
 
+> **Resolved conflict C-DEX-07**: TIP-1038 §4 says the T3 swap pause check covers every token in the swap path; the implementation checks only the input token of each hop, so the final `tokenOut` is not pause-checked in route validation (its TIP-20 transfer to the taker checks it). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-dex-07).
+
 > **Resolved conflict C-FORKS-03**: TIP-1036 (T2 meta) dates the StablecoinDEX internal-balance swap pause check at T2; the implementation applies the swap-route check from T3 (as TIP-1038 says) and the internal-balance placement checks from T4. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-forks-03).
 
 ### 11.3 Swap entrypoints
@@ -901,8 +907,10 @@ def handle_flip(o, ob, deltas):
         deltas[o.maker] += track_minted(lambda: order_delete(o.orderId))
 ```
 
-- *System errors* are: out of gas, database errors, static-call violations, `Fatal`, `Panic` (including `Panic(0x11)`), and storage-delta underflow. All other errors (DEX, TIP-20, TIP-403 and other precompile ABI errors) are *business errors*. Before T1A every error is swallowed, system errors included.
-- `selector(e)` is the 4-byte ABI selector of the error; `Panic` and storage-delta underflow map to `0x4e487b71`; errors with no ABI encoding map to `0x00000000`.
+- *System errors* are: OutOfGas, database failures, `StaticCallNotAllowed`, internal invariant violations (such as an unknown order version, §6.5.1), `Panic` (including `Panic(0x11)`), and an SDEC primitive whose decrement would go below zero ([00-framework.md §7.2](00-framework.md#72-primitive-costs)) when the operation does not itself map that underflow to a domain error (TIP-20 balance debits map it to `InsufficientBalance`, a business error). All other errors (DEX, TIP-20, TIP-403 and other precompile ABI errors) are *business errors*. From T1A a system error propagates and ends the swap with the outcome [00-framework.md §5](00-framework.md#5-results-and-errors) gives it.
+- **Before T1A every error is swallowed, system errors included.** This includes database failures and internal invariant violations raised inside the flip, an explicit exception to [00-framework.md §5](00-framework.md#5-results-and-errors): they end the flip's `place_flip` and the swap continues; block processing does not fail.
+- **OutOfGas swallowed before T1A.** The failed charge deducts nothing: the frame's remaining gas is what it was before that charge. Charges that succeeded earlier stay spent, including an earlier part of the same primitive (the `WARM_READ` part of a cold SLOAD whose `COLD_SLOAD_EXTRA` charge failed). Before T4, SLOAD, SSTORE and ACCOUNT_READ load, write and warm before charging ([00-framework.md §7.2](00-framework.md#72-primitive-costs)), so the failing primitive's slot or account stays warm and an SSTORE's new value stays written; a LOG whose charge fails is not appended. Before T1C the checkpoint is a no-op (§15), so these effects and every earlier write of the flip persist. The swap then continues with the remaining gas, and its later primitives are charged normally.
+- `selector(e)` is the 4-byte ABI selector of the error; `Panic` and the SDEC underflow map to `0x4e487b71`; errors with no ABI encoding map to `0x00000000`.
 - Before T5 a successful flip creates a **new** order with a new id (`nextOrderId` advances) and emits `OrderPlaced(newId, maker, base, amount, !isBid, oldFlipTick, true, oldTick)`; the filled record is always deleted. Its escrow comes only from the maker's internal balance.
 
 ```python
@@ -1181,7 +1189,7 @@ A DEX call that returns an error reverts all of its state changes (persistent, t
 Inside a call, `placeFlip` and the flip paths open a checkpoint so that a swallowed flip failure leaves no partial writes:
 
 - **From T1C** the checkpoint is real: a failure inside `place_flip` / `flip_in_place` reverts that function's writes and logs before the error is swallowed or propagated.
-- **Before T1C** the checkpoint is a no-op. A swallowed failure of the pre-T5 automatic flip keeps whatever that `place_flip` call had written before failing. The business-error checks in `place_flip` all run before its first write, so only a failure after its balance debit (an arithmetic panic or other system error in `commit_order_to_book`, swallowed only before T1A) can leave partial state.
+- **Before T1C** the checkpoint is a no-op. A swallowed failure of the pre-T5 automatic flip keeps whatever that `place_flip` call had written before failing. The business-error checks in `place_flip` all run before its first write, so only a failure after its balance debit (an arithmetic panic or other system error in `commit_order_to_book`, swallowed only before T1A) can leave partial state. A swallowed OutOfGas leaves the gas and access state given in §11.7.
 
 ## 16. Event order per entrypoint
 
@@ -1200,7 +1208,7 @@ Events are listed in emission order. TIP-20 events come from the token calls at 
 
 ## 17. Gas
 
-The DEX defines no fixed per-function gas. A call costs the framework's input cost plus the metered cost of exactly the storage reads/writes, transient reads/writes, account accesses and logs its algorithm performs, including those inside the TIP-20, TIP-403, factory and StorageCredits operations it invokes ([00-framework.md](00-framework.md); TIP-1060 creation pricing and credit spending in [account-keychain.md](account-keychain.md)). The pseudocode in this chapter is normative for that access sequence: an implementation MUST perform the same reads and writes, including the redundant ones, such as:
+The DEX defines no fixed per-function gas. A call costs the framework's input cost plus the metered cost of exactly the storage reads/writes, transient reads/writes, account accesses and logs its algorithm performs, including those inside the TIP-20, TIP-403, factory and StorageCredits operations it invokes ([00-framework.md](00-framework.md); TIP-1060 creation pricing and credit spending in [account-keychain.md](account-keychain.md)). Accesses to other precompiles' storage (TIP-20 balances, flags and policy slots, TIP403Registry, StorageCredits) follow the warm-set rule of [00-framework.md §3.4](00-framework.md#34-account-warmness): each warms its slot and the owning account and charges only the slot's cold or warm cost, never an account-access cost. The pseudocode in this chapter is normative for that access sequence: an implementation MUST perform the same reads and writes, including the redundant ones, such as:
 
 - `inc_bal` / `sub_bal` re-reading a balance just read, `place` reading `nextOrderId` twice (and `placeFlip` before T1C), Orderbook re-reads in every fill and cancel;
 - from T8, the version SLOAD before every order-record access, and the re-load of slot `O+0` in full reads;

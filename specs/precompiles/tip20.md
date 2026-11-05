@@ -30,7 +30,7 @@ Gas is never stated as a total. Each procedure lists the metered operations it p
 | `RMW(s, field)` | Packed access ([00-framework.md](00-framework.md) §6.2): write of a field that shares slot `s` with another field: `SLOAD(s)`, replace the field's bytes, `SSTORE(s, new)`. |
 | `STR_READ(s)` / `STR_WRITE(s, x)` | ([00-framework.md](00-framework.md) §6.7) Solidity string read and write at base slot `s` (short form for ≤ 31 bytes, long form otherwise; from T5 a write first reads the base slot to clear a stale long-string tail). |
 | `KECCAK(n)` | Metered keccak-256 over `n` bytes. Mapping-slot derivation and the factory's address derivation are **not** metered. |
-| `ECRECOVER` | 3,000 gas, charged before the signature is examined. |
+| `ECRECOVER` | ([00-framework.md](00-framework.md) §7.2) 3,000 gas, charged before the signature is examined; `v ∉ {27, 28}`, `s > n/2` (EIP-2 low-s) and `r` or `s` outside `[1, n − 1]` give an invalid result. |
 | `TLOAD(s)` / `TSTORE(s, v)` | Metered transient-storage access (100 gas each). |
 | `LOG(event)` | Log emission from the contract the procedure belongs to, with the standard log cost for its topics and data. |
 | `SET_CODE(a, 0xEF)` | Install the 1-byte code `0xEF` at `a`, charging the code-deposit cost for 1 byte. |
@@ -46,7 +46,7 @@ Several procedures below are invoked natively by another precompile or by the tr
 
 - performs no input-cost charge, no selector dispatch and no TIP-20 initialization check (§3.2);
 - runs in the gas context of the calling precompile frame (or of the handler, as the calling chapter says);
-- reads and writes the token's storage with the same metered operations, but does not perform `ACCOUNT_READ` on the token. Touching another contract's storage warms that account without an account-access charge;
+- reads and writes the token's storage with the same metered operations, but does not perform `ACCOUNT_READ` on the token. Every `SLOAD`, `SSTORE`, `SINC` and `SDEC`, on the token's storage or on another account's (TIP403Registry, AccountKeychain, StorageCredits), adds the slot and its account to the transaction's EIP-2929 access sets and charges only the slot's cold or warm cost, never an account-access cost ([warm-set rule](00-framework.md#34-account-warmness)). This holds also when the gas of the invocation is discarded (fee hooks, §9.2), so the warmth carries into the EVM phase of the same transaction;
 - emits logs from the token's address, interleaved with the caller's logs in execution order.
 
 When a TIP-20 entrypoint calls another precompile natively (TIP403Registry, AddressRegistry, AccountKeychain, ReceivePolicyGuard, StorageCredits) the same rules apply in reverse.
@@ -274,7 +274,7 @@ All events are emitted by the token address, with standard Solidity log encoding
 
 Errors raised by native callees bubble up unchanged, including `VirtualAddressUnregistered()` (`0xda56842c`, AddressRegistry), `AddressReserved()` (`0x98387502`, ReceivePolicyGuard), the AccountKeychain spending-limit errors ([account-keychain.md](account-keychain.md)) and TIP-403 errors ([tip403.md](tip403.md)).
 
-> **Resolved conflict C-T20-04**: the TIP-20 docs present an interface without the reward functions and events that the code dispatches at every fork. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-t20-04).
+> **Resolved conflict C-T20-04**: the TIP-20 docs present an interface without the reward functions and events that the implementation dispatches at every fork. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-t20-04).
 
 ## 5. Storage layout
 
@@ -374,7 +374,9 @@ def ensure_authorized_as(pairs):          # list of (user, role), checked in ord
         if not TIP403Registry.is_authorized_as(pid, user, role): fail(PolicyForbids())
 ```
 
-Before T2, both lookups always run. The role semantics (including the T2 compound-policy directional roles) and their storage reads are in [tip403.md](tip403.md).
+`SENDER`, `RECIPIENT` and `MINT_RECIPIENT` in this chapter are the fork-selected roles `role_sender()`, `role_recipient()` and `role_mint_recipient()` of [tip403.md §3.1](tip403.md#31-constants-and-types): before T2 each is the symmetric `TRANSFER` role.
+
+Before T2, both lookups always run. Each `is_authorized_as` call reads the policy record on its own (no value is carried between the two calls), so a transfer under a user-created policy performs two record reads, the second one warm; built-in policies 0 and 1 read nothing. The role semantics (including the T2 compound-policy directional roles) and their storage reads are in [tip403.md §3.4](tip403.md#34-internal-operations).
 
 ### 6.5 Spending limit and allowance
 
@@ -583,10 +585,8 @@ def permit(owner, spender, value, deadline, v, r, s):
     nonce = SLOAD(permitNonces[owner])                                  # 2
     struct_hash = KECCAK(192)(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonce, deadline))
     digest = KECCAK(66)(0x19 ‖ 0x01 ‖ domain_separator() ‖ struct_hash)  # domain_separator ops run before this KECCAK
-    ECRECOVER                                                           # 3: 3,000 gas, always charged
-    if v not in (27, 28): fail(InvalidSignature())
-    signer = secp256k1_recover(digest, v, r, s)                         # EIP-2: s > secp256k1n/2 fails
-    if signer is None or signer == 0 or signer != owner: fail(InvalidSignature())
+    signer = ECRECOVER(digest, v, r, s)                                 # 3: 3,000 gas, always charged
+    if signer is invalid or signer != owner: fail(InvalidSignature())
     # (from T14 only: retired-root check; no operation before T14)
     if nonce == 2**256 - 1: fail(Panic(0x11))
     SSTORE(permitNonces[owner], nonce + 1)                              # 4
@@ -594,7 +594,7 @@ def permit(owner, spender, value, deadline, v, r, s):
     LOG(Approval(owner, spender, value))                                # 6
 ```
 
-`permit` ignores `msg_sender`, is allowed while paused, performs no TIP-403 or spending-limit check, and accepts only `v ∈ {27, 28}` (no normalization of 0/1). `chain_id` is the chain's configured chain id. The domain separator is recomputed on every call from the stored name and the chain id.
+`permit` ignores `msg_sender`, is allowed while paused, and performs no TIP-403 or spending-limit check. Signature acceptance is exactly the framework `ECRECOVER` primitive ([00-framework.md](00-framework.md) §7.2): only `v ∈ {27, 28}` (no normalization of 0/1), `r` and `s` in `[1, n − 1]`, and the EIP-2 low-s rule (`s > n/2` is invalid); an invalid result, including recovery failure or the zero address, fails with `InvalidSignature()`. `chain_id` is the chain's configured chain id. The domain separator is recomputed on every call from the stored name and the chain id.
 
 > **Resolved conflict C-T20-06**: TIP-1004 orders the nonce increment before signature validation; the step order above (validation first) is what produced mainnet gas. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-06).
 
@@ -989,6 +989,25 @@ def transfer_fee_post_tx(to, refund, actual_spending):
 
 Neither hook checks TIP-403, resolves virtual addresses, applies receive policies, or changes `totalSupply`. `transfer_fee_post_tx` does not check the pause flag.
 
+**Warmth left by fee collection (informative example).** The fee hooks run as native host invocations whose gas is discarded, but their storage accesses stay in the transaction's access sets (§1.3, [00-framework.md §3.4](00-framework.md#34-account-warmness)). Before EVM execution, pre-transaction fee collection with fee token `F` authorizes the fee payer through `ensure_authorized_as` (reading `F`'s effective transfer policy, §5.1) and runs `transfer_fee_pre_tx`, which reads `paused` and reads and writes `balances[payer]` and `balances[TIP_FEE_MANAGER_ADDRESS]` (from T8 it reads no reward state). Take a T13 transaction whose sender is the fee payer, signed with its root key, whose only call is `F.transfer(to, 1)`. `F` is bound in the TIP403Registry to policy 1, is not paused, and `to` is not virtual, has no receive policy and already holds `F`. The transfer frame is metered as follows, compared with the same call on a token that fee collection did not touch (in both cases the token is the transaction's target, so its account is warm):
+
+| Operation (§3.1, §6.10, §6.7) | Token not touched by fee collection | Fee token `F` |
+|---|---|---|
+| Input charge (68 bytes, 3 words) | 90 | 90 |
+| `ACCOUNT_READ(F)` | 100 | 100 |
+| `SLOAD(12)` (`paused`) | 2,100 | 100 |
+| Registry binding `SLOAD` (§5.1) | 2,100 | 100 |
+| Policy 1 authorization (twice) | 0 | 0 |
+| Spending limit, root key (`TLOAD`) | 100 | 100 |
+| Receive policy of `to` (registry `SLOAD`) | 2,100 | 2,100 |
+| `SDEC(balances[sender])`: `SLOAD` | 2,100 | 100 |
+| `SDEC(balances[sender])`: `SSTORE` | 2,900 (warm after its `SLOAD`, clean: `WARM_READ + SSTORE_RESET`) | 100 (dirty: the fee debit made present ≠ original) |
+| `SINC(balances[to])` | 2,100 + 2,900 | 2,100 + 2,900 |
+| `LOG(Transfer)` (3 topics, 32 data bytes) | 1,756 | 1,756 |
+| **Total** | **18,346** | **9,546** |
+
+The 8,800 difference is three warm `SLOAD`s (3 × 2,000) and the dirty `SSTORE` (2,800 less). When a contract, rather than the transaction itself, calls `F`, its CALL also pays the warm account cost (100) instead of the cold one (2,600), because fee collection warmed `F`'s account.
+
 > **Resolved conflict C-FORKS-04**: TIP-1036 attributes the spending-limit refund in `transfer_fee_post_tx` to T2; it is active from T1C. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-forks-04).
 
 ### 9.3 channel_reserve_transfer (from T12)
@@ -1038,7 +1057,6 @@ def release_blocked_funds(originator, receiver, to, amount, recovery_mode, recov
 - `ensure_transfer_authorized(frm, to)` and `ensure_authorized_as(pairs)` (§6.4), used by the DEX and the channel reserve.
 - `transfer(sender, to, amount)`, `transfer_from(...)` invoked natively with a precompile as `msg_sender` (§7.2 semantics without the §3.1 entry steps), used by the DEX, the guard and the pre-T12 channel reserve.
 - `ensure_receive_policy_authorized(sender, receiver)`: `fail(PolicyForbids())` if `TIP403Registry.validate_receive_policy(T.address, sender, receiver)` reports a block.
-- `increment_balance` / `decrement_balance` (§6.6), used by the fee manager and DEX where their chapters say so.
 - Currency check for fee tokens: `InvalidToken()` if the address is not prefixed, `InvalidCurrency()` if `STR_READ(4) != "USD"` ([fee-manager.md](fee-manager.md)).
 
 ## 10. TIP20Factory
@@ -1230,7 +1248,7 @@ Errors:
 
 `RootKeyRetired` is raised only from T14. TIP-20 errors (for example `InvalidToken()` `0xc1ab6dc1` for a non-prefixed token, `PolicyForbids()`, `ContractPaused()`, `InsufficientBalance`) and AddressRegistry, AccountKeychain and ReceivePolicyGuard errors bubble up unchanged.
 
-> **Resolved conflict C-T20-09**: TIP-1034 requires an interface identical to its reference file and on-chain storage of only `ChannelState`; from T7 the code adds the `storageCredits` view and the per-payer credit mapping (§11.3, §11.9). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-09).
+> **Resolved conflict C-T20-09**: TIP-1034 requires an interface identical to its reference file and on-chain storage of only `ChannelState`; from T7 the implementation adds the `storageCredits` view and the per-payer credit mapping (§11.3, §11.9). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-09).
 
 ### 11.3 Storage layout
 
@@ -1478,7 +1496,7 @@ From T12, for **every** channel regardless of when it was opened:
 
 Only the receive-policy sender used for the payee preflight in `topUp` and for captures depends on the per-channel flag (§11.3): the payer for channels opened from T12, the reserve for older channels. `open` always preflights with the payer.
 
-> **Resolved conflict C-T20-10**: TIP-1095 says its behaviour activates for channels opened at or after T12; the code applies the T12 authorization and delivery path to all channels from T12 and keeps only the receive-policy sender per channel. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-10).
+> **Resolved conflict C-T20-10**: TIP-1095 says its behaviour activates for channels opened at or after T12; the implementation applies the T12 authorization and delivery path to all channels from T12 and keeps only the receive-policy sender per channel. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-t20-10).
 
 ### 11.9 Channel storage credits (from T7)
 

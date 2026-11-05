@@ -133,7 +133,7 @@ The DKG verifies sets of dealer-log and acknowledgement signatures as a batch. A
 - **invalid** if the list is empty;
 - otherwise **valid** iff every entry passes §3.5 `verify`, except with probability at most about `2^-128` per batch.
 
-The reference implementation checks one random linear combination of the cofactored equations:
+Tempo's node checks one random linear combination of the cofactored equations:
 
 ```text
 [8]( [-Σ z_i·s_i]B + Σ [z_i]R_i + Σ [z_i·k_i]A_i ) == identity
@@ -308,7 +308,7 @@ def batch_same_message(ns, msg, entries) -> set[int]:      # returns the indices
     return bisect(entries, z)                          # recursively re-check halves to find the bad entries
 ```
 
-Result semantics: with probability at least `1 − 2^-128`, `batch_same_signer` returns true iff every entry verifies individually, and `batch_same_message` returns exactly the entries that fail individual verification. (The weighted-sum signature can be the identity only with negligible probability; the reference implementation then reports failure.)
+Result semantics: with probability at least `1 − 2^-128`, `batch_same_signer` returns true iff every entry verifies individually, and `batch_same_message` returns exactly the entries that fail individual verification. (The weighted-sum signature can be the identity only with negligible probability; Tempo's node then reports failure.)
 
 ### 4.7 Proof of possession
 
@@ -378,7 +378,7 @@ Derived values:
 - **Identity** (group public key, "network identity"): `public = A_0`, the constant term. It equals `s · g2`.
 - **Partial public key** of index `i`: §5.5.
 
-Tempo's Simplex scheme (§6) additionally requires `total == n` (the number of participants) and `required == q`, the quorum of [codec.md §8](codec.md#8-fault-model-n3f1). The reference implementation aborts when an epoch's sharing violates either; the DKG ([dkg.md](dkg.md)) only produces sharings that satisfy them.
+Tempo's Simplex scheme (§6) additionally requires `total == n` (the number of participants) and `required == q`, the quorum of [codec.md §8](codec.md#8-fault-model-n3f1). A node that builds an epoch's signer or verifier scheme from a sharing (a validator entering the epoch, or any node checking a restored floor finalization) MUST stop with a fatal error when either condition fails. It neither runs the epoch as a verifier nor skips it. A node that only checks recovered certificates against the constant term (a certificate-only verifier, §6.5) does not check these conditions, and neither do decoding and block validity ([dkg.md §11.2](dkg.md#112-sharing)). The DKG ([dkg.md](dkg.md)) only produces sharings that satisfy both, and every Tempo mainnet boundary outcome through epoch 2201 does.
 
 The DKG also uses `Poly<Fr>` (a dealer's secret polynomial) and evaluates polynomials at points; evaluation is Horner's rule or any equivalent:
 
@@ -519,7 +519,7 @@ def verify_attestation(S: Sharing, subject, a: Attestation) -> bool:
         and bls_verify(pk_i, ns_seed, subject.seed_msg, a.signature.seed_signature))
 ```
 
-A vote is valid iff both partial signatures verify. The reference implementation checks one vote with `batch_same_signer` over the two entries, and checks many votes for one subject with `batch_same_message` (once for the vote signatures, once for the seed signatures), marking a signer invalid if either of its two partials fails (§4.6). These give the same verdicts as the function above.
+A vote is valid iff both partial signatures verify. Tempo's node checks one vote with `batch_same_signer` over the two entries, and checks many votes for one subject with `batch_same_message` (once for the vote signatures, once for the seed signatures), marking a signer invalid if either of its two partials fails (§4.6). These give the same verdicts as the function above.
 
 ### 6.5 Verifying certificates
 
@@ -533,7 +533,7 @@ def verify_certificate(identity: G2, subject, c: VrfCertificate) -> bool:
         and bls_verify(identity, ns_seed, subject.seed_msg, c.seed_signature))
 ```
 
-The reference implementation evaluates this as `batch_same_signer(identity, [(vote_ns, vote_msg, vote_sig), (ns_seed, seed_msg, seed_sig)])`.
+Tempo's node evaluates this as `batch_same_signer(identity, [(vote_ns, vote_msg, vote_sig), (ns_seed, seed_msg, seed_sig)])`.
 
 When it verifies several certificates at once, it also requires that certificates for the same round carry the same seed signature, returning false for the whole set otherwise, and then batch-verifies every vote signature plus one seed signature per round. Because a round has exactly one valid seed signature, this accepts a set iff every certificate in it passes `verify_certificate`.
 

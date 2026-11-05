@@ -33,8 +33,8 @@ This chapter names the primitives as follows:
 
 | Notation | Meaning |
 |---|---|
-| `R(s)` | metered SLOAD of slot `s` of the executing precompile's own storage |
-| `W(s, v)` | metered SSTORE of `v` to slot `s` (including the TIP-1060 hook from T7, when enabled) |
+| `R(s)` | metered SLOAD of slot `s` of the storage of the precompile whose procedure is running (AccountKeychain in §1, NonceManager in §2, StorageCredits in §4), whoever invoked the procedure |
+| `W(s, v)` | metered SSTORE of `v` to slot `s` of that storage (including the TIP-1060 hook from T7, when enabled) |
 | `TR(s)`, `TW(s, v)` | metered TLOAD / TSTORE of transient slot `s` |
 | `ACC(a)` | metered account-information read of account `a` |
 | `DEDUP(n)` | from T11: deduct `20 * n` gas; before T11: no-op (TIP-1105) |
@@ -45,7 +45,21 @@ Every `R`, `W`, `TR`, `TW` listed is a separate metered operation, even when it 
 the same call already touched (the second access is warm). An implementation MUST perform exactly
 the listed operations in the listed order, because gas, warm sets and the TIP-1060 hook depend on
 them. Writes of a value equal to the present value are still performed (`W` of an unchanged value
-costs the no-op SSTORE price).
+costs the no-op SSTORE price). Pseudocode in this chapter follows the conventions of
+[precompiles/00-framework.md §6.10](00-framework.md#610-pseudocode-conventions); the set procedures of
+§0.3 spell out the §6.8 set operations primitive by primitive.
+
+**Warm sets.** Every `R` and `W` follows the warm-set rule of
+[precompiles/00-framework.md §3.4](00-framework.md#34-account-warmness), at every fork and whoever
+runs the procedure (an ABI call into the precompile, another precompile, or the protocol): it adds
+the `(address, slot)` pair and the account that owns the storage (`ACCOUNT_KEYCHAIN_ADDRESS`,
+`NONCE_PRECOMPILE_ADDRESS` or `STORAGE_CREDITS_ADDRESS`) to the transaction's EIP-2929 access sets,
+and charges only the slot's cold or warm cost, never an account-access cost for that owner. `TR`,
+`TW`, `LOG` and `DEDUP` warm nothing; `ACC(a)` warms account `a`. The cross-account paths of this
+chapter are: TIP-20 running §1.8 on AccountKeychain storage; SignatureVerifier reading the AccountKeychain
+key word (§3.5); the transaction handler running §1.9, §2.4 and §2.5 (§1.9); the StablecoinDEX and
+TIP20ChannelReserve reading StorageCredits balances (§4.6.5); and the SSTORE hook reading and writing
+StorageCredits balances (§4.4). In each, the touched pairs and the owning account become warm.
 
 Integers are big-endian. `pad32(x)` left-pads a value of at most 32 bytes with zero bytes to 32 bytes
 (for an address: 12 zero bytes then the 20 address bytes; for a `bytes4`: 28 zero bytes then the 4
@@ -164,8 +178,9 @@ def set_write(b, values):           # replace contents; only used with address s
         W(data_slot(b) + i, 0)
 ```
 
-A stored length or position that exceeds `2^32 - 1` is a fatal storage inconsistency; it cannot
-arise from the rules in this chapter.
+A stored length or position read above `2^32 - 1` is an out-of-range storage value: an ABI call
+reverts with `Panic(0x11)` (precompiles/00-framework.md §5, §6.6, §6.8), and a procedure the protocol
+runs (§1.9) fails with that error. No rule in this chapter can store such a value.
 
 ## 1. AccountKeychain
 
@@ -188,7 +203,8 @@ implicit and never stored. From T6 an access key may be an *admin key*, which ma
 The three TIP-20 selectors above are the *constrained selectors*. An address *has the TIP-20 prefix*
 iff its first 12 bytes equal `TIP20_PREFIX`.
 
-Signature types (the `SignatureType` ABI enum, encoded as `uint8`, and the stored type byte):
+Signature types (the `SignatureType` ABI enum of 4 members, whose canonical ABI type is `uint8`, and
+the stored type byte):
 `0` Secp256k1, `1` P256, `2` WebAuthn, `3` ConfigurableAccount. Type 3 cannot be stored at T13
 or earlier (see [§1.6.1](#161-authorize_key_internal)).
 
@@ -214,7 +230,7 @@ transaction):
 Both transient values are written only by the protocol (§1.9). Their word is the address as a
 160-bit integer.
 
-> **Resolved conflict C-KEY-01**: AccountKeychain.mdx puts `transactionKey` in transient slot 0; the code uses transient slot 4 (and slot 5 for `tx_origin`). Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-01).
+> **Resolved conflict C-KEY-01**: AccountKeychain.mdx puts `transactionKey` in transient slot 0; the implementation uses transient slot 4 (and slot 5 for `tx_origin`). Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-01).
 
 `accountKey` is the account-key row hash:
 
@@ -238,6 +254,19 @@ def scope_base(account, key_id):                # KeyScope base (4 slots)
 def witness_slot(account, witness):
     return mapping_slot(witness, mapping_slot(account, 3))
 ```
+
+Test vectors, for `account = 0x1111111111111111111111111111111111111111`,
+`key_id = 0x2222222222222222222222222222222222222222`, `token = target = 0x20C0000000000000000000000000000000000000`
+and `selector = 0xa9059cbb` (each value is a 32-byte slot, hexadecimal):
+
+| Quantity | Value |
+|---|---|
+| `key_slot(account, key_id)` | `0xd1360c905f62126f789549525bc3219e0fb5feba645fd0705768a3cc3bf3fc5c` |
+| `account_key(account, key_id)` | `0xa284ddd69adb56d959922d24c73d2cd9e6b24d5e789a4106eca975c86ec900e1` |
+| `limit_slot(account, key_id, token)` (`s0`) | `0xd670f4b1c2069ede83fb68de0e8e7360b44b2757296eefd79ba775b5a480395d` |
+| `K = scope_base(account, key_id)` | `0xf9c1141af1c4d8f856a83b1e27e2138a09919ba597e77f8a4d257fc7e4a77f76` |
+| `T = mapping_slot(target, K + 3)` (selector set base) | `0xeb8d6e7d50d0a7b96207d35d2771884ea5d07952d91b27756c31b29e51435411` |
+| position slot of `selector` in that set, `mapping_slot(pad32(selector), T + 1)` | `0xa006a7c078ca7c9bc253515a4e087a49b74718831d3b082ee29f2fafebbf1dbd` |
 
 #### AuthorizedKey (one word at `key_slot`)
 
@@ -297,7 +326,7 @@ set allows every selector (and selector-less calldata) on that target. A selecto
 an empty `recipients` set allows every recipient. Child rows exist only for members of the parent
 set.
 
-> **Resolved conflict C-KEY-04**: TIP-1011 stores periodic-limit metadata in a separate `spending_limit_period_state` mapping; the code extends the `spending_limits` row (`s1`). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-04).
+> **Resolved conflict C-KEY-04**: TIP-1011 stores periodic-limit metadata in a separate `spending_limit_period_state` mapping; the implementation extends the `spending_limits` row (`s1`). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-04).
 
 #### Witnesses (from T5)
 
@@ -326,10 +355,10 @@ calls as the framework specifies.
 
 | Function | Selector | Live | Kind |
 |---|---|---|---|
-| `authorizeKey(address keyId, uint8 signatureType, uint64 expiry, bool enforceLimits, (address,uint256)[] limits)` (legacy) | `0x54063a55` | always; from T3 it returns `LegacyAuthorizeKeySelectorChanged` | mutator |
-| `authorizeKey(address keyId, uint8 signatureType, KeyRestrictions config)` | `0x980a6025` | T3+ | mutator |
-| `authorizeKey(address keyId, uint8 signatureType, KeyRestrictions config, bytes32 witness)` | `0xe3c154d2` | T5+ | mutator |
-| `authorizeAdminKey(address keyId, uint8 signatureType, bytes32 witness)` | `0x9a424307` | T6+ (through T13) | mutator |
+| `authorizeKey(address keyId, SignatureType signatureType, uint64 expiry, bool enforceLimits, (address,uint256)[] limits)` (legacy) | `0x54063a55` | always; from T3 it returns `LegacyAuthorizeKeySelectorChanged` | mutator |
+| `authorizeKey(address keyId, SignatureType signatureType, KeyRestrictions config)` | `0x980a6025` | T3+ | mutator |
+| `authorizeKey(address keyId, SignatureType signatureType, KeyRestrictions config, bytes32 witness)` | `0xe3c154d2` | T5+ | mutator |
+| `authorizeAdminKey(address keyId, SignatureType signatureType, bytes32 witness)` | `0x9a424307` | T6+ (through T13) | mutator |
 | `burnKeyAuthorizationWitness(bytes32 witness)` | `0xcff31c46` | T5+ | mutator |
 | `revokeKey(address keyId)` | `0x5ae7ab32` | always | mutator |
 | `updateSpendingLimit(address keyId, address token, uint256 newLimit)` | `0xcbbb4480` | always | mutator |
@@ -343,7 +372,12 @@ calls as the framework specifies.
 | `isAdminKey(address account, address keyId) returns (bool)` | `0x9009a18d` | T6+ | view |
 | `getTransactionKey() returns (address)` | `0xb07fbc1a` | always | view |
 
-> **Resolved conflict C-KEY-06**: TIP-1011 specifies a flat 7-argument `authorizeKey` (selector `0x203e2736`) and a `getRemainingLimit` that returns `(uint256, uint64)`; the code uses the `KeyRestrictions` tuple form (`0x980a6025`), removes `getRemainingLimit` at T3 and adds `getRemainingLimitWithPeriod`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-06).
+`SignatureType` is an enum argument: selectors use its canonical type `uint8`, and it is decoded as an
+enum with 4 members under the fork's decoder settings
+([precompiles/00-framework.md §4.5](00-framework.md#45-abi-decoder-configuration)); §1.4 gives the
+outcome per fork, for all four authorize selectors including the legacy `0x54063a55`.
+
+> **Resolved conflict C-KEY-06**: TIP-1011 specifies a flat 7-argument `authorizeKey` (selector `0x203e2736`) and a `getRemainingLimit` that returns `(uint256, uint64)`; the implementation uses the `KeyRestrictions` tuple form (`0x980a6025`), removes `getRemainingLimit` at T3 and adds `getRemainingLimitWithPeriod`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-06).
 
 Events (topic0 = keccak256 of the signature; indexed parameters are topics 1..3 in order; the rest
 is the ABI-encoded data):
@@ -396,15 +430,18 @@ For every call into the AccountKeychain:
 3. Dispatch the selector per the table in §1.3 and the framework's decoding rules. Argument decoding
    of the `signatureType` enum: before T11 (permissive decoding) the value is the low-order byte of
    its word, and a byte value of 4 or more decodes to an *invalid* type that later fails with
-   `InvalidSignatureType` (§1.6.1); from T11 (strict decoding) a word of 4 or more is a decoding
-   failure (empty revert data).
+   `InvalidSignatureType` (§1.6.1); the value 3 decodes to ConfigurableAccount, which also fails with
+   `InvalidSignatureType` there. From T11 (strict decoding) a word of 4 or more is a decoding
+   failure (empty revert data), and a word of 3 has already reverted with empty data in step 2.
 4. Legacy `authorizeKey` (`0x54063a55`): before T3 it behaves as
    `authorize_key(msg.sender, keyId, signatureType, KeyRestrictions{expiry, enforceLimits,
    limits: [(token, amount, period = 0) for each limit], allowAnyCalls: true, allowedCalls: []},
    witness = None)`. From T3, after successful decoding, it MUST revert with
-   `LegacyAuthorizeKeySelectorChanged(0x980a6025)` and do nothing else.
+   `LegacyAuthorizeKeySelectorChanged(0x980a6025)` and do nothing else. From T11 a legacy call whose
+   `signatureType` word is 3 or more therefore reverts with empty data (step 2 or a decoding failure),
+   not with `LegacyAuthorizeKeySelectorChanged`.
 
-> **Resolved conflict C-KEY-02**: AccountKeychain.mdx says an unsupported `signatureType` reverts with `InvalidSignatureType`; from T11 the code reverts with empty data for 3 and for values of 4 or more. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-02).
+> **Resolved conflict C-KEY-02**: AccountKeychain.mdx says an unsupported `signatureType` reverts with `InvalidSignatureType`; from T11 the implementation reverts with empty data for 3 and for values of 4 or more. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-02).
 
 ### 1.5 Common procedures
 
@@ -543,10 +580,15 @@ Notes:
 - When `enforceLimits` is false, limits are neither written nor checked for duplicates or size
   (before T3 the `period` check above still applies).
 - Before T3, duplicate tokens are accepted and the last one wins.
+- From T3, duplicate tokens are rejected only when `enforceLimits` is true. A transaction's
+  `key_authorization` sets `enforceLimits` exactly when it carries limits (§1.9.3), so for it every
+  duplicate is rejected; an ABI call with `enforceLimits = false` and duplicate tokens succeeds.
 - An admin key (`is_admin`) writes only the key word: no limit rows and no scope tree (so its
   `is_scoped` slot stays 0).
 
-> **Resolved conflict C-KEY-03**: AccountKeychain.mdx says recipient-constrained selector rules are validated before any state is written; the code writes the key word (and the scope-tree reset) before validating scopes, and before T4 validates each scope while inserting it. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-03).
+> **Resolved conflict C-KEY-13**: TIP-1011 (TokenLimit rule 4) requires duplicate token entries in an authorization to be rejected unconditionally; the implementation checks for duplicates only when `enforceLimits` is true, and ignores the limits otherwise. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-13).
+
+> **Resolved conflict C-KEY-03**: AccountKeychain.mdx says recipient-constrained selector rules are validated before any state is written; the implementation writes the key word (and the scope-tree reset) before validating scopes, and before T4 validates each scope while inserting it. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-03).
 
 #### 1.6.2 authorizeKey (T3 `0x980a6025`, T5 `0xe3c154d2`)
 
@@ -579,7 +621,7 @@ LOG([KeyAuthorizationWitnessBurned, msg.sender, witness], b"")
 
 From T6 an admin access key passes `ensure_admin_caller` and may therefore burn witnesses.
 
-> **Resolved conflict C-KEY-07**: TIP-1053 says access keys MUST NOT burn witnesses; from T6 the code lets an admin access key burn them (as do the docs). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-07).
+> **Resolved conflict C-KEY-07**: TIP-1053 says access keys MUST NOT burn witnesses; from T6 the implementation lets an admin access key burn them (as do the docs). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-07).
 
 #### 1.6.5 revokeKey (`0x5ae7ab32`)
 
@@ -756,7 +798,7 @@ remove_target_scope(account_key(msg.sender, keyId), target)
 Removing an absent target is a no-op. Removing the last target leaves the key scoped with no targets
 (deny-all). No event is emitted.
 
-> **Resolved conflict C-KEY-05**: TIP-1011 says `removeAllowedCalls` only disables the target scope and that prior selector rows may remain in state; the code removes the target from the set and deletes every selector and recipient row under it. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-05).
+> **Resolved conflict C-KEY-05**: TIP-1011 says `removeAllowedCalls` only disables the target scope and that prior selector rows may remain in state; the implementation removes the target from the set and deletes every selector and recipient row under it. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-05).
 
 ### 1.7 Views
 
@@ -953,10 +995,27 @@ would leave unbacked. (A periodic row whose configured amount is 0 still stores 
 ### 1.9 Internal interface used by the transaction handler
 
 The handler (06-transactions-and-fees.md) calls the following AccountKeychain procedures directly,
-not through ABI dispatch. Unless 06-transactions-and-fees.md says otherwise they run with TIP-1060
-accounting disabled (§4.6) and their gas is covered by the transaction's intrinsic gas; their
-storage effects and logs are as specified here. An error raised by any of them makes the
-transaction invalid unless 06-transactions-and-fees.md maps it otherwise.
+not through ABI dispatch: they are native host invocations
+([precompiles/00-framework.md §9.1](00-framework.md#91-native-host-invocations)). Unless
+06-transactions-and-fees.md says otherwise they run with TIP-1060 accounting disabled (§4.6) and their
+gas is covered by the transaction's intrinsic gas; the exceptions are the T1/T1A key-authorization
+write (§1.9.3) and, from T3, call-scope prevalidation (§1.9.4), which are metered. Their storage
+effects and logs are as specified here. An error raised by any of them makes the transaction invalid
+unless 06-transactions-and-fees.md maps it otherwise.
+
+**Warmth from protocol invocations.** Metered or not, at every fork (including the T1/T1A metered
+key-authorization path), these invocations warm what they touch as §0.1 states, and the warmth
+persists into the EVM phase of the same transaction
+([precompiles/00-framework.md §3.4](00-framework.md#34-account-warmness)): the access key's
+`key_slot` read by key validation (§1.9.2); every slot read or written by a key authorization
+(§1.9.3) and by the fee spending-limit deduction (`authorize_transfer`, §1.8.2); the nonce slot of
+`increment_nonce` (§2.4); the seen, ring and pointer slots of `check_and_mark_expiring_nonce` (§2.5);
+and in each case the owning account (`ACCOUNT_KEYCHAIN_ADDRESS` or `NONCE_PRECOMPILE_ADDRESS`). The
+transient writes `set_tx_origin` and `set_transaction_key` (§1.9.1) warm nothing. Consequences: in a
+transaction signed by access key `k` of `account`, a later `verifyKeychain` of a signature by `k`
+pays 100 for its read of `key_slot(account, k)`, an EVM call to `ACCOUNT_KEYCHAIN_ADDRESS` pays the
+warm account-access cost (100), and in a 2D-nonce transaction a `getNonce(sender, nonce_key)` call
+pays 100 for its read and 100 for the call to `NONCE_PRECOMPILE_ADDRESS`.
 
 #### 1.9.1 Transient context
 
@@ -1000,6 +1059,28 @@ calls, with `msg_sender` = the transaction sender:
 `ensure_admin_caller` inside it sees `tx_origin = sender` and the transaction key as set at that
 point (0 for a root-signed or same-key authorization, the admin key for a T6 admin-signed one).
 
+At T1 and T1A (not before T1, and not from T1B) this invocation is metered under the
+[T1/T1A metered gas table](00-framework.md#911-t1t1a-metered-gas-table), with the gas limit and
+out-of-gas rollback of 06-transactions-and-fees.md §4.10.2; at every other fork its gas is part of
+intrinsic gas and its primitives cost the transaction nothing.
+
+Worked example (T1, root-signed transaction): a `key_authorization` for a new secp256k1 key with an
+expiry and limits `[(tokenA, 1000), (tokenB, 5000)]` (distinct tokens, nonzero amounts, no witness,
+which T1 does not support). The pre-T3 path of §1.6.1 performs, in order:
+
+| Step | Primitive | T1/T1A gas |
+|---|---|---|
+| `ensure_admin_caller`: transaction key (no `tx_origin` read before T2) | `TR(4)` | 100 |
+| existing-key check | `R(key_slot)` | 100 |
+| `write_key`, pre-T4 whole-struct write | `R(key_slot)`; `W(key_slot, word)`, zero → nonzero | 100 + 250,000 |
+| limit for `tokenA` (`remaining` only, a full word, no load) | `W(s0_A, 1000)`, zero → nonzero | 250,000 |
+| limit for `tokenB` | `W(s0_B, 5000)`, zero → nonzero | 250,000 |
+| `KeyAuthorized` (3 topics, 64 data bytes; emitted at T1) | `LOG` | 375 |
+| **Total** | | **750,675** |
+
+A limit with amount 0 would be a zero → zero write costing 0. `set_transaction_key` is not part of
+this invocation.
+
 #### 1.9.4 validate_call_scope_for_transaction (T3+)
 
 Called for each top-level call of an access-key-signed transaction before the first call executes,
@@ -1035,11 +1116,18 @@ def validate_call_scope_for_transaction(account, key_id, to, input):
 ```
 
 This procedure does not re-check the key's expiry or revocation (the handler validated the key).
+Its `CREATE` branch is unreachable for a transaction that passed the structure checks of
+06-transactions-and-fees.md §4.2: a `CREATE` other than the first call is invalid at every fork, and
+from T3 a first-call `CREATE` in a Keychain-signed transaction is invalid. Both outcomes are
+transaction invalidity, as TIP-1011 requires.
 
 #### 1.9.5 Other callers
 
 `authorize_transfer`, `authorize_approve` and `refund_spending_limit` (§1.8) are called from the
-TIP-20 precompile; `verify_and_update_spending` is reached only through them.
+TIP-20 precompile; `verify_and_update_spending` is reached only through them. Their `TR`, `R` and `W`
+are metered in the calling TIP-20 storage context and act on AccountKeychain storage: each `R`/`W`
+warms its AccountKeychain slot and `ACCOUNT_KEYCHAIN_ADDRESS` and charges no account-access cost
+(§0.1).
 
 ### 1.10 Log order
 
@@ -1093,10 +1181,14 @@ def ring_slot(i):  return mapping_slot(i.to_bytes(4, "big"), 2)   # uint32 key, 
 PTR_SLOT = 3
 ```
 
+Test vectors: `ring_slot(0) = 0xac33ff75c19e70fe83507db0d683fd3465c996598dc972688b7ace676c89077b`;
+`nonce_slot(0x1111111111111111111111111111111111111111, 1) =
+0x5e1e8d7a153ea63f1dff93fab2c49e87ac787007f54fbf1809a4dee6a9bff898`.
+
 All values are stored as full words (`uint64`/`uint32` right-aligned). The ring pointer is always in
 `[0, EXPIRING_NONCE_SET_CAPACITY)` for the capacity in force when it was written.
 
-> **Resolved conflict C-KEY-10**: spec-tempo-transaction.mdx gives the 2D nonce storage key as `keccak256(abi.encode(account_address, nonce_key))`; the code uses the nested mapping at slot 0 above. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-10).
+> **Resolved conflict C-KEY-10**: spec-tempo-transaction.mdx gives the 2D nonce storage key as `keccak256(abi.encode(account_address, nonce_key))`; the implementation uses the nested mapping at slot 0 above. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](../conflicts.md#c-key-10).
 
 ### 2.3 ABI
 
@@ -1175,26 +1267,31 @@ def check_and_mark_expiring_nonce(replay_hash, valid_before):
 
 The pointer slot holds the wrapped index, never a running counter.
 
-> **Resolved conflict C-KEY-09**: TIP-1009 stores `ptr + 1` unbounded and indexes with `ptr % CAPACITY`; the code stores the wrapped pointer (as TIP-1093 states). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-09).
+> **Resolved conflict C-KEY-09**: TIP-1009 stores `ptr + 1` unbounded and indexes with `ptr % CAPACITY`; the implementation stores the wrapped pointer (as TIP-1093 states). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-09).
 
-> **Resolved conflict C-KEY-08**: TIP-1009 keys replay protection on the transaction hash; from T1B the code keys it on `keccak256(encode_for_signing || sender)`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-08).
+> **Resolved conflict C-KEY-08**: TIP-1009 keys replay protection on the transaction hash; from T1B the implementation keys it on `keccak256(encode_for_signing || sender)`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-08).
 
 **Capacity change at T11.** The T11 activation performs no state migration. The pointer value
 written by the last pre-T11 expiring transaction (some `p < 300,000`) is used as is; from T11 the
-pointer advances from `p` up to 2,999,999 and only then wraps to 0. Consequently:
+pointer advances from `p` up to 2,999,999 and only then wraps to 0. Every pre-T11 hash has expired
+by the first post-T11 block that reaches it (pre-T11 windows are at most 30 s). Consequently:
 
-- ring indices `p .. 299,999` still hold pre-T11 hashes (all expired by then, since pre-T11 windows
-  are at most 30 s), which are evicted (`seen[old] := 0`) only when the pointer reaches them on its
-  next lap through `[0, 3,000,000)`;
+- ring indices `p .. 299,999` are reached first, by the first post-T11 expiring transactions. They
+  hold pre-T11 hashes only if the pre-T11 pointer had wrapped at least once; each such hash is evicted
+  (`seen[old] := 0`) when the pointer reaches it, and an empty index is filled without eviction;
 - indices `300,000 .. 2,999,999` are empty on the first post-T11 lap, so no eviction happens there;
+- indices `0 .. p - 1` hold the most recent pre-T11 hashes and are reached only after the pointer
+  wraps at 3,000,000; those hashes are evicted then;
 - the maximum validity window becomes 300 s for blocks at or after T11.
+
+> **Resolved conflict C-KEY-14**: TIP-1093 says post-activation transactions are inserted into the previously unallocated ring slots rather than overwriting pre-activation entries; the implementation resumes at the stored pointer, so indices `p .. 299,999` (which hold pre-activation entries once the ring has wrapped) are overwritten first, after evicting their expired entries. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-14).
 
 Because `valid_before` is committed to by the replay hash, a hash whose `seen` entry has expired can
 never pass the window check again, so an expired entry is only ever removed by eviction.
 
-Canonical execution MUST use only the stored pointer. (The reference client's optional prewarming
-path may pre-seek the pointer per transaction; it restores it and is disabled for canonical
-execution, so it has no consensus effect.)
+Canonical execution MUST use only the stored pointer. A client MAY pre-seek the pointer outside
+canonical execution (for example when speculatively prewarming state), provided the stored state and
+every canonical result are unchanged.
 
 ## 3. SignatureVerifier
 
@@ -1235,9 +1332,9 @@ All four functions are views (allowed in static calls).
 
 ```python
 def recover(hash, signature) -> Address:
-    sig = parse_primitive_signature(signature)       # 03-signatures.md; failure -> InvalidFormat (no gas)
+    sig = decode_primitive(signature)                # 03-signatures.md §3.2; DecodeError -> InvalidFormat (no gas)
     deduct_gas({SECP256K1: 3000, P256: 8000, WEBAUTHN: 8000}[sig.type])
-    signer = recover_signer(sig, hash)               # 03-signatures.md
+    signer = recover_primitive(sig, hash)            # see below
     if signer is FAILURE:
         raise ERR(InvalidSignature)
     return signer
@@ -1246,22 +1343,30 @@ def verify(signer, hash, signature) -> bool:
     return recover(hash, signature) == signer         # reverts instead of returning false on bad signatures
 ```
 
-`parse_primitive_signature` accepts exactly the primitive formats: 65 bytes (secp256k1, no type
+`decode_primitive` accepts exactly the primitive formats: 65 bytes (secp256k1, no type
 byte), `0x01 || 129 bytes` (P256), `0x02 || 128..2048 bytes` (WebAuthn). Every other input,
-including keychain signatures (`0x03`, `0x04`) and empty input, fails with `InvalidFormat`. The
-verification gas is the flat amount above; the WebAuthn per-byte calldata surcharge used for
-transaction signatures is not charged here.
+including keychain signatures (`0x03`, `0x04`), configurable-account signatures (`0x05`) and empty
+input, fails with `InvalidFormat`. A secp256k1 `v` outside the set of 03-signatures.md §4.1
+(`0, 1, 27, 28, 35..255`) is a decode error and so also fails with `InvalidFormat`.
+
+`recover_primitive(sig, hash)` is the per-type recovery of 03-signatures.md with `digest = hash`:
+`secp256k1_recover` (§4.2, including the EIP-2 low-`s` rule and the `r`, `s` range checks),
+`recover_p256` (§5.2) or `recover_webauthn` (§6.2). For WebAuthn the expected `clientDataJSON`
+challenge is therefore the unpadded Base64URL encoding of the 32-byte `hash` argument (for
+`verifyKeychain`, of the Keychain V2 digest, §3.5), under the acceptance rules of 03-signatures.md
+§6.3. Any verification failure gives `FAILURE`. The verification gas is the flat amount above; the
+WebAuthn per-byte calldata surcharge used for transaction signatures is not charged here.
 
 ### 3.5 verifyKeychain and verifyKeychainAdmin (T6+)
 
 ```python
 def recover_keychain_key(hash, signature):
-    sig = parse_tempo_signature(signature)           # 03-signatures.md; failure -> InvalidFormat
+    sig = decode_tempo_signature(signature)          # 03-signatures.md §3.2; DecodeError -> InvalidFormat
     if not sig.is_keychain():          raise ERR(InvalidFormat)
     if sig.version == V1:              raise ERR(InvalidFormat)   # only 0x04 (Keychain V2)
-    if not sig.inner.is_primitive():   raise ERR(InvalidFormat)
-    signing_hash = keccak256(b"\x04" + hash + sig.user_address)  # not metered
-    key_id = recover(signing_hash, encode(sig.inner))  # canonical re-encoding; gas and errors as in recover
+    if not sig.inner.is_primitive():   raise ERR(InvalidFormat)   # e.g. an inner 0x05 signature
+    signing_hash = keccak256(b"\x04" + hash + sig.user_address)  # keychain_effective_digest(V2, ...); not metered
+    key_id = recover(signing_hash, encode(sig.inner))  # canonical re-encoding (03-signatures.md §7); gas and errors as in recover
     return sig.user_address, key_id
 
 def verifyKeychain(account, hash, signature) -> bool:
@@ -1289,7 +1394,11 @@ def verifyKeychainAdmin(account, hash, signature) -> bool:
 Through T13 the inner signature's type is not compared with the stored key type, and
 `verifyKeychain` returns true for any active access key, admin or not. Storage or out-of-gas errors
 propagate. Gas = input cost + the inner primitive's verification gas + (unless short-circuited) one
-SLOAD of AccountKeychain `key_slot(account, key_id)` (cold or warm per the transaction's access set).
+SLOAD of AccountKeychain `key_slot(account, key_id)`. That SLOAD is metered in the SignatureVerifier
+call: it costs 2,100 if `(ACCOUNT_KEYCHAIN_ADDRESS, key_slot)` is cold and 100 if warm, adds that pair
+and `ACCOUNT_KEYCHAIN_ADDRESS` to the access sets, and charges no account-access cost for
+`ACCOUNT_KEYCHAIN_ADDRESS` (§0.1). The slot is already warm when the same transaction was signed by
+that key (§1.9) or read it earlier.
 
 ## 4. Storage credits (TIP-1060)
 
@@ -1304,15 +1413,18 @@ where the protocol disables or redirects the accounting.
 | Name | Value |
 |---|---|
 | `STORAGE_CREDITS_ADDRESS` | `0x1060000000000000000000000000000000000000` |
-| `SSTORE_CREATE_COST` | 250,000 |
-| `SSTORE_SET_COST` | 5,000 |
+| `SSTORE_CREATE_COST` | 250,000 (`SstoreSetWithoutLoadCost` at T1 – T6, excluding the 100-gas `SstoreStatic` part) |
+| `SSTORE_SET_COST` | 5,000 (`SstoreSetWithoutLoadCost` from T7, excluding the 100-gas `SstoreStatic` part) |
 | `STORAGE_CREDIT_VALUE` | 245,000 (`SSTORE_CREATE_COST - SSTORE_SET_COST`) |
 | `WarmStorageReadCost` | 100 |
 | `ColdStorageAdditionalCost` | 2,000 |
-| `SstoreResetWithoutColdLoadCost` | 2,900 |
+| `WARM_SSTORE_RESET` | 2,900 (`SstoreStatic` 100 + `SstoreResetWithoutColdLoadCost` 2,800) |
 
-The T7 changes to the general SSTORE gas table (zero → nonzero set cost 5,000, set refund 5,000,
-clearing refund 0, refund quotient 1) are specified in 05-block-execution.md.
+The SSTORE names follow the split of [05-block-execution.md §1.7](../05-block-execution.md#17-gas-schedule-per-fork):
+`SstoreSetWithoutLoadCost` and `SstoreResetWithoutColdLoadCost` exclude `SstoreStatic`, and
+`WARM_SSTORE_RESET` is the full warm clean reset including it. The T7 changes to the general SSTORE
+gas table (zero → nonzero set cost 5,000, set refund 5,000, clearing refund 0, refund quotient 1) are
+specified in [05-block-execution.md §1.7](../05-block-execution.md#17-gas-schedule-per-fork).
 
 ### 4.2 Persistent state
 
@@ -1323,10 +1435,17 @@ def credit_slot(A: Address) -> int:
     return u256(pad32(A))          # the address itself, left-padded; no hashing
 ```
 
-Its value is the balance as an unsigned integer `< 2^64` (bits 64..255 are zero). A stored word of
-`2^64` or more is a fatal state inconsistency. A missing slot means balance 0.
+For example `credit_slot(0x1111111111111111111111111111111111111111) =
+0x0000000000000000000000001111111111111111111111111111111111111111`.
 
-> **Resolved conflict C-KEY-11**: TIP-1060 describes the balance as `mapping(address => uint256 packed_state)`; the code stores it at slot `uint256(bytes32(account))` with no mapping hash. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-11).
+Its value is the balance as an unsigned integer `< 2^64` (bits 64..255 are zero). A missing slot means
+balance 0. No rule stores a word of `2^64` or more. If one is read, the outcome depends on the reader:
+a metered read `R` of the slot (`balanceOf`, §4.6.5) is an out-of-range storage value and reverts with
+`Panic(0x11)` as precompiles/00-framework.md §5 specifies, while the SSTORE hook (§4.4) and settlement
+(§4.7) treat it as an internal invariant violation and block processing fails. This overrides the
+framework's `Panic(0x11)` outcome for those two readers.
+
+> **Resolved conflict C-KEY-11**: TIP-1060 describes the balance as `mapping(address => uint256 packed_state)`; the implementation stores it at slot `uint256(bytes32(account))` with no mapping hash. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-11).
 
 ### 4.3 Transient state
 
@@ -1342,7 +1461,7 @@ For each account `A`, the StorageCredits account's *transient* storage at slot `
 It follows EIP-1153 semantics: journaled with call frames (reverted with the frame that wrote it) and
 cleared at the end of the transaction. A mode byte above 2 is a fatal inconsistency (unreachable).
 
-> **Resolved conflict C-KEY-12**: TIP-1060 describes the transient state as a mapping of a struct `{uint64 budget; uint8 mode; uint64 pending_refunds}`; the code uses the direct slot and the bit layout above. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-12).
+> **Resolved conflict C-KEY-12**: TIP-1060 describes the transient state as a mapping of a struct `{uint64 budget; uint8 mode; uint64 pending_refunds}`; the implementation uses the direct slot and the bit layout above. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-key-12).
 
 ### 4.4 The SSTORE hook
 
@@ -1388,7 +1507,7 @@ def storage_credit_hook(owner, key, O, P, N):
     if changed:
         o, p = journal_sstore_unmetered(STORAGE_CREDITS_ADDRESS, s, credit)  # returns that slot's original/present
         if p != credit and o == p:
-            charge(2900)                           # SstoreResetWithoutColdLoadCost, only for a clean change
+            charge(2900)                           # WARM_SSTORE_RESET, only for a clean change
 ```
 
 `charge(x)` fails with out-of-gas if less than `x` gas remains. The unmetered journal reads and
@@ -1397,15 +1516,29 @@ slot) that cost nothing beyond the charges shown; in particular creating the cre
 `SSTORE_CREATE_COST`. A clear of a slot whose credit is saturated at `2^64 - 1` still performs the
 (no-op) journal write. The hook runs only when it is enabled for the current storage context (§4.6).
 
+Warm sets: the hook's balance read adds `(STORAGE_CREDITS_ADDRESS, credit_slot(owner))` and the account
+`STORAGE_CREDITS_ADDRESS` to the transaction's EIP-2929 access sets, for opcode and precompile SSTOREs
+alike, and charges no account-access cost for `STORAGE_CREDITS_ADDRESS`. The read is performed only if
+it is affordable: when the slot is cold and less than 2,000 gas remains after the 100-gas charge, the
+hook fails with out-of-gas before accessing the slot, and nothing is warmed (the failing frame undoes
+its accesses anyway). The journal write touches the same, already warm, slot. The hook's `tload` and
+`tstore` warm nothing.
+
 ### 4.5 Precompile ABI (T7+)
 
 | Function | Selector | Kind |
 |---|---|---|
 | `balanceOf(address account) returns (uint64)` | `0x70a08231` | view: `R(credit_slot(account))` |
-| `modeOf(address account) returns (uint8 mode)` | `0x13668995` | view: `TR(credit_slot(account))`, returns `mode` |
+| `modeOf(address account) returns (Mode mode)` | `0x13668995` | view: `TR(credit_slot(account))`, returns `mode` |
 | `budgetOf(address account) returns (uint64)` | `0x7865e71f` | view: `TR(credit_slot(account))`, returns `budget` |
-| `setMode(uint8 newMode)` | `0x21175b4a` | mutator |
+| `setMode(Mode newMode)` | `0x21175b4a` | mutator |
 | `setBudget(uint64 credits)` | `0xffe295c3` | mutator |
+
+`Mode` is the ABI enum `{Refund, Preserve, Direct}` (3 members, values 0, 1, 2); selectors use its
+canonical type `uint8`, and `newMode` is decoded as an enum under
+[precompiles/00-framework.md §4.5](00-framework.md#45-abi-decoder-configuration): before T11 the low-order
+byte of the word, a byte of 3 or more giving the out-of-range value that `setMode` rejects with
+`InvalidMode`; from T11 a word of 3 or more is a decoding failure (empty revert data).
 
 Errors: `InvalidMode()` `0xa0042b17`; `OnlyDirectCall()` `0xbc592142` is declared
 but never raised. A `DELEGATECALL` or `CALLCODE` into this (or any Tempo) precompile reverts with
@@ -1510,8 +1643,11 @@ def track_minted_credits(owner, f):          # T7+
     return v, after - before
 ```
 
-Before T7 both helpers just run `f` and report 0. Here `R` reads the StorageCredits slot through the
-calling precompile's metered storage context. How the DEX and channel reserve use the deltas is
+Before T7 both helpers just run `f` and report 0. Here `R` reads the StorageCredits slot, and `TR`/`TW`
+access its transient slot, through the calling precompile's metered storage context. Each `R` adds
+`(STORAGE_CREDITS_ADDRESS, credit_slot(owner))` and `STORAGE_CREDITS_ADDRESS` to the access sets and
+charges no account-access cost (the first read in a transaction costs 2,100, later ones 100);
+`TR`/`TW` warm nothing. `preserve_storage_credits` performs only `TR` and `TW`. How the DEX and channel reserve use the deltas is
 specified in their chapters.
 
 ### 4.7 End-of-transaction settlement

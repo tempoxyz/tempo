@@ -552,8 +552,8 @@ S_round = 12df552e79bc5230f87b416077da527c0324231ba053398ea99528d7720a37da
 DealerPubMsg =
   03
   a518c1f0e33b6aca2e70eb66ca4035c6021f5c522e1b0fabef7e07233ac909212b98749bced78ec9748a52dfcf80b1fe0410388d0a8846d897f417c84c6cc52ed1eb03dbbedf5dfe5e701dfa01ba45ebc1fa43bfff12395c4da431e55793a86d
-  b9453f42850845bf85a899886521a8601eac88e6e16d13943af610b51822f9c88fe01fbde5cc778f36229475bb777e870d9779c614843bf2fe49081a46711cf214a3ef959f01a8f329af4569e9d20e1bc3dcbff89eaaebefa0453b53639b2659b8
-  0d7a6bd3c7fb2c1eb3e271fcb9eb17fa409447e3de289c4196e3f5f6d7cbf13018123b69db101b286c594db2b9761a0582389c06b4344f9d9429f52780228d10a2f0b4cd2e7e3f30807cb9377c19a3bc99acb9c7df786272afae4038e66524
+  b9453f42850845bf85a899886521a8601eac88e6e16d13943af610b51822f9c88fe01fbde5cc778f36229475bb777e870d9779c614843bf2fe49081a46711cf214a3ef959f01a8f329af4569e9d20e1bc3dcbff89eaaebefa0453b53639b2659
+  b80d7a6bd3c7fb2c1eb3e271fcb9eb17fa409447e3de289c4196e3f5f6d7cbf13018123b69db101b286c594db2b9761a0582389c06b4344f9d9429f52780228d10a2f0b4cd2e7e3f30807cb9377c19a3bc99acb9c7df786272afae4038e66524
 
 ack_summary(key1, DealerPubMsg) = 49043a2a6b912031eb0d4aee3c2758017e7d3f6ae28c40ab8454e02b3e658440
 
@@ -568,7 +568,7 @@ PlayerAck from key4 = cf976d329cc9b8d6c65950b9b1634d9f0f8bce9ca45c29d7cce83fea8b
 
 SignedDealerLog =
   8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c     # dealer = key1
-  03 a518c1f0… b9453f42… 0d7a6bd3…                                     # DealerPubMsg
+  03 a518c1f0… b9453f42… b80d7a6b…                                     # DealerPubMsg
   00                                                                   # Ok
   04 8139770e…8fc9b394 8a88e3dd…b40f6f5c ca93ac17…dbdabe7c ed4928c6…ac8737d1   # keys, in players order
   04 00 14aa4501…c9d5e506 00 5bf7c118…e3bc3208 00 cf976d32…213fff05 01 00a937e9…3707791f   # Ack, Ack, Ack, Reveal
@@ -576,7 +576,7 @@ SignedDealerLog =
 
 Output =
   12df552e79bc5230f87b416077da527c0324231ba053398ea99528d7720a37da     # summary
-  00 00000004 03 a518c1f0… b9453f42… 0d7a6bd3…                         # Sharing (one dealer, weight 1)
+  00 00000004 03 a518c1f0… b9453f42… b80d7a6b…                         # Sharing (one dealer, weight 1)
   01 8a88e3dd…b40f6f5c                                                 # dealers
   04 8139770e… 8a88e3dd… ca93ac17… ed4928c6…                           # players
   01 ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1  # revealed = {key3}

@@ -78,7 +78,7 @@ These are the transaction-level entries of the gas schedule (the full schedule, 
 | `AUTH_REFUND` (EIP-7702 refund for an existing authority) | 12,500 | 0 | 0 |
 | `ACCESS_LIST_ADDRESS_COST` / `ACCESS_LIST_STORAGE_KEY_COST` | 2,400 / 1,900 | same | same |
 | `COLD_ACCOUNT_ACCESS_COST` / `COLD_SLOAD_COST` / `WARM_STORAGE_READ_COST` | 2,600 / 2,100 / 100 | same | same |
-| `SSTORE_SET_COST` (`SstoreSetWithoutLoadCost`) | 20,000 | 250,000 | 5,000 |
+| `SSTORE_SET_COST` (clean zero → non-zero SSTORE, excluding the 100-gas static part; `SstoreSetWithoutLoadCost` in [05](05-block-execution.md#17-gas-schedule-per-fork), `SSTORE_SET` in [precompiles/00-framework.md](precompiles/00-framework.md#71-gas-parameters)) | 19,900 | 250,000 | 5,000 |
 | `FLOOR_BASE` / `FLOOR_COST_PER_TOKEN` (EIP-7623) | 21,000 / 10 | same | same |
 | `MAX_REFUND_QUOTIENT` | 5 | 5 | 1 |
 
@@ -97,7 +97,7 @@ Tempo transaction processing deviates from Osaka only as follows:
 5. **EIP-7702 costs.** From T1 the per-authorization cost is 12,500 and the refund for an existing authority is 0 (§1.5).
 6. **Transaction gas limit cap.** The EIP-7825 cap is 30,000,000 from T1A (§1.4).
 7. **Refunds.** From T7 the refund quotient is 1 and TIP-1060 storage-credit refunds are added. A net-negative refund counter refunds the full cap (§7.3).
-8. **Nonce before fees.** The sender nonce is incremented before fee resolution and fee collection (§3.2).
+8. **Nonce before fees (types 0, 1, 2, 4).** For these types the sender nonce is incremented before fee resolution and fee collection (§3.2). Type `0x76` follows its own order (§4.1): the fee context is resolved before the nonce is processed.
 9. **Receipt logs.** The fee `Transfer` log is appended after the execution logs (§9).
 
 ## 2. Transaction types
@@ -145,11 +145,13 @@ def prepare_ethereum_tx(tx, sender):
     # §2.1 item 7, then the Osaka nonce check:
     if sender.nonce != tx.nonce: invalid()
     sender.nonce += 1                      # bumped here for CALL and CREATE alike
-    warm(sender); warm(header.beneficiary); warm(tx.to if call); warm(active precompiles)
+    warm(sender); warm(header.beneficiary); warm(tx.to if call); warm(active Ethereum precompiles)   # Tempo precompiles are not pre-warmed
     warm(access_list)                      # types 1, 2, 4
     fee = resolve_fee_context(tx)          # §6, may be invalid
     collect_fee_pre_tx(fee)                # §7.2, may be invalid
 ```
+
+`warm(active Ethereum precompiles)` warms only the base Ethereum precompile addresses active at the block's fork ([precompiles/00-framework.md §2.1](precompiles/00-framework.md#21-base-ethereum-precompiles)); no Tempo precompile address is pre-warmed (§4.7).
 
 Then the transaction executes as in Osaka: for type 4, the authorization list is applied first (EIP-7702: tuples with a wrong chain id, `nonce == 2**64-1`, an unrecoverable signature, an authority with non-delegation code or a nonce mismatch are skipped; a valid tuple installs `0xef0100 || address`, or clears the code when `address == 0`, and increments the authority nonce; before T1 a tuple whose authority already existed adds `AUTH_REFUND` to the refund counter). Delegations survive a failed execution. The message call or creation then runs with `gas_limit - intrinsic_gas` gas. Settlement is §7.3.
 
@@ -304,7 +306,7 @@ def key_authorization_gas(ska, fork) -> int:
     n = len(ka.limits) if ka.limits is not None else 0
     if fork < T1B:
         return KEY_AUTH_BASE_GAS + sig + KEY_AUTH_PER_LIMIT_GAS * n     # 27_000 + sig + 22_000*n
-    sload = WARM_STORAGE_READ_COST + (COLD_SLOAD_COST - WARM_STORAGE_READ_COST)   # 2_100
+    sload = COLD_SLOAD_COST                                         # 2_100: one cold SLOAD
     limit_slots = 2 * n if fork >= T3 else n
     sstores = 1 + limit_slots
     if fork >= T3:
@@ -363,7 +365,7 @@ Because a new 2D key always has `nonce == 0`, the new-key amounts apply only bef
 
 ### 4.7 Warming
 
-Before fee resolution, the following are added to the EIP-2929 warm set (no gas charged): `sender`; `header.beneficiary` (EIP-3651); `calls[0].to` if it is a call; the active precompile addresses ([precompiles/00-framework.md](precompiles/00-framework.md)); every access-list address and storage key. Other call targets are warmed immediately before their call executes (§4.12); the intrinsic `2_600` per extra call pays for that.
+Before fee resolution, the following are added to the EIP-2929 warm set (no gas charged): `sender`; `header.beneficiary` (EIP-3651); `calls[0].to` if it is a call; the active Ethereum (base) precompile addresses ([precompiles/00-framework.md §2.1](precompiles/00-framework.md#21-base-ethereum-precompiles); Tempo precompile addresses are not pre-warmed); every access-list address and storage key. Other call targets are warmed immediately before their call executes (§4.12); the intrinsic `2_600` per extra call pays for that.
 
 ### 4.8 Nonce processing
 
@@ -387,6 +389,8 @@ def apply_nonce(tx, fork) -> int:            # returns create_nonce
 ```
 
 The protocol nonce is never compared for 2D or expiring transactions. Nonce state written here is written by the protocol, is not charged beyond the intrinsic nonce gas, and survives a failed batch.
+
+`touch(acct)` marks the sender as touched in the sense of EIP-161 for this transaction, whether or not the account exists. At the end of the transaction, as in Osaka, every touched account that is empty (nonce 0, zero balance, empty code) is deleted from the state, and a touched account that does not exist is not created. Native balances are always zero on Tempo ([05-block-execution.md](05-block-execution.md#14-no-native-token)), so a sender with nonce 0 and no code that sends a 2D-nonce or expiring-nonce transaction, which does not bump its protocol nonce, is absent from the post-transaction state, unless something else in the transaction gave it a nonce or code (such as a self-authorization in `aa_authorization_list` or a CREATE call). Its nonce-key and replay-record state lives in the NonceManager's storage and is kept.
 
 #### 4.8.1 Protocol nonce (`nonce_key == 0`)
 
@@ -492,7 +496,26 @@ The write runs without gas metering and costs nothing beyond the intrinsic key-a
 
 #### 4.10.2 T1 and T1A (metered)
 
-The write runs with gas limit `gas_limit - g` (`g` from §4.6, which already includes the pre-T1B heuristic) under `METERED_TABLE`: every gas-schedule entry is 0 except `SSTORE_SET_COST = 250_000` and `WARM_STORAGE_READ_COST = 100`, applied through the precompile storage gas model of [precompiles/00-framework.md](precompiles/00-framework.md). On success its gas is added to `g` (so `execution_gas` shrinks by it). On out-of-gas the authorization is rolled back (including its events), the EIP-7702 authorization list is still applied (§4.11), and the transaction is **failed** without executing the batch: all `gas_limit` is consumed, the refund is 0, and it is settled as in §7.3. In that case a CREATE-first transaction with `nonce_key == 0` does not consume its protocol nonce (§4.8.1 defers that bump to the batch, which does not run).
+The write runs with gas limit `gas_limit - g` (`g` from §4.6, which already includes the pre-T1B heuristic) under `METERED_TABLE`. `METERED_TABLE` is the T1 gas schedule with every parameter set to 0 except `SSTORE_SET_COST = 250_000` and `WARM_STORAGE_READ_COST = 100`. Applied to the primitive costs of [precompiles/00-framework.md §7](precompiles/00-framework.md#7-gas-metering-of-primitives), it gives:
+
+| Primitive | Cost under `METERED_TABLE` (T1/T1A) |
+|---|---|
+| SLOAD | 100, cold or warm (`COLD_SLOAD_EXTRA` = 0) |
+| SSTORE | 250,000 when clean and effective with `original == 0` (`original == present == 0`, `new != 0`); 0 otherwise (static part, `COLD_SSTORE_EXTRA` and `SSTORE_RESET` are 0) |
+| SINC, SDEC | the SLOAD and SSTORE above |
+| SSTORE refunds | none (before T4 no refund is recorded, [framework §7.3](precompiles/00-framework.md#73-sstore-refunds)) |
+| TLOAD, TSTORE | 100 each |
+| LOG | 375 per log, whatever its topics and data (per-topic and per-byte terms are 0) |
+| KECCAK | `30 + 6 × ceil(len / 32)` (constant) |
+| ECRECOVER | 3,000 (constant) |
+| ACCOUNT_READ | 100, cold or warm (`COLD_ACCOUNT_EXTRA` = 0) |
+| WARM_CALLER_READ | 0 |
+| SET_CODE | 0 (`CODE_DEPOSIT` = 0) |
+| Input charge ([framework §4.1](precompiles/00-framework.md#41-input-charge-tip-1100)), duplicate-validation charge ([framework §4.2](precompiles/00-framework.md#42-duplicate-validation-charge-tip-1105)) | none (no ABI dispatch; the duplicate-validation charge is T11+) |
+| TIP-1060 hook ([framework §7.4](precompiles/00-framework.md#74-tip-1060-storage-credit-hook-from-t7)) | disabled |
+| Explicit chapter charges | unchanged |
+
+The write is a protocol-internal invocation, so no input charge (TIP-1100) applies. Warm and cold status are still tracked, so the slots and accounts it touches are warm afterwards. This table is identical to [precompiles/00-framework.md §9.1.1](precompiles/00-framework.md#911-t1t1a-metered-gas-table). On success its gas is added to `g` (so `execution_gas` shrinks by it). On out-of-gas the authorization is rolled back (including its events), the EIP-7702 authorization list is still applied (§4.11), and the transaction is **failed** without executing the batch: all `gas_limit` is consumed, the refund is 0, and it is settled as in §7.3. In that case a CREATE-first transaction with `nonce_key == 0` does not consume its protocol nonce (§4.8.1 defers that bump to the batch, which does not run).
 
 ### 4.11 EIP-7702 authorizations (`aa_authorization_list`)
 
@@ -514,7 +537,7 @@ for auth in tx.aa_authorization_list:
     if fork < T1 and existed: refund_counter += AUTH_REFUND        # 12_500
 ```
 
-The sender is touched in §4.8, so a self-authorization counts as existing. Skipped entries still paid their intrinsic gas.
+`account_exists(a)` is true iff `a` is in the state as seen by this transaction so far (including changes made earlier in the transaction). `touched_in_this_tx(a)` is true iff `a` has been touched (EIP-161) earlier in the current transaction and the touch has not been rolled back; touches from earlier transactions do not count, since the EIP-161 sweep at the end of each transaction clears them. This is the Osaka EIP-7702 `account_exists` check together with its treatment of touched accounts. The sender is touched in §4.8, so a self-authorization counts as existing. Skipped entries still paid their intrinsic gas.
 
 ### 4.12 Batch execution
 
@@ -550,7 +573,7 @@ def execute_batch(tx, create_nonce, fork):
     return Success(output=last r.output, gas_left=remaining, refund=refund)
 ```
 
-Each call is a depth-0 frame that receives all remaining gas (no 63/64 retention), with `ORIGIN = CALLER = sender` and `GASPRICE = price`. A call to an account carrying an EIP-7702 delegation runs the delegate's code (Osaka). An exceptional halt consumes all remaining gas (`gas_left = 0`); a revert returns its unused gas. `create_address(sender, n) = keccak256(rlp([sender, n]))[12:]` with `n = create_nonce`, the protocol nonce read in §4.8 before any bump: it equals `tx.nonce` for `nonce_key == 0`, and is the current protocol nonce for 2D and expiring transactions, whose CREATE also increments the protocol nonce (rolled back if the batch fails). The batch is atomic: either all calls' state changes and logs persist, or none do. The call-scope matching rules (and its revert errors, such as `CallNotAllowed`) are in [precompiles/account-keychain.md](precompiles/account-keychain.md).
+Each call is a depth-0 frame that receives all remaining gas (no 63/64 retention), with `ORIGIN = CALLER = sender` and `GASPRICE = price`. The calls of a batch run inside one transaction, as the message calls of a single Osaka transaction would. Everything that Osaka scopes to a transaction is shared across the calls and is not reset between them: EIP-1153 transient storage, the EIP-2929 accessed-address and accessed-storage-key sets (including the warming of §4.7), the EIP-6780 set of contracts created in this transaction (a contract created by the first call and `SELFDESTRUCT`ed by a later call is deleted), the EIP-161 touched-account set and the self-destruct set. They end with the transaction. `create(...)` is a top-level creation message, the same as the creation message of an Osaka contract-creation transaction: it does not increment the caller's nonce. The only increment for a CREATE call is the explicit `sender.nonce += 1` before it. A call to an account carrying an EIP-7702 delegation runs the delegate's code (Osaka). An exceptional halt consumes all remaining gas (`gas_left = 0`); a revert returns its unused gas. `create_address(sender, n) = keccak256(rlp([sender, n]))[12:]` with `n = create_nonce`, the protocol nonce read in §4.8 before any bump: it equals `tx.nonce` for `nonce_key == 0`, and is the current protocol nonce for 2D and expiring transactions, whose CREATE also increments the protocol nonce (rolled back if the batch fails). The batch is atomic: either all calls' state changes and logs persist, or none do. The call-scope matching rules (and its revert errors, such as `CallNotAllowed`) are in [precompiles/account-keychain.md](precompiles/account-keychain.md).
 
 ### 4.13 What survives a failed batch
 

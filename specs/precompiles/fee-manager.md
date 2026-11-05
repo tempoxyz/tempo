@@ -157,9 +157,9 @@ def validate_usd_currency(token):
 
 A token address with the TIP-20 prefix but no code reads an empty currency string and so fails `validate_usd_currency` with `InvalidCurrency`.
 
-`tip403_require(token, [(addr, role), ...])` reads the token's `transferPolicyId` once, then evaluates `TIP403Registry.is_authorized_as(policy_id, addr, role)` for each pair **in order**, raising `TIP20.PolicyForbids` at the first `false` (later pairs are not evaluated). `role` is SENDER or RECIPIENT as defined in [tip403.md](tip403.md).
+`tip403_require(token, [(addr, role), ...])` is the token's `ensure_authorized_as` ([tip20.md §6.4](tip20.md#64-tip-403-authorization)). It reads the token's effective transfer policy once with `transfer_policy_id(token)` ([tip20.md §5.1](tip20.md#51-effective-transfer-policy-t9-binding): from T9 the TIP403Registry binding lookup first, and the legacy `transferPolicyId` slot only when no binding exists; before T9 the legacy slot alone), then evaluates `TIP403Registry.is_authorized_as(policy_id, addr, role)` for each pair **in order**, raising `TIP20.PolicyForbids` at the first `false` (later pairs are not evaluated). `role` is SENDER or RECIPIENT as defined in [tip403.md](tip403.md).
 
-`tip20_ensure_transfer_authorized(token, from, to)` reads `transferPolicyId`, evaluates SENDER for `from`; **from T2**, if that is false it raises `PolicyForbids` without evaluating the recipient; otherwise (and always before T2) it evaluates RECIPIENT for `to` and raises `PolicyForbids` if either is false.
+`tip20_ensure_transfer_authorized(token, from, to)` is the token's `ensure_transfer_authorized(from, to)` ([tip20.md §6.4](tip20.md#64-tip-403-authorization)). It reads the policy with `transfer_policy_id(token)` ([tip20.md §5.1](tip20.md#51-effective-transfer-policy-t9-binding)), then evaluates SENDER for `from`; **from T2**, if that is false it raises `PolicyForbids` without evaluating the recipient; otherwise (and always before T2) it evaluates RECIPIENT for `to` and raises `PolicyForbids` if either is false.
 
 `msg_sender` below is the caller of the precompile frame; `block.beneficiary` is the header's beneficiary (coinbase) of the block being executed.
 
@@ -360,7 +360,7 @@ There is no access control: anyone may trigger distribution to `validator`. The 
 
 The transaction handler ([06-transactions-and-fees.md](../06-transactions-and-fees.md) fixes their position in the pipeline) calls two internal entry points of the FeeManager for every transaction that pays fees. They are internal calls, not EVM messages:
 
-- They run with `FEE_MANAGER` as the storage owner, directly against the transaction's state journal, with **no gas metering**: their storage reads, writes, transient accesses and logs are charged to no gas budget and do not count toward the transaction's `gasUsed`. The accounts and slots they touch are warm (EIP-2929) for the rest of the transaction.
+- They run with `FEE_MANAGER` as the storage owner, directly against the transaction's state journal, with **no gas metering**: their storage reads, writes, transient accesses and logs are charged to no gas budget and do not count toward the transaction's `gasUsed`. Their storage accesses still follow the warm-set rule of [00-framework.md §3.4](00-framework.md#34-account-warmness): every slot they access (in FeeManager, the fee token, TIP403Registry or AccountKeychain) and its owning account become warm, and that warmth persists into the EVM phase and the rest of the transaction. For example, after the pre hook an EVM SLOAD of a slot it read costs 100, and a CALL to the fee token costs the warm account-access cost of 100.
 - They run with TIP-1060 storage-credit accounting **disabled**: their SSTOREs neither mint nor consume storage credits nor create pending refunds ([account-keychain.md](account-keychain.md)).
 - Any error they return makes the transaction **invalid**: a block that contains it is invalid. (Implementations report insufficient AMM liquidity, insufficient fee-token balance, a paused fee token and other failures as distinct invalidity reasons; the reason does not affect consensus.)
 
@@ -383,7 +383,7 @@ Call rules:
 
 Because the base fee is never below its floor (`6 × 10^8` from T7, higher before), `collected ≥ 1` for any `gas_limit ≥ 1` in block execution, so the pre hook runs for every fee-paying transaction.
 
-The post hook's return value (the amount credited to the validator) is not part of consensus; the reference payload builder uses it to rank blocks.
+The post hook's return value (the amount credited to the validator) is not part of consensus; block builders may use it to rank blocks.
 
 ### 7.2 collectFeePreTx
 

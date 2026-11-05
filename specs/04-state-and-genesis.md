@@ -30,7 +30,7 @@ with integers encoded as minimal big-endian strings (`0` encodes as the empty st
 
 T14 adds an optional fifth RLP item to the account leaf, the *account extension*, which holds configurable-account commitments and is encoded only when non-empty. At or before T13:
 
-- No state transition can produce a non-empty extension (every write of an account configuration commitment fails before T14; see [precompiles/account-keychain.md](precompiles/account-keychain.md)).
+- No state transition can produce a non-empty extension: before T14 no precompile, opcode or transaction path writes an account configuration commitment (the configurable-account constructs that write it are introduced by T14 and are rejected or absent at every fork in scope; see [03-signatures.md §9](03-signatures.md#9-configurable-account-signatures-0x05-at-or-before-t13) and [06-transactions-and-fees.md §4.2](06-transactions-and-fees.md#42-structure-checks) item 2).
 - A client MUST treat any account leaf with a fifth item as invalid state. Equivalently, every account leaf is exactly the 4-item list above.
 
 ### 1.3 Code
@@ -78,7 +78,7 @@ In addition, the Ethereum built-in precompiles are active:
 - **Before T1C:** the Prague set (addresses `0x01` to `0x11`, with Prague's MODEXP pricing and bounds).
 - **From T1C:** the Osaka set (adds P256VERIFY at `0x0100` per EIP-7951, and the EIP-7823/EIP-7883 MODEXP limits and pricing).
 
-The precompile set at fork F determines EIP-2929 warm addresses at transaction start, and calls to these addresses run native code. A Tempo precompile is dispatched on the call target regardless of the code stored there. A DELEGATECALL or CALLCODE to a Tempo precompile, that is any frame whose storage address differs from the call target, MUST revert with ABI data `DelegateCallNotAllowed()`, selector `keccak256("DelegateCallNotAllowed()")[0..4]`. The dispatch rules, gas and error conventions are in [precompiles/00-framework.md](precompiles/00-framework.md).
+The Ethereum built-in precompile set active at fork F determines the EIP-2929 warm addresses at transaction start; Tempo precompile addresses are not pre-warmed ([05-block-execution.md §1.3](05-block-execution.md#13-precompiles)). Calls to every precompile address, Ethereum or Tempo, run native code. A Tempo precompile is dispatched on the call target regardless of the code stored there. A DELEGATECALL or CALLCODE to a Tempo precompile, that is any frame whose storage address differs from the call target, MUST revert with ABI data `DelegateCallNotAllowed()`, selector `keccak256("DelegateCallNotAllowed()")[0..4]`. The dispatch rules, gas and error conventions are in [precompiles/00-framework.md](precompiles/00-framework.md).
 
 ### 2.2 State representation of protocol accounts
 

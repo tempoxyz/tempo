@@ -348,7 +348,7 @@ A key listed in both maps is treated as primary. Tracking rules:
 
 1. Indices MUST strictly increase. A set whose index is not greater than the latest tracked index is ignored.
 2. The node retains the `tracked_peer_sets` most recent sets (Tempo: 1). Tracking a new set drops the oldest beyond that.
-3. A set's size, counting primary and secondary keys plus the local key if absent, MUST NOT exceed `max_peers_per_set` (Tempo default 128). The reference implementation treats a larger set as a fatal programming error.
+3. A set's size, counting primary and secondary keys plus the local key if absent, MUST NOT exceed `max_peers_per_set` (Tempo default 128). Tempo's node treats a larger set as a fatal error.
 4. A peer is **eligible** when it is in a primary or secondary map of at least one retained set, is not the local node, and is not blocked (§6.7). A peer is a **dial target** when it is in a primary map of at least one retained set.
 5. When tracking a set changes the address of a peer that is connected (or has a connection in progress), the node closes that connection. When dropping old sets leaves a connected peer ineligible, the node closes its connection.
 6. *Overwrite* replaces addresses of already-known peers without creating a set; it closes the connections of peers whose address changed. Unknown keys are ignored.
@@ -411,6 +411,8 @@ When a TCP connection arrives from `source`, the listener checks, in order, befo
 2. If `bypass_ip_check` is false (Tempo: false) and `source.ip` is not the egress IP of some eligible peer: close. (A blocked peer's egress IP no longer counts, unless another eligible peer shares it.)
 3. Per-IP and per-subnet handshake quotas (§7.1): the connection consumes one cell from the quota of `source.ip` and one from the quota of its subnet (`/24` for IPv4, `/48` for IPv6; an IPv4-mapped IPv6 address uses its IPv4 `/24`). If either quota is exhausted: close. Tempo defaults: one per 5 s per IP, one per 15 ms per subnet.
 4. If `max_concurrent_handshakes` (Tempo default 512) handshakes are in progress: close.
+
+`source.ip` is the address exactly as the listening socket reports it, with no conversion. In steps 1 and 2, in the per-IP quota of step 3 and in the bouncer, an IPv4-mapped IPv6 source (`::ffff:a.b.c.d`) is an IPv6 address: it is not global, so step 1 closes it unless `allow_private_ips` is set, and it never equals a registered IPv4 egress, so step 2 and the bouncer reject it. Only the subnet quota maps it to its IPv4 `/24`. A node that accepts IPv4 peers MUST therefore listen so that their connections are reported as IPv4 sources (an IPv4 socket, or an IPv6-only socket beside an IPv4 one), not on a dual-stack IPv6 socket.
 
 Then the listener runs the handshake of §4.3 with this bouncer:
 
@@ -594,7 +596,7 @@ Rules:
 1. A requester has at most one request in flight per key. Each request goes to one peer.
 2. A requester MUST accept a `Response` or `Error` only from the peer it sent the request with that `id` to, and only while that request is active. Responses with unknown `id`s, from other peers, or after the timeout are ignored. A late response does not penalize the peer.
 3. Request ids are local to the requester; responders treat them as opaque and echo them.
-4. A requester MUST verify every value before use. The validity rules are per key type: Simplex certificates ([simplex.md](simplex.md)) and marshal values ([08-p2p-and-sync.md §3.3.5](../08-p2p-and-sync.md#335-channel-4-marshal-backfill)). An invalid value MUST NOT be used; the reference implementation blocks the responder.
+4. A requester MUST verify every value before use. The validity rules are per key type: Simplex certificates ([simplex.md](simplex.md)) and marshal values ([08-p2p-and-sync.md §3.3.5](../08-p2p-and-sync.md#335-channel-4-marshal-backfill)). An invalid value MUST NOT be used, and the requester blocks the responder (§6.7; the per-channel rules are in [08-p2p-and-sync.md §2.5](../08-p2p-and-sync.md#25-misbehaviour-and-blocking)).
 5. Candidate peers: the Simplex resolver asks the participants of the Simplex instance's epoch; the marshal resolver asks the primary peers of the latest tracked peer set. Fresh keys are tried before retries.
 
 Tempo parameters:

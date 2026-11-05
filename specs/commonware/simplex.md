@@ -38,7 +38,7 @@ An instance of Simplex runs for one epoch `E` with a fixed committee, the ordere
 
 The committee tolerates `f = max_faults(n)` faults and a quorum is `q = quorum(n)`, both defined in [codec.md §8](codec.md#8-fault-model-n3f1) (for example `n = 4` gives `f = 1`, `q = 3`).
 
-The committee's public polynomial MUST have `n` participants and threshold (number of coefficients) `q`. A node that holds a share `s_i` for index `i` whose public value equals the polynomial evaluated at `i` is a **signer**. Any other node (including a committee member without a valid share) is a **verifier**: it runs the protocol but casts no votes and never proposes.
+The committee's public polynomial MUST have `n` participants and threshold (number of coefficients) `q`. A node asked to run an instance with a polynomial that breaks either rule stops with a fatal error instead ([cryptography.md §5.4](cryptography.md#54-public-polynomial-and-sharing-encoding)). A node that holds a share `s_i` for index `i` whose public value equals the partial public key of index `i` (the polynomial evaluated at `i + 1`, [cryptography.md §5.5](cryptography.md#55-partial-public-keys)) is a **signer**. Any other node (including a committee member without a valid share) is a **verifier**: it runs the protocol but casts no votes and never proposes.
 
 A signer's local index `me` is its share's index. Simplex never uses Ed25519 signatures. A received vote is attributed to its sender by the authenticated transport, and the vote's signer index MUST equal the sender's index (§5.1).
 
@@ -467,6 +467,8 @@ A node blocks a peer ([p2p.md §6.7](p2p.md#67-blocking); 4 h by default) when, 
 - a vote fails signature verification;
 - a notarization or finalization names a different proposal than the one the leader sent (the leader is blocked).
 
+A message outside the node's current window of views, or an exact duplicate, is dropped without blocking. The per-channel blocking and dropping rules of a Tempo node, including the resolver channel, are tabulated in [08-p2p-and-sync.md §2.5](../08-p2p-and-sync.md#25-misbehaviour-and-blocking).
+
 The threshold scheme is not attributable: partial signatures can be forged from `q` others, so vote evidence is meaningful only locally (because the sender is authenticated), never to a third party.
 
 ### 8.13 Persistence
@@ -575,6 +577,17 @@ Generated with an independent program against commonware 2026.9.0. The committee
 ```text
 Y = 98c6e82fdf8990fa8b78df3788c45d4a36d83dd6c4e619b7b746abe12891427dd93ccd2d00596b8a87a5b084578fd2cf0a1f3a02672f4b370b2601e6425f873eafeb10a62adaa093b503a8630b89994c5f1401e62001896d2bd4f858be2cb941
 ```
+
+The fixture's shares (encoded as in [cryptography.md §5.2](cryptography.md#52-share-encoding), `varint(index) ‖ scalar[32]`) and partial public keys ([§5.5](cryptography.md#55-partial-public-keys)) are:
+
+| Signer | Share | Partial public key |
+|---|---|---|
+| 0 | `00` ‖ `6b170a6a737021ce871c154f6681ea2297b65bfcce6eb2e6a43c5e8a40fefba4` | `85697e892bd6a208f886dcd95932232ba4d2e6409d81bd7833044808e612a378073e3c8268ef13eb15ca1fdb86ee88bb16cba73ce1ccade565e6927881b5ec0b4c421dd8c3219062a36f1760e8a12f5bd23114fd8e29c5cdd05f88cb349edf92` |
+| 1 | `01` ‖ `413a9d3968401aa8e4f5b812f265bbaa7383ace8792c723df0892c85af77cd5f` | `8d85a5f600de1c063560bd9815cae7fa90a557176b4ca2e52dea967858e7388c18b1503b0a5084ec24fb3f8b6aa7401d118cdc27581ca07d642164b02880e754ee1f495735df649e39f5fa9140ddc8b4d2a084b22a13d0be6468a2b6e828e24f` |
+| 2 | `02` ‖ `2413cb10607a5c72fe80af5d0015371ca8eaac3eed19470431d95f73b1ea8b50` | `8b64c2d9143dbe81807b0284a95c079a2b778e92335e387e4a9785ccd46b9d9c25910b0dd0a286e7d878e13cb5bc3e8f04d6b673096e9156c9ec66625b6463168c538165e9519ba52146e440417942635792b3d8f4a15743e3478cfb8ef78c3c` |
+| 3 | `03` ‖ `13a293ef5c1ee72cd3bcfb2d8f905c7937eb5a002a353139682cf75448573577` | `a122826d2857d1a8aefcddca4e6b0cd6587839b07dbe0b8032700cefd873100d040056890076afa05448428168468290034b54930c4bc9081d51a287fe83e448f4ec2f48a4f310f07b6c99ce17695c25cc7b6aee71ba588a81b6bc5d99fdb341` |
+
+Each share's public value is its partial public key, and the vote vectors below verify against them.
 
 Round `(E = 3, v = 300)`, proposal with `parent = 299` and `payload = 0xab × 32`:
 

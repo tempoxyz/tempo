@@ -4,7 +4,7 @@ Each entry is a place where Tempo's docs or TIPs disagree with the implementatio
 
 Groups:
 
-- **A. Affects block validity, gas or state (67).** Mainnet blocks were produced by the implementation, so a spec that follows the doc would reject real blocks or execute them incorrectly. The only open question is how to fix the TIP or doc.
+- **A. Affects block validity, gas or state (70).** Mainnet blocks were produced by the implementation, so a spec that follows the doc would reject real blocks or execute them incorrectly. The only open question is how to fix the TIP or doc.
 - **B. Doc-only (18).** The doc is stale, incomplete or out of scope, and block validity is not affected.
 - **C. Needs a decision (1).**
 
@@ -363,6 +363,24 @@ TIP-1060 describes the transient state as a mapping of a struct `{uint64 budget;
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
 - Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
+### C-KEY-13
+<a id="c-key-13"></a>
+
+TIP-1011 TokenLimit rule 4 requires duplicate tokens in an authorization's limits to be rejected unconditionally. From T3 the implementation rejects them only when `enforceLimits` is true, so an ABI `authorizeKey` with `enforceLimits = false` and duplicate tokens succeeds. A transaction `key_authorization` that carries limits always enforces them.
+
+- Where: [precompiles/account-keychain.md §1.6.1](precompiles/account-keychain.md#161-authorize_key_internal)
+- Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
+
+### C-KEY-14
+<a id="c-key-14"></a>
+
+TIP-1093 says post-activation expiring-nonce entries go into the new ring slots without overwriting pre-activation entries. The implementation resumes at the stored pointer `p`: indices `p .. 299,999` are overwritten first (expired pre-T11 entries, if the ring had wrapped), then `300,000 .. 2,999,999`, then `0 .. p - 1`.
+
+- Where: [precompiles/account-keychain.md §2.5](precompiles/account-keychain.md#25-check_and_mark_expiring_nonce-internal-t1)
+- Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
+
 ### C-FEE-06
 <a id="c-fee-06"></a>
 
@@ -432,6 +450,15 @@ TIP-1062 says a version-1 flip order that flips MUST remain version 1; the imple
 TIP-1056 requires a flip rewrite to write only the order-record slots whose contents change (under a "TIP-1055" layout that does not exist); at T5–T7 the implementation stores all six legacy slots, including unchanged ones.
 
 - Where: [precompiles/stablecoin-dex.md §11.7](precompiles/stablecoin-dex.md#117-flip-orders-on-full-fill)
+- Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
+
+### C-DEX-07
+<a id="c-dex-07"></a>
+
+TIP-1038 §4 says the T3 swap pause check covers every token in the swap path. The implementation checks each hop's input token only; the final `tokenOut` is checked later, by the TIP-20 transfer to the taker.
+
+- Where: [precompiles/stablecoin-dex.md §11.2](precompiles/stablecoin-dex.md#112-route-validation)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
 - Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 

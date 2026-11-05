@@ -254,7 +254,7 @@ The other flag bits (0x02, 0x08 BE, 0x10 BS, 0x20) are ignored. Origin, `crossOr
 
 ### 6.3 clientDataJSON acceptance
 
-`client_data_json_accepts(cdj, expected_challenge)` is true exactly when `cdj` deserializes, with serde_json 1.0.151 `from_slice`, into the borrowed struct `{ "type": &str, "challenge": &str }` (no `deny_unknown_fields`), and then `type == "webauthn.get"` and `challenge == expected_challenge`, compared byte for byte. A client that does not use that library MUST implement the following acceptance rules, which are equivalent:
+`client_data_json_accepts(cdj, expected_challenge)` is true exactly when `cdj` satisfies all of the following rules. These rules are the normative definition; they are stricter than a generic RFC 8259 parser in rules 2 and 4 and laxer in rule 5. JSON terms (object, array, member, string, escape, number, literal) are those of [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259).
 
 1. **Framing.** `cdj = ws value ws`, where `ws` is any run of `0x20`, `0x09`, `0x0A`, `0x0D`. No other bytes may precede or follow `value` (no BOM, no second value, no comments).
 2. **Top-level value.** `value` MUST be either
@@ -428,6 +428,8 @@ def fee_payer_signing_hash(tx, sender: Address) -> bytes32:
 | Ethereum transaction types | per EIP-155 (legacy), EIP-2930, EIP-1559, EIP-7702 |
 
 The prefix bytes 0x04, 0x05, 0x76 and 0x78 keep the domains disjoint.
+
+Two worked 0x76 examples, one sponsored and one not, with a key authorization and a Keychain V2 signature, give the sender preimage, the sender and fee-payer signing hashes, the Keychain V2 effective digest, the transaction hash and the expiring-nonce replay hash: [02-encoding.md §4.7](02-encoding.md#47-test-vectors-tempo-transactions).
 
 ## 11. Sender and fee payer recovery
 

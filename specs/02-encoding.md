@@ -176,7 +176,7 @@ Every Tempo header (genesis and all later blocks) has exactly these 21 fields (E
 Notes:
 
 - `requests_hash`: Tempo blocks carry no execution-layer requests in any fork, so on mainnet this field has always equalled `EMPTY_REQUESTS_HASH`. The normative rule (it equals the EIP-7685 commitment of the block's requests) is in [05-block-execution.md](05-block-execution.md).
-- `beneficiary`, `mix_hash` and `parent_beacon_block_root` are not constrained by header validation at any fork up to T13. Honest proposers set `beneficiary` per [05-block-execution.md](05-block-execution.md) and set `mix_hash = parent_beacon_block_root = 0x00…00` (32 zero bytes).
+- `beneficiary`, `mix_hash` and `parent_beacon_block_root` are not constrained by header validation at any fork up to T13. Honest proposers set `beneficiary` per [07-consensus.md §12](07-consensus.md#12-validator-proposal-procedure) (build step 6) and set `mix_hash = parent_beacon_block_root = 0x00…00` (32 zero bytes).
 - `blob_gas_used = excess_blob_gas = 0` follows from Ethereum's Osaka rules: no blob transactions are accepted ([§4.1](#41-envelope-types)), so the block's blob gas sum is 0, and the EIP-4844/EIP-7918 excess-blob-gas recurrence from a zero genesis value stays 0. A client MAY implement the general Osaka rule instead of the constant; the result is the same.
 
 ### 2.3 TempoConsensusContext
@@ -192,11 +192,18 @@ TempoConsensusContext = rlp([
 
 All four fields are required (no optionals). `proposer` MUST be exactly 32 bytes that decode as an Ed25519 public key under [commonware/cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding): the bytes are the compressed encoding of a curve point, with non-canonical encodings accepted per ZIP-215. A context whose `proposer` fails this check is decode-invalid, which makes the whole header decode-invalid.
 
-Presence by fork:
+Presence by fork, as observed on mainnet:
 
-- The genesis header MUST NOT contain `consensus_context`.
-- Before T4: `consensus_context` MUST be absent. Every pre-T4 mainnet header omits it.
-- From T4: every non-genesis header MUST contain `consensus_context`, and it MUST equal the context of the consensus round that certified the block ([07-consensus.md](07-consensus.md)).
+- The genesis header does not contain `consensus_context`.
+- Every pre-T4 mainnet header omits it.
+- Every post-T4 non-genesis mainnet header contains it.
+
+What is checked today:
+
+- Header validation and block execution do not check whether `consensus_context` is present, at any fork. A header that contains one MUST decode as above; its contents are not compared with anything during execution.
+- A validator voting on a proposal requires the context to be present and equal to the Context the block was **first proposed under** ([07-consensus.md §5.1](07-consensus.md#header-consensus-context)): the epoch and view of that proposal's round, the view of its parent, and that round's leader. No rule compares it with the round of the certificate that notarizes or finalizes it. A boundary block that is re-proposed ([07-consensus.md §5.3](07-consensus.md#53-epoch-scoped-instances)) keeps the header, and so the context, of its first proposal, and may be certified in a later view.
+
+Whether presence by fork (absent before T4, present from T4) is also a header-validity rule that every node enforces when replaying finalized blocks is undecided.
 
 > **Open conflict C-FORKS-05**: TIP-1031 and t4.mdx gate `consensus_context` presence by fork (absent before T4, required from T4), but code has no fork gate: the execution layer never checks presence by fork, and consensus requires it on every new proposal. See [conflicts](conflicts.md#c-forks-05).
 
@@ -221,7 +228,7 @@ A non-genesis header `h` is valid on its own iff all of the following hold. Let 
 6. `h.timestamp_millis_part < 1000`.
 7. `h.shared_gas_limit == expected_shared_gas_limit(F, h.inner.gas_limit)`.
 8. `h.general_gas_limit == expected_general_gas_limit(F, h.inner.gas_limit, h.shared_gas_limit)`.
-9. `consensus_context` presence follows [§2.3](#23-tempoconsensuscontext).
+9. If `consensus_context` is present, it decodes as in [§2.3](#23-tempoconsensuscontext). Its presence by fork is not part of this check (open conflict C-FORKS-05, [§2.3](#23-tempoconsensuscontext)).
 
 ```python
 def expected_shared_gas_limit(F, gas_limit):
@@ -550,6 +557,121 @@ These rules apply to every primitive signature inside a `0x76` transaction: the 
 Normative rule: a client MUST accept every encoding the decoder accepts, and MUST compute **every** hash, root and length over the canonical re-encoding of the decoded value, never over the received bytes. This covers the transaction hash, the sender signing hash and fee-payer signing hash (which embed `key_authorization`, and so its re-encoded signature), `unique_tx_identifier`, the transactions root ([§7.3](#73-roots)) and the block size ([§3.2](#32-body-validity)). A client that hashes the received bytes computes a different `transactions_root` for a block containing, say, a `v = 0` signature, and rejects a block the network accepts. Encoders MUST emit canonical bytes.
 
 The Ethereum transaction types are not malleable this way: their signatures are RLP integers and the legacy `v` re-encodes from `(y_parity, chain_id)` to the same bytes.
+
+### 4.7 Test vectors: Tempo transactions
+
+Both vectors below were produced by the encoder that produced mainnet blocks, and each hash was recomputed independently from the rules of §4.2, §4.5 and [03-signatures.md §8.1](03-signatures.md#81-effective-digest). Every secp256k1 signature is the deterministic RFC 6979 signature of the stated key, written canonically (`v = 27 + y_parity`).
+
+Keys (secp256k1 private keys, as 32-byte big-endian integers):
+
+| Role | Private key | Address |
+|---|---|---|
+| root account (sender) | 1 | `0x7e5f4552091a69125d5dfcb7b8c2659029395bdf` |
+| access key | 2 | `0x2b5ad5c4795c026514f8317c7a215e218dccd6cf` |
+| fee payer (vector B only) | 3 | `0x6813eb9362372eef6200f3b1dbc3f819671cba69` |
+
+Shared parts. The key authorization is `KeyAuthorization{chain_id = 4217, key_type = Secp256k1, key_id = access key, expiry = 1800000000, limits = [TokenLimit{token = 0x20c0…0000, limit = 1000000000, period = 0}]}`, signed by the root key. The one call is `transfer(0x…beef, 1000000)` on the TIP-20 token `0x20c0000000000000000000000000000000000000`.
+
+```text
+KeyAuthorization (digest preimage, 60 bytes) =
+f83a 821079 80 942b5ad5c4795c026514f8317c7a215e218dccd6cf 846b49d200
+     db da 9420c0000000000000000000000000000000000000 843b9aca00
+key_authorization_digest = 0x03785f7bb7714bd3d7523ae46397f923acba6751aa6eabb581755d71b9e5a666
+
+SignedKeyAuthorization (129 bytes) =
+f87f f83a…3b9aca00 (as above)
+     b841 512f817ac191fb563b836711c554a3af4e25ad204f4614697e808c6385359eae
+          73b504f0ad61d830d6c5acb2f6370d3d6cacaefaf2f37778ed21e6149ca48d21 1b
+
+calls item (96 bytes) =
+f85e f85c 9420c0000000000000000000000000000000000000 80
+          b844 a9059cbb 000000000000000000000000000000000000000000000000000000000000beef
+                        00000000000000000000000000000000000000000000000000000000000f4240
+```
+
+The key type `Secp256k1` (0) encodes as `80`, and the `TokenLimit` with `period = 0` is the two-item list `da…`.
+
+#### 4.7.1 Vector A: unsponsored, expiring nonce, Keychain V2
+
+Fields: `chain_id = 4217`, `max_priority_fee_per_gas = 0`, `max_fee_per_gas = 20000000000`, `gas_limit = 1000000`, the call above, empty `access_list`, `nonce_key = 2**256 − 1`, `nonce = 0`, `valid_before = 1781013630`, no `valid_after`, no `fee_token`, no `fee_payer_signature`, empty `aa_authorization_list`, the key authorization above. The signature is a Keychain V2 signature of the access key for the root account.
+
+```text
+encode_for_signing (287 bytes) =
+76 f9011b
+   821079 80 8504a817c800 830f4240        # chain_id, priority fee 0, max fee, gas_limit
+   f85e…0f4240                            # calls
+   c0                                     # access_list
+   a0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff   # nonce_key
+   80 846a281c7e 80                       # nonce 0, valid_before, valid_after absent
+   80 80                                  # fee_token absent, fee-payer slot 0x80 (unsponsored)
+   c0                                     # aa_authorization_list
+   f87f…1b                                # SignedKeyAuthorization
+sender_signing_hash            = 0xb741450401746f1fb6892e853995c06d8ce27e57beafc4be4caf7860bc023ba4
+keychain V2 effective digest   = keccak256(04 || sender_signing_hash || 7e5f…5bdf)
+                               = 0xad38c1fd8c1b45415672987337d7368d63adb0723c4418c4fe85dc3288d8104b
+
+signature (86 bytes) =
+04 7e5f4552091a69125d5dfcb7b8c2659029395bdf          # Keychain V2, user_address
+   5281c2b6ab2f2d828006916c1269004f0cc860bf27f9934f2630c4860d9e46be   # inner r (access key)
+   12f01c6466e4b969d156d656b81a50d2b17d26b051c092aac24010eb2254757b   # inner s
+   1c                                                                  # inner v
+
+tx (2718, 375 bytes) =
+76 f90173 <the 283 payload bytes of encode_for_signing> b856 <signature>
+tx_hash             = 0x07d210e402c8128344b99c6e70722806487f0228bcbd8112309d209a5ddb27e7
+unique_tx_identifier (expiring-nonce replay hash from T1B)
+                    = keccak256(encode_for_signing || 7e5f…5bdf)
+                    = 0x3acce9d1bddd6e2136e949bb944174634f3baacc8095cc254273fb71e77896c1
+```
+
+Recovering the inner signature over the effective digest gives the access key `0x2b5a…d6cf`; the sender is `user_address` `0x7e5f…5bdf`.
+
+#### 4.7.2 Vector B: sponsored, Keychain V2
+
+As vector A, except `nonce_key = 0`, `nonce = 5`, no `valid_before`, `fee_token = 0x20c0000000000000000000000000000000000000`, and a fee-payer signature by the fee payer key.
+
+```text
+encode_for_signing (250 bytes) =
+76 f8f7
+   821079 80 8504a817c800 830f4240 f85e…0f4240 c0
+   80 05 80 80                            # nonce_key 0, nonce 5, valid_before, valid_after absent
+   80                                     # fee_token omitted because sponsored
+   00                                     # raw fee-payer placeholder byte (sponsored)
+   c0 f87f…1b
+sender_signing_hash            = 0xae25a1a3af1535b6deb22f5a44dd711756529573c02fe3805a8a8d6cdcad82d5
+keychain V2 effective digest   = 0xdbbf18ebb55b6a878bd10fd6a22ae0e73c8d8eadb8f33558eb6a5b1c70a1b58c
+
+fee-payer preimage (291 bytes) =
+78 f9011f
+   821079 80 8504a817c800 830f4240 f85e…0f4240 c0
+   80 05 80 80
+   9420c0000000000000000000000000000000000000   # fee_token, always committed
+   947e5f4552091a69125d5dfcb7b8c2659029395bdf   # sender (root account)
+   c0 f87f…1b
+fee_payer_signing_hash = 0x3cc7225f8b58dcf8a32d1a453d50253851edbd09669db6cf18dc3a4a67a8e79f
+
+signature (86 bytes) =
+04 7e5f4552091a69125d5dfcb7b8c2659029395bdf
+   5e836d0a259cc2822bb7c2f90f01898a2e5d4d9c82e0b8490ce40e608126d879
+   056931aa9546d65cc3b1acab1dca90f14ebc158fef9a75cc44fc93221b26bf5c
+   1b
+
+fee_payer_signature item (69 bytes) =
+f843 80                                                              # y_parity 0
+     a09a2196bd029ad312d59c051d697a9bb34a4498cf3e723b9a03e0590c37666ce3
+     a00b2fb4aaa465dfca145b85f5d84c5aa3b2c41e328d0a57ac14937a9d08878ba0
+
+tx (2718, 427 bytes) =
+76 f901a7
+   821079 80 8504a817c800 830f4240 f85e…0f4240 c0 80 05 80 80
+   9420c0000000000000000000000000000000000000   # fee_token
+   f843…878ba0                                  # fee_payer_signature
+   c0 f87f…1b
+   b856 <signature>
+tx_hash = 0x91a94bcf1b45ccfd5e6026548f8d9cacc8620e5baf2e399dc8a194f7a249a305
+```
+
+The sender preimage of vector B is the same whatever the fee payer's signature and fee token are: replacing `fee_token` or the fee-payer signature changes `tx_hash` but not `sender_signing_hash`.
 
 ---
 

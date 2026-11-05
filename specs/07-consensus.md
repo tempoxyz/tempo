@@ -102,9 +102,9 @@ Phases drive DKG timing (§9.4). They do not affect block validity.
 
 #### Header consensus context
 
-From T4, every block after genesis carries `header.consensus_context = {epoch, view, parent_view, proposer}` (TIP-1031; encoding in 02-encoding.md), and this equals the Context the block was proposed under: `epoch` and `view` of the proposal's round, `parent_view` of its parent, and `proposer` = the round's leader as 32 raw Ed25519 bytes. Blocks before T4 have no `consensus_context`. The genesis block has none.
+Every block a validator proposes carries `header.consensus_context = {epoch, view, parent_view, proposer}` (TIP-1031; encoding in [02-encoding.md §2.3](02-encoding.md#23-tempoconsensuscontext)), equal to the Context the block was **first proposed under**: `epoch` and `view` of that proposal's round, `parent_view` of its parent, and `proposer` = that round's leader as 32 raw Ed25519 bytes. No rule compares it with the round of the certificate that notarizes or finalizes it; a re-proposed boundary block keeps its first proposal's context (§5.3). On mainnet the genesis header and every header before T4 have no `consensus_context`, and every non-genesis header from T4 has one.
 
-A validator voting on a proposal MUST require that the context is present and equal to the engine's Context (§13). The execution layer does not check whether the field is present.
+A validator voting on a new proposal MUST require that the context is present and equal to the engine's Context for it (§13 step 5). This check has no fork gate. The execution layer does not check whether the field is present.
 
 > **Open conflict C-CONS-01**: TIP-1031 requires the context to be absent before T4 and the check to depend on activation, but the implementation has no T4 gate: it always builds and requires a context. See [conflicts](conflicts.md#c-cons-01).
 
@@ -222,13 +222,19 @@ def verify_finalization(fin: Finalization, B: Block) -> None:
 
 A valid finalization of `B` finalizes `B` and, through the `parent_hash` chain, every ancestor of `B`. A follower MAY skip certificates for intermediate blocks. It MUST take the ancestors' bodies by following `parent_hash` from `B` down to its last finalized block, checking that each block hashes to the digest its child names. Two valid finalizations for different blocks at the same height cannot exist unless more than `f` participants of the epoch are faulty. A follower that sees them SHOULD stop rather than choose one.
 
-Validators verify finalizations, notarizations and nullifications received over the network with the same keys and namespaces. A validator MAY accept a finalization or notarization for any epoch whose key it holds, including straggler certificates for an epoch it already left. It SHOULD keep the schemes of the last two epochs (§14).
+Validators verify finalizations, notarizations and nullifications received over the network with the same keys and namespaces. A validator MAY accept a finalization or notarization for any epoch whose key it holds, including straggler certificates for an epoch it already left. After it leaves epoch `E`, it holds the keys of `E−1`, `E` and `E+1` (§14).
 
 ## 8. Trust chain and network identity
 
 ### 8.1 Root of trust
 
-When syncing from genesis, the root of trust is `outcome(0) = OnchainDkgOutcome.read(genesis.extra_data)`. Its `epoch` MUST be 0, and its group key verifies epoch 0's certificates. The genesis hash itself comes from the chain specification (04-state-and-genesis.md).
+A client's root of trust is the genesis hash from the chain specification (04-state-and-genesis.md) together with its network identity checkpoint (§8.3), which every client has. Every node also reads `outcome(0) = OnchainDkgOutcome.read(genesis.extra_data)`, whose `epoch` MUST be 0, and installs `keys[0]` from it when it starts from genesis.
+
+When the chain ships no checkpoint, the checkpoint is `{from_epoch: 0, identity: outcome(0).output.public.public()}`, so the root of trust is the genesis block alone. A client then verifies every epoch's certificates under the genesis identity until one fails, and from there installs keys one boundary at a time (§8.3).
+
+With the built-in mainnet checkpoint (`from_epoch = 2042`), the root of trust for mainnet history is that checkpoint plus the genesis hash. A client verifies one finalization of an epoch `≥ 2042` under the checkpoint and authenticates every earlier block through the `parent_hash` chain (§7.2). It needs no certificate of epochs 0 to 2041. No node is required to keep or serve one ([08-p2p-and-sync.md §5.5](08-p2p-and-sync.md#55-retention-guarantees)), so a client can't count on checking the checkpoint itself against the network. When a finalization of block `last(2041)` is available, a client can check the checkpoint from genesis: that finalization verifies under the genesis identity (epochs 0 to 2041 share it, because every ceremony before epoch 2041 was a reshare), and the block it finalizes carries `outcome(2042)`. This check trusts the genesis identity as a fallback in the sense of §8.3.
+
+> Informative: at the time of writing, the public mainnet RPC (08-p2p-and-sync.md §7.2) serves the finalization of block 44,107,199 (`last(2041)`, epoch 2041, view 21,608) but not that of block 21,599 (`last(0)`).
 
 ### 8.2 Per-epoch keys from boundary blocks
 
@@ -253,20 +259,11 @@ def install(E: int, key: G2) -> None:
 
 ### 8.3 Network identity checkpoints
 
-A client MAY ship a checkpoint `NetworkIdentity = {from_epoch: u64, identity: G2}`. Its JSON form is exactly `{"from_epoch": <u64>, "identity": "0x<192 hex chars>"}` (no other fields), where `identity` is the 96-byte compressed G2 group key, which MUST decode as a valid G2 point ([cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)). The mainnet and moderato values are in §3. Each one is the identity produced by the network's most recent full DKG at the time of the release, and from_epoch is the epoch whose certificates it first verifies.
+Every client has exactly one configured checkpoint `NetworkIdentity = {from_epoch: u64, identity: G2}`. It is the checkpoint the client ships for the chain, an operator-configured one that replaces it, or, when neither exists, the genesis checkpoint `{from_epoch: 0, identity: outcome(0).output.public.public()}` (§8.1). A chain whose genesis carries no decodable outcome and that has no configured checkpoint can't be followed or validated. Its JSON form is exactly `{"from_epoch": <u64>, "identity": "0x<192 hex chars>"}` (no other fields), where `identity` is the 96-byte compressed G2 group key, which MUST decode as a valid G2 point ([cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)). The mainnet and moderato values are in §3. Each one is the identity produced by the network's most recent full DKG at the time of the release, and from_epoch is the epoch whose certificates it first verifies.
 
-```python
-def trusted_key(E: int) -> G2:
-    if E in keys:
-        return keys[E]
-    if E >= checkpoint.from_epoch:
-        return checkpoint.identity      # valid until the next rotation; on failure, sync boundaries (§8.2)
-    raise IdentityUnavailable(E)        # sync boundary blocks from an earlier trusted epoch
-```
+#### Startup identity selection and tip check
 
-At startup a client MUST call `install(checkpoint.from_epoch, checkpoint.identity)`. A key derived from the chain for that epoch must then agree with the checkpoint, or the client stops. For epochs above `from_epoch` the checkpoint is only a fallback: when an on-chain outcome for such an epoch carries a different key, the chain-derived key is installed for that epoch, and the client SHOULD warn that its checkpoint is outdated.
-
-A client that persists the latest identity it derived from the chain (as `{from_epoch, identity}`) chooses, at startup:
+A client persists the latest identity it derived from the chain as `{from_epoch, identity}` (validators in their DKG state, followers in their trusted-identity record, 08-p2p-and-sync.md §9). At startup it selects its trusted identity `trusted`:
 
 ```python
 trusted = configured_checkpoint
@@ -277,7 +274,28 @@ if persisted is not None:
         trusted = persisted
 ```
 
-and then checks its locally stored finalized tip, if any. A tip whose certificate epoch is `≥ trusted.from_epoch` MUST verify against `trusted.identity`, which is then installed for that epoch. A tip from an earlier epoch is accepted as local history without verification. Only genesis (height 0) may have no certificate. Finally `install(trusted.from_epoch, trusted.identity)`.
+and then checks its locally stored finalized tip, if any. A tip whose certificate epoch is `≥ trusted.from_epoch` MUST verify against `trusted.identity`, which is then installed for that epoch. If it fails, startup fails, and the operator must configure a newer checkpoint. A tip from an earlier epoch is accepted as local history without verification. A certificate at height 0 is fatal, and a client without a stored tip MUST be at genesis. Finally `install(trusted.from_epoch, trusted.identity)`. A key later derived from the chain for `trusted.from_epoch` must agree with it, or the client stops.
+
+`trusted` stays fixed until the next restart. An identity the client installs from a boundary during the run (§8.2) is persisted (08-p2p-and-sync.md §7.5), but it becomes `trusted` only at the next startup.
+
+#### Fallback verification
+
+```python
+def trusted_key(E: int) -> G2:
+    if E in keys:
+        return keys[E]
+    if E >= trusted.from_epoch:
+        return trusted.identity         # fallback
+    raise IdentityUnavailable(E)
+```
+
+A finalization that verifies under the fallback installs `trusted.identity` as `keys[E]` for its epoch. A boundary that later yields a different key for that epoch is a conflict, which is fatal (§8.2).
+
+When verification under the fallback fails, the identity may have rotated. Let `current_epoch` be the highest epoch whose key the client installed from a boundary. If the certificate's epoch is above `current_epoch`, the client fetches the finalization of `last(current_epoch)`, which verifies under `keys[current_epoch]`, and installs the next key from that block (§8.2). It repeats this one boundary at a time until `current_epoch` reaches the certificate's epoch (08-p2p-and-sync.md §7.4, §7.5). A client with the genesis checkpoint crosses every rotation since genesis this way. A certificate whose epoch is below `trusted.from_epoch` and has no installed key raises `IdentityUnavailable`, and the client doesn't use it. With the genesis checkpoint this never happens.
+
+For epochs above `trusted.from_epoch` the checkpoint is only a fallback. When an on-chain outcome for such an epoch carries a different key, the chain-derived key is installed for that epoch, and the client SHOULD warn that its configured checkpoint is outdated.
+
+**Security of the fallback.** Fallback acceptance trusts that no quorum of shares of the group secret behind `trusted.identity` signs a false finalization. Resharing keeps the secret, so this covers every committee that ever held shares of it, including committees of earlier epochs that have since left. Within one run the fallback stays `trusted.identity`, even after the client installed a newer key from a rotation at epoch `R > trusted.from_epoch`. Until it restarts, it accepts a certificate for any later epoch whose key it hasn't installed if the certificate verifies under the replaced identity, and such a certificate can drive it to a block the current committee never finalized. Keeping the configured checkpoint current, and restarting after a rotation, limits this exposure.
 
 > Informative: the mainnet checkpoint (`from_epoch = 2042`) means a full DKG ran during epoch 2041. Its identity differs from the genesis identity.
 
@@ -343,7 +361,15 @@ A validator MUST persist, per epoch, the dealings it received and the acks it ga
 
 ### 9.5 Share recovery (informative)
 
-A validator that lost its share MAY rebuild it from finalized history. If it was a player in epoch `E−1`'s ceremony and that ceremony succeeded (`outcome(E).output != outcome(E−1).output`), it derives its share as in [dkg.md §12](commonware/dkg.md#12-player-share-derivation) from the first valid log of each selected dealer found in blocks `first(E−1)…last(E−1)−1`, together with any shares those logs reveal to it. The rebuilt output MUST equal `outcome(E).output`. A configured initial share is used only if its public share matches `outcome(E).output.public` ([cryptography.md §5.5](commonware/cryptography.md#55-partial-public-keys)).
+A validator that starts without usable DKG state for epoch `E` (for example after restoring a snapshot) takes its share for `E`, in order of preference, from a configured share, from a share salvaged from stale state, or by recovery from finalized history. The first two are used only if their public share matches the partial public key of their index in `outcome(E).output.public` ([cryptography.md §5.5](commonware/cryptography.md#55-partial-public-keys)).
+
+Recovery from finalized history lacks the player's private dealings, which never appear on chain, so it works only when every selected dealer's log revealed this player's share. Its preconditions are:
+
+- the validator is in `outcome(E).output.players`;
+- the ceremony of `E−1` succeeded (`outcome(E).output != outcome(E−1).output`), and the validator was one of its players;
+- for each dealer in `outcome(E).output.dealers`, a log that decodes and passes `check(info(E−1))` (§10.1) appears in blocks `first(E−1)…last(E−1)−1`. The first such log per dealer is used.
+
+It then runs [dkg.md §12](commonware/dkg.md#12-player-share-derivation) on those logs with no private dealings. If a selected log carries this player's acknowledgement instead of a reveal, the player's share from that dealer is missing and recovery fails. The validator then runs epoch `E` without a share. A rebuilt output that differs from `outcome(E).output` is an error, and no share is used.
 
 ## 10. On-chain DKG artifacts
 
@@ -366,7 +392,7 @@ Inclusion rule *(validator voting rule)*, for a regular block proposed in round 
 2. Otherwise `extra_data` MUST decode as a `SignedDealerLog` for epoch `E` and pass `check(info(E))`, and the returned `dealer` MUST equal `ℓ`. Anything else is a reject.
 3. If the validator's DKG state is not at epoch `E`, so it cannot check the log, it abstains (§13).
 
-The ceremony itself (§11.1) ignores regular-block `extra_data` that fails to decode or to check, wherever it appears. It also ignores later logs from a dealer whose earlier log is already counted.
+The ceremony itself (§11.1) ignores regular-block `extra_data` that fails to decode or to check, wherever it appears. For each dealer, the first log on `P`'s ancestry that decodes and passes `check(info(E))` is that dealer's log, whatever its later classification in [dkg.md §9](commonware/dkg.md#9-log-collection-and-selection) and [§10](commonware/dkg.md#10-computing-the-output) (for example faulty). Every later log from the same dealer is ignored, even a valid one.
 
 ### 10.2 `OnchainDkgOutcome` in boundary blocks
 
@@ -388,7 +414,11 @@ The boundary block `last(E)` MUST carry, as `extra_data`, the encoding of the ou
 - *(validator voting rule)* A validator rejects a boundary proposal whose `extra_data` does not decode as an `OnchainDkgOutcome`, or whose decoded outcome differs from its own computation (§13).
 - **From T8**, block execution also decodes the boundary outcome for the CurrentCommittee system call, and a block that fails this decode is invalid for every node (05-block-execution.md). **Before T8**, block execution does not read `extra_data`.
 
-Every node treats a *finalized* boundary block without a decodable outcome as a fatal inconsistency. Size: the encoding MUST fit within 10,240 bytes. It grows by about 32 bytes per key in each of the three key sets and by 96 bytes per polynomial coefficient (one coefficient per unit of quorum).
+Every node treats a *finalized* boundary block without a decodable outcome as a fatal inconsistency.
+
+**Size.** The encoding MUST fit within 10,240 bytes (§3). It takes 32 bytes per key in each of the four key sets (`dealers`, `players`, `revealed`, `next_players`), 96 bytes per polynomial coefficient (`q` coefficients for a committee of `n`), and under 20 bytes of fixed fields and length prefixes. When the committee, the selected dealers and the next players are the same `n` validators, the outcome fits for `n ≤ 63` with no revealed players and for `n ≤ 59` with `f(n)` revealed players. A `SignedDealerLog` (§10.1) takes 96 bytes per commitment coefficient, 32 bytes per player key, 65 bytes per acknowledgement and 33 bytes per reveal, plus about 100 bytes of dealer key, signature and length prefixes. It fits for up to 63 players when every player acknowledges.
+
+Neither ValidatorConfigV2 nor consensus limits the number of active validators. If `next_players` makes the outcome exceed the cap, no valid boundary block exists and the chain can't extend past `last(E) − 1`. A dealer log that exceeds the cap makes every block that carries it invalid, so it never lands on chain and that dealer is missing from the ceremony. Mainnet committees have had at most 19 members through epoch 2201.
 
 ### 10.3 Genesis
 
@@ -451,15 +481,15 @@ def active_players(vc) -> ordered_set:
     keys = set()
     for v in vc.getActiveValidators():               # contract order
         pk = ed25519_decode(v.publicKey)             # 32 bytes, must decompress
-        ingress = parse_socket_addr(v.ingress)       # "<ipv4>:<port>" or "[<ipv6>]:<port>"
-        egress  = parse_ip_addr(v.egress)            # "<ipv4>" or "<ipv6>"
+        ingress = parse_socket_addr(v.ingress)       # SocketAddr grammar, see below
+        egress  = parse_ip_addr(v.egress)            # IpAddr grammar, see below
         if pk is None or ingress is None or egress is None:
             continue                                 # an entry that does not decode is skipped
         keys.add(pk)                                 # duplicate keys collapse to one
     return sorted(keys)                              # ascending by the 32 key bytes
 ```
 
-`ed25519_decode` is the public key decoding of [cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding). `getActiveValidators()` returns, in `active_indices` order, the records that are active at the post-state of `P`: added at a height `< last(E)` and not deactivated. This matches TIP-1017's player selection with `boundary(E) = last(E)`. The resulting set MUST NOT be empty, because the encoding requires at least one next player.
+`ed25519_decode` is the public key decoding of [cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding). `parse_socket_addr` and `parse_ip_addr` accept exactly the `SocketAddr` and `IpAddr` grammars of [precompiles/validator-config-and-zones.md §0.3](precompiles/validator-config-and-zones.md#03-endpoint-text-grammar), including an IPv6 scope id in `SocketAddr`, and fail on any other string. `getActiveValidators()` returns, in `active_indices` order, the records that are active at the post-state of `P`: added at a height `< last(E)` and not deactivated. This matches TIP-1017's player selection with `boundary(E) = last(E)`. The resulting set MUST NOT be empty, because the encoding requires at least one next player.
 
 > **Resolved conflict C-CONS-02**: TIP-1017 says the consensus layer reads ValidatorConfig V1 until ValidatorConfigV2 is initialized, but the implementation always reads ValidatorConfigV2. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-cons-02).
 
@@ -496,10 +526,19 @@ For a proposal `(E, v, pv, pd, D)` with leader `ℓ`, a validator runs these che
 | 5 | From T4: `B.consensus_context` is present and equals `{E, v, pv, ℓ}` | reject |
 | 6 | If `is_boundary(B.number)`: `B.extra_data` decodes as an `OnchainDkgOutcome` (§10.2) | reject |
 | 7 | Else, if `B.extra_data` is not empty: if the local DKG state is not at epoch `E`, abstain. Otherwise it MUST decode and check as a `SignedDealerLog` and its dealer MUST equal `ℓ` (§10.1) | abstain / reject |
-| 8 | Execute `B` on `P` with the full execution-layer rules (05-block-execution.md, including the header rules: `timestamp_ms > P.timestamp_ms`, `timestamp_millis_part < 1000`, `len(extra_data) ≤ 10240`). Missing ancestors are fetched and executed first, down to the finalized tip. | INVALID (of `B` or an ancestor): reject; no verdict reached: abstain |
+| 8 | Execute `B` on `P` with the full execution-layer rules (05-block-execution.md, including the header rules: `timestamp_ms > P.timestamp_ms`, `timestamp_millis_part < 1000`, `len(extra_data) ≤ 10240`), by the *verification probe* below | `INVALID`: reject; no verdict: abstain |
 | 9 | Clock gate: wait until local time `≥ B.timestamp_ms`. This never rejects; it only delays the vote. | — |
 | 10 | If boundary: compute `boundary_outcome(P)` (§11) and require equality with the decoded outcome of step 6, field by field (`epoch`, `output` including summary, polynomial, dealers, players and revealed, `next_players`, `is_next_full_dkg`) | cannot compute (logs or state unavailable): abstain; differs: reject |
 | 11 | Accept: the validator sends its notarize vote. | — |
+
+**Verification probe (step 8).** The validator submits `B` to its execution layer with `engine_newPayload` (Engine API semantics, 08-p2p-and-sync.md §0) and reads the status:
+
+- `VALID`: step 8 passes.
+- `INVALID`: reject. This covers an invalid ancestor too, because the execution layer answers `INVALID` for every descendant of a block it found invalid.
+- `SYNCING` (the execution layer lacks an ancestor): the validator walks down `B`'s ancestry one block at a time. It obtains the missing parent from its execution layer or its consensus stores, or else fetches it from peers by hash (`Block(d)`, 08-p2p-and-sync.md §3.3.5), and submits that block with `engine_newPayload`. A `SYNCING` answer moves the walk to the next parent; a `VALID` answer makes it submit `B` again for the verdict. The walk never goes below the latest finalized block. When the missing block is the finalized tip or below it, the validator waits until finalized-block delivery has executed it, then submits `B` again.
+- `ACCEPTED` (stored without execution): abstain.
+
+The validator also abstains when finality passes `B`'s height before a verdict, when a newly finalized block conflicts with `B`'s ancestry, when a later request for the same round replaces this one, or when the block fetch is abandoned. None of these is a reject. An engine call that fails outright, without a status, is fatal.
 
 There is no upper bound on how far a timestamp may be ahead of local time. A block from the future only delays the votes of validators whose clocks are behind (step 9).
 
@@ -507,12 +546,18 @@ After finalization (Simplex finalize votes), a validator delivers finalized bloc
 
 ## 14. Epoch transition (validator)
 
-For a validator in epoch `E`:
+For a validator in epoch `E`, the transition happens when the finalized block `last(E)` is processed, in height order with every other finalized block. It does not wait for a block of epoch `E+1`. The steps run in this order:
 
-1. Epoch `E`'s instance finalizes the boundary block `last(E)`, possibly as a re-proposal in a later view.
-2. When the finalized `last(E)` is processed in height order, the DKG component reads `outcome(E+1)` from its `extra_data`. It sets the share to the one this node concluded for that parent, or none if its local output differs from `outcome(E+1).output` or it was not a player. It persists the new state `S(E+1)` (§9.1).
-3. The validator stops epoch `E`'s instance. It SHOULD keep the verification keys of the last two epochs to accept straggler certificates for `last(E)`.
-4. It starts epoch `E+1`'s instance (§5.3) with `floor = hash(last(E))`, participants `outcome(E+1).output.players`, the elector version from `header(last(E)).timestamp`, and its share if it has one. It then starts the ceremony of epoch `E+1` with `info(E+1)`.
+1. Epoch `E`'s instance finalizes the boundary block `last(E)`, possibly as a re-proposal in a later view. Marshal delivers it once every lower height is processed.
+2. The DKG component reads `outcome(E+1)` from the `extra_data` of `last(E)`. It sets the share to the one this node concluded for that parent, or none if its local output differs from `outcome(E+1).output` or it was not a player. It durably persists the new state `S(E+1)` (§9.1) before step 3.
+3. **Exit `E`.** The validator stops epoch `E`'s Simplex instance and ceremony. This deregisters `E`'s subchannels on the vote, certificate, resolver and DKG channels (08-p2p-and-sync.md §3.2). It deletes the verification key of epoch `E−2`, if any, and keeps those of `E−1` and `E`.
+4. **Enter `E+1`.** It installs epoch `E+1`'s key and starts its instance (§5.3) with `floor = hash(last(E))`, participants `outcome(E+1).output.players`, the elector version from `header(last(E)).timestamp`, and its share if it has one. This registers `E+1`'s vote, certificate and resolver subchannels. It then starts the ceremony of epoch `E+1` with `info(E+1)`, which registers `E+1`'s DKG subchannel.
+
+Consequences:
+
+- From step 3 on, the validator sends no vote, certificate or resolver message for `E` and answers none. Certificates, resolver messages and DKG messages for `E` are dropped, and votes for `E` go to the vote backup queue, which ignores them (08-p2p-and-sync.md §3.2). Through marshal backfill, it still accepts finalizations and notarizations of `E−1` and `E` from stragglers, such as a finalization of a later re-proposal of `last(E)`, and still serves its own stored ones.
+- Votes for `E+1` that arrive before step 4 go to the backup queue. There they trigger a fetch of the finalization of `last(E)` (if it isn't stored yet) and are then discarded. They are never delivered to `E+1`'s instance.
+- After step 4 the validator holds three keys: `E−1`, `E` and `E+1`.
 
 A validator that sees votes for an epoch later than its own SHOULD fetch the finalization of its current epoch's boundary block and catch up one epoch at a time (08-p2p-and-sync.md). Simplex's per-epoch vote journal MUST be persisted ([simplex.md §8.13](commonware/simplex.md#813-persistence)), so that a validator never signs two conflicting votes in one round across restarts.
 

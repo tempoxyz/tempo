@@ -70,7 +70,7 @@ A validator's consensus identity is its ed25519 key pair ([cryptography.md §3.1
 
 ### 2.2 Transport and handshake
 
-Validators MUST implement the authenticated lookup network of [p2p.md §6](commonware/p2p.md#6-authenticated-lookup-network) with the following parameters (named as in [p2p.md §11](commonware/p2p.md#11-constants)). "Normative" parameters MUST be used for interoperability or because peers depend on them; "default" values are the reference implementation's operator defaults and MAY differ.
+Validators MUST implement the authenticated lookup network of [p2p.md §6](commonware/p2p.md#6-authenticated-lookup-network) with the following parameters (named as in [p2p.md §11](commonware/p2p.md#11-constants)). "Normative" parameters MUST be used for interoperability or because peers depend on them; "default" values are the operator defaults of Tempo's node and MAY differ.
 
 | Parameter | Value | Kind |
 |---|---|---|
@@ -95,7 +95,7 @@ Validators MUST implement the authenticated lookup network of [p2p.md §6](commo
 | `bypass_ip_check` | false | default |
 | `allow_private_ips` | false | default |
 | `allow_dns` | true | default (ingress values from ValidatorConfigV2 are always literal socket addresses, so DNS is never used) |
-| `listen` | operator-chosen (reference default `127.0.0.1:8000`; production nodes bind the port of their registered ingress) | default |
+| `listen` | operator-chosen (Tempo's node defaults to `127.0.0.1:8000`; production nodes bind the port of their registered ingress) | default |
 
 The framing, handshake, key exchange and encryption are specified in [p2p.md](commonware/p2p.md): framing [§2](commonware/p2p.md#2-framing), transcript [§3](commonware/p2p.md#3-transcript), handshake [§4](commonware/p2p.md#4-encrypted-stream-handshake), encrypted transport [§5](commonware/p2p.md#5-encrypted-transport). A connection is authenticated to an ed25519 public key; the application sees every inbound message tagged with that key.
 
@@ -113,10 +113,10 @@ Data    := varint(channel) || bytes(payload)
 
 Each peer in a tracked set has an asymmetric address `{ingress, egress}` ([p2p.md §6.5.2](commonware/p2p.md#652-addresses)) built from its ValidatorConfigV2 entry:
 
-- `ingress` = the socket address `parse_socket_addr(entry.ingress)` — the address other validators dial. `entry.ingress` is a string `"<ip>:<port>"` (IPv6 as `"[<ip>]:<port>"`) a literal IPv4 or IPv6 socket address (no host names, no IPv6 zone index).
-- `egress` = `(parse_ip_addr(entry.egress), port 0)` — only the IP is used: it is the source address the peer's outbound connections come from.
+- `ingress` = the socket address `parse_socket_addr(entry.ingress)`, the address other validators dial. `parse_socket_addr` accepts exactly the `SocketAddr` grammar of [precompiles/validator-config-and-zones.md §0.3](precompiles/validator-config-and-zones.md#03-endpoint-text-grammar): a literal IPv4 or IPv6 socket address, never a host name.
+- `egress` = `(parse_ip_addr(entry.egress), port 0)`, where `parse_ip_addr` accepts exactly the `IpAddr` grammar of the same section. Only the IP is used: it is the source address the peer's outbound connections come from.
 
-An entry whose `publicKey` is not a valid ed25519 point encoding ([cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding)), or whose `ingress` or `egress` fails to parse, is *undecodable* (2.4 says how undecodable entries are handled).
+`decode(entry)` returns the entry's `public_key` and its `p2p_address = {ingress, egress}` as above, which is `to_p2p_address` of [precompiles/validator-config-and-zones.md §2.9](precompiles/validator-config-and-zones.md#29-consumption-by-consensus). It never uses `validatorAddress` (the entry's EVM address). An entry whose `publicKey` is not a valid ed25519 point encoding ([cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding)), or whose `ingress` or `egress` fails to parse, is *undecodable* (2.4 says how undecodable entries are handled).
 
 Admission rules of the lookup network (connection slots [p2p.md §6.5.3](commonware/p2p.md#653-connection-slots), accepting [§6.5.4](commonware/p2p.md#654-accepting-connections), dialing [§6.5.5](commonware/p2p.md#655-dialing)):
 
@@ -144,19 +144,19 @@ def refresh_peers(el, consensus_tip_height, last_tracked):
         b = 0
     else:
         b = last(epoch(h) - 1)
-    outcome = OnchainDkgOutcome.decode(el.header_by_number(b).extra_data)   # MUST succeed
+    outcome = OnchainDkgOutcome.read(el.header_by_number(b).extra_data)     # prefix decode (07-consensus.md §10); failure is an error
 
-    primary_keys   = outcome.players                       # sorted set (07-consensus.md)
+    primary_keys   = outcome.output.players                # sorted set (07-consensus.md §10.2)
     secondary_keys = [k for k in outcome.next_players if k not in primary_keys]
 
     # All contract reads below are against the post-state of block h.
     vc = ValidatorConfigV2.at_post_state(el.header_by_number(h))
-    active = {}                                            # public key -> Address
+    active = {}                                            # public key -> p2p address {ingress, egress}
     for entry in vc.getActiveValidators():
         d = decode(entry)                                  # see 2.3
         if d is None:
             continue                                       # undecodable active entries are skipped
-        active[d.public_key] = d.address                   # a later duplicate replaces an earlier one
+        active[d.public_key] = d.p2p_address               # a later duplicate replaces an earlier one
 
     primary = {}
     for k in primary_keys:
@@ -165,12 +165,12 @@ def refresh_peers(el, consensus_tip_height, last_tracked):
         else:
             d = decode(vc.validatorByPublicKey(k))         # inactive DKG player
             assert d is not None                           # invariant; violation is fatal
-            primary[k] = d.address
+            primary[k] = d.p2p_address
     for k in secondary_keys:
         if k not in active:
             d = decode(vc.validatorByPublicKey(k))
             assert d is not None                           # invariant; violation is fatal
-            active[k] = d.address
+            active[k] = d.p2p_address
     secondary = active                                     # next players + other active validators
     return track_or_overwrite(h, primary, secondary, last_tracked)
 ```
@@ -203,7 +203,26 @@ Consequences that implementers MUST preserve:
 
 ### 2.5 Misbehaviour and blocking
 
-Components that detect Byzantine behaviour from an authenticated peer (an invalid certificate or signature, an undecodable message on a channel, a resolver response that fails verification) block the peer ([p2p.md §6.7](commonware/p2p.md#67-blocking)): the connection is dropped and the peer is refused for `block_duration` (4 h by default). A node MUST NOT block a peer for a certificate it cannot verify only because it lacks the epoch's scheme; in particular schemes MUST be retained for the two most recent epochs after an epoch ends (07-consensus.md), because straggling peers keep re-proposing and certifying the outgoing epoch's boundary block.
+A node reacts to a bad inbound message from an authenticated peer in one of three ways:
+
+- **Block**: the peer is blocked ([p2p.md §6.7](commonware/p2p.md#67-blocking)). Its connection is closed and it is refused for `block_duration` (4 h by default).
+- **Close**: the connection is closed without blocking. The peer may reconnect after the usual cooldowns.
+- **Drop**: the message is ignored and the connection stays open.
+
+Which reaction applies changes which peers stay connected, so it is normative:
+
+| Layer or channel | Block | Close | Drop |
+|---|---|---|---|
+| Transport ([p2p.md §6.3](commonware/p2p.md#63-receiving)) | never | an oversized or undecryptable frame, a `Message` that does not decode, a message on an unknown channel | a message that finds the channel's inbound buffer full; a message over the channel quota is delayed, not dropped (3.1) |
+| Epoch multiplexer, channels 0, 1, 2, 5 (3.2) | never | never | an epoch prefix that is not a canonical `varint`, a full subchannel queue, an unregistered epoch on channels 1, 2 and 5; on channel 0 an unregistered epoch goes to the backup queue, which drops entries that don't fit |
+| 0 votes | a `Vote` that does not decode; a vote whose epoch differs from its subchannel's; a vote from a peer that is not a participant of the epoch; a signer index different from the sender's index; two conflicting votes from one signer (two notarizes or two finalizes for different proposals, a nullify and a finalize for one view, two different nullifies, or different bytes for the same proposal); a vote whose signature fails verification | never | a vote for a view outside the node's current window (checked before the participant check); an exact duplicate |
+| 1 certificates | a `Certificate` that does not decode; a certificate whose epoch differs from its subchannel's; a certificate that fails verification; the leader, when its notarization or finalization shows it proposed two blocks in one view | never | a certificate outside the current window; a second certificate of the same kind for a view |
+| 2 simplex resolver ([p2p.md §9](commonware/p2p.md#9-resolver-protocol)) | a response whose value does not decode as a `Certificate`, does not cover the requested view (3.3.3), names another epoch or fails verification | never | a resolver message that does not decode; a response or error for an unknown request id or from a peer not asked; a response for a view already settled. An `Error` reply only makes the requester retry. |
+| 3 block broadcast | never | never | a message that does not decode as a block (including a block whose header carries a block-access-list hash); a duplicate; from a peer that is not a primary peer, the block only wakes local waiters (3.3.4) |
+| 4 marshal backfill | a response that fails the checks of 3.3.5, including a block that does not decode or carries a block-access-list hash | never | a resolver message that does not decode; a response for an unknown request id; a `Finalized` or `Notarized` response for an epoch whose scheme the node lacks |
+| 5 DKG | a `DkgMessage` that does not decode; a dealing that fails validation (sender not a dealer of the round, invalid commitment, or a share that does not match the commitment) | never | a dealing when the node is not a player; a repeated dealing from a dealer already handled (answered with the same ack); any acknowledgement, valid or not (an invalid one only stops the dealer from resending to that player) |
+
+A node MUST NOT block a peer for a certificate it can't verify only because it lacks the epoch's scheme. After leaving epoch `E` a node keeps the schemes of `E−1` and `E` ([07-consensus.md §14](07-consensus.md#14-epoch-transition-validator)), because straggling peers keep re-proposing and certifying the outgoing epoch's boundary block.
 
 ## 3. Consensus channels
 
@@ -249,7 +268,7 @@ The vote itself is never verified: a hint only starts a targeted fetch (5.1.8), 
 
 The hint makes marshal fetch the finalization of `last(reference)` (with its block) from the sender (3.3.5). Once the DKG manager processes that finalized boundary block it enters the next epoch; this repeats one epoch at a time until the node reaches the network's epoch (5.6).
 
-When a node exits epoch `E` (at the first finalized block of epoch `E+1`, 07-consensus.md) it deregisters `E`'s subchannels and deletes the scheme of epoch `E−2`.
+A validator exits epoch `E` and enters `E+1` when it processes the finalized boundary block `last(E)`, in the order of [07-consensus.md §14](07-consensus.md#14-epoch-transition-validator): it persists the DKG state of `E+1`, deregisters `E`'s subchannels on channels 0, 1, 2 and 5, deletes the scheme of epoch `E−2` (keeping those of `E−1` and `E`), installs the scheme of `E+1`, and registers `E+1`'s subchannels on channels 0, 1 and 2 and then on channel 5. Between the two steps no subchannel is registered: messages for `E` or `E+1` on channels 1, 2 and 5 are dropped, and votes go to the backup queue, which ignores them while no epoch is entered.
 
 ### 3.3 Channel payloads
 
@@ -298,7 +317,7 @@ Response values:
 | `Finalized{h}` | `enc(Finalization) \|\| enc(Block)` | the finalization's epoch is `epoch(h)` and it verifies under that epoch's scheme (07-consensus.md); its payload equals the block hash; the block's number is `h` |
 | `Notarized{r}` | `enc(Notarization) \|\| enc(Block)` | the notarization's round is `r` and it verifies under the scheme of `r.epoch`; its payload equals the block hash |
 
-A response that fails these checks SHOULD cause the requester to block the responder (2.5) and retry with another peer. A `Finalized` or `Notarized` response for an epoch whose scheme the requester no longer (or does not yet) holds is dropped without blame. How marshal uses the responses is in 5.1 and 5.3. Resolver parameters (reference): request timeout 2 s, retry delay 100 ms, requests and responses not sent with priority, peers chosen from the primary peers of the latest tracked peer set ([p2p.md §9.2](commonware/p2p.md#92-requester)).
+A response that fails these checks SHOULD cause the requester to block the responder (2.5) and retry with another peer. A `Finalized` or `Notarized` response for an epoch whose scheme the requester no longer (or does not yet) holds is dropped without blame. How marshal uses the responses is in 5.1 and 5.3. Resolver parameters of Tempo's node: request timeout 2 s, retry delay 100 ms, requests and responses not sent with priority, peers chosen from the primary peers of the latest tracked peer set ([p2p.md §9.2](commonware/p2p.md#92-requester)).
 
 #### 3.3.6 Channel 5: DKG
 
@@ -315,7 +334,7 @@ The message types and the envelope are those of [dkg.md §5](commonware/dkg.md#5
 
 - A node MUST NOT send an application payload (including the mux prefix) larger than its configured `max_message_size` (default 8,388,608 bytes). It drops such an outbound message locally instead of passing it to the transport.
 - Inbound encrypted frames whose payload exceeds the receiver's `max_message_size` plus the 32 bytes of message framing and authentication tag are rejected by the transport ([p2p.md §5.3](commonware/p2p.md#53-encrypted-frames)).
-- A proposed block travels as a single channel-3 message and inside channel-4 responses. Every node MUST accept inbound application payloads of at least 8,388,608 bytes (the block RLP size limit `MAX_RLP_BLOCK_SIZE` of EIP-7934, 05-block-execution.md). With the reference default (`max_message_size = 8,388,608`) a channel-4 response carrying a block whose RLP is within a few hundred bytes of that limit exceeds the limit once the finalization and `Message` framing are added, and is dropped by the responder; such a block can still be obtained from the EL (devp2p) or after a retry from a peer configured with a larger limit. Operators SHOULD NOT lower the default.
+- A proposed block travels as a single channel-3 message and inside channel-4 responses. Every node MUST accept inbound application payloads of at least 8,388,608 bytes (the block RLP size limit `MAX_RLP_BLOCK_SIZE` of EIP-7934, 05-block-execution.md). With the default (`max_message_size = 8,388,608`) a channel-4 response carrying a block whose RLP is within a few hundred bytes of that limit exceeds the limit once the finalization and `Message` framing are added, and is dropped by the responder; such a block can still be obtained from the EL (devp2p) or after a retry from a peer configured with a larger limit. Operators SHOULD NOT lower the default.
 
 ## 4. Execution-layer devp2p
 
@@ -357,7 +376,27 @@ Every Tempo node (validator or follower) runs a devp2p stack as defined by the d
 
 - Transport is RLPx with the `p2p` capability, protocol version 5 (snappy-compressed messages after the Hello).
 - The Hello advertises `eth/66`, `eth/67`, `eth/68`, `eth/69`, `eth/70` and `eth/71`, plus `tempo/1` when enabled (4.3). `snap` is not advertised by default. As the RLPx specification says, the session uses, for each capability name, the highest version both sides advertise.
-- A conforming node MUST support at least one of these `eth` versions so that it can exchange transactions and serve and download headers and bodies. `eth/68` or `eth/69` is RECOMMENDED: every Tempo node accepts both.
+- A conforming node MUST support at least one of these `eth` versions so that it can exchange transactions and serve and download headers and bodies. `eth/68` or `eth/69` is RECOMMENDED: every Tempo node accepts both. `eth/70` and `eth/71` are advertised but not required. Their EIPs are drafts, so a node MUST NOT advertise either unless it implements exactly the message formats below.
+- When an operator enables `snap/2` (10 message ids), it is advertised too. It sorts between `eth` and `tempo`.
+
+RLPx numbers each session's capabilities after the reserved `p2p` ids `0x00`–`0x0f`, in name order, each taking as many ids as its version defines. The `eth` capability starts at `0x10`. Its message-id count is its highest id plus one, unassigned ids included:
+
+| Negotiated `eth` | Ids (relative to `0x10`) | Count | `tempo/1` `NewFinalization` id (without `snap/2`) | with `snap/2` |
+|---|---|---|---|---|
+| `eth/66`, `eth/67`, `eth/68` | `0x00`–`0x10` | 17 | `0x21` | `0x2b` |
+| `eth/69`, `eth/70` | `0x00`–`0x11` | 18 | `0x22` | `0x2c` |
+| `eth/71` | `0x00`–`0x13` | 20 | `0x24` | `0x2e` |
+
+Two Tempo nodes with default settings negotiate `eth/71` without `snap/2`, so `NewFinalization` is message id `0x24`. The relative `eth` ids are:
+
+- **`eth/66`**: `0x00` Status, `0x01` NewBlockHashes, `0x02` Transactions, `0x03` GetBlockHeaders, `0x04` BlockHeaders, `0x05` GetBlockBodies, `0x06` BlockBodies, `0x07` NewBlock, `0x08` NewPooledTransactionHashes, `0x09` GetPooledTransactions, `0x0a` PooledTransactions, `0x0b`–`0x0c` unassigned, `0x0d` GetNodeData, `0x0e` NodeData, `0x0f` GetReceipts, `0x10` Receipts.
+- **`eth/67`**: as `eth/66`, but `0x0d` and `0x0e` are invalid. They still count.
+- **`eth/68`**: as `eth/67`, with the EIP-5793 form of `0x08` (types, sizes, hashes).
+- **`eth/69`**: as `eth/68`, with the EIP-7642 Status (no total difficulty) and Receipts without blooms, plus `0x11` BlockRangeUpdate.
+- **`eth/70`**: as `eth/69`, with the EIP-7975 forms of `0x0f` GetReceipts (request id, first-block receipt index, block hashes) and `0x10` Receipts (request id, last-block-incomplete flag, receipt lists).
+- **`eth/71`**: as `eth/70`, plus EIP-8159 `0x12` GetBlockAccessLists and `0x13` BlockAccessLists.
+
+A Tempo node answers `eth/70` GetReceipts with the receipts it has for at most 1,024 blocks, stopping at the first unknown hash. It skips the requested number of receipts in the first block, keeps the response near 2 MiB, and sends a partial last block with the incomplete flag set rather than exceed that. Tempo blocks have no block access lists, so it answers `eth/71` GetBlockAccessLists with one entry per requested hash (at most 1,024), each the empty RLP string `0x80`. It never refuses the request.
 
 **`eth` Status.** The Status message follows the negotiated `eth` version (`eth/66`–`eth/68`: `caps/eth.md`; `eth/69` and later: EIP-7642). Its fields:
 
@@ -398,13 +437,13 @@ A node MUST NOT treat a block obtained over devp2p as canonical or final because
 |---|---|
 | Capability name | `"tempo"` |
 | Version | `1` |
-| Message ids reserved | 1 (the capability's message-id space is offset by RLPx after all lower-sorting capabilities, as for any RLPx subprotocol) |
+| Message ids reserved | 1. RLPx places the capability after all lower-sorting shared capabilities, so its offset is `0x10` plus the negotiated `eth` version's count, plus 10 when `snap/2` is shared: `0x21`, `0x22` or `0x24` without `snap/2` (4.1) |
 | Messages | `0x00` `NewFinalization` |
 | Maximum frame size | 1,024 bytes (message id included) |
 
 A node offering `tempo/1` MUST advertise it in every RLPx hello; capabilities are negotiated per session, so a session opened before the protocol was registered never carries it. If the remote side does not support `tempo/1`, the session MUST be kept for its other capabilities (`eth`).
 
-The reference node offers `tempo/1` by default (`--consensus.devp2p.finalizations=true`).
+Tempo's node offers `tempo/1` by default (`--consensus.devp2p.finalizations=true`).
 
 #### 4.3.2 Frame format
 
@@ -557,7 +596,7 @@ Marshal emits two kinds of update. Each update goes to every consumer, in a fixe
 - Heights are delivered in strictly increasing order without gaps, starting at `processed_height + 1`, or at 0 (the genesis block) when nothing was processed.
 - A block is emitted only after it, and its finalization if marshal has one, are durable.
 - Delivery is at least once. A block can be delivered again after a restart (5.1.5) or after a floor is applied (5.1.7). Consumers MUST tolerate a repeated block and still acknowledge it.
-- At most `max_pending_acks` blocks are unacknowledged at a time. Reference values are 1 for followers and, for validators, the number of unpersisted blocks the EL holds in memory before it stops processing engine requests. Validators acknowledge only after EL persistence (8), so their window must exceed the EL's persistence batch.
+- At most `max_pending_acks` blocks are unacknowledged at a time. Tempo's node uses 1 for followers and, for validators, the number of unpersisted blocks the EL holds in memory before it stops processing engine requests. Validators acknowledge only after EL persistence (8), so their window must exceed the EL's persistence batch.
 
 Each consumer gets its own copy of `ack` and MUST acknowledge it once it has processed the block. A consumer that does not need the block for durable state, such as gossip or the peer manager, acknowledges at once. The block counts as acknowledged only when every copy is acknowledged. A copy dropped without acknowledging stops marshal, which is fatal to the node.
 
@@ -750,11 +789,11 @@ It answers `Error` (or nothing) when it cannot. A node whose EL prunes history c
 
 ### 5.5 Retention guarantees
 
-| Data | Reference retention | Guarantee a peer can rely on |
+| Data | Retention in Tempo's node | Guarantee a peer can rely on |
 |---|---|---|
 | Finalized blocks in the prunable store | ≥ 64,800 blocks behind the EL's finalized tip (`MINIMAL_PEER_SYNC_FINALIZED_BLOCKS`, `--consensus.finalized-blocks-retention`) | blocks up to three mainnet epochs behind the finalized tip are servable from consensus storage |
 | Finalized blocks older than that | served from the EL; available iff the EL has not pruned them (RPC/archive nodes default to archive mode; `--minimal` prunes) | none |
-| Finalizations | the finalization archive is never pruned: a node keeps every finalization it stored from its first stored height (genesis+1 for a node synced from genesis, the snapshot anchor for a restored node) upward; heights finalized only implicitly (through a descendant's certificate during backfill) may lack one | validators that are not freshly restored hold the finalization of every height of the current and previous epoch and of every boundary they processed |
+| Finalizations | the finalization archive is never pruned: a node keeps every finalization it stored from its first stored height (genesis+1 for a node synced from genesis, the snapshot anchor for a restored node) upward; heights finalized only implicitly (through a descendant's certificate during backfill) may lack one | none for any particular height. A node that is not freshly restored usually holds the finalizations it received during the epochs it ran, but heights finalized implicitly have none, and no node is required to keep the finalization of a boundary block. History older than a node's anchor is trusted through the network identity checkpoint and the hash chain ([07-consensus.md §8.1](07-consensus.md#81-root-of-trust)) |
 | Notarizations and notarized blocks | at least `view_retention` views behind the processed round (5.1.6) | none |
 | DKG events | current and previous epoch | (local only) |
 
@@ -782,8 +821,8 @@ A node MUST NOT install the scheme of epoch `E+1` before the boundary block `las
 
 **Follower mode** syncs any history, including from genesis:
 
-1. At genesis the EL's finalized height is 0, so the follower installs the epoch-0 scheme from the genesis outcome and pins the configured network identity (7.5).
-2. It verifies the upstream's latest finalization against the pinned identity (mainnet: `from_epoch = 2042`) and reports it to marshal.
+1. At genesis the EL's finalized height is 0, so the follower installs the epoch-0 scheme from the genesis outcome and pins its trusted network identity (7.5).
+2. It verifies the upstream's latest finalization against the pinned identity (mainnet: `from_epoch = 2042`) and reports it to marshal. With the genesis checkpoint (`from_epoch = 0`, [07-consensus.md §8.3](07-consensus.md#83-network-identity-checkpoints)), a tip after a rotation fails this check. The follower then fetches `Finalized{last(E)}` for its current epoch `E`, starting at `last(0)`, and installs each next scheme from the processed boundary until it reaches the tip's epoch (7.4, 7.5). This needs a source that serves those boundary finalizations, which no node is required to keep (5.5).
 3. Marshal fetches the tip block and walks parent hashes down to height 1 (5.3), storing every block as finalized; blocks are delivered in order and executed by the EL (7.6). Historical certificates are not needed: the verified tip authenticates its whole ancestry by hash.
 
 **Validator mode** derives peers from ValidatorConfigV2 at the finalized tip (2.4) and replays finalized blocks through the engine API with `VALID` required (8). A validator therefore cannot start consensus from a state whose finalized height precedes the population of ValidatorConfigV2 with entries for every player of the latest boundary outcome. To join from scratch, a validator MUST first reach a recent finalized height in follower mode or from a snapshot (section 6), then start in validator mode on the same storage (9.5).
@@ -848,7 +887,7 @@ Before replacing any local consensus data the installer MUST:
 1. check the archive's hash against the one in `consensus_archive`;
 2. extract it into a staging directory without following or creating links outside it;
 3. require that every extracted entry is a regular file or directory, that every file is in the file list of `consensus_archive` with matching size and hash, and that every listed file is present;
-4. require that the extracted files form the two stores of 6.1 in the installer's own storage format, and reject the archive otherwise (for example, the reference installer requires each top-level directory to belong to one of its two stores);
+4. require that the extracted files form the two stores of 6.1 in the installer's own storage format, and reject the archive otherwise (for example, Tempo's installer requires each top-level directory to belong to one of its two stores);
 
 then move the stores into the consensus data directory (default `<datadir>/consensus`), refusing to overwrite existing files unless forced.
 
@@ -859,13 +898,13 @@ These checks only protect integrity against the manifest. Authenticity comes fro
 A node started on restored storage performs, before any actor runs:
 
 1. **Archive consistency** (9.4): the finalization archive's tip certificate epoch equals `epoch(tip_height)`; its first index is not 0; the tip header, where the prunable store or the EL has a block at that height, has number `tip_height` and hash equal to the tip certificate's payload.
-2. **Floor verification**: the floor is the first finalization in the archive (the anchor). The node reads `header(boundary_for(cert.epoch))` from the hybrid store, decodes its `OnchainDkgOutcome`, requires `outcome.epoch == cert.epoch`, builds the full verifier scheme from `outcome.players` and `outcome.sharing`, and requires the floor finalization to verify. Failure is fatal. The scheme is registered for the floor's epoch.
-3. **Tip verification against the trusted identity** (summary; normative rule: 07-consensus.md §8.3 "startup identity selection and tip check"): the trusted identity is the configured one (built-in: mainnet `{from_epoch: 2042, identity: 0x8627d337…a182}`, see 07-consensus.md), replaced by a persisted identity with a higher `from_epoch` (validators: from DKG state; followers: from the driver record, 9.3); a persisted identity with the same `from_epoch` but a different key is fatal. If the tip certificate's epoch ≥ `trusted.from_epoch` it MUST verify under the trusted identity, otherwise startup fails (an operator must configure a newer identity after a full-DKG rotation). If its epoch < `from_epoch` it is accepted as historical. The trusted identity is registered for `from_epoch`, and for the tip's epoch when verified; a later attempt to register a different key for either epoch is fatal.
+2. **Floor verification**: the floor is the first finalization in the archive (the anchor). The node reads `header(boundary_for(cert.epoch))` from the hybrid store, reads its `OnchainDkgOutcome` with prefix decoding ([07-consensus.md §10](07-consensus.md#10-on-chain-dkg-artifacts)), requires `outcome.epoch == cert.epoch`, builds the full verifier scheme from `outcome.output.players` and the sharing `outcome.output.public` (whose `total` and threshold must match the players, [cryptography.md §5.4](commonware/cryptography.md#54-public-polynomial-and-sharing-encoding)), and requires the floor finalization to verify. Failure is fatal. The scheme is registered for the floor's epoch.
+3. **Tip verification against the trusted identity** (summary; normative rule: [07-consensus.md §8.3, startup identity selection and tip check](07-consensus.md#startup-identity-selection-and-tip-check)): the trusted identity is the configured one (built-in: mainnet `{from_epoch: 2042, identity: 0x8627d337…a182}`, see 07-consensus.md), replaced by a persisted identity with a higher `from_epoch` (validators: from DKG state; followers: from the driver record, 9.3); a persisted identity with the same `from_epoch` but a different key is fatal. If the tip certificate's epoch ≥ `trusted.from_epoch` it MUST verify under the trusted identity, otherwise startup fails (an operator must configure a newer identity after a full-DKG rotation). If its epoch < `from_epoch` it is accepted as historical. The trusted identity is registered for `from_epoch`, and for the tip's epoch when verified; a later attempt to register a different key for either epoch is fatal.
 4. **EL linkage**: when the floor is below the EL's finalized height, the executor starts from the EL's canonical block at the floor height and marshal re-delivers finalized blocks from the floor; each delivery must extend the EL's canonical chain (a `newPayload` that is not `VALID` for a finalized block is fatal, section 8). When the floor is above the EL's finalized height, the executor backfills from the EL's finalized height to the floor from the snapshot's contiguous prunable blocks (5.7).
 
 The state root of the EL snapshot is thereby authenticated: it is in a header on the hash chain from the verified anchor/tip down to the EL's finalized block, and the EL executes every later finalized block on top of it.
 
-After restore, the validator DKG manager has no persisted state and rebuilds it from the latest boundary outcome at or below the floor (07-consensus.md): its share comes, in order of preference, from `--consensus.signing-share` if it matches the outcome's public polynomial at its index, then from a salvaged stale share that matches, then by recovery from dealings revealed in the previous epoch's finalized dealer logs.
+After restore, the validator DKG manager has no persisted state and rebuilds it from the latest boundary outcome at or below the floor. Its share comes, in order of preference, from `--consensus.signing-share` if it matches the outcome's public polynomial at its index, then from a salvaged stale share that matches, then by recovery from the previous epoch's finalized dealer logs ([07-consensus.md §9.5](07-consensus.md#95-share-recovery-informative)). Recovery has no private dealings, so it succeeds only when every selected dealer's log revealed this validator's share; otherwise the validator runs the epoch without a share.
 
 ## 7. Follower mode
 
@@ -873,24 +912,73 @@ After restore, the validator DKG manager has no persisted state and rebuilds it 
 
 A follower runs marshal, a *driver* that verifies certificates, a resolver that fetches missing data, and an executor that drives its EL; it runs no Simplex instance, no DKG and no consensus p2p. Its trust model is:
 
-- **Trust root**: the network identity pinned in the node (built-in per chain, overridable with `--consensus.network-identity` + `--consensus.network-identity-from-epoch`), together with the identities it learns from finalized boundary blocks (07-consensus.md §8 "Trust chain and network identity").
+- **Trust root**: the genesis hash and the network identity checkpoint (built-in per chain, overridable with `--consensus.network-identity` + `--consensus.network-identity-from-epoch`, and derived from the genesis outcome when the chain ships none), together with the identities it learns from finalized boundary blocks ([07-consensus.md §8](07-consensus.md#8-trust-chain-and-network-identity)).
 - **Everything else is untrusted**: the upstream RPC node, `tempo/1` peers and devp2p peers only supply data; a follower accepts a block as finalized only if a finalization that verifies under a trusted scheme commits to it or to a descendant.
 
 A follower executes every block in its EL; it does not trust the upstream's state.
 
 ### 7.2 Certificate sources
 
-**Upstream JSON-RPC** (required in the reference implementation; `--follow <ws-url>` or `--follow auto`, which uses `wss://rpc.presto.tempo.xyz` on mainnet and `wss://rpc.moderato.tempo.xyz` on Moderato). The follower uses a WebSocket connection (ping every 5 s, closed after 10 s of inactivity, reconnect backoff 2 s × attempts capped at 20 s plus up to 1 s jitter) and these methods (informative; RPC is out of scope of this specification):
+**Upstream JSON-RPC.** A follower obtains finalizations from an upstream Tempo node over JSON-RPC 2.0 on a WebSocket connection: `--follow <ws-url>`, or `--follow auto`, which uses `wss://rpc.presto.tempo.xyz` on mainnet and `wss://rpc.moderato.tempo.xyz` on Moderato. Tempo's follower pings every 5 s, treats 10 s without traffic as a dead connection, and reconnects after 2 s × attempts, capped at 20 s, plus up to 1 s of jitter. These timings are local policy. The methods below are normative for an upstream that serves followers and for a follower that uses one. Servers also accept them over HTTP and IPC.
 
-| Method | Use |
-|---|---|
-| `consensus_subscribe` (notifications `event`) | stream of `Event` objects tagged by `"type"`: `"finalized"` (`CertifiedBlock` fields flattened plus `seen` ms), `"notarized"` (ignored), `"nullified"` (ignored) |
-| `consensus_getFinalization(query)` | `query` is `"latest"` or `{"height": N}`; returns a `CertifiedBlock` |
-| `eth_getBlockByHash(hash, true)` | full block by hash (block source, 7.3) |
+**Encoding conventions.**
 
-`CertifiedBlock` = `{ epoch, view, digest, certificate, block }` where `certificate` is the hex encoding of `enc(Finalization)` and `block` is the full JSON block (header and transactions).
+- `epoch`, `view`, `height` and `seen` are unsigned 64-bit integers written as JSON numbers, not as hex strings.
+- 32-byte hashes (`digest`, header hashes) are `0x`-prefixed hex strings of 64 digits.
+- `certificate` is the hex encoding of `enc(Finalization)` (07-consensus.md §7.1). Servers write it without a `0x` prefix in lowercase. A reader MUST accept it with or without a `0x` prefix, in either case.
+- Parameters are a positional array. A server also accepts the named form `{"query": ...}` for `consensus_getFinalization`.
 
-The reference feed emits only `"finalized"` events and always returns `notarized: null` from `consensus_getLatest`; a follower MUST NOT depend on notarized or nullified events.
+`CertifiedBlock` is a JSON object with exactly these members:
+
+| Member | Type | Meaning |
+|---|---|---|
+| `epoch` | number | the certificate's epoch |
+| `view` | number | the certificate's view |
+| `digest` | 32-byte hex | the finalized block's hash |
+| `certificate` | hex string | `enc(Finalization)` |
+| `block` | object | `{"header": Header, "body": {"transactions": [...], "ommers": [...], "withdrawals": null or [...]}}` |
+
+`Header` is the header of 02-encoding.md as a JSON object with camelCase members: the Ethereum header fields (`parentHash`, `sha3Uncles`, `miner`, `stateRoot`, `transactionsRoot`, `receiptsRoot`, `logsBloom`, `difficulty`, `number`, `gasLimit`, `gasUsed`, `timestamp`, `extraData`, `mixHash`, `nonce`, and, when present, `baseFeePerGas`, `withdrawalsRoot`, `blobGasUsed`, `excessBlobGas`, `parentBeaconBlockRoot`, `requestsHash`), then `mainBlockGeneralGasLimit`, `sharedGasLimit` and `timestampMillisPart` as hex quantities, and, when present, `consensusContext` = `{"epoch": number, "view": number, "parentView": number, "proposer": 32-byte hex}`. Integer header fields are `0x`-prefixed hex quantities and byte fields `0x`-prefixed hex. The object carries no `hash`: the reader computes the hash from the header (02-encoding.md §2.4). Each transaction is its envelope's JSON object, tagged by `"type"`. This specification does not define that JSON form.
+
+A follower MUST take from a `CertifiedBlock` only `certificate` and the block. It MUST ignore `epoch`, `view` and `digest`, because the certificate's own round and payload are authoritative. It obtains the block in one of two ways, which give the same result:
+
+- it decodes `block`, rebuilds the header and body, and recomputes the hash; or
+- it ignores `block` and fetches the block named by the certificate's payload from a block source (7.3), for example by hash over devp2p.
+
+Either way it then applies the checks of 7.4.
+
+| Method | Params | Result |
+|---|---|---|
+| `consensus_getFinalization` | `[query]`, where `query` is `"latest"` or `{"height": N}` | `CertifiedBlock` for the latest finalization or the one at height `N` |
+| `consensus_getLatest` | `[]` | `{"finalized": CertifiedBlock or null, "notarized": null}` |
+| `consensus_subscribe` | `[]` | a subscription id; events follow as notifications |
+| `consensus_unsubscribe` | `[subscription id]` | `true` once the subscription is removed |
+| `eth_getBlockByHash` | `[hash, true]` | the block in Ethereum JSON-RPC form (block source, 7.3) |
+
+`consensus_getFinalization` never returns `null`. When it has nothing to return it answers a JSON-RPC error:
+
+- code `204`, message `"the requested content was not available"`: the node isn't ready;
+- code `503`, message `"the consensus subservice was not available, but the request can be retried later"`, with `data` `"certificate"` (no finalization stored at that height), `"block"` (the block is missing) or `"certifications"` (nothing finalized yet, for `"latest"`).
+
+A follower treats any error as "not available" and retries later (7.3).
+
+Each event of a subscription arrives as a notification:
+
+```json
+{"jsonrpc": "2.0", "method": "consensus_event", "params": {"subscription": <id>, "result": <Event>}}
+```
+
+An `Event` is an object with a `"type"` member:
+
+- `"finalized"`: the members of a `CertifiedBlock` plus `seen`;
+- `"notarized"`: the same members;
+- `"nullified"`: `epoch`, `view` and `seen`.
+
+`seen` is the Unix time in milliseconds when the server published the event. A server emits only `"finalized"` events. A follower MUST ignore the other types and MUST NOT depend on them.
+
+A subscription is best effort. A server skips events for a subscriber that lags, and closes a subscription whose subscriber stays too slow. So a follower MUST NOT assume that it sees every finalization: a later one finalizes all earlier blocks, and gaps are filled with `consensus_getFinalization` (5.3, 7.3).
+
+> Informative: a Tempo server allows 4 consensus subscriptions per connection (error `-32006` beyond that) and 256 in total (error `-32009`). It closes a subscription when more than 128 notifications are pending or a send takes longer than 5 s.
 
 > **Resolved conflict C-P2P-02**: docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalized and nullified events and `consensus_getLatest` returns the latest notarized block; the code emits only finalized events and always returns `notarized: null`. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-p2p-02).
 
@@ -920,7 +1008,7 @@ def verify_certificate(fin):
         if not fin.verify(scheme_provider[E]):          # 07-consensus.md
             return INVALID                              # sender is at fault
         return OK
-    if E >= trusted.from_epoch:
+    if E >= trusted.from_epoch:                         # fallback; trusted is fixed at startup (07-consensus.md §8.3)
         s = certificate_verifier(NAMESPACE=b"TEMPO", identity=trusted.identity)
         if not fin.verify(s):
             return FALLBACK_FAILED                      # identity may have rotated
@@ -940,6 +1028,7 @@ Handling:
 
 - Upstream event, `OK`: report the block to marshal as certified for `fin.round` and report `fin` as a finalization.
 - Upstream event, `FALLBACK_FAILED`: if `epoch(block.number) > current_epoch`, set `epoch_sync_target` to the max of it and any pending target and hint the boundary of the current epoch (7.5). Drop the event.
+- Upstream event, `IDENTITY_UNAVAILABLE` (an epoch below `trusted.from_epoch` with no installed scheme): drop, without a hint. A follower with the genesis checkpoint never gets this result.
 - Upstream event, `INVALID`: drop. Other errors (malformed, digest or epoch mismatch): drop and log.
 - `tempo/1` certificate with `round ≤ latest_verified_round`: accept as already settled. `OK`: raise `latest_verified_round` and report the finalization to marshal (marshal fetches the block). `INVALID` → *invalid*. `IDENTITY_UNAVAILABLE` → *needs scheme*. `FALLBACK_FAILED` → hint as above, then *needs scheme* (4.3.5).
 
@@ -950,20 +1039,21 @@ Handling:
 At startup (after marshal is initialized):
 
 1. Run the tip verification of 6.4 step 3 with the persisted driver identity (9.3).
-2. Let `f` be the EL's finalized height and `b` the latest boundary at or below `f` (`f` itself if it is a boundary, else `last(epoch(f) − 1)`, or 0). Decode `header(b).extra_data` as an `OnchainDkgOutcome` (failure is fatal) and register `certificate_verifier(outcome.network_identity)` for `outcome.epoch`. Set `current_epoch = outcome.epoch`.
+2. Let `f` be the EL's finalized height and `b` the latest boundary at or below `f` (`f` itself if it is a boundary, else `last(epoch(f) − 1)`, or 0). Read `header(b).extra_data` as an `OnchainDkgOutcome` with prefix decoding (failure is fatal) and register `certificate_verifier(outcome.output.public.public())` for `outcome.epoch`. Set `current_epoch = outcome.epoch`.
 3. If the startup floor (5.1.5) is in a later epoch than `b`'s outcome describes (the EL is behind consensus storage), let `p = epoch(floor) − 1`; if `p > epoch(b)` and marshal has the block `last(p)`, decode and register its outcome likewise and raise `current_epoch`. If marshal lacks it, continue: the node relies on the pinned identity fallback.
 
 On every block marshal delivers (in order, after durable storage), if it is a boundary block `last(E)`:
 
 ```python
-outcome = OnchainDkgOutcome.decode(block.extra_data)       # MUST succeed
-scheme_provider.register(outcome.epoch, certificate_verifier(outcome.network_identity))
+outcome = OnchainDkgOutcome.read(block.extra_data)         # prefix decode (07-consensus.md §10); failure is fatal
+identity = outcome.output.public.public()                   # the network identity of outcome.epoch
+scheme_provider.register(outcome.epoch, certificate_verifier(identity))
 assert outcome.epoch == E + 1                               # fatal otherwise
-if outcome.epoch >= configured.from_epoch and outcome.network_identity != configured.identity:
+if outcome.epoch >= configured.from_epoch and identity != configured.identity:
     warn("binary's network identity is outdated")
 persisted_from = max(trusted.from_epoch, driver_record.from_epoch if any)
 if outcome.epoch >= persisted_from:
-    driver_record.observe(from_epoch=outcome.epoch, identity=outcome.network_identity)
+    driver_record.observe(from_epoch=outcome.epoch, identity=identity)
 current_epoch = max(current_epoch, outcome.epoch)
 if epoch_sync_target is not None:
     if current_epoch >= epoch_sync_target: epoch_sync_target = None
@@ -971,7 +1061,7 @@ if epoch_sync_target is not None:
 acknowledge(block)                                          # always last
 ```
 
-`driver_record.observe` persists `{from_epoch, identity}` only when the identity differs from the persisted one (a reshare keeps the original `from_epoch`), syncing before returning.
+`driver_record.observe` persists `{from_epoch, identity}` only when the identity differs from the persisted one (a reshare keeps the original `from_epoch`), syncing before returning. It does not change `trusted`: the fallback of 7.4 keeps the identity selected at startup until the next restart, which then selects the persisted record if it is newer ([07-consensus.md §8.3](07-consensus.md#83-network-identity-checkpoints) describes what this fallback trusts).
 
 A hint always names `last(current_epoch)`, never a height taken from an unverified certificate. Each processed boundary installs the scheme needed to verify the next boundary's finalization, so a follower that slept through a full-DKG rotation catches up one epoch at a time; a quarantined `tempo/1` certificate is retried once a processed boundary installs its epoch's scheme. Gossip observes boundaries only after the driver has processed them.
 
@@ -1026,7 +1116,7 @@ The validator executor separates **delivery** from **forkchoice**:
 - `engine_forkchoiceUpdated` (outside block building) sets `finalized = safe =` the latest delivered finalized block, and `head =` the *convergence target* (the parent selected by the latest consensus context, i.e. the notarized tip being built on) only if that target's own `newPayload` returned `VALID` and its ancestry was walked down to the current finalized tip; otherwise `head =` the finalized block.
 - A finalized block whose `newPayload` is not `VALID`, a forkchoice update that is not `VALID`, and any engine call that fails outright are fatal.
 - A finalized block is acknowledged to marshal only once the forkchoice update finalizing it was accepted **and** the EL has durably persisted it.
-- Block building: fetch and deliver the parent, then `forkchoiceUpdated` with payload attributes on `VALID`. Verification probes and the `SYNCING` ancestor walk are specified in 07-consensus.md (validator verification procedure).
+- Block building: fetch and deliver the parent, then `forkchoiceUpdated` with payload attributes on `VALID`. Verification probes and the `SYNCING` ancestor walk are specified in [07-consensus.md §13](07-consensus.md#13-validator-verification-procedure) (verification probe, step 8).
 - A heartbeat forkchoice update is resent after `--consensus.fcu-heartbeat-interval` (default 5 min) without one.
 
 So on a validator, the EL's `finalized`/`safe` tags are the latest finalized block and `latest` is the notarized tip the node is converging on, which is never behind `finalized`.
@@ -1057,16 +1147,16 @@ A validator MUST satisfy all of the following across crashes and restarts:
 3. **Ack after durability.** A finalized block MUST NOT be acknowledged to marshal (and so marked processed) until the EL has durably persisted it and accepted the forkchoice update finalizing it; marshal emits a block only after durably storing it with its finalization (5.1.3). On restart, marshal resumes delivery above its persisted processed height, or at the finalization archive's lowest entry when that is higher (5.1.5), and the executor first replays blocks from the EL's finalized height up to that point (5.7), so no finalized block is skipped by the EL.
 4. **Startup checks** of 9.4 MUST pass before any actor starts.
 
-> **Informative**: the encodings in this note are the reference implementation's local formats. They are not interoperable and another implementation MAY store this state differently; only the durability rules of item 2 are normative.
+> **Informative**: the encodings in this note are local formats of Tempo's node. They are not interoperable and another implementation MAY store this state differently; only the durability rules of item 2 are normative.
 >
-> Reference DKG state encoding (codec of [codec.md](commonware/codec.md); `Set` is [§6.1](commonware/codec.md#61-ordered-set), `Option` [§5.2](commonware/codec.md#52-option), tags [§5.6](commonware/codec.md#56-tagged-unions-enums)): `State := varint(epoch) || seed[32] || Output || ShareState || Set<ed25519>(players, 1..=65535) || Set<ed25519>(syncers, 0..=65535, always empty) || bool(is_full_dkg)`; `ShareState := 0x00 || Option<Share>` (plaintext; other tags are reserved). `Output` is [dkg.md §11.1](commonware/dkg.md#111-output) and `Share` is [cryptography.md §5.2](commonware/cryptography.md#52-share-encoding). Event journal entries: `0x00 || dealer || DealerPubMsg || DealerPrivMsg` (dealing), `0x01 || player || PlayerAck` (ack), `0x02 || dealer || DealerLog` (log), `0x03 || digest[32] || parent[32] || varint(height)` (finalized), with the messages of [dkg.md §5](commonware/dkg.md#5-messages) and `DealerLog` of [dkg.md §8.1](commonware/dkg.md#81-dealerlog-encoding).
+> DKG state encoding of Tempo's node (codec of [codec.md](commonware/codec.md); `Set` is [§6.1](commonware/codec.md#61-ordered-set), `Option` [§5.2](commonware/codec.md#52-option), tags [§5.6](commonware/codec.md#56-tagged-unions-enums)): `State := varint(epoch) || seed[32] || Output || ShareState || Set<ed25519>(players, 1..=65535) || Set<ed25519>(syncers, 0..=65535, always empty) || bool(is_full_dkg)`; `ShareState := 0x00 || Option<Share>` (plaintext; other tags are reserved). `Output` is [dkg.md §11.1](commonware/dkg.md#111-output) and `Share` is [cryptography.md §5.2](commonware/cryptography.md#52-share-encoding). Event journal entries: `0x00 || dealer || DealerPubMsg || DealerPrivMsg` (dealing), `0x01 || player || PlayerAck` (ack), `0x02 || dealer || DealerLog` (log), `0x03 || digest[32] || parent[32] || varint(height)` (finalized), with the messages of [dkg.md §5](commonware/dkg.md#5-messages) and `DealerLog` of [dkg.md §8.1](commonware/dkg.md#81-dealerlog-encoding).
 
 On startup the DKG manager uses the persisted state if its epoch is at least the epoch of height `floor + 1`; otherwise it rebuilds the state from the chain as described at the end of 6.4.
 
 ### 9.3 Follower requirements
 
 1. Marshal storage and the ack-after-processing rule as for validators, except that a follower acknowledges a block once its `newPayload` returned `VALID` or `SYNCING` and its forkchoice update was handled; the floor only advances to blocks the EL has durably persisted and that are at least one epoch behind the EL's finalized height (7.6).
-2. The trusted-identity record holds `{from_epoch, identity}` (a 96-byte G2 network identity). It MUST be written durably before the follower relies on a changed identity (7.5). It is never part of a snapshot. Informative: the reference record is `0x01 || u64be(from_epoch) || G2[96]` (version 1, 105 bytes; G2 encoding [cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)), a local format that other implementations need not share.
+2. The trusted-identity record holds `{from_epoch, identity}` (a 96-byte G2 network identity). It MUST be written durably before the follower relies on a changed identity (7.5). It is never part of a snapshot. Informative: Tempo's node writes the record as `0x01 || u64be(from_epoch) || G2[96]` (version 1, 105 bytes; G2 encoding [cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)), a local format that other implementations need not share.
 3. A follower MUST NOT move its EL forkchoice to a block that marshal has not stored together with its finalization (or as an ancestor of a stored finalization).
 
 ### 9.4 Startup consistency checks (both modes)
@@ -1126,4 +1216,4 @@ A configured share is used only if it matches the public polynomial of the lates
 
 > **Resolved conflict C-P2P-02**: docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalized and nullified events and `consensus_getLatest` returns the latest notarized block; the code emits only finalized events and always returns `notarized: null`. Decided: this spec follows the implementation, and the docs are fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098). See [conflicts](conflicts.md#c-p2p-02).
 
-Section 2.1 states the code's behaviour for C-P2P-01 and section 7.2 for C-P2P-02. Neither affects block validity.
+Section 2.1 states the decided behaviour for C-P2P-01 and section 7.2 for C-P2P-02. Neither affects block validity.

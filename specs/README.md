@@ -6,7 +6,7 @@ This folder specifies the Tempo protocol precisely enough to build a Tempo clien
 
 - **In scope:** everything that decides whether a block is valid and what state it produces, plus what a validator needs to propose, vote and run the DKG, and what a follower needs to sync and verify finality.
 - **Networks:** Tempo mainnet (chain ID 4217) from genesis, with every rule from T0 through T13. Moderato testnet (chain ID 42431) shares these rules from its T0 activation onward. Its earlier pre-T0 "Genesis" era is not specified.
-- **Out of scope:** JSON-RPC, transaction pool policy (except where it affects block validity), node operations, T14 and later.
+- **Out of scope:** JSON-RPC, except the `consensus_*` methods a follower depends on ([08-p2p-and-sync.md §7.2](08-p2p-and-sync.md#72-certificate-sources)); transaction pool policy (except where it affects block validity), node operations, T14 and later.
 
 ## Normative references
 

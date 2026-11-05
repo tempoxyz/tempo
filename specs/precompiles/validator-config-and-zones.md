@@ -145,71 +145,78 @@ Inbound is validated before outbound. Revert data length affects only callers' g
 
 ### 1.4 Function semantics
 
+The pseudocode follows the conventions of [precompiles/00-framework.md §6.10](00-framework.md#610-pseudocode-conventions): each `len(validatorsArray)` is one SLOAD of slot 1, `validatorsArray[i]` is unchecked, `r = validators[a]` is a whole read of all four record slots (and the data words of a long-form string), and `validators[a] = r` is a whole write. Every written occurrence is performed again; nothing is cached between them.
+
 ```python
 def check_owner(sender):
-    if sender != sload(0).owner: revert Unauthorized()
+    if sender != owner: revert Unauthorized()       # one SLOAD of slot 0 (full access)
+
+def exists(a) -> bool:
+    r = validators[a]                                # whole read (4 slots + long-string data words)
+    return r.publicKey != 0
 
 def owner() -> address: return owner
 def validatorCount() -> uint64: return len(validatorsArray)
 def getNextFullDkgCeremony() -> uint64: return nextDkgCeremony
 
 def validatorsArray(index: uint256) -> address:
-    if index >= 2**64 or index >= len(validatorsArray): revert Panic(0x32)
-    return validatorsArray[index]
+    if index >= 2**64: revert Panic(0x32)           # no storage read
+    return validatorsArray.at(index)                 # checked: length read, then element; out of bounds = Panic(0x32)
 
 def validators(addr) -> Validator:
-    # returns the stored record verbatim, all-zero if absent
-    return validators[addr]
+    return validators[addr]                          # whole read; the stored record verbatim, all-zero if absent
 
 def getValidators() -> Validator[]:
     out = []
-    for i in range(len(validatorsArray)):
-        a = validatorsArray[i]
-        r = validators[a]
+    for i in range(len(validatorsArray)):            # one length read for the whole loop
+        a = validatorsArray[i]                       # unchecked
+        r = validators[a]                            # whole read
         out.append(Validator(r.publicKey, r.active, r.index, a, r.inboundAddress, r.outboundAddress))
     return out
 
 def addValidator(sender, newAddr, publicKey, active, inbound, outbound):
     if publicKey == 0: revert InvalidPublicKey()
     check_owner(sender)
-    if validators[newAddr].publicKey != 0: revert ValidatorAlreadyExists()
+    if exists(newAddr): revert ValidatorAlreadyExists()
     validate_endpoints(inbound, outbound)            # §1.3
-    validators[newAddr] = Validator(publicKey, active, index=len(validatorsArray),
-                                    validatorAddress=newAddr, inbound, outbound)
-    validatorsArray.push(newAddr)
+    i = len(validatorsArray)
+    validators[newAddr] = Validator(publicKey, active, index=i,
+                                    validatorAddress=newAddr, inbound, outbound)   # whole write, not fresh
+    validatorsArray.push(newAddr)                    # its own length read, element store, length store
 
 def updateValidator(sender, newAddr, publicKey, inbound, outbound):
     if publicKey == 0: revert InvalidPublicKey()
-    if validators[sender].publicKey == 0: revert ValidatorNotFound()
-    old = validators[sender]
+    if not exists(sender): revert ValidatorNotFound()
+    old = validators[sender]                         # a second whole read of the same record
     if newAddr != sender:
-        if validators[newAddr].publicKey != 0: revert ValidatorAlreadyExists()
-        validatorsArray[old.index] = newAddr
-        delete validators[sender]                     # clears all 4 slots incl. long-string data
+        if exists(newAddr): revert ValidatorAlreadyExists()
+        validatorsArray[old.index] = newAddr         # unchecked element store (no length read)
+        del validators[sender]                       # whole delete: both strings (incl. long-string data), then slots b+0, b+1
     validate_endpoints(inbound, outbound)            # §1.3 (after the rotation writes)
-    validators[newAddr] = Validator(publicKey, old.active, old.index, newAddr, inbound, outbound)
+    validators[newAddr] = Validator(publicKey, old.active, old.index, newAddr, inbound, outbound)   # whole write, not fresh
 
 def changeValidatorStatus(sender, addr, active):
     check_owner(sender)
-    if validators[addr].publicKey == 0: revert ValidatorNotFound()
-    r = validators[addr]; r.active = active
-    validators[addr] = r                              # full-record write
+    if not exists(addr): revert ValidatorNotFound()
+    r = validators[addr]                             # a second whole read
+    r.active = active
+    validators[addr] = r                             # whole write, not fresh
 
 def changeValidatorStatusByIndex(sender, index, active):   # from T1
     check_owner(sender)
-    if index >= len(validatorsArray): revert ValidatorNotFound()
-    a = validatorsArray[index]
-    r = validators[a]; r.active = active
-    validators[a] = r                                 # full-record write
+    a = validatorsArray.at(index)                    # checked: length read, then element; out of bounds = ValidatorNotFound()
+    r = validators[a]                                # whole read (no existence check)
+    r.active = active
+    validators[a] = r                                # whole write, not fresh
 
 def changeOwner(sender, newOwner):
-    check_owner(sender); owner = newOwner             # zero allowed
+    check_owner(sender); owner = newOwner            # full store of slot 0; zero allowed
 
 def setNextFullDkgCeremony(sender, epoch):
-    check_owner(sender); nextDkgCeremony = epoch
+    check_owner(sender); nextDkgCeremony = epoch     # full store of slot 3
 ```
 
-Notes (normative): V1 does not enforce public-key uniqueness, does not reject a zero `newValidatorAddress`, never shrinks `validatorsArray`, and `updateValidator` is authorised by the record at `msg.sender` only (the owner has no special right there). "Full-record write" stores every field of the struct in field order, as the framework's struct write defines.
+Notes (normative): V1 does not enforce public-key uniqueness, does not reject a zero `newValidatorAddress`, never shrinks `validatorsArray`, and `updateValidator` is authorised by the record at `msg.sender` only (the owner has no special right there). `owner` (slot 0) and `nextDkgCeremony` (slot 3) are each alone in their slot, so they are accessed full ([00-framework.md §6.2](00-framework.md#62-field-slot-allocation)): a read is one SLOAD and a write one SSTORE without a prior load. A whole write of a `Validator` record follows [00-framework.md §6.3](00-framework.md#63-structs): `publicKey` is stored; the run `active · index · validatorAddress` in `b+1` is assembled from the slot's current word (one SLOAD) before T4 and from zero from T4; each string is written to a destination that is not fresh (from T5 its old word is loaded first for tail cleanup, [§6.7](00-framework.md#67-bytes-and-string)). The element that `push` writes is a full-slot store.
 
 ## 2. ValidatorConfigV2 (TIP-1017)
 
@@ -218,7 +225,7 @@ Notes (normative): V1 does not enforce public-key uniqueness, does not reject a 
 - The address `0xCCCCCCCC00000000000000000000000000000001` is routed to the native precompile at every fork (it is listed as a Genesis system precompile), regardless of the account's code.
 - Before T2: a call MUST charge the input cost (§0.1) and then return success with empty return data, without decoding the selector, reading or writing storage. (This differs from calling an empty account: the input charge applies.)
 - At the start of every block from T2, before any transaction, if the account at this address has empty code (code hash `0xc5d2…a470` = `keccak256("")`, or the account does not exist), the executor MUST set its code to the single byte `0xEF`, keeping its balance and nonce (a non-existent account is created with nonce 0 and balance 0) and writing no storage. This is idempotent: after the first T2 block the condition is false. The step's position among the other pre-block steps is defined in 05-block-execution.md. Mainnet genesis contains no account at this address, so the marker is written in the first T2 block.
-- From T2, calls dispatch per §2.3. The storage is all-zero at T2 activation (owner `0`, not initialized), so every function except the views, `deactivateValidator` (which finds no validators), `migrateValidator` and `initializeIfMigrated` reverts `NotInitialized()` until migration completes (§2.7).
+- From T2, calls dispatch per §2.3. The storage is all-zero at T2 activation (owner `0`, not initialized). Until migration completes (§2.7), every mutator other than `deactivateValidator`, `migrateValidator` and `initializeIfMigrated` fails, and each reports the first failing check of its own order in §2.6: `addValidator` and `setNetworkIdentityRotationEpoch` revert `NotInitialized()` first; `rotateValidator`, `setFeeRecipient`, `setIpAddresses` and `transferValidatorOwnership` first run `get_active_validator` (with no records they revert `ValidatorNotFound()`) and only then check initialization; `transferOwnership(address(0))` reverts `InvalidOwner()` before the initialization check. Views succeed.
 
 ### 2.2 Storage layout
 
@@ -286,9 +293,9 @@ interface IValidatorConfigV2 {
 }
 ```
 
-> **Resolved conflict C-VAL-01**: TIP-1017 orders the `Validator` struct `…, egress, index, addedAtHeight, deactivatedAtHeight, feeRecipient`; the code returns `…, egress, feeRecipient, index, addedAtHeight, deactivatedAtHeight`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-01).
+> **Resolved conflict C-VAL-01**: TIP-1017 orders the `Validator` struct `…, egress, index, addedAtHeight, deactivatedAtHeight, feeRecipient`; the implementation returns `…, egress, feeRecipient, index, addedAtHeight, deactivatedAtHeight`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-01).
 
-> **Resolved conflict C-VAL-02**: TIP-1017 names the rotation-epoch functions `getNextFullDkgCeremony()` / `setNextFullDkgCeremony(uint64)` (selectors `0x281a69ec` / `0xc3576d46`); the code exposes only `getNextNetworkIdentityRotationEpoch()` / `setNetworkIdentityRotationEpoch(uint64)`, so the TIP selectors revert `UnknownFunctionSelector` on V2. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-02).
+> **Resolved conflict C-VAL-02**: TIP-1017 names the rotation-epoch functions `getNextFullDkgCeremony()` / `setNextFullDkgCeremony(uint64)` (selectors `0x281a69ec` / `0xc3576d46`); the implementation exposes only `getNextNetworkIdentityRotationEpoch()` / `setNetworkIdentityRotationEpoch(uint64)`, so the TIP selectors revert `UnknownFunctionSelector` on V2. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-02).
 
 Events (emitted at the V2 address; `indexed` fields are topics in declaration order after topic0):
 
@@ -334,8 +341,10 @@ Errors:
 
 #### 2.4.1 Guards
 
+The V2 pseudocode follows [00-framework.md §6.10](00-framework.md#610-pseudocode-conventions). Each `len(validators)` or `len(activeIndices)` is one SLOAD of slot 1 or slot 6. Element accesses `validators[i]` and `activeIndices[i]` are unchecked unless the pseudocode tests the index against a `len(...)` it evaluates itself. `v = validators[i]` is a whole read of the six record slots plus the data words of a long-form `ingress` or `egress`. `validators[i].f` reads or writes only member `f`; the members of `b+4` and of `b+5` share a slot, so a member write there is an SLOAD and an SSTORE of that slot. `config` fits in slot 0, so a whole read of it is one SLOAD.
+
 ```python
-def cfg(): return sload_config()                        # one read of slot 0
+def cfg(): return config                                # whole read of slot 0: one SLOAD
 def require_init(c):      if not c.isInit: revert NotInitialized()
 def require_not_init(c):  if c.isInit: revert AlreadyInitialized()
 def require_owner(c, s):  if s != c.owner: revert Unauthorized()
@@ -343,8 +352,8 @@ def require_owner_or_validator(c, s, v):
     if s != v and s != c.owner: revert Unauthorized()
 
 def get_active_validator(idx) -> ValidatorRecord:
-    if idx >= len(validators): revert ValidatorNotFound()
-    v = validators[idx]                                  # full-record read
+    if idx >= len(validators): revert ValidatorNotFound()   # one length read
+    v = validators[idx]                                  # unchecked whole read (6 slots + long-string data)
     if v.deactivatedAtHeight != 0: revert ValidatorAlreadyDeactivated()
     return v
 
@@ -355,7 +364,8 @@ def require_new_pubkey(pk):
 def require_new_address(a):                              # deactivated addresses may be reused
     if a == 0: revert InvalidValidatorAddress()
     i1 = addressToIndex[a]
-    if i1 != 0 and validators[i1-1].deactivatedAtHeight == 0: revert AddressAlreadyHasValidator()
+    if i1 != 0 and validators[i1-1].deactivatedAtHeight == 0:   # unchecked member read of b+5: one SLOAD
+        revert AddressAlreadyHasValidator()
 ```
 
 #### 2.4.2 Endpoint validation
@@ -368,7 +378,7 @@ def validate_endpoints(ingress, egress):
         revert NotIp(egress, "input was not a valid IP address")
 ```
 
-(From T14 additional length and IPv4-mapped checks apply; out of scope.) An accepted `egress` is at most 45 bytes. An accepted `ingress` is at most 64 bytes unless `port` or `scope` has leading zeros, which the grammar allows without limit. At ≤ T13 nothing rejects a longer `ingress` here. If an `ingress` longer than 255 bytes reaches the `uint8(len(ingress))` of §2.4.4, its length does not fit in the prefix: that is an internal invariant violation, and block processing fails ([00-framework.md §5](00-framework.md#5-results-and-errors)). No valid block contains such a call.
+(From T14 additional length and IPv4-mapped checks apply; out of scope.) An accepted `egress` is at most 45 bytes. An accepted `ingress` is at most 64 bytes unless `port` or `scope` has leading zeros, which the grammar allows without limit. At ≤ T13 nothing rejects a longer `ingress` here. If an `ingress` longer than 255 bytes reaches the `uint8(len(ingress))` of §2.4.4 (that is, the call passed every earlier check of `addValidator` or `rotateValidator`, including the signature-format check), its length does not fit in the prefix. That is an invariant violation ([00-framework.md §5](00-framework.md#5-results-and-errors)): a block containing a transaction whose execution reaches it is invalid, whether the call is the transaction's top-level call or a nested one. No transaction-pool or block-building rule filters such transactions out, so a proposer MUST NOT include one; it would make its own block invalid.
 
 #### 2.4.3 Ingress key
 
@@ -379,7 +389,13 @@ def ingressKey(ingress) -> bytes32:
     else:        return keccak256(sa.ip.octets[16] ‖ be32(sa.scope_id) ‖ be16(sa.port))   # scope 0 if absent
 ```
 
-Two textual forms of the same socket address (for example `[::1]:80` and `[0:0:0:0:0:0:0:1%0]:80`) have the same key.
+Two textual forms of the same socket address (for example `[::1]:80` and `[0:0:0:0:0:0:0:1%0]:80`) have the same key. An absent scope and `%0` are the same scope id.
+
+| `ingress` | Hashed bytes | `ingressKey` |
+|---|---|---|
+| `1.2.3.4:80` | `010203040050` | `0x84b7e0232698f689bac022cb0191407d51217fec7d0ebea33357d5aff9d94f7c` |
+| `[::1%0]:80`, `[::1]:80`, `[0:0:0:0:0:0:0:1%0]:80` | `00000000000000000000000000000001` ‖ `00000000` ‖ `0050` | `0x897c6d1db7619342dbaaa277cb296dd2ced5f1b603c953f9c416991a931634bd` |
+| `[fe80::1%3]:8000` | `fe800000000000000000000000000001` ‖ `00000003` ‖ `1f40` | `0xe322ec538e6be65a46f95eddd3625d226084d0822a8459e9474c200441b00e12` |
 
 #### 2.4.4 Key-ownership signature
 
@@ -406,6 +422,15 @@ def verify_validator_signature(kind, publicKey, signature, validatorAddress, ing
 
 `ed25519_signature_decode` and `ed25519_public_key_decode` decode the 64-byte signature and the 32-byte public key of [cryptography.md §3.1](../commonware/cryptography.md#31-ed25519-encodings) (exact length, no trailing bytes); a public key MUST decompress under [§3.2](../commonware/cryptography.md#32-public-key-decoding). `pk.verify(ns, msg, sig)` is the namespaced Ed25519 verification of [§3.5](../commonware/cryptography.md#35-namespaced-ed25519-signatures): ZIP-215 verification ([§3.4](../commonware/cryptography.md#34-ed25519-verification)) over `union_unique(ns, msg)` ([codec.md §7.2](../commonware/codec.md#72-union_unique)). The acceptance set of keys and signatures is exactly that of those sections. The signature is decoded before the public key, so a malformed signature reports `InvalidSignatureFormat` even when the key is also undecodable. No gas is charged for decoding or verification.
 
+Test vector (ADD): `chain_id = 4217`, `validatorAddress = 0x1111111111111111111111111111111111111111`, `ingress = "1.2.3.4:80"`, `egress = "1.2.3.4"`, `feeRecipient = 0x2222222222222222222222222222222222222222`. The 87-byte preimage is
+
+```text
+0000000000001079 cccccccc00000000000000000000000000000001 1111111111111111111111111111111111111111
+0a 312e322e332e343a3830 07 312e322e332e34 2222222222222222222222222222222222222222
+```
+
+(spaces for readability only) and `msg = 0x8319b04267158b3212e55f0bb42fe050eff4c769dea3c48c8914f18b113accbf`. The key then signs `union_unique(NS_ADD, msg)`.
+
 ### 2.5 Views
 
 ```python
@@ -420,8 +445,8 @@ def to_abi(r) -> Validator:
                      r.index, r.addedAtHeight, r.deactivatedAtHeight)
 
 def validatorByIndex(i):
-    if i >= len(validators): revert ValidatorNotFound()
-    return to_abi(validators[i])
+    if i >= len(validators): revert ValidatorNotFound()  # the only length read
+    return to_abi(validators[i])            # unchecked whole read
 def validatorByAddress(a):
     i1 = addressToIndex[a]
     if i1 == 0: revert ValidatorNotFound()
@@ -431,14 +456,22 @@ def validatorByPublicKey(pk):
     if i1 == 0: revert ValidatorNotFound()
     return to_abi(validators[i1-1])
 def getActiveValidators():
+    # one length read; per entry one unchecked element read of activeIndices and one whole record read
     return [to_abi(validators[activeIndices[j]-1]) for j in range(len(activeIndices))]
 ```
+
+`owner()`, `isInitialized()` and `getInitializedAtHeight()` each read slot 0 once; `getNextNetworkIdentityRotationEpoch()` reads slot 4 once (it is alone in its slot, so it is accessed full).
 
 The order of `getActiveValidators()` is the `activeIndices` order, which changes on deactivation (§2.6.2); consumers MUST NOT rely on it.
 
 ### 2.6 Mutators
 
-`block.number` is the executing block's number. All checks and writes are in the order shown.
+`block.number` is the executing block's number. All checks, reads and writes are in the order shown. Two kinds of record write occur:
+
+- `validators[i] = v` is a whole write to a destination that is not fresh ([00-framework.md §6.3](00-framework.md#63-structs)). `publicKey` is stored. Before T4 the slots `b+1`, `b+4` and `b+5` (each a run of packable members) are each loaded and then stored; from T4 they are stored without a load. From T5 the old word of `ingress` and of `egress` is loaded before each is written, for tail cleanup.
+- `validators.push(rec)` reads the length, then writes the record at the new index as a fresh destination, then stores the new length ([§6.6](00-framework.md#66-dynamic-arrays-t)). Before T4 the run slots `b+1`, `b+4` and `b+5` are still loaded first, but the strings' old words are never loaded.
+
+`activeIndices` elements are `uint64` packed four per slot, so every element write or delete is an SLOAD and an SSTORE of its slot.
 
 #### 2.6.1 addValidator (owner)
 
@@ -461,10 +494,11 @@ def append_validator(addr, pk, ingress, egress, fee, added, deactivated) -> uint
     n = len(validators)
     activeIdx = 0
     if deactivated == 0:
-        activeIndices.push(n + 1)            # element write, then length write
-        activeIdx = len(activeIndices)
+        activeIndices.push(n + 1)            # length read, element SLOAD + SSTORE, length store
+        activeIdx = len(activeIndices)       # a second length read of slot 6
     validators.push(ValidatorRecord(pk, addr, ingress, egress, fee, index=n,
                                     activeIdx=activeIdx, added=added, deactivated=deactivated))
+                                             # reads len(validators) again; fresh destination
     pubkeyToIndex[pk] = n + 1
     addressToIndex[addr] = n + 1             # overwrites a pointer to a deactivated record
     return n
@@ -479,15 +513,15 @@ def deactivateValidator(sender, idx):
     v = get_active_validator(idx)
     require_owner_or_validator(cfg(), sender, v.validatorAddress)
     delete activeIngressIps[ingressKey(v.ingress)]
-    validators[idx].deactivatedAtHeight = block.number
-    a = v.activeIdx - 1
+    validators[idx].deactivatedAtHeight = block.number    # member write: SLOAD + SSTORE of b+5
+    a = v.activeIdx - 1                             # from the record read above, not re-read
     last = len(activeIndices) - 1
     if a != last:                                   # swap-and-pop
-        moved = activeIndices[last]
-        activeIndices[a] = moved
-        validators[moved - 1].activeIdx = a + 1
-    activeIndices.pop()                             # zeroes the vacated element, then length -= 1
-    validators[idx].activeIdx = 0
+        moved = activeIndices[last]                 # unchecked: one SLOAD
+        activeIndices[a] = moved                    # unchecked: SLOAD + SSTORE
+        validators[moved - 1].activeIdx = a + 1     # member write: SLOAD + SSTORE
+    activeIndices.pop()                             # its own length read, element read, lane zeroed (SLOAD + SSTORE), length store
+    validators[idx].activeIdx = 0                   # member write: SLOAD + SSTORE of b+5
     emit ValidatorDeactivated(idx, v.validatorAddress)
 ```
 
@@ -504,18 +538,21 @@ def rotateValidator(sender, idx, publicKey, ingress, egress, signature):
     if activeIngressIps[ingressKey(ingress)]: revert IngressAlreadyExists(ingress)
     #   (the validator's own current ingress counts as in use: the new ingress MUST differ, a port change suffices)
     verify_validator_signature(ROTATE, publicKey, signature, v.validatorAddress, ingress, egress)
-    # update ingress tracking (keys always differ here)
-    delete activeIngressIps[ingressKey(v.ingress)]
-    activeIngressIps[ingressKey(ingress)] = true
+    # update ingress tracking; the keys always differ here (an equal key failed the check above)
+    old, new = ingressKey(v.ingress), ingressKey(ingress)
+    if old != new:
+        if activeIngressIps[new]: revert IngressAlreadyExists(ingress)   # a second read of the same slot; never true here
+        delete activeIngressIps[old]
+        activeIngressIps[new] = true
     # append a deactivated snapshot of the old identity
-    j = len(validators)
+    j = len(validators)                              # then push reads the length again
     validators.push(ValidatorRecord(v.publicKey, v.validatorAddress, v.ingress, v.egress, v.feeRecipient,
                                     index=j, activeIdx=0, added=v.addedAtHeight, deactivated=block.number))
     pubkeyToIndex[v.publicKey] = j + 1
     # overwrite the original slot in place
-    r = validators[idx]
+    r = validators[idx]                              # a fresh whole read (6 slots), not the earlier v
     r.publicKey = publicKey; r.ingress = ingress; r.egress = egress; r.addedAtHeight = block.number
-    validators[idx] = r                              # full-record write
+    validators[idx] = r                              # whole write, not fresh
     pubkeyToIndex[publicKey] = idx + 1
     emit ValidatorRotated(idx, j, v.validatorAddress, v.publicKey, publicKey, ingress, egress, sender)
 ```
@@ -529,7 +566,7 @@ def setFeeRecipient(sender, idx, feeRecipient):
     v = get_active_validator(idx)
     c = cfg(); require_init(c); require_owner_or_validator(c, sender, v.validatorAddress)
     v.feeRecipient = feeRecipient
-    validators[idx] = v                              # full-record write
+    validators[idx] = v                              # whole write, not fresh (v is not re-read)
     emit FeeRecipientUpdated(idx, feeRecipient, sender)
 
 def setIpAddresses(sender, idx, ingress, egress):
@@ -542,7 +579,7 @@ def setIpAddresses(sender, idx, ingress, egress):
         delete activeIngressIps[old]
         activeIngressIps[new] = true
     v.ingress = ingress; v.egress = egress
-    validators[idx] = v                              # full-record write
+    validators[idx] = v                              # whole write, not fresh (v is not re-read)
     emit IpAddressesUpdated(idx, ingress, egress, sender)
 
 def transferValidatorOwnership(sender, idx, newAddress):
@@ -551,7 +588,7 @@ def transferValidatorOwnership(sender, idx, newAddress):
     require_new_address(newAddress)                  # the record's own address is active: AddressAlreadyHasValidator
     old = v.validatorAddress
     v.validatorAddress = newAddress
-    validators[idx] = v                              # full-record write
+    validators[idx] = v                              # whole write, not fresh (v is not re-read)
     delete addressToIndex[old]
     addressToIndex[newAddress] = idx + 1
     emit ValidatorOwnershipTransferred(idx, old, newAddress, sender)
@@ -566,13 +603,13 @@ def transferOwnership(sender, newOwner):
     if newOwner == 0: revert InvalidOwner()          # checked before initialization and auth
     c = cfg(); require_init(c); require_owner(c, sender)
     old = c.owner; c.owner = newOwner
-    store_config(c)
+    store_config(c)                                  # whole write of slot 0: SLOAD + SSTORE before T4, SSTORE from T4
     emit OwnershipTransferred(old, newOwner)
 
 def setNetworkIdentityRotationEpoch(sender, epoch):
     c = cfg(); require_init(c); require_owner(c, sender)
-    prev = nextNetworkIdentityRotationEpoch
-    nextNetworkIdentityRotationEpoch = epoch
+    prev = nextNetworkIdentityRotationEpoch          # slot 4, full access: one SLOAD
+    nextNetworkIdentityRotationEpoch = epoch         # one SSTORE, no prior load
     emit NetworkIdentityRotationEpochSet(prev, epoch)
 ```
 
@@ -584,12 +621,13 @@ Migration copies V1 records into V2 one call at a time, in **descending** V1 ind
 def require_migration_owner(sender) -> Config:
     c = cfg(); require_not_init(c)
     if c.owner == 0:                                  # first migration call (or V1 owner is zero)
-        c.owner = V1.owner
-        n1 = len(V1.validatorsArray)
+        c.owner = V1.owner                            # V1 slot 0
+        n1 = len(V1.validatorsArray)                  # V1 slot 1
         if n1 == 0: revert EmptyV1ValidatorSet()
         c.v1ValidatorCount = n1 mod 256               # truncating uint8 snapshot
         store_config(Config(owner=c.owner, isInit=False, initAtHeight=0,
                             migrationSkippedCount=0, v1ValidatorCount=c.v1ValidatorCount))
+                                                      # whole write of slot 0: SLOAD + SSTORE before T4, SSTORE from T4
     require_owner(c, sender)                          # after the bootstrap write; a failing call reverts it
     return c
 
@@ -598,12 +636,14 @@ def migrateValidator(sender, idx):
     n1 = c.v1ValidatorCount
     processed = len(validators) + c.migrationSkippedCount
     if processed >= n1 or idx != n1 - processed - 1: revert InvalidMigrationIndex()
-    a = V1.validatorsArray(idx)                       # V1 Panic(0x32) cannot occur: V1 never shrinks
-    r1 = V1.validators(a)                             # (publicKey, active, index, validatorAddress, inbound, outbound)
+    a = V1.validatorsArray.at(idx)                    # checked: V1 slot 1 (length), then the element slot
+    #   out of bounds would be Panic(0x32); it cannot occur because idx < n1 <= V1's length and V1 never shrinks
+    r1 = V1.validators[a]                             # whole read of the 4-slot V1 record (+ long-string data words)
 
     def skip():
         emit SkippedValidatorMigration(idx, r1.validatorAddress, r1.publicKey)
         config.migrationSkippedCount = min(c.migrationSkippedCount + 1, 255)
+        #   member write of a packed field: SLOAD + SSTORE of slot 0; the other config fields are kept
         return
 
     if not ed25519_public_key_decodes(r1.publicKey): return skip()
@@ -611,7 +651,7 @@ def migrateValidator(sender, idx):
     egress = canonical_ip_text(parse_SocketAddr(r1.outboundAddress).ip)
     if pubkeyToIndex[r1.publicKey] != 0: return skip()
     i1 = addressToIndex[r1.validatorAddress]
-    if i1 != 0 and validators[i1-1].deactivatedAtHeight == 0:
+    if i1 != 0 and validators[i1-1].deactivatedAtHeight == 0:   # unchecked member read of b+5
         revert AddressAlreadyHasValidator()           # NOT a skip
     h = ingressKey(r1.inboundAddress)                 # unparsable inbound reverts NotIpPort (NOT a skip)
     if r1.active and activeIngressIps[h]: return skip()
@@ -625,25 +665,57 @@ def initializeIfMigrated(sender):
     c = require_migration_owner(sender)
     if c.v1ValidatorCount == 0 or len(validators) + c.migrationSkippedCount < c.v1ValidatorCount:
         revert MigrationNotComplete()
-    nextNetworkIdentityRotationEpoch = V1.nextDkgCeremony    # no NetworkIdentityRotationEpochSet event
+    nextNetworkIdentityRotationEpoch = V1.nextDkgCeremony    # V1 slot 3, then V2 slot 4; no NetworkIdentityRotationEpochSet event
     c.initAtHeight = block.number; c.isInit = True
-    store_config(c)                                   # owner, skipped count and v1 count preserved
+    store_config(c)                                   # whole write of slot 0; owner, skipped count and v1 count preserved
     emit Initialized(block.number)
 ```
 
-`canonical_ip_text` is the canonical text of the parsed IP. For IPv4 it is dotted decimal without leading zeros. For an IPv4-mapped IPv6 address (`::ffff:0:0/96`) it is `::ffff:` followed by the IPv4 dotted decimal. For any other IPv6 address it is the RFC 5952 §4 form: lowercase hex groups without leading zeros, with the longest run of two or more zero groups replaced by `::` (the first run when runs tie). No other IPv6 address uses dotted IPv4 notation. The ingress string is copied verbatim; only egress is canonicalised (and loses its port). Inactive V1 records are migrated as born-deactivated entries (`deactivatedAtHeight = addedAtHeight = block.number`, no `activeIndices` entry, no ingress reservation). V1 is read through its storage directly (no call frame, no input charge).
+`canonical_ip_text` is the canonical text of the parsed IP. For IPv4 it is dotted decimal without leading zeros. For an IPv4-mapped IPv6 address (`::ffff:0:0/96`) it is `::ffff:` followed by the IPv4 dotted decimal. For any other IPv6 address it is the RFC 5952 §4 form: lowercase hex groups without leading zeros, with the longest run of two or more zero groups replaced by `::` (the first run when runs tie). No other IPv6 address uses dotted IPv4 notation.
 
-> **Resolved conflict C-VAL-03**: TIP-1017 says `initializeIfMigrated` "can be called immediately when the V1 validator count is zero"; the code reverts `EmptyV1ValidatorSet()` (or `MigrationNotComplete()`) when V1 is empty. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-03).
+| V1 `outboundAddress` | Migrated `egress` |
+|---|---|
+| `[::ffff:1.2.3.4]:9000` | `::ffff:1.2.3.4` |
+| `[0:0:0:0:0:ffff:0102:0304]:9000` | `::ffff:1.2.3.4` |
+| `[2001:0DB8:0000:0000:0000:0000:0000:0001]:9000` | `2001:db8::1` |
+| `[2001:db8:0:0:1:0:0:1]:1` | `2001:db8::1:0:0:1` (the first of two tied runs) |
+| `[1:0:0:2:0:0:0:3]:1` | `1:0:0:2::3` (the longer run) |
+| `[::1.2.3.4]:1` | `::102:304` (not IPv4-mapped) |
+| `[::]:1` | `::` |
 
-> **Resolved conflict C-VAL-04**: TIP-1017 says an invalid V1 entry is always "marked as processed … so global completion is not blocked"; the code reverts `AddressAlreadyHasValidator()` when the V1 address belongs to an active V2 record and reverts `NotIpPort` when the V1 inbound address does not parse, leaving that index unprocessed. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-04).
+The ingress string is copied verbatim; only egress is canonicalised (and loses its port). Inactive V1 records are migrated as born-deactivated entries (`deactivatedAtHeight = addedAtHeight = block.number`, no `activeIndices` entry, no ingress reservation). V1 is read through its storage directly: no call frame, no input charge and no account-access charge for V1's address. Each V1 read is a metered SLOAD of a slot of V1's account (`0xCCCCCCCC00000000000000000000000000000000`) and follows the warm-set rule of [00-framework.md §3.4](00-framework.md#34-account-warmness): it costs the slot's cold or warm SLOAD price, warms the pair (V1 address, slot) and V1's account, and never charges for V1's account itself. The V1 slots read are:
+
+- `require_migration_owner`, only when V2's owner is zero: V1 slot 0 (owner), then V1 slot 1 (length of `validatorsArray`).
+- `migrateValidator`: V1 slot 1 (length, for the checked access), then the element slot `keccak256(p(1)) + idx`, then the record at `b = keccak256(p(a) ‖ p(2))` as a whole read: `b+0`, `b+1`, `b+2` (and its data words if long-form), `b+3` (and its data words if long-form).
+- `initializeIfMigrated`: V1 slot 3 (`nextDkgCeremony`).
+
+A first `migrateValidator` in a transaction therefore reads V1 slot 1 twice (cold, then warm).
+
+> **Resolved conflict C-VAL-03**: TIP-1017 says `initializeIfMigrated` "can be called immediately when the V1 validator count is zero"; the implementation reverts `EmptyV1ValidatorSet()` (or `MigrationNotComplete()`) when V1 is empty. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-03).
+
+> **Resolved conflict C-VAL-04**: TIP-1017 says an invalid V1 entry is always "marked as processed … so global completion is not blocked"; the implementation reverts `AddressAlreadyHasValidator()` when the V1 address belongs to an active V2 record and reverts `NotIpPort` when the V1 inbound address does not parse, leaving that index unprocessed. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-04).
 
 ### 2.8 Gas
 
 Every V2 function costs exactly the input charge plus the framework cost of the storage reads, storage writes and logs listed in §2.4–§2.7, performed in that order. Signature decoding and Ed25519 verification, endpoint parsing and `ingressKey` hashing cost no gas. Pre-T2 calls cost only the input charge.
 
+Test vectors (T3, block number 100). Each call starts with no slot of V1 or V2 warm, as in a new transaction whose access list is empty; the account-access cost of the call into V2 is paid by the caller and is not included. Before the call, V2 is initialized, its owner is the caller, and it holds three active records with short strings: indices 0, 1, 2 with `activeIndices = [1, 2, 3]` and addresses `0x10…10`, `0x11…11`, `0x12…12`. For `migrateValidator`, V2 is empty and V1 holds two active records. "Set" is a clean zero to non-zero SSTORE (100 + 250,000), "reset" a clean non-zero to other SSTORE (100 + 2,800), "no-op" an SSTORE that leaves the value unchanged or rewrites a dirty slot (100). Each cold SSTORE adds 2,100. Refunds are not included.
+
+| Call | Input | SLOAD cold / warm | SSTORE | LOG | Total gas |
+|---|---|---|---|---|---|
+| `addValidator`, ingress `192.168.1.1:8000`, egress `192.168.1.1` (420-byte calldata) | 84 | 10 / 2 | 9 set (3 cold), 3 reset | 3,548 (3 topics, 256 bytes) | 2,290,732 |
+| `rotateValidator(1)` to ingress `10.0.0.2:9000` (388-byte calldata) | 78 | 13 / 12 | 8 set (3 cold), 5 reset (2 cold), 4 no-op | 4,179 (4 topics, 288 bytes) | 2,058,957 |
+| `deactivateValidator(0)` (swap with the last entry) | 12 | 11 / 6 | 5 reset (1 cold), 2 no-op | 1,500 (3 topics) | 42,012 |
+| `deactivateValidator(2)` (already last, no swap) | 12 | 10 / 4 | 4 reset (1 cold), 1 no-op | 1,500 | 36,712 |
+| first `migrateValidator(1)` (V2 owner still zero) | 12 | 17 / 5 | 12 set (3 cold), 1 no-op | 1,756 (3 topics, 32 bytes) | 3,045,568 |
+
+For example, `deactivateValidator(2)` performs, in order: SLOAD slot 1, SLOAD `b+0` … `b+5` of record 2, SLOAD slot 0, SSTORE `activeIngressIps[key]` (cold, 1 → 0), SLOAD and SSTORE of `b+5` (deactivation height), SLOAD slot 6 (cold), SLOAD slot 6 again for `pop`, SLOAD of the element slot (cold), SLOAD and SSTORE of the element slot (lane zeroed), SSTORE slot 6, SLOAD and SSTORE of `b+5` (`activeIdx = 0`, a no-op on a dirty slot), then the log.
+
+In the same transaction, a second `migrateValidator(0)` costs 2,283,168 and the following `initializeIfMigrated()` costs 255,712. At T13, with the TIP-1060 hook active ([00-framework.md §7.4](00-framework.md#74-tip-1060-storage-credit-hook-from-t7)), no storage credits held, and the input charge of 30 gas per word, the five calls of the table cost 2,293,968, 2,064,869, 46,960, 41,660 and 3,048,716.
+
 ### 2.9 Consumption by consensus
 
-A validator computing or checking the DKG outcome carried by the boundary block of an epoch (07-consensus.md defines the boundary predicate, the `OnchainDkgOutcome` encoding and how proposals are compared) MUST derive two of its fields from ValidatorConfigV2 storage as follows. Let `P` be the parent of the boundary block and `S` the post-state of `P` (that is, the state after executing `P`, which is the pre-state of the boundary block). Reads are direct storage reads under the rules of `P`'s fork; they do not execute transactions or charge gas.
+A validator computing or checking the DKG outcome carried by the boundary block of an epoch ([07-consensus.md §11](../07-consensus.md#11-deterministic-boundary-outcome) defines the outcome, [§10.2](../07-consensus.md#102-onchaindkgoutcome-in-boundary-blocks) its encoding) MUST derive two of its fields from ValidatorConfigV2 storage as follows. This section and [07-consensus.md §11.2](../07-consensus.md#112-active-players) state the same rule. It applies to every boundary whose parent post-state has ValidatorConfigV2 initialized. Earlier mainnet boundary outcomes were produced from V1 (the historical predicate `can_use_v2(P)` of [07-consensus.md §17](../07-consensus.md#17-open-items) selected V2 only when it held) and are accepted through their finalization certificates; no node recomputes them. Let `P` be the parent of the boundary block and `S` the post-state of `P` (that is, the state after executing `P`, which is the pre-state of the boundary block). Reads are direct storage reads under the rules of `P`'s fork; they do not execute transactions or charge gas.
 
 ```python
 def next_players(S) -> ordered_set[ed25519.PublicKey]:
@@ -663,9 +735,9 @@ where `outcome_epoch = epoch(P) + 1`. Undecodable entries are skipped silently, 
 
 The T12 change to DKG reveal handling (07-consensus.md) does not change these reads.
 
-The same decoded entries (with `to_p2p_address`: ingress socket, egress IP with port 0) also feed the peer set; 08-p2p-and-sync.md specifies that use.
+The same decoded entries also feed the peer set through `to_p2p_address(v) = {ingress: parse_SocketAddr(v.ingress), egress: (parse_IpAddr(v.egress), port 0)}`; [08-p2p-and-sync.md §2.3](../08-p2p-and-sync.md#23-peer-addresses-and-admission) and [§2.4](../08-p2p-and-sync.md#24-peer-set-derivation) specify that use.
 
-> **Resolved conflict C-VAL-05**: TIP-1017 says the consensus layer reads V1 while `v2.isInitialized()` is false and V2 afterwards; the code always reads V2 (no V1 fallback and no `isInitialized` check). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-05).
+> **Resolved conflict C-VAL-05**: TIP-1017 says the consensus layer reads V1 while `v2.isInitialized()` is false and V2 afterwards; the implementation always reads V2 (no V1 fallback and no `isInitialized` check). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-05).
 
 The `feeRecipient` field is not consumed by block validity at or below T13 (its use as the required beneficiary starts at T14, out of scope).
 
@@ -703,7 +775,7 @@ def setCommitteeMembers(sender, newEpoch, keys):
     publicKeys = keys          # array assignment: shorter arrays zero the stale tail slots, then length, then elements
 ```
 
-"Disable TIP-1060 storage credits" has the meaning defined in precompiles/account-keychain.md (storage credits section). The array assignment follows the framework's dynamic-array store with tail cleanup (active since T5, hence always at T8+): if the previous length exceeds the new one, the element slots `[newLen, prevLen)` are zeroed first, then the length slot is written, then elements `0..newLen-1`. No event is emitted. Any caller other than `address(0)` gets `Unauthorized()`, so in practice only the system call below can write.
+"Disable TIP-1060 storage credits" has the meaning defined in precompiles/account-keychain.md (storage credits section). `epoch` is alone in slot 0, so its write is one SSTORE without a prior load. The array assignment follows the framework's dynamic-array whole write to a destination that is not fresh, with tail cleanup (active since T5, hence always at T8+, [00-framework.md §6.6](00-framework.md#66-dynamic-arrays-t)): the old length is loaded (one SLOAD of slot 1); if it exceeds the new one, the element slots `[newLen, prevLen)` are zeroed first; then the length slot is written, then elements `0..newLen-1`. No event is emitted. Any caller other than `address(0)` gets `Unauthorized()`, so in practice only the system call below can write.
 
 ### 3.4 End-of-epoch system call
 
@@ -714,7 +786,7 @@ def apply_current_committee_system_call(block):
     outcome = OnchainDkgOutcome.read(block.header.extra_data)   # 07-consensus.md encoding
     #   decoding reads a prefix of extra_data; bytes after the outcome are not examined by this step
     #   decode failure => block INVALID
-    keys = [bytes32(pk) for pk in outcome.output.players]       # 32-byte ed25519 keys, set order
+    keys = [bytes32(pk) for pk in outcome.output.players]       # the Output's player set (07-consensus.md §10.2), set order
     calldata = abi.encodeCall(setCommitteeMembers, (outcome.epoch, keys))
     result = system_call(caller=0x0000000000000000000000000000000000000000,
                          to=0xC077E00000000000000000000000000000000000,
@@ -727,10 +799,10 @@ Rules:
 
 - `outcome.output.players` is the player set of the DKG `Output` (the committee for `outcome.epoch`), not `next_players`. Keys are written in ordered-set order ([codec.md §6.1](../commonware/codec.md#61-ordered-set), ascending key bytes per [cryptography.md §3.1](../commonware/cryptography.md#31-ed25519-encodings)), unchanged.
 - The call is a system call (05-block-execution.md): it is not a transaction, produces no receipt, does not consume block gas, transfers no value and pays no fee. Its gas limit, 250,000,000 (`SYSTEM_CALL_GAS_LIMIT`), is binding: running out of gas invalidates the block.
-- Ordering within block finalisation: (1) the T4 incentive-gas check, (2) selection of the post-execution EIP-7928 block-access-list index, (3) this call, (4) before T13, the inherited Ethereum post-block processing; from T13 nothing further (TIP-1119).
+- Ordering within block finalisation: (1) the T4 incentive-gas check, (2) this call, (3) before T13, the inherited Ethereum post-block processing; from T13 nothing further (TIP-1119). No block-level access list is built or committed to at or below T13 (the header carries no access-list hash, 05-block-execution.md), so nothing else affects validity here.
 - Transactions in the boundary block observe the previous record; the new record is visible from the next block.
 
-> **Resolved conflict C-VAL-06**: TIP-1070 requires the call to come "from the system address" (by EIP-4788 convention `0xfffffffffffffffffffffffffffffffffffffffe`); the code (and TIP-1119's table) uses caller `address(0)`, and the precompile reverts `Unauthorized()` for any other caller. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-06).
+> **Resolved conflict C-VAL-06**: TIP-1070 requires the call to come "from the system address" (by EIP-4788 convention `0xfffffffffffffffffffffffffffffffffffffffe`); the implementation (and TIP-1119's table) uses caller `address(0)`, and the precompile reverts `Unauthorized()` for any other caller. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-06).
 
 ## 4. Zones (TIP-1091, TIP-1096, TIP-1098)
 
@@ -899,24 +971,27 @@ def transferOwnership(sender, newOwner):
 ```python
 def createZone(sender, p: CreateZoneParams) -> (uint32, address):
     deduct_gas(15_000_000)                            # first, before any check; insufficient gas = exceptional halt
-    if sender != owner: revert NotOwner()
-    if not (p.initialToken[0:12] == TIP20_PREFIX and code_hash(p.initialToken) != keccak256(b"")):
+    if sender != owner: revert NotOwner()             # SLOAD factory slot 0 (packed read of owner)
+    if not (p.initialToken[0:12] == TIP20_PREFIX      # no state access when the prefix differs
+            and code_hash(p.initialToken) != keccak256(b"")):    # ACCOUNT_READ(initialToken)
         revert InvalidToken()                         # TIP20Factory.isTIP20 (precompiles/tip20.md)
-    if not tip403_token_transfer_policy_binding(p.initialToken).is_set:
-        revert TokenTransferPolicyNotSet()            # explicit TIP-403 binding (precompiles/tip403.md)
-    validate_closed_loop(p)
+    if not tip403_token_transfer_policy_binding(p.initialToken).is_set:   # whole-struct read of the
+        revert TokenTransferPolicyNotSet()            # TIP-403 binding record (precompiles/tip403.md)
+    validate_closed_loop(p)                           # from T11: explicit 20-gas-per-entry charge
     if p.admin == 0: revert InvalidAdmin()
-    validate_sequencer_set(p.sequencers, p.threshold)
-    zoneId = nextZoneId
+    validate_sequencer_set(p.sequencers, p.threshold) # calldata only, no state access
+    zoneId = nextZoneId                               # SLOAD factory slot 0 again (packed read)
     portal = portal_address(zoneId)
-    name, symbol, currency = TIP20(p.initialToken).name, .symbol, .currency   # storage reads
-    if max(len(name), len(symbol), len(currency)) > 31: revert TokenMetadataTooLong()   # UTF-8 byte length
-    enablement_hash = keccak256(abi.encode(bytes32(0), p.initialToken, name, symbol, currency))
+    name = TIP20(p.initialToken).name                 # whole string reads (§6.7 of the framework),
+    symbol = TIP20(p.initialToken).symbol             # in this order
+    currency = TIP20(p.initialToken).currency
+    if max(len(name), len(symbol), len(currency)) > 31: revert TokenMetadataTooLong()   # UTF-8 byte length of the local values
+    enablement_hash = keccak256(abi.encode(bytes32(0), p.initialToken, name, symbol, currency))   # unmetered
     if zoneId == 2**32 - 1: revert Panic(0x11)
-    nextZoneId = zoneId + 1
+    nextZoneId = zoneId + 1                           # packed write: SLOAD + SSTORE of slot 0
     initialize_portal(portal, zoneId, p, enablement_hash)          # §4.6
     zones[zoneId] = ZoneInfo(zoneId, portal, p.accessMode, p.gatewayMode, p.admin,
-                             p.sequencers, p.threshold, ZONE_VERIFIER_ADDRESS, p.rpcUrl)
+                             p.sequencers, p.threshold, ZONE_VERIFIER_ADDRESS, p.rpcUrl)   # whole-struct write, see below
     emit_logs_in_order(portal, zoneId, p)              # §4.4.5
     return (zoneId, portal)
 
@@ -942,11 +1017,13 @@ def validate_sequencer_set(seqs, threshold):
 
 From T11 a sequencer repeated within `sequencers` is reported as `InvalidClosedLoopConfig()` (the global duplicate test runs first); before T11 it is reported as `InvalidSequencerSet()`. From T11, two zero-address entries anywhere in the three lists are duplicates.
 
-> **Resolved conflict C-VAL-07**: TIP-1091 (and its reference ZoneFactory.sol) reject only addresses that appear in both `allowedAccounts` and `zoneGateways` before T11; the code also rejects, before T11, any sequencer that appears in `allowedAccounts` or `zoneGateways`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-07).
+> **Resolved conflict C-VAL-07**: TIP-1091 (and its reference ZoneFactory.sol) reject only addresses that appear in both `allowedAccounts` and `zoneGateways` before T11; the implementation also rejects, before T11, any sequencer that appears in `allowedAccounts` or `zoneGateways`. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-07).
 
-> **Resolved conflict C-VAL-09**: the TIP-1091 reference `ZoneFactory.sol` checks `NotOwner` before anything else (and says the owner is set "by the T9 activation"); the code deducts 15,000,000 gas before the owner check, so failing calls also consume it or halt out of gas, and the owner is installed at T10. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-09).
+> **Resolved conflict C-VAL-09**: the TIP-1091 reference `ZoneFactory.sol` checks `NotOwner` before anything else (and says the owner is set "by the T9 activation"); the implementation deducts 15,000,000 gas before the owner check, so failing calls also consume it or halt out of gas, and the owner is installed at T10. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-09).
 
-Gas of a `createZone` call is exactly: the input charge; 15,000,000; the framework cost of every account read (`initialToken` code hash), storage read and write performed in §4.4.4 and §4.6 in the listed order (TIP-20 metadata strings, TIP-403 binding, factory slot 0, portal and `zones` records); from T11, `20 * (len(allowedAccounts)+len(zoneGateways)+len(sequencers))`; the code-installation charge of §4.6 step 2; and the cost of the logs of §4.4.5.
+The `zones[zoneId]` assignment is a whole-struct write ([framework §6.3](00-framework.md#63-structs), [§6.10](00-framework.md#610-pseudocode-conventions) rule 5) at T10 or later, so every run is assembled from zero. In member order it performs: one SSTORE of `b+0` (no SLOAD); one SSTORE of `b+1`; the `sequencers` array write at `b+2`, whose destination is **not fresh** (SLOAD of the old length at `b+2`, zeroing of any old elements past the new length, SSTORE of the length, then one SSTORE per element at `keccak256(p(b+2)) + i`, since addresses do not pack in arrays); one SSTORE of `b+3`; and the `rpcUrl` string write at `b+4`, also **not fresh** (SLOAD of the old word at `b+4`, clearing of surplus old data words, then the new word and data words).
+
+Gas of a `createZone` call is exactly the sum, in this order, of: the input charge; 15,000,000; the primitives of the pseudocode above in its written order (SLOAD of factory slot 0 for `owner`; ACCOUNT_READ of `initialToken`, only when its prefix matches; the TIP-403 binding read; from T11, `20 * (len(allowedAccounts)+len(zoneGateways)+len(sequencers))`; SLOAD of factory slot 0 for `nextZoneId`; the `name`, `symbol` and `currency` string reads; SLOAD and SSTORE of factory slot 0); the primitives of `initialize_portal` in the order of §4.6, including the SET_CODE charge of step 2; the `zones[zoneId]` write as described above; and the LOG charges of §4.4.5 in their order. A check that reverts ends the sum at that point. All these accesses follow the framework's warm-set rule ([§3.4](00-framework.md#34-account-warmness)): the factory, the token, the TIP-403 registry and the portal accounts and every slot touched become warm for the rest of the transaction (unless the call reverts), and no account-access cost is charged for the TIP-403 registry or the portal.
 
 #### 4.4.5 createZone logs
 
@@ -1002,24 +1079,24 @@ Every portal proxy executes the shared implementation by `DELEGATECALL`, so its 
 
 `createZone` initialises the portal **natively**: it writes the portal account's code and storage directly and never executes EVM code at the portal or the implementation.
 
-> **Resolved conflict C-VAL-08**: TIP-1091 (step 5) and its reference `ZoneFactory.sol` say the factory calls the portal's factory-only initializer; the code writes portal storage and emits the portal's logs natively without any call frame (different gas, no inner call). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-08).
+> **Resolved conflict C-VAL-08**: TIP-1091 (step 5) and its reference `ZoneFactory.sol` say the factory calls the portal's factory-only initializer; the implementation writes portal storage and emits the portal's logs natively without any call frame (different gas, no inner call). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-08).
 
 ```python
 def initialize_portal(portal, zoneId, p, enablement_hash):
     S = storage_of(portal)
-    if S[16].initialized: revert AlreadyInitialized()                       # 1
-    set_code(portal, ZONE_PORTAL_PROXY_RUNTIME)                              # 2 unconditional, overwrites any code
-    S.admin = p.admin                                                        # 3  slot 0
-    S.tokenConfigs[p.initialToken] = TokenConfig(enabled=True, depositsActive=True)   # 4
-    S.enabledTokens = [p.initialToken]                                       # 5  array assignment
-    S.rpcUrl = p.rpcUrl                                                      # 6
+    if S[16].initialized: revert AlreadyInitialized()                       # 1  SLOAD slot 16
+    SET_CODE(portal, ZONE_PORTAL_PROXY_RUNTIME)                              # 2 unconditional, overwrites any code
+    S.admin = p.admin                                                        # 3  slot 0, full: SSTORE, no load
+    S.tokenConfigs[p.initialToken] = TokenConfig(enabled=True, depositsActive=True)   # 4 whole-struct write: one SSTORE
+    S.enabledTokens = [p.initialToken]                                       # 5  array write, not fresh
+    S.rpcUrl = p.rpcUrl                                                      # 6  string write, not fresh
     S.zoneId = zoneId                                                        # 7  slot 15
     S.messenger = ZONE_MESSENGER_ADDRESS                                     # 8  slot 15
     S.verifier = ZONE_VERIFIER_ADDRESS                                       # 9  slot 16
     S.initialized = True                                                     # 10 slot 16
     S.sequencerThreshold = p.threshold                                       # 11 slot 16
-    S.sequencers = p.sequencers                                              # 12 array assignment
-    for s in p.sequencers: S.role[s] = 1        # Sequencer                  # 13
+    S.sequencers = p.sequencers                                              # 12 array write, not fresh
+    for s in p.sequencers: S.role[s] = 1        # Sequencer                  # 13 mapping value, full: SSTORE
     S.isAccessEnforced = p.accessMode                                        # 14 slot 21
     S.isGatewayEnforced = p.gatewayMode                                      # 15 slot 21
     S.leader = p.sequencers[0]                                               # 16 slot 23
@@ -1027,14 +1104,16 @@ def initialize_portal(portal, zoneId, p, enablement_hash):
     S.leaderActivationTempoBlock = block.number                              # 18 slot 24
     S.tokenEnableCountBlock = block.number                                   # 19 slot 24
     S.tokensEnabledInCurrentBlock = 1                                        # 20 slot 25
-    S.tokenEnablementHash = enablement_hash                                              # 21 slot 26
+    S.tokenEnablementHash = enablement_hash                                  # 21 slot 26, full: SSTORE
     if T13_active: S.tokenEnablementCursorInitialized = True                 # 22 slot 28 (from T13)
-    for g in p.zoneGateways:    S.role[g] = 3   # CallbackGateway            # 23
-    for a in p.allowedAccounts: S.role[a] = 2   # Account                    # 24
+    for g in p.zoneGateways:    S.role[g] = 3   # CallbackGateway            # 23 full: SSTORE
+    for a in p.allowedAccounts: S.role[a] = 2   # Account                    # 24 full: SSTORE
 ```
 
-- Every assignment to a packed field is a read-modify-write of its slot (framework packed-slot semantics).
-- Step 2 charges the framework's code-installation cost for 45 bytes (per-byte code-deposit gas plus code-deposit state gas, and, when TIP-1016 is active and the account was empty, the CREATE charge, CREATE state gas and keccak cost for 2 words, exactly as for TIP-20 deployment; see 06-transactions-and-fees.md and precompiles/00-framework.md). The portal's nonce and balance are not changed.
+- Every assignment to a packed field (steps 7–11, 14–20, 22) is a read-modify-write of its slot (one SLOAD and one SSTORE each, [framework §6.2](00-framework.md#62-field-slot-allocation)); steps 3 and 21 and the `role` mapping values of steps 13, 23 and 24 are full-slot stores without a load.
+- Steps 5, 6 and 12 write to a destination that is **not fresh** ([framework §6.6–§6.7](00-framework.md#66-dynamic-arrays-t)): each first SLOADs the old length (array) or old word (string), zeroes any old elements or data words past the new value, then stores the length or word and then each element (one SSTORE per address element) or data word. Step 4 is a whole-struct write assembled from zero ([§6.3](00-framework.md#63-structs)): one SSTORE, no load.
+- Step 2 is the framework's SET_CODE primitive ([§7.2](00-framework.md#72-primitive-costs)) with the 45-byte proxy runtime of §4.1: it charges `CODE_DEPOSIT × 45 = 1,000 × 45 = 45,000` gas at T10–T13, charges no account-access cost, and makes the portal account warm. There is no other charge (state gas is zero at every fork up to T13). The portal's nonce, balance and storage are not changed.
+- The portal's slots are ordinary storage of the portal account. Under the framework's warm-set rule ([§3.4](00-framework.md#34-account-warmness)) every SLOAD and SSTORE above adds the `(portal, slot)` pair and the portal account to the transaction's access sets and charges only the slot's cold or warm cost. The TIP-1060 storage-credit hook ([framework §7.4](00-framework.md#74-tip-1060-storage-credit-hook-from-t7)) runs for each of these SSTOREs with the **portal** as the storage owner, so credits are minted for and consumed from the portal account, not the factory.
 - `sequencerSetVersion`, `blockHash`, `zoneGasRate`, `maxTempoGasRate`, `depositCount` and the other fields are left at zero; `lastProcessedEnabledTokenCount` stays 0.
 - Before T11 an address may appear more than once in `allowedAccounts` or `zoneGateways`; later writes win (account roles last).
 - New portals created from T13 have `tokenEnablementCursorInitialized = true` with `lastProcessedEnabledTokenCount = 0`, so their token cursor starts operational; portals created before T13 keep `false` until their first T13 settlement initialises it (§4.7).
@@ -1115,12 +1194,31 @@ Every validation failure returns `false` (ABI-encoded) with the gas already char
 
 #### 4.8.3 Document parsing
 
-`parse_attestation(doc)` succeeds only if all of the following hold (CBOR per RFC 8949; COSE per RFC 9052; decoding of individual integers and strings is exactly that of `minicbor` 2.3.0 with `minicbor-serde` 0.7.1):
+The document is a COSE_Sign1 structure (RFC 9052 §4.2) encoded in CBOR (RFC 8949). The decoder is a strict, schema-driven profile of RFC 8949, not a generic well-formedness check. These generic rules hold for every data item the parser reads:
 
-1. `len(doc) <= 24_576`. The document is one CBOR data item with no trailing bytes: optionally a single tag 18 (any other leading tag fails), then a definite-length array of exactly 4 elements `[protected, unprotected, payload, signature]`. No other tags are accepted anywhere (including inside the payload and on field names).
-2. `protected` is a definite-length byte string whose content is exactly a definite-length map of one entry, key unsigned `1`, value negative `-35`, with no trailing bytes. `unprotected` is an empty map (definite or indefinite length); any entry fails. `payload` is a byte string of 1–16,384 bytes. `signature` is a byte string of exactly 96 bytes (`r ‖ s`). All byte and text strings everywhere are definite-length (chunked strings fail).
-3. `payload` decodes, with no trailing bytes, as a map (definite or indefinite length) with text-string keys only. Required keys: `module_id` (non-empty text), `digest` (text equal to `SHA384`), `timestamp` (unsigned integer, nonzero, fits u64; milliseconds), `pcrs` (map), `certificate` (byte string), `cabundle` (array). Optional keys: `public_key`, `user_data`, `nonce` (byte string or CBOR null; null or absent is treated as empty). Unknown keys, duplicate keys (including duplicated optional keys, even when null), CBOR `undefined`, non-null wrong types, and non-text keys fail.
-4. `pcrs`: 1 or more entries, unsigned integer keys, unique, each < 32, values byte strings of length 32, 48 or 64. `certificate`: 1–1,024 bytes. `cabundle`: 1–32 byte strings of 1–1,024 bytes each (the parser stops at the 33rd entry). A non-null `public_key` is 1–1,024 bytes; `user_data` and `nonce` are at most 512 bytes (a zero-length byte string is allowed).
+- **Heads.** An argument (integer value, string length, array or map length, tag number) MAY use any of the encodings of RFC 8949 §3 (additional information 0–27), shortest or not: `0x18 0x05` is accepted as the unsigned integer 5 and `0x59 0x00 0x02 …` as a 2-byte byte string. This deviates from the preferred serialization of RFC 8949 §4.2.1, which the parser does not require. Additional information 28–30 (reserved, RFC 8949 §3) makes the document invalid wherever it appears in an item the parser reads.
+- **Strings.** Byte and text strings MUST be definite-length; an indefinite-length (chunked) string fails, even where RFC 8949 §3.2.3 allows one. Text strings MUST be valid UTF-8 (RFC 3629; overlong forms and surrogates fail), as RFC 8949 §3.1 requires.
+- **Containers.** Where a rule below says "definite or indefinite", an indefinite-length array or map (terminated by the break byte `0xff`) is accepted; elsewhere only a definite length is. A definite length larger than the items present fails (end of input); a smaller one leaves bytes unconsumed, which fails as trailing data.
+- **Simple values and floats.** The only simple value accepted is `null` (`0xf6`), and only where rule 3 allows it. `undefined` (`0xf7`), `false`/`true`, the one-byte forms `0xe0`–`0xf3`, every two-byte form `0xf8 xx` (including the non-well-formed `0xf8` with `xx < 32`) and floating-point values (`0xf9`–`0xfb`) fail wherever they appear.
+- **Tags.** No tag is accepted anywhere except one leading tag 18 on the whole document (rule 1). In particular bignums (tags 2 and 3) are not integers here.
+- **Order of failure.** The parser reads items front to back and stops at the first item that breaks a rule; it never looks at what follows (for example the value of an unknown key). Every failure has the same result (§4.8.2), so only acceptance is observable.
+
+`parse_attestation(doc)` succeeds only if all of the following hold:
+
+1. `len(doc) <= 24_576`. The document is one CBOR data item with no trailing bytes: optionally one tag whose number is 18 (any head encoding of 18; any other tag number fails), then an array of exactly 4 elements `[protected, unprotected, payload, signature]` with a **definite** length (an indefinite-length array fails).
+2. `protected` is a byte string whose content is exactly a **definite**-length map of one entry, key the unsigned integer `1` and value the negative integer `-35` (ES384), with no trailing bytes; an empty `protected` fails. `unprotected` is an empty map, definite (`0xa0`) or indefinite (`0xbf 0xff`); any entry fails at its key. `payload` is a byte string of 1–16,384 bytes. `signature` is a byte string of exactly 96 bytes (`r ‖ s`, each 48 bytes big-endian).
+3. `payload` decodes, with no trailing bytes, as a map (definite or indefinite; an array fails) whose keys are text strings matched byte-for-byte against the field names below. A key of any other major type (an integer field index or a byte string, for example) fails. Required keys and their value types:
+   - `module_id`: text string, non-empty.
+   - `digest`: text string equal to `SHA384`.
+   - `timestamp`: unsigned integer (major type 0 only; a negative integer, bignum or float fails), nonzero; milliseconds since the Unix epoch.
+   - `pcrs`: map (definite or indefinite) whose keys are unsigned integers (major type 0) at most 255 and whose values are byte strings. A key above 255 or of another type fails. A repeated key fails.
+   - `certificate`: byte string.
+   - `cabundle`: array (definite or indefinite) of byte strings.
+
+   Optional keys `public_key`, `user_data` and `nonce`: a byte string or `null`; `null` or an absent key is the empty byte string. An unknown key fails before its value is read. A key that appears twice fails, including a repeated optional key whose values are `null`. Keys may appear in any order.
+4. Value constraints, checked after decoding: `pcrs` has at least one entry, every key is below 32, and every value is 32, 48 or 64 bytes long. `certificate` is 1–1,024 bytes. `cabundle` has 1–32 entries, each 1–1,024 bytes. A non-null `public_key` is 1–1,024 bytes. `user_data` and `nonce` are at most 512 bytes each (a zero-length byte string is allowed).
+
+`cabundle` is decoded entry by entry. Entries 1 to 32 are kept. When a 33rd entry is present, it is decoded (it must itself be a definite-length byte string), and then parsing fails: entries after the 33rd and the rest of the payload are never read. `verify` then returns `false` having charged only the 40,000 base gas, never the per-certificate gas, which depends on the number of entries kept.
 
 The PCR entries are kept sorted by index; the exact `protected` and `payload` byte strings are kept for §4.8.4.
 
@@ -1145,22 +1243,27 @@ adf3023100a2f39b1605b27028a5dd4ba069b5016e65b4fbde8fe0061d6a53197f9cdaf5d943bc61
 2302f3dff6
 ```
 
-2. Every certificate in `chain` (root included):
-   - decodes as an X.509 `Certificate` (RFC 5280) and re-encodes to exactly the same bytes (strict DER; decoding as by `x509-cert` 0.2.5 / `der` 0.7.10);
-   - has version v3;
-   - has outer `signatureAlgorithm` and `tbsCertificate.signature` both equal to `ecdsa-with-SHA384` (OID 1.2.840.10045.4.3.3) with absent parameters;
-   - is valid at the block: `notBefore <= block.timestamp <= notAfter`, comparing whole seconds since the Unix epoch;
-   - has no two extensions with the same OID, and no critical extension other than basicConstraints (2.5.29.19) and keyUsage (2.5.29.15); basicConstraints and keyUsage, when present, decode;
-   - if a CA (index < n): basicConstraints is present, **critical**, with `cA = TRUE`; keyUsage is present with `keyCertSign` (its criticality is not checked); its `pathLenConstraint`, if any, is recorded;
-   - if the leaf: basicConstraints, if present, has `cA = FALSE` and no `pathLenConstraint`; keyUsage is present with `digitalSignature`;
-   - has subjectPublicKeyInfo algorithm id-ecPublicKey (1.2.840.10045.2.1) with parameters the named curve secp384r1 (1.3.132.0.34), and a 97-byte uncompressed key (first byte `0x04`) that is a valid, non-identity P-384 point;
-   - has a signature value that is a strict-DER `SEQUENCE { INTEGER r, INTEGER s }` with no trailing bytes, `r` and `s` positive with magnitudes of 1–48 bytes.
+2. Every certificate in `chain` (root included) satisfies the following. Encoding, decoding and field names are those of RFC 5280 §4.1 and ITU-T X.690 DER (§10–§11); deviations from RFC 5280 are marked.
+   - **Round trip.** The bytes decode as one `Certificate` with no trailing bytes, and re-encoding the decoded value in DER yields exactly the same bytes. Any BER-only form fails: a non-minimal or indefinite length, a non-minimal `INTEGER`, a `BOOLEAN` other than `0x00`/`0xff`, an explicitly encoded `DEFAULT` value (such as `critical FALSE` in an `Extension`, or an explicit `version` of v1), a `SET OF` in a `RelativeDistinguishedName` whose elements are not in DER order, or a repeated element in such a set.
+   - **Version.** `version` is present and equals v3 (`2`).
+   - **Serial number.** `serialNumber` is a DER `INTEGER` of 1–21 content octets. Zero and negative values are accepted (deviation: RFC 5280 §4.1.2.2 requires a positive value of at most 20 octets).
+   - **Algorithms.** The outer `signatureAlgorithm` and `tbsCertificate.signature` both have OID `ecdsa-with-SHA384` (1.2.840.10045.4.3.3) and no `parameters` field (an explicit `NULL` fails), as RFC 5758 §3.2 requires.
+   - **Names.** `issuer` and `subject` are `SEQUENCE OF RelativeDistinguishedName`, each RDN a `SET OF AttributeTypeAndValue`. An `AttributeValue` may be any single DER element of any tag (PrintableString, UTF8String, IA5String or any other); its content is not interpreted. An empty name and an empty RDN set are accepted (deviation: RFC 5280 requires non-empty RDNs). Names are compared only as DER bytes (item 3).
+   - **Validity.** `notBefore` and `notAfter` are each either a `UTCTime` of exactly the form `YYMMDDHHMMSSZ` or a `GeneralizedTime` of exactly the form `YYYYMMDDHHMMSSZ` (no fractional seconds, no offset). Either form is accepted for any year (deviation: RFC 5280 §4.1.2.5 requires `UTCTime` through 2049). A `UTCTime` year `YY` is `19YY` when `YY >= 50` and `20YY` otherwise. The date MUST lie between 1970-01-01T00:00:00Z and 9999-12-31T23:59:59Z, with month 1–12, a day that exists in that month of the proleptic Gregorian calendar, hour 0–23, minute 0–59 and second 0–59 (a leap second `60` fails); so `UTCTime` years 1950–1969 fail. Each time converts to whole seconds since the Unix epoch without leap seconds, and the certificate is valid at the block when `notBefore <= block.timestamp <= notAfter`.
+   - **Unique identifiers.** `issuerUniqueID` and `subjectUniqueID` may be present (any `BIT STRING`) and are ignored.
+   - **Extensions.** If the `extensions` field is present it may hold zero extensions (deviation: RFC 5280 requires `SIZE (1..MAX)`). No two extensions have the same OID. No extension other than basicConstraints (2.5.29.19) and keyUsage (2.5.29.15) is critical; a non-critical extension of any other OID is ignored and its `extnValue` is not decoded.
+   - **basicConstraints**, when present, has an `extnValue` that decodes, with no trailing bytes, as `SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint INTEGER (0..255) OPTIONAL }`. Here an explicitly encoded `cA FALSE` is accepted (deviation from X.690 §11.5, which forbids encoding a `DEFAULT` value), and a `pathLenConstraint` above 255 fails.
+   - **keyUsage**, when present, has an `extnValue` that decodes, with no trailing bytes, as a `BIT STRING` of at most 16 bits, bit `i` being bit `7 - (i mod 8)` of content octet `i div 8` (bit 0 `digitalSignature`, bit 5 `keyCertSign`). Trailing zero bits and nonzero unused bits in the last octet are accepted, and bits 9–15 are ignored (deviation from the DER named-bit-list rule of X.690 §11.2.2).
+   - **CA certificates** (index < n): basicConstraints is present, **critical**, with `cA = TRUE`; keyUsage is present with `keyCertSign` set (its criticality is not checked); its `pathLenConstraint`, if any, is recorded.
+   - **The leaf**: basicConstraints, if present, has `cA = FALSE` and no `pathLenConstraint`; keyUsage is present with `digitalSignature` set.
+   - **Public key.** `subjectPublicKeyInfo.algorithm` is id-ecPublicKey (1.2.840.10045.2.1) with `parameters` the named-curve OID secp384r1 (1.3.132.0.34). `subjectPublicKey` is a `BIT STRING` with zero unused bits holding a 97-byte uncompressed point (first byte `0x04`, SEC 1 §2.3.3) whose coordinates are below the field prime and that lies on the P-384 curve (SEC 1 §3.2.2.1 partial validation).
+   - **Signature value.** `signatureValue` is a `BIT STRING` with zero unused bits whose content is a DER `SEQUENCE { INTEGER r, INTEGER s }` with no trailing bytes, `r` and `s` positive, each with a magnitude of 1–48 bytes (RFC 5758 §3.2, RFC 3279 §2.2.3).
 3. For `i = 1..n`: the DER encoding of `chain[i].issuer` equals that of `chain[i-1].subject`.
 4. For every CA `chain[i]` (`i < n`) with `pathLenConstraint = L`: the number of certificates `chain[j]`, `i < j < n`, whose subject differs from their issuer is at most `L` (the leaf is never counted).
 5. For `i = 1..n`: ECDSA P-384 verification of the DER signature of `chain[i]` over `SHA-384(DER(chain[i].tbsCertificate))` under `chain[i-1]`'s key succeeds. The root's own signature is not checked.
-6. The COSE signature verifies: ECDSA P-384 over `SHA-384(Sig_structure)` under the leaf key, with the 96-byte `r ‖ s` signature, where `Sig_structure` is the CBOR encoding (definite lengths, shortest-form heads) of the array `["Signature1", protected, h'', payload]` using the exact `protected` and `payload` bytes of the document.
+6. The COSE signature verifies: ECDSA P-384 over `SHA-384(Sig_structure)` under the leaf key, with the 96-byte `r ‖ s` signature (`r` = bytes 0–47, `s` = bytes 48–95, big-endian), where `Sig_structure` is the CBOR encoding (definite lengths, shortest-form heads) of the array `["Signature1", protected, h'', payload]` using the exact `protected` and `payload` bytes of the document (RFC 9052 §4.4, empty external AAD).
 
-ECDSA verification accepts both low-s and high-s signatures. The verified result exposes `timestamp`, `pcrs`, `public_key`, `user_data` and `nonce`.
+ECDSA verification in items 5 and 6 is the verification of FIPS 186-5 §6.4.2 (equivalently SEC 1 §4.1.4) on curve P-384 (FIPS 186-5 / SP 800-186, `n` its group order) with the 48-byte SHA-384 digest used whole as the integer `e`. It fails unless `1 <= r <= n - 1` and `1 <= s <= n - 1`; a 48-byte `r` or `s` that is `>= n`, or zero, fails. There is no low-s rule: `s` and `n - s` both verify. The verified result exposes `timestamp`, `pcrs`, `public_key`, `user_data` and `nonce`.
 
 #### 4.8.5 Approved PCRs
 
@@ -1174,7 +1277,7 @@ From T13 the approved measurements are (48-byte SHA-384 values; provenance: prov
 
 Other PCR indices may be present and are ignored. The tuple is a fork constant (no runtime configuration; mainnet and Moderato never accept overrides).
 
-> **Resolved conflict C-VAL-10**: TIP-1098 leaves PCR0–2 as placeholders and says the production verifier "has no approved tuple and MUST return false", and docs zones/proving.mdx says the measurements are unset so Nitro proofs are rejected; the code approves the tuple above from T13. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-10).
+> **Resolved conflict C-VAL-10**: TIP-1098 leaves PCR0–2 as placeholders and says the production verifier "has no approved tuple and MUST return false", and docs zones/proving.mdx says the measurements are unset so Nitro proofs are rejected; the implementation approves the tuple above from T13. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-10).
 
 #### 4.8.6 Batch commitment
 

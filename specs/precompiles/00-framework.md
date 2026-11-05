@@ -164,7 +164,7 @@ through DELEGATECALL or CALLCODE), the frame MUST revert with return data
 check. The frame consumes no gas (all forwarded gas is returned to the caller). This applies to
 every Tempo precompile at every fork, including ValidatorConfigV2 before T2.
 
-> **Resolved conflict C-PFW-01**: TIP-1100 (and docs upgrades/t11) require the input charge on *every* Tempo precompile call; the code reverts DELEGATECALL/CALLCODE with no input charge. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-pfw-01).
+> **Resolved conflict C-PFW-01**: TIP-1100 (and docs upgrades/t11) require the input charge on *every* Tempo precompile call; the implementation reverts DELEGATECALL/CALLCODE with no input charge. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-pfw-01).
 
 ### 3.2 Static context
 
@@ -192,8 +192,35 @@ precompile needs the transaction origin it is provided through protocol-internal
 Tempo native precompile addresses are not in the EIP-2929 pre-warmed set. A CALL-family
 instruction targeting a Tempo precompile pays the standard Osaka account-access cost (2,600 cold,
 100 warm) unless the address is already warm (transaction `to`, access list, or an earlier access
-in the transaction). Inside the precompile, reading or writing the precompile's own storage marks
-the precompile account warm without an additional account-access charge.
+in the transaction, including the accesses below).
+
+**Warm-set rule.** Precompile logic shares the transaction's EIP-2929 access sets (accounts and
+`(address, slot)` pairs) with the EVM. At every fork, in every way precompile logic runs
+(EVM-dispatched calls, native host invocations (§9.1) and system calls (§9.2)):
+
+1. Every SLOAD, SSTORE, SINC and SDEC primitive (§7.2) on `(addr, key)` adds `(addr, key)` to
+   the slot set and `addr` to the account set. This holds for **any** `addr`: the precompile's
+   own storage, another precompile's storage (for example TIP-20 reading TIP403Registry,
+   AccountKeychain or StorageCredits slots, or ValidatorConfigV2 reading ValidatorConfig v1
+   slots) and the storage of an ordinary account (ZoneFactory writing portal proxy storage). The
+   primitive charges only its slot cost (cold or warm). It never charges an account-access cost
+   for `addr`, whether `addr` was warm or cold.
+2. ACCOUNT_READ and SET_CODE add the account to the account set (ACCOUNT_READ charges its own
+   account cost, §7.2).
+3. TLOAD, TSTORE, LOG, KECCAK and ECRECOVER add nothing.
+4. Additions persist for the rest of the transaction, across frames and across the boundary
+   between native host invocations and EVM execution. Warmth created before EVM execution (by
+   fee-token resolution, fee collection, nonce checks, keychain validation or key authorization)
+   is seen by the EVM phase, and warmth created by the EVM phase is seen by post-execution fee
+   settlement.
+5. Additions made inside a frame that reverts or halts are undone with the frame, as for any
+   EIP-2929 access, and so are additions undone by an internal checkpoint rollback (§5, from T1C)
+   or by a call site that rolls back a native host invocation.
+
+Consequences: an EVM SLOAD of a slot that a native host invocation already read costs 100; a
+CALL to a TIP-20 token whose storage the fee collection touched costs 100 for account access;
+a second precompile call that reads a slot an earlier call read pays `WARM_READ` only. §9.1 gives
+a worked example.
 
 ## 4. Call processing
 
@@ -328,7 +355,7 @@ Precompile logic ends in one of these outcomes, mapped to the EVM frame result:
 | Malformed ABI arguments; missing selector (from T1); empty reverts a chapter defines | revert | empty | as revert |
 | OutOfGas: a failed `charge`, the input charge, a skipped cold load, the T12 stipend sentry | exceptional halt | empty | all forwarded gas consumed |
 | `StaticCallNotAllowed` raised by a write primitive (any fork); step 6 from T12; missing selector before T1 | exceptional halt | empty | all forwarded gas consumed |
-| Database failure or internal invariant violation (a stored short-string length > 31, invalid UTF-8 in a stored string, a packed lane spanning a slot boundary) | none: block processing fails | — | — |
+| Database failure or internal invariant violation (a stored short-string length > 31, invalid UTF-8 in a stored string, a packed lane spanning a slot boundary) | none: block processing fails (one exception: before T1A the StablecoinDEX automatic flip swallows every error, these included, [stablecoin-dex.md](stablecoin-dex.md) §11.7) | — | — |
 
 `Panic(uint256)` has selector `0x4e487b71`. As for every EVM frame, a revert or halt undoes the
 frame's state changes, transient-storage changes and logs and discards gas refunds recorded in it.
@@ -337,8 +364,8 @@ Gas charged before a revert (including the input charge and pre-dispatch checks)
 **Internal checkpoints.** Some methods take an internal checkpoint, perform several writes and
 roll back to the checkpoint on a later failure while still returning normally (for example the
 StablecoinDEX batch paths, [stablecoin-dex.md](stablecoin-dex.md)). From T1C the rollback undoes
-all state, transient-storage and log changes since the checkpoint (gas already charged is not
-returned). **Before T1C taking a checkpoint is a no-op and rolling back does nothing**: writes made
+all state, transient-storage and log changes and all access-set additions (§3.4) since the
+checkpoint (gas already charged is not returned). **Before T1C taking a checkpoint is a no-op and rolling back does nothing**: writes made
 before the failure persist if the method then returns normally.
 
 ## 6. Storage model
@@ -354,7 +381,7 @@ layout except for mapping keys of `bytesN` (N < 32) and negative `intN` (§6.5).
 |---|---|---|---|
 | `bool` | 1 | yes | 0 or 1; read as lane ≠ 0 |
 | `uintN` (N = 8…256) | N/8 | if < 32 | right-aligned; a full-word read whose value exceeds the type's maximum is `Panic(0x11)` |
-| `intN` | N/8 | if < 32 | two's complement truncated to N bits, right-aligned (high bits zero, not sign-extended); same overflow check on the raw unsigned value |
+| `intN` | N/8 | if < 32 | two's complement truncated to N bits, right-aligned (high bits zero, not sign-extended); a full-word read whose raw unsigned value exceeds `2^N − 1` is `Panic(0x11)`, otherwise the low N bits are interpreted as two's complement (so every stored negative value reads back) |
 | `address` | 20 | yes | right-aligned; read takes the low 20 bytes |
 | `bytesN` (N = 1…32) | N | if < 32 | the N bytes right-aligned (low-order); read takes the low N bytes |
 | enum (`uint8`-represented) | 1 | yes | discriminant as `uint8`; an unknown discriminant on read is `Panic(0x21)` |
@@ -402,18 +429,24 @@ A struct's members are allocated by §6.2 relative to the struct's base slot (me
 at slot 0); its slot count is the number of slots spanned. A struct value is accessed whole or per
 member:
 
-- *Whole read*: for each run of consecutive packable members sharing a slot the word is loaded
-  once; other members are read per their type.
-- *Whole write*: for each run of consecutive packable members sharing a slot the lanes are
-  assembled and the word is stored once. Before T4 the assembly starts from the slot's current
-  word (one SLOAD per run); **from T4 it starts from zero** (no SLOAD; unused lane bytes are
-  cleared). Non-packable members are written per their type.
+A *run* is a maximal sequence of consecutive packable members (§6.1: `bool`, `uintN`/`intN` with
+N < 256, `address`, `bytesN` with N < 32, enums) placed in the same slot. **A run may have a
+single member**: a packable member alone in its slot (such as an `address` followed by a
+`uint256`) is a run of one. A slot holding only non-packable members (`uint256`, `int256`,
+`bytes32`, nested structs, arrays, dynamic types) belongs to no run.
+
+- *Whole read*: each run's word is loaded once; other members are read per their type.
+- *Whole write*: each run's lanes are assembled and the word is stored once (one SSTORE per run).
+  Before T4 the assembly starts from the slot's current word: **one SLOAD per run, runs of one
+  included**. **From T4 it starts from zero** (no SLOAD; unused lane bytes are cleared).
+  Non-packable members are written per their type (a static full-word member is one SSTORE with
+  no prior SLOAD at every fork). The writes happen in member order.
 - *Whole delete*: dynamic members are deleted per their type; then every slot that contains a
   static member is set to zero.
 - *Member access* (e.g. through a mapping value handle) uses the member's own location, with the
   §6.2 packed/full rule applied among the struct's members.
 
-> **Resolved conflict C-PFW-02**: TIP-1046 §8 says T4 removes the SLOAD for "the first packed slot" of a packed-struct store; the code removes it for every packed slot run of the struct. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-pfw-02).
+> **Resolved conflict C-PFW-02**: TIP-1046 §8 says T4 removes the SLOAD for "the first packed slot" of a packed-struct store; the implementation removes it for every packed slot run of the struct. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-pfw-02).
 
 ### 6.4 Fixed arrays
 
@@ -468,12 +501,16 @@ with the §6.4 placement (packed iff `size(T) <= 16`).
   type). Then store `len(v)` at `s`, then store every data slot of `v` (packed slots assembled from
   zero). Before T5 there is no tail cleanup; stale elements past the new length remain in storage.
 - *Push*: read the length `L`; write the element at index `L` (packed element: read-modify-write of
-  its slot; unpacked: written as a fresh value); store `L + 1`.
+  its slot; unpacked: written as a fresh value, so a dynamic or struct element loads no old
+  length or word); store `L + 1`. Push always performs its own length read, even when the caller
+  has just read the length (§6.10).
 - *Pop*: read the length `L` (nothing if 0); read element `L − 1`; delete it (packed: lane zeroed by
   read-modify-write); store `L − 1`.
 - *Delete*: read the length `L`; store 0 at `s`; clear every data slot or element in `[0, L)`.
 - Checked element access by index first reads the length; an index ≥ length is out of bounds (the
-  chapter states the resulting error).
+  chapter states the resulting error). Unchecked access reads no length (§6.10).
+- Writing or deleting a single packed element is a read-modify-write of its slot (one SLOAD and one
+  SSTORE per element, even for consecutive elements of the same slot).
 
 ### 6.7 `bytes` and `string`
 
@@ -500,10 +537,18 @@ store zero at `s`.
   `2^32 − 1` is `Panic(0x11)`); push `v`; return true.
 - *remove(v)*: `p = positions[v]`; if 0 return false; read the length `L`; if `p − 1 != L − 1`: read
   `last = values[L − 1]`, write `positions[last] = p`, write `values[p − 1] = last`; delete
-  `values[L − 1]`; store the length `L − 1`; delete `positions[v]`; return true.
+  `values[L − 1]`; store the length `L − 1`; delete `positions[v]`; return true. The element
+  reads and writes here are unchecked (no further length reads).
 - *write(new)* (whole replace; `new` has no duplicates): read the length `L`; for `i` in `[0, L)` read
   `values[i]` and delete its position; for each `(i, v)` of `new` write `positions[v] = i + 1` then
   `values[i] = v`; store the length `len(new)`; delete `values[i]` for `i` in `[len(new), L)`.
+  Every element access is an unchecked single-element access, never a slot-assembled write: for a
+  packed `T` (`size(T) <= 16`, such as `bytes4`, 8 per slot) each `values[i] = v` is a
+  read-modify-write of its slot (SLOAD + SSTORE) and each tail `delete values[i]` zeroes its lane by
+  read-modify-write, one per element, even when several elements share a slot. For an unpacked `T`
+  each element write is a full store and each delete stores zero.
+- Positions are a mapping of `uint32` values, so every position write or delete is a single full
+  SSTORE with no prior SLOAD (§6.5).
 - *delete*: read the length `L`; for each `i < L` read `values[i]` and delete its position; then
   delete the array (§6.6).
 
@@ -512,6 +557,34 @@ store zero at `s`.
 Fields a chapter declares *transient* use EIP-1153 transient storage of the precompile address with
 the same slot derivation and packing; packed transient writes are TLOAD + TSTORE. Transient storage
 is cleared at the end of each transaction.
+
+### 6.10 Pseudocode conventions
+
+Chapters give each method as pseudocode in storage-access order, and its gas is the cost of the
+primitives that pseudocode performs. Pseudocode maps onto primitives by these rules:
+
+1. Each evaluation of `len(x)` for a `T[]`, `bytes`, `string` or set `x` is one SLOAD of the length
+   word (for `bytes`/`string`, of the word at its slot). Evaluations are never cached: two written
+   evaluations are two SLOADs. A local variable holding a value read earlier is never re-read.
+2. `x[i]` is **unchecked**: it reads no length and computes the element's location directly.
+   `x.at(i)`, or `x[i]` annotated `# checked`, is a checked access: it first reads the length (one
+   SLOAD) and raises the chapter's out-of-bounds outcome when `i >= length`.
+3. Push, pop and the set operations (insert, remove, contains, write, delete) perform exactly the
+   accesses listed in §6.6 and §6.8, including their own length read, whatever the caller read
+   before.
+4. `r = m[k]` or `r = x[i]` that binds a whole struct is a whole read (§6.3): all its slots,
+   including the length word and data words of its `bytes`/`string` members. `m[k].f` reads
+   only member `f` (§6.2 packed/full rule among the struct's members). Each written occurrence is
+   performed again: `m[k].f` followed by `r = m[k]` reads `f`'s slot twice.
+5. `m[k] = v` of a struct value is a whole write (§6.3); `m[k].f = v` is a member write of `f`;
+   `del m[k]` is a whole delete.
+6. A `T[]`, `bytes` or `string` write's destination is *not fresh* (from T5 its old length or word
+   is loaded for tail cleanup, §6.6, §6.7) unless the chapter states the destination is fresh.
+7. Reads and writes of a primitive-typed contract field follow §6.2 (packed fields: read-modify-
+   write; full fields: a store without load).
+8. Calls into another precompile's functions (such as a TIP-20 method invoked by the DEX, or a
+   registry lookup) run that function's own pseudocode at the point of the call, with no call
+   frame, input charge or account-access charge, unless the chapter says the call is an EVM call.
 
 ## 7. Gas metering of primitives
 
@@ -546,8 +619,9 @@ processor ([06-transactions-and-fees.md](../06-transactions-and-fees.md)).
 ### 7.2 Primitive costs
 
 Warm/cold status uses the transaction's shared EIP-2929 access sets (accounts and
-`(address, slot)` pairs): a slot warmed by an earlier frame, the access list or an earlier
-precompile call is warm.
+`(address, slot)` pairs), maintained by the warm-set rule of §3.4: a slot or account warmed by the
+access list, an earlier frame, an earlier precompile call or a native host invocation earlier in
+the transaction is warm.
 
 ```python
 def SLOAD(addr, key):
@@ -592,9 +666,14 @@ def SSTORE(addr, key, new):
   (no memory-expansion term); the log is appended to the current logs with emitter `addr`.
 - *KECCAK(data)* (only where a chapter names a metered hash, e.g. EIP-712 digests):
   `charge(30 + 6 × ceil(len(data) / 32))`.
-- *ECRECOVER(digest, v, r, s)*: `charge(3,000)`; then if `v ∉ {27, 28}` the result is "invalid"
-  (no 0/1 normalisation); else secp256k1 public-key recovery with y-parity `v == 28`, where a
-  failure or the zero address is "invalid". The charge applies even when the result is invalid.
+- *ECRECOVER(digest, v, r, s)*: `charge(3,000)`; then the result is "invalid" if `v ∉ {27, 28}`
+  (no 0/1 normalisation), if `s > n/2` (EIP-2 low-s rule, `n` the secp256k1 group order), or if
+  `r` or `s` lies outside `[1, n − 1]`; otherwise it is secp256k1 public-key recovery with y-parity
+  `v == 28`, where a recovery failure or the zero address is "invalid". This is
+  `secp256k1_recover` of [03-signatures.md §4.2](../03-signatures.md#42-verification-and-recovery)
+  (`s == n/2` accepted), with `v` restricted to `{27, 28}` instead of the wider set of 03 §4.1.
+  These rules apply to every precompile that uses ECRECOVER (unlike the base precompile at 0x01, which accepts high `s`). The
+  charge applies even when the result is invalid.
 - *ACCOUNT_READ(addr)* (account info: code-hash or "initialized" checks, code presence): from T4
   `charge(WARM_READ)`, then if the account is cold and `gas_remaining < COLD_ACCOUNT_EXTRA` raise
   OutOfGas without loading it; before T4 load first, then `charge(WARM_READ)`. In both cases, if it
@@ -609,7 +688,7 @@ def SSTORE(addr, key, new):
 
 A failed `charge` raises OutOfGas and the frame halts (§5).
 
-> **Resolved conflict C-PFW-03**: TIP-1000 gives 252,100 gas for a cold zero-to-nonzero SSTORE from T1; the code charges 100 + 2,100 + 250,000 = 252,200 (precompile SSTOREs included). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-pfw-03).
+> **Resolved conflict C-PFW-03**: TIP-1000 gives 252,100 gas for a cold zero-to-nonzero SSTORE from T1; the implementation charges 100 + 2,100 + 250,000 = 252,200 (precompile SSTOREs included). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-pfw-03).
 
 ### 7.3 SSTORE refunds
 
@@ -635,7 +714,7 @@ EVM bytecode are unaffected; see [06-transactions-and-fees.md](../06-transaction
 From T4 the value above is added to the transaction's refund counter (and discarded if the frame
 reverts or halts).
 
-> **Resolved conflict C-PFW-04**: TIP-1000 (invariant 4) requires storage clearing to keep its refund for every SSTORE, including precompile-created state; the code records no refund for native-precompile SSTOREs before T4. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-pfw-04).
+> **Resolved conflict C-PFW-04**: TIP-1000 (invariant 4) requires storage clearing to keep its refund for every SSTORE, including precompile-created state; the implementation records no refund for native-precompile SSTOREs before T4. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-pfw-04).
 
 ### 7.4 TIP-1060 storage-credit hook (from T7)
 
@@ -645,8 +724,9 @@ dynamic part (§7.2). The hook, its gas (including its own metered read of the c
 its state effects are specified in [account-keychain.md](account-keychain.md), section "Storage
 credits". The framework supplies:
 
-- `owner` = the precompile address whose storage is written, `key` = the slot, and
-  `(original, present, new)`;
+- `owner` = the account whose storage is written (the SSTORE's `addr`, not the executing
+  precompile: for ZoneFactory's writes to a portal proxy it is the portal proxy account), `key` =
+  the slot, and `(original, present, new)`;
 - `tip1060_enabled`: true in every EVM-dispatched precompile call from T7, except where a chapter
   disables it for its own writes (CurrentCommittee `setCommitteeMembers`); false in
   protocol-internal invocations (§9.1);
@@ -744,10 +824,14 @@ the current transaction's journaled state:
 
 - `is_static = false`; `fork` is the block's fork; the storage model (§6) and the primitives (§7)
   are unchanged;
+- warm sets: the warm-set rule of §3.4 applies in full. Every slot and account a native host
+  invocation touches is in the transaction's EIP-2929 access sets afterwards, at every fork, whether
+  or not its gas is metered, and stays there for the EVM phase and later invocations (unless the
+  call site rolls the invocation back);
 - gas: unless the call site states a gas limit, primitives are metered against an unbounded budget
   whose usage is discarded (they cost the transaction nothing). The AccountKeychain key-authorization
-  path is the exception and is metered as stated in [account-keychain.md](account-keychain.md)
-  (including the T1/T1A special gas table);
+  write at T1 and T1A is the exception: it is metered under the table of §9.1.1, with the limit and
+  out-of-gas handling of [06-transactions-and-fees.md §4.10.2](../06-transactions-and-fees.md#4102-t1-and-t1a-metered);
 - refunds computed by §7.3 stay in that discarded budget and do not reach the transaction;
 - TIP-1060: the storage-credit hook is disabled (`tip1060_enabled = false`); call sites that create
   persistent storage charge for it as their chapter specifies;
@@ -762,6 +846,64 @@ keychain signature validation, key authorization and spending-limit accounting, 
 expiring-nonce checks and updates (NonceManager), fee-token resolution, pre-transaction fee
 collection and post-transaction fee settlement (TipFeeManager and TIP-20 fee transfers), and
 storage-credit settlement at the end of the transaction.
+
+**Worked example (warmth from fee collection).** A transaction whose fee payer is its sender pays
+its fee in token `F` and then calls `F.transfer(to, amount)`. Before EVM execution, fee
+collection runs `F`'s pre-transaction fee transfer as a native host invocation
+([fee-manager.md](fee-manager.md), [tip20.md](tip20.md)). That invocation reads `F`'s pause
+state, the policy data used to authorize the payer and (before T8) the payer's reward state, and
+reads and writes `balances[sender]` and `balances[FEE_MANAGER]` of `F`. Its gas is discarded, but by §3.4
+the account `F` and every one of those `(F, slot)` pairs (and the TIP403Registry slots it read)
+are warm when the batch starts. So in the later `transfer`:
+
+- a CALL to `F` from a contract pays the warm account-access cost, 100, not 2,600 (when `F` is the
+  top-level call target it is warm anyway);
+- the TIP-20 "token initialized" ACCOUNT_READ of `F` is warm: 100, not 2,600;
+- each SLOAD of a slot the fee transfer touched (the pause state, the sender-side policy reads,
+  before T8 the sender's reward state, `balances[sender]`) pays 100, not 2,100;
+- the SSTORE of `balances[sender]` is warm (no `COLD_SSTORE_EXTRA`) and not clean (`original !=
+  present` after the fee debit), so it pays only `WARM_READ` (100), with no `SSTORE_RESET`;
+- slots the fee transfer did not touch (`balances[to]`, the recipient-side policy reads, the
+  recipient's reward state) are charged as usual: cold on first access.
+
+The same transfer of a token the fee collection did not touch pays the cold costs throughout.
+[tip20.md](tip20.md) §9.2 gives the measured T13 totals for both cases.
+
+#### 9.1.1 T1/T1A metered gas table
+
+At T1 and T1A (not before T1, not from T1B) the AccountKeychain key-authorization write that the
+transaction processor performs before the batch ([06-transactions-and-fees.md §4.10.2](../06-transactions-and-fees.md#4102-t1-and-t1a-metered),
+[account-keychain.md](account-keychain.md)) runs with a gas limit under a special schedule: the T1
+gas schedule with every parameter set to 0 except `SSTORE_SET` (250,000) and `WARM_READ` (100).
+Constant charges that are not schedule parameters are unchanged. Every framework primitive costs:
+
+| Primitive | Cost at T1/T1A metered |
+|---|---|
+| SLOAD | 100, cold or warm (`COLD_SLOAD_EXTRA` = 0) |
+| SSTORE | 250,000 when clean and effective with `original == 0` (`original == present == 0`, `new != 0`); 0 otherwise (static part, `COLD_SSTORE_EXTRA` and `SSTORE_RESET` are 0) |
+| SINC, SDEC | the SLOAD and SSTORE above |
+| SSTORE refunds | none (before T4 no refund is recorded, §7.3) |
+| TLOAD, TSTORE | 100 each |
+| LOG | 375 per log, whatever its topics and data (per-topic and per-byte terms are 0) |
+| KECCAK | `30 + 6 × ceil(len / 32)` (constant) |
+| ECRECOVER | 3,000 (constant) |
+| ACCOUNT_READ | 100, cold or warm (`COLD_ACCOUNT_EXTRA` = 0) |
+| WARM_CALLER_READ | 0 |
+| SET_CODE | 0 (`CODE_DEPOSIT` = 0) |
+| Input charge (§4.1), duplicate-validation charge (§4.2) | none (no ABI dispatch; §4.2 is T11+) |
+| TIP-1060 hook (§7.4) | disabled |
+| Explicit chapter charges | unchanged |
+
+Charge order is the pre-T4 order of §7.2 (load, then charge). Warm/cold status is still tracked and
+updated (§3.4), though it changes no cost here.
+
+Example: at T1, a root-signed transaction authorizes a new non-admin key with an expiry and two
+non-zero limits on distinct tokens, without a witness. The write performs, in order: TLOAD of the
+transaction key (100); SLOAD of the key record, the existing-key check (100); the whole-struct
+write of the key record, SLOAD then a clean zero-to-non-zero SSTORE (100 + 250,000; §6.3 before
+T4); one full-word SSTORE per limit slot, each zero-to-non-zero (2 × 250,000); and the
+KeyAuthorized log (375). Total: 750,675 gas. A zero-amount limit writes 0 over 0 and costs 0.
+[account-keychain.md](account-keychain.md) lists the path's accesses.
 
 ### 9.2 System calls
 

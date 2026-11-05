@@ -98,7 +98,7 @@ The EVM block environment of a block is derived from its header ([02-encoding.md
 | `BASEFEE` | `header.base_fee_per_gas` (attodollars per gas) |
 | `PREVRANDAO` | `header.mix_hash` interpreted as a big-endian 256-bit integer |
 | `BLOBBASEFEE` | `fake_exponential(1, header.excess_blob_gas, update_fraction)` per EIP-4844 with the Osaka blob parameters; since `excess_blob_gas` is always 0 (§2.2) this is 1 |
-| `CHAINID` | 4217 |
+| `CHAINID` | `chainId` from the chain configuration ([01-chain-and-forks.md](01-chain-and-forks.md); mainnet 4217) |
 | epoch length (used by §6.2) | `EPOCH_LENGTH` from the chain configuration (mainnet 21,600) |
 
 The Tempo-specific header fields `general_gas_limit` and `shared_gas_limit` are inputs to block-section accounting (§5.4).
@@ -161,11 +161,11 @@ If any charge exceeds the remaining gas the frame halts exceptionally (all its g
 
 ### 1.7 Gas schedule per fork
 
-Tempo uses the Osaka gas schedule with the overrides below. Parameters not listed (for example `ColdStorageCost` = 2,100, `ColdAccountAdditionalCost` = 2,500, `ColdStorageAdditionalCost` = 2,000, `WarmStorageReadCost` = `SstoreStatic` = 100, `SstoreResetWithoutColdLoadCost` = 2,800, `SstoreResetRefund` = 2,800, calldata token costs, EIP-7623 floor costs, EIP-3860 initcode word cost, memory, copy, log, Keccak, call-stipend and EIP-150 rules, precompile prices) keep their Osaka values at every fork.
+Tempo uses the Osaka gas schedule with the overrides below. The SSTORE parameters are split as in §1.6.2: `SstoreStatic` (100) is charged on every SSTORE, and `SstoreSetWithoutLoadCost` and `SstoreResetWithoutColdLoadCost` are the dynamic parts that **exclude** it. So Osaka's EIP-2200/EIP-2929 `SSTORE_SET_GAS` (20,000) is `SstoreStatic + SstoreSetWithoutLoadCost` = 100 + 19,900, and Osaka's warm reset (`SSTORE_RESET_GAS − COLD_SLOAD_COST` = 2,900) is `SstoreStatic + SstoreResetWithoutColdLoadCost` = 100 + 2,800. A quantity that includes the static part (such as the 2,900-gas warm reset) is never given one of these names. Parameters not listed (for example `ColdStorageCost` = 2,100, `ColdAccountAdditionalCost` = 2,500, `ColdStorageAdditionalCost` = 2,000, `WarmStorageReadCost` = `SstoreStatic` = 100, `SstoreResetWithoutColdLoadCost` = 2,800, `SstoreResetRefund` = 2,800, calldata token costs, EIP-7623 floor costs, EIP-3860 initcode word cost, memory, copy, log, Keccak, call-stipend and EIP-150 rules, precompile prices) do not change at any fork; each equals the Osaka amount under this split.
 
-| Parameter (meaning) | T0 (Osaka value) | T1 – T6 | T7 – T13 |
+| Parameter (meaning) | T0 (Osaka amount under the §1.7 split) | T1 – T6 | T7 – T13 |
 |---|---|---|---|
-| `SstoreSetWithoutLoadCost` (clean-creation dynamic SSTORE cost, §1.6.2) | 19,900 | 250,000 | 5,000 |
+| `SstoreSetWithoutLoadCost` (clean-creation dynamic SSTORE cost, excluding `SstoreStatic`, §1.6.2) | 19,900 | 250,000 | 5,000 |
 | `SstoreSetRefund` (refund for restoring an originally-zero slot to zero) | 19,900 | 19,900 | 5,000 |
 | `SstoreClearingSlotRefund` (EIP-3529 `SSTORE_CLEARS_SCHEDULE`) | 4,800 | 4,800 | 0 |
 | `Create` (`CREATE`/`CREATE2` base cost) | 32,000 | 500,000 | 500,000 |
@@ -604,7 +604,7 @@ def is_dynamic_call(e, data):
     return signature is not None and is_valid_tempo_signature_encoding(signature)
 ```
 
-`rlp(tx.key_authorization)` is the RLP encoding of the signed key authorization exactly as it appears in the transaction ([02-encoding.md](02-encoding.md)). `is_valid_tempo_signature_encoding(b)` is true iff `b` parses as a Tempo primitive signature encoding ([03-signatures.md](03-signatures.md)); the signature is not verified. `abi_decode_checked(e, args)` decodes the arguments of a dynamic entry. It checks that each head word is a valid value of its type and that the `bytes` offset and length are in range. Nothing else about the encoding is checked:
+`rlp(tx.key_authorization)` is the RLP encoding of the signed key authorization exactly as it appears in the transaction ([02-encoding.md](02-encoding.md)). `is_valid_tempo_signature_encoding(b)` is true iff `decode_primitive(b)` of [03-signatures.md §3.2](03-signatures.md#32-decoding-pseudocode) succeeds; the signature is not verified. So exactly these are accepted: a 65-byte secp256k1 signature whose `v` byte is one the lenient decoding of [03-signatures.md §4.1](03-signatures.md#41-decoding-and-accepted-v) accepts (0, 1, 27, 28 or 35..255), a 130-byte `0x01` P256 signature with any `pre_hash` byte, and a `0x02` WebAuthn signature of 129 to 2049 bytes. Keychain envelopes (`0x03`, `0x04`), `0x05` configurable-account signatures, any other type byte, and an empty or 1-byte value make the call non-payment, at every fork from T5. No RLP layout is parsed. `abi_decode_checked(e, args)` decodes the arguments of a dynamic entry. It checks that each head word is a valid value of its type and that the `bytes` offset and length are in range. Nothing else about the encoding is checked:
 
 ```python
 SETTLE_HEAD = [address, address, address, address, bytes32, address, bytes32,   # D
@@ -716,7 +716,7 @@ A **system transaction** is a legacy (type `0x00`) transaction whose signature i
 
 #### 5.5.1 Structural checks before execution
 
-1. Every system transaction in the block (at any position, at any fork) MUST satisfy: `gas_price == 0`, `gas_limit == 0`, `value == 0`, `nonce == 0` and `chain_id` present and equal to the chain id (4217), i.e. it is EIP-155-signed with `v = 2 * 4217 + 35 = 8469`.
+1. Every system transaction in the block (at any position, at any fork) MUST satisfy: `gas_price == 0`, `gas_limit == 0`, `value == 0`, `nonce == 0` and `chain_id` present and equal to the configured `chainId`, i.e. it is EIP-155-signed with `v = 2 * chainId + 35` (8469 on mainnet, where `chainId = 4217`).
 2. Before T4: the block MUST contain at least one transaction and its **last** transaction MUST be a system transaction with `to == 0x0000000000000000000000000000000000000000` (a call, not a creation).
 3. From T4: the block MUST NOT contain any system transaction (rule 2 does not apply; any system transaction is rejected by §5.5.2).
 
@@ -774,7 +774,7 @@ From T4: if `st.incentive_gas_used > 0`, the block is invalid.
 From T8, if `(h.number + 1) % EPOCH_LENGTH == 0` (i.e. `h.number % EPOCH_LENGTH == EPOCH_LENGTH - 1`, the last block of an epoch; mainnet `EPOCH_LENGTH = 21_600`):
 
 1. Read an `OnchainDkgOutcome` from the start of `h.extra_data` (format in [07-consensus.md](07-consensus.md) §10.2; embedded `Output` per [commonware/dkg.md §11.1](commonware/dkg.md#111-output)). This is a read, not a full decode, in the sense of [commonware/codec.md §11](commonware/codec.md#11-decoding-rules). If decoding fails, the block is invalid. (This step does not itself examine bytes after the encoded outcome.) For blocks that are not the last block of an epoch, `extra_data` MUST NOT be interpreted by this step.
-2. Let `epoch = outcome.epoch` (`uint64`) and `publicKeys = [bytes32(k) for k in outcome.players]`, each player's 32-byte Ed25519 public key, in the outcome's player order (no sorting or deduplication).
+2. Let `epoch = outcome.epoch` (`uint64`) and `publicKeys = [bytes32(k) for k in outcome.output.players]`, each player's 32-byte Ed25519 public key, in the outcome's player order (no sorting or deduplication).
 3. Execute a system call (§4.4) with:
    - `caller = 0x0000000000000000000000000000000000000000`,
    - `target = CURRENT_COMMITTEE_ADDRESS` (`0xC077E00000000000000000000000000000000000`),
