@@ -468,16 +468,19 @@ where
         // executed.
         //
         // Execution keeps its verdict on the outcome of a boundary block only
-        // while the block is registered, so register it before execution
-        // runs it and hold the registration until the verdict is read.
+        // while the block is registered, so register it as soon as the block
+        // is known, before waiting for the parent, and hold the registration
+        // until the verdict is read. A block the engine executed before that
+        // has no verdict, and this node abstains on it.
         let (ceremony, registration) = if self.is_boundary(block.height()) {
+            let registration = self.boundary_outcome_checks.register(block.digest().0);
             let Some(parent) = ancestry.next().await else {
                 warn!("ancestry ended before yielding the parent; abstaining");
                 return std::future::pending().await;
             };
             (
                 Some(self.dkg_manager.subscribe_dkg_ceremony(parent)),
-                Some(self.boundary_outcome_checks.register(block.digest().0)),
+                Some(registration),
             )
         } else {
             (None, None)
