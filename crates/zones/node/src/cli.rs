@@ -371,16 +371,12 @@ async fn configure_sequencing(
     let prover_addresses = ProverAddresses::new(args.prover_addresses.clone(), policy.as_deref())?;
     let prover_config = match prover_addresses {
         None => None,
-        Some(addresses) if should_sequence_blocks => Some(ZoneProverConfig::Settlement(addresses)),
         Some(addresses) => {
             eyre::ensure!(
-                rpc_only,
-                "--sequencer.prover-address requires a sequencer or an rpc_only P2P follower"
+                should_sequence_blocks,
+                "--sequencer.prover-address requires a sequencer; rpc_only P2P followers do not prove"
             );
-            Some(ZoneProverConfig::Shadow {
-                prover_addresses: Some(addresses),
-                proof_verifier: args.shadow_prover_pcrs.clone(),
-            })
+            Some(ZoneProverConfig::Settlement(addresses))
         }
     };
 
@@ -709,9 +705,9 @@ pub struct ZoneArgs {
 
     /// Route to an immutable prover release for each exact live L1 hardfork. Repeat per hardfork.
     ///
-    /// Any assignment enables proving: a sequencer then requires a Nitro-attested SPF proof before
-    /// settlement and persists witnesses durably, and an rpc_only follower validates finalized
-    /// submissions observationally. Without one, a sequencer settles without a proof.
+    /// Any assignment enables proving: the sequencer then requires a Nitro-attested SPF proof before
+    /// settlement and persists witnesses durably. Without one, it settles without a proof.
+    /// Rejected on nodes that do not sequence, including rpc_only P2P followers.
     #[arg(
         long = "sequencer.prover-address",
         env = "SEQUENCER_PROVER_ADDRESS",
@@ -1046,6 +1042,32 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[tokio::test]
+    async fn prover_addresses_require_a_sequencer() {
+        let args = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.prover-address",
+            "T13=prover:5000",
+        ])
+        .unwrap()
+        .zone;
+        let node = ZoneNode::new(
+            "ws://localhost:8546".to_owned(),
+            Address::ZERO,
+            1,
+            Duration::from_secs(1),
+        );
+        let error = configure_sequencing(&args, 1, 1, std::path::Path::new("unused"), node)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--sequencer.prover-address requires a sequencer; rpc_only P2P followers do not prove"
+        );
     }
 
     #[test]
