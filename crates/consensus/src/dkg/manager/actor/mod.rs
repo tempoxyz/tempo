@@ -1494,7 +1494,7 @@ where
         // The boundary header is not checked against the finalized floor's
         // certificate, so an outcome for a later epoch could otherwise persist
         // a future identity that startup then trusts over the configured one.
-        let (boundary_digest, onchain_outcome) = read_outcome_from_boundary(
+        let (boundary_header, onchain_outcome) = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
@@ -1504,10 +1504,14 @@ where
         // Read the ceremony at the finalized floor rather than at the boundary:
         // a node that keeps little history may have pruned the boundary's
         // state, but has the state of its latest finalized block.
-        let ceremony_state_block = if matches!(onchain_outcome, OnchainDkgOutcome::V1(_))
+        let ceremony_state_block = if !self
+            .config
+            .execution_node
+            .chain_spec()
+            .stores_dkg_ceremony_at(boundary_header.timestamp())
             || self.config.last_finalized_height == latest_boundary
         {
-            boundary_digest
+            Digest(boundary_header.hash_slow())
         } else {
             let floor = get_header(
                 &self.config.execution_node,
@@ -1737,13 +1741,13 @@ fn latest_boundary_at_or_before_height() {
 }
 
 /// Reads the DKG outcome for `expected_epoch` from the boundary block at
-/// height `boundary`. Returns the boundary block's digest with it.
+/// height `boundary`. Returns the boundary block's header with it.
 async fn read_outcome_from_boundary<TExecutionLayer, TMarshal>(
     node: &TExecutionLayer,
     marshal: &TMarshal,
     boundary: Height,
     expected_epoch: Epoch,
-) -> eyre::Result<(Digest, OnchainDkgOutcome)>
+) -> eyre::Result<(TempoHeader, OnchainDkgOutcome)>
 where
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
@@ -1761,7 +1765,7 @@ where
         "boundary outcome at height `{boundary}` is for epoch `{}`, expected epoch `{expected_epoch}`",
         outcome.raw_epoch(),
     );
-    Ok((Digest(header.hash_slow()), outcome))
+    Ok((header, outcome))
 }
 
 /// Returns the players and mode of the ceremony that ran during the epoch of

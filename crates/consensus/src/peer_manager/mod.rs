@@ -54,7 +54,6 @@ use commonware_p2p::AddressableManager;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::channel::mpsc;
 use reth_provider::{BlockIdReader as _, HeaderProvider as _};
-use tempo_dkg_onchain_artifacts::OutcomeEncoding;
 use tempo_node::TempoFullNode;
 use tempo_primitives::TempoHeader;
 
@@ -103,8 +102,9 @@ pub(crate) trait ExecutionLayer: ExecutionNode + Send + Sync + 'static {
     fn finalized_block_number(&self) -> eyre::Result<Option<u64>>;
     fn header_by_number(&self, height: u64) -> eyre::Result<Option<TempoHeader>>;
 
-    /// Returns how the DKG outcome of a boundary block with `timestamp` is encoded.
-    fn dkg_outcome_encoding_at(&self, timestamp: u64) -> OutcomeEncoding;
+    /// Returns whether a boundary block with `timestamp` stores the DKG ceremony of the epoch it
+    /// starts in execution state (T15, TIP-1123) instead of its header.
+    fn stores_dkg_ceremony_at(&self, timestamp: u64) -> bool;
 }
 
 impl ExecutionLayer for TempoFullNode {
@@ -120,7 +120,7 @@ impl ExecutionLayer for TempoFullNode {
             .map_err(eyre::Report::new)
     }
 
-    fn dkg_outcome_encoding_at(&self, timestamp: u64) -> OutcomeEncoding {
-        self.chain_spec().dkg_outcome_encoding_at(timestamp)
+    fn stores_dkg_ceremony_at(&self, timestamp: u64) -> bool {
+        self.chain_spec().stores_dkg_ceremony_at(timestamp)
     }
 }

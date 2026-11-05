@@ -242,9 +242,15 @@ impl TempoChainSpec {
         self
     }
 
+    /// Returns whether a boundary block with `timestamp` stores the DKG ceremony of the epoch it
+    /// starts in execution state (TIP-1123) instead of its header.
+    pub fn stores_dkg_ceremony_at(&self, timestamp: u64) -> bool {
+        self.tempo_hardfork_at(timestamp).stores_dkg_ceremony()
+    }
+
     /// Returns how the DKG outcome of a boundary block with `timestamp` is encoded.
     pub fn dkg_outcome_encoding_at(&self, timestamp: u64) -> OutcomeEncoding {
-        if self.tempo_hardfork_at(timestamp).stores_dkg_ceremony() {
+        if self.stores_dkg_ceremony_at(timestamp) {
             OutcomeEncoding::CeremonyInState
         } else {
             OutcomeEncoding::Legacy
