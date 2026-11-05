@@ -1,5 +1,5 @@
 # Zone test image: the Tempo L1 node, the zone node built with SDK assertions enabled,
-# the provisioning tools and the scripts docker-compose.yaml runs.
+# the provisioning tools, txgen, the scripts docker-compose.yaml runs and the test commands.
 #
 # Build from the repository root (requires the crates/zones/contracts/lib submodules):
 #   docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
@@ -40,6 +40,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     && cp target/${RUST_PROFILE}/tempo target/${RUST_PROFILE}/tempo-zone \
         target/${RUST_PROFILE}/tempo-xtask target/${RUST_PROFILE}/tempo-zone-xtask /out/
 
+# txgen drives the zone journeys (txgen/journey.yml).
+FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS txgen
+ARG TXGEN_REV=585b43b178428c17768ea5775b3c1a908f48b0f8
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    cargo install --locked --root /out --git https://github.com/tempoxyz/txgen --rev "$TXGEN_REV" \
+        txgen-tempo
+
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git \
@@ -72,7 +80,12 @@ COPY --from=builder /out/ /usr/local/bin/
 COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
+COPY --from=txgen /out/bin/txgen-tempo /usr/local/bin/txgen-tempo
 COPY zones/antithesis/scripts/ /opt/zones/
+COPY zones/antithesis/txgen/ /opt/zones/txgen/
+# The journey workloads load these ABIs from ../../contrib/bench/neobank/abis.
+COPY zones/contrib/bench/neobank/abis/ /opt/contrib/bench/neobank/abis/
+COPY zones/antithesis/test/ /opt/antithesis/test/v1/zones/
 
 ENV RUST_BACKTRACE=full
 WORKDIR /app
