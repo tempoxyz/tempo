@@ -512,7 +512,7 @@ Each request is single-shot for its inputs: consensus does not retry it after an
 
 ## 10. Marshal Inline wrapper
 
-Tempo plugs its block application ([07-consensus.md §12–§13](../07-consensus.md#12-validator-proposal-procedure)) into Simplex through the **Inline** wrapper, which implements `propose`, `verify`, `certify` and `broadcast` on top of marshal, the block store and fetcher. `last(E)` is the last height of epoch `E` ([07-consensus.md §4](../07-consensus.md#4-epochs)). `h(B)` is a block's height, `parent(B)` its parent digest, `digest(B)` its hash.
+Tempo plugs its block application ([07-consensus.md §12–§13](../07-consensus.md#12-validator-proposal-procedure)) into Simplex through the **Inline** wrapper, which implements `propose`, `verify`, `certify` and `broadcast` on top of marshal ([08-p2p-and-sync.md §5.1](../08-p2p-and-sync.md#51-marshal)). The marshal operations used below (`has_verified_block`, `block`, `store_verified`, `store_certified`, and `proposed` for the broadcast) are defined in [08-p2p-and-sync.md §5.1.2](../08-p2p-and-sync.md#512-inputs) and [§5.1.9](../08-p2p-and-sync.md#519-lookups). `last(E)` is the last height of epoch `E` ([07-consensus.md §4](../07-consensus.md#4-epochs)). `h(B)` is a block's height, `parent(B)` its parent digest, `digest(B)` its hash.
 
 ### 10.1 propose(ctx)
 

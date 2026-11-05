@@ -355,7 +355,7 @@ The DKG is driven by **finalized** blocks of epoch `E`, in height order:
 
 Nothing in block validity enforces these timings. For example, a log that appears before the midpoint is still valid.
 
-A validator MUST persist, per epoch, the dealings it received and the acks it gave, and MUST persist the new DKG state (epoch, output, share, players, is_full_dkg) before it enters the next epoch. Otherwise it may equivocate after a restart. Storage formats are in 08-p2p-and-sync.md.
+A validator MUST persist, per epoch, the dealings it received and the acks it gave, and MUST persist the new DKG state (epoch, output, share, players, is_full_dkg) before it enters the next epoch. Otherwise it may equivocate after a restart. The durability requirements are in 08-p2p-and-sync.md §9.2; on-disk formats are implementation-defined.
 
 ### 9.5 Share recovery (informative)
 

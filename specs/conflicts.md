@@ -667,7 +667,7 @@ the consensus docs page links version 0.0.65 of commonware's consensus crate, bu
 
 TIP-1017 says the ed25519 key is used for signing all consensus p2p messages; the code uses it only for transport authentication and DKG artifacts, while votes and certificates carry BLS threshold signatures.
 
-- Where: [08-p2p-and-sync.md:68](08-p2p-and-sync.md#L68), [08-p2p-and-sync.md:828](08-p2p-and-sync.md#L828)
+- Where: [08-p2p-and-sync.md §2.1](08-p2p-and-sync.md#21-identity), [08-p2p-and-sync.md §12](08-p2p-and-sync.md#12-open-conflicts)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
 - Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 
@@ -676,7 +676,7 @@ TIP-1017 says the ed25519 key is used for signing all consensus p2p messages; th
 
 docs protocol/rpc/index.mdx says `consensus_subscribe` emits notarized, finalized and nullified events and `consensus_getLatest` returns the latest notarized block; the code emits only finalized events and always returns `notarized: null`.
 
-- Where: [08-p2p-and-sync.md:600](08-p2p-and-sync.md#L600), [08-p2p-and-sync.md:830](08-p2p-and-sync.md#L830)
+- Where: [08-p2p-and-sync.md §7.2](08-p2p-and-sync.md#72-certificate-sources), [08-p2p-and-sync.md §12](08-p2p-and-sync.md#12-open-conflicts)
 - Recommendation: Follow the implementation; fix the doc. No effect on block validity.
 - Decision: follow the implementation; docs fixed in [tempoxyz/docs#1098](https://github.com/tempoxyz/docs/pull/1098).
 

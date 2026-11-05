@@ -205,7 +205,9 @@ def decode_point(b: bytes[n], group) -> Point:
     if b[0] & 0x80 == 0:
         reject("bad encoding")                    # uncompressed form is not accepted
     if b[0] & 0x40:
-        reject("infinity")                        # whether or not the remaining bits are zero
+        if b[0] & 0x3f == 0 and all(c == 0 for c in b[1:]):
+            reject("infinity")                    # the canonical encoding 0xc0 ‖ zeros
+        reject("bad encoding")                    # infinity flag with any other bit set
     x_bytes = clear_top_3_bits(b)
     x = parse_fp(x_bytes) if group == G1 else Fp2(c1=parse_fp(x_bytes[0:48]), c0=parse_fp(x_bytes[48:96]))
     # parse_fp rejects ("bad encoding") any 48-byte big-endian value >= p
@@ -223,6 +225,23 @@ def decode_point(b: bytes[n], group) -> Point:
 ```
 
 So a decoded G1 or G2 point is always finite, on the curve, and in the order-`r` subgroup. Every 48-byte signature and 96-byte public key in this chapter is decoded this way, except where §6.2 defers the check.
+
+G2 decoding test vectors (`x = x0 + x1·u`; each row is a full 96-byte input):
+
+| Case | Encoding | Result |
+|---|---|---|
+| `g2` | `93e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb8` | accepted: `g2` |
+| `g2` with the sign bit flipped (byte 0 `0x93` → `0xb3`) | `b3e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb8` | accepted: `−g2`, which equals `(r − 1)·g2` |
+| point at infinity | `c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000` | rejected: infinity |
+| infinity flag with the sign bit set | `e00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000` | rejected: bad encoding |
+| infinity flag with a nonzero last byte | `c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001` | rejected: bad encoding |
+| `g2` with the compression bit cleared | `13e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb8` | rejected: bad encoding |
+| `x1 = p`, `x0 = 0` | `9a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000` | rejected: bad encoding |
+| `x1` of `g2`, `x0 = p` | `93e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab` | rejected: bad encoding |
+| `x = 1`: `x³ + 4(u + 1)` has no square root in `Fp2` | `800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001` | rejected: not on curve |
+| `x = 2`: on the curve, `[r]P ≠ O` | `800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002` | rejected: not in group |
+
+The flipped-sign row exercises the `y1` branch of the sign rule; the table has no vector for the `y1 = 0` branch. The G2 encodings in this chapter (`g2`, the §4.5 `pk`, the §5.8 coefficients and partial public key) and this table were reproduced with two independent BLS12-381 implementations, from their scalars where stated.
 
 ### 4.4 Hash to curve
 

@@ -492,9 +492,9 @@ For `n = 4` with no reveals this is `32 + 289 + 1 + 129 + 261 + 64 = 776` bytes.
 
 ## 15. Test vectors
 
-These vectors were produced with the library this chapter describes. Ed25519 private keys are [RFC 8032](https://www.rfc-editor.org/rfc/rfc8032) 32-byte seeds. Dealer polynomials were sampled at random, so the vectors give the resulting messages. An implementation can check the encodings, summaries, signatures (Ed25519 signing is deterministic) and the output computation.
+These vectors were produced with the library this chapter describes. Ed25519 private keys are [RFC 8032](https://www.rfc-editor.org/rfc/rfc8032) 32-byte seeds. Dealer polynomials were sampled at random, so the vectors give the resulting messages. An implementation can check the encodings, summaries, signatures (Ed25519 signing is deterministic) and the output computation. Vectors A and B have one dealer each. Vectors C and D combine several dealers, fresh and resharing.
 
-Keys, whose public keys sort as key2 < key1 < key4 < key3:
+Keys, whose public keys sort as key5 < key2 < key1 < key4 < key3 (key5 appears only in vector D):
 
 | Key | Seed | Public key |
 |---|---|---|
@@ -502,6 +502,7 @@ Keys, whose public keys sort as key2 < key1 < key4 < key3:
 | key2 | `02` × 32 | `8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394` |
 | key3 | `03` × 32 | `ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1` |
 | key4 | `04` × 32 | `ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c` |
+| key5 | `05` × 32 | `6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1` |
 
 ### 15.1 Vector A: fresh DKG, one dealer, one player
 
@@ -588,3 +589,172 @@ Share (key3) = 03 00a937e95b503a6238833233efd36e1316a49362d32cc5e4775b0bf9370779
 
 The output's constant term equals vector A's group key, as resharing requires. Each `…` abbreviates the full value given earlier in the same vector.
 
+### 15.3 Vector C: fresh DKG, four dealers, one log excluded
+
+`namespace = b"TEMPO"`, `round = 0`, `previous = None`, `dealers = players = {key2, key1, key4, key3}` (sorted order), Reveal V1. So `degree = 2`, `required = q(4) = 3`, `max_reveals = f(4) = 1` and `reveal_threshold = 3 − f(4) = 2`. Player evaluation points are key2 → 1, key1 → 2, key4 → 3, key3 → 4.
+
+The vector exercises three paths:
+
+- **TooManyReveals.** key2 gets acks only from key2 and key1. Two reveals exceed `max_reveals`, so its log is `TooManyReveals` and unavailable (§8.3).
+- **Reveals.** key3 does not acknowledge key1 or key4. Their logs reveal key3's share, and key3 takes those two shares from the reveals (§12).
+- **Revealed set.** Two selected logs reveal key3, which meets `reveal_threshold`, so `revealed = {key3}`.
+
+The usable logs in key order are key1, key4 and key3. That is exactly `required`, so all three are selected.
+
+Each dealer's block gives its `DealerPubMsg`, its `ack_summary` (§4), its private message to every player, and its signed log's `log_summary` and signature. The four private messages fix the dealer's degree-2 polynomial. The acks are omitted: each is the deterministic Ed25519 signature of the acknowledging player over `0x00 ‖ ack_summary`. A `TooManyReveals` log encodes as `DealerPubMsg ‖ 0x01`. An `Ok` log encodes per §8.1, with entries in players order. The signed logs are 386 bytes (key2), 744 bytes (key1 and key4, one reveal each) and 776 bytes (key3).
+
+```text
+S_round = 616b3ee69839819877dc1766879d3ec6551fc4075a02c04868958048c9a55987
+
+# dealer key2
+DealerPubMsg =
+  03
+  80b2a5545afafde5de487c5a5580afa792cb4d782bc3e3547b04d8acec0035a38f3e0b682a623507c3dce0f53318698003c48192069cfc36dd183f5304212bde32246c5282fc81c3e45350e86768dbc5c064063bb1e68f5ba19a6b6ab6028cd1
+  91f947ddb784d8291dbed2dc1e2945e91b5a974471f24a3500cd3099973ee4d0e1e07157f28b7d28eba34752554b9ef207b1a2ce2b77dd15a6a76b67cda95750137313448844c86931f0929c73d5ff5b3ddbc3ec969654175f42971efaaa10c8
+  a4c64b119ae24ad29e3e92568fa4d637e5165e6c74f6c27cd66bef1334046b8e2012b42b7159dff13b80386672a22a170c6df504c4c1cb3fc950920f38381b869ad7e7a0656966d7bff70a3f7b3a44750be5708ca38b182768592806282d3f90
+ack_summary = d3001625050c60558d082467437961000d813c4f831e0f4fe3b7a84f33e5572f
+DealerPrivMsg to key2 = 2756c64731deabce6d550dc24097f8570e3f291a2661a87b31b1ee624c2c7748
+DealerPrivMsg to key1 = 4bd894ee8cf461aca6164ff7fc34e824bc82ac93933aa7a7021aa13202440cbd
+DealerPrivMsg to key4 = 5d0859782e95b76cc93f5f9eff229e21806667e53026fb704e3ffd2dd75669e9   # not acknowledged
+DealerPrivMsg to key3 = 5ae613e416c2ad0ed6d03cb749611a4d59ea5b0efd26a3d716220255cb638ecc   # not acknowledged
+log_summary = e0e416b5f7cf84f654cbca3cca789fd593a6a235f8aa13780666269e70a37377
+SignedDealerLog.sig = 2e78607af86879456c68c501719bb5c2e45d6f2670d6889bc9d299ca7823e83d99792685cf3857f1caf28ae592be2938e28f2feae07d4abbe143a371411b3603
+
+# dealer key1
+DealerPubMsg =
+  03
+  b2c90dbecbd3ee46dfc83987b753d7ee19db8e386621ccdba973dc2058f679fedcd924d963b6d1dce0392fd11159273a0d2fed832820b7d108eeacb5126ddd54e1e6f4113736f603d990f5723241bc06d76538a551b301a6c95373c7f5d524cb
+  adccf782d84ebc61440bb1a6d084671c85621ceaa2ec46781dced6b67d8970849d626f7d7f1a4c9b0904ddfdb672ef0e14a7089872c52de0c9f09bf465ccf536f61fccc34e07a99c45f8574444d21e8674978610cb6fb150e432bb011fe84297
+  982e05412cc352b8c48ffe0f0fb2c62a2f7b7b5cc56a9a9de3629fa335ec073aac70d790f26e865609d0947ee14e2a8e0a893ae53b64f357be95c46a64c03d6d061793f548985c3f7fe7598a03be5d293c265df1b93242531c67e62373b88058
+ack_summary = 0a51212ecb17e57f488934a7535a0460bfca5f0d2a6bad8aac872695d2033b14
+DealerPrivMsg to key2 = 0eb79032d0af10ab5e2b47491a1bff843b2043f4761c9dcb4942a5141f3d6ec6
+DealerPrivMsg to key1 = 6cc4f03bfa852a3ab520211948c96a73c34a7ac31db5fbc3eb109dcb81763bd5
+DealerPrivMsg to key4 = 6b03328e15a7f42e6c873f83444a382a8f8b784166eb73dd9ffa1e8c73c7ebc1
+DealerPrivMsg to key3 = 0972572922176e868460a2870c9e68a89fe33c6f51bd061867ff2756f6327e8a   # not acknowledged
+log_summary = 0d09781b57208436beb601ac00b15d143ec12225cce2620ea1a7b9b35ee01919
+SignedDealerLog.sig = 1b566623422b480976a50b987764bb3284cfccc690a9e4a037ed65774a54df8cd1b4e95e0361e867aef5a0198f8b33f24175bd26b40a3a70672a59fdfa7acb04
+
+# dealer key4
+DealerPubMsg =
+  03
+  84f93bfac92c55f0aa8d10f55ece88e560c90d4d4056e2e7ced1634458125e9fcbf1d8dc3d2f762d8562ea1d20c597340841b771ff2f9356c1102d891bf6dfee31b303dd15839923ea02a33e086a93370bd385252ea53480a7bd629e8cacefea
+  81e906e3065d1766d8cd549c4a37152cf0c6de29fbef3d1ff9c121a0f13fc3c288115434c8764248fa653a3675a5f3370517ae9caee7e849f95e884381b689eea619e2765957cc9853668cbd77c901feef400456c0135e1d76c9554eb87bfb9f
+  a220ff66900192f4bf908d2fa38b1783b660eafd58f563cb1d62521a74a96a2cfb44103c2fa0ece55f5291d63a5a40bf00d15bc7ef4a2ddbb42f0d57d34cbb0b99f5ef06653026e400242036666ae2881390911eecab240999850fe3531e0cff
+ack_summary = 26de2fc8722e6b51b2baa379be213138c62f0f70e73b5a6cd1da06ef5fa8ea9f
+DealerPrivMsg to key2 = 0326cb5423e768b8785f1a18d6898b8f239c784d2e0a73c21aaddd653e00f1fd
+DealerPrivMsg to key1 = 42fce55e994429adee5e39663d2c998a5656b1a9172e7bba353b688acec5dd9a
+DealerPrivMsg to key4 = 2642c587d10c86d71ca4552dc971aaf4c513a9171f3ffe5d78cdf8d39848326e
+DealerPrivMsg to key3 = 20e61322f4ddfd7c366b457784fa97d3c391029a463d57aae5658e3e9a87f07a   # not acknowledged
+log_summary = 45af0ccce2a6012d749c2fd4fecacc36edbb1b23ac179f4267bbd1a11216101d
+SignedDealerLog.sig = 972c3d8fd08903ac096da5e49f137ffcae495a1e13dc64d97c649bda327a6a6b48378487a35f6897ff81468eca9488041647fe6cdc1b7adfc18694a8dbd7b400
+
+# dealer key3
+DealerPubMsg =
+  03
+  941e5f65892b25834560917363d2ad9cd56c670b9af17a40aa5e4d5d1656d3f0fb6c5ed140c4086003ca3a82dfadcd2b11e14acdacd19615051b8d56cc97b2f2a258e6914ad2abe12a8b4b9b2c1a2302873bc522810d7e01fc109fe4dfd04cc0
+  98bd629dcec2f49c0f0befd1f12a6560cf3e950273f5f2e35708cf520a8906b780a15d7a7e2cb4d48aa216ca1c7cff7312bb855b2f2859c4352142010e8eeef0e0a0fe3d6a6332af27d368a6aa9bba8c3892def4fa2156050589e8d6a977355d
+  87af5605017a0a853c933a04d5374106f523605fca91c7749a29878d4a8f2f12cb4af98ebcaac2b7fd7ec9cecfc749ab135063db9b56501da4510629099d7c0f7a04c8a17d6c8e041f6450902378c7281ecf1e1512071025c7a44a5289ecbd7a
+ack_summary = 5797d2096d28ea3cbb20b89c673daf33808a1929a2c638ad733dff9b754cef6d
+DealerPrivMsg to key2 = 664bd59cd21f7aa8d41802adfc20193f5a35e6d53495c9048563538c3fdce692
+DealerPrivMsg to key1 = 156913e4f6d90d8644a2450a2921bd9f8abe7b09cd08380de72271f08aa66c54
+DealerPrivMsg to key4 = 09d19a9dffbc9aa924bfb3a4cb4ee910eafb5f1eedda05d3d96365a97df67bd7
+DealerPrivMsg to key3 = 438569c7ecca221174704e7de2a79b937aec9314970b32565c262eb719cd151b
+log_summary = 21f6dbca8ac23612fc4af4fe40f45f419d4b7d384d98729b045b0c3d150bc941
+SignedDealerLog.sig = 708ac8aacbfc8a407ecde0f2c00f8e40458614b72f397fc3b187cd1b4439c8de5000d0c4fe695ac8570c5fbe62c0145cb58a52b671a8741450448359bace590e
+
+Output =
+  616b3ee69839819877dc1766879d3ec6551fc4075a02c04868958048c9a55987     # summary = S_round
+  00 00000004 03
+  8a357a6c64c7d97d2346e8b54603aab0c2e0f5e5fb47f08a165de746cfa4cf61595b62e0968c121b0826fb8eeac97aaa07e0f23692592d3de1a93ba204efb2698672ba1661a5415091791ec2abdb131d6569e39d808c2616dbda7c892c1cb2f7
+  8d05407100fccd45f3c61c3cd0f717d3060c188b34ed557ab0931a22f3a7429973c2bfa7726a638e4ea826ee24cc86dc10ac91bf930a3e8715494fedd88129b508a1bf2f330d98ac55f1c78acd2e8bafc783faf30b21efd4476aa4be56d975ad
+  9006dcf0757c959a2efc9b467fb9c53162372df58cf9bb18d3509788016ef3ac215a0f31218de24efc5ce5ae588f91f50d3b4ea8f4017906ab0ede7d5e836a88b7ebc3841dc7dd607e1eb5e708bc8369e29a4f1435d4b73b87502c5cad876f69
+  03 8a88e3dd…b40f6f5c ca93ac17…dbdabe7c ed4928c6…ac8737d1   # dealers = key1, key4, key3
+  04 8139770e…8fc9b394 8a88e3dd…b40f6f5c ca93ac17…dbdabe7c ed4928c6…ac8737d1   # players
+  01 ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1   # revealed
+
+Share (key2) = 00 043c89d09d1876c477688c07e323cc4d6534ff13d8be7e92e953d6069d1b4754
+Share (key1) = 01 513d422c6104e426b4e6c781a575e99850a2037301ee538d076e7847dae285c2
+Share (key4) = 02 2729eb60bcd398667ab1704dcf68f42aebdcdc7474071c0ff22b7d0a8a069a05
+Share (key3) = 03 6dddd41403bf8e142f3c367c74409c0fde60d21e2f059019a98ae44caa87841f
+```
+
+The output polynomial is the coefficient-wise sum of the commitments of key1, key4 and key3. Each share is the sum of the three private messages the player got from those dealers, revealed ones included. For example, key3's share sums key1's and key4's revealed shares and key3's dealing to itself. key2's dealing contributes to neither. Abbreviated keys refer to the key table.
+
+### 15.4 Vector D: resharing vector C, three of four dealers selected
+
+`round = 1`, `previous` = vector C's output, `dealers = {key2, key1, key4, key3}` (vector C's players), `players = {key5, key2, key1, key3}` (sorted order), Reveal V1. key4 leaves and key5 joins. So `degree = 2`, `required = max(q(4), q(4)) = 3` and `reveal_threshold = 2`. The new evaluation points are key5 → 1, key2 → 2, key1 → 3, key3 → 4.
+
+Each dealer deals its vector C share, so its `commitment[0]` equals `partial_public(C.public, j)` at its vector C index `j` (§7.1). Every player acknowledges every dealer, so no log has a reveal. key1's log never reaches the log collection. The selected dealers are therefore key2, key4 and key3, at previous evaluation points 1, 3 and 4. Their Lagrange weights at 0 (§10) are:
+
+```text
+w(key2) = (3·4) / ((3−1)·(4−1)) =  2
+w(key4) = (1·4) / ((1−3)·(4−3)) = −2        # r − 2 in F_r
+w(key3) = (1·3) / ((1−4)·(3−4)) =  1
+```
+
+The blocks have the same layout as in vector C. key1's dealing is omitted because it does not contribute.
+
+```text
+S_round = 45e7cf72218b633e117733c506ce4e6c1d7ef8364847160cc8ac88ce510af1be
+
+# dealer key2
+DealerPubMsg =
+  03
+  8c0f5fcc654c76a78fc591159f970eff85daf70a79bda666fbdcaf2d757465498ac3ce4ba25540ceb8353f43863c0c7b012bd4f2e3446b3ada8e86c21a88847ae25c972a225d3b17739c838eaaf78a327c0b8d4bfc2c5e6561ea3d6cc3d6fba7
+  a8c44afcf85c9964e5904302f5d49f70fe9efcea1bc1807c1c8b1a6ba50a29daf3fe7209d8f52a53cd75b4a71764ab8507339b181b7c7c38f6c1e1b9d94db09551c2a741b335b4806b0f2adfb79a61498d0439cfdbcd0b9839e209fe80a35c10
+  ae73aa6c65f2fdfe5a3690a31899a99e47df86b1ce9bf570d1197b6cc03f2cbf83eff33286b71917bbfa1e57662e8a2406c80ab3fa9e2a2ea54072103e97027772cda3a975875d5a14cca4a960846b2a20b3e49821290217ed07bb87919ab46e
+ack_summary = 698686fa363059ac3bf3c04ed047800389a9c1556a8245e84e2488ebb7c35681
+DealerPrivMsg to key5 = 2c4598817483bcb2e367101f7f31628ccde0027c48f96eceb7899d4db239f11e
+DealerPrivMsg to key2 = 17635a204cc5be54badd5f093f2d56c1c68152f26ef0cf414ca3700051166cf8
+DealerPrivMsg to key1 = 398376004f7bf8f2310550cd2cb980f1a2d694794aa2fbe9a8a14e1d79b0bae3
+DealerPrivMsg to key3 = 1eb844ce5308ef4312a50d633e3409170f22230ddc1198c8cb8337a62c08dade
+log_summary = d243964bae93a2527c580989296520c917c422e9e8ff1fd3139f45bf528cdee7
+SignedDealerLog.sig = 4997b52a87a0a5530f628ca9aaa35cde0b3a4a998847c1ce14c06a870f13d786b043d585267ddfb7b8bbde525131b91f1eaca598a670798d5b8c8aefce6a6905
+
+# dealer key4
+DealerPubMsg =
+  03
+  952f6aeefbcd800dd7f8d6a22cac310b4951ccf642125d6fd2aadaaebd9eee247c9172f72d0267d5c7d0dd29fc7f39f510dd237975768bf117f2fdcbfd59f1d467d704e49897181e60b073142cb3e7469822d4cbe2a630cfb657a20263c29de9
+  b573030cc86f196c64631c766edfcfb1faae9a9f8e57791e7d800db8a6dfd13caf201ef8ac461384644c9aa8ce6672b40047150a713bd148c205b198ff8ad387c6b8ca1c662b68d58090faff2b42ee0d1e2536c0d24bc59a8caa4d17ed14de39
+  9104444428bc7056382ad43c6b11a1a845997720803f0d024d5ce34a57239264d22f7add2f5f82e8af4dcfe9bb593b8a15d6649d4c0b8c2e3c551ff1abfc834fea3df567fa419adf575a5bed71e7f1cba17d9e65c3391b2c78a2c10b053756d3
+ack_summary = 78a1c0247a283c5277748b9c15fc517e5b0b54727e255b1bba74ed0995c8b7b3
+DealerPrivMsg to key5 = 5e97b13fcc09ef8e32789440596e22a4343dc4fbd2aaf8d97e415c4d9ab4abb8
+DealerPrivMsg to key2 = 5529316b062fbe44e4f42c238af975c9426477016e3cf413e5848e7f6c3eac1b
+DealerPrivMsg to key1 = 0ade6be26b45048a922437f7640aed9a1650f28546bd0dbf27f5139ffea49b2e
+DealerPrivMsg to key3 = 6792af4c4e84bcefa07c67cbf7e63a21577e7f8d5c27fdd94592ebad51e678f3
+log_summary = 8293cc5b2057ab627e0e12c46ec266bf4f55b39d75c0523ee8968bf83b355fca
+SignedDealerLog.sig = 8956a4fcc8c440669a3530820fa916f2196fc5539320251da66a5af97ac797280296f72c309f41ba6f7a564ff22138c8d32a9e0bce54139aaaa56a2cb9f56004
+
+# dealer key3
+DealerPubMsg =
+  03
+  8452e65fb1fa4a4315acc806af0a0d3dc14f7f090774e7771693c13c4f967e2625b2366382c72bd371f21ad0c024ab520c2703a88ce35c7df4c600a3caac2c34d5432094fb270c60211a15a82c6195414075fc0032f1993a09412843e1f8ddf3
+  8f42b2cb6413282e0865a1d0421c1ee62d836f76f156960efa6170d269a998c0b258a984d285f9a0cd0e07c0168096b504f2ddeaeab25e6bff98b36a171d430f252df71cc4f05acbdcfaf2a638b148a819da59a2b385e0d1d018820124f24954
+  b6fc5a90f92fec5aaa4fbaaab86480777d7bef760bc63fea31ad2512e24be7668767717e43dfb4e6046d59dadb1e726213c071ecaa170d4aef622bf1488f9f6da507f83a9980376fc59d5314b703c258c23b3f69a49d9acc498bb7d8c63e104b
+ack_summary = f6fc303bb8cf216a6b0c98b9bc9cab1d424bcd1b36cbf3ddf488adba60c9b38a
+DealerPrivMsg to key5 = 3301305dedc5a604e3297c275643d09f7fa804374701c79720fbf6727c919572
+DealerPrivMsg to key2 = 511f3508f4d86e09ca14deb44d15a069eea4b3c3dea914b816b22afab15ce50e
+DealerPrivMsg to key1 = 544a3ac1ef5a68dab0c4861b4f143369d7993cc0f5fd1b7d8aad81e648e972f2
+DealerPrivMsg to key3 = 3c824188dd4b96779738725c5c3f899f3a859f2e8cfddbe77cedfb3543373f1e
+log_summary = db36a76f6d42d02ffa2bd2265afcb14bf4416d4f4b029d7109134a6efe170248
+SignedDealerLog.sig = c52b44940cf7afe24408e026605df83eeb83e829e16c37a8cd1923367325047f22602fb211dbc0a0c3ff5e3b087b495fa97049b73dd5ee9b2f9f48332181870c
+
+Output =
+  45e7cf72218b633e117733c506ce4e6c1d7ef8364847160cc8ac88ce510af1be     # summary = S_round
+  00 00000004 03
+  8a357a6c64c7d97d2346e8b54603aab0c2e0f5e5fb47f08a165de746cfa4cf61595b62e0968c121b0826fb8eeac97aaa07e0f23692592d3de1a93ba204efb2698672ba1661a5415091791ec2abdb131d6569e39d808c2616dbda7c892c1cb2f7
+  b6cc482e559fa44baa51e553897b009129e71763fdbd085a9a3855912dbb9417f4333184e51055f2ba7cce3f04548d1b16ed24ec271e6371d6dac77434e5ab217c9d4658a7968a1dd84304659ad5d0f1eada3f54505f1db151975b789e8979b2
+  8c691fe5377e06b411e70e856946a26422dc5fc6238c81ff1828bd8ecc38c6e85af6c2c61ccbde8573ddbd78a60001970a26d00d77bc52f765a5bf8c09f12bea3bdfe150125f1b466db3069f848e051543291f678d0bcd526c0caeef5eb5a3c8
+  03 8139770e…8fc9b394 ca93ac17…dbdabe7c ed4928c6…ac8737d1   # dealers = key2, key4, key3
+  04 6e7a1cdd…80505bf1 8139770e…8fc9b394 8a88e3dd…b40f6f5c ed4928c6…ac8737d1   # players
+  00    # revealed
+
+Share (key5) = 00 424aa6346856bd9678404bedab6c287606aa233b339d0f80938c7871ab9c203f
+Share (key2) = 01 49812dc6aba1eb71a9211c87bf1f3a604a9c0fa8e00f2711e4efedfb7b0c66c9
+Share (key1) = 02 3da6a7aa8e2ad461bb4cdfbed6cf82139ce6dca5fdca9bd38c05f6e23f01b25b
+Share (key3) = 03 1ebb13e00ff17866aec39592f27cff8ffd8a8a328ccf6dc588ce9325f77c02f5
+```
+
+The output polynomial is `2·C_key2 − 2·C_key4 + C_key3`, coefficient by coefficient. Its constant term equals vector C's group key. Each share is `2·s_key2 − 2·s_key4 + s_key3` in `F_r`, where `s_d` is the player's private message from dealer `d`.
+
+Vectors C and D were also reproduced independently of the library, with a separate BLS12-381 implementation and plain arithmetic mod `r`. That check decoded every commitment, verified every private message against it, and interpolated each dealer's secret from its private messages. It recomputed both output polynomials (the sum for C, the weighted combination for D) and every share from the private messages. It confirmed `share · g == partial_public(output.public, index)` for each player, and that the weighted vector C shares of key2, key4 and key3 give vector C's group secret. It verified every ack and log signature over `0x00 ‖ ack_summary` and `0x00 ‖ log_summary`.

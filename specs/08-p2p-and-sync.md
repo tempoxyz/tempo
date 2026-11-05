@@ -31,13 +31,11 @@ Terms:
 - **CL** / **EL**: the consensus layer and the execution layer of a node. In the reference implementation both run in one process; the EL is reth.
 - **Validator**: a node running the consensus engine with an ed25519 signing key (`--consensus.signing-key`). It may or may not hold a BLS share in a given epoch (signer vs verifier, 07-consensus.md).
 - **Follower**: a node that does not vote. It obtains finalization certificates and blocks from other nodes, verifies them and drives its EL (`tempo node --follow`).
-- **Marshal**: the component that orders finalized blocks, persists finalizations and blocks, and repairs gaps; its consensus-facing wrapper is [simplex.md §10](commonware/simplex.md#10-marshal-inline-wrapper).
+- **Marshal**: the component that orders finalized blocks, persists finalizations and blocks, and repairs gaps (5.1); its consensus-facing wrapper is [simplex.md §10](commonware/simplex.md#10-marshal-inline-wrapper).
 - **Finalization**: the Simplex finalization certificate of [simplex.md §3.7](commonware/simplex.md#37-certificates) under the threshold VRF scheme ([cryptography.md §6.2](commonware/cryptography.md#62-certificate-signature-pair)), whose digest is the 32-byte block hash (07-consensus.md §7 "Certificates and follower verification").
 - **Block (consensus encoding)**: the RLP encoding of the Tempo execution block (header + body) as specified in 02-encoding.md, with no additional framing. Decoding MUST reject a block whose body does not match the header commitments (transactions root, ommers hash, withdrawals root) and a block whose header carries a block-access-list hash.
 - **epoch(h)**, **last(E)**, **first(E)**: the fixed epoch mapping of 07-consensus.md with `epochLength = 21600` on mainnet (chain id 4217) and Moderato (chain id 42431). The boundary block of epoch `E` is `last(E)`; its `extra_data` is the `OnchainDkgOutcome` for epoch `E+1`. The genesis block (height 0) plays the role of the boundary of "epoch −1": its `extra_data` is the outcome for epoch 0.
 - **boundary_for(E)**: `0` if `E = 0`, else `last(E−1)`. The outcome in `header(boundary_for(E)).extra_data` describes epoch `E`.
-
-Reference implementation: crates/consensus/src (consensus and follow engines), crates/node/src/gossip (tempo/1 transport), bin/tempo/src (snapshot commands).
 
 ## 1. Overview
 
@@ -108,13 +106,11 @@ Data    := varint(channel) || bytes(payload)
 
 `channel` is the channel id of section 3 (a u64). `payload` is the channel's application message. Pings are transport keep-alives. A message on an unknown channel, or one that does not decode, closes the connection ([p2p.md §6.3](commonware/p2p.md#63-receiving)).
 
-Reference implementation: crates/consensus/src/lib.rs (`instantiate_network`), crates/consensus/src/args.rs (defaults), crates/consensus/src/config.rs.
-
 ### 2.3 Peer addresses and admission
 
 Each peer in a tracked set has an asymmetric address `{ingress, egress}` ([p2p.md §6.5.2](commonware/p2p.md#652-addresses)) built from its ValidatorConfigV2 entry:
 
-- `ingress` = `Ingress::Socket(parse_socket_addr(entry.ingress))` — the address other validators dial. `entry.ingress` is a string `"<ip>:<port>"` (IPv6 as `"[<ip>]:<port>"`) parsed with the Rust `std::net::SocketAddr` grammar.
+- `ingress` = `Ingress::Socket(parse_socket_addr(entry.ingress))` — the address other validators dial. `entry.ingress` is a string `"<ip>:<port>"` (IPv6 as `"[<ip>]:<port>"`) a literal IPv4 or IPv6 socket address (no host names, no IPv6 zone index).
 - `egress` = `(parse_ip_addr(entry.egress), port 0)` — only the IP is used: it is the source address the peer's outbound connections come from.
 
 An entry whose `publicKey` is not a valid ed25519 point encoding ([cryptography.md §3.2](commonware/cryptography.md#32-public-key-decoding)), or whose `ingress` or `egress` fails to parse, is *undecodable* (2.4 says how undecodable entries are handled).
@@ -129,7 +125,7 @@ Admission rules of the lookup network (connection slots [p2p.md §6.5.3](commonw
 
 ### 2.4 Peer-set derivation
 
-Peer sets are derived only from finalized state. The node keeps the highest finalized tip that consensus (marshal) has reported, `consensus_tip`, initialised from the finalization archive tip at startup.
+Peer sets are derived only from finalized state. The node keeps the highest finalized tip that consensus (marshal) has reported, `consensus_tip`, initialised from the finalization archive tip at startup (5.1.5).
 
 ```python
 def refresh_peers(el, consensus_tip_height, last_tracked):
@@ -185,7 +181,7 @@ def refresh_peers(el, consensus_tip_height, last_tracked):
 When peer sets are refreshed:
 
 1. Once at engine construction, from EL state alone, **before** marshal, the executor or the DKG manager start (the DKG manager may need peers to recover and authenticate the tip). If this initial read fails (missing header or state), startup MUST fail.
-2. On every marshal `Update::Block` (the block is acknowledged immediately) and `Update::Tip`, after raising `consensus_tip` to the reported height if higher.
+2. On every marshal `FinalizedBlock` update (the block is acknowledged immediately) and `FinalizedTip` update (5.1.3), after raising `consensus_tip` to the reported height if higher.
 3. Every 30 s when no update arrived (the timer restarts on each update). Errors on these later refreshes are ignored; the previous set stays in force.
 
 Consequences that implementers MUST preserve:
@@ -194,11 +190,9 @@ Consequences that implementers MUST preserve:
 - Addresses always come from ValidatorConfigV2 at the finalized tip, including for players that are no longer active.
 - A node whose EL is behind its consensus tip derives peers from the EL's finalized height. A node whose EL is ahead derives them from the consensus tip.
 
-> **Note**: ValidatorConfigV2 has no entries before it is populated after T2 (mainnet genesis allocates only the V1 contract at `0xCCCCCCCC00000000000000000000000000000000`). The invariant assertions above therefore fail for heights before ValidatorConfigV2 holds entries for every player of the latest boundary outcome, so a validator cannot start its consensus engine from such a height; see 5.6.
+> **Note**: ValidatorConfigV2 has no entries before it is populated after T2 (mainnet genesis allocates only the V1 contract at `0xCCCCCCCC00000000000000000000000000000000`). The invariant assertions above therefore fail for heights before ValidatorConfigV2 holds entries for every player of the latest boundary outcome, so a validator cannot start its consensus engine from such a height; see 5.7.
 
 > **TODO**: the lowest mainnet height at which ValidatorConfigV2 held a decodable entry for every player of the latest boundary outcome (the lowest height from which a validator-mode node can start) was not determined from the code; it depends on when the T2 migration populated the contract on mainnet.
-
-Reference implementation: crates/consensus/src/peer_manager/{mod.rs,actor.rs}, crates/consensus/src/validators.rs.
 
 ### 2.5 Misbehaviour and blocking
 
@@ -219,8 +213,6 @@ Components that detect Byzantine behaviour from an authenticated peer (an invali
 
 Votes and certificates are signed with the threshold VRF scheme ([cryptography.md §6](commonware/cryptography.md#6-threshold-vrf-scheme)). Quotas are GCRA quotas of `n` messages per second with burst `n` ([p2p.md §7](commonware/p2p.md#7-rate-limiting)), enforced per channel and per peer. An inbound message over quota is delayed, not dropped: the receiver stops reading that connection until the quota allows the message ([p2p.md §6.3](commonware/p2p.md#63-receiving), [§7.2](commonware/p2p.md#72-channel-quotas)), which stalls every channel of the connection. Outbound, recipients over quota are left out, and a send is refused only when every recipient is over quota. Quotas are local policy, but a node that sends above its peers' quotas slows its own connections to them; a conforming node SHOULD NOT exceed them.
 
-Reference implementation: crates/consensus/src/config.rs, crates/consensus/src/lib.rs (`run_consensus_stack`).
-
 ### 3.2 Epoch multiplexing
 
 Channels 0, 1, 2 and 5 are multiplexed by epoch with the multiplexer of [p2p.md §8](commonware/p2p.md#8-epoch-multiplexer) (all subchannels share the channel's quota): the channel payload is
@@ -229,20 +221,26 @@ Channels 0, 1, 2 and 5 are multiplexed by epoch with the multiplexer of [p2p.md 
 MuxedPayload := varint(epoch) || inner_message
 ```
 
-A node registers subchannel `E` on channels 0, 1 and 2 when it enters epoch `E` (starts the Simplex instance for `E`), and on channel 5 when its DKG manager runs the ceremony of epoch `E`. Messages for a subchannel that is not registered are dropped, except on channel 0 (votes), whose unregistered-epoch messages go to a backup handler:
+A node registers subchannel `E` on channels 0, 1 and 2 when it enters epoch `E` (starts the Simplex instance for `E`), and on channel 5 when its DKG manager runs the ceremony of epoch `E`. Registration is local and is not signalled to peers ([p2p.md §8](commonware/p2p.md#8-epoch-multiplexer)).
+
+Each registered subchannel has a receive queue of `--consensus.mailbox-size` messages (default 16,384). The multiplexer reads the channel's messages in arrival order and never waits on a consumer: a message whose subchannel queue is full is dropped, and a payload whose epoch prefix is not a canonical `varint` is dropped. Messages for a subchannel that is not registered are dropped, except on channel 0 (votes).
+
+On channel 0 the multiplexer has a **backup queue**. A vote message for an unregistered epoch is pushed to it as `(their_epoch, sender, inner_message)`, without decoding `inner_message`. The backup queue holds `--consensus.mailbox-size` entries and keeps arrival order; an entry that does not fit is dropped. Its only consumer is the component that enters and exits epochs (the epoch manager). It takes entries one at a time, in queue order, interleaved with its own epoch transitions, and handles each with:
 
 ```python
-def on_vote_for_unregistered_epoch(their_epoch, sender):
+def on_vote_for_unregistered_epoch(their_epoch, sender):   # inner_message is discarded unread
     if no epoch has been entered yet:
         return
     reference = latest entered epoch
     if their_epoch <= reference:
-        return
+        return                                  # a straggler in an epoch we left, or ours
     # A peer votes in a later epoch: the boundary of our epoch must be finalized.
     marshal.hint_finalized(height=last(reference), targets=[sender])
 ```
 
-The hint makes marshal fetch the finalization of `last(reference)` (with its block) from the sender (3.3.5). Once the DKG manager processes that finalized boundary block it enters the next epoch; this repeats one epoch at a time until the node reaches the network's epoch (5.5).
+The vote itself is never verified: a hint only starts a targeted fetch (5.1.8), and the response must verify under the node's own scheme for `reference` (3.3.5). A peer that answers with an invalid finalization is blocked (2.5). A hint is a no-op once the finalization of `last(reference)` is stored or that height is processed. While a fetch for it is in progress, each further hint adds its sender to the fetch's targets. Dropped backup entries lose nothing, because every later vote from an epoch ahead triggers the same hint.
+
+The hint makes marshal fetch the finalization of `last(reference)` (with its block) from the sender (3.3.5). Once the DKG manager processes that finalized boundary block it enters the next epoch; this repeats one epoch at a time until the node reaches the network's epoch (5.6).
 
 When a node exits epoch `E` (at the first finalized block of epoch `E+1`, 07-consensus.md) it deregisters `E`'s subchannels and deletes the scheme of epoch `E−2`.
 
@@ -290,10 +288,10 @@ Response values:
 | Request | Response value | Requester MUST check |
 |---|---|---|
 | `Block(d)` | block encoding | decodes; `keccak256(rlp(header)) == d` |
-| `Finalized{h}` | `enc(Finalization) \|\| enc(Block)` | the finalization verifies under the scheme of its epoch (07-consensus.md); its payload equals the block hash; the block's number is `h` |
+| `Finalized{h}` | `enc(Finalization) \|\| enc(Block)` | the finalization's epoch is `epoch(h)` and it verifies under that epoch's scheme (07-consensus.md); its payload equals the block hash; the block's number is `h` |
 | `Notarized{r}` | `enc(Notarization) \|\| enc(Block)` | the notarization's round is `r` and it verifies under the scheme of `r.epoch`; its payload equals the block hash |
 
-A response that fails these checks SHOULD cause the requester to block the responder (2.5) and retry with another peer. Resolver parameters (reference): request timeout 2 s, retry delay 100 ms, requests and responses not sent with priority, peers chosen from the primary peers of the latest tracked peer set ([p2p.md §9.2](commonware/p2p.md#92-requester)).
+A response that fails these checks SHOULD cause the requester to block the responder (2.5) and retry with another peer. A `Finalized` or `Notarized` response for an epoch whose scheme the requester no longer (or does not yet) holds is dropped without blame. How marshal uses the responses is in 5.1 and 5.3. Resolver parameters (reference): request timeout 2 s, retry delay 100 ms, requests and responses not sent with priority, peers chosen from the primary peers of the latest tracked peer set ([p2p.md §9.2](commonware/p2p.md#92-requester)).
 
 #### 3.3.6 Channel 5: DKG
 
@@ -312,16 +310,14 @@ The message types and the envelope are those of [dkg.md §5](commonware/dkg.md#5
 - Inbound encrypted frames whose payload exceeds the receiver's `max_message_size` plus the 32 bytes of message framing and authentication tag are rejected by the transport ([p2p.md §5.3](commonware/p2p.md#53-encrypted-frames)).
 - A proposed block travels as a single channel-3 message and inside channel-4 responses. Every node MUST accept inbound application payloads of at least 8,388,608 bytes (the block RLP size limit `MAX_RLP_BLOCK_SIZE` of EIP-7934, 05-block-execution.md). With the reference default (`max_message_size = 8,388,608`) a channel-4 response carrying a block whose RLP is within a few hundred bytes of that limit exceeds the limit once the finalization and `Message` framing are added, and is dropped by the responder; such a block can still be obtained from the EL (devp2p) or after a retry from a peer configured with a larger limit. Operators SHOULD NOT lower the default.
 
-Reference implementation: crates/consensus/src/network.rs.
-
 ## 4. Execution-layer devp2p
 
 ### 4.1 Stack
 
 Every Tempo node (validator or follower) runs reth's devp2p stack at the pinned revision:
 
-- **Discovery**: discv4 (reth default). Mainnet bootnodes are compiled into the chain spec (informative list: crates/chainspec/src/bootnodes.rs, `PRESTO_BOOTNODES`; Moderato: `MODERATO_BOOTNODES`).
-- **Transport**: RLPx with the `p2p` hello handshake. The node advertises `eth/66` through `eth/71` (reth `EthVersion::ALL_VERSIONS`) and, when enabled, `tempo/1` (4.3).
+- **Discovery**: discv4 (reth default). Mainnet and Moderato bootnodes are built into the node's chain configuration.
+- **Transport**: RLPx with the `p2p` hello handshake. The node advertises `eth/66` through `eth/71` (every version reth supports at the pinned revision) and, when enabled, `tempo/1` (4.3).
 - **`eth` Status**: network id and chain id 4217 on mainnet (42431 on Moderato), genesis hash of the Tempo genesis (04-state-and-genesis.md), and the EIP-2124 fork id computed over Tempo's fork schedule as specified in 01-chain-and-forks.md. Peers whose fork id is incompatible are disconnected.
 
 A conforming node MUST support at least one `eth` version that reth at the pinned revision accepts (`eth/68` or `eth/69` is RECOMMENDED) so that it can exchange transactions and serve and download headers and bodies.
@@ -425,60 +421,300 @@ In the consensus-side actor, per logical peer:
    - **needs scheme** (no scheme for the epoch yet, or it failed only against the pinned network identity fallback): quarantine the slot until a finalized boundary block installs a scheme for that epoch, then requeue it. The sender is not penalized.
    - **no answer** (verifier unavailable): settle the frame (clear identical slots) without penalty.
 
-Reference implementation: crates/node/src/gossip/{wire.rs,transport.rs,peer_control.rs}, crates/consensus/src/gossip/{actor.rs,ingress.rs,mod.rs}.
+## 5. Marshal, backfill and sync
 
-## 5. Backfill and sync
+### 5.1 Marshal
 
-### 5.1 Storage model
+Marshal turns consensus activity into a gap-free, height-ordered stream of finalized blocks. Every validator and every follower runs one marshal. It persists finalizations and finalized blocks, keeps a cache of recent notarized and verified blocks, repairs gaps from peers (5.3) and answers peers' backfill requests (5.4). Simplex reaches it through the Inline wrapper of [simplex.md §10](commonware/simplex.md#10-marshal-inline-wrapper); the rest of the node consumes its output updates (5.1.3).
+
+The names below are this specification's. Only the backfill wire format (3.3.5) is interoperable; everything else in this section is local behaviour that other nodes rely on only through what a node serves and when it votes.
+
+#### 5.1.1 State and stores
+
+Marshal keeps:
+
+- `processed_height`: the highest height whose finalized block every consumer acknowledged, or none. It is durable.
+- `round_floor`: a round at or below which no certificate-bound work is needed. It is derived at startup (5.1.5) and advances with `processed_height` (5.1.6).
+- `tip`: the highest height reported in a `FinalizedTip` during this run.
+- `pending_floor`: a floor finalization whose block has not arrived yet, or none (5.1.7).
+- `in_flight`: the blocks dispatched to consumers and not yet acknowledged, in height order, at most `max_pending_acks` of them.
+
+It uses these logical stores (their on-disk layout is implementation-defined, 9.1):
+
+| Store | Contents | Indexed by |
+|---|---|---|
+| finalization archive | one `Finalization` per height, insert-only | height, block digest |
+| finalized-block store | finalized blocks (5.2) | height, block digest |
+| delivery metadata | `processed_height` | — |
+| consensus cache, one per epoch | verified blocks (several per view allowed), notarized blocks, notarizations and finalizations by view; certified blocks by height; plus the range of epochs that may have a cache | view or height, block digest |
+
+Marshal does not own the block broadcast buffer of 3.3.4, but reads it. `find(d)` looks for the block with digest `d` in the broadcast buffer, then in the consensus caches (newest epoch first; verified, notarized, then certified blocks), then in the finalized-block store.
+
+A finalized block is *stored* with:
+
+```python
+def store_finalized(h, B, f):                 # f is None when B is finalized only through a descendant
+    if h <= (processed_height or 0):
+        return False                           # already delivered; ignored
+    finalized_blocks.put(B)                    # buffered: readable at once, durable after the next sync
+    if f is not None:
+        finalizations.put(h, digest(B), f)
+    barrier = min(barrier, h)                  # dispatch stops at h until a sync covers this write
+    if f is not None and h > tip:
+        emit FinalizedTip(f.round, h, digest(B))
+        tip = h
+    return True
+```
+
+Every step that stores finalized blocks ends by starting a durable sync of both stores. When the sync completes, `barrier` is cleared for the writes it covers and dispatch resumes (5.1.4). A sync failure is fatal.
+
+#### 5.1.2 Inputs
+
+| Input | Source | Effect |
+|---|---|---|
+| `notarization(n)` | Simplex (validators) | Write `n` to the cache at its round. Its sync runs in the background. If `find(n.payload)` returns a block that the verified cache does not already hold at that round, write it as a notarized block too. A notarization alone never triggers a fetch. |
+| `finalization(f)` | Simplex (validators); the follower driver (7.4) | Write `f` to the cache at its round and wait until it is durable. If `find(f.payload)` returns `B`: `store_finalized(h(B), B, f)`, advance the round floor if `h(B) ≤ processed_height` (5.1.6), run repair (5.3) and start a sync. Otherwise request `Block(f.payload)` (3.3.5) for the finalized chain. |
+| `proposed(round, B)` | the Inline wrapper's `broadcast` | Send `B` to all peers on channel 3 (3.3.4), then store it as verified for `round`. Sending first keeps propagation off the storage path. |
+| `store_verified(round, B)` | the Inline wrapper's `verify` | Write `B` to the verified cache at `round`, unless that view already holds this digest. Returns once the write is durable. Presence in the verified cache is not a validity claim. |
+| `store_certified(round, B)` | the Inline wrapper's `certify`; the follower driver for upstream blocks (7.4) | Write `B` to the notarized cache at `round`, unless the verified cache already holds it there. Returns once the block and the round's notarization (if one was written earlier) are durable. |
+| `hint_finalized(h, targets)` | epoch catch-up (3.2, 5.6); the follower driver (7.5) | 5.1.8 |
+| `set_floor(f)` | the follower executor (7.6) | 5.1.7 |
+| backfill responses | resolver (3.3.5, 7.3) | 5.3 |
+
+Every block that marshal receives or writes, by any of these paths, also wakes local waiters for its digest (5.1.9). If its digest is the payload of `pending_floor`, the floor is applied (5.1.7) and the block is not processed further.
+
+#### 5.1.3 Outputs
+
+Marshal emits two kinds of update. Each update goes to every consumer, in a fixed order. Validators' consumers are the application, the executor (8), the DKG manager, the peer manager (2.4), the RPC feed and `tempo/1` gossip (4.3.3). Followers' consumers are the executor (7.6), the driver (7.5), the RPC feed and gossip, with the driver ahead of gossip.
+
+`FinalizedTip(round, height, digest)` reports a new finalized tip:
+
+- It is emitted when `store_finalized` writes a finalization above every tip reported in this run, and once at startup for the finalization archive's highest entry (5.1.5).
+- Within one run, tip heights strictly increase. The startup tip can repeat a height reported before the restart.
+- The finalization is readable from the finalization archive when the tip is emitted. The tip is not a durability signal: the write may not be durable yet.
+- The tip can name a height whose ancestors marshal does not hold yet.
+- A finalization whose block marshal does not hold yields no tip, because its height is unknown. The tip follows once the block arrives.
+- When a tip for height `h` is emitted, it precedes `FinalizedBlock` for `h` in the same run. A height finalized only through a descendant gets a block update and no tip.
+
+`FinalizedBlock(block, ack)` delivers one finalized block:
+
+- Heights are delivered in strictly increasing order without gaps, starting at `processed_height + 1`, or at 0 (the genesis block) when nothing was processed.
+- A block is emitted only after it, and its finalization if marshal has one, are durable.
+- Delivery is at least once. A block can be delivered again after a restart (5.1.5) or after a floor is applied (5.1.7). Consumers MUST tolerate a repeated block and still acknowledge it.
+- At most `max_pending_acks` blocks are unacknowledged at a time. Reference values are 1 for followers and, for validators, the number of unpersisted blocks the EL holds in memory before it stops processing engine requests. Validators acknowledge only after EL persistence (8), so their window must exceed the EL's persistence batch.
+
+Each consumer gets its own copy of `ack` and MUST acknowledge it once it has processed the block. A consumer that does not need the block for durable state, such as gossip or the peer manager, acknowledges at once. The block counts as acknowledged only when every copy is acknowledged. A copy dropped without acknowledging stops marshal, which is fatal to the node.
+
+#### 5.1.4 Delivery
+
+```python
+def next_height():
+    return 0 if processed_height is None else processed_height + 1
+
+def dispatch():
+    if pending_floor is not None:
+        return
+    while len(in_flight) < max_pending_acks:
+        h = in_flight[-1].height + 1 if in_flight else next_height()
+        if barrier is not None and h >= barrier:
+            return                              # the block at h may not be durable yet
+        B = finalized_blocks.get(h)
+        if B is None:
+            return                              # a gap; repair (5.3) fills it
+        ack = new_ack()
+        emit FinalizedBlock(B, ack)
+        in_flight.append((h, digest(B), ack))
+
+def on_acknowledged():                          # runs when in_flight[0] is fully acknowledged
+    while in_flight and in_flight[0].ack is acknowledged:
+        h, d, _ = in_flight.popleft()
+        processed_height = h
+        cancel resolver requests for heights <= h
+        f = finalizations.get(h)
+        if f is not None:
+            advance_round_floor(h, f.round)     # 5.1.6
+    persist processed_height                    # durable sync, before any further dispatch
+    dispatch()
+```
+
+Acknowledgements are consumed in height order, so `processed_height` never skips a block that is still in flight. Because blocks are dispatched only once durable and `processed_height` is persisted only after acknowledgement, a crash never leaves `processed_height` above a block the stores lack.
+
+#### 5.1.5 Startup and restart
+
+On startup (both modes), before any consumer runs:
+
+1. Open the stores and run the startup checks of 9.4.
+2. Choose the startup anchor. If the finalization archive is empty, the anchor is the genesis block, which MUST equal the EL's genesis; marshal stores it at height 0 unless it is present or `processed_height` is above 0. Otherwise the anchor is the archive's lowest finalization (the floor of 6.4, already verified there).
+3. Restore `processed_height`. Derive `round_floor` as the round of the highest stored finalization at or below `processed_height` (or the zero round). Raise it to the round of the finalization at `processed_height + 1` if that finalization and its block are both stored.
+4. Emit `FinalizedTip` for the finalization archive's highest entry, if any.
+5. Open the consensus caches of every epoch in the recorded range.
+6. Install a non-genesis anchor as a floor (5.1.7). It has no effect when its round is at or below `round_floor`.
+7. Run repair (5.3), sync, and dispatch (5.1.4).
+
+So every block above the persisted `processed_height` is delivered again after a restart. A restored node with no `processed_height` gets the anchor's block first. The *startup floor* is `max(processed_height, anchor height)`. The validator executor replays EL history up to it before marshal's deliveries matter (5.7).
+
+#### 5.1.6 Round floor and cache retention
+
+```python
+def advance_round_floor(h, r):
+    if h > (processed_height or 0) or r <= round_floor:
+        return
+    old = round_floor
+    round_floor = r
+    # Retain a window behind the previous floor.
+    delete the consensus caches of every epoch < old.epoch
+    in old.epoch's cache, delete views < old.view - view_retention
+    cancel resolver requests bound to rounds <= r
+    if pending_floor is not None and pending_floor.round <= r:
+        pending_floor = None                    # its block is already processed; resume
+        repair(); dispatch()
+```
+
+Deletion is in whole sections of 4,096 views, so a cache can keep more than `view_retention` views. `view_retention` is 10 × `--consensus.views-to-track` (2,560 views by default) on validators, so they can serve `Notarized{r}` requests (5.4), and 1 on followers. Certified blocks above `processed_height` are cached by height when an ancestry walk fetches them (5.1.9). They are deleted with their epoch's cache and below an applied floor.
+
+#### 5.1.7 Floors
+
+A *floor* moves the start of delivery to a finalized block. The startup anchor (5.1.5) and `set_floor(f)` both install one:
+
+```python
+def install_floor(f, from_set_floor):
+    if f.round <= round_floor:
+        return                                  # stale floor; ignored
+    require f verifies under the scheme of f.epoch   # failure is fatal: a local caller supplied f
+    write f to the cache at f.round
+    if from_set_floor and pending_floor is not None and pending_floor.round >= f.round:
+        return                                  # keep waiting for the newer pending floor
+    pending_floor = f
+    B = find(f.payload)
+    if B is not None:
+        apply_floor(B)
+    else:
+        drop in_flight                          # their acknowledgements are ignored
+        request Block(f.payload) for the finalized chain
+
+def apply_floor(B):                             # B is the block named by pending_floor
+    f = pending_floor
+    pending_floor = None
+    h = h(B)
+    if h <= (processed_height or 0):
+        advance_round_floor(h, f.round)
+        repair(); dispatch()
+        return
+    finalized_blocks.put(B); finalizations.put(h, digest(B), f); durable sync
+    if h > tip:
+        emit FinalizedTip(f.round, h, digest(B)); tip = h
+    processed_height = h - 1                    # so that B itself is delivered next
+    advance_round_floor(h - 1, f.round)
+    persist processed_height
+    drop in_flight
+    prune the finalization archive, the finalized-block store and the certified-block caches below h
+    repair(); dispatch()
+```
+
+While `pending_floor` is set, repair and dispatch pause. In Tempo the finalization archive and the finalized-block store ignore pruning (5.2), so a floor only moves the delivery start and prunes certified-block caches.
+
+#### 5.1.8 Hints
+
+`hint_finalized(h, targets)` asks for the finalization at height `h`:
+
+```python
+def hint_finalized(h, targets):
+    if finalizations.has(h):
+        return
+    if h <= (processed_height or 0):
+        return
+    resolver.fetch_targeted(Finalized{h}, targets)   # a fetch already in progress gains these targets
+```
+
+The response is checked per 3.3.5. If no scheme is known for `epoch(h)` when it arrives, it is dropped as stale without penalizing the peer, and the hint has no effect. A valid response is stored with `store_finalized(h, B, f)`, which reports a new tip if `h` is above it, and repair then walks down from `B` (5.3). Hints are fire-and-forget: nothing is reported back to the caller. Followers ignore `targets` and ask the upstream (7.3).
+
+#### 5.1.9 Lookups
+
+The Inline wrapper ([simplex.md §10](commonware/simplex.md#10-marshal-inline-wrapper)) and the consumers use these operations. None of them waits for durability.
+
+| Operation | Result |
+|---|---|
+| `has_verified_block(round)` | true iff the verified cache holds a block at `round` |
+| `block(d, fetch_round=r)` | `find(d)` if it succeeds. Otherwise the caller waits until a block with digest `d` reaches marshal by any path (5.1.2). If `r` is given and above `round_floor`, marshal also requests `Notarized{r}` (3.3.5). The caller MAY abandon the wait. A block obtained this way may not have been stored yet. |
+| `block(d)` with an ancestry height bound `h` | as above, but requests `Block(d)`; a matching response at height ≤ `h` and above `processed_height` is cached as a certified block. Used when walking the ancestry of a block the node already accepted (building on, verifying or certifying it). |
+| `finalized_block(h)`, `finalization(h)` | the finalized-block store or the finalization archive at `h`, or none; never fetches |
+| `latest()` | height, digest and round of the finalization archive's highest entry |
+| `processed_height()` | `processed_height` |
+
+### 5.2 Storage model
 
 Validators and followers keep the same consensus storage (so a node can switch modes without migration, 9.5):
 
-- **Finalizations by height**: an immutable archive mapping height → `Finalization`, keyed also by block digest. It holds one finalization per finalized height from the node's floor upward (heights for which only a later descendant's certificate was received may be absent). The genesis block MUST NOT have a finalization. Validators never prune it.
-- **Finalized blocks**: a *hybrid* store. A prunable archive (4,096 items per section) holds recently finalized blocks; every block at or below the EL's finalized height is served from the EL (canonical blocks only). On every insertion the prunable archive drops whole sections below `el_finalized − retention + 1` (default retention 64,800 = 3 × 21,600 blocks, so it holds between 64,800 and 68,895 blocks once the EL has caught up). It never drops a block the EL has not finalized. Gap tracking treats every height at or below the EL's finalized height as present.
-- **Marshal metadata**: the last processed (delivered and acknowledged) height and marshal's floor.
+- **Finalization archive**: maps height → `Finalization`, also looked up by block digest. It holds one finalization per finalized height from the node's floor upward (heights for which only a later descendant's certificate was received may be absent). The genesis block MUST NOT have a finalization. It is never pruned, in either mode.
+- **Finalized-block store**: a *hybrid* store. A prunable store (4,096 blocks per section) holds recently finalized blocks; every block at or below the EL's finalized height is served from the EL (canonical blocks only). On every insertion the prunable store drops whole sections below `el_finalized − retention + 1` (default retention 64,800 = 3 × 21,600 blocks, so it holds between 64,800 and 68,895 blocks once the EL has caught up). It never drops a block the EL has not finalized, and marshal's prune requests have no effect on it. An insertion at a height the prunable store has already dropped is a successful no-op, since the EL holds that block. Gap tracking treats every height at or below the EL's finalized height as present.
+- **Delivery metadata**: `processed_height` (5.1.1).
+- **Consensus caches**: the per-epoch caches of 5.1.1, retained per 5.1.6.
 
-### 5.2 Gap repair
+### 5.3 Gap repair
 
-Marshal delivers finalized blocks to the application strictly in height order without gaps, at least once each. When it knows a finalization (or a finalized tip) at height `t` above its last contiguous height `c`:
+Marshal repairs the finalized chain above `processed_height` (5.1.4 delivers it). Repair runs after every stored finalization, after every batch of resolver deliveries, after a floor is applied and at startup. It does nothing while `pending_floor` is set.
 
-1. If the block named by the finalization is missing, it requests `Block(payload)`.
-2. Having a block at height `h > c + 1` whose parent is missing, it requests `Block(parent_hash)`, walking parent hashes downward until it reaches height `c + 1`. Each fetched block is authenticated by the hash its child committed to; it is stored as finalized because a verified finalization of a descendant finalizes all ancestors.
-3. A **hint** `hint_finalized(h, targets)` requests `Finalized{h}` from the given peers; the response carries the finalization and block for `h`, verified per 3.3.5.
+```python
+def repair():
+    start = (processed_height or 0) + 1
+    # 1. Finalizations above the last stored block: anchor the highest one first.
+    t = finalizations.last_index()
+    if t is not None and t >= start and (finalized_blocks.last_index() or -1) < t:
+        f = finalizations[t]
+        B = find(f.payload)
+        if B is not None: store_finalized(t, B, f)
+        else: request Block(f.payload) for the finalized chain at height t
+    # 2. Internal gaps: walk parent hashes down from the block above each gap.
+    for each gap (lo, hi] of missing heights at or above start, lowest first:
+        cursor = finalized_blocks.get(hi + 1)
+        while h(cursor) - 1 > lo:
+            P = find(parent(cursor))
+            if P is None:
+                request Block(parent(cursor)) for the finalized chain at height h(cursor) - 1
+                break out of both loops
+            store_finalized(h(cursor) - 1, P, cached finalization for digest(P), if any)
+            cursor = P
+    # 3. Ask for finalizations of the lowest missing heights.
+    request Finalized{h} for up to max_repair missing heights >= start
+```
 
-Requests go over channel 4 (validators) or to the follower resolver (7.3). At most 20 blocks are repaired per repair round (reference `max_repair`). Requests below marshal's floor are cancelled.
+A block fetched by `Block(d)` is authenticated by `d`, which a stored child or a verified finalization committed to. It is stored as finalized when it was requested for the finalized chain or a finalization for it is cached, because a verified finalization of a descendant finalizes all ancestors. A `Finalized{h}` response carries the finalization and block for `h`, verified per 3.3.5.
 
-### 5.3 Serving obligations
+Requests go over channel 4 (validators) or to the follower resolver (7.3). Marshal handles resolver messages (responses and peers' requests) in batches of up to `max_repair` = 20. It verifies the batch's certificates together, runs repair, starts one sync, and then answers the batch's peer requests. Requests at or below `processed_height` (or bound to a round at or below `round_floor`) are not sent, and are cancelled when the floors pass them.
+
+### 5.4 Serving obligations
 
 A validator MUST answer channel-4 requests it can satisfy:
 
-- `Block(d)` from the prunable archive or, for canonical EL blocks, from the EL;
-- `Finalized{h}` for any height in its finalization archive, with the block from the hybrid store;
-- `Notarized{r}` for rounds still in marshal's in-memory cache (`view_retention` = 10 × `--consensus.views-to-track` = 2,560 views by default).
+- `Block(d)` when `find(d)` succeeds: the broadcast buffer, the consensus caches, the prunable store or, for canonical EL blocks, the EL;
+- `Finalized{h}` for any height in its finalization archive, with the block from the finalized-block store;
+- `Notarized{r}` while its consensus cache still holds the notarization of `r` and the block it names (5.1.6).
 
-It answers `Error` (or nothing) when it cannot. A node whose EL prunes history can serve blocks only within its retention window; requests for heights below it fail without penalty and the requester retries elsewhere.
+It answers `Error` (or nothing) when it cannot. A node whose EL prunes history can serve blocks only within its retention window; requests for heights below it fail without penalty and the requester retries elsewhere. A node under load MAY drop peers' requests before its own responses.
 
-### 5.4 Retention guarantees
+### 5.5 Retention guarantees
 
 | Data | Reference retention | Guarantee a peer can rely on |
 |---|---|---|
-| Finalized blocks in the prunable archive | ≥ 64,800 blocks behind the EL's finalized tip (`MINIMAL_PEER_SYNC_FINALIZED_BLOCKS`, `--consensus.finalized-blocks-retention`) | blocks up to three mainnet epochs behind the finalized tip are servable from consensus storage |
+| Finalized blocks in the prunable store | ≥ 64,800 blocks behind the EL's finalized tip (`MINIMAL_PEER_SYNC_FINALIZED_BLOCKS`, `--consensus.finalized-blocks-retention`) | blocks up to three mainnet epochs behind the finalized tip are servable from consensus storage |
 | Finalized blocks older than that | served from the EL; available iff the EL has not pruned them (RPC/archive nodes default to archive mode; `--minimal` prunes) | none |
 | Finalizations | the finalization archive is never pruned: a node keeps every finalization it stored from its first stored height (genesis+1 for a node synced from genesis, the snapshot anchor for a restored node) upward; heights finalized only implicitly (through a descendant's certificate during backfill) may lack one | validators that are not freshly restored hold the finalization of every height of the current and previous epoch and of every boundary they processed |
+| Notarizations and notarized blocks | at least `view_retention` views behind the processed round (5.1.6) | none |
 | DKG events | current and previous epoch | (local only) |
 
 Validators SHOULD keep EL history for at least `MINIMAL_PEER_SYNC_FINALIZED_BLOCKS` blocks so that peers up to three epochs behind can catch up over consensus p2p.
 
-### 5.5 Epoch catch-up (validators)
+### 5.6 Epoch catch-up (validators)
 
 A validator that is behind enters epochs one at a time:
 
 ```python
 while behind:
     E = latest entered epoch
-    # Triggered by a vote for an epoch > E (3.2), or by marshal's own gap repair.
-    marshal.hint_finalized(last(E))                    # fetch Finalized{last(E)} from the voter
+    # Triggered by a vote for an epoch > E (3.2).
+    marshal.hint_finalized(last(E), targets=[voter])   # fetch Finalized{last(E)} from the voter
     # The finalization of last(E) verifies under epoch E's scheme, which the node has.
-    # Marshal backfills epoch E's blocks by parent hash and delivers them in order.
+    # Marshal backfills epoch E's blocks by parent hash and delivers them in order (5.3).
     # The DKG manager processes the finalized boundary block last(E), persists the
     # state for epoch E+1 (07-consensus.md) and only then enters epoch E+1, which
     # registers the scheme for E+1 and the channel subchannels for E+1.
@@ -486,17 +722,17 @@ while behind:
 
 A node MUST NOT install the scheme of epoch `E+1` before the boundary block `last(E)` is finalized and processed, and MUST NOT accept a hint target's claim about any other height: hints always name the boundary of the node's own current epoch.
 
-### 5.6 Syncing from genesis
+### 5.7 Syncing from genesis
 
 **Follower mode** syncs any history, including from genesis:
 
 1. At genesis the EL's finalized height is 0, so the follower installs the epoch-0 scheme from the genesis outcome and pins the configured network identity (7.5).
 2. It verifies the upstream's latest finalization against the pinned identity (mainnet: `from_epoch = 2042`) and reports it to marshal.
-3. Marshal fetches the tip block and walks parent hashes down to height 1 (5.2), storing every block as finalized; blocks are delivered in order and executed by the EL (7.6). Historical certificates are not needed: the verified tip authenticates its whole ancestry by hash.
+3. Marshal fetches the tip block and walks parent hashes down to height 1 (5.3), storing every block as finalized; blocks are delivered in order and executed by the EL (7.6). Historical certificates are not needed: the verified tip authenticates its whole ancestry by hash.
 
 **Validator mode** derives peers from ValidatorConfigV2 at the finalized tip (2.4) and replays finalized blocks through the engine API with `VALID` required (8). A validator therefore cannot start consensus from a state whose finalized height precedes the population of ValidatorConfigV2 with entries for every player of the latest boundary outcome. To join from scratch, a validator MUST first reach a recent finalized height in follower mode or from a snapshot (section 6), then start in validator mode on the same storage (9.5).
 
-In validator mode, on startup the executor first replays finalized blocks from the EL's finalized height up to marshal's finalized floor (from marshal storage, falling back to the EL), issuing a forkchoice update every 8 delivered blocks and at the floor, after waiting until the EL reports ready (a forkchoice update reaffirming the EL's own current forkchoice returns `VALID`, polled every 1 s). If a block in that range cannot be sourced, startup fails.
+In validator mode, on startup the executor first replays finalized blocks from the EL's finalized height up to the startup floor (5.1.5), reading them from marshal's stores and falling back to the EL. It issues a forkchoice update every 8 delivered blocks and at the startup floor, after waiting until the EL reports ready (a forkchoice update reaffirming the EL's own current forkchoice returns `VALID`, polled every 1 s). If a block in that range cannot be sourced, startup fails.
 
 ## 6. Consensus snapshots
 
@@ -518,12 +754,14 @@ The snapshot manifest (reth `SnapshotManifest` JSON) carries an extension object
 
 The manifest's EL snapshot block MUST be at or above `execution_finalized_height`.
 
-The consensus archive `consensus.tar.zst` is a zstd-compressed tar of the reference implementation's storage partitions (blob layout V0) with these and only these partitions:
+The consensus archive is one file described by `consensus_archive`. It holds two of the logical stores of 9.1, and nothing else:
 
-- `engine-finalizations-by-height-*` (metadata, freezer table, freezer key, freezer value, ordinal): every finalization from the anchor height to the tip height that the source holds;
-- `engine-finalized-blocks-prunable-*` (key, value, metadata): every prunable-archive block above `execution_finalized_height`.
+- the **finalization archive**, with every finalization from the anchor height to the tip height that the source holds;
+- the **finalized-block store**'s prunable part, with every block above `execution_finalized_height` that the source holds.
 
-It excludes the DKG state, the follower identity record, Simplex vote journals and marshal metadata; a restored node rebuilds them (6.4).
+It excludes the DKG state, the follower identity record, Simplex vote journals, the consensus caches and marshal's delivery metadata; a restored node rebuilds them (6.4).
+
+The archive's internal encoding (container, compression, file names and store layout) is implementation-defined. A snapshot is only guaranteed to install on the implementation, and storage format version, that produced it. The reference archive is a zstd-compressed tar of its two store directories. The manifest fields above and the logical contents are the same for every implementation.
 
 ### 6.2 Anchor selection
 
@@ -551,9 +789,10 @@ Before replacing any local consensus data the installer MUST:
 
 1. check the archive's blake3 hash against `consensus_archive.blake3`;
 2. extract it into a staging directory without following or creating links outside it;
-3. require that every top-level entry is a directory named with one of the two partition prefixes of 6.1, that every entry inside is a regular file, that every file is listed in `output_files` with matching size and blake3 hash, and that every listed file is present;
+3. require that every extracted entry is a regular file or directory, that every file is listed in `output_files` with matching size and blake3 hash, and that every listed file is present;
+4. require that the extracted files form the two stores of 6.1 in the installer's own storage format, and reject the archive otherwise (for example, the reference installer requires each top-level directory to belong to one of its two stores);
 
-then move the partitions into the consensus data directory (default `<datadir>/consensus`), refusing to overwrite existing files unless forced.
+then move the stores into the consensus data directory (default `<datadir>/consensus`), refusing to overwrite existing files unless forced.
 
 These checks only protect integrity against the manifest. Authenticity comes from the startup checks of 6.4.
 
@@ -561,16 +800,14 @@ These checks only protect integrity against the manifest. Authenticity comes fro
 
 A node started on restored storage performs, before any actor runs:
 
-1. **Archive consistency** (9.4): the finalization archive's tip certificate epoch equals `epoch(tip_height)`; its first index is not 0; the tip header, where the prunable archive or the EL has a block at that height, has number `tip_height` and hash equal to the tip certificate's payload.
+1. **Archive consistency** (9.4): the finalization archive's tip certificate epoch equals `epoch(tip_height)`; its first index is not 0; the tip header, where the prunable store or the EL has a block at that height, has number `tip_height` and hash equal to the tip certificate's payload.
 2. **Floor verification**: the floor is the first finalization in the archive (the anchor). The node reads `header(boundary_for(cert.epoch))` from the hybrid store, decodes its `OnchainDkgOutcome`, requires `outcome.epoch == cert.epoch`, builds the full verifier scheme from `outcome.players` and `outcome.sharing`, and requires the floor finalization to verify. Failure is fatal. The scheme is registered for the floor's epoch.
 3. **Tip verification against the trusted identity** (summary; normative rule: 07-consensus.md §8.3 "startup identity selection and tip check"): the trusted identity is the configured one (built-in: mainnet `{from_epoch: 2042, identity: 0x8627d337…a182}`, see 07-consensus.md), replaced by a persisted identity with a higher `from_epoch` (validators: from DKG state; followers: from the driver record, 9.3); a persisted identity with the same `from_epoch` but a different key is fatal. If the tip certificate's epoch ≥ `trusted.from_epoch` it MUST verify under the trusted identity, otherwise startup fails (an operator must configure a newer identity after a full-DKG rotation). If its epoch < `from_epoch` it is accepted as historical. The trusted identity is registered for `from_epoch`, and for the tip's epoch when verified; a later attempt to register a different key for either epoch is fatal.
-4. **EL linkage**: when the floor is below the EL's finalized height, the executor starts from the EL's canonical block at the floor height and marshal re-delivers finalized blocks from the floor; each delivery must extend the EL's canonical chain (a `newPayload` that is not `VALID` for a finalized block is fatal, section 8). When the floor is above the EL's finalized height, the executor backfills from the EL's finalized height to the floor from the snapshot's contiguous prunable blocks (5.6).
+4. **EL linkage**: when the floor is below the EL's finalized height, the executor starts from the EL's canonical block at the floor height and marshal re-delivers finalized blocks from the floor; each delivery must extend the EL's canonical chain (a `newPayload` that is not `VALID` for a finalized block is fatal, section 8). When the floor is above the EL's finalized height, the executor backfills from the EL's finalized height to the floor from the snapshot's contiguous prunable blocks (5.7).
 
 The state root of the EL snapshot is thereby authenticated: it is in a header on the hash chain from the verified anchor/tip down to the EL's finalized block, and the EL executes every later finalized block on top of it.
 
 After restore, the validator DKG manager has no persisted state and rebuilds it from the latest boundary outcome at or below the floor (07-consensus.md): its share comes, in order of preference, from `--consensus.signing-share` if it matches the outcome's public polynomial at its index, then from a salvaged stale share that matches, then by recovery from dealings revealed in the previous epoch's finalized dealer logs.
-
-Reference implementation: crates/consensus/src/storage/{mod.rs,snapshot.rs,hybrid/mod.rs}, crates/consensus/src/alias.rs, crates/consensus/src/startup.rs, bin/tempo/src/{snapshot_manifest.rs,snapshot_download.rs}.
 
 ## 7. Follower mode
 
@@ -656,7 +893,7 @@ At startup (after marshal is initialized):
 
 1. Run the tip verification of 6.4 step 3 with the persisted driver identity (9.3).
 2. Let `f` be the EL's finalized height and `b` the latest boundary at or below `f` (`f` itself if it is a boundary, else `last(epoch(f) − 1)`, or 0). Decode `header(b).extra_data` as an `OnchainDkgOutcome` (failure is fatal) and register `certificate_verifier(outcome.network_identity)` for `outcome.epoch`. Set `current_epoch = outcome.epoch`.
-3. If marshal's finalized floor is in a later epoch than `b`'s outcome describes (the EL is behind consensus storage), let `p = epoch(floor) − 1`; if `p > epoch(b)` and marshal has the block `last(p)`, decode and register its outcome likewise and raise `current_epoch`. If marshal lacks it, continue: the node relies on the pinned identity fallback.
+3. If the startup floor (5.1.5) is in a later epoch than `b`'s outcome describes (the EL is behind consensus storage), let `p = epoch(floor) − 1`; if `p > epoch(b)` and marshal has the block `last(p)`, decode and register its outcome likewise and raise `current_epoch`. If marshal lacks it, continue: the node relies on the pinned identity fallback.
 
 On every block marshal delivers (in order, after durable storage), if it is a boundary block `last(E)`:
 
@@ -682,7 +919,7 @@ A hint always names `last(current_epoch)`, never a height taken from an unverifi
 
 ### 7.6 Driving the EL (followers)
 
-Marshal reports finalized tips (`Update::Tip(round, height, digest)`, sent only once that finalization is stored) and delivers finalized blocks in order (`Update::Block`) to the follower executor, which processes one request at a time, blocks before tips.
+Marshal reports finalized tips (`FinalizedTip(round, height, digest)`, emitted once that finalization is readable from the finalization archive) and delivers finalized blocks in order (`FinalizedBlock`) to the follower executor (5.1.3), which processes one request at a time, blocks before tips.
 
 A forkchoice **target** is `(round?, hash)`. A delivered block's target takes its round from the header's consensus context (present from TIP-1031 activation, 07-consensus.md; absent in earlier headers); a tip's target always has a round. `a.supersedes(b)` is `a.round > b.round` when both have a round, true when only `a` has one, and false otherwise. `live` is the target of the EL's current finalized header.
 
@@ -713,15 +950,13 @@ def forkchoice(t):
 
 So blocks without a round (before TIP-1031) are only delivered with `newPayload`; the EL is moved by the next tip, whose target always has a round. A heartbeat resends a forkchoice to the latest tip every `--consensus.fcu-heartbeat-interval` (default 5 min) of inactivity.
 
-**Floor advance**: after each completed request, if a tip was reported since the last advance (the first such tip's height is the *floor candidate*), the candidate is ≤ `el_finalized − epochLength`, and the EL has durably persisted the candidate block, the executor sets marshal's floor to the stored finalization at the candidate height.
+**Floor advance**: after each completed request, if a tip was reported since the last advance (the first such tip's height is the *floor candidate*), the candidate is ≤ `el_finalized − epochLength`, and the EL has durably persisted the candidate block, the executor calls `set_floor` with the stored finalization at the candidate height (5.1.7). Marshal ignores it when its round is at or below marshal's round floor, which is the case once the candidate block was delivered and acknowledged; otherwise delivery restarts at the candidate block.
 
 A follower's `head`, `safe` and `finalized` are always the same finalized block; followers never expose unfinalized blocks.
 
 ### 7.7 Uncertified follow mode (informative)
 
 `--follow.nocertify` runs reth's debug consensus client against the upstream without certificate verification. Such a node trusts the upstream completely and is not a conforming follower.
-
-Reference implementation: crates/consensus/src/follow/{engine.rs,driver/,resolver/,upstream/,executor/}, crates/consensus/src/finalization_verifier/mod.rs, crates/consensus/src/epoch/scheme_provider.rs, crates/node/src/rpc/consensus/.
 
 ## 8. Driving the EL (validators)
 
@@ -736,23 +971,22 @@ The validator executor separates **delivery** from **forkchoice**:
 
 So on a validator, the EL's `finalized`/`safe` tags are the latest finalized block and `latest` is the notarized tip the node is converging on, which is never behind `finalized`.
 
-Reference implementation: crates/consensus/src/executor/{mod.rs,actor.rs}.
-
 ## 9. Persistence and crash safety
 
-### 9.1 Storage layout (reference)
+### 9.1 Logical stores
 
-All consensus storage lives under the consensus data directory (`--consensus.datadir`, default `<datadir>/consensus`), as storage partitions of the reference implementation (blob layout V0). `P = "engine"`.
+All consensus storage lives under the consensus data directory (`--consensus.datadir`, default `<datadir>/consensus`). A node keeps the logical stores below. Their on-disk layout, naming and encoding are implementation-defined; only what each store holds, and when it is durable, is normative.
 
-| Partition(s) | Content | Used by | In snapshot |
+| Store | Holds | Used by | In snapshot |
 |---|---|---|---|
-| `P-finalizations-by-height-{metadata,freezer-table,freezer-key,freezer-value,ordinal}` | finalizations by height | validator, follower | yes |
-| `P-finalized-blocks-prunable-{key,value,metadata}` | recent finalized blocks | validator, follower | yes |
-| marshal's internal partitions under prefix `P` | processed height, floor | validator, follower | no |
-| `P_epoch_manager_consensus_epoch_<E>` | Simplex journal of epoch `E` (own votes and observed artifacts) | validator | no |
-| `P_dkg_manager_states_metadata` | DKG `State` per epoch (key `u64` epoch) | validator | no |
-| `P_dkg_manager_events` | DKG event journal, one section per epoch | validator | no |
-| `P_driver_states_metadata` | follower trusted-identity record (key `0`) | follower | no |
+| Finalization archive | one finalization per height, by height and block digest; never pruned (5.2) | validator, follower | yes: anchor to tip (6.1) |
+| Finalized-block store | recent finalized blocks above the EL's finalized height minus the retention; older blocks come from the EL (5.2) | validator, follower | yes: blocks above `execution_finalized_height` |
+| Delivery metadata | marshal's processed height (5.1.1) | validator, follower | no |
+| Consensus caches | per epoch: verified and notarized blocks, notarizations and finalizations by view, certified blocks by height (5.1.6) | validator, follower | no |
+| Simplex journal | per epoch: the node's own votes and the artifacts it observed ([simplex.md §8.13](commonware/simplex.md#813-persistence)) | validator | no |
+| DKG state | the DKG `State` of each epoch the node entered (9.2) | validator | no |
+| DKG event journal | received dealings, acknowledgements, dealer logs and finalized-block markers, per epoch (9.2) | validator | no |
+| Trusted-identity record | the follower's latest trusted network identity (9.3) | follower | no |
 
 ### 9.2 Validator requirements
 
@@ -760,17 +994,19 @@ A validator MUST satisfy all of the following across crashes and restarts:
 
 1. **No equivocation.** Before sending a Simplex vote it MUST durably record it in the epoch's journal, and on restart it MUST replay the journal and never send a conflicting vote for a view it already voted in (07-consensus.md). Losing a journal (for example by restoring a snapshot, which never contains journals) while the epoch is still running risks equivocation; an operator MUST NOT run a validator whose journal for the current epoch was lost unless it is certain it sent no vote in that epoch's remaining views.
 2. **DKG consistency.** It MUST durably persist, before acting on them: the per-epoch DKG `State` (`epoch`, transcript `seed`, `output`, `share`, `players`, an empty legacy `syncers` set, `is_full_dkg`) when it enters an epoch; every dealing it received as a player (so it never acknowledges two different dealings from one dealer); every acknowledgement it received as a dealer; every dealer log read from a finalized block; and finalized-block markers. It MUST NOT acknowledge differently after a restart. Events of epochs older than the previous one MAY be pruned.
-3. **Ack after durability.** A finalized block MUST NOT be acknowledged to marshal (and so marked processed) until the EL has durably persisted it and accepted the forkchoice update finalizing it; marshal emits a block only after durably storing it with its finalization. On restart, marshal resumes delivery above `max(stored processed height, finalization-archive floor)`, and the executor first replays blocks from the EL's finalized height up to that point (5.6), so no finalized block is skipped by the EL.
+3. **Ack after durability.** A finalized block MUST NOT be acknowledged to marshal (and so marked processed) until the EL has durably persisted it and accepted the forkchoice update finalizing it; marshal emits a block only after durably storing it with its finalization (5.1.3). On restart, marshal resumes delivery above its persisted processed height, or at the finalization archive's lowest entry when that is higher (5.1.5), and the executor first replays blocks from the EL's finalized height up to that point (5.7), so no finalized block is skipped by the EL.
 4. **Startup checks** of 9.4 MUST pass before any actor starts.
 
-DKG state format (codec of [codec.md](commonware/codec.md); `Set` is [§6.1](commonware/codec.md#61-ordered-set), `Option` [§5.2](commonware/codec.md#52-option), tags [§5.6](commonware/codec.md#56-tagged-unions-enums)): `State := varint(epoch) || seed[32] || Output || ShareState || Set<ed25519>(players, 1..=65535) || Set<ed25519>(syncers, 0..=65535, always empty) || bool(is_full_dkg)`; `ShareState := 0x00 || Option<Share>` (plaintext; other tags are reserved). `Output` is [dkg.md §11.1](commonware/dkg.md#111-output) and `Share` is [cryptography.md §5.2](commonware/cryptography.md#52-share-encoding). Event journal entries: `0x00 || dealer || DealerPubMsg || DealerPrivMsg` (dealing), `0x01 || player || PlayerAck` (ack), `0x02 || dealer || DealerLog` (log), `0x03 || digest[32] || parent[32] || varint(height)` (finalized), with the messages of [dkg.md §5](commonware/dkg.md#5-messages) and `DealerLog` of [dkg.md §8.1](commonware/dkg.md#81-dealerlog-encoding). These are local formats; only their durability semantics are normative.
+> **Informative**: the encodings in this note are the reference implementation's local formats. They are not interoperable and another implementation MAY store this state differently; only the durability rules of item 2 are normative.
+>
+> Reference DKG state encoding (codec of [codec.md](commonware/codec.md); `Set` is [§6.1](commonware/codec.md#61-ordered-set), `Option` [§5.2](commonware/codec.md#52-option), tags [§5.6](commonware/codec.md#56-tagged-unions-enums)): `State := varint(epoch) || seed[32] || Output || ShareState || Set<ed25519>(players, 1..=65535) || Set<ed25519>(syncers, 0..=65535, always empty) || bool(is_full_dkg)`; `ShareState := 0x00 || Option<Share>` (plaintext; other tags are reserved). `Output` is [dkg.md §11.1](commonware/dkg.md#111-output) and `Share` is [cryptography.md §5.2](commonware/cryptography.md#52-share-encoding). Event journal entries: `0x00 || dealer || DealerPubMsg || DealerPrivMsg` (dealing), `0x01 || player || PlayerAck` (ack), `0x02 || dealer || DealerLog` (log), `0x03 || digest[32] || parent[32] || varint(height)` (finalized), with the messages of [dkg.md §5](commonware/dkg.md#5-messages) and `DealerLog` of [dkg.md §8.1](commonware/dkg.md#81-dealerlog-encoding).
 
 On startup the DKG manager uses the persisted state if its epoch is at least the epoch of height `floor + 1`; otherwise it rebuilds the state from the chain as described at the end of 6.4.
 
 ### 9.3 Follower requirements
 
 1. Marshal storage and the ack-after-processing rule as for validators, except that a follower acknowledges a block once its `newPayload` returned `VALID` or `SYNCING` and its forkchoice update was handled; the floor only advances to blocks the EL has durably persisted and that are at least one epoch behind the EL's finalized height (7.6).
-2. The trusted-identity record: `StoredIdentity := 0x01 || u64be(from_epoch) || G2[96]` (G2 encoding: [cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding); version 1; 105 bytes; other versions are rejected), stored under key 0, written with a durable sync when the identity changes (7.5). It is never part of a snapshot.
+2. The trusted-identity record holds `{from_epoch, identity}` (a 96-byte G2 network identity). It MUST be written durably before the follower relies on a changed identity (7.5). It is never part of a snapshot. Informative: the reference record is `0x01 || u64be(from_epoch) || G2[96]` (version 1, 105 bytes; G2 encoding [cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)), a local format that other implementations need not share.
 3. A follower MUST NOT move its EL forkchoice to a block that marshal has not stored together with its finalization (or as an ancestor of a stored finalization).
 
 ### 9.4 Startup consistency checks (both modes)
@@ -779,7 +1015,7 @@ In order; any failure is fatal:
 
 1. The finalization archive's tip certificate epoch equals `epoch(tip_height)`.
 2. If the archive is empty, the EL's finalized height MUST be 0 (genesis start). If one of first/last index is set the other MUST be too. The first index MUST NOT be 0.
-3. The tip header found at `tip_height` in the prunable archive and, separately, in the EL (each only if present) MUST have number `tip_height` and hash equal to the tip certificate's payload.
+3. The tip header found at `tip_height` in the prunable store and, separately, in the EL (each only if present) MUST have number `tip_height` and hash equal to the tip certificate's payload.
 4. If the floor is above genesis, the archive MUST contain the floor's finalization, and it MUST verify under the scheme built from the outcome at `boundary_for(floor.epoch)` (6.4 step 2).
 5. The archive tip height MUST be ≥ marshal's stored processed height (otherwise consensus storage was overwritten with a stale snapshot).
 6. Tip verification against the trusted identity (6.4 step 3); genesis MUST have no tip certificate and a tip MUST NOT be below the floor.
@@ -787,7 +1023,7 @@ In order; any failure is fatal:
 
 ### 9.5 Mode switching
 
-Validators and followers use the same partition prefix and archive formats for marshal storage, so a node MAY stop in one mode and restart in the other on the same data directory. A follower that becomes a validator also needs its ed25519 key, and either a share for the current epoch or recovery per 6.4.
+An implementation MUST use the same marshal stores (9.1), in the same format, in both modes, so that a node MAY stop in one mode and restart in the other on the same data directory. A follower that becomes a validator also needs its ed25519 key, and either a share for the current epoch or recovery per 6.4.
 
 ## 10. Key and share files (informative)
 
@@ -799,8 +1035,6 @@ Validators and followers use the same partition prefix and archive formats for m
 | network identity override | `--consensus.network-identity <0x-hex 96-byte G2>` ([cryptography.md §4.3](commonware/cryptography.md#43-point-encoding-and-decoding)) with `--consensus.network-identity-from-epoch <u64>`; the built-in files `mainnet-network-identity.json` / `testnet-network-identity.json` are `{"from_epoch": u64, "identity": "0x" + 192 hex}` |
 
 A configured share is used only if it matches the public polynomial of the latest finalized boundary outcome at the share's index (6.4; [cryptography.md §5.5](commonware/cryptography.md#55-partial-public-keys)).
-
-Reference implementation: crates/consensus-config/src/lib.rs, crates/consensus/src/args.rs, crates/chainspec/src/network_identity.rs.
 
 ## 11. Constants
 
@@ -815,7 +1049,10 @@ Reference implementation: crates/consensus-config/src/lib.rs, crates/consensus/s
 | Tracked peer sets | 1 |
 | Block broadcast deque | 10 per peer |
 | Marshal resolver timeout / retry | 2 s / 100 ms |
-| Prunable section size | 4,096 blocks |
+| Prunable section size | 4,096 blocks (finalized-block store), 4,096 views (consensus caches) |
+| Marshal `max_repair` | 20 |
+| Marshal `view_retention` | 2,560 views (validators, default), 1 view (followers) |
+| Muxer queues (each subchannel, channel-0 backup) | `--consensus.mailbox-size`, default 16,384 messages |
 | `MINIMAL_PEER_SYNC_FINALIZED_BLOCKS` | 64,800 (= 3 × 21,600) |
 | `tempo/1` | name `"tempo"`, version 1, 1 message, `NewFinalization = 0x00`, max frame 1,024 bytes |
 | `tempo/1` limits | 8 frames/s per connection, 32 verifications/s, 256-frame queue, 2 connections per peer |
