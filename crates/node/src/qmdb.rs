@@ -42,7 +42,7 @@ use reth_provider::{
     DatabaseProviderFactory, HeaderProvider, ProviderError, ProviderResult, StateBackend,
     StateReader, StorageChangeSetReader,
 };
-use reth_tracing::tracing::{debug, info, warn};
+use reth_tracing::tracing::{debug, info, info_span, warn};
 use reth_trie::hashed_cursor::HashedPostStateCursorFactory;
 use reth_trie_common::{HashedPostState, HashedPostStateSorted, updates::TrieUpdates};
 use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseHashedPostState as _};
@@ -259,6 +259,13 @@ fn spawn_prefetch(store: Arc<Store>, metrics: Arc<QmdbMetrics>) -> StateRootHand
         hashed_state_rx,
     );
     let prefetch = move || {
+        // Spans the block's execution stream, so traces show when the last prefetch ends
+        // relative to the block's merkleization.
+        let block_span = info_span!(
+            "qmdb.prefetch.block",
+            rounds = reth_tracing::tracing::field::Empty
+        );
+        let mut rounds = 0u64;
         let mut keys = PrefetchKeys::default();
         let mut finished = false;
         while !finished && let Ok(message) = updates_rx.recv() {
@@ -269,6 +276,14 @@ fn spawn_prefetch(store: Arc<Store>, metrics: Arc<QmdbMetrics>) -> StateRootHand
             if accounts.is_empty() && slots.is_empty() {
                 continue;
             }
+            rounds += 1;
+            let _round = info_span!(
+                parent: &block_span,
+                "qmdb.prefetch",
+                accounts = accounts.len() as u64,
+                slots = slots.len() as u64,
+            )
+            .entered();
             let started = Instant::now();
             if let Err(err) = store.prefetch(accounts, slots) {
                 debug!(target: "qmdb", %err, "QMDB prefetch failed");
@@ -276,6 +291,7 @@ fn spawn_prefetch(store: Arc<Store>, metrics: Arc<QmdbMetrics>) -> StateRootHand
             }
             metrics.prefetch_duration.record(started.elapsed());
         }
+        block_span.record("rounds", rounds);
     };
     if let Err(err) = std::thread::Builder::new()
         .name("qmdb-prefetch".into())
