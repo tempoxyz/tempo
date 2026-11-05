@@ -399,6 +399,9 @@ where
 
         check_cancel!();
 
+        let state_root_hints = state_root_handle
+            .as_mut()
+            .and_then(|handle| handle.take_hint_stream());
         if let Some(handle) = state_root_handle.as_mut() {
             let mut hook = handle.take_state_hook();
             executor.set_state_hook(move |state| hook.on_state(state));
@@ -434,7 +437,8 @@ where
             prewarm_evm_env,
             self.evm_config.clone(),
             self.config.enable_parallel,
-        );
+        )
+        .with_state_root_hints(state_root_hints);
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(

@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, Receiver, Sender},
 };
 
@@ -14,11 +14,18 @@ use reth_tasks::{TaskExecutor, WorkerStatefulPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
+use reth_trie_common::MultiProofTargetsV2;
+use reth_trie_parallel::state_root_task::StateRootHintStream;
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
+
+/// How many source transactions past the builder's position prewarming sends state root hints
+/// for. Prewarming can run far ahead into transactions that will not fit the block, and proofs
+/// fetched for them only compete with the proofs the block needs.
+const STATE_ROOT_HINT_LOOKAHEAD: usize = 4096;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -28,6 +35,8 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    /// Number of transactions handed to the builder.
+    consumed: Arc<AtomicUsize>,
 }
 
 impl BestTransactionsPrewarming {
@@ -46,6 +55,7 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            consumed: prewarm.consumed.clone(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -60,6 +70,7 @@ impl BestTransactionsPrewarming {
                         commands_rx,
                         commands_tx,
                         prewarm,
+                        next_index: 0,
                         next_expiring_nonce_offset: 0,
                     },
                 );
@@ -92,6 +103,8 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
+                let index = ctx.next_index;
+                ctx.next_index += 1;
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
@@ -114,7 +127,8 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
+                    let tx =
+                        Self::prewarm_transaction(pool, prewarm, tx, index, expiring_nonce_offset);
                     if let Some(transactions_tx) = transactions_tx {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -173,11 +187,16 @@ impl BestTransactionsPrewarming {
     ///
     /// If [`PrewarmingExecutionContext::parallel`] is enabled and prewarming was successful,
     /// a [`PrewarmedTransaction`] with populated replay data is returned.
+    ///
+    /// `index` is the transaction's position in the source order. Transactions within
+    /// [`STATE_ROOT_HINT_LOOKAHEAD`] of the builder send the state they change to the state root
+    /// task, so its proofs are fetched before the builder commits the transaction.
     #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
     fn prewarm_transaction<Provider>(
         pool: &WorkerStatefulPool,
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
+        index: usize,
         expiring_nonce_offset: Option<usize>,
     ) -> PrewarmedTransaction
     where
@@ -216,6 +235,15 @@ impl BestTransactionsPrewarming {
                 };
 
                 trace!(target: "payload_builder", "Prewarmed transaction");
+
+                if let Some(hints) = &prewarm.state_root_hints
+                    && index < prewarm.consumed.load(Ordering::Relaxed) + STATE_ROOT_HINT_LOOKAHEAD
+                {
+                    let (targets, _) = MultiProofTargetsV2::from_account_changes(
+                        result.pending_state.account_changes(),
+                    );
+                    hints.on_access_hint(targets.into());
+                }
 
                 if !prewarm.parallel {
                     return None;
@@ -269,6 +297,14 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let tx = self.next_buffered()?;
+        self.consumed.fetch_add(1, Ordering::Relaxed);
+        Some(tx)
+    }
+}
+
+impl BestTransactionsPrewarming {
+    fn next_buffered(&mut self) -> Option<PrewarmedTransaction> {
         // Empty replies describe earlier source polls. Drain them before deciding
         // whether a ready transaction exists, preserving the order of actual txs.
         if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
@@ -328,6 +364,8 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    /// Source position of the next transaction.
+    next_index: usize,
     next_expiring_nonce_offset: usize,
 }
 
@@ -361,6 +399,10 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_config: TempoEvmConfig,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    /// Prefetch hints for the payload's state root task.
+    state_root_hints: Option<StateRootHintStream>,
+    /// Number of transactions handed to the builder.
+    consumed: Arc<AtomicUsize>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -385,7 +427,15 @@ where
             evm_config,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            state_root_hints: None,
+            consumed: Arc::default(),
         }
+    }
+
+    /// Sends the state changed by prewarmed transactions to the payload's state root task.
+    pub(crate) fn with_state_root_hints(mut self, hints: Option<StateRootHintStream>) -> Self {
+        self.state_root_hints = hints;
+        self
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
@@ -763,6 +813,8 @@ mod tests {
             evm_config,
             stop: Arc::default(),
             parallel,
+            state_root_hints: None,
+            consumed: Arc::default(),
         }
     }
 
@@ -869,6 +921,7 @@ mod tests {
                 transactions_rx,
                 commands_tx,
                 stop: Arc::default(),
+                consumed: Arc::default(),
             };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
@@ -902,6 +955,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            consumed: Arc::default(),
         };
 
         let next = prewarming.next();
@@ -928,6 +982,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            consumed: Arc::default(),
         };
 
         assert!(prewarming.next().is_none());
@@ -955,6 +1010,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            consumed: Arc::default(),
         };
 
         assert_eq!(
@@ -1161,6 +1217,7 @@ mod tests {
                 &pool,
                 context.clone(),
                 test_payment_tx(sender, 0),
+                0,
                 None,
             );
             assert!(failed.replay.is_none());
@@ -1176,6 +1233,7 @@ mod tests {
                 &pool,
                 context,
                 test_payment_tx(sender, 500_000),
+                0,
                 None,
             );
             let replay = successful.replay.expect("successful prewarm replay");
@@ -1204,6 +1262,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            consumed: Arc::default(),
         };
 
         // Leave the coordinator commands unprocessed: the original buffer must
