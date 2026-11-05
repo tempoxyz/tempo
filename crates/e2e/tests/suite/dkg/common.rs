@@ -100,12 +100,9 @@ pub(crate) fn read_ceremony_from_validator(
     assert_eq!(stored.epoch, outcome.raw_epoch());
     assert_eq!(stored.dealers, public_keys(outcome.players()));
     DkgCeremony {
-        players: ordered::Set::try_from_iter(
-            stored
-                .players
-                .iter()
-                .map(|key| PublicKey::decode(key.as_slice()).expect("valid player key")),
-        )
+        players: ordered::Set::try_from_iter(stored.players.iter().map(|key| {
+            PublicKey::decode(commonware_codec::Copying(key.as_slice())).expect("valid player key")
+        }))
         .expect("stored players are distinct"),
         is_full_dkg: stored.isRotatingNetworkIdentity,
     }

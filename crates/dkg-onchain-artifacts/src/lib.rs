@@ -2,8 +2,8 @@
 
 use std::num::NonZeroU32;
 
-use bytes::{Buf, BufMut};
-use commonware_codec::{DecodeExt, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
+use bytes::BufMut;
+use commonware_codec::{Buf, DecodeExt, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
 #[cfg(feature = "commonware-consensus")]
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -145,9 +145,10 @@ impl OnchainDkgOutcome {
     /// encoding, so it rejects trailing bytes. [`OutcomeEncoding::Legacy`]
     /// keeps ignoring them, as it always has.
     pub fn decode_extra_data(
-        mut extra_data: &[u8],
+        extra_data: &[u8],
         encoding: OutcomeEncoding,
     ) -> Result<Self, commonware_codec::Error> {
+        let mut extra_data = commonware_codec::Copying(extra_data);
         Ok(match encoding {
             OutcomeEncoding::Legacy => Self::V1(OnchainDkgOutcomeV1::read(&mut extra_data)?),
             OutcomeEncoding::CeremonyInState => Self::V2(OnchainDkgOutcomeV2::decode(extra_data)?),

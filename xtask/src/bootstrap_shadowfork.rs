@@ -692,7 +692,7 @@ fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcomeV1> {
     let bytes = const_hex::decode(hex.trim_start_matches("0x"))
         .wrap_err("failed decoding shadow_dkg_outcome hex")?;
     // Manifests keep the legacy encoding, which carries the ceremony of the shadow epoch.
-    OnchainDkgOutcomeV1::read(&mut bytes.as_slice())
+    OnchainDkgOutcomeV1::read(&mut commonware_codec::Copying(bytes.as_slice()))
         .wrap_err("failed decoding shadow_dkg_outcome payload")
 }
 
@@ -1306,7 +1306,7 @@ impl Read for BootstrapShareState {
     type Cfg = ();
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(buf)?;
@@ -1361,7 +1361,7 @@ impl Read for BootstrapDkgState {
     type Cfg = NonZeroU32;
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let epoch = ReadExt::read(buf)?;

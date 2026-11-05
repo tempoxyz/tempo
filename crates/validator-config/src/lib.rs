@@ -86,9 +86,10 @@ impl ValidatorConfig {
         message: &B256,
         signature: &[u8],
     ) -> Result<(), ValidatorConfigError> {
-        let public_key = ed25519::PublicKey::decode(self.public_key.as_slice())
-            .map_err(|_| ValidatorConfigError::InvalidPublicKey)?;
-        let sig = ed25519::Signature::decode(signature)
+        let public_key =
+            ed25519::PublicKey::decode(commonware_codec::Copying(self.public_key.as_slice()))
+                .map_err(|_| ValidatorConfigError::InvalidPublicKey)?;
+        let sig = ed25519::Signature::decode(commonware_codec::Copying(signature))
             .map_err(|_| ValidatorConfigError::InvalidSignature)?;
         if !public_key.verify(namespace, message.as_slice(), &sig) {
             return Err(ValidatorConfigError::SignatureVerificationFailed);

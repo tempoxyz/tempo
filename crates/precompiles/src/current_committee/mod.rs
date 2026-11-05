@@ -87,12 +87,13 @@ impl CurrentCommittee {
             .get_active_validators()?
             .into_iter()
             .map(|validator| {
-                PublicKey::decode(validator.publicKey.as_slice()).map_err(|_| {
-                    TempoPrecompileError::Fatal(format!(
-                        "active validator key {} is not a valid Ed25519 public key",
-                        validator.publicKey
-                    ))
-                })
+                PublicKey::decode(commonware_codec::Copying(validator.publicKey.as_slice()))
+                    .map_err(|_| {
+                        TempoPrecompileError::Fatal(format!(
+                            "active validator key {} is not a valid Ed25519 public key",
+                            validator.publicKey
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>>>()?;
         if players.is_empty() || players.len() > MAX_KEYS {

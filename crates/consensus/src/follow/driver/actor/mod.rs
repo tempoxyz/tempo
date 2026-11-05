@@ -4,7 +4,8 @@ use commonware_consensus::{
     simplex::types::Activity,
     types::{Epoch, Epocher as _, Height, Round},
 };
-use commonware_runtime::{BufferPooler, Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
+use commonware_cryptography::Digested;
+use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{OptionExt as _, Report, WrapErr as _};
 use rand_core::{CryptoRng, Rng};
@@ -33,7 +34,7 @@ pub(super) async fn try_init<TContext, P, M>(
     config: Config<P, M>,
 ) -> eyre::Result<super::Initialized<TContext, P, M>>
 where
-    TContext: Clock + Spawner + Metrics + Storage + BufferPooler + CryptoRng,
+    TContext: Clock + Spawner + Metrics + Storage + CryptoRng,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
@@ -120,7 +121,7 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Driver<TContext: Clock + Metrics + Storage + BufferPooler, P, M> {
+pub(crate) struct Driver<TContext: Clock + Metrics + Storage, P, M> {
     state: State<TContext>,
     context: ContextCell<TContext>,
     config: Config<P, M>,
@@ -134,7 +135,7 @@ pub(crate) struct Driver<TContext: Clock + Metrics + Storage + BufferPooler, P, 
 
 impl<C, P, M> Driver<C, P, M>
 where
-    C: Clock + Rng + CryptoRng + Spawner + Metrics + Storage + BufferPooler,
+    C: Clock + Rng + CryptoRng + Spawner + Metrics + Storage,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
@@ -219,7 +220,7 @@ where
 
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(boundary_block.header())
+                .decode_dkg_outcome_and_register_boundary(boundary_block.inner().header())
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
@@ -300,7 +301,8 @@ where
             Err(error) => return Err(Report::new(error)),
         };
 
-        let consensus_block = Block::from_execution_block_unchecked(certified.block);
+        let consensus_block =
+            Digested::from(Block::from_execution_block_unchecked(certified.block));
 
         let round = finalization.round();
         self.latest_verified_round = self.latest_verified_round.max(round);
@@ -422,7 +424,7 @@ where
         if epoch_info.last() == block.height() {
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(block.header())
+                .decode_dkg_outcome_and_register_boundary(block.inner().header())
                 .expect("boundary blocks must contain DKG outcomes");
 
             // Prevent an outcome from advancing the persisted trust anchor to an arbitrary epoch.

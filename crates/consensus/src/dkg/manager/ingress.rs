@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use commonware_cryptography::Digested;
 
 use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
@@ -8,7 +8,7 @@ use commonware_cryptography::{
         dkg::feldman_desmedt::{Output, SignedDealerLog},
         primitives::variant::MinSig,
     },
-    ed25519::{PrivateKey, PublicKey},
+    ed25519::PublicKey,
 };
 use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
@@ -38,7 +38,7 @@ impl Mailbox {
     pub(crate) async fn get_dealer_log(
         &self,
         epoch: Epoch,
-    ) -> eyre::Result<Option<SignedDealerLog<MinSig, PrivateKey>>> {
+    ) -> eyre::Result<Option<SignedDealerLog<MinSig, PublicKey>>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(GetDealerLog { epoch, response }))
@@ -60,7 +60,7 @@ impl Mailbox {
     /// down.
     pub(crate) fn subscribe_dkg_ceremony(
         &self,
-        parent: Arc<Block>,
+        parent: Digested<Block>,
     ) -> oneshot::Receiver<Output<MinSig, PublicKey>> {
         let (response, rx) = oneshot::channel();
         // A closed mailbox drops the sender, so the receiver reports cancellation.
@@ -145,11 +145,11 @@ impl From<SubscribeDkgCeremony> for Command {
 
 pub(super) struct GetDealerLog {
     pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Option<SignedDealerLog<MinSig, PrivateKey>>>,
+    pub(super) response: oneshot::Sender<Option<SignedDealerLog<MinSig, PublicKey>>>,
 }
 
 pub(super) struct SubscribeDkgCeremony {
-    pub(super) parent: Arc<Block>,
+    pub(super) parent: Digested<Block>,
     pub(super) response: oneshot::Sender<Output<MinSig, PublicKey>>,
 }
 

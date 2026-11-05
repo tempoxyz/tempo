@@ -1318,7 +1318,7 @@ impl ValidatorInfo {
         if !self.no_dkg_information {
             let roles = read_dkg_roles(&provider, &chain, &epoch_strategy, current_height).await?;
 
-            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+            let key = PublicKey::decode(commonware_codec::Copying(&pubkey_bytes[..]))
                 .wrap_err("failed decoding on-chain ed25519 key")?;
 
             let committee = roles.dealers.position(&key).is_some();
@@ -1516,7 +1516,7 @@ impl Info {
 
         let mut validators: Vec<ValidatorOutput> = Vec::new();
         for (key, validator) in validators_by_public_key {
-            let public_key = match PublicKey::decode(key.as_ref()) {
+            let public_key = match PublicKey::decode(commonware_codec::Copying(key.as_ref())) {
                 Ok(key) => key,
                 Err(e) => {
                     let index = validator.index;
@@ -1645,7 +1645,7 @@ async fn read_dkg_roles<P: Provider<TempoNetwork>>(
     let decode_keys = |keys: Vec<B256>, what: &str| {
         let keys = keys
             .iter()
-            .map(|key| PublicKey::decode(key.as_slice()))
+            .map(|key| PublicKey::decode(commonware_codec::Copying(key.as_slice())))
             .collect::<Result<Vec<_>, _>>()
             .wrap_err_with(|| format!("stored DKG {what} are not ed25519 public keys"))?;
         ordered::Set::try_from_iter(keys)

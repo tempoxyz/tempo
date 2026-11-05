@@ -6,7 +6,6 @@
 //!
 //! All definitions herein are only intended to support the the tests defined
 //! in tests/.
-
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -458,10 +457,6 @@ pub async fn link_validators<TClock: commonware_runtime::Clock>(
                 .await
             {
                 Ok(()) => (),
-                // TODO: it should be possible to remove the below if Commonware simulated network exposes list of registered peers.
-                //
-                // This is fine because some of the peers might be registered later
-                Err(commonware_p2p::simulated::Error::PeerMissing) => (),
                 // This is fine because we might call this multiple times as peers are joining the network.
                 Err(commonware_p2p::simulated::Error::LinkExists) => (),
                 res @ Err(_) => res.unwrap(),

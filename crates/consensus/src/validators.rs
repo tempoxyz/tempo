@@ -149,7 +149,7 @@ pub(crate) fn read_dkg_ceremony(
     let decode_keys = |keys: Vec<B256>, what: &str| {
         let keys = keys
             .iter()
-            .map(|key| PublicKey::decode(key.as_slice()))
+            .map(|key| PublicKey::decode(commonware_codec::Copying(key.as_slice())))
             .collect::<Result<Vec<_>, _>>()
             .wrap_err_with(|| format!("stored DKG {what} are not Ed25519 public keys"))?;
         ordered::Set::try_from_iter(keys)
@@ -235,7 +235,7 @@ impl DecodedValidatorV2 {
             ..
         }: IValidatorConfigV2::Validator,
     ) -> eyre::Result<Self> {
-        let public_key = PublicKey::decode(publicKey.as_ref())
+        let public_key = PublicKey::decode(commonware_codec::Copying(publicKey.as_ref()))
             .wrap_err("failed decoding publicKey field as ed25519 public key")?;
         let ingress = ingress.parse().wrap_err("ingress was not valid")?;
         let egress = egress.parse().wrap_err("egress was not valid")?;

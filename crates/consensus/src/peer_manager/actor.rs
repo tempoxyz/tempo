@@ -13,7 +13,7 @@ use commonware_consensus::{
     marshal::Update,
     types::{Epocher, FixedEpocher, Height},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digestible as _, ed25519::PublicKey};
 use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
 use commonware_runtime::{
     Clock, ContextCell, Metrics, Spawner, spawn_cell,
@@ -239,9 +239,9 @@ where
             );
             PeersBuilder::new(stored.dealers, &stored.ceremony.players)
         } else {
-            let outcome = OnchainDkgOutcomeV1::read(
-                &mut latest_boundary_header.extra_data().as_ref(),
-            )
+            let outcome = OnchainDkgOutcomeV1::read(&mut commonware_codec::Copying(
+                latest_boundary_header.extra_data().as_ref(),
+            ))
             .wrap_err_with(|| {
                 format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
             })?;
