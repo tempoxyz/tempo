@@ -37,9 +37,9 @@ where
     pub(crate) partition_prefix: String,
     pub(crate) views_to_track: ViewDelta,
     pub(crate) inactive_time_before_leader_skip: Duration,
-    /// The recovery boundary, which the execution layer finalized without a certificate, or
-    /// `None` without a chain recovery. Used as the floor of the epoch after it until marshal
-    /// finalizes it.
+
+    /// An execution-finalized boundary, used as the floor of the next epoch until marshal
+    /// finalizes it during chain recovery
     pub(crate) recovery_boundary: Option<(Height, Digest)>,
 }
 

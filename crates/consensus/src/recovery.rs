@@ -11,7 +11,7 @@ use std::sync::Arc;
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_codec::DecodeExt as _;
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use reth_chain_state::ExecutedBlock;
@@ -43,13 +43,10 @@ use crate::consensus::Digest;
 #[derive(Clone, Debug)]
 pub(crate) struct Recovery {
     /// The last block finalized before consensus halted.
-    finalized_height: Height,
-    finalized_hash: B256,
+    last_finalized: (Height, Digest),
     /// The last block of the halted epoch, carrying `outcome`.
-    boundary: Height,
-    boundary_hash: B256,
+    boundary: (Height, Digest),
     outcome: OnchainDkgOutcome,
-    encoded_outcome: Bytes,
 }
 
 impl Recovery {
@@ -86,12 +83,9 @@ impl Recovery {
         );
 
         Ok(Some(Self {
-            finalized_height,
-            finalized_hash: recovery.finalized_hash,
-            boundary,
-            boundary_hash: recovery.boundary_hash,
+            last_finalized: (finalized_height, Digest(recovery.finalized_hash)),
+            boundary: (boundary, Digest(recovery.boundary_hash)),
             outcome,
-            encoded_outcome: recovery.outcome.clone(),
         }))
     }
 
@@ -105,7 +99,7 @@ impl Recovery {
 
     /// The boundary block that ends the halted epoch.
     pub(crate) fn boundary(&self) -> (Height, Digest) {
-        (self.boundary, Digest(self.boundary_hash))
+        self.boundary
     }
 
     /// Builds and imports the empty blocks after the last finalized block up to the boundary,
@@ -114,43 +108,44 @@ impl Recovery {
     /// Does nothing if the execution layer already finalized the boundary. Fails if the boundary
     /// this node builds does not match the pinned hash, or if the execution layer finalized
     /// neither the boundary nor the recovery's finalized block.
-    #[instrument(skip_all, fields(finalized_height = %self.finalized_height, boundary = %self.boundary), err)]
+    #[instrument(skip_all, fields(last_finalized = %self.last_finalized.0, boundary = %self.boundary.0), err)]
     pub(crate) async fn fill_to_boundary(&self, node: &TempoFullNode) -> eyre::Result<()> {
+        let ((finalized_height, Digest(finalized_hash)), (boundary, Digest(boundary_hash))) =
+            (self.last_finalized, self.boundary);
         let finalized = node
             .provider
             .canonical_in_memory_state()
             .get_finalized_num_hash()
             .ok_or_eyre("execution layer has not finalized any block")?;
 
-        if finalized.number >= self.boundary.get() {
+        if finalized.number >= boundary.get() {
             let hash = node
                 .provider
-                .block_hash(self.boundary.get())
+                .block_hash(boundary.get())
                 .wrap_err("failed reading the boundary hash")?
                 .ok_or_eyre("execution layer finalized past the boundary but does not have it")?;
             ensure!(
-                hash == self.boundary_hash,
+                hash == boundary_hash,
                 "execution layer finalized boundary `{hash}`, but the recovery pins `{}`",
-                self.boundary_hash,
+                boundary_hash,
             );
             info!("execution layer already finalized the recovery boundary");
             return Ok(());
         }
 
         ensure!(
-            finalized.number == self.finalized_height.get()
-                && finalized.hash == self.finalized_hash,
+            finalized.number == finalized_height.get() && finalized.hash == finalized_hash,
             "recovery starts at block `{}` at height `{}`, but the execution layer finalized \
             `{}` at height `{}`; sync the execution layer to the recovery block first",
-            self.finalized_hash,
-            self.finalized_height,
+            finalized_hash,
+            finalized_height,
             finalized.hash,
             finalized.number,
         );
 
         let parent = node
             .provider
-            .sealed_header(self.finalized_height.get())
+            .sealed_header(finalized_height.get())
             .wrap_err("failed reading the recovery's finalized header")?
             .ok_or_eyre("execution layer does not have the recovery's finalized header")?;
 
@@ -158,7 +153,7 @@ impl Recovery {
         let factory = node.provider.clone();
         let evm_config = node.evm_config.clone();
         let chain_spec = node.chain_spec();
-        let (boundary, outcome) = (self.boundary, self.encoded_outcome.clone());
+        let outcome = self.outcome.clone();
         let blocks = tokio::task::spawn_blocking(move || {
             build_fill_blocks(
                 factory,
@@ -176,9 +171,9 @@ impl Recovery {
             .expect("a recovery fills at least one block")
             .hash();
         ensure!(
-            built == self.boundary_hash,
+            built == boundary_hash,
             "this node built boundary `{built}`, but the recovery pins `{}`",
-            self.boundary_hash,
+            boundary_hash,
         );
 
         let engine = node.add_ons_handle.beacon_engine_handle.clone();
@@ -199,9 +194,9 @@ impl Recovery {
         let response = engine
             .fork_choice_updated(
                 ForkchoiceState {
-                    head_block_hash: self.boundary_hash,
-                    safe_block_hash: self.boundary_hash,
-                    finalized_block_hash: self.boundary_hash,
+                    head_block_hash: boundary_hash,
+                    safe_block_hash: boundary_hash,
+                    finalized_block_hash: boundary_hash,
                 },
                 None,
             )
@@ -212,7 +207,7 @@ impl Recovery {
             "execution layer refused to finalize the recovery boundary: {:?}",
             response.payload_status,
         );
-        info!(boundary_hash = %self.boundary_hash, "finalized the recovery boundary");
+        info!(boundary_hash = %boundary_hash, "finalized the recovery boundary");
         Ok(())
     }
 }
@@ -228,7 +223,7 @@ pub fn build_fill_blocks<TFactory>(
     chain_spec: &TempoChainSpec,
     mut parent: SealedHeader<TempoHeader>,
     boundary: Height,
-    outcome: &Bytes,
+    outcome: &OnchainDkgOutcome,
 ) -> eyre::Result<Vec<RecoveredBlock<Block>>>
 where
     TFactory: DatabaseProviderFactory + Clone,
@@ -241,6 +236,7 @@ where
         + BlockNumReader,
 {
     let mut overlay = OverlayManager::<TempoPrimitives>::default().overlay_builder(parent.hash());
+    let outcome = Bytes::from(outcome.encode().to_vec());
     let mut blocks = Vec::new();
     while parent.number() < boundary.get() {
         let number = parent.number() + 1;
@@ -322,7 +318,6 @@ mod tests {
     use std::num::NonZeroU64;
 
     use alloy_genesis::Genesis;
-    use commonware_codec::Encode as _;
     use commonware_runtime::{Runner as _, deterministic};
 
     use crate::test_utils::dkg_fixture;
@@ -404,7 +399,8 @@ mod tests {
         reth_db_common::init::init_genesis(&factory).unwrap();
         let genesis = factory.sealed_header(0).unwrap().unwrap();
         let evm_config = TempoEvmConfig::new(chain.clone());
-        let outcome = Bytes::from_static(b"recovery outcome");
+        let outcome =
+            dkg_fixture(&mut rand::rng(), commonware_consensus::types::Epoch::new(1)).outcome;
 
         let build = || {
             build_fill_blocks(
@@ -431,7 +427,7 @@ mod tests {
                 .iter()
                 .all(|block| block.extra_data().is_empty())
         );
-        assert_eq!(blocks[2].extra_data(), &outcome);
+        assert_eq!(blocks[2].extra_data().as_ref(), outcome.encode().as_ref());
         for (parent, child) in std::iter::once(genesis.hash())
             .chain(blocks.iter().map(|block| block.hash()))
             .zip(&blocks)

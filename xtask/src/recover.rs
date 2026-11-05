@@ -138,15 +138,13 @@ impl Recover {
             is_next_full_dkg: false,
         };
 
-        let encoded_outcome = Bytes::from(outcome.encode().to_vec());
-
         let blocks = build_fill_blocks(
             factory,
             &TempoEvmConfig::new(chain.clone()),
             &chain,
             finalized.clone(),
             epoch_info.last(),
-            &encoded_outcome,
+            &outcome,
         )
         .wrap_err("failed building the fill blocks")?;
         let boundary_hash = blocks
@@ -158,7 +156,7 @@ impl Recover {
             finalized_height: finalized_height.get(),
             finalized_hash: finalized.hash(),
             boundary_hash,
-            outcome: encoded_outcome,
+            outcome: Bytes::from(outcome.encode().to_vec()),
         };
 
         std::fs::create_dir_all(&output)
