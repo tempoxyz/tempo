@@ -639,6 +639,10 @@ Arithmetic in `abi_decode_checked` is on unbounded integers. Because `data` is a
 
 Such an input is classified by its decoded values alone; re-encoding the result is not compared with `args`.
 
+> **Resolved conflict C-EXEC-09**: TIP-1045 (Payment Call Allow-List and Invariant 3) requires `settle` and `close` calldata to be valid ABI encoding and classifies malformed encodings as general; Tempo accepts the non-canonical encodings listed in this section (any in-range offset, missing or non-zero padding, trailing data) as payments. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-09).
+
+> **Resolved conflict C-EXEC-10**: TIP-1045 requires the `signature` of `settle` and `close` to be a valid Tempo transaction signature byte encoding, which includes Keychain envelopes; Tempo accepts only primitive encodings (secp256k1, P256, WebAuthn), so a Keychain V1 or V2 signature makes the call non-payment. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](conflicts.md#c-exec-10).
+
 Allow-list (`D` = `(address,address,address,address,bytes32,address,bytes32)`, the channel descriptor):
 
 | Entry set | Signature | Selector | Words |

@@ -1418,11 +1418,11 @@ where the protocol disables or redirects the accounting.
 | `STORAGE_CREDIT_VALUE` | 245,000 (`SSTORE_CREATE_COST - SSTORE_SET_COST`) |
 | `WarmStorageReadCost` | 100 |
 | `ColdStorageAdditionalCost` | 2,000 |
-| `WARM_SSTORE_RESET` | 2,900 (`SstoreStatic` 100 + `SstoreResetWithoutColdLoadCost` 2,800) |
+| `SstoreResetWithoutColdLoadCost` | 2,800 (the warm clean reset of 2,900 minus its 100-gas `SstoreStatic` part) |
 
 The SSTORE names follow the split of [05-block-execution.md §1.7](../05-block-execution.md#17-gas-schedule-per-fork):
-`SstoreSetWithoutLoadCost` and `SstoreResetWithoutColdLoadCost` exclude `SstoreStatic`, and
-`WARM_SSTORE_RESET` is the full warm clean reset including it. The T7 changes to the general SSTORE
+`SstoreSetWithoutLoadCost` and `SstoreResetWithoutColdLoadCost` exclude `SstoreStatic`. The hook's
+credit-slot write charges only `SstoreResetWithoutColdLoadCost` (2,800), never the 100-gas static part. The T7 changes to the general SSTORE
 gas table (zero → nonzero set cost 5,000, set refund 5,000, clearing refund 0, refund quotient 1) are
 specified in [05-block-execution.md §1.7](../05-block-execution.md#17-gas-schedule-per-fork).
 
@@ -1507,7 +1507,7 @@ def storage_credit_hook(owner, key, O, P, N):
     if changed:
         o, p = journal_sstore_unmetered(STORAGE_CREDITS_ADDRESS, s, credit)  # returns that slot's original/present
         if p != credit and o == p:
-            charge(2900)                           # WARM_SSTORE_RESET, only for a clean change
+            charge(2800)                           # SstoreResetWithoutColdLoadCost, only for a clean change
 ```
 
 `charge(x)` fails with out-of-gas if less than `x` gas remains. The unmetered journal reads and

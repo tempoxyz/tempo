@@ -1032,7 +1032,9 @@ Handling:
 - Upstream event, `INVALID`: drop. Other errors (malformed, digest or epoch mismatch): drop and log.
 - `tempo/1` certificate with `round ≤ latest_verified_round`: accept as already settled. `OK`: raise `latest_verified_round` and report the finalization to marshal (marshal fetches the block). `INVALID` → *invalid*. `IDENTITY_UNAVAILABLE` → *needs scheme*. `FALLBACK_FAILED` → hint as above, then *needs scheme* (4.3.5).
 
-`current_epoch` is the highest epoch whose scheme the follower has installed from an authenticated boundary.
+`current_epoch` is the highest epoch whose scheme the follower has installed from an authenticated boundary. It starts at the epoch of the EL's latest boundary (7.5) and rises only when a processed boundary installs a scheme. A scheme registered through the fallback, including the checkpoint's own epoch, never raises it.
+
+**Catch-up below the checkpoint.** The walk always starts at `last(current_epoch)`, even when `current_epoch + 1 < trusted.from_epoch`. Take a follower whose EL is at genesis (`current_epoch = 0`) and whose checkpoint has `from_epoch = 2042`, after a rotation at an epoch `R > 2042` that its checkpoint doesn't record. Every upstream tip of an epoch `≥ R` returns `FALLBACK_FAILED`, so the follower hints `last(0)`, then would hint `last(1)`, and so on. These are boundary finalizations of epochs below the checkpoint, which no node is required to serve (5.5); the public mainnet RPC doesn't serve that of `last(0)`. If the upstream doesn't serve them, the follower makes no progress. It keeps repeating the hint, raises no error and doesn't stop. The startup tip check doesn't detect this either, because such a follower has no stored tip. The operator recovers by configuring a checkpoint whose `from_epoch` is at or after the latest rotation, so that the upstream tip verifies under the fallback and marshal backfills the chain from it. A follower whose EL has already processed a boundary at or above `trusted.from_epoch − 1` isn't affected.
 
 ### 7.5 Identity installation
 

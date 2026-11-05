@@ -4,7 +4,7 @@ Each entry is a place where Tempo's docs or TIPs disagree with the implementatio
 
 Groups:
 
-- **A. Affects block validity, gas or state (70).** Mainnet blocks were produced by the implementation, so a spec that follows the doc would reject real blocks or execute them incorrectly. The only open question is how to fix the TIP or doc.
+- **A. Affects block validity, gas or state (72).** Mainnet blocks were produced by the implementation, so a spec that follows the doc would reject real blocks or execute them incorrectly. The only open question is how to fix the TIP or doc.
 - **B. Doc-only (18).** The doc is stale, incomplete or out of scope, and block validity is not affected.
 - **C. Needs a decision (1).**
 
@@ -180,6 +180,24 @@ TIP-1010 (and the fee specification's parameter table) give the block gas limit 
 TIP-1045 requires static-only payment calldata to satisfy the ABI encoding constraints of its signature and classifies malformed encodings as general; the code checks only the selector and exact length (e.g. an `address` word with non-zero high bytes still classifies as a payment).
 
 - Where: [05-block-execution.md §5.3](05-block-execution.md#53-payment-classification)
+- Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
+
+### C-EXEC-09
+<a id="c-exec-09"></a>
+
+TIP-1045 (Payment Call Allow-List, line "valid ABI-decodable calldata", and Invariant 3) requires the dynamic entries `settle` and `close` to be valid ABI-decodable calldata and classifies malformed encodings as general; the implementation checks only the head words' types and that the `bytes` offset and length are in range, so a non-canonical offset, missing or non-zero padding, and trailing data still classify as a payment.
+
+- Where: [05-block-execution.md §5.3](05-block-execution.md#53-payment-classification), [precompiles/tip20.md §11.10](precompiles/tip20.md#1110-payment-lane-classification)
+- Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
+- Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
+
+### C-EXEC-10
+<a id="c-exec-10"></a>
+
+TIP-1045 (Payment Call Allow-List) requires the `signature` argument of `settle` and `close` to be a valid Tempo transaction signature byte encoding, which includes Keychain V1 and V2 envelopes; the implementation accepts only primitive encodings (secp256k1, P256, WebAuthn), so a `0x03` or `0x04` Keychain signature makes the call non-payment.
+
+- Where: [05-block-execution.md §5.3](05-block-execution.md#53-payment-classification), [precompiles/tip20.md §11.10](precompiles/tip20.md#1110-payment-lane-classification)
 - Recommendation: Follow the implementation (it produced mainnet's blocks); amend the TIP or doc.
 - Decision: follow the implementation; TIP amended in its own PR (tempoxyz/tempo#8940 to #8974).
 

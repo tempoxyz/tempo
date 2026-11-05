@@ -689,7 +689,7 @@ The ingress string is copied verbatim; only egress is canonicalised (and loses i
 - `migrateValidator`: V1 slot 1 (length, for the checked access), then the element slot `keccak256(p(1)) + idx`, then the record at `b = keccak256(p(a) ‖ p(2))` as a whole read: `b+0`, `b+1`, `b+2` (and its data words if long-form), `b+3` (and its data words if long-form).
 - `initializeIfMigrated`: V1 slot 3 (`nextDkgCeremony`).
 
-A first `migrateValidator` in a transaction therefore reads V1 slot 1 twice (cold, then warm).
+A `migrateValidator` that runs the bootstrap (V2 owner zero) therefore reads V1 slot 1 twice (cold, then warm). Once the owner is set, a first `migrateValidator` in a later transaction reads V1 slot 1 once (cold).
 
 > **Resolved conflict C-VAL-03**: TIP-1017 says `initializeIfMigrated` "can be called immediately when the V1 validator count is zero"; the implementation reverts `EmptyV1ValidatorSet()` (or `MigrationNotComplete()`) when V1 is empty. Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-val-03).
 
@@ -699,11 +699,19 @@ A first `migrateValidator` in a transaction therefore reads V1 slot 1 twice (col
 
 Every V2 function costs exactly the input charge plus the framework cost of the storage reads, storage writes and logs listed in §2.4–§2.7, performed in that order. Signature decoding and Ed25519 verification, endpoint parsing and `ingressKey` hashing cost no gas. Pre-T2 calls cost only the input charge.
 
-Test vectors (T3, block number 100). Each call starts with no slot of V1 or V2 warm, as in a new transaction whose access list is empty; the account-access cost of the call into V2 is paid by the caller and is not included. Before the call, V2 is initialized, its owner is the caller, and it holds three active records with short strings: indices 0, 1, 2 with `activeIndices = [1, 2, 3]` and addresses `0x10…10`, `0x11…11`, `0x12…12`. For `migrateValidator`, V2 is empty and V1 holds two active records. "Set" is a clean zero to non-zero SSTORE (100 + 250,000), "reset" a clean non-zero to other SSTORE (100 + 2,800), "no-op" an SSTORE that leaves the value unchanged or rewrites a dirty slot (100). Each cold SSTORE adds 2,100. Refunds are not included.
+Test vectors (T3, block number 100). Each call starts with no slot of V1 or V2 warm, as in a new transaction whose access list is empty; the account-access cost of the call into V2 is paid by the caller and is not included. Before the call, V2 is initialized, its owner is the caller, `nextNetworkIdentityRotationEpoch` is 0, and it holds three active records with `activeIndices = [1, 2, 3]`, all added at block 100 by `addValidator` (so `addedAtHeight = 100` and `deactivatedAtHeight = 0`):
+
+| Index | `validatorAddress` = `feeRecipient` | `ingress` | `egress` |
+|---|---|---|---|
+| 0 | `0x10…10` | `192.168.1.1:8000` | `192.168.1.1` |
+| 1 | `0x11…11` | `192.168.1.2:8000` | `10.0.0.2` |
+| 2 | `0x12…12` | `192.168.1.3:8000` | `192.168.1.3` |
+
+Each record has its own valid Ed25519 public key. `addValidator` adds `0x13…13` (also its fee recipient) with a fresh key. `rotateValidator(1)` uses a fresh key and the egress `10.0.0.2`, which equals record 1's stored egress; with a different egress the `b+3` write is a reset, not a no-op, and the total rises by 2,800. For `migrateValidator`, V2's storage is all zero and V1's owner is the caller. V1 holds two active records with valid Ed25519 keys: index 0 at `0x20…20` (inbound `10.1.1.1:8000`, outbound `10.1.1.1:9000`) and index 1 at `0x21…21` (inbound `10.1.1.2:8000`, outbound `10.1.1.2:9000`). V1's `nextDkgCeremony` is 7: any nonzero value makes `initializeIfMigrated`'s write of V2 slot 4 a set; with 0 it is a no-op and the call costs 250,000 less. "Set" is a clean zero to non-zero SSTORE (100 + 250,000), "reset" a clean non-zero to other SSTORE (100 + 2,800), "no-op" an SSTORE that leaves the value unchanged or rewrites a dirty slot (100). Each cold SSTORE adds 2,100. Refunds are not included.
 
 | Call | Input | SLOAD cold / warm | SSTORE | LOG | Total gas |
 |---|---|---|---|---|---|
-| `addValidator`, ingress `192.168.1.1:8000`, egress `192.168.1.1` (420-byte calldata) | 84 | 10 / 2 | 9 set (3 cold), 3 reset | 3,548 (3 topics, 256 bytes) | 2,290,732 |
+| `addValidator`, ingress `192.168.1.4:8000`, egress `192.168.1.4` (420-byte calldata) | 84 | 10 / 2 | 9 set (3 cold), 3 reset | 3,548 (3 topics, 256 bytes) | 2,290,732 |
 | `rotateValidator(1)` to ingress `10.0.0.2:9000` (388-byte calldata) | 78 | 13 / 12 | 8 set (3 cold), 5 reset (2 cold), 4 no-op | 4,179 (4 topics, 288 bytes) | 2,058,957 |
 | `deactivateValidator(0)` (swap with the last entry) | 12 | 11 / 6 | 5 reset (1 cold), 2 no-op | 1,500 (3 topics) | 42,012 |
 | `deactivateValidator(2)` (already last, no swap) | 12 | 10 / 4 | 4 reset (1 cold), 1 no-op | 1,500 | 36,712 |
@@ -711,7 +719,13 @@ Test vectors (T3, block number 100). Each call starts with no slot of V1 or V2 w
 
 For example, `deactivateValidator(2)` performs, in order: SLOAD slot 1, SLOAD `b+0` … `b+5` of record 2, SLOAD slot 0, SSTORE `activeIngressIps[key]` (cold, 1 → 0), SLOAD and SSTORE of `b+5` (deactivation height), SLOAD slot 6 (cold), SLOAD slot 6 again for `pop`, SLOAD of the element slot (cold), SLOAD and SSTORE of the element slot (lane zeroed), SSTORE slot 6, SLOAD and SSTORE of `b+5` (`activeIdx = 0`, a no-op on a dirty slot), then the log.
 
-In the same transaction, a second `migrateValidator(0)` costs 2,283,168 and the following `initializeIfMigrated()` costs 255,712. At T13, with the TIP-1060 hook active ([00-framework.md §7.4](00-framework.md#74-tip-1060-storage-credit-hook-from-t7)), no storage credits held, and the input charge of 30 gas per word, the five calls of the table cost 2,293,968, 2,064,869, 46,960, 41,660 and 3,048,716.
+In the same transaction, a second `migrateValidator(0)` costs 2,283,168 and the following `initializeIfMigrated()` costs 255,712. At T13, with the TIP-1060 hook active ([00-framework.md §7.4](00-framework.md#74-tip-1060-storage-credit-hook-from-t7)), no storage credits held, and the input charge of 30 gas per word, the five calls of the table cost 2,293,968, 2,064,869, 46,960, 41,660 and 3,048,716. The first hook of each call finds V2's credit slot cold and pays 2,000 for it; later hooks find it warm. For example, `deactivateValidator(2)` at T13 costs 36,712 + 48 + 4,900 = 41,660:
+
+- **Input:** 2 words at 30 gas instead of 6, so 48 more.
+- **Clear of `activeIngressIps[key]` (1 → 0):** the SSTORE itself costs 5,000 as at T3 (100 static, 2,100 cold, 2,800 reset). The hook adds 100 for its balance read, 2,000 because V2's credit slot is cold, and 2,800 (`SstoreResetWithoutColdLoadCost`) for the clean 0 → 1 write of that slot: 4,900.
+- **Other writes:** the `b+5` writes, the lane write and the length write of `activeIndices` cross no zero boundary, so they run no hook.
+
+Each zero → nonzero set costs 100 more than at T3: the set's dynamic cost drops from 250,000 to 5,000 and the hook charges the 245,000 creditable part (the default mode is Refund and no credit is held) plus 100 for its balance read. So `addValidator` costs 2,290,732 + 336 (input) + 2,000 (cold credit slot, first set) + 9 × 100 = 2,293,968. `rotateValidator(1)` costs 2,058,957 + 312 (input) + 4,900 (clear of the old ingress key) + 8 × 100 (sets) − 100 (T4 and T5 whole-write changes: three run SLOADs dropped, two string old-word SLOADs added) = 2,064,869.
 
 ### 2.9 Consumption by consensus
 

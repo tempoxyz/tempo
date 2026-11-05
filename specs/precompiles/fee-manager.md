@@ -44,7 +44,7 @@ Mapping slots follow Solidity: for a mapping at base slot `s` and key `k`, the v
 | low 16 bytes (bits 0..127) | `reserveUserToken: uint128` |
 | high 16 bytes (bits 128..255) | `reserveValidatorToken: uint128` |
 
-i.e. `word = reserveValidatorToken << 128 | reserveUserToken`. Reading a Pool is one SLOAD; writing it is one SSTORE of the whole word.
+i.e. `word = reserveValidatorToken << 128 | reserveUserToken`. `Pool` is a struct whose two members form one packed run ([00-framework.md §6.3](00-framework.md#63-structs)). Reading a Pool is one SLOAD. Writing it is one SSTORE of the whole word, preceded **before T4** by one SLOAD of the same slot (the run is assembled from the slot's current word); from T4 there is no prior SLOAD. Every `sstore(pools[id], pool)` in this chapter follows this rule; the pseudocode shows the pre-T4 load as `if not T4_active: sload(pools[id])`. Each such write follows a read of the same slot in the same call, so the pre-T4 load is warm (100 gas when metered).
 
 ### 2.2 Transient storage (EIP-1153, at `FEE_MANAGER`)
 
@@ -238,6 +238,7 @@ def mint(user_token, validator_token, amount, to) -> uint256:
 
     if amount > U128_MAX: raise InvalidAmount
     pool.reserveValidatorToken = checked_add_u128(pool.reserveValidatorToken, amount)   # overflow -> InvalidAmount
+    if not T4_active: sload(pools[id])                    # whole-write assembly, Section 2.1
     sstore(pools[id], pool)
     sstore(totalSupply[id], checked_add(total_supply, liquidity))        # PANIC_OVERFLOW
     bal = sload(liquidityBalances[id][to])
@@ -289,6 +290,7 @@ def burn(user_token, validator_token, liquidity, to) -> (uint256, uint256):
     if amount_user > pool.reserveUserToken: raise InsufficientReserves
     pool.reserveUserToken -= amount_user
     pool.reserveValidatorToken -= amount_validator                       # InsufficientReserves on underflow
+    if not T4_active: sload(pools[id])                    # whole-write assembly, Section 2.1
     sstore(pools[id], pool)
     tip20_transfer(user_token, sender=FEE_MANAGER, to=to, amount=amount_user)
     tip20_transfer(validator_token, sender=FEE_MANAGER, to=to, amount=amount_validator)
@@ -323,6 +325,7 @@ def rebalanceSwap(user_token, validator_token, amount_out, to) -> uint256:
     if T1C_active:
         reserved = tload(pendingFeeSwapReservation[id])
         if pool.reserveValidatorToken < reserved: raise InsufficientLiquidity
+    if not T4_active: sload(pools[id])                    # whole-write assembly, Section 2.1
     sstore(pools[id], pool)
     require_tip20_prefix(validator_token)                                 # TIP20.InvalidToken
     tip20_system_transfer_from(validator_token, caller=FEE_MANAGER, from_=msg_sender, amount=amount_in)
@@ -501,6 +504,7 @@ def execute_fee_swap(user_token, validator_token, amount_in) -> uint256:
     if amount_in > U128_MAX or amount_out > U128_MAX: raise PANIC_OVERFLOW
     pool.reserveUserToken = checked_add_u128(pool.reserveUserToken, amount_in)   # PANIC_OVERFLOW
     pool.reserveValidatorToken -= amount_out
+    if not T4_active: sload(pools[id])                    # whole-write assembly, Section 2.1
     sstore(pools[id], pool)
     return amount_out
 ```
@@ -533,10 +537,11 @@ Before T7 there are no storage credits and nothing in this section has an effect
 | T1C | Direct-route reservation (Section 7.4); `burn` and `rebalanceSwap` reservation checks; post-hook refund restores the access-key spending limit. |
 | T2 | Pre-T8 pre-hook authorization short-circuits: a failing sender check skips the FeeManager recipient lookup. |
 | T3 | `setUserToken` with the already-stored token is a no-op (no SSTORE, no event). |
+| T4 | Writing a `Pool` no longer loads its slot first (Section 2.1): each pool write in `mint`, `burn`, `rebalanceSwap` and the fee swap drops one warm SLOAD (100 gas in the metered entry points). |
 | T5 | Two-hop route through `userToken.quoteToken()` with reservation of both legs and `twoHopIntermediate`; `systemTransferFrom` requires the caller on the Implicit Approval List (FeeManager is listed). |
 | T7 | TIP-1060 storage credits: hooks run without accounting; minting disabled in `distributeFees` and `rebalanceSwap` (Section 8). |
 | T8 | TIP-1042 authorization: pre hook checks only the fee payer as sender; `mint` checks `(msg.sender sender, FeeManager recipient, to recipient)` on userToken then `to` recipient on validatorToken; `burn` checks `msg.sender` as sender on userToken then validatorToken. Pools created before T8 stay routable. |
-| T1, T1A, T1B, T4, T6, T9–T13 | No change to this precompile's own logic. Changes reached through TIP-20, TIP-403, the framework (input gas, ABI strictness at T11/T12, static-call halting at T12) and fee-token resolution (T13 ordered fallback) are specified in their chapters. |
+| T1, T1A, T1B, T6, T9–T13 | No change to this precompile's own logic. Changes reached through TIP-20, TIP-403, the framework (input gas, ABI strictness at T11/T12, static-call halting at T12) and fee-token resolution (T13 ordered fallback) are specified in their chapters. |
 
 ## 10. Invariants (informative)
 

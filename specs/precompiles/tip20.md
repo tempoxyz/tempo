@@ -1535,7 +1535,9 @@ Before T7, `delete_state_and_credit_payer` is a plain `SSTORE(channelStates[id],
 
 ### 11.10 Payment-lane classification
 
-Channel-reserve calls are payment-lane calls for block gas accounting under the predicate in [../05-block-execution.md](../05-block-execution.md) and [../06-transactions-and-fees.md](../06-transactions-and-fees.md) (`open`, `topUp`, `requestClose`, `withdraw` by exact static length; `settle` and `close` by strict decoding, total calldata ≤ 2048 bytes and a valid Tempo signature encoding). That classification does not change the reserve's execution.
+Channel-reserve calls are payment-lane calls for block gas accounting under the predicate in [../05-block-execution.md](../05-block-execution.md) and [../06-transactions-and-fees.md](../06-transactions-and-fees.md) (`open`, `topUp`, `requestClose`, `withdraw` by exact static length; `settle` and `close` by the lenient decoding of [05-block-execution.md §5.3](../05-block-execution.md#53-payment-classification), total calldata ≤ 2048 bytes, and a `signature` that is a primitive signature encoding only). That classification does not change the reserve's execution.
+
+> **Resolved conflicts C-EXEC-09 and C-EXEC-10**: TIP-1045 requires `settle` and `close` calldata to be valid ABI encoding with a valid Tempo signature encoding; Tempo accepts non-canonical ABI encodings and only primitive signature encodings (no Keychain envelopes). Decided: this spec follows the implementation, and the TIP is amended in its own PR (tempoxyz/tempo#8940 to #8974). See [conflicts](../conflicts.md#c-exec-09) and [conflicts](../conflicts.md#c-exec-10).
 
 ## 12. Per-fork change ledger
 
