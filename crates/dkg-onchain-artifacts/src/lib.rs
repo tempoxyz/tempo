@@ -21,7 +21,7 @@ use commonware_utils::{NZU32, ordered};
 const MAX_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
 /// Reads the output of a DKG ceremony with the bounds of [`OnchainDkgOutcome`]. Like
-/// [`OnchainDkgOutcome::read`], it ignores trailing bytes.
+/// `OnchainDkgOutcome::read`, it ignores trailing bytes.
 pub fn read_output(bytes: &[u8]) -> Result<Output<MinSig, PublicKey>, commonware_codec::Error> {
     Output::read_cfg(
         &mut commonware_codec::Copying(bytes),
