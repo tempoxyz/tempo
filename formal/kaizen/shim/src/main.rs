@@ -264,6 +264,15 @@ pub(crate) fn verify_execution(pre: &[u8], digest: &[u8], post: &[u8]) -> bool {
 
 /// Loads the 256 block hashes before `start` for BLOCKHASH, each checked against its successor's
 /// parent hash down from block `start`. Block `start` itself is checked by the core.
+/// Build the blocking proof client on a blocking thread: reqwest's blocking builder enters (and,
+/// in debug builds, creates and drops) a Tokio runtime, which panics on an async worker.
+async fn new_proof_rpc(url: String) -> eyre::Result<exec::ProofRpc> {
+    tokio::task::spawn_blocking(move || exec::ProofRpc::new(url)).await?
+}
+
+/// Fetch the 256 ancestors of start for BLOCKHASH, linked by parent hashes to the header the
+/// upstream serves at start. That header is recorded in hashes too, so the main loop can
+/// insist that the block the core certifies at start is the same one the ancestors hang from.
 async fn backfill_hashes(
     rpc: &Rpc,
     start: u64,
@@ -284,6 +293,7 @@ async fn backfill_hashes(
         .collect::<eyre::Result<_>>()?;
     let mut expected = headers[&start].parent_hash();
     let mut map = hashes.lock().unwrap();
+    map.insert(start, headers[&start].hash_slow());
     for h in (from..start).rev() {
         let hash = headers[&h].hash_slow();
         if hash != expected {
@@ -375,7 +385,7 @@ async fn main() -> eyre::Result<()> {
     };
 
     if let Some(n) = args.check_exec {
-        let proof_rpc = exec::ProofRpc::new(args.proof_rpc.clone())?;
+        let proof_rpc = new_proof_rpc(args.proof_rpc.clone()).await?;
         let end = start;
         let hashes = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
         backfill_hashes(&rpc, end, &hashes, args.concurrency.get()).await?;
@@ -457,7 +467,7 @@ async fn main() -> eyre::Result<()> {
             "WARNING: --trust-execution: blocks are not re-executed; the core accepts any state root"
         );
     }
-    let proof_rpc = exec::ProofRpc::new(args.proof_rpc.clone())?;
+    let proof_rpc = new_proof_rpc(args.proof_rpc.clone()).await?;
     let hashes = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
     if !args.trust_execution {
         backfill_hashes(&rpc, start, &hashes, args.concurrency.get()).await?;
@@ -495,10 +505,12 @@ async fn main() -> eyre::Result<()> {
             if cand.height != h {
                 bail!("upstream returned height {} for query {h}", cand.height);
             }
-            hashes
-                .lock()
-                .unwrap()
-                .insert(h, alloy_primitives::B256::from(cand.digest));
+            let digest = alloy_primitives::B256::from(cand.digest);
+            if let Some(prev) = hashes.lock().unwrap().insert(h, digest)
+                && prev != digest
+            {
+                bail!("block {h} differs from the one its BLOCKHASH ancestors were linked to");
+            }
             prepared.push((cand, block));
         }
         if !args.trust_execution {
