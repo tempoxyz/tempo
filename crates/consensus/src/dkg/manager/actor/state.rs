@@ -1246,7 +1246,10 @@ mod tests {
     };
     use commonware_math::algebra::Random as _;
     use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
-    use commonware_utils::TryFromIterator as _;
+    use commonware_utils::{TryFromIterator as _, probability};
+    use futures::FutureExt as _;
+    use rand::SeedableRng as _;
+    use std::panic::AssertUnwindSafe;
 
     fn make_test_state(rng: &mut impl rand_core::CryptoRng, epoch: u64) -> State {
         let mut keys: Vec<_> = (0..3)
@@ -1309,7 +1312,6 @@ mod tests {
 
     #[track_caller]
     fn assert_roundtrip(original: &ShareState) {
-        use commonware_codec::Encode as _;
         let encoded = original.encode();
         let decoded = ShareState::read_cfg(&mut encoded.as_ref(), &()).unwrap();
         assert_eq!(original, &decoded);
@@ -1322,7 +1324,6 @@ mod tests {
 
     #[test]
     fn share_state_roundtrip_plaintext_some() {
-        use rand::SeedableRng as _;
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
         let keys = std::iter::repeat_with(|| PrivateKey::random(&mut rng))
@@ -1371,10 +1372,6 @@ mod tests {
 
     #[test]
     fn metadata_write_failures_panic() {
-        use commonware_utils::probability;
-        use futures::FutureExt as _;
-        use std::panic::AssertUnwindSafe;
-
         for (operation, expected) in [
             ("initialize", "failed to persist initial DKG state"),
             ("set_state", "failed to persist DKG state"),

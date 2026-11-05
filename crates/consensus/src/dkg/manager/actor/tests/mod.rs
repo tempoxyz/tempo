@@ -5,7 +5,10 @@ mod startup;
 
 use std::time::Duration;
 
-use commonware_consensus::types::{Epoch, Height, Round as ConsensusRound, View};
+use commonware_consensus::{
+    Reporter as _,
+    types::{Epoch, Height, Round as ConsensusRound, View},
+};
 use commonware_cryptography::{
     bls12381::primitives::{
         group::{Private, Share},
@@ -14,8 +17,11 @@ use commonware_cryptography::{
     ed25519::PrivateKey,
 };
 use commonware_macros::test_traced;
-use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
-use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
+use commonware_runtime::{
+    Runner as _, Supervisor as _,
+    deterministic::{FaultConfig, Runner},
+};
+use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _, probability};
 use rand::{SeedableRng as _, rngs::StdRng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::TempoConsensusContext;
@@ -47,9 +53,6 @@ fn boundary_outcome(
 
 #[test]
 fn network_storage_failures_panic_and_allow_recovery() {
-    use commonware_runtime::deterministic::FaultConfig;
-    use commonware_utils::probability;
-
     // Exercise both failure while appending to a new journal section and
     // failure while syncing an appended dealing.
     for fail_open in [true, false] {
@@ -413,10 +416,6 @@ fn duplicate_and_late_acks_do_not_penalize_peers() {
 
 #[test]
 fn local_share_storage_failures_panic_and_allow_recovery() {
-    use commonware_consensus::Reporter as _;
-    use commonware_runtime::deterministic::FaultConfig;
-    use commonware_utils::probability;
-
     // Fail opening the dealing's journal section, syncing the dealing, or
     // syncing the ACK after the dealing has already been persisted.
     for (fail_open, seed_dealing) in [(true, false), (false, false), (false, true)] {
@@ -597,6 +596,36 @@ fn startup_discards_stale_state_on_startup() {
             harness.execution.reads(),
             vec![Height::new(19); 3],
             "healing should replace stale state from the latest boundary"
+        );
+    });
+}
+
+#[test]
+fn startup_rejects_boundary_outcome_for_another_epoch() {
+    Runner::default().start(|mut context| async move {
+        // Height 19 ends epoch 1, so its outcome must be for epoch 2.
+        let (future_state, _, _) = dkg_state(&mut context, Epoch::new(5), 4, false);
+        let mut harness = Harness::builder(context.child("test"), "startup_rejects_outcome_epoch")
+            .epoch_length(10)
+            .finalized_floor(Height::new(19))
+            .build()
+            .await;
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(19), &future_state));
+
+        harness.start().await;
+        harness.wait_for_exit().await;
+
+        assert!(harness.epoch_manager.events().is_empty());
+        let storage = state::builder()
+            .partition_prefix("startup_rejects_outcome_epoch")
+            .init_unverified(context.child("reopened"))
+            .await
+            .unwrap();
+        assert!(
+            storage.state().is_none(),
+            "the outcome must not be persisted"
         );
     });
 }

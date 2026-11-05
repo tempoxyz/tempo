@@ -929,7 +929,11 @@ mod tests {
         providers::{StaticFileProvider, StaticFileProviderRWRefMut},
     };
     use reth_storage_api::{ChangeSetReader, NodePrimitivesProvider, StorageChangeSetReader};
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::mpsc,
+        time::Duration,
+    };
     use tempo_primitives::TempoPrimitives;
 
     #[derive(Clone)]
@@ -1061,8 +1065,6 @@ mod tests {
     /// re-rolls it via ASLR). Only the call under test runs on a watchdogged worker thread.
     #[test]
     fn replace_block_zero_static_changesets_does_not_self_deadlock() {
-        use std::{sync::mpsc, time::Duration};
-
         let iterations = 512;
         let (sender, receiver) = mpsc::channel();
 

@@ -535,8 +535,13 @@ impl CreateZone {
         println!("Sequencer set version: {sequencer_set_version}");
 
         println!("Waiting for creation block {creation_block} to finalize...");
-        let anchor =
-            wait_for_finalized_pre_creation_anchor(&provider, portal, creation_block).await?;
+        let anchor = wait_for_finalized_pre_creation_anchor(
+            &provider,
+            self.zone_factory,
+            portal,
+            creation_block,
+        )
+        .await?;
         println!(
             "Using pre-creation block {} (hash: {}) as genesis anchor",
             anchor.block_number, anchor.hash
@@ -548,6 +553,7 @@ impl CreateZone {
             base_fee_per_gas: self.base_fee_per_gas,
             gas_limit: self.gas_limit,
             tempo_portal: None,
+            zone_factory: self.zone_factory,
             l1_rpc_url: None,
             default_fee_token: self.initial_token,
             tempo_genesis_header_rlp: None,
