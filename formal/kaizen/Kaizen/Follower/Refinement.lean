@@ -101,11 +101,16 @@ lemma dkgCheck_refines (L : UInt64) (hL : L.toNat ≠ 0) (m : Std.HashMap UInt64
       · simp [h1, Except.map]
   · simp [hb, Except.map]
 
+lemma execOk_refines (verifyExec : VerifyExec) (tip : Option ImplTip) (c : ImplCandidate) :
+    implExecOk verifyExec tip c = execOk verifyExec (tip.map ImplTip.abs) c.abs := by
+  cases tip <;> rfl
+
 /-- Stage II refinement: the executable step refines the abstract step, with identical result
 codes, for every implementation state and input. -/
-theorem implStep_refines (verify : Verify) (s : ImplState) (c : ImplCandidate) :
-    (implStep verify s c).1 = (step verify s.abs c.abs).1 ∧
-    (implStep verify s c).2.abs = (step verify s.abs c.abs).2 := by
+theorem implStep_refines (verify : Verify) (verifyExec : VerifyExec) (s : ImplState)
+    (c : ImplCandidate) :
+    (implStep verify verifyExec s c).1 = (step verify verifyExec s.abs c.abs).1 ∧
+    (implStep verify verifyExec s c).2.abs = (step verify verifyExec s.abs c.abs).2 := by
   have hdec := decodeCert_refines c.cert
   unfold implStep step
   have hL : (s.epochLength = 0) ↔ s.abs.epochLength = 0 := by
@@ -153,24 +158,32 @@ theorem implStep_refines (verify : Verify) (s : ImplState) (c : ImplCandidate) :
         | none => exact ⟨rfl, rfl⟩
         | some key =>
           simp only [Cert.toSpec, u64_toNat_toUInt64, ba_toArray]
-          split_ifs <;> exact ⟨rfl, rfl⟩
+          split_ifs
+          · exact ⟨rfl, rfl⟩
+          · unfold implAccept accept
+            rw [execOk_refines, ← htc]
+            split_ifs <;> exact ⟨rfl, rfl⟩
 
 /-- Iterated refinement: running the implementation on a sequence of inputs refines running the
 spec on the abstracted inputs. -/
-def implRun (verify : Verify) : ImplState → List ImplCandidate → ImplState × List ImplCandidate
+def implRun (verify : Verify) (verifyExec : VerifyExec) :
+    ImplState → List ImplCandidate → ImplState × List ImplCandidate
   | s, [] => (s, [])
   | s, c :: cs =>
-    let r := implStep verify s c
-    let rest := implRun verify r.2 cs
+    let r := implStep verify verifyExec s c
+    let rest := implRun verify verifyExec r.2 cs
     if r.1 = Code.accepted then (rest.1, c :: rest.2) else rest
 
-theorem implRun_refines (verify : Verify) : ∀ (cs : List ImplCandidate) (s : ImplState),
-    (implRun verify s cs).1.abs = (run verify s.abs (cs.map ImplCandidate.abs)).1 ∧
-    (implRun verify s cs).2.map ImplCandidate.abs = (run verify s.abs (cs.map ImplCandidate.abs)).2
+theorem implRun_refines (verify : Verify) (verifyExec : VerifyExec) :
+    ∀ (cs : List ImplCandidate) (s : ImplState),
+    (implRun verify verifyExec s cs).1.abs =
+      (run verify verifyExec s.abs (cs.map ImplCandidate.abs)).1 ∧
+    (implRun verify verifyExec s cs).2.map ImplCandidate.abs =
+      (run verify verifyExec s.abs (cs.map ImplCandidate.abs)).2
   | [], s => ⟨rfl, rfl⟩
   | c :: cs, s => by
-    obtain ⟨h1, h2⟩ := implStep_refines verify s c
-    obtain ⟨i1, i2⟩ := implRun_refines verify cs (implStep verify s c).2
+    obtain ⟨h1, h2⟩ := implStep_refines verify verifyExec s c
+    obtain ⟨i1, i2⟩ := implRun_refines verify verifyExec cs (implStep verify verifyExec s c).2
     rw [h2] at i1 i2
     simp only [implRun, run, List.map_cons]
     rw [← h1]

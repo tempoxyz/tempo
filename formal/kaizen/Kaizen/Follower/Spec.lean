@@ -12,6 +12,11 @@ namespace Kaizen.Follower
 In Kaizen.FFI it is the extern kz_verify_finalization; everywhere else it is a parameter. -/
 abbrev Verify := ByteArray → UInt64 → UInt64 → UInt64 → ByteArray → ByteArray → Bool
 
+/-- The execution oracle: verifyExec preStateRoot blockDigest postStateRoot is true iff executing
+the block with this digest on the state with root preStateRoot yields postStateRoot.
+In Kaizen.FFI it is the extern kz_verify_execution; everywhere else it is a parameter. -/
+abbrev VerifyExec := ByteArray → ByteArray → ByteArray → Bool
+
 /-! Result codes. -/
 namespace Code
 def accepted : UInt8 := 0
@@ -26,14 +31,16 @@ def roundNotIncreasing : UInt8 := 8
 def missingDkg : UInt8 := 9
 def dkgEpochMismatch : UInt8 := 10
 def badConfig : UInt8 := 11
+def executionInvalid : UInt8 := 12
 end Code
 
-/-- Accepted tip: height, digest, round = (epoch, view). -/
+/-- Accepted tip: height, digest, round = (epoch, view), and the block's post-state root. -/
 structure Tip where
   height : Nat
   digest : ByteArray
   epoch : Nat
   view : Nat
+  stateRoot : ByteArray
   deriving DecidableEq
 
 /-- Abstract follower state. -/
@@ -44,11 +51,13 @@ structure State where
   networkKey : ByteArray
   learned : Nat → Option ByteArray
 
-/-- Abstract step input. dkg is the (epoch, identity key) the shim parsed from extra_data. -/
+/-- Abstract step input. dkg is the (epoch, identity key) the shim parsed from extra_data;
+stateRoot is the header's post-state root. -/
 structure Candidate where
   height : Nat
   blockDigest : ByteArray
   parentDigest : ByteArray
+  stateRoot : ByteArray
   cert : ByteArray
   dkg : Option (Nat × ByteArray)
 
@@ -90,8 +99,25 @@ def dkgCheck (L : Nat) (learned : Nat → Option ByteArray) (c : Candidate) (fc 
       else .ok (fun x => if x = e' then some k else learned x)
   else .ok learned
 
-/-- The abstract follower step. On rejection the state is unchanged. -/
-def step (verify : Verify) (s : State) (c : Candidate) : UInt8 × State :=
+/-- Execution check against the current tip: with no tip (trust-on-first-verified block) there is
+nothing to check and the candidate's stateRoot becomes the anchor. -/
+def execOk (verifyExec : VerifyExec) (tip : Option Tip) (c : Candidate) : Bool :=
+  match tip with
+  | none => true
+  | some t => verifyExec t.stateRoot c.blockDigest c.stateRoot
+
+/-- Final stage of an accepting step, after the signature check: the execution check, then the
+new tip (recording the block's state root) and learned map. -/
+def accept (verifyExec : VerifyExec) (s : State) (c : Candidate) (fc : SpecCert)
+    (learned' : Nat → Option ByteArray) : UInt8 × State :=
+  if execOk verifyExec s.tip c = false then (Code.executionInvalid, s)
+  else (Code.accepted,
+    { s with tip := some ⟨c.height, c.blockDigest, fc.epoch, fc.view, c.stateRoot⟩,
+             learned := learned' })
+
+/-- The abstract follower step. On rejection the state is unchanged. The execution oracle runs
+last, only on blocks whose certificate verified. -/
+def step (verify : Verify) (verifyExec : VerifyExec) (s : State) (c : Candidate) : UInt8 × State :=
   if s.epochLength = 0 then (Code.badConfig, s) else
   match specDecode c.cert.data.toList with
   | none => (Code.malformed, s)
@@ -109,15 +135,14 @@ def step (verify : Verify) (s : State) (c : Candidate) : UInt8 × State :=
         | some key =>
           if verify key fc.epoch.toUInt64 fc.view.toUInt64 fc.parent.toUInt64
               ⟨fc.payload.toArray⟩ ⟨fc.sig.toArray⟩ = false then (Code.badSignature, s)
-          else (Code.accepted,
-            { s with tip := some ⟨c.height, c.blockDigest, fc.epoch, fc.view⟩, learned := learned' })
+          else accept verifyExec s c fc learned'
 
 /-- Run a sequence of candidates; returns the final state and the accepted candidates in order. -/
-def run (verify : Verify) : State → List Candidate → State × List Candidate
+def run (verify : Verify) (verifyExec : VerifyExec) : State → List Candidate → State × List Candidate
   | s, [] => (s, [])
   | s, c :: cs =>
-    let r := step verify s c
-    let rest := run verify r.2 cs
+    let r := step verify verifyExec s c
+    let rest := run verify verifyExec r.2 cs
     if r.1 = Code.accepted then (rest.1, c :: rest.2) else rest
 
 end Kaizen.Follower

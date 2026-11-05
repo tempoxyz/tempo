@@ -1,0 +1,19 @@
+[package]
+name = "kaizen-fuzz-targets"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kaizen-fuzz = { path = "..", default-features = false }
+
+[[bin]]
+name = "step_diff"
+path = "fuzz_targets/step_diff.rs"
+test = false
+doc = false
+bench = false

@@ -8,8 +8,9 @@ void lean_initialize_runtime_module(void);
 extern lean_object* KZ_INIT_FN(uint8_t builtin);
 extern lean_object* kz_new(uint64_t epoch_length, uint64_t from_epoch, lean_object* network_key);
 extern lean_object* kz_step(lean_object* s, uint64_t height, lean_object* block_digest,
-                            lean_object* parent_digest, lean_object* cert, uint8_t has_dkg,
-                            uint64_t dkg_epoch, lean_object* dkg_key);
+                            lean_object* parent_digest, lean_object* state_root, lean_object* cert,
+                            uint8_t has_dkg, uint64_t dkg_epoch, lean_object* dkg_key);
+extern lean_object* kz_tip_state_root(lean_object* s);
 extern lean_object* kz_out_state(lean_object* o);
 extern uint8_t kz_out_code(lean_object* o);
 extern uint64_t kz_tip_height(lean_object* s);
@@ -41,10 +42,10 @@ lean_object* kzg_new(uint64_t epoch_length, uint64_t from_epoch, const uint8_t* 
 
 // Consumes *state, replaces it with the next state, returns the result code.
 uint8_t kzg_step(lean_object** state, uint64_t height, const uint8_t* digest, const uint8_t* parent,
-                 const uint8_t* cert, size_t cert_len, uint8_t has_dkg, uint64_t dkg_epoch,
+                 const uint8_t* state_root, const uint8_t* cert, size_t cert_len, uint8_t has_dkg, uint64_t dkg_epoch,
                  const uint8_t* dkg_key, size_t dkg_key_len) {
   lean_object* out = kz_step(*state, height, kzg_bytes(digest, 32), kzg_bytes(parent, 32),
-                             kzg_bytes(cert, cert_len), has_dkg, dkg_epoch,
+                             kzg_bytes(state_root, 32), kzg_bytes(cert, cert_len), has_dkg, dkg_epoch,
                              kzg_bytes(dkg_key, dkg_key_len));
   lean_inc(out);
   uint8_t code = kz_out_code(out);
@@ -58,6 +59,16 @@ uint8_t kzg_has_tip(lean_object* s) { lean_inc(s); return kz_has_tip(s); }
 void kzg_tip_digest(lean_object* s, uint8_t* out) {
   lean_inc(s);
   lean_object* d = kz_tip_digest(s);
+  size_t n = lean_sarray_size(d);
+  memset(out, 0, 32);
+  memcpy(out, lean_sarray_cptr(d), n < 32 ? n : 32);
+  lean_dec(d);
+}
+
+// Copies the tip state root (32 bytes) into out.
+void kzg_tip_state_root(lean_object* s, uint8_t* out) {
+  lean_inc(s);
+  lean_object* d = kz_tip_state_root(s);
   size_t n = lean_sarray_size(d);
   memset(out, 0, 32);
   memcpy(out, lean_sarray_cptr(d), n < 32 ? n : 32);

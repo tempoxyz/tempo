@@ -47,20 +47,51 @@ theorem unique {L : Nat} (E : Epochs L) : UniqueFinalized (Finalized E) := by
 started from the same configuration and fed arbitrary, possibly adversarial, candidate
 sequences, never accept different block digests at the same height, provided the shim's
 obligations hold (Assumptions: BLS soundness, sound network identity, sound DKG outcomes in
-finalized boundary blocks; AllCommitted: candidate fields are bound to the hashed header). -/
+finalized boundary blocks, execution-oracle soundness; AllCommitted: candidate fields are bound
+to the hashed header). -/
 theorem extracted_followers_agree {L : Nat} (E : Epochs L) {Committed : Candidate → Prop}
+    {Executed : ByteArray → ByteArray → ByteArray → Prop}
     {Sound : Nat → ByteArray → Prop} (l f : UInt64) (k : ByteArray)
-    (A : Assumptions Kaizen.FFI.kzVerify (Finalized E) Committed Sound l.toNat f.toNat k)
+    (A : Assumptions Kaizen.FFI.kzVerify Kaizen.FFI.kzVerifyExec (Finalized E) Committed Executed
+      Sound l.toNat f.toNat k)
     (xs1 xs2 : List ImplCandidate)
     (C1 : AllCommitted Committed (xs1.map ImplCandidate.abs))
     (C2 : AllCommitted Committed (xs2.map ImplCandidate.abs)) :
     ∀ t1 t2,
-      ((implRun Kaizen.FFI.kzVerify (Kaizen.FFI.kzNew l f k) xs1).1.abs).tip = some t1 →
-      ((implRun Kaizen.FFI.kzVerify (Kaizen.FFI.kzNew l f k) xs2).1.abs).tip = some t2 →
+      ((implRun Kaizen.FFI.kzVerify Kaizen.FFI.kzVerifyExec
+          (Kaizen.FFI.kzNew l f k) xs1).1.abs).tip = some t1 →
+      ((implRun Kaizen.FFI.kzVerify Kaizen.FFI.kzVerifyExec
+          (Kaizen.FFI.kzNew l f k) xs2).1.abs).tip = some t2 →
       t1.height = t2.height → t1.digest = t2.digest := by
   intro t1 t2 h1 h2 hh
   obtain ⟨p1, f1⟩ := Kaizen.FFI.kz_run_tip_finalized l f k A xs1 C1 h1
   obtain ⟨p2, f2⟩ := Kaizen.FFI.kz_run_tip_finalized l f k A xs2 C2 h2
   exact unique E _ _ _ _ _ f1 (hh ▸ f2)
+
+/-- End to end, state: two runs of the extracted follower core whose tips have the same height
+also have the same state root, provided the header's state root is a function of its digest
+(the shim's hash binding: Committed c binds c.stateRoot to c.blockDigest). -/
+theorem extracted_followers_agree_state {L : Nat} (E : Epochs L) {Committed : Candidate → Prop}
+    {Executed : ByteArray → ByteArray → ByteArray → Prop}
+    {Sound : Nat → ByteArray → Prop} (l f : UInt64) (k : ByteArray)
+    (A : Assumptions Kaizen.FFI.kzVerify Kaizen.FFI.kzVerifyExec (Finalized E) Committed Executed
+      Sound l.toNat f.toNat k)
+    (hRoot : ∀ c c', Committed c → Committed c' → c.blockDigest = c'.blockDigest →
+      c.stateRoot = c'.stateRoot)
+    (xs1 xs2 : List ImplCandidate)
+    (C1 : AllCommitted Committed (xs1.map ImplCandidate.abs))
+    (C2 : AllCommitted Committed (xs2.map ImplCandidate.abs)) :
+    ∀ t1 t2,
+      ((implRun Kaizen.FFI.kzVerify Kaizen.FFI.kzVerifyExec (Kaizen.FFI.kzNew l f k) xs1).1.abs).tip
+        = some t1 →
+      ((implRun Kaizen.FFI.kzVerify Kaizen.FFI.kzVerifyExec (Kaizen.FFI.kzNew l f k) xs2).1.abs).tip
+        = some t2 →
+      t1.height = t2.height → t1.stateRoot = t2.stateRoot := by
+  intro t1 t2 h1 h2 hh
+  have hd := extracted_followers_agree E l f k A xs1 xs2 C1 C2 t1 t2 h1 h2 hh
+  obtain ⟨c1, k1, -, d1, r1⟩ := Kaizen.FFI.kz_run_tip_last l f k xs1 C1 h1
+  obtain ⟨c2, k2, -, d2, r2⟩ := Kaizen.FFI.kz_run_tip_last l f k xs2 C2 h2
+  rw [r1, r2]
+  exact hRoot c1 c2 k1 k2 (d1.symm.trans (hd.trans d2))
 
 end Kaizen.Glue

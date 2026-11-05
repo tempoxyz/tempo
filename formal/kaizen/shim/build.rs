@@ -72,6 +72,7 @@ fn main() {
     build
         .include(prefix.join("include"))
         .define("KZ_INIT_FN", init_fn.as_str())
+        .flag("-w")
         .flag("-Wno-unused-parameter")
         .flag("-Wno-unused-label")
         .flag("-Wno-unused-but-set-variable")

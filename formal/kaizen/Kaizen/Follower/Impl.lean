@@ -12,6 +12,7 @@ structure ImplTip where
   digest : ByteArray
   epoch : UInt64
   view : UInt64
+  stateRoot : ByteArray
 
 /-- Executable follower state. -/
 structure ImplState where
@@ -26,6 +27,7 @@ structure ImplCandidate where
   height : UInt64
   blockDigest : ByteArray
   parentDigest : ByteArray
+  stateRoot : ByteArray
   cert : ByteArray
   dkg : Option (UInt64 × ByteArray)
 
@@ -57,8 +59,21 @@ def implDkgCheck (L : UInt64) (learned : Std.HashMap UInt64 ByteArray) (c : Impl
       else .ok (learned.insert e' k)
   else .ok learned
 
+def implExecOk (verifyExec : VerifyExec) (tip : Option ImplTip) (c : ImplCandidate) : Bool :=
+  match tip with
+  | none => true
+  | some t => verifyExec t.stateRoot c.blockDigest c.stateRoot
+
+def implAccept (verifyExec : VerifyExec) (s : ImplState) (c : ImplCandidate) (fc : Cert)
+    (learned' : Std.HashMap UInt64 ByteArray) : UInt8 × ImplState :=
+  if implExecOk verifyExec s.tip c = false then (Code.executionInvalid, s)
+  else (Code.accepted,
+    { s with tip := some ⟨c.height, c.blockDigest, fc.epoch, fc.view, c.stateRoot⟩,
+             learned := learned' })
+
 /-- The executable follower step. -/
-def implStep (verify : Verify) (s : ImplState) (c : ImplCandidate) : UInt8 × ImplState :=
+def implStep (verify : Verify) (verifyExec : VerifyExec) (s : ImplState) (c : ImplCandidate) :
+    UInt8 × ImplState :=
   if s.epochLength = 0 then (Code.badConfig, s) else
   match decodeCert c.cert with
   | none => (Code.malformed, s)
@@ -76,12 +91,12 @@ def implStep (verify : Verify) (s : ImplState) (c : ImplCandidate) : UInt8 × Im
         | some key =>
           if verify key fc.epoch fc.view fc.parent fc.payload fc.sig = false then
             (Code.badSignature, s)
-          else (Code.accepted,
-            { s with tip := some ⟨c.height, c.blockDigest, fc.epoch, fc.view⟩, learned := learned' })
+          else implAccept verifyExec s c fc learned'
 
 /-! ## Abstraction functions -/
 
-def ImplTip.abs (t : ImplTip) : Tip := ⟨t.height.toNat, t.digest, t.epoch.toNat, t.view.toNat⟩
+def ImplTip.abs (t : ImplTip) : Tip :=
+  ⟨t.height.toNat, t.digest, t.epoch.toNat, t.view.toNat, t.stateRoot⟩
 
 def absLearned (m : Std.HashMap UInt64 ByteArray) (e : Nat) : Option ByteArray :=
   if e < 2 ^ 64 then m[e.toUInt64]? else none
@@ -91,6 +106,6 @@ def ImplState.abs (s : ImplState) : State :=
     absLearned s.learned⟩
 
 def ImplCandidate.abs (c : ImplCandidate) : Candidate :=
-  ⟨c.height.toNat, c.blockDigest, c.parentDigest, c.cert, c.dkg.map (fun p => (p.1.toNat, p.2))⟩
+  ⟨c.height.toNat, c.blockDigest, c.parentDigest, c.stateRoot, c.cert, c.dkg.map (fun p => (p.1.toNat, p.2))⟩
 
 end Kaizen.Follower

@@ -11,6 +11,7 @@ unsafe extern "C" {
         height: u64,
         digest: *const u8,
         parent: *const u8,
+        state_root: *const u8,
         cert: *const u8,
         cert_len: usize,
         has_dkg: u8,
@@ -21,6 +22,7 @@ unsafe extern "C" {
     fn kzg_tip_height(s: Obj) -> u64;
     fn kzg_has_tip(s: Obj) -> u8;
     fn kzg_tip_digest(s: Obj, out: *mut u8);
+    fn kzg_tip_state_root(s: Obj, out: *mut u8);
     fn kzg_bytes_ptr(a: Obj) -> *const u8;
     fn kzg_bytes_len(a: Obj) -> usize;
     fn kzg_dec(o: Obj);
@@ -68,6 +70,7 @@ impl Core {
                 c.height,
                 c.digest.as_ptr(),
                 c.parent.as_ptr(),
+                c.state_root.as_ptr(),
                 c.certificate.as_ptr(),
                 c.certificate.len(),
                 has,
@@ -94,6 +97,21 @@ impl Core {
     }
 }
 
+impl Core {
+    pub(crate) fn tip_state_root(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        unsafe { kzg_tip_state_root(self.state, out.as_mut_ptr()) };
+        out
+    }
+}
+
+/// Called by the Lean core: @[extern "kz_verify_execution"]. ByteArray arguments are borrowed.
+#[unsafe(no_mangle)]
+pub extern "C" fn kz_verify_execution(pre: Obj, digest: Obj, post: Obj) -> u8 {
+    let bytes = |o: Obj| unsafe { std::slice::from_raw_parts(kzg_bytes_ptr(o), kzg_bytes_len(o)) };
+    crate::verify_execution(bytes(pre), bytes(digest), bytes(post)) as u8
+}
+
 impl Drop for Core {
     fn drop(&mut self) {
         unsafe { kzg_dec(self.state) }
@@ -115,6 +133,7 @@ pub(crate) fn describe(code: u8) -> &'static str {
         9 => "boundary block without DKG outcome",
         10 => "DKG outcome for the wrong epoch",
         11 => "bad configuration",
+        12 => "re-execution does not reach the header's state root",
         _ => "unknown code",
     }
 }

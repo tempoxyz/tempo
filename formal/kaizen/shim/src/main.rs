@@ -35,6 +35,8 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::{BlockBody, TempoHeader};
 
 mod core;
+mod exec;
+mod mpt;
 
 /// Tempo's consensus namespace (crates/consensus/src/config.rs).
 const NAMESPACE: &[u8] = b"TEMPO";
@@ -65,6 +67,18 @@ struct Args {
     /// Only check the BLS oracle against the latest finalization, decoded by commonware, and exit.
     #[arg(long)]
     check_oracle: bool,
+    /// Only re-execute these many blocks ending at --from (or the latest) and compare state roots.
+    #[arg(long)]
+    check_exec: Option<u64>,
+    /// RPC serving eth_getProof/eth_getCode for the execution oracle (rpc.testnet.tempo.xyz refuses eth_getProof).
+    #[arg(long, default_value = "https://rpc.moderato.tempo.xyz")]
+    proof_rpc: String,
+    /// Concurrent block re-executions.
+    #[arg(long, default_value_t = 8)]
+    exec_concurrency: usize,
+    /// Do not re-execute blocks: the execution oracle answers true (consensus-only mode).
+    #[arg(long)]
+    trust_execution: bool,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +105,7 @@ struct Candidate {
     height: u64,
     digest: [u8; 32],
     parent: [u8; 32],
+    state_root: [u8; 32],
     certificate: Vec<u8>,
     dkg: Option<(u64, Vec<u8>)>,
     txs: usize,
@@ -166,6 +181,7 @@ fn prepare(c: RpcCertified, epoch_length: u64) -> eyre::Result<Candidate> {
     }
     let digest = header.hash_slow().0;
     let parent = header.parent_hash().0;
+    let state_root = header.state_root().0;
     let is_boundary = (height + 1) % epoch_length == 0;
     let dkg = if is_boundary {
         let mut extra = header.extra_data().as_ref();
@@ -181,10 +197,65 @@ fn prepare(c: RpcCertified, epoch_length: u64) -> eyre::Result<Candidate> {
         height,
         digest,
         parent,
+        state_root,
         certificate,
         dkg,
         txs: body.transactions.len(),
     })
+}
+
+/// Post-state roots of blocks re-executed by [`exec::execute`], keyed by (pre-state root, digest).
+static EXECUTED: std::sync::LazyLock<Mutex<HashMap<([u8; 32], [u8; 32]), [u8; 32]>>> =
+    std::sync::LazyLock::new(Default::default);
+static TRUST_EXECUTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The execution oracle the Lean core calls: did re-executing this block on the state with root
+/// `pre` reach `post`?
+pub(crate) fn verify_execution(pre: &[u8], digest: &[u8], post: &[u8]) -> bool {
+    if TRUST_EXECUTION.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    let (Ok(pre), Ok(digest)) = (<[u8; 32]>::try_from(pre), <[u8; 32]>::try_from(digest)) else {
+        return false;
+    };
+    EXECUTED
+        .lock()
+        .unwrap()
+        .get(&(pre, digest))
+        .is_some_and(|p| p[..] == post[..])
+}
+
+/// Loads the 256 block hashes before `start` for BLOCKHASH, each checked against its successor's
+/// parent hash down from block `start`. Block `start` itself is checked by the core.
+async fn backfill_hashes(
+    rpc: &Rpc,
+    start: u64,
+    hashes: &std::sync::Arc<Mutex<BTreeMap<u64, alloy_primitives::B256>>>,
+    concurrency: usize,
+) -> eyre::Result<()> {
+    let from = start.saturating_sub(256);
+    let headers: BTreeMap<u64, TempoHeader> = stream::iter(from..=start)
+        .map(|h| async move { (h, rpc.finalization(serde_json::json!({"height": h})).await) })
+        .buffer_unordered(concurrency)
+        .map(|(h, r)| {
+            r.and_then(|c| c.ok_or_eyre("missing ancestor"))
+                .map(|c| (h, c.block.header))
+        })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<eyre::Result<_>>()?;
+    let mut expected = headers[&start].parent_hash();
+    let mut map = hashes.lock().unwrap();
+    for h in (from..start).rev() {
+        let hash = headers[&h].hash_slow();
+        if hash != expected {
+            bail!("ancestor {h} does not link to its successor");
+        }
+        map.insert(h, hash);
+        expected = headers[&h].parent_hash();
+    }
+    Ok(())
 }
 
 /// The verification oracle the Lean core calls (the model's VAF-like parameter):
@@ -266,6 +337,50 @@ async fn main() -> eyre::Result<()> {
         s => s.parse()?,
     };
 
+    if let Some(n) = args.check_exec {
+        let proof_rpc = exec::ProofRpc::new(args.proof_rpc.clone())?;
+        let end = start;
+        let hashes = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        backfill_hashes(&rpc, end, &hashes, args.concurrency).await?;
+        let mut ok = 0;
+        for h in end + 1 - n..=end {
+            let parent = rpc
+                .finalization(serde_json::json!({"height": h - 1}))
+                .await?
+                .ok_or_eyre("missing parent")?;
+            let block = rpc
+                .finalization(serde_json::json!({"height": h}))
+                .await?
+                .ok_or_eyre("missing block")?;
+            let pre = parent.block.header.state_root();
+            let want = block.block.header.state_root();
+            let (header, body) = (block.block.header.clone(), block.block.body.clone());
+            let (pr, hs) = (proof_rpc.clone(), hashes.clone());
+            let t = Instant::now();
+            let res =
+                tokio::task::spawn_blocking(move || exec::execute(&pr, &header, &body, pre, hs))
+                    .await?;
+            match res {
+                Ok(o) => {
+                    let m = o.post_root == want;
+                    ok += m as u64;
+                    println!(
+                        "height {h}: {} txs, post-state root {} header ({} accounts, {} slots, {} reveals, {:.0} ms)",
+                        block.block.body.transactions.len(),
+                        if m { "==" } else { "!=" },
+                        o.accounts,
+                        o.slots,
+                        o.reveals,
+                        t.elapsed().as_secs_f64() * 1e3
+                    );
+                }
+                Err(e) => println!("height {h}: execution error: {e:#}"),
+            }
+        }
+        println!("{ok}/{n} blocks re-executed to the header's state root");
+        return Ok(());
+    }
+
     if args.check_oracle {
         let latest = rpc
             .finalization(serde_json::json!("latest"))
@@ -300,6 +415,19 @@ async fn main() -> eyre::Result<()> {
     let mut txs = 0usize;
     let mut next = start;
     let mut last_report = Instant::now();
+    let (mut executed, mut exec_accounts, mut exec_slots, mut reveals) =
+        (0u64, 0usize, 0usize, 0usize);
+    TRUST_EXECUTION.store(args.trust_execution, std::sync::atomic::Ordering::Relaxed);
+    if args.trust_execution {
+        eprintln!(
+            "WARNING: --trust-execution: blocks are not re-executed; the core accepts any state root"
+        );
+    }
+    let proof_rpc = exec::ProofRpc::new(args.proof_rpc.clone())?;
+    let hashes = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+    if !args.trust_execution {
+        backfill_hashes(&rpc, start, &hashes, args.concurrency).await?;
+    }
     let mut head = start;
     loop {
         if next > head {
@@ -314,7 +442,8 @@ async fn main() -> eyre::Result<()> {
             }
         }
         // Fetch a window of heights concurrently, then feed them to the core strictly in order.
-        let end = head.min(next + args.concurrency as u64 * 4 - 1);
+        let window_len = (args.concurrency as u64 * 4).max(args.exec_concurrency as u64);
+        let end = head.min(next + window_len - 1);
         let window: Vec<u64> = (next..=end).collect();
         let fetched: BTreeMap<u64, eyre::Result<Option<RpcCertified>>> =
             stream::iter(window.clone())
@@ -326,12 +455,62 @@ async fn main() -> eyre::Result<()> {
                 .collect()
                 .await;
         let mut progressed = false;
+        let mut prepared = Vec::new();
         for (h, res) in fetched {
             let Some(c) = res? else { break };
+            let block = (c.block.header.clone(), c.block.body.clone());
             let cand = prepare(c, args.epoch_length)?;
             if cand.height != h {
                 bail!("upstream returned height {} for query {h}", cand.height);
             }
+            hashes
+                .lock()
+                .unwrap()
+                .insert(h, alloy_primitives::B256::from(cand.digest));
+            prepared.push((cand, block));
+        }
+        if !args.trust_execution {
+            // Re-execute every block whose parent state root is known (the tip's, then each
+            // predecessor's in the window), concurrently; the core consults the results.
+            let mut pre = core.has_tip().then(|| core.tip_state_root());
+            let mut jobs = Vec::new();
+            for (cand, (header, body)) in &prepared {
+                if let Some(p) = pre {
+                    jobs.push((p, cand.digest, header.clone(), body.clone()));
+                }
+                pre = Some(cand.state_root);
+            }
+            let results: Vec<_> = stream::iter(jobs)
+                .map(|(p, d, header, body)| {
+                    let (pr, hs) = (proof_rpc.clone(), hashes.clone());
+                    async move {
+                        let h = header.number();
+                        let r = tokio::task::spawn_blocking(move || {
+                            exec::execute(&pr, &header, &body, alloy_primitives::B256::from(p), hs)
+                        })
+                        .await;
+                        (p, d, h, r)
+                    }
+                })
+                .buffer_unordered(args.exec_concurrency)
+                .collect()
+                .await;
+            for (p, d, h, r) in results {
+                match r {
+                    Ok(Ok(o)) => {
+                        executed += 1;
+                        exec_accounts += o.accounts;
+                        exec_slots += o.slots;
+                        reveals += o.reveals;
+                        EXECUTED.lock().unwrap().insert((p, d), o.post_root.0);
+                    }
+                    Ok(Err(e)) => eprintln!("height {h}: re-execution failed: {e:#}"),
+                    Err(e) => eprintln!("height {h}: re-execution panicked: {e}"),
+                }
+            }
+        }
+        for (cand, _) in prepared {
+            let h = cand.height;
             let code = core.step(&cand);
             if code != 0 {
                 bail!(
@@ -357,9 +536,10 @@ async fn main() -> eyre::Result<()> {
         {
             let rate = accepted as f64 / t0.elapsed().as_secs_f64();
             eprintln!(
-                "tip {} (0x{}) accepted {accepted} blocks, {txs} txs, {rate:.1} blocks/s",
+                "tip {} (0x{}) state 0x{} accepted {accepted} blocks, {txs} txs, {rate:.1} blocks/s; re-executed {executed} ({exec_accounts} accounts, {exec_slots} slots proven, {reveals} extra trie reveals)",
                 core.tip_height(),
-                alloy_primitives::hex::encode(core.tip_digest())
+                alloy_primitives::hex::encode(core.tip_digest()),
+                alloy_primitives::hex::encode(core.tip_state_root())
             );
             last_report = Instant::now();
         }
