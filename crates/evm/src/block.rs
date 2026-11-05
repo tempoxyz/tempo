@@ -474,7 +474,7 @@ impl<'a> TempoBlockExecutor<'a> {
                     "failed decoding boundary block extra data as DKG outcome: {err}"
                 ))
             })?;
-        let epoch = outcome.epoch;
+        let epoch = outcome.raw_epoch();
         let public_keys = outcome
             .players()
             .iter()
@@ -1169,6 +1169,7 @@ mod tests {
             ZONE_VERIFIER_RUNTIME,
         },
     };
+    use tempo_dkg_onchain_artifacts::OnchainDkgOutcomeV1;
     use tempo_precompiles::{
         storage::{StorageActions, StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
@@ -1443,7 +1444,7 @@ mod tests {
                 .build(&mut db, &chainspec);
             reader.apply_pre_execution_changes().unwrap();
             let committee = read_current_committee(&mut reader);
-            assert_eq!(committee.epoch, outcome.epoch);
+            assert_eq!(committee.epoch, outcome.raw_epoch());
             assert_eq!(committee.publicKeys, expected_keys);
             let output = reader.finish().unwrap();
             db.commit_source(&reth_execution_types::BundleSource(&output.state));
@@ -2280,7 +2281,7 @@ mod tests {
         executor.apply_current_committee_system_call().unwrap();
 
         let committee = read_current_committee(&mut executor);
-        assert_eq!(committee.epoch, outcome.epoch);
+        assert_eq!(committee.epoch, outcome.raw_epoch());
         assert_eq!(committee.publicKeys, expected_public_keys);
     }
 
@@ -2399,10 +2400,9 @@ mod tests {
 
     /// Returns the encoding of a TIP-1123 DKG outcome for `epoch`.
     fn ceremony_in_state_outcome(epoch: u64) -> OnchainDkgOutcome {
-        OnchainDkgOutcome {
-            next_ceremony: None,
-            ..OnchainDkgOutcome::dealt(epoch, 3)
-        }
+        OnchainDkgOutcomeV1::dealt(epoch, 3)
+            .without_ceremony()
+            .into()
     }
 
     fn read_dkg_ceremony(

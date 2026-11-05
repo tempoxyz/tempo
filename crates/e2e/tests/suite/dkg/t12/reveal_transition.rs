@@ -75,10 +75,10 @@ fn validators_switch_dkg_reveal_version_at_t12() {
 
             let input = read_outcome_from_validator(validator, boundary).unwrap();
             let outcome = read_outcome_from_validator(validator, last).unwrap();
-            assert_eq!(outcome.epoch, epoch.next().get());
+            assert_eq!(outcome.raw_epoch(), epoch.next().get());
             let ceremony = input
-                .next_ceremony
-                .clone()
+                .next_ceremony()
+                .cloned()
                 .expect("T12 outcomes are legacy");
             assert!(!ceremony.is_full_dkg);
 
@@ -86,10 +86,10 @@ fn validators_switch_dkg_reveal_version_at_t12() {
                 Info::<MinSig, PublicKey>::new::<N3f1>(
                     tempo_consensus::NAMESPACE,
                     epoch.get(),
-                    Some(input.output.clone()),
+                    Some(input.output().clone()),
                     Mode::NonZeroCounter,
                     reveal,
-                    input.output.players().clone(),
+                    input.output().players().clone(),
                     ceremony.players.clone(),
                 )
                 .unwrap()
@@ -139,11 +139,13 @@ fn validators_switch_dkg_reveal_version_at_t12() {
             let observed =
                 dkg::observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
             assert_eq!(
-                observed, outcome.output,
+                &observed,
+                outcome.output(),
                 "on-chain outcome must match the ceremony logs"
             );
             assert_ne!(
-                outcome.output, input.output,
+                outcome.output(),
+                input.output(),
                 "the ceremony must succeed rather than carry forward its input"
             );
         }

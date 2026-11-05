@@ -53,7 +53,9 @@ use rand_core::CryptoRng;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
-use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome, OutcomeEncoding};
+use tempo_dkg_onchain_artifacts::{
+    DkgCeremony, OnchainDkgOutcomeV1, OnchainDkgOutcomeV2, OutcomeEncoding,
+};
 use tempo_primitives::{BlockBody, TempoConsensusContext, TempoHeader};
 use tokio::sync::oneshot;
 
@@ -855,13 +857,13 @@ pub(super) fn block(header: TempoHeader) -> Block {
 /// Returns a boundary block at `height` whose legacy DKG outcome starts
 /// `state`.
 pub(super) fn outcome_header(height: Height, state: &State) -> TempoHeader {
-    let outcome = OnchainDkgOutcome {
+    let outcome = OnchainDkgOutcomeV1 {
         epoch: state.epoch.get(),
         output: state.output.clone(),
-        next_ceremony: Some(DkgCeremony {
+        next_ceremony: DkgCeremony {
             players: state.players().clone(),
             is_full_dkg: state.is_full_dkg,
-        }),
+        },
     };
 
     let mut header = header(height);
@@ -877,10 +879,9 @@ pub(super) fn ceremony_in_state_header(
     timestamp: u64,
     state: &State,
 ) -> (TempoHeader, StoredDkgCeremony) {
-    let outcome = OnchainDkgOutcome {
+    let outcome = OnchainDkgOutcomeV2 {
         epoch: state.epoch.get(),
         output: state.output.clone(),
-        next_ceremony: None,
     };
 
     let mut header = header(height);

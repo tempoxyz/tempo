@@ -218,13 +218,14 @@ where
             format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
         })?;
 
-        let builder = match &onchain_outcome.next_ceremony {
-            Some(ceremony) => {
-                PeersBuilder::new(onchain_outcome.players().clone(), &ceremony.players)
-            }
+        let builder = match &onchain_outcome {
+            OnchainDkgOutcome::V1(outcome) => PeersBuilder::new(
+                outcome.output.players().clone(),
+                &outcome.next_ceremony.players,
+            ),
             // From TIP-1123 the boundary block stored the ceremony of the epoch it
             // starts in the CurrentCommittee precompile, so every state since has it.
-            None => {
+            OnchainDkgOutcome::V2(outcome) => {
                 let (_, _, stored) = read_validator_config_at_block_hash(
                     self.execution_node.as_ref(),
                     highest_finalized_header.hash_slow(),
@@ -235,10 +236,10 @@ where
                     "boundary block uses the TIP-1123 encoding, but no DKG ceremony is stored",
                 )?;
                 ensure!(
-                    stored.epoch == onchain_outcome.epoch,
+                    stored.epoch == outcome.epoch,
                     "stored DKG ceremony is for epoch `{}`, but the boundary block at `{latest_boundary}` starts epoch `{}`",
                     stored.epoch,
-                    onchain_outcome.epoch,
+                    outcome.epoch,
                 );
                 PeersBuilder::new(stored.dealers, &stored.ceremony.players)
             }
@@ -518,7 +519,7 @@ mod tests {
         TempoChainSpec,
         spec::{DEV, MODERATO},
     };
-    use tempo_dkg_onchain_artifacts::{DkgCeremony, OutcomeEncoding};
+    use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcomeV1, OutcomeEncoding};
     use tempo_node::evm::{TempoEvm, TempoEvmConfig};
     use tempo_precompiles::{
         current_committee::{CurrentCommittee, ICurrentCommittee},
@@ -751,14 +752,15 @@ mod tests {
             ordered::Set::try_from_iter(players)?,
         )?;
 
-        Ok(OnchainDkgOutcome {
+        Ok(OnchainDkgOutcomeV1 {
             epoch: 0,
             output,
-            next_ceremony: Some(DkgCeremony {
+            next_ceremony: DkgCeremony {
                 players: ordered::Set::try_from_iter(next_players)?,
                 is_full_dkg: false,
-            }),
-        })
+            },
+        }
+        .into())
     }
 
     fn keys(
@@ -791,14 +793,14 @@ mod tests {
     fn with_boundary(
         mut execution: TestExecutionNode,
         height: u64,
-        mut outcome: OnchainDkgOutcome,
+        outcome: OnchainDkgOutcome,
     ) -> TestExecutionNode {
         let boundary = if height % 10 == 9 {
             height
         } else {
             (height / 10 * 10).saturating_sub(1)
         };
-        outcome.epoch = (boundary + 1) / 10;
+        let outcome = crate::test_utils::with_epoch(outcome, (boundary + 1) / 10);
         let mut boundary_header = execution_header(boundary);
         boundary_header.inner.extra_data = outcome.encode().into();
         let tip_header = if boundary == height {
@@ -1005,10 +1007,7 @@ mod tests {
     fn ceremony_in_state_outcome(
         players: impl IntoIterator<Item = PublicKey>,
     ) -> OnchainDkgOutcome {
-        OnchainDkgOutcome {
-            next_ceremony: None,
-            ..dkg_outcome(players, []).unwrap()
-        }
+        crate::test_utils::without_ceremony(&dkg_outcome(players, []).unwrap())
     }
 
     fn init_peer_manager(

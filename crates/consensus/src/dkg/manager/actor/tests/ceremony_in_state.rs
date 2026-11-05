@@ -331,7 +331,7 @@ fn dealt(epoch: u64) -> OnchainDkgOutcome {
 fn state_with_output(outcome: &OnchainDkgOutcome) -> State {
     let (state, _, _) = dkg_state(&mut StdRng::seed_from_u64(0), outcome.epoch(), 1, false);
     State {
-        output: outcome.output.clone(),
+        output: outcome.output().clone(),
         ..state
     }
 }
@@ -342,17 +342,14 @@ fn recovery_uses_the_ceremony_of_a_legacy_outcome() {
     let current = state_with_output(&dealt(2));
 
     assert_eq!(
-        Some(recovered_ceremony(&ceremony_outcome, &current)),
-        ceremony_outcome.next_ceremony,
+        Some(&recovered_ceremony(&ceremony_outcome, &current)),
+        ceremony_outcome.next_ceremony(),
     );
 }
 
 #[test]
 fn recovery_derives_the_ceremony_of_a_ceremony_in_state_outcome() {
-    let ceremony_outcome = OnchainDkgOutcome {
-        next_ceremony: None,
-        ..dealt(1)
-    };
+    let ceremony_outcome = crate::test_utils::without_ceremony(&dealt(1));
 
     // A full DKG changes the network identity.
     let full_dkg = state_with_output(&dealt(2));

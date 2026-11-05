@@ -86,7 +86,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
 
             let outcome_after =
                 wait_for_outcome(&context, &validators, full_dkg_epoch, epoch_length).await;
-            if outcome_after.output != outcome_before.output {
+            if outcome_after.output() != outcome_before.output() {
                 assert_ne!(
                     outcome_before.sharing().public(),
                     outcome_after.sharing().public(),
@@ -125,7 +125,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
 
         if update_network_identity {
             late_validator.network_identity = tempo_chainspec::NetworkIdentity {
-                from_epoch: outcome_after.epoch,
+                from_epoch: outcome_after.raw_epoch(),
                 identity: *outcome_after.network_identity(),
             };
         }
@@ -186,7 +186,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
                 outcome_after.network_identity(),
                 "resharing must preserve the rotated network identity"
             );
-            if outcome.output != previous.output {
+            if outcome.output() != previous.output() {
                 break;
             }
             info!(epoch, "resharing failed; waiting for the next ceremony");

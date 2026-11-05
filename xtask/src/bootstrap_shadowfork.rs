@@ -44,7 +44,9 @@ use tempo_chainspec::{
 };
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase, SigningShare};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
-use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome, OutcomeEncoding};
+use tempo_dkg_onchain_artifacts::{
+    DkgCeremony, OnchainDkgOutcome, OnchainDkgOutcomeV1, OutcomeEncoding,
+};
 use tempo_precompiles::{
     current_committee::{CURRENT_COMMITTEE_ADDRESS, CurrentCommittee},
     error::TempoPrecompileError,
@@ -642,7 +644,9 @@ where
     }
 }
 
-pub(crate) fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgOutcome> {
+pub(crate) fn read_private_genesis_outcome(
+    manifest_dir: &Path,
+) -> eyre::Result<OnchainDkgOutcomeV1> {
     let genesis_path = manifest_dir.join("genesis.json");
     let json = std::fs::read_to_string(&genesis_path)
         .wrap_err_with(|| format!("failed reading `{}`", genesis_path.display()))?;
@@ -663,25 +667,32 @@ pub(crate) fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<
 /// Decodes a genesis `extraData` written in `encoding`. A TIP-1123 genesis keeps its ceremony in
 /// `CurrentCommittee` storage instead, which is always the epoch-0 reshare among the genesis
 /// players (see `ConsensusConfig::genesis_dkg_ceremony`), so it is restored from the outcome.
-fn decode_genesis_outcome(hex: &str, encoding: OutcomeEncoding) -> eyre::Result<OnchainDkgOutcome> {
+fn decode_genesis_outcome(
+    hex: &str,
+    encoding: OutcomeEncoding,
+) -> eyre::Result<OnchainDkgOutcomeV1> {
     let bytes = const_hex::decode(hex.trim_start_matches("0x"))
         .wrap_err("failed decoding shadow genesis extraData hex")?;
-    let mut outcome = OnchainDkgOutcome::decode_extra_data(&bytes, encoding)
+    let outcome = OnchainDkgOutcome::decode_extra_data(&bytes, encoding)
         .wrap_err("failed decoding shadow genesis extraData payload")?;
-    if outcome.next_ceremony.is_none() {
-        outcome.next_ceremony = Some(DkgCeremony {
-            players: outcome.players().clone(),
-            is_full_dkg: false,
-        });
-    }
-    Ok(outcome)
+    Ok(match outcome {
+        OnchainDkgOutcome::V1(outcome) => outcome,
+        OnchainDkgOutcome::V2(outcome) => OnchainDkgOutcomeV1 {
+            next_ceremony: DkgCeremony {
+                players: outcome.output.players().clone(),
+                is_full_dkg: false,
+            },
+            epoch: outcome.epoch,
+            output: outcome.output,
+        },
+    })
 }
 
-fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcome> {
+fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcomeV1> {
     let bytes = const_hex::decode(hex.trim_start_matches("0x"))
         .wrap_err("failed decoding shadow_dkg_outcome hex")?;
     // Manifests keep the legacy encoding, which carries the ceremony of the shadow epoch.
-    OnchainDkgOutcome::decode_extra_data(&bytes, OutcomeEncoding::Legacy)
+    OnchainDkgOutcomeV1::read(&mut bytes.as_slice())
         .wrap_err("failed decoding shadow_dkg_outcome payload")
 }
 
@@ -796,7 +807,7 @@ fn patch_execution_validator_registry(
     block_number: u64,
     validator_config_storage: &[(U256, U256)],
     validators: &[ShadowValidatorRegistration],
-    outcome: &OnchainDkgOutcome,
+    outcome: &OnchainDkgOutcomeV1,
 ) -> eyre::Result<()> {
     ensure!(
         db_path.exists(),
@@ -887,11 +898,7 @@ fn patch_execution_validator_registry(
         );
     }
     if encoding == OutcomeEncoding::CeremonyInState {
-        let ceremony = outcome
-            .next_ceremony
-            .as_ref()
-            .ok_or_eyre("the shadow DKG outcome does not carry its ceremony")?;
-        patch_current_committee(&mut storage, outcome, ceremony)?;
+        patch_current_committee(&mut storage, outcome)?;
         println!(
             "replaced CurrentCommittee storage in `{}` with the shadow DKG ceremony",
             db_path.display(),
@@ -917,14 +924,13 @@ fn patch_execution_validator_registry(
 /// epoch, as the activated TIP-1123 boundary block would have stored them.
 fn patch_current_committee<TX>(
     storage: &mut DbStorageOverlay<'_, TX>,
-    outcome: &OnchainDkgOutcome,
-    ceremony: &DkgCeremony,
+    outcome: &OnchainDkgOutcomeV1,
 ) -> eyre::Result<()>
 where
     TX: DbTx + DbTxMut,
 {
     storage.clear_db_storage(CURRENT_COMMITTEE_ADDRESS)?;
-    StorageCtx::enter(storage, || store_dkg_ceremony(outcome, ceremony))
+    StorageCtx::enter(storage, || store_dkg_ceremony(outcome))
         .wrap_err("failed writing the shadow DKG ceremony")?;
     for ((address, slot), value) in std::mem::take(&mut storage.overlay) {
         storage.write_db_storage(address, slot, value)?;
@@ -939,9 +945,9 @@ where
     };
     ensure!(
         stored.epoch == outcome.epoch
-            && stored.dealers == keys(outcome.players())
-            && stored.players == keys(&ceremony.players)
-            && stored.isRotatingNetworkIdentity == ceremony.is_full_dkg,
+            && stored.dealers == keys(outcome.output.players())
+            && stored.players == keys(&outcome.next_ceremony.players)
+            && stored.isRotatingNetworkIdentity == outcome.next_ceremony.is_full_dkg,
         "patched CurrentCommittee does not hold the shadow DKG ceremony: {stored:?}",
     );
     Ok(())
@@ -976,7 +982,7 @@ fn patch_boundary_header<TX>(
     tx: &TX,
     chain_spec: &TempoChainSpec,
     block_number: u64,
-    outcome: &OnchainDkgOutcome,
+    outcome: &OnchainDkgOutcomeV1,
 ) -> eyre::Result<(OutcomeEncoding, Option<(B256, B256)>)>
 where
     TX: DbTx + DbTxMut,
@@ -1016,13 +1022,7 @@ where
         .unwrap_or_else(|| header.hash_slow());
 
     let encoding = chain_spec.dkg_outcome_encoding_at(header.timestamp());
-    let outcome = &OnchainDkgOutcome {
-        next_ceremony: outcome
-            .next_ceremony
-            .clone()
-            .filter(|_| encoding == OutcomeEncoding::Legacy),
-        ..outcome.clone()
-    };
+    let outcome = &outcome.clone().into_encoding(encoding);
     let extra_data = Bytes::from(outcome.encode());
     if header.inner.extra_data == extra_data {
         tx.delete::<tables::HeaderNumbers>(old_hash, None)?;
@@ -1122,15 +1122,12 @@ where
     .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
     ensure!(
         decoded.players() == expected_outcome.players()
-            && decoded.next_ceremony == expected_outcome.next_ceremony
             && decoded.dealers() == expected_outcome.dealers(),
-        "patched boundary header DKG peers do not match generated shadow validators: dealers={:?}, players={:?}, next_ceremony={:?}, expected_dealers={:?}, expected_players={:?}, expected_next_ceremony={:?}",
+        "patched boundary header DKG peers do not match generated shadow validators: dealers={:?}, players={:?}, expected_dealers={:?}, expected_players={:?}",
         decoded.dealers(),
         decoded.players(),
-        decoded.next_ceremony,
         expected_outcome.dealers(),
         expected_outcome.players(),
-        expected_outcome.next_ceremony,
     );
     ensure!(
         &decoded == expected_outcome,
@@ -1174,16 +1171,17 @@ fn execution_static_files_path(db_path: &Path) -> eyre::Result<PathBuf> {
     Ok(chain_dir.join("static_files"))
 }
 
-fn share_matches_outcome(outcome: &OnchainDkgOutcome, share: &Share) -> bool {
+fn share_matches_outcome(outcome: &OnchainDkgOutcomeV1, share: &Share) -> bool {
     outcome
-        .sharing()
+        .output
+        .public()
         .partial_public(share.index)
         .is_ok_and(|partial| share.public::<MinSig>() == partial)
 }
 
 fn seed_consensus_state(
     consensus_dir: &Path,
-    outcome: OnchainDkgOutcome,
+    outcome: OnchainDkgOutcomeV1,
     signing_share: Share,
     seed: u64,
     force: bool,
@@ -1233,9 +1231,7 @@ fn seed_consensus_state(
                     states.clear();
                 }
 
-                let ceremony = outcome
-                    .next_ceremony
-                    .ok_or_eyre("the shadow DKG outcome does not carry its ceremony")?;
+                let ceremony = outcome.next_ceremony;
                 let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
                 let state = BootstrapDkgState {
                     epoch: Epoch::new(outcome.epoch),

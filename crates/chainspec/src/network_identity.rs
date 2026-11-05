@@ -52,7 +52,7 @@ impl NetworkIdentity {
             .wrap_err("unable to parse dkg outcome")?;
 
         Ok(Self {
-            from_epoch: outcome.epoch,
+            from_epoch: outcome.raw_epoch(),
             identity: *outcome.network_identity(),
         })
     }

@@ -405,7 +405,7 @@ pub(crate) mod marshal {
         ensure!(
             onchain_outcome.epoch() == epoch,
             "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",
-            onchain_outcome.epoch,
+            onchain_outcome.raw_epoch(),
         );
 
         let scheme = Scheme::verifier(

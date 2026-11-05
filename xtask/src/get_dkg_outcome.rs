@@ -15,7 +15,7 @@ use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use serde::Serialize;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee};
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{OnchainDkgOutcome, OnchainDkgOutcomeV1};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct GetDkgOutcome {
@@ -139,7 +139,11 @@ impl GetDkgOutcome {
         )
         .wrap_err("failed to parse DKG outcome from extra_data")?;
 
-        let (next_players, is_next_full_dkg) = if let Some(ceremony) = &outcome.next_ceremony {
+        let (next_players, is_next_full_dkg) = if let OnchainDkgOutcome::V1(OnchainDkgOutcomeV1 {
+            next_ceremony: ceremony,
+            ..
+        }) = &outcome
+        {
             (
                 ceremony.players.iter().map(pubkey_to_hex).collect(),
                 ceremony.is_full_dkg,
@@ -156,10 +160,10 @@ impl GetDkgOutcome {
             let ceremony = ICurrentCommittee::getDkgCeremonyCall::abi_decode_returns(&output)
                 .wrap_err("failed decoding CurrentCommittee.getDkgCeremony")?;
             ensure!(
-                ceremony.epoch == outcome.epoch,
+                ceremony.epoch == outcome.raw_epoch(),
                 "CurrentCommittee at block {block_number} stores the DKG ceremony of epoch {}, expected {}",
                 ceremony.epoch,
-                outcome.epoch,
+                outcome.raw_epoch(),
             );
             (
                 ceremony
@@ -173,7 +177,7 @@ impl GetDkgOutcome {
 
         let sharing = outcome.sharing();
         let info = DkgOutcomeInfo {
-            epoch: outcome.epoch,
+            epoch: outcome.raw_epoch(),
             block_number,
             block_hash,
             dealers: outcome.dealers().iter().map(pubkey_to_hex).collect(),

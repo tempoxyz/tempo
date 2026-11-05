@@ -21,7 +21,6 @@ use reth_provider::{
 use secp256k1::SECP256K1;
 use serde::Serialize;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
-use tempo_dkg_onchain_artifacts::OutcomeEncoding;
 use tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD;
 use tempo_primitives::TempoPrimitives;
 use tempo_validator_config::ValidatorConfig;
@@ -193,8 +192,7 @@ impl GenerateShadowfork {
             write_shadow_chainspec(&output, &source_chain, source_chain_id, shadow_epoch_length)?;
         // The manifest keeps the legacy encoding: it carries the ceremony that
         // bootstrap-shadowfork seeds and, for a TIP-1123 fork block, writes to state.
-        let mut shadow_dkg_outcome =
-            consensus_config.to_genesis_dkg_outcome(OutcomeEncoding::Legacy);
+        let mut shadow_dkg_outcome = consensus_config.genesis_dkg_outcome();
         shadow_dkg_outcome.epoch = SHADOW_EPOCH;
         let shadow_dkg_outcome = const_hex::encode_prefixed(shadow_dkg_outcome.encode());
 

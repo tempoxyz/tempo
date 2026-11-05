@@ -14,7 +14,9 @@ use commonware_cryptography::{
 use commonware_utils::ordered;
 use eyre::{Report, WrapErr as _};
 use reth_provider::StateProvider as _;
-use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome, OutcomeEncoding};
+use tempo_dkg_onchain_artifacts::{
+    DkgCeremony, OnchainDkgOutcome, OnchainDkgOutcomeV1, OnchainDkgOutcomeV2, OutcomeEncoding,
+};
 use tempo_node::{ExecutedState, TempoFullNode};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tracing::{Level, debug, info, instrument};
@@ -58,7 +60,11 @@ impl TempoParentState {
                     .wrap_err("could not determine who the next players are supposed to be")?;
                 Ok((next_players, next_full_dkg_epoch))
             })?;
-        if let Some(ceremony) = &outcome.next_ceremony {
+        if let OnchainDkgOutcome::V1(OnchainDkgOutcomeV1 {
+            next_ceremony: ceremony,
+            ..
+        }) = &outcome
+        {
             info!(
                 ceremony.is_full_dkg,
                 next_epoch = %outcome.epoch(),
@@ -138,21 +144,21 @@ fn assemble_boundary_outcome(
         .epoch()
         .next();
 
-    let next_ceremony = match encoding {
+    let epoch = next_epoch.get();
+    Ok(match encoding {
         OutcomeEncoding::Legacy => {
             let (players, next_full_dkg_epoch) = read_parent_state()?;
-            Some(DkgCeremony {
-                players,
-                is_full_dkg: next_full_dkg_epoch == next_epoch.get(),
-            })
+            OnchainDkgOutcomeV1 {
+                epoch,
+                output,
+                next_ceremony: DkgCeremony {
+                    players,
+                    is_full_dkg: next_full_dkg_epoch == epoch,
+                },
+            }
+            .into()
         }
-        OutcomeEncoding::CeremonyInState => None,
-    };
-
-    Ok(OnchainDkgOutcome {
-        epoch: next_epoch.get(),
-        output,
-        next_ceremony,
+        OutcomeEncoding::CeremonyInState => OnchainDkgOutcomeV2 { epoch, output }.into(),
     })
 }
 
@@ -173,7 +179,7 @@ mod tests {
         let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
         let output = dkg_fixture(&mut StdRng::seed_from_u64(0), Epoch::new(2))
             .outcome
-            .output;
+            .into_output();
         let next_players = ordered::Set::try_from_iter(
             (10..13).map(|seed| PrivateKey::from_seed(seed).public_key()),
         )
@@ -191,14 +197,14 @@ mod tests {
                     || Ok((next_players.clone(), next_full_dkg_epoch)),
                 )
                 .unwrap(),
-                OnchainDkgOutcome {
+                OnchainDkgOutcome::V1(OnchainDkgOutcomeV1 {
                     epoch: 2,
                     output: output.clone(),
-                    next_ceremony: Some(DkgCeremony {
+                    next_ceremony: DkgCeremony {
                         players: next_players.clone(),
                         is_full_dkg,
-                    }),
-                },
+                    },
+                }),
                 "full DKG scheduled for epoch {next_full_dkg_epoch}",
             );
         }
@@ -209,7 +215,7 @@ mod tests {
         let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
         let output = dkg_fixture(&mut StdRng::seed_from_u64(0), Epoch::new(2))
             .outcome
-            .output;
+            .into_output();
 
         let outcome = assemble_boundary_outcome(
             &epoch_strategy,
@@ -221,11 +227,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             outcome,
-            OnchainDkgOutcome {
-                epoch: 2,
-                output,
-                next_ceremony: None,
-            },
+            OnchainDkgOutcome::V2(OnchainDkgOutcomeV2 { epoch: 2, output }),
         );
         assert_eq!(outcome.encoding(), OutcomeEncoding::CeremonyInState);
     }
@@ -235,7 +237,7 @@ mod tests {
         let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
         let output = dkg_fixture(&mut StdRng::seed_from_u64(0), Epoch::new(2))
             .outcome
-            .output;
+            .into_output();
 
         let error = assemble_boundary_outcome(
             &epoch_strategy,

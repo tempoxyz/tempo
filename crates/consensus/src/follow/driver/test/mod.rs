@@ -267,7 +267,7 @@ fn network_identity_verifies_finalization_when_epoch_scheme_is_missing() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: network_fixture.outcome.epoch,
+                    from_epoch: network_fixture.outcome.raw_epoch(),
                     identity: *network_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
@@ -329,7 +329,7 @@ fn gossiped_certificate_is_admitted_and_reported_only_to_marshal() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: network_fixture.outcome.epoch,
+                    from_epoch: network_fixture.outcome.raw_epoch(),
                     identity: *network_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
@@ -681,8 +681,7 @@ fn reshared_boundaries_register_the_epoch_without_advancing_the_persisted_identi
         let rig = start_rig(&mut context).await;
         let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
         for epoch in [1, 2] {
-            let mut outcome = rig.fixture.outcome.clone();
-            outcome.epoch = epoch;
+            let outcome = crate::test_utils::with_epoch(rig.fixture.outcome.clone(), epoch);
             let (ack, waiter) = Exact::handle();
             let _ = rig.mailbox.to_marshal_reporter().report(Update::Block(
                 make_block(EPOCH_LENGTH.get() * epoch - 1, Some(&outcome)).into(),
@@ -769,8 +768,7 @@ fn historical_boundaries_do_not_replace_a_newer_configured_anchor_for_the_same_k
         .await
         .unwrap();
         let handle = actor.start();
-        let mut outcome = historical.outcome.clone();
-        outcome.epoch = 2;
+        let outcome = crate::test_utils::with_epoch(historical.outcome.clone(), 2);
         let (ack, waiter) = Exact::handle();
         let _ = mailbox.to_marshal_reporter().report(Update::Block(
             make_block(EPOCH_LENGTH.get() * 2 - 1, Some(&outcome)).into(),
@@ -1393,7 +1391,7 @@ fn scheme_before_network_identity_epoch_is_required() {
                 execution_provider: provider,
                 scheme_provider: schemes.clone(),
                 network_identity: NetworkIdentity {
-                    from_epoch: missing_fixture.outcome.epoch + 1,
+                    from_epoch: missing_fixture.outcome.raw_epoch() + 1,
                     identity: *missing_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
@@ -1449,7 +1447,7 @@ fn gossiped_certificate_without_a_usable_identity_needs_scheme() {
                 execution_provider: provider,
                 scheme_provider: SchemeProvider::new(),
                 network_identity: NetworkIdentity {
-                    from_epoch: missing_fixture.outcome.epoch + 1,
+                    from_epoch: missing_fixture.outcome.raw_epoch() + 1,
                     identity: *missing_fixture.outcome.network_identity(),
                 },
                 last_finalized_height: Height::zero(),
@@ -1589,8 +1587,7 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
 fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
-        let mut recovered_outcome = fixture.outcome.clone();
-        recovered_outcome.epoch = 3;
+        let recovered_outcome = crate::test_utils::with_epoch(fixture.outcome.clone(), 3);
         let startup_block = make_block(0, Some(&fixture.outcome));
         let provider = StubExecutionProvider::default();
         provider.add_header(&startup_block);
