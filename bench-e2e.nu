@@ -385,6 +385,9 @@ def qmdb-import [tempo_bin: string, genesis: string, datadir: string] {
 # and only then record it in the marker, so a failed import never looks complete.
 # QMDB takes about 2.6x the bloat size on disk (1.64B keys at 100 GiB of bloat), with margin.
 def qmdb-import-snapshot [tempo_bin: string, genesis: string, datadir: string, bloat_mib: int] {
+    # The import replaces any QMDB of an older format, so free its space before checking.
+    let qmdb_dir = $"($datadir)/qmdb"
+    if ($qmdb_dir | path exists) { rm -rf $qmdb_dir }
     let required = ($bloat_mib * $E2E_QMDB_SIZE_MULTIPLIER) + $E2E_BLOAT_FREE_MARGIN_MIB
     let available = (df-available-mib $datadir)
     if $available < $required {
