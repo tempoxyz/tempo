@@ -77,6 +77,9 @@ pub enum Lane {
 pub struct Envelope {
     /// Chain the transaction is valid on.
     pub chain_id: ChainId,
+    /// keccak256 of the 96-byte network public key the body is encrypted to, so a body encrypted
+    /// before a full re-DKG is recognizable without decrypting it.
+    pub key_id: B256,
     /// Account whose nonce is consumed and whose fee is charged at inclusion.
     pub sender: Address,
     /// 2D nonce key.
@@ -94,14 +97,15 @@ impl Envelope {
     /// Copying a ciphertext into another envelope changes the identity, so its key never opens
     /// the copy.
     pub fn identity(&self, sealed_body_hash: B256) -> B256 {
-        let mut buf = [0u8; 8 + 20 + 32 + 8 + 8 + 1 + 32];
+        let mut buf = [0u8; 8 + 32 + 20 + 32 + 8 + 8 + 1 + 32];
         buf[..8].copy_from_slice(&self.chain_id.to_be_bytes());
-        buf[8..28].copy_from_slice(self.sender.as_slice());
-        buf[28..60].copy_from_slice(&self.nonce_key.to_be_bytes::<32>());
-        buf[60..68].copy_from_slice(&self.nonce.to_be_bytes());
-        buf[68..76].copy_from_slice(&self.gas_limit.to_be_bytes());
-        buf[76] = self.lane as u8;
-        buf[77..].copy_from_slice(sealed_body_hash.as_slice());
+        buf[8..40].copy_from_slice(self.key_id.as_slice());
+        buf[40..60].copy_from_slice(self.sender.as_slice());
+        buf[60..92].copy_from_slice(&self.nonce_key.to_be_bytes::<32>());
+        buf[92..100].copy_from_slice(&self.nonce.to_be_bytes());
+        buf[100..108].copy_from_slice(&self.gas_limit.to_be_bytes());
+        buf[108] = self.lane as u8;
+        buf[109..].copy_from_slice(sealed_body_hash.as_slice());
         keccak256(buf)
     }
 }

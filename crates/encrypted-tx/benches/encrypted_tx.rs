@@ -1,6 +1,6 @@
 //! Per-block cost of each encrypted-transaction stage with 16 validators, on one core and on all.
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use commonware_cryptography::bls12381::{
     dkg::feldman_desmedt::deal_anonymous,
     primitives::{sharing::Mode, variant::MinSig},
@@ -19,6 +19,7 @@ const BATCH: usize = 1_000;
 fn envelope(nonce: u64) -> Envelope {
     Envelope {
         chain_id: 4217,
+        key_id: B256::repeat_byte(0x22),
         sender: Address::repeat_byte(0x11),
         nonce_key: U256::ZERO,
         nonce,

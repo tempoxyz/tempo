@@ -35,6 +35,7 @@ impl Network {
 fn envelope(nonce: u64) -> Envelope {
     Envelope {
         chain_id: 4217,
+        key_id: B256::repeat_byte(0x22),
         sender: Address::repeat_byte(0x11),
         nonce_key: U256::from(7),
         nonce,
@@ -81,6 +82,23 @@ fn key_for_another_lane_does_not_open_body() {
         ..envelope(0)
     };
     let copied_into = as_payment.identity(keccak256(&encrypted.sealed));
+
+    let keys = network.keys(&[copied_into]);
+
+    assert!(matches!(encrypted.decrypt(&keys[0]), Err(Error::Decrypt)));
+}
+
+#[test]
+fn key_for_another_network_key_does_not_open_body() {
+    let mut rng = StdRng::seed_from_u64(10);
+    let network = Network::new(&mut rng);
+    let (encrypted, _) =
+        EncryptedBody::encrypt(&mut rng, network.identity(), &envelope(0), b"secret").unwrap();
+    let other_key = Envelope {
+        key_id: B256::repeat_byte(0x33),
+        ..envelope(0)
+    };
+    let copied_into = other_key.identity(keccak256(&encrypted.sealed));
 
     let keys = network.keys(&[copied_into]);
 
