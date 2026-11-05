@@ -24,9 +24,41 @@ use tempo_precompiles::{
         StorageActions, StorageCtx, account_config_commitment,
     },
     tip20::{ITIP20, TIP20Token},
-    validator_config_v2::{ValidatorConfigV2, ValidatorConfigV2Error},
+    validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2, ValidatorConfigV2Error},
 };
 use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
+
+/// Returns the DKG outcome that the boundary block before `epoch` carries for the ceremony
+/// `output`, given the `ValidatorConfigV2` active `validators` and next network identity rotation
+/// epoch in the pre-state of that block.
+///
+/// The players of the ceremony in `epoch` are the active validators. Like consensus
+/// (`read_active_peers` in tempo-consensus), this skips validators whose public key or endpoints
+/// do not decode, and counts each public key once.
+pub fn boundary_dkg_outcome(
+    epoch: u64,
+    output: Output<MinSig, PublicKey>,
+    validators: impl IntoIterator<Item = IValidatorConfigV2::Validator>,
+    next_full_dkg_epoch: u64,
+) -> OnchainDkgOutcome {
+    let next_players = ordered::Set::from_iter_dedup(
+        validators
+            .into_iter()
+            .filter(|validator| {
+                validator.ingress.parse::<SocketAddr>().is_ok()
+                    && validator.egress.parse::<IpAddr>().is_ok()
+            })
+            .filter_map(|validator| {
+                PublicKey::decode(commonware_codec::Copying(validator.publicKey.as_slice())).ok()
+            }),
+    );
+    OnchainDkgOutcome {
+        epoch,
+        output,
+        next_players,
+        is_next_full_dkg: next_full_dkg_epoch == epoch,
+    }
+}
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
@@ -288,26 +320,12 @@ pub trait TempoStateAccess<M = ()> {
                     config.get_next_network_identity_rotation_epoch()?,
                 ))
             })?;
-        // Consensus skips active validators whose entries it cannot decode, so they are no
-        // players either (`read_active_peers` in tempo-consensus).
-        let next_players = ordered::Set::from_iter_dedup(
-            validators
-                .into_iter()
-                .filter(|validator| {
-                    validator.ingress.parse::<SocketAddr>().is_ok()
-                        && validator.egress.parse::<IpAddr>().is_ok()
-                })
-                .filter_map(|validator| {
-                    PublicKey::decode(commonware_codec::Copying(validator.publicKey.as_slice()))
-                        .ok()
-                }),
-        );
-        Ok(OnchainDkgOutcome {
+        Ok(boundary_dkg_outcome(
             epoch,
             output,
-            next_players,
-            is_next_full_dkg: next_full_dkg_epoch == epoch,
-        })
+            validators,
+            next_full_dkg_epoch,
+        ))
     }
 }
 

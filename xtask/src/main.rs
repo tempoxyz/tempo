@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 
 use crate::{
     bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
-    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_hardfork::AddHardfork, generate_localnet::GenerateLocalnet,
-    generate_shadowfork::GenerateShadowfork, get_dkg_outcome::GetDkgOutcome,
-    identity_transitions::GetIdentityTransitions,
+    check_boundary_outcomes::CheckBoundaryOutcomes, generate_devnet::GenerateDevnet,
+    generate_genesis::GenerateGenesis, generate_hardfork::AddHardfork,
+    generate_localnet::GenerateLocalnet, generate_shadowfork::GenerateShadowfork,
+    get_dkg_outcome::GetDkgOutcome, identity_transitions::GetIdentityTransitions,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -18,6 +18,7 @@ use tempo_state_bloat::GenerateStateBloat;
 
 mod bootstrap_shadowfork;
 mod check_abi;
+mod check_boundary_outcomes;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_hardfork;
@@ -34,6 +35,10 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
         Action::CheckAbi(args) => args.run().wrap_err("failed ABI alignment check"),
+        Action::CheckBoundaryOutcomes(args) => args
+            .run()
+            .await
+            .wrap_err("failed checking boundary DKG outcomes"),
         Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
         Action::GetIdentityTransitions(args) => args
             .run()
@@ -78,6 +83,7 @@ struct Args {
 #[derive(Debug, clap::Subcommand)]
 enum Action {
     CheckAbi(CheckAbi),
+    CheckBoundaryOutcomes(CheckBoundaryOutcomes),
     GetDkgOutcome(GetDkgOutcome),
     GetIdentityTransitions(GetIdentityTransitions),
     GenerateGenesis(GenerateGenesis),
