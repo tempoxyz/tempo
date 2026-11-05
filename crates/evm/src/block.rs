@@ -3198,8 +3198,10 @@ mod tests {
             }
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
+            // Keep block 1 off an epoch boundary, which must carry a DKG outcome from T15.
             let mut executor = TestExecutorBuilder::default()
                 .with_spec(spec)
+                .with_epoch_length(100)
                 .with_parent_beacon_block_root(B256::ZERO)
                 .build(&mut db, &chainspec);
             let mut block = *executor.evm().block();
