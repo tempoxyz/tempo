@@ -14881,6 +14881,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "crossbeam-channel",
+ "evm2",
  "metrics",
  "proptest",
  "reth-basic-payload-builder",

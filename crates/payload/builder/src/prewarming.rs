@@ -15,6 +15,8 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
+
+use crate::hints::{StorageHintSlot, StorageHints};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
@@ -106,15 +108,19 @@ impl BestTransactionsPrewarming {
                 // Only parallel jobs send their result. A sender held by every job would make
                 // the drain on invalidation wait for all in-flight and queued prewarms.
                 let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
+                let hints = StorageHintSlot::default();
 
                 if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
+                    let _ = ctx.transactions_tx.send(Some(PrewarmedTransaction {
+                        tx: tx.clone(),
+                        replay: None,
+                        hints: Some(hints.clone()),
+                    }));
                 }
 
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
+                    let tx =
+                        Self::prewarm_transaction(pool, prewarm, tx, hints, expiring_nonce_offset);
                     if let Some(transactions_tx) = transactions_tx {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -173,11 +179,15 @@ impl BestTransactionsPrewarming {
     ///
     /// If [`PrewarmingExecutionContext::parallel`] is enabled and prewarming was successful,
     /// a [`PrewarmedTransaction`] with populated replay data is returned.
+    ///
+    /// Successful prewarming fills `hints` with the parent-state values of the slots the
+    /// transaction touched.
     #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
     fn prewarm_transaction<Provider>(
         pool: &WorkerStatefulPool,
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
+        hints: StorageHintSlot,
         expiring_nonce_offset: Option<usize>,
     ) -> PrewarmedTransaction
     where
@@ -186,6 +196,7 @@ impl BestTransactionsPrewarming {
         if prewarm.parallel && !is_parallel_candidate(&tx) {
             return PrewarmedTransaction::without_replay(tx);
         }
+        let tx_hints = hints.clone();
 
         let replay = pool.get_or_init(
             || prewarm.evm_for_ctx(),
@@ -216,6 +227,8 @@ impl BestTransactionsPrewarming {
                 };
 
                 trace!(target: "payload_builder", "Prewarmed transaction");
+
+                let _ = tx_hints.set(StorageHints::from_pending_state(&result.pending_state));
 
                 if !prewarm.parallel {
                     return None;
@@ -249,7 +262,11 @@ impl BestTransactionsPrewarming {
             },
         );
 
-        PrewarmedTransaction { tx, replay }
+        PrewarmedTransaction {
+            tx,
+            replay,
+            hints: Some(hints),
+        }
     }
 }
 
@@ -336,11 +353,17 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
+    /// Parent-state storage values, once prewarming executed the transaction.
+    pub(crate) hints: Option<StorageHintSlot>,
 }
 
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self { tx, replay: None }
+        Self {
+            tx,
+            replay: None,
+            hints: None,
+        }
     }
 }
 
@@ -1161,6 +1184,7 @@ mod tests {
                 &pool,
                 context.clone(),
                 test_payment_tx(sender, 0),
+                StorageHintSlot::default(),
                 None,
             );
             assert!(failed.replay.is_none());
@@ -1176,7 +1200,17 @@ mod tests {
                 &pool,
                 context,
                 test_payment_tx(sender, 500_000),
+                StorageHintSlot::default(),
                 None,
+            );
+            assert!(failed.hints.expect("hint slot").get().is_none());
+            assert!(
+                successful
+                    .hints
+                    .as_ref()
+                    .expect("hint slot")
+                    .get()
+                    .is_some()
             );
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());

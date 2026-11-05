@@ -4,6 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod encode;
+mod hints;
 mod metrics;
 mod prewarming;
 
@@ -15,6 +16,7 @@ use crate::{
         EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
         block_transaction_length,
     },
+    hints::HintedStateProvider,
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
@@ -324,7 +326,8 @@ where
             .map(|provider| provider as &dyn EvmStateProvider)
             .unwrap_or(evm_state_provider);
 
-        let mut db = StateProviderDatabase::new(evm_state_provider);
+        let hinted_state_provider = HintedStateProvider::new(evm_state_provider);
+        let mut db = StateProviderDatabase::new(&hinted_state_provider as &dyn EvmStateProvider);
         drop(_state_setup_span);
         self.metrics
             .state_setup_duration_seconds
@@ -604,6 +607,7 @@ where
                 best_txs.on_new_result(result);
             };
 
+            hinted_state_provider.set_hints(pool_tx.hints.take());
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
