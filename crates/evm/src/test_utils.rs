@@ -1,8 +1,8 @@
 use std::{num::NonZeroU64, sync::Arc};
 
 use crate::{
-    TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt, TempoEvmConfig,
-    TempoEvmEnv, block::BlockSection,
+    BoundaryOutcomeCheck, TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt,
+    TempoEvmConfig, TempoEvmEnv, block::BlockSection,
 };
 use alloy_primitives::{B256, Bytes, U256};
 use evm2::{EvmFeatures, SpecId, evm::DynDatabase};
@@ -27,7 +27,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) amsterdam_eip8037_enabled: bool,
     pub(crate) spec: TempoHardfork,
     pub(crate) extra_data: Bytes,
-    pub(crate) check_boundary_outcome: Option<B256>,
+    pub(crate) check_boundary_outcome: Option<BoundaryOutcomeCheck>,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
 }
@@ -67,9 +67,13 @@ impl TestExecutorBuilder {
         self
     }
 
-    /// Asks the executor to check the boundary DKG outcome, as a verifying validator does.
-    pub(crate) fn with_boundary_outcome_check(mut self, block_hash: B256) -> Self {
-        self.check_boundary_outcome = Some(block_hash);
+    /// Checks the boundary DKG outcome of the block `block_hash`, enforcing it as a verifying
+    /// validator does or only recording the verdict as any other execution does.
+    pub(crate) fn with_boundary_outcome_check(mut self, block_hash: B256, enforce: bool) -> Self {
+        self.check_boundary_outcome = Some(BoundaryOutcomeCheck {
+            block_hash,
+            enforce,
+        });
         self
     }
 

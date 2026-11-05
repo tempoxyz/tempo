@@ -539,18 +539,29 @@ where
             }
         }
 
-        // Only a boundary block carries a DKG outcome. Execution checked all
-        // of it but the ceremony output against the parent state, unless the
-        // execution layer already knew the block and did not execute it again.
+        // Only a boundary block carries a DKG outcome. Every execution of it
+        // checks all of it but the ceremony output against the parent state,
+        // including one the execution layer ran without being asked to enforce
+        // the check, such as a block it buffered until its parent arrived.
         match proposed_outcome {
             None => true,
             Some(outcome) => {
-                if !self.boundary_outcome_checks.passed(block.digest().0) {
-                    warn!(
-                        "execution did not check the boundary block's DKG outcome \
-                        against the parent state; abstaining"
-                    );
-                    return std::future::pending().await;
+                match self.boundary_outcome_checks.verdict(block.digest().0) {
+                    Some(true) => {}
+                    Some(false) => {
+                        warn!(
+                            "the boundary block's DKG outcome does not match the parent \
+                            state; failing block"
+                        );
+                        return false;
+                    }
+                    None => {
+                        warn!(
+                            "execution recorded no verdict on the boundary block's DKG \
+                            outcome; abstaining"
+                        );
+                        return std::future::pending().await;
+                    }
                 }
                 let ceremony =
                     ceremony.expect("`verify_header` decodes an outcome only for a boundary block");

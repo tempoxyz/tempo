@@ -31,7 +31,7 @@ pub use action_replay::{
 pub use assemble::TempoBlockAssembler;
 pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 pub use common::{BoundaryOutcomeChecks, DkgCeremonyConfig, TempoStateAccess, TempoTx};
-pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+pub use context::{BoundaryOutcomeCheck, TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
 pub use fee_manager::{
@@ -337,7 +337,10 @@ impl ConfigureEvm for TempoEvmConfig {
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
             consensus_context: block.header().consensus_context,
-            check_boundary_outcome: None,
+            check_boundary_outcome: Some(BoundaryOutcomeCheck {
+                block_hash: block.hash(),
+                enforce: false,
+            }),
         })
     }
 

@@ -32,37 +32,40 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
 
-/// Boundary blocks whose DKG outcome passed the check a validator asked for when verifying them
-/// (see [`crate::TempoBlockExecutionCtx::check_boundary_outcome`]).
+/// Verdicts of the DKG outcome check of recently executed boundary blocks (see
+/// [`crate::TempoBlockExecutionCtx::check_boundary_outcome`]): whether each outcome matches the
+/// parent state.
 ///
-/// The execution layer reports a block it already knows as valid without executing it again, so
-/// a validator reads this after a boundary block is reported valid to confirm the check ran.
-/// Clones share their contents.
+/// Every execution of a boundary block records its verdict, including one the execution layer ran
+/// without being asked to enforce the check, such as a block it buffered until its parent arrived.
+/// A validator reads the verdict after the block is reported valid, since the execution layer
+/// reports a block it already knows as valid without executing it again. Clones share their
+/// contents.
 #[derive(Clone, Debug, Default)]
-pub struct BoundaryOutcomeChecks(Arc<Mutex<VecDeque<B256>>>);
+pub struct BoundaryOutcomeChecks(Arc<Mutex<VecDeque<(B256, bool)>>>);
 
 impl BoundaryOutcomeChecks {
     /// Boundary blocks come once per epoch, so only the latest few are kept.
     const CAPACITY: usize = 64;
 
-    /// Records that the outcome of the boundary block `block_hash` passed the check.
-    pub fn record(&self, block_hash: B256) {
-        let mut passed = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if passed.contains(&block_hash) {
-            return;
+    /// Records whether the outcome of the boundary block `block_hash` matches the parent state.
+    pub fn record(&self, block_hash: B256, matches: bool) {
+        let mut verdicts = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        verdicts.retain(|(hash, _)| *hash != block_hash);
+        if verdicts.len() == Self::CAPACITY {
+            verdicts.pop_front();
         }
-        if passed.len() == Self::CAPACITY {
-            passed.pop_front();
-        }
-        passed.push_back(block_hash);
+        verdicts.push_back((block_hash, matches));
     }
 
-    /// Whether the outcome of the boundary block `block_hash` passed the check.
-    pub fn passed(&self, block_hash: B256) -> bool {
+    /// Whether the outcome of the boundary block `block_hash` matches the parent state, or `None`
+    /// if no execution of the block recorded a verdict.
+    pub fn verdict(&self, block_hash: B256) -> Option<bool> {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .contains(&block_hash)
+            .iter()
+            .find_map(|(hash, matches)| (*hash == block_hash).then_some(*matches))
     }
 }
 

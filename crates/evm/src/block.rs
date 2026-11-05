@@ -1,6 +1,6 @@
 use crate::{
-    BoundaryOutcomeChecks, SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx,
-    TempoEvm, TempoEvmTypes, transaction::ExecutionContext,
+    BoundaryOutcomeCheck, BoundaryOutcomeChecks, SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState,
+    TempoBlockExecutionCtx, TempoEvm, TempoEvmTypes, transaction::ExecutionContext,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
@@ -260,7 +260,7 @@ pub struct TempoBlockExecutor<'a> {
     prague_active: bool,
     section: BlockSection,
     extra_data: Bytes,
-    check_boundary_outcome: Option<B256>,
+    check_boundary_outcome: Option<BoundaryOutcomeCheck>,
     boundary_outcome_checks: BoundaryOutcomeChecks,
 
     pub(crate) replay_state: StorageActionReplayState,
@@ -306,22 +306,28 @@ impl<'a> TempoBlockExecutor<'a> {
         }
     }
 
-    /// Records boundary blocks whose DKG outcome passes the check into `checks`.
+    /// Records the verdicts of the boundary DKG outcome check into `checks`.
     pub(crate) fn with_boundary_outcome_checks(mut self, checks: BoundaryOutcomeChecks) -> Self {
         self.boundary_outcome_checks = checks;
         self
     }
 
-    /// Checks the DKG outcome of a boundary block against the parent state, when a validator
-    /// verifying the block asked for it.
+    /// Checks the DKG outcome of a boundary block against the parent state and records the verdict.
     ///
     /// The payload builder fills in the outcome's epoch, next players and full-DKG flag from
-    /// ValidatorConfigV2 in the parent state, and consensus compares only the ceremony output. This
-    /// is a voting rule, not part of block validity: syncing, following and replaying blocks skip
-    /// it and trust finalization. So it reads the backing database, which holds the parent state,
-    /// keeping these reads out of the block's state and access list.
+    /// ValidatorConfigV2 in the parent state, and consensus compares only the ceremony output. A
+    /// mismatch rejects the block only when a validator verifying it enforces the check: this is a
+    /// voting rule, not part of block validity, so syncing, following and replaying blocks only
+    /// record the verdict and trust finalization. The check reads the backing database, which holds
+    /// the parent state, keeping these reads out of the block's state and access list. When the
+    /// check is not enforced, a failed read, such as from a corpus record captured before the check
+    /// existed, records no verdict.
     fn check_boundary_outcome(&mut self) -> Result<(), BlockExecutionError> {
-        let Some(block_hash) = self.check_boundary_outcome else {
+        let Some(BoundaryOutcomeCheck {
+            block_hash,
+            enforce,
+        }) = self.check_boundary_outcome
+        else {
             return Ok(());
         };
         let epoch_length = self.evm().block().ext.epoch_length.get();
@@ -329,6 +335,29 @@ impl<'a> TempoBlockExecutor<'a> {
         if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
             return Ok(());
         }
+        let verdict = match self.boundary_outcome_verdict(block_number, epoch_length) {
+            Ok(verdict) => verdict,
+            Err(error) if enforce => return Err(error),
+            Err(error) => {
+                trace!(%error, "could not check the boundary DKG outcome; recording no verdict");
+                return Ok(());
+            }
+        };
+        self.boundary_outcome_checks
+            .record(block_hash, verdict.is_ok());
+        match verdict {
+            Err(mismatch) if enforce => Err(mismatch.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Compares the boundary block's DKG outcome with the one derived from the parent state. The
+    /// outer error means the parent state could not be read; the inner one is a mismatch.
+    fn boundary_outcome_verdict(
+        &mut self,
+        block_number: u64,
+        epoch_length: u64,
+    ) -> Result<Result<(), BlockValidationError>, BlockExecutionError> {
         let spec = self.evm().config_spec_id();
         let mut parent_state: &mut dyn evm2::evm::DynDatabase = self.evm_mut().database_mut();
         let config = crate::TempoStateAccess::<((), ())>::dkg_ceremony_config(
@@ -338,35 +367,36 @@ impl<'a> TempoBlockExecutor<'a> {
         )
         .map_err(BlockExecutionError::other)?;
         // Before ValidatorConfigV2 was initialized, the players came from ValidatorConfig V1.
-        if let Some(config) = config {
-            // Trailing bytes are not rejected yet, matching the committee system call.
-            let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-                &mut commonware_codec::Copying(self.extra_data.as_ref()),
-            )
-            .map_err(|err| {
-                BlockValidationError::msg(format!(
+        let Some(config) = config else {
+            return Ok(Ok(()));
+        };
+        // Trailing bytes are not rejected yet, matching the committee system call.
+        let proposed = match tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+            &mut commonware_codec::Copying(self.extra_data.as_ref()),
+        ) {
+            Ok(proposed) => proposed,
+            Err(err) => {
+                return Ok(Err(BlockValidationError::msg(format!(
                     "failed decoding boundary block extra data as DKG outcome: {err}"
-                ))
-            })?;
-            let expected =
-                config.boundary_outcome(block_number / epoch_length + 1, proposed.output.clone());
-            if proposed != expected {
-                return Err(BlockValidationError::msg(format!(
-                    "boundary block DKG outcome does not match the parent state: \
-                    epoch {} (expected {}), next players {:?} (expected {:?}), \
-                    full DKG {} (expected {})",
-                    proposed.epoch,
-                    expected.epoch,
-                    proposed.next_players(),
-                    expected.next_players(),
-                    proposed.is_next_full_dkg,
-                    expected.is_next_full_dkg,
-                ))
-                .into());
+                ))));
             }
+        };
+        let expected =
+            config.boundary_outcome(block_number / epoch_length + 1, proposed.output.clone());
+        if proposed != expected {
+            return Ok(Err(BlockValidationError::msg(format!(
+                "boundary block DKG outcome does not match the parent state: \
+                epoch {} (expected {}), next players {:?} (expected {:?}), \
+                full DKG {} (expected {})",
+                proposed.epoch,
+                expected.epoch,
+                proposed.next_players(),
+                expected.next_players(),
+                proposed.is_next_full_dkg,
+                expected.is_next_full_dkg,
+            ))));
         }
-        self.boundary_outcome_checks.record(block_hash);
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// Block-level counters after all prior transactions were committed.
@@ -1600,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn test_checks_boundary_dkg_outcome_against_parent_state_on_request() {
+    fn test_checks_boundary_dkg_outcome_against_parent_state() {
         let chainspec = system_calls_chainspec();
         let validator = PrivateKey::from_seed(1);
         let players = ordered::Set::from_iter_dedup([validator.public_key()]);
@@ -1612,19 +1642,20 @@ mod tests {
             ..OnchainDkgOutcome::dealt(1, 3)
         };
 
-        // V2 is initialized at height 0 unless db is empty. Only a verifying validator asks for
-        // the check, and a block whose outcome passes it is recorded.
+        // V2 is initialized at height 0 unless db is empty. Every execution of a boundary block
+        // records a verdict; only a verifying validator enforces it. Without a check, as when
+        // building a block, nothing is checked.
         let checks = BoundaryOutcomeChecks::default();
         let block_hash = B256::repeat_byte(0xB0);
-        let run = |db, fork, block_number, extra_data: Bytes, check: bool| {
+        let run = |db: InMemoryDB, block_number, extra_data: Bytes, enforce: Option<bool>| {
             let mut builder = TestExecutorBuilder::default()
                 .with_block_number(block_number)
                 .with_epoch_length(5)
                 .with_extra_data(extra_data)
                 .with_parent_beacon_block_root(B256::ZERO)
-                .with_spec(fork);
-            if check {
-                builder = builder.with_boundary_outcome_check(block_hash);
+                .with_spec(TempoHardfork::T15);
+            if let Some(enforce) = enforce {
+                builder = builder.with_boundary_outcome_check(block_hash, enforce);
             }
             builder
                 .build(db, &chainspec)
@@ -1632,8 +1663,6 @@ mod tests {
                 .apply_pre_execution_changes()
                 .map_err(|e| e.to_string())
         };
-        let pre_execution =
-            |db, fork, block_number, extra_data| run(db, fork, block_number, extra_data, true);
         let config = |rotation_epoch| {
             db_with_accounts(&validator_config_v2_accounts(
                 &validator,
@@ -1641,8 +1670,18 @@ mod tests {
                 rotation_epoch,
             ))
         };
-        let check = |rotation_epoch, fork, outcome: &OnchainDkgOutcome| {
-            pre_execution(config(rotation_epoch), fork, 4, outcome.encode().into())
+        let check_at = |rotation_epoch, fork, outcome: &OnchainDkgOutcome| {
+            TestExecutorBuilder::default()
+                .with_block_number(4)
+                .with_epoch_length(5)
+                .with_extra_data(outcome.encode().into())
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(fork)
+                .with_boundary_outcome_check(block_hash, true)
+                .build(config(rotation_epoch), &chainspec)
+                .with_boundary_outcome_checks(checks.clone())
+                .apply_pre_execution_changes()
+                .map_err(|e| e.to_string())
         };
 
         let full_dkg = OnchainDkgOutcome {
@@ -1653,26 +1692,27 @@ mod tests {
             next_players: OnchainDkgOutcome::dealt(1, 3).next_players,
             ..correct.clone()
         };
-        // Syncing, following and replaying blocks do not check the outcome.
+
+        // Syncing, following and replaying blocks record the verdict but never reject the block.
+        for (outcome, matches) in [(&wrong_players, false), (&correct, true)] {
+            assert_eq!(
+                run(config(None), 4, outcome.encode().into(), Some(false)),
+                Ok(())
+            );
+            assert_eq!(checks.verdict(block_hash), Some(matches));
+        }
+        // Building a block checks nothing, so it neither rejects nor records.
         assert_eq!(
-            run(
-                config(None),
-                TempoHardfork::T15,
-                4,
-                wrong_players.encode().into(),
-                false
-            ),
+            run(config(None), 4, wrong_players.encode().into(), None),
             Ok(())
         );
-        assert!(!checks.passed(block_hash));
-        assert!(check(None, TempoHardfork::T15, &wrong_players).is_err());
-        assert!(!checks.passed(block_hash));
+        assert_eq!(checks.verdict(block_hash), Some(true));
 
-        // When asked for, the check applies at every fork.
+        // When enforced, the check applies at every fork and records its verdict too.
         for fork in [TempoHardfork::T8, TempoHardfork::T14, TempoHardfork::T15] {
-            assert_eq!(check(None, fork, &correct), Ok(()));
-            assert!(checks.passed(block_hash));
-            assert_eq!(check(Some(1), fork, &full_dkg), Ok(()));
+            assert_eq!(check_at(None, fork, &correct), Ok(()));
+            assert_eq!(checks.verdict(block_hash), Some(true));
+            assert_eq!(check_at(Some(1), fork, &full_dkg), Ok(()));
 
             for (rotation_epoch, wrong) in [
                 (Some(1), correct.clone()),
@@ -1684,58 +1724,75 @@ mod tests {
                         ..correct.clone()
                     },
                 ),
-                (
-                    None,
-                    OnchainDkgOutcome {
-                        next_players: OnchainDkgOutcome::dealt(1, 3).next_players,
-                        ..correct.clone()
-                    },
-                ),
+                (None, wrong_players.clone()),
             ] {
-                let err = check(rotation_epoch, fork, &wrong).unwrap_err();
+                let err = check_at(rotation_epoch, fork, &wrong).unwrap_err();
                 assert!(
                     err.starts_with("boundary block DKG outcome does not match the parent state"),
                     "{err}"
                 );
+                assert_eq!(checks.verdict(block_hash), Some(false));
             }
         }
+
+        // Extra data that does not decode fails the check.
+        let err = run(config(None), 4, Bytes::from_static(&[0xff]), Some(true)).unwrap_err();
+        assert!(
+            err.starts_with("failed decoding boundary block extra data as DKG outcome"),
+            "{err}"
+        );
+        assert_eq!(checks.verdict(block_hash), Some(false));
 
         let mut trailing = correct.encode().to_vec();
         trailing.push(0);
         // Trailing bytes are not enforced yet.
         assert_eq!(
-            pre_execution(config(None), TempoHardfork::T15, 4, trailing.clone().into()),
+            run(config(None), 4, trailing.clone().into(), Some(true)),
             Ok(())
         );
+        assert_eq!(checks.verdict(block_hash), Some(true));
 
-        // Before ValidatorConfigV2 is initialized, boundaries are not checked, not even decoded.
+        // Before ValidatorConfigV2 is initialized, boundaries pass without being decoded.
         for extra_data in [
             wrong_players.encode().into(),
             trailing.into(),
             Bytes::from_static(&[0xff]),
         ] {
             assert_eq!(
-                pre_execution(InMemoryDB::default(), TempoHardfork::T15, 4, extra_data),
+                run(InMemoryDB::default(), 4, extra_data, Some(true)),
                 Ok(())
             );
+            assert_eq!(checks.verdict(block_hash), Some(true));
         }
-        // Blocks other than the boundary carry no outcome.
+
+        // Blocks other than the boundary carry no outcome and record nothing.
+        let fresh = BoundaryOutcomeChecks::default();
         assert_eq!(
-            pre_execution(config(None), TempoHardfork::T15, 3, Bytes::new()),
+            TestExecutorBuilder::default()
+                .with_block_number(3)
+                .with_epoch_length(5)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T15)
+                .with_boundary_outcome_check(block_hash, true)
+                .build(config(None), &chainspec)
+                .with_boundary_outcome_checks(fresh.clone())
+                .apply_pre_execution_changes()
+                .map_err(|e| e.to_string()),
             Ok(())
         );
+        assert_eq!(fresh.verdict(block_hash), None);
 
         // The check reads the parent state outside the block's state, so the block access list is
         // the same with or without it.
-        let block_access_list = |check: bool| {
+        let block_access_list = |enforce: Option<bool>| {
             let mut builder = TestExecutorBuilder::default()
                 .with_block_number(4)
                 .with_epoch_length(5)
                 .with_extra_data(correct.encode().into())
                 .with_parent_beacon_block_root(B256::ZERO)
                 .with_spec(TempoHardfork::T15);
-            if check {
-                builder = builder.with_boundary_outcome_check(block_hash);
+            if let Some(enforce) = enforce {
+                builder = builder.with_boundary_outcome_check(block_hash, enforce);
             }
             let mut executor = builder.build(config(None), &chainspec);
             executor.enable_block_access_list_builder();
@@ -1746,7 +1803,67 @@ mod tests {
                 .1
                 .expect("T15 builds a block access list")
         };
-        assert_eq!(block_access_list(true), block_access_list(false));
+        assert_eq!(block_access_list(Some(true)), block_access_list(None));
+        assert_eq!(block_access_list(Some(false)), block_access_list(None));
+    }
+
+    /// Fails every storage read of ValidatorConfigV2, like a corpus record captured before the
+    /// boundary outcome check read those slots.
+    struct MissingValidatorConfig(InMemoryDB);
+
+    impl evm2::evm::Database for MissingValidatorConfig {
+        type Error = std::io::Error;
+
+        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            evm2::evm::Database::get_account(&mut self.0, address).map_err(std::io::Error::other)
+        }
+
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            evm2::evm::Database::get_code_by_hash(&mut self.0, code_hash)
+                .map_err(std::io::Error::other)
+        }
+
+        fn get_storage(&mut self, address: &Address, key: &U256) -> Result<U256, Self::Error> {
+            if *address == VALIDATOR_CONFIG_V2_ADDRESS {
+                return Err(std::io::Error::other("uncaptured storage"));
+            }
+            evm2::evm::Database::get_storage(&mut self.0, address, key)
+                .map_err(std::io::Error::other)
+        }
+
+        fn get_block_hash(&mut self, number: &U256) -> Result<B256, Self::Error> {
+            evm2::evm::Database::get_block_hash(&mut self.0, number).map_err(std::io::Error::other)
+        }
+    }
+
+    #[test]
+    fn test_boundary_dkg_outcome_check_without_parent_state() {
+        let chainspec = system_calls_chainspec();
+        let checks = BoundaryOutcomeChecks::default();
+        let block_hash = B256::repeat_byte(0xB0);
+        let run = |enforce| {
+            TestExecutorBuilder::default()
+                .with_block_number(4)
+                .with_epoch_length(5)
+                .with_extra_data(OnchainDkgOutcome::dealt(1, 3).encode().into())
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T15)
+                .with_boundary_outcome_check(block_hash, enforce)
+                .build(
+                    evm2::evm::Db::new(MissingValidatorConfig(InMemoryDB::default())),
+                    &chainspec,
+                )
+                .with_boundary_outcome_checks(checks.clone())
+                .apply_pre_execution_changes()
+                .map_err(|e| e.to_string())
+        };
+
+        // Replaying a block whose parent state lacks ValidatorConfigV2 records no verdict.
+        assert_eq!(run(false), Ok(()));
+        assert_eq!(checks.verdict(block_hash), None);
+        // A verifying validator rejects it.
+        assert!(run(true).is_err());
+        assert_eq!(checks.verdict(block_hash), None);
     }
 
     #[test]

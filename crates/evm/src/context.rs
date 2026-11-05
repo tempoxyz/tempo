@@ -14,10 +14,20 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub shared_gas_limit: u64,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
-    /// The block's hash when a validator verifying it asked for its boundary DKG outcome to be
-    /// checked against the parent state, see [`crate::BoundaryOutcomeChecks`]. `None` when
-    /// syncing, following, replaying or building blocks.
-    pub check_boundary_outcome: Option<alloy_primitives::B256>,
+    /// Checks a boundary block's DKG outcome against the parent state and records the verdict in
+    /// [`crate::BoundaryOutcomeChecks`]. Set for every block executed from a sealed block, `None`
+    /// when building one.
+    pub check_boundary_outcome: Option<BoundaryOutcomeCheck>,
+}
+
+/// The DKG outcome check of a boundary block, see [`TempoBlockExecutionCtx::check_boundary_outcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundaryOutcomeCheck {
+    /// The hash of the block, under which the verdict is recorded.
+    pub block_hash: alloy_primitives::B256,
+    /// Whether a mismatch rejects the block. Only a validator verifying a proposal enforces the
+    /// check; syncing, following and replaying blocks only record the verdict.
+    pub enforce: bool,
 }
 
 /// Context required for next block environment.

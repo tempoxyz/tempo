@@ -29,7 +29,9 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
             check_boundary_outcome,
         } = payload;
         let mut ctx = self.context_for_block(block)?;
-        ctx.check_boundary_outcome = check_boundary_outcome.then(|| block.hash());
+        if let Some(check) = &mut ctx.check_boundary_outcome {
+            check.enforce = *check_boundary_outcome;
+        }
         Ok(ctx)
     }
 
