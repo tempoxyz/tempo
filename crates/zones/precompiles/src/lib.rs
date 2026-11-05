@@ -210,7 +210,9 @@ where
                 message,
                 gas,
                 &self.env,
-                ztip20::TIP20Rules,
+                ztip20::TIP20Rules {
+                    l1: self.l1.clone(),
+                },
                 |data, caller| {
                     TIP20Token::from_address_unchecked(address)
                         .call(data, caller)

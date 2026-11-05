@@ -272,6 +272,12 @@ impl StorageCtx {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
 
+    /// Returns whether receive-policy blocks revert instead of diverting the funds. See
+    /// [`PrecompileStorageProvider::set_revert_blocked_inbound`].
+    pub fn revert_blocked_inbound(&self) -> bool {
+        Self::with_storage(|s| s.revert_blocked_inbound())
+    }
+
     /// Creates a journal checkpoint and returns a RAII guard.
     ///
     /// All state mutations after this call will be atomically

@@ -88,6 +88,9 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 url.workspace = true
 
+antithesis_sdk = { workspace = true, optional = true }
+serde_json = { workspace = true, default-features = true, optional = true }
+
 [dev-dependencies]
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
@@ -104,3 +107,4 @@ tracing-subscriber.workspace = true
 
 [features]
 default = []
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:serde_json"]

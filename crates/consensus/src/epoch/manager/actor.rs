@@ -296,6 +296,12 @@ where
         resolver_mux: &mut MuxHandle<impl Sender<PublicKey = PublicKey>>,
     ) -> eyre::Result<()> {
         if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k) {
+            #[cfg(feature = "fuzz")]
+            antithesis_sdk::assert_always_greater_than!(
+                epoch.get(),
+                latest.get(),
+                "Epoch manager only enters an epoch newer than every running one"
+            );
             ensure!(
                 epoch > latest,
                 "requested to start an epoch `{epoch}` older than the latest \

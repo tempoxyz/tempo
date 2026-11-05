@@ -333,6 +333,12 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
         .await
         .wrap_err("failed sending finalized payload")?;
 
+    #[cfg(feature = "fuzz")]
+    antithesis_sdk::assert_always!(
+        !payload_status.is_invalid(),
+        "Follow mode execution never rejects a finalized block as invalid",
+        &details
+    );
     ensure!(
         payload_status.is_valid() || payload_status.is_syncing(),
         "payload status of finalized block was neither valid nor syncing: \
@@ -385,6 +391,13 @@ async fn submit_forkchoice_update<
     };
 
     debug!(payload_status = %response.payload_status, "execution layer reported FCU status");
+
+    #[cfg(feature = "fuzz")]
+    antithesis_sdk::assert_always!(
+        !response.is_invalid(),
+        "Follow mode forkchoice never rejects a finalized tip as invalid",
+        &serde_json::json!({ "digest": tip.digest.to_string(), "status": response.payload_status.to_string() })
+    );
 
     ensure!(
         !response.is_invalid(),
