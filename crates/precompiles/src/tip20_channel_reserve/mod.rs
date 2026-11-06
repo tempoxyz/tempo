@@ -856,7 +856,7 @@ impl TIP20ChannelReserve {
     ) -> Result<()> {
         let digest = self.get_voucher_digest_inner(channel_id, cumulative_amount)?;
         let signer = SignatureVerifier::new()
-            .recover(digest, signature.clone())
+            .recover(digest, signature)
             .map_err(|_| TIP20ChannelReserveError::invalid_signature())?;
         if signer != self.expected_signer(descriptor) {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
