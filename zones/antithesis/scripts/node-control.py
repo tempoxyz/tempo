@@ -63,15 +63,15 @@ def option(argv, name, default=None):
     return default
 
 
-def receive(conn):
+def receive(conn, limit=4096):
     data = bytearray()
     while b'\n' not in data:
         part = conn.recv(4096)
         if not part:
             raise ValueError('incomplete request')
         data.extend(part)
-        if len(data) > 4096:
-            raise ValueError('request too large')
+        if len(data) > limit:
+            raise ValueError('control message too large')
     return json.loads(data.split(b'\n', 1)[0])
 
 
@@ -342,7 +342,7 @@ def main():
         client.settimeout(STOP_TIMEOUT + OFFLINE_TIMEOUT + RECOVERY_TIMEOUT + 15)
         client.connect(args.socket)
         client.sendall(json.dumps(request).encode() + b'\n')
-        result = receive(client)
+        result = receive(client, limit=64 * 1024)
     print(json.dumps(result), flush=True)
     return 0 if result.get('state') == 'recovered' else 1
 

@@ -10,7 +10,10 @@ use antithesis_sdk::{assert_always, assert_sometimes};
 use eyre::WrapErr as _;
 use futures::{StreamExt as _, TryStreamExt as _, stream};
 use serde_json::json;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZonePortal},
@@ -23,6 +26,8 @@ use super::{Context, Record, is_rpc_error, poll_until, shuffled};
 pub(super) const SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Accounts and transactions `check-consistency` samples per run.
 const SAMPLE: usize = 16;
+/// Concurrent node/block reads in the post-fault history check.
+const HISTORY_READS: usize = 32;
 /// Blocks per `eth_getLogs` request.
 const LOG_CHUNK: u64 = 10_000;
 /// Concurrent balance reads in `check-ledger`.
@@ -346,51 +351,68 @@ impl Context {
         }
 
         let records = self.ledger.records()?;
-        // Nodes may agree on a common rollback; a confirmed transaction's block is a floor.
-        let last_zone_block = records
-            .iter()
-            .filter_map(|record| match record {
-                Record::Transfer { zone_block, .. } | Record::Withdrawal { zone_block, .. } => {
-                    Some(*zone_block)
-                }
-                _ => None,
-            })
-            .max()
-            .unwrap_or_default();
-        let converged = converged && highest >= last_zone_block;
-        // Missing historical blocks or receipts are tolerated during faults, not after
-        // recovery. Check every recorded transaction on every node within the same budget.
-        let mut missing_transactions = Vec::new();
+        let mut transactions: BTreeMap<u64, BTreeSet<B256>> = BTreeMap::new();
         for record in &records {
-            let (tx, height) = match record {
-                Record::Transfer {
-                    zone_tx,
-                    zone_block,
-                    ..
-                }
-                | Record::Withdrawal {
-                    zone_tx,
-                    zone_block,
-                    ..
-                } => (*zone_tx, *zone_block),
-                _ => continue,
-            };
-            for (url, zone) in self.zone_urls.iter().zip(&self.zones) {
-                let block = zone
-                    .get_block_by_number(BlockNumberOrTag::Number(height))
-                    .await?;
-                let receipt = zone.get_transaction_receipt(tx).await?;
-                if !block.is_some_and(|block| {
-                    block.header.number == height
-                        && block.transactions.hashes().any(|hash| hash == tx)
-                }) || !receipt
-                    .is_some_and(|receipt| receipt.status() && receipt.block_number == Some(height))
-                {
-                    missing_transactions.push(json!({
-                        "node": url.as_str(), "tx": tx, "recorded_block": height,
-                    }));
+            if let Record::Transfer {
+                zone_tx,
+                zone_block,
+                ..
+            }
+            | Record::Withdrawal {
+                zone_tx,
+                zone_block,
+                ..
+            } = record
+            {
+                transactions
+                    .entry(*zone_block)
+                    .or_default()
+                    .insert(*zone_tx);
+            }
+        }
+        // Nodes may agree on a common rollback; a confirmed transaction's block is a floor.
+        let last_zone_block = transactions
+            .last_key_value()
+            .map_or(0, |(&height, _)| height);
+        let converged = converged && highest >= last_zone_block;
+        // Fetch each block and its receipts once per node, not once per ledger entry.
+        // Bounded parallelism keeps a growing history from turning RPC latency into a timeout.
+        let mut history = stream::iter(self.zone_urls.iter().zip(&self.zones).flat_map(
+            |(url, zone)| {
+                transactions
+                    .iter()
+                    .map(move |(&height, txs)| (url, zone, height, txs))
+            },
+        ))
+        .map(|(url, zone, height, txs)| async move {
+            let block = zone
+                .get_block_by_number(BlockNumberOrTag::Number(height))
+                .await?;
+            let receipts = zone.get_block_receipts(BlockId::number(height)).await?;
+            let mut included = BTreeSet::new();
+            let mut successful = BTreeSet::new();
+            if let Some(block) = block.filter(|block| block.header.number == height) {
+                included.extend(block.transactions.hashes());
+                for receipt in receipts.into_iter().flatten() {
+                    if receipt.status()
+                        && receipt.block_number == Some(height)
+                        && receipt.block_hash == Some(block.header.hash)
+                    {
+                        successful.insert(receipt.transaction_hash);
+                    }
                 }
             }
+            eyre::Ok(
+                txs.iter()
+                    .filter(|&tx| !included.contains(tx) || !successful.contains(tx))
+                    .map(|tx| json!({ "node": url.as_str(), "tx": tx, "recorded_block": height }))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .buffer_unordered(HISTORY_READS);
+        let mut missing_transactions = Vec::new();
+        while let Some(missing) = history.try_next().await? {
+            missing_transactions.extend(missing);
         }
         let mut unsettled_deposits = Vec::new();
         let mut unpaid_withdrawals = Vec::new();
