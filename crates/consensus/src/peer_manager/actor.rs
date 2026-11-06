@@ -52,7 +52,6 @@ where
     execution_node: Arc<TExecutionNode>,
     epoch_strategy: FixedEpocher,
     latest_observed_finalized_tip: (Height, Digest),
-    public_key: PublicKey,
     max_peers: NonZeroUsize,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
@@ -76,7 +75,6 @@ where
             execution_node,
             epoch_strategy,
             finalized_tip,
-            public_key,
             max_peers,
         }: super::Config<TPeerManager, TExecutionNode>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
@@ -93,7 +91,6 @@ where
             execution_node,
             epoch_strategy,
             latest_observed_finalized_tip: finalized_tip,
-            public_key,
             max_peers,
             mailbox,
             peers,
@@ -254,15 +251,14 @@ where
     }
 
     fn track_or_overwrite(&mut self, height: u64, peers: Peers) {
-        // The P2P network panics on a set larger than `max_peers`, counting the
-        // local identity. Warn with a third of the budget left.
-        let flat = peers.to_flat_map();
-        let size = flat.len() + usize::from(flat.position(&self.public_key).is_none());
+        // The P2P network panics on a set larger than `max_peers`. Warn with
+        // a third of the budget left.
+        let size = peers.len();
         if size > self.max_peers.get() * 2 / 3 {
             warn!(
                 peers = size,
-                max_peers = self.max_peers.get(),
-                "peer set is above 2/3 of --consensus.max-peers-per-set; the node will halt at the limit",
+                max_peers = self.max_peers,
+                "peer set is above 2/3 of the max peers per set; the node will halt at the limit",
             );
         }
 
@@ -787,7 +783,6 @@ mod tests {
                             Height::new(consensus_tip),
                             Digest(B256::repeat_byte(0xFF)),
                         ),
-                        public_key: peer(1).public_key,
                         max_peers: commonware_utils::NZUsize!(128),
                     },
                 )
@@ -823,7 +818,6 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
-                    public_key: peer(1).public_key,
                     max_peers: commonware_utils::NZUsize!(128),
                 },
             );
@@ -847,7 +841,6 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
-                    public_key: peer(1).public_key,
                     max_peers: commonware_utils::NZUsize!(128),
                 },
             )

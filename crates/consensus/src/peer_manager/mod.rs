@@ -73,8 +73,6 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     /// Execution-layer-derived reads must not advance beyond this tip until
     /// marshal reports a newer finalized tip.
     pub(crate) finalized_tip: (Height, Digest),
-    /// This node's public key, which the P2P network counts toward every peer set.
-    pub(crate) public_key: PublicKey,
     /// The P2P network's maximum peer set size. The network panics on larger
     /// peer sets; a warning is logged past 2/3 of it.
     pub(crate) max_peers: NonZeroUsize,

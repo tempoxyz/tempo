@@ -215,7 +215,6 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_tip: (finalized_tip.1, finalized_tip.2),
-                public_key: self.signer.public_key(),
                 max_peers: self.max_peers,
             },
         )
