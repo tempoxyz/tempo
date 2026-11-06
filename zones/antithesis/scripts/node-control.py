@@ -218,10 +218,10 @@ class Supervisor:
                 raise Rejected(str(exc)) from exc
             returncode = self.node.returncode
             event('stopped', operation, returncode=returncode)
-            if returncode > 0:
-                raise SafetyFailure('node failed during maintenance shutdown: exit ' + str(returncode))
-            if returncode not in (0, -signal.SIGTERM):
+            if returncode == -signal.SIGKILL:
                 raise Rejected('node killed during maintenance shutdown: exit ' + str(returncode))
+            if returncode not in (0, -signal.SIGTERM):
+                raise SafetyFailure('node failed during maintenance shutdown: exit ' + str(returncode))
             self.node = None
             if self.shutting_down:
                 raise RuntimeError('supervisor shutting down')
