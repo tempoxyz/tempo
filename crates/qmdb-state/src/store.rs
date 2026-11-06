@@ -596,7 +596,8 @@ impl Readers {
             let read = self
                 .runtime
                 .spawn_blocking(move || read_shared_db(&runtime, &db, name, &keys));
-            return futures::executor::block_on(read).map_err(|_| Error::Stopped)?;
+            return futures::executor::block_on(tokio::task::unconstrained(read))
+                .map_err(|_| Error::Stopped)?;
         }
         read_shared_db(&self.runtime, db, name, keys)
     }
@@ -610,7 +611,9 @@ fn read_shared_db<D: Readable>(
     keys: &[Key],
 ) -> Result<Vec<Option<D::Value>>, Error> {
     let _runtime = runtime.enter();
-    futures::executor::block_on(async {
+    // Blocking here never returns to a calling tokio task's scheduler, so its budget could
+    // never refill: once spent, the lock would stay pending, its wakeup deferred until then.
+    futures::executor::block_on(tokio::task::unconstrained(async {
         let start = Instant::now();
         let db = db.read().await;
         metrics::histogram!("qmdb_state_read_lock_wait_seconds", "db" => name)
@@ -619,7 +622,7 @@ fn read_shared_db<D: Readable>(
             Some(db) => db.read_many(keys).await,
             None => Err(Error::Stopped),
         }
-    })
+    }))
 }
 
 impl std::fmt::Debug for Readers {
@@ -1719,6 +1722,28 @@ mod tests {
                 .unwrap()
                 .root()
         );
+    }
+
+    #[test]
+    fn reads_inside_tokio_tasks_ignore_their_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(imported(dir.path(), 64));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        // Like an RPC handler, one poll of the task reads many times without yielding.
+        let reads = runtime.spawn(async move {
+            for _ in 0..1_000 {
+                store.get_slot(Key::new([1; 32])).unwrap();
+            }
+        });
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(runtime.block_on(reads)).unwrap());
+        finished
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("reads stalled")
+            .unwrap();
     }
 
     #[test]
