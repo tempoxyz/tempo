@@ -316,6 +316,12 @@ fn settlement_prover_addresses(
     should_sequence_blocks: bool,
     rpc_only: bool,
 ) -> eyre::Result<Option<ProverAddresses>> {
+    if args.shadow_prover_pcrs.is_some() {
+        warn!(
+            target: "reth::cli",
+            "Ignoring --shadow-prover.pcrs: shadow proving was removed"
+        );
+    }
     if !args.enable_prover {
         return Ok(None);
     }
@@ -732,6 +738,16 @@ pub struct ZoneArgs {
     )]
     pub prover_attestation_policy: Option<PathBuf>,
 
+    /// Removed with the shadow prover; accepted and ignored so existing launch args still start.
+    // TODO: remove after rpc_only deployments stop passing --shadow-prover.pcrs
+    #[arg(
+        long = "shadow-prover.pcrs",
+        env = "SHADOW_PROVER_PCRS",
+        value_name = "PCR0,PCR1,PCR2",
+        hide = true
+    )]
+    pub shadow_prover_pcrs: Option<String>,
+
     /// Bounce deposits whose L1 sender is not on the allowlist persisted at
     /// `<datadir>/deposit-allowlist.json`. Until the admin first writes the list, the sequencer
     /// credits every deposit. Requires `--deposits.allowlist.admin`.
@@ -997,6 +1013,29 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn removed_shadow_prover_pcrs_flag_is_accepted_and_ignored() {
+        let pcr = "11".repeat(48);
+        let pcrs = format!("{pcr},{pcr},{pcr}");
+        let args = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.enable-prover",
+            "--sequencer.prover-address",
+            "T13=prover:5000",
+            "--shadow-prover.pcrs",
+            pcrs.as_str(),
+        ])
+        .unwrap()
+        .zone;
+        assert!(
+            settlement_prover_addresses(&args, false, true)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
