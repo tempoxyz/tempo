@@ -6,10 +6,13 @@ use alloy_primitives::{
 };
 use evm2::{
     TxResult,
-    block::{BlockExecutionError, InternalBlockExecutionError, map_database_error},
+    block::{
+        BlockExecutionError, BlockExecutor, ExecutableTx, InternalBlockExecutionError,
+        map_database_error,
+    },
     evm::{CacheDB, DynDatabase, PendingState},
 };
-use reth_evm::{BlockExecutor, ExecutorTx, RecoveredTx};
+use std::borrow::Borrow;
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
     nonce::NonceManager,
@@ -23,12 +26,12 @@ impl TempoBlockExecutor<'_> {
     /// `result_closure` observes the synthesized result before the replayed state is committed.
     pub fn execute_transaction_with_actions(
         &mut self,
-        tx: impl ExecutorTx<Self>,
+        tx: impl ExecutableTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
     ) -> Result<(), BlockExecutionError> {
-        let (tx_env, recovered) = tx.into_parts();
-        let original = recovered.tx();
+        let (tx_env, tx) = tx.into_parts();
+        let original = tx.borrow();
 
         let StorageActionReplay {
             result,

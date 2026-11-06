@@ -18,6 +18,7 @@ mod handler;
 mod instructions;
 #[cfg(feature = "jit")]
 pub mod jit;
+mod reth_block;
 mod signature_gas;
 #[cfg(test)]
 mod test_utils;
