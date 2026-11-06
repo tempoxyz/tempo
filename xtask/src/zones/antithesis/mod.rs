@@ -450,21 +450,26 @@ impl Context {
         else {
             return Ok(());
         };
-        let count = random_between(50, 200);
+        let url = &self.zone_urls[node];
+        let zone = self.wallet(&sender, url);
+        let gas_price = zone.get_gas_price().await?;
+        // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
+        let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
+        // Fees stay within half the balance and transfers take a quarter, so the batch always
+        // fits what the sender holds.
+        let count = random_between(50, 200).min((balance / 2) / max_fee.max(1));
+        if count == 0 {
+            return Ok(());
+        }
         let amount = (balance / 4) / count;
         if amount == 0 {
             return Ok(());
         }
-        let url = &self.zone_urls[node];
-        let zone = self.wallet(&sender, url);
-        let gas_price = zone.get_gas_price().await?;
         let mut nonce = zone
             .get_transaction_count(sender.address())
             .pending()
             .await?;
         let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
-        // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
-        let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
         // The pool admits only FANOUT_CHUNK pending transactions per sender, so the batch goes out
         // in chunks, each confirmed before the next.
         let mut remaining = count;
@@ -473,7 +478,7 @@ impl Context {
             remaining -= chunk;
             let mut pending: Vec<(Address, PendingTransactionBuilder<_>)> = Vec::new();
             for _ in 0..chunk {
-                let to = self.ledger.new_account()?.address();
+                let to = self.ledger.new_sink_account()?.address();
                 let tx = token
                     .transfer(to, U256::from(amount))
                     .gas(TIP20_TX_GAS)
@@ -698,7 +703,7 @@ impl Context {
         &self,
         zone: &DynProvider,
     ) -> eyre::Result<Option<(Account, u128, Lease)>> {
-        for account in shuffled(self.ledger.accounts()?)
+        for account in shuffled(self.ledger.sender_accounts()?)
             .into_iter()
             .take(SENDER_CANDIDATES)
         {

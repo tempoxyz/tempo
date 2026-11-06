@@ -29,7 +29,13 @@ const FIRST_WORKLOAD_INDEX: u32 = 1_000;
 #[serde(rename_all = "snake_case")]
 pub(super) enum Record {
     /// A new account was derived at this mnemonic index. Written before the account is used.
-    Account { index: u32 },
+    Account {
+        index: u32,
+        /// A fanout recipient: it only grows the state and never sends, so senders are not
+        /// picked from it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sink: bool,
+    },
     /// An L1 deposit succeeded; the zone must credit `net_amount` to `to` or bounce it back.
     Deposit {
         l1_tx: B256,
@@ -91,6 +97,15 @@ impl Ledger {
 
     /// Derives a fresh workload account and records it before returning it.
     pub(super) fn new_account(&self) -> eyre::Result<Account> {
+        self.derive_account(false)
+    }
+
+    /// Like [`Self::new_account`], for an account that only receives.
+    pub(super) fn new_sink_account(&self) -> eyre::Result<Account> {
+        self.derive_account(true)
+    }
+
+    fn derive_account(&self, sink: bool) -> eyre::Result<Account> {
         let mut file = self.locked_file()?;
         let count = read_records(&file)?
             .iter()
@@ -99,7 +114,7 @@ impl Ledger {
         let index = FIRST_WORKLOAD_INDEX
             .checked_add(u32::try_from(count)?)
             .ok_or_else(|| eyre::eyre!("workload account index overflow"))?;
-        let mut line = serde_json::to_vec(&Record::Account { index })?;
+        let mut line = serde_json::to_vec(&Record::Account { index, sink })?;
         line.push(b'\n');
         file.write_all(&line)
             .wrap_err("failed appending account record")?;
@@ -108,10 +123,19 @@ impl Ledger {
 
     /// Every workload account recorded so far.
     pub(super) fn accounts(&self) -> eyre::Result<Vec<Account>> {
+        self.collect_accounts(|_| true)
+    }
+
+    /// Every workload account recorded so far that may send, leaving out sinks.
+    pub(super) fn sender_accounts(&self) -> eyre::Result<Vec<Account>> {
+        self.collect_accounts(|sink| !sink)
+    }
+
+    fn collect_accounts(&self, keep: impl Fn(bool) -> bool) -> eyre::Result<Vec<Account>> {
         self.records()?
             .into_iter()
             .filter_map(|record| match record {
-                Record::Account { index } => Some(Account::workload(index)),
+                Record::Account { index, sink } if keep(sink) => Some(Account::workload(index)),
                 _ => None,
             })
             .collect()
@@ -240,12 +264,30 @@ mod tests {
     }
 
     #[test]
+    fn sinks_count_as_accounts_but_not_senders() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(dir.path()).unwrap();
+        let sender = ledger.new_account().unwrap();
+        let sink = ledger.new_sink_account().unwrap();
+        assert_eq!(sink.index, FIRST_WORKLOAD_INDEX + 1);
+        assert_eq!(ledger.accounts().unwrap().len(), 2);
+        let senders = ledger.sender_accounts().unwrap();
+        assert_eq!(senders.len(), 1);
+        assert_eq!(senders[0].index, sender.index);
+    }
+
+    #[test]
     fn every_record_reads_back() {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Ledger::open(dir.path()).unwrap();
         let records = [
             Record::Account {
                 index: FIRST_WORKLOAD_INDEX,
+                sink: false,
+            },
+            Record::Account {
+                index: FIRST_WORKLOAD_INDEX + 1,
+                sink: true,
             },
             Record::Deposit {
                 l1_tx: B256::repeat_byte(1),
