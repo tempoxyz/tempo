@@ -64,6 +64,8 @@ const RECEIPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a driver watches for its deposit or withdrawal to land on the other chain.
 const BRIDGE_WAIT: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(500);
+/// Spenders each owner approves, so repeated approvals overwrite and clear earlier ones.
+const APPROVAL_SPENDERS: u64 = 64;
 /// How many leased-account candidates a driver tries before giving up for this run.
 const SENDER_CANDIDATES: usize = 16;
 /// Transfers one fanout keeps pending at once. A follower forwards a sender's transactions to the
@@ -113,6 +115,8 @@ enum Command {
     Fanout,
     /// Sends a sender's whole balance to another account, deleting its balance slot.
     Sweep,
+    /// Sets, changes and clears a batch of allowances, inserting, updating and deleting slots.
+    Approve,
     /// Checks that state proofs verify against the block's state root and that nodes agree.
     CheckProofs,
     /// Checks that zone nodes agree with L1 settlement while faults run.
@@ -139,6 +143,7 @@ impl Antithesis {
             Command::Withdraw => ctx.withdraw().await,
             Command::Fanout => ctx.fanout().await,
             Command::Sweep => ctx.sweep().await,
+            Command::Approve => ctx.approve().await,
         };
         // Under faults, or on a node that lags the sequencer, a send can be rejected (nonce too
         // low) or never confirm. Drivers record only confirmed operations, so such an RPC error
@@ -535,6 +540,112 @@ impl Context {
         );
         println!(
             "fanout: {count} new accounts from {}, {accounts} total",
+            sender.address()
+        );
+        Ok(())
+    }
+
+    /// Sends a batch of approvals from one sender to spenders drawn from a fixed per-sender set,
+    /// so allowance slots in pathUSD's storage trie are created, overwritten and, for zero
+    /// amounts, deleted, many per block. Afterwards every touched allowance must read back as the
+    /// last amount set.
+    async fn approve(&self) -> eyre::Result<()> {
+        let node = random_index(self.zones.len());
+        let Some((sender, balance, _lease)) = self.lease_zone_sender(&self.zones[node]).await?
+        else {
+            return Ok(());
+        };
+        let url = &self.zone_urls[node];
+        let zone = self.wallet(&sender, url);
+        let gas_price = zone.get_gas_price().await?;
+        let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
+        // Fees stay within half the balance.
+        let count = random_between(8, 64).min((balance / 2) / max_fee.max(1));
+        if count == 0 {
+            return Ok(());
+        }
+        let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
+        let mut nonce = zone
+            .get_transaction_count(sender.address())
+            .pending()
+            .await?;
+        // The last amount each spender was given, and the block of the last approval.
+        let mut expected: Vec<(Address, U256)> = Vec::new();
+        let mut last_block = None;
+        let mut remaining = count;
+        while remaining > 0 {
+            let chunk = remaining.min(FANOUT_CHUNK);
+            remaining -= chunk;
+            let mut pending: Vec<(Address, U256, PendingTransactionBuilder<_>)> = Vec::new();
+            for _ in 0..chunk {
+                let spender = approval_spender(sender.address(), random_below(APPROVAL_SPENDERS));
+                // A third of approvals clear the allowance, deleting its slot.
+                let amount = if random_below(3) == 0 {
+                    U256::ZERO
+                } else {
+                    U256::from(random_between(1, u128::from(u64::MAX)))
+                };
+                let tx = token
+                    .approve(spender, amount)
+                    .gas(TIP20_TX_GAS)
+                    .gas_price(gas_price)
+                    .nonce(nonce)
+                    .send()
+                    .await?;
+                nonce += 1;
+                pending.push((spender, amount, tx));
+            }
+            for (spender, amount, tx) in pending {
+                let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
+                let funded_revert = !receipt.status()
+                    && self
+                        .covered_before(&zone, &receipt, sender.address(), max_fee)
+                        .await?;
+                assert_always!(
+                    !funded_revert,
+                    "Funded zone approval succeeds",
+                    &json!({ "tx": receipt.transaction_hash, "owner": sender.address() })
+                );
+                if receipt.status() {
+                    expected.retain(|(seen, _)| *seen != spender);
+                    expected.push((spender, amount));
+                }
+                last_block = receipt.block_number.max(last_block);
+            }
+        }
+        let Some(block) = last_block else {
+            return Ok(());
+        };
+        let cleared = expected
+            .iter()
+            .filter(|(_, amount)| amount.is_zero())
+            .count();
+        for (spender, amount) in &expected {
+            let read = token
+                .allowance(sender.address(), *spender)
+                .block(BlockId::number(block))
+                .call()
+                .await?;
+            assert_always!(
+                read == *amount,
+                "Zone allowance reads back the last approved amount",
+                &json!({
+                    "owner": sender.address(),
+                    "spender": spender,
+                    "approved": amount,
+                    "read": read,
+                    "block": block,
+                })
+            );
+        }
+        assert_sometimes!(
+            cleared > 0 && cleared < expected.len(),
+            "Approval batch both sets and clears allowances",
+            &json!({ "owner": sender.address(), "spenders": expected.len(), "cleared": cleared })
+        );
+        println!(
+            "approve: {count} approvals to {} spenders ({cleared} cleared) from {}",
+            expected.len(),
             sender.address()
         );
         Ok(())
@@ -945,6 +1056,13 @@ async fn poll_until(
         }
         tokio::time::sleep(POLL).await;
     }
+}
+
+/// Spender `index` of `owner`'s approval set: a fixed address no key controls.
+fn approval_spender(owner: Address, index: u64) -> Address {
+    let mut preimage = owner.to_vec();
+    preimage.extend_from_slice(&index.to_be_bytes());
+    Address::from_word(alloy::primitives::keccak256(preimage))
 }
 
 /// A random value in `0..bound` from the Antithesis randomness source, so every choice the

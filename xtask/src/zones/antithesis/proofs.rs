@@ -23,10 +23,12 @@ use tempo_contracts::{
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
 
-use super::{Context, is_rpc_error, random_below, shuffled};
+use super::{APPROVAL_SPENDERS, Context, approval_spender, is_rpc_error, random_below, shuffled};
 
 /// Workload accounts whose pathUSD balance slot each run proves.
 const PROOF_ACCOUNTS: usize = 12;
+/// Workload accounts whose allowance to one of their approval spenders each run proves.
+const PROOF_OWNERS: usize = 6;
 /// Random keys and addresses each run proves, which are almost always absent.
 const RANDOM_KEYS: usize = 4;
 /// Highest slot index `check-proofs` tries when looking for the TIP-20 balances mapping.
@@ -60,6 +62,12 @@ impl Context {
         let mut zone_slots: Vec<B256> = (0..RANDOM_KEYS).map(|_| random_b256()).collect();
         if let Some(index) = self.balances_mapping_slot(&accounts).await? {
             zone_slots.extend(accounts.iter().map(|account| mapping_key(*account, index)));
+            // pathUSD's allowances mapping follows the balances one. Keys into owners'
+            // approval sets cover set, cleared and never-set allowances.
+            zone_slots.extend(accounts.iter().take(PROOF_OWNERS).map(|owner| {
+                let spender = approval_spender(*owner, random_below(APPROVAL_SPENDERS));
+                nested_mapping_key(*owner, spender, index + 1)
+            }));
         }
         let mut addresses: Vec<Address> =
             vec![PATH_USD_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS];
@@ -356,6 +364,14 @@ fn mapping_key(account: Address, index: u64) -> B256 {
     let mut preimage = [0u8; 64];
     preimage[12..32].copy_from_slice(account.as_slice());
     preimage[32..].copy_from_slice(&U256::from(index).to_be_bytes::<32>());
+    keccak256(preimage)
+}
+
+/// The storage key of `outer`, `inner` in a Solidity-layout nested mapping at slot `index`.
+fn nested_mapping_key(outer: Address, inner: Address, index: u64) -> B256 {
+    let mut preimage = [0u8; 64];
+    preimage[12..32].copy_from_slice(inner.as_slice());
+    preimage[32..].copy_from_slice(mapping_key(outer, index).as_slice());
     keccak256(preimage)
 }
 
