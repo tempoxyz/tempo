@@ -146,8 +146,8 @@ fuzz = [
 	"tempo-consensus/fuzz",
 	"tempo-node/fuzz",
 	"tempo-precompiles/fuzz",
-	"reth-db/dst",
-	"reth-trie/dst",
+	"reth-db/fuzz",
+	"reth-trie/fuzz",
 ]
 
 localnet = ["dep:nix"]
