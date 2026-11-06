@@ -353,7 +353,8 @@ listed, or a `ReceivePolicyGuard` `claim` whose caller or `to` is not listed. Wh
 checks each pool transaction again against its current list before executing it, and leaves out
 and drops from its pool any that the list now rejects. Submission also rejects a `transferFrom`
 from an unlisted caller, whatever parties it names, so an unlisted account cannot learn whether
-an address is listed from whether its transaction is accepted.
+an address is listed from whether its transaction is accepted. A screened call whose arguments do
+not decode is rejected with `malformed transfer calldata`, since the precompile would revert it.
 
 Checking calls is enough because zones disable contract creation and authorization lists, and
 T15, which enables transfers, removes the Multicall3 and Permit2 predeploys. No contract can move
@@ -363,7 +364,8 @@ Every RPC follower keeps an in-memory copy of the leader's list so it can reject
 transactions on submission, returning `transfer sender or recipient is not allowlisted` instead of
 forwarding them. It needs no flag: reading the list needs no signature. It copies the list of the
 leader it forwards transactions to at startup, after every write it relays, and every second
-after that, then drops pooled transactions the new list rejects. It holds no file. The copy
+after that, then drops pooled transactions the new list rejects. It asks only the leader, and
+only every 30 seconds while the leader has no written list. It holds no file. The copy
 follows the leader wherever its list goes, including to an older list after a leader change or to
 none once the leader runs without `--deposits.allowlist`, and keeps its last list while the leader
 does not answer. While it holds no written list it admits every transfer, and the leader still
@@ -372,7 +374,9 @@ enforces its own list.
 Removing an account from the list does not trap its funds. Fees and transfers to the outbox are
 exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if
 the withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback
-recipient must both be listed. Funds that a receive policy held in the `ReceivePolicyGuard` can be
+recipient must both be listed. The fallback is checked when the withdrawal is requested, so it is
+still credited if it is removed from the list before the bounce. The withdrawal's Tempo recipient
+is not checked, since Tempo transfers are open anyway. Funds that a receive policy held in the `ReceivePolicyGuard` can be
 claimed only while the claimer and the destination are both listed.
 
 Limits:

@@ -2068,11 +2068,11 @@ where
         let enabled_tokens = self.enabled_tokens;
         let transfer_allowlist = self.transfer_allowlist;
         validator.set_additional_stateful_validation(move |_origin, tx, _account_state| {
-            validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())?;
+            // The in-memory allowlist check runs before the balance check, which reads state.
             if let Some(allowlist) = &transfer_allowlist {
                 validate_transfer_calls(allowlist.as_ref(), tx)?;
             }
-            Ok(())
+            validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
         });
 
         let validator =

@@ -504,7 +504,7 @@ pub struct AllowlistMirror {
 
 #[derive(Debug, Default)]
 struct MirrorInner {
-    /// The leader's list, `None` while the leader runs without the allowlist or none is known.
+    /// The leader's written list, `None` while the leader has none or none is known.
     list: RwLock<Option<MirroredList>>,
     /// Wakes the refresh task early, after this node relays a write.
     refresh: Notify,
@@ -512,14 +512,13 @@ struct MirrorInner {
 
 #[derive(Debug)]
 struct MirroredList {
+    /// Always initialized: the refresh clears the copy instead of installing an unwritten list.
     status: DepositAllowlistStatus,
-    /// Empty while `status` is uninitialized.
     addresses: BTreeSet<Address>,
 }
 
 impl AllowlistMirror {
-    /// The version of the copy, `None` while the leader runs without the allowlist or none is
-    /// known.
+    /// The version of the copy, `None` while the leader has no written list or none is known.
     pub(crate) fn status(&self) -> Option<DepositAllowlistStatus> {
         self.inner.list.read().as_ref().map(|list| list.status)
     }
@@ -537,8 +536,8 @@ impl AllowlistMirror {
         changed
     }
 
-    /// Drop the copy once the leader runs without the allowlist, so every transfer is admitted
-    /// again. Returns whether it held one.
+    /// Drop the copy once the leader has no written list, so every transfer is admitted again.
+    /// Returns whether it held one.
     pub(crate) fn clear(&self) -> bool {
         self.inner.list.write().take().is_some()
     }
@@ -556,11 +555,8 @@ impl AllowlistMirror {
 
 impl TransferAllowlist for AllowlistMirror {
     fn allows_all(&self, addresses: &[Address]) -> bool {
-        let list = self.inner.list.read();
         allows_all(
-            list.as_ref()
-                .filter(|list| list.status.initialized)
-                .map(|list| &list.addresses),
+            self.inner.list.read().as_ref().map(|list| &list.addresses),
             addresses,
         )
     }

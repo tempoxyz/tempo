@@ -25,10 +25,7 @@ use reth_tasks::TaskExecutor;
 use reth_transaction_pool::TransactionPool;
 use serde::{Deserialize, Serialize};
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
-use tokio::{
-    sync::{Semaphore, mpsc, oneshot},
-    time::MissedTickBehavior,
-};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tracing::{Instrument, debug, info, warn};
 use zone_p2p::{
     AllowlistClient, AllowlistRequest, AllowlistResponses, LeadershipSchedule, P2pPeerId,
@@ -44,11 +41,15 @@ use super::{
 /// writes from being relayed.
 const MAX_CONCURRENT_READS: usize = 4;
 
-/// How often an RPC-only node checks whether the leader's allowlist changed. Writes this node
+/// How long an RPC-only node waits between checks of the leader's allowlist. Writes this node
 /// relays refresh its copy immediately; writes relayed through another node show up here within
-/// this interval. A round waits for every sequencer, so one that does not answer stretches it to
-/// the relay timeout.
+/// this delay.
 const MIRROR_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How long to wait instead while the leader reports no written list, so Zones that never enable
+/// the allowlist are not polled every second. The first write this node relays still refreshes
+/// at once.
+const IDLE_MIRROR_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// An allowlist request relayed to every sequencer.
 #[derive(Debug, Serialize, Deserialize)]
@@ -171,7 +172,7 @@ impl AllowlistRelay {
     /// Send `request` to every sequencer and return each one's response, or an error naming the
     /// sequencers that rejected it or did not answer.
     async fn relay(&self, request: &Request) -> RelayResult {
-        answers(&self.client, request).await?.into_responses()
+        answers(&self.client, None, request).await?.into_responses()
     }
 
     /// Relay `request` in a free `lane` slot, failing fast with `Busy` when there is none. The
@@ -363,15 +364,20 @@ pub(crate) async fn apply_relayed_requests(
     }
 }
 
-/// Send `request` to every sequencer and collect their answers.
-async fn answers(client: &AllowlistClient, request: &Request) -> RpcResult<Answers> {
+/// Send `request` to `sequencer`, or to every sequencer when it is `None`, and collect their
+/// answers.
+async fn answers(
+    client: &AllowlistClient,
+    sequencer: Option<&P2pPeerId>,
+    request: &Request,
+) -> RpcResult<Answers> {
     let payload = serde_json::to_vec(request)
         .map_err(|err| relay_error(format!("failed to encode request: {err}")))?;
     let AllowlistResponses {
         answers,
         unanswered,
     } = client
-        .request(payload)
+        .request(sequencer.cloned(), payload)
         .await
         .map_err(|err| relay_error(err.to_string()))?;
     let answered = answers.into_iter().map(|(peer, answer)| {
@@ -398,16 +404,19 @@ pub(crate) async fn mirror_leader<P>(
 ) where
     P: TransactionPool<Transaction = TempoPooledTransaction>,
 {
-    let mut interval = tokio::time::interval(MIRROR_REFRESH_INTERVAL);
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut delay = Duration::ZERO;
     loop {
         tokio::select! {
-            _ = interval.tick() => {}
+            () = tokio::time::sleep(delay) => {}
             () = mirror.refresh_requested() => {}
         }
-        match refresh_mirror(&client, &leadership, &mirror).await {
-            Ok(false) => {}
-            Ok(true) => {
+        let refreshed = refresh_mirror(&client, &leadership, &mirror).await;
+        delay = match refreshed {
+            Ok(Refreshed::Unlisted { .. }) => IDLE_MIRROR_REFRESH_INTERVAL,
+            _ => MIRROR_REFRESH_INTERVAL,
+        };
+        match refreshed {
+            Ok(Refreshed::Listed { changed: true }) => {
                 let evicted = evict_unlisted_transfers(&pool, &mirror);
                 let status = mirror.status();
                 info!(
@@ -418,51 +427,77 @@ pub(crate) async fn mirror_leader<P>(
                     "Updated mirrored transfer allowlist"
                 );
             }
+            Ok(Refreshed::Unlisted { cleared: true }) => {
+                info!(target: "zone::allowlist", "Leader has no written transfer allowlist, admitting every transfer");
+            }
+            Ok(_) => {}
+            // Only a stopped P2P runtime fails the request, and that shuts the node down.
             Err(error) => {
-                warn!(target: "zone::allowlist", %error, "Failed to refresh mirrored transfer allowlist");
+                debug!(target: "zone::allowlist", %error, "Failed to refresh mirrored transfer allowlist");
             }
         }
     }
 }
 
+/// What a mirror refresh learned from the leader.
+#[derive(Debug, PartialEq, Eq)]
+enum Refreshed {
+    /// The leader reported a written list, and the copy now matches it.
+    Listed {
+        /// Whether the copy's version changed.
+        changed: bool,
+    },
+    /// The leader runs without the allowlist or has not written its list, so the copy is cleared.
+    Unlisted {
+        /// Whether the mirror held a copy before.
+        cleared: bool,
+    },
+    /// The leader is unknown or did not answer properly, so the copy is kept.
+    Unanswered,
+}
+
 /// Copy the list of the leader `leadership` routes transactions to, the only sequencer that
-/// enforces it, into `mirror`. Returns whether the copy changed. The copy is kept while the
-/// leader is unknown or does not answer.
+/// enforces it, into `mirror`, asking only the leader.
 async fn refresh_mirror(
     client: &AllowlistClient,
     leadership: &LeadershipSchedule,
     mirror: &AllowlistMirror,
-) -> RpcResult<bool> {
+) -> RpcResult<Refreshed> {
     let Some(leader) = leadership.next_anchor_record().map(|record| record.leader) else {
-        return Ok(false);
+        return Ok(Refreshed::Unanswered);
     };
-    let status = match answers(client, &Request::Status).await?.outcome_of(&leader) {
-        Some(Ok(Response::Status(status))) => status,
-        Some(Err(Failure::Rejected(DepositAllowlistError::Disabled))) => return Ok(mirror.clear()),
+    let status = match answers(client, Some(&leader), &Request::Status)
+        .await?
+        .outcome_of(&leader)
+    {
+        Some(Ok(Response::Status(status))) if status.initialized => status,
+        // An uninitialized list admits everyone, like no list at all.
+        Some(Ok(Response::Status(_)))
+        | Some(Err(Failure::Rejected(DepositAllowlistError::Disabled))) => {
+            return Ok(Refreshed::Unlisted {
+                cleared: mirror.clear(),
+            });
+        }
         outcome => {
             debug!(target: "zone::allowlist", %leader, ?outcome, "Leader did not report its allowlist status");
-            return Ok(false);
+            return Ok(Refreshed::Unanswered);
         }
     };
     if mirror.status() == Some(status) {
-        return Ok(false);
+        return Ok(Refreshed::Listed { changed: false });
     }
-    // An uninitialized list holds no addresses to fetch.
-    let snapshot = if status.initialized {
-        match answers(client, &Request::Get).await?.outcome_of(&leader) {
-            Some(Ok(Response::Snapshot(snapshot))) => snapshot,
-            outcome => {
-                debug!(target: "zone::allowlist", %leader, ?outcome, "Leader did not return its allowlist");
-                return Ok(false);
-            }
+    match answers(client, Some(&leader), &Request::Get)
+        .await?
+        .outcome_of(&leader)
+    {
+        Some(Ok(Response::Snapshot(snapshot))) => Ok(Refreshed::Listed {
+            changed: mirror.replace(snapshot),
+        }),
+        outcome => {
+            debug!(target: "zone::allowlist", %leader, ?outcome, "Leader did not return its allowlist");
+            Ok(Refreshed::Unanswered)
         }
-    } else {
-        DepositAllowlistSnapshot {
-            status,
-            addresses: Vec::new(),
-        }
-    };
-    Ok(mirror.replace(snapshot))
+    }
 }
 
 fn relay_error(message: String) -> ErrorObjectOwned {
@@ -568,7 +603,7 @@ mod tests {
             }
         }
 
-        fn refresh_mirror(&self) -> tokio::task::JoinHandle<RpcResult<bool>> {
+        fn refresh_mirror(&self) -> tokio::task::JoinHandle<RpcResult<Refreshed>> {
             let (client, leadership, mirror) = (
                 self.relay.client.clone(),
                 self.leadership.clone(),
@@ -577,17 +612,23 @@ mod tests {
             tokio::spawn(async move { refresh_mirror(&client, &leadership, &mirror).await })
         }
 
+        /// The next request at each of the three sequencers.
         async fn receive(&mut self) -> Vec<AllowlistRequest> {
             let mut requests = Vec::new();
-            for peer in &mut self.peers[..3] {
-                requests.push(
-                    tokio::time::timeout(Duration::from_secs(10), peer.allowlist.requests.recv())
-                        .await
-                        .expect("sequencer did not receive request")
-                        .unwrap(),
-                );
+            for index in 0..3 {
+                requests.push(self.receive_at(index).await);
             }
             requests
+        }
+
+        async fn receive_at(&mut self, index: usize) -> AllowlistRequest {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.peers[index].allowlist.requests.recv(),
+            )
+            .await
+            .expect("sequencer did not receive request")
+            .unwrap()
         }
     }
 
@@ -791,15 +832,13 @@ mod tests {
     }
 
     impl RelayFixture {
-        /// Answer the next request at the three sequencers with `answers`, in order.
-        async fn answer(&mut self, answers: [Vec<u8>; 3]) {
-            for (request, answer) in self.receive().await.into_iter().zip(answers) {
-                request.respond(answer).await;
-            }
+        /// Answer the next request at sequencer `index` with `answer`.
+        async fn answer_at(&mut self, index: usize, answer: Vec<u8>) {
+            self.receive_at(index).await.respond(answer).await;
         }
     }
 
-    async fn changed(refresh: tokio::task::JoinHandle<RpcResult<bool>>) -> bool {
+    async fn refreshed(refresh: tokio::task::JoinHandle<RpcResult<Refreshed>>) -> Refreshed {
         tokio::time::timeout(Duration::from_secs(10), refresh)
             .await
             .unwrap()
@@ -812,71 +851,71 @@ mod tests {
         let mut fixture = RelayFixture::new();
         let (old, new) = (Address::repeat_byte(1), Address::repeat_byte(2));
 
-        // Only the leader's list is copied, even when another sequencer holds a newer one.
         let refresh = fixture.refresh_mirror();
-        fixture
-            .answer([
-                ok(Response::Status(status(1))),
-                ok(Response::Status(status(2))),
-                malformed(),
-            ])
-            .await;
-        fixture
-            .answer([ok(listed(1, old)), ok(listed(2, new)), malformed()])
-            .await;
-        assert!(changed(refresh).await);
+        fixture.answer_at(0, ok(Response::Status(status(1)))).await;
+        fixture.answer_at(0, ok(listed(1, old))).await;
+        assert_eq!(
+            refreshed(refresh).await,
+            Refreshed::Listed { changed: true }
+        );
         assert_eq!(fixture.relay.mirror.status(), Some(status(1)));
         assert!(fixture.relay.mirror.allows_all(&[old]));
         assert!(!fixture.relay.mirror.allows_all(&[new]));
-
-        // An unchanged version is not fetched again, and a leader that does not answer properly
-        // leaves the copy as it is.
-        for answers in [
-            [ok(Response::Status(status(1))), disabled(), uninitialized()],
-            [malformed(), ok(Response::Status(status(3))), disabled()],
-        ] {
-            let refresh = fixture.refresh_mirror();
-            fixture.answer(answers).await;
-            assert!(!changed(refresh).await);
-            assert_eq!(fixture.relay.mirror.status(), Some(status(1)));
+        // Only the leader is asked.
+        for peer in &mut fixture.peers[1..3] {
+            assert!(peer.allowlist.requests.try_recv().is_err());
         }
+
+        // An unchanged version is not fetched again.
         let refresh = fixture.refresh_mirror();
-        fixture
-            .answer([ok(Response::Status(status(3))), disabled(), disabled()])
-            .await;
-        fixture.answer([malformed(), disabled(), disabled()]).await;
-        assert!(!changed(refresh).await);
+        fixture.answer_at(0, ok(Response::Status(status(1)))).await;
+        assert_eq!(
+            refreshed(refresh).await,
+            Refreshed::Listed { changed: false }
+        );
+
+        // A leader that does not answer properly leaves the copy as it is.
+        let refresh = fixture.refresh_mirror();
+        fixture.answer_at(0, malformed()).await;
+        assert_eq!(refreshed(refresh).await, Refreshed::Unanswered);
+        let refresh = fixture.refresh_mirror();
+        fixture.answer_at(0, ok(Response::Status(status(3)))).await;
+        fixture.answer_at(0, malformed()).await;
+        assert_eq!(refreshed(refresh).await, Refreshed::Unanswered);
         assert_eq!(fixture.relay.mirror.status(), Some(status(1)));
 
         // The copy moves back with the leader, e.g. after the admin rebuilt its list.
         let refresh = fixture.refresh_mirror();
-        fixture
-            .answer([ok(Response::Status(status(0))), disabled(), disabled()])
-            .await;
-        fixture
-            .answer([ok(listed(0, new)), disabled(), disabled()])
-            .await;
-        assert!(changed(refresh).await);
+        fixture.answer_at(0, ok(Response::Status(status(0)))).await;
+        fixture.answer_at(0, ok(listed(0, new))).await;
+        assert_eq!(
+            refreshed(refresh).await,
+            Refreshed::Listed { changed: true }
+        );
         assert_eq!(fixture.relay.mirror.status(), Some(status(0)));
         assert!(fixture.relay.mirror.allows_all(&[new]));
 
-        // An uninitialized list is installed without a fetch and admits everyone.
-        let refresh = fixture.refresh_mirror();
-        fixture
-            .answer([uninitialized(), ok(Response::Status(status(3))), disabled()])
-            .await;
-        assert!(changed(refresh).await);
-        assert!(fixture.relay.mirror.status().is_some());
-        assert!(fixture.relay.mirror.allows_all(&[old, new]));
-
-        // A leader without the allowlist clears the copy.
-        let refresh = fixture.refresh_mirror();
-        fixture
-            .answer([disabled(), ok(Response::Status(status(3))), disabled()])
-            .await;
-        assert!(changed(refresh).await);
-        assert_eq!(fixture.relay.mirror.status(), None);
-        assert!(fixture.relay.mirror.allows_all(&[old, new]));
+        // An uninitialized list or a leader without the allowlist clears the copy.
+        for answer in [uninitialized(), disabled()] {
+            fixture.relay.mirror.replace(DepositAllowlistSnapshot {
+                status: status(0),
+                addresses: vec![new],
+            });
+            let refresh = fixture.refresh_mirror();
+            fixture.answer_at(0, answer.clone()).await;
+            assert_eq!(
+                refreshed(refresh).await,
+                Refreshed::Unlisted { cleared: true }
+            );
+            assert_eq!(fixture.relay.mirror.status(), None);
+            assert!(fixture.relay.mirror.allows_all(&[old, new]));
+            let refresh = fixture.refresh_mirror();
+            fixture.answer_at(0, answer).await;
+            assert_eq!(
+                refreshed(refresh).await,
+                Refreshed::Unlisted { cleared: false }
+            );
+        }
     }
 
     #[tokio::test]
@@ -897,17 +936,12 @@ mod tests {
             .unwrap();
 
         let refresh = fixture.refresh_mirror();
-        fixture
-            .answer([
-                ok(Response::Status(status(1))),
-                ok(Response::Status(status(2))),
-                disabled(),
-            ])
-            .await;
-        fixture
-            .answer([ok(listed(1, old)), ok(listed(2, new)), disabled()])
-            .await;
-        assert!(changed(refresh).await);
+        fixture.answer_at(1, ok(Response::Status(status(2)))).await;
+        fixture.answer_at(1, ok(listed(2, new))).await;
+        assert_eq!(
+            refreshed(refresh).await,
+            Refreshed::Listed { changed: true }
+        );
         assert_eq!(fixture.relay.mirror.status(), Some(status(2)));
         assert!(fixture.relay.mirror.allows_all(&[new]));
     }

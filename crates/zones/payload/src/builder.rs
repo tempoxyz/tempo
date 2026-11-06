@@ -1119,7 +1119,6 @@ mod tests {
         let transfer = Arc::new(ValidPoolTransaction {
             transaction: TempoPooledTransaction::new(Recovered::new_unchecked(
                 TempoTxEnvelope::Legacy(transfer.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
-                // Not the zero address, whose transfers are exempt as mints.
                 address!("0x00000000000000000000000000000000000a11ce"),
             )),
             transaction_id: TransactionId::new(SenderId::from(1u64), 0),
