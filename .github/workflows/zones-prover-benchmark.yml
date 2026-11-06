@@ -245,7 +245,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 90d2b0ffee23077e8c3fdc2864735de348299688 # tempo-multi-region-benchmark main (#483)
+          ref: f950cd011533008de311bb22603bbe99abfcc43f # tempo-multi-region-benchmark#490 (l1-snapshot.sh from main)
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
