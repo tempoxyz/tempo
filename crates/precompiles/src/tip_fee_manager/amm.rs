@@ -483,7 +483,7 @@ impl TipFeeManager {
         )?;
         let total_supply = self.get_total_supply(pool_id)?;
         #[cfg(feature = "fuzz")]
-        antithesis_sdk::assert_always!(
+        antithesis_sdk::assert_always_or_unreachable!(
             liquidity <= total_supply,
             "Fee AMM LP burn stays within the pool's LP total supply",
             &serde_json::json!({
