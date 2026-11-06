@@ -20,9 +20,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::consensus::validate_body_against_header;
 use tempo_precompiles::dispatch::abi_decoder_config_for_spec;
 use tempo_primitives::{Block, TempoHeader, TempoTxEnvelope};
+use tempo_reth_consensus::validate_body_against_header;
 use tokio::sync::mpsc;
 use tokio_util::sync;
 use tracing::{debug, info};

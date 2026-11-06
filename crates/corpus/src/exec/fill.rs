@@ -25,8 +25,9 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::TempoEvmConfig;
 use tempo_primitives::TempoPrimitives;
+use tempo_reth_consensus::TempoConsensus;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
 

@@ -19,6 +19,7 @@ on:
       - "crates/contracts/**"
       - "crates/dkg-onchain-artifacts/**"
       - "crates/evm/**"
+      - "crates/reth-consensus/**"
       - "crates/hardfork/**"
       - "crates/precompiles/**"
       - "crates/precompiles-macros/**"
@@ -77,6 +78,7 @@ jobs:
               - 'crates/contracts/**'
               - 'crates/dkg-onchain-artifacts/**'
               - 'crates/evm/**'
+              - 'crates/reth-consensus/**'
               - 'crates/hardfork/**'
               - 'crates/precompiles/**'
               - 'crates/precompiles-macros/**'

@@ -32,6 +32,7 @@ exec = [
   "dep:reth-provider",
   "dep:evm2",
   "dep:tempo-evm",
+  "dep:tempo-reth-consensus",
   "dep:schnellru",
 ]
 
@@ -41,6 +42,7 @@ reth-primitives-traits.workspace = true
 reth-execution-types = { workspace = true, optional = true }
 evm2 = { workspace = true, optional = true }
 tempo-evm = { workspace = true, features = ["default"], optional = true }
+tempo-reth-consensus = { workspace = true, optional = true }
 tempo-primitives = { workspace = true, features = ["default"] }
 reth-evm = { workspace = true, optional = true }
 reth-provider = { workspace = true, optional = true }

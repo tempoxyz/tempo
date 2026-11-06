@@ -1,4 +1,7 @@
-//! Tempo consensus implementation.
+//! Tempo block validation for reth: header, body and post-execution checks.
+
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
 

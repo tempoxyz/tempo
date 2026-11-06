@@ -14401,6 +14401,7 @@ dependencies = [
  "tempo-node-launcher",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-reth-consensus",
  "tempo-state-bloat",
  "tempo-telemetry-util",
  "tempo-validator-config",
@@ -14551,6 +14552,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-reth-consensus",
  "tempo-telemetry-util",
  "thiserror 2.0.21",
  "tokio",
@@ -14633,6 +14635,7 @@ dependencies = [
  "tempo-evm",
  "tempo-fuzz-types",
  "tempo-primitives",
+ "tempo-reth-consensus",
  "tokio",
  "tracing",
  "url",
@@ -14741,8 +14744,6 @@ dependencies = [
  "rayon",
  "reth-chainspec",
  "reth-consensus",
- "reth-consensus-common",
- "reth-ethereum-consensus",
  "reth-ethereum-primitives",
  "reth-evm",
  "reth-evm-ethereum",
@@ -14839,6 +14840,7 @@ dependencies = [
  "tempo-invariants",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-reth-consensus",
 ]
 
 [[package]]
@@ -14973,6 +14975,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-reth-consensus",
  "tempo-transaction-pool",
  "test-case",
  "thiserror 2.0.21",
@@ -15026,6 +15029,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-reth-consensus",
  "tempo-transaction-pool",
  "tokio",
  "tracing",
@@ -15143,6 +15147,25 @@ dependencies = [
  "sha2 0.10.9",
  "tempo-contracts",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "tempo-reth-consensus"
+version = "1.17.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-genesis",
+ "alloy-primitives",
+ "evm2",
+ "reth-chainspec",
+ "reth-consensus",
+ "reth-consensus-common",
+ "reth-ethereum-consensus",
+ "reth-primitives-traits",
+ "serde_json",
+ "tempo-chainspec",
+ "tempo-primitives",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -17759,6 +17782,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-reth-consensus",
  "tempo-state-bloat",
  "tempo-transaction-pool",
  "thiserror 2.0.21",

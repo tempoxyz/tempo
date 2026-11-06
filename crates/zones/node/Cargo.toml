@@ -14,6 +14,7 @@ workspace = true
 # tempo
 tempo-chainspec.workspace = true
 tempo-evm = { workspace = true, features = ["engine", "rpc"] }
+tempo-reth-consensus.workspace = true
 tempo-node.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives.workspace = true

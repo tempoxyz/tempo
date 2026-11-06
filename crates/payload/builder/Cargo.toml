@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["reth"] }
+tempo-reth-consensus = { workspace = true, optional = true }
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
@@ -63,5 +64,6 @@ fuzz = [
 	"antithesis_sdk/full",
 	"dep:reth-consensus",
 	"dep:serde_json",
+	"dep:tempo-reth-consensus",
 	"tempo-payload-types/fuzz",
 ]

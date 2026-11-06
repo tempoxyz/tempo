@@ -31,9 +31,9 @@ use reth_provider::{
     BlockReader as _, BlockSource,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::{node::TempoNode, rpc::consensus::CertifiedBlock};
 use tempo_primitives::Block as TempoBlock;
+use tempo_reth_consensus::validate_body_against_header;
 use tokio::select;
 use tracing::{debug, error, instrument, warn};
 

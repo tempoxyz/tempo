@@ -23,7 +23,7 @@ use tempo_primitives::TempoConsensusContext;
 use tracing::warn;
 
 use crate::consensus::Digest;
-use tempo_evm::consensus::validate_body_against_header;
+use tempo_reth_consensus::validate_body_against_header;
 
 /// Consensus block shared through commonware.
 ///

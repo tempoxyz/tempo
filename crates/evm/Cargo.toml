@@ -27,9 +27,7 @@ tempo-primitives = { workspace = true, features = ["evm", "std"] }
 commonware-codec.workspace = true
 
 reth-consensus = { workspace = true, optional = true }
-reth-consensus-common = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, optional = true }
-reth-ethereum-consensus = { workspace = true, optional = true }
 reth-evm = { workspace = true, optional = true }
 reth-evm-ethereum = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
@@ -99,8 +97,6 @@ default = ["reth", "rpc", "engine"]
 reth = [
     "dep:reth-chainspec",
     "dep:reth-consensus",
-    "dep:reth-consensus-common",
-    "dep:reth-ethereum-consensus",
     "dep:reth-evm",
     "dep:reth-evm-ethereum",
     "dep:reth-primitives-traits",
