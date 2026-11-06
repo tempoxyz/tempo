@@ -92,7 +92,7 @@ pub(crate) fn store_config(qmdb_dir: &Path) -> Config {
     Config {
         directory: qmdb_dir.join("db"),
         threads: std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
-        page_cache_pages: NonZeroUsize::new(1 << 16).expect("non-zero"),
+        page_cache_pages: NonZeroUsize::new(1 << 19).expect("non-zero"),
         max_pending: NonZeroUsize::new(1024).expect("non-zero"),
     }
 }
