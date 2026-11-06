@@ -22,7 +22,9 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt, account::encode_config_commitment};
+use tempo_primitives::{
+    TempoBlockEnv, TempoBlockExt, TempoEvmKind, account::encode_config_commitment,
+};
 
 /// Production [`PrecompileStorageProvider`] backed by EVM2's live transaction state.
 ///
@@ -35,7 +37,6 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     is_static: bool,
     tip1060_storage_credits_enabled: bool,
     tip1060_storage_credit_minting_enabled: bool,
-    revert_blocked_inbound: bool,
     non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
     /// Recorded storage actions.
     actions: StorageActions,
@@ -44,6 +45,7 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
 impl<'evm, 'gas, 'db, T> EvmPrecompileStorageProvider<'evm, 'gas, 'db, T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     /// Creates a storage provider over EVM2's live state and gas tracker.
     pub fn new(
@@ -84,7 +86,6 @@ where
             is_static,
             tip1060_storage_credits_enabled: spec.is_t7(),
             tip1060_storage_credit_minting_enabled: true,
-            revert_blocked_inbound: false,
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
         }
@@ -317,6 +318,7 @@ where
 impl<T> StorageCreditsBackend for EvmPrecompileStorageProvider<'_, '_, '_, T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     type Error = TempoPrecompileError;
 
@@ -389,6 +391,7 @@ where
 impl<T> PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_, T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     fn chain_id(&self) -> u64 {
         self.version.chain_id
@@ -663,13 +666,8 @@ where
     }
 
     #[inline]
-    fn set_revert_blocked_inbound(&mut self, enabled: bool) {
-        self.revert_blocked_inbound = enabled;
-    }
-
-    #[inline]
-    fn revert_blocked_inbound(&self) -> bool {
-        self.revert_blocked_inbound
+    fn kind(&self) -> TempoEvmKind {
+        self.evm.ext().kind()
     }
 
     #[inline]
@@ -723,6 +721,9 @@ pub trait EvmStorageExt {
 
     /// Returns the transaction-local non-creditable slots.
     fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>>;
+
+    /// Returns the kind of the EVM, whose rules every storage context over it follows.
+    fn kind(&self) -> TempoEvmKind;
 }
 
 bitflags! {
@@ -878,12 +879,12 @@ impl DerefMut for GasTrackerStorage<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EvmPrecompileStorageProvider, GasTrackerStorage};
+    use super::{EvmPrecompileStorageProvider, EvmStorageExt, GasTrackerStorage};
     use crate::{
         STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
         storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
-        storage_credits::StorageCredits,
+        storage_credits::{NonCreditableSlots, StorageCredits},
     };
     use alloy::primitives::{
         Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256, bytes, keccak256,
@@ -897,10 +898,26 @@ mod tests {
         registry::TxRegistry,
         version::{GasId, GasParams},
     };
+    use std::{cell::RefCell, rc::Rc};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+    use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
     struct TestTypes;
+
+    /// Unit-test EVMs without extension state record no storage actions and execute Tempo L1.
+    impl EvmStorageExt for () {
+        fn storage_actions(&self) -> StorageActions {
+            StorageActions::disabled()
+        }
+
+        fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+            Rc::new(RefCell::new(NonCreditableSlots::empty()))
+        }
+
+        fn kind(&self) -> TempoEvmKind {
+            TempoEvmKind::L1
+        }
+    }
 
     impl EvmTypesHost for TestTypes {
         type ConfigSelector = BaseEvmConfigSelector;
