@@ -19,6 +19,14 @@ docker compose -f zones/antithesis/docker-compose.yaml up
 
 `ZONES_IMAGE` overrides the image the services run.
 
+## Antithesis registry
+
+[`antithesis-zones.yml`](../../.github/workflows/antithesis-zones.yml) builds both images on every push to `main`
+that touches the node or this directory, and on a manual dispatch of any branch, and pushes them to
+`us-central1-docker.pkg.dev/molten-verve-216720/tempo-repository` as `<branch>-<sha>` and `<branch>`. The
+config image adds an `.env` that pins `ZONES_IMAGE` to the test image's digest. It needs the registry's JSON
+key in the `ANTITHESIS_REGISTRY_KEY` repository secret.
+
 ## Test template
 
 `test/v1/zone_payments` ships in the image outside `/opt/antithesis`; `scripts/workload.sh` installs it at
