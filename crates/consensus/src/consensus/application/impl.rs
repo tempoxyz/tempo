@@ -10,7 +10,7 @@ use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Digested, Digestible as _,
@@ -22,12 +22,12 @@ use commonware_runtime::{
     telemetry::metrics::{Counter, MetricsExt as _},
 };
 use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
-use eyre::{OptionExt as _, WrapErr as _, ensure};
+use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
+use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::BoundaryOutcomeChecks;
 use tempo_payload_types::{
     Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
 };
@@ -35,9 +35,10 @@ use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
 
+use super::parent_state::TempoParentState;
 use crate::{
     consensus::{Digest, block::Block},
-    executor::DeferredCeremonyOutput,
+    executor::{DeferredExtraData, ProposalExtraData},
 };
 
 pub(in crate::consensus) struct Config<TContext> {
@@ -52,14 +53,15 @@ pub(in crate::consensus) struct Config<TContext> {
 
     pub(in crate::consensus) dkg_manager: crate::dkg::manager::Mailbox,
 
+    /// Reads the part of a boundary block's DKG outcome that comes from the
+    /// post-state of its parent.
+    pub(in crate::consensus) parent_state: TempoParentState,
+
     /// Proposal pacing and execution feedback shared with the payload builder.
     pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
-
-    /// Boundary blocks whose DKG outcome execution checked against the parent state.
-    pub(in crate::consensus) boundary_outcome_checks: BoundaryOutcomeChecks,
 }
 
 /// Tempo's block builder and verifier, see the module documentation.
@@ -72,7 +74,7 @@ pub(crate) struct Inner {
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
-    boundary_outcome_checks: BoundaryOutcomeChecks,
+    parent_state: TempoParentState,
 
     metrics: Metrics,
 }
@@ -87,7 +89,7 @@ impl Inner {
             estimator: config.estimator,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
-            boundary_outcome_checks: config.boundary_outcome_checks,
+            parent_state: config.parent_state,
             metrics: Metrics::init(&config.context),
         }
     }
@@ -120,17 +122,17 @@ impl Inner {
             parent: (parent_view, parent_digest),
         } = context;
 
-        let (extra_data, deferred_ceremony_output) = if self.is_boundary(parent.height().next()) {
-            // The boundary block carries the DKG outcome. Consensus supplies the
-            // ceremony output on the parent, and the payload builder fills in
-            // the rest from the parent state.
+        let (extra_data, ceremony) = if self.is_boundary(parent.height().next()) {
+            // The boundary block carries the DKG outcome.
+            //
+            // Part of it is read from the post-state of the parent,
+            // so the executor resolves it only after the parent returned VALID.
             //
             // The DKG actor reads no chain state, so it starts on the
-            // ceremony output now, while the executor delivers the parent.
-            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
+            // ceremony output now, while the executor works on the parent.
             (
                 Bytes::default(),
-                Some(deferred_ceremony_output(parent.digest(), ceremony)),
+                Some(self.dkg_manager.subscribe_dkg_ceremony(parent.clone())),
             )
         } else {
             // Regular block: try to include DKG dealer log.
@@ -172,6 +174,17 @@ impl Inner {
         let window_opened_millis = epoch_millis;
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
+        // From T15, consensus supplies only the ceremony output, and the
+        // payload builder fills in the rest of the outcome from the parent
+        // state. Before T15, consensus reads the parent state itself.
+        let deferred_extra_data = ceremony.map(|ceremony| {
+            if self.is_t15(timestamp) {
+                deferred_ceremony_output(parent.digest(), ceremony)
+            } else {
+                self.boundary_dkg_outcome(round.epoch(), parent.digest(), ceremony)
+            }
+        });
+
         let consensus_context = Some(TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
@@ -211,7 +224,7 @@ impl Inner {
                     parent: (parent_view, parent_digest),
                 },
                 attrs,
-                deferred_ceremony_output,
+                deferred_extra_data,
             )?
             .await
             .wrap_err(
@@ -286,6 +299,66 @@ impl Inner {
         Ok(proposal)
     }
 
+    /// Returns the DKG outcome of a boundary block in `epoch` as deferred
+    /// extra data. The executor resolves it with the parent once the parent
+    /// returned VALID, so the post-state of the parent is available.
+    ///
+    /// `ceremony` is the request for the ceremony output on the parent
+    /// `parent_digest`.
+    fn boundary_dkg_outcome(
+        &self,
+        epoch: Epoch,
+        parent_digest: Digest,
+        ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
+    ) -> DeferredExtraData {
+        let parent_state = self.parent_state.clone();
+        let epoch_strategy = self.epoch_strategy.clone();
+        DeferredExtraData::new(move |parent| {
+            async move {
+                ensure!(
+                    parent.digest() == parent_digest,
+                    "the executor built on `{}`, but the DKG ceremony was requested \
+                    for `{parent_digest}`",
+                    parent.digest(),
+                );
+                let output = ceremony
+                    .await
+                    .wrap_err("failed getting public dkg ceremony outcome")?;
+                let outcome =
+                    parent_state.boundary_outcome(&epoch_strategy, parent.inner(), output)?;
+                ensure!(
+                    epoch.next() == outcome.epoch(),
+                    "outcome is for epoch `{}`, but we are trying to include the \
+                    outcome for epoch `{}`",
+                    outcome.epoch,
+                    epoch.next(),
+                );
+                info!(
+                    %outcome.epoch,
+                    outcome.network_identity = %outcome.network_identity(),
+                    outcome.dealers = ?outcome.dealers(),
+                    outcome.players = ?outcome.players(),
+                    outcome.next_players = ?outcome.next_players(),
+                    "received DKG outcome; will include in payload builder attributes",
+                );
+                Ok(ProposalExtraData::Encoded(outcome.encode().into()))
+            }
+            .boxed()
+        })
+    }
+
+    /// Returns whether T15 is active at `timestamp`, in seconds. From T15,
+    /// execution checks the DKG outcome of a boundary block against the
+    /// parent state, and consensus supplies and compares only the ceremony
+    /// output.
+    fn is_t15(&self, timestamp: u64) -> bool {
+        self.parent_state
+            .node
+            .chain_spec()
+            .tempo_hardfork_at(timestamp)
+            .is_t15()
+    }
+
     /// Returns whether the block at `height` is the last block of its epoch,
     /// which carries the DKG outcome.
     fn is_boundary(&self, height: Height) -> bool {
@@ -300,8 +373,7 @@ impl Inner {
     /// layer: the consensus context it claims and the DKG data in `extra_data`.
     ///
     /// For a boundary block, this only decodes the DKG outcome and returns it.
-    /// [`Self::verify_boundary_output`] compares its ceremony output after
-    /// execution, and execution checks the rest of it at this node's request.
+    /// [`Self::verify_boundary_outcome`] compares it after execution.
     #[instrument(skip_all, err(Display))]
     async fn verify_header(
         &self,
@@ -365,9 +437,72 @@ impl Inner {
         Ok(None)
     }
 
-    /// Checks that a boundary block contains the DKG ceremony output that this
-    /// node calculates for the block's `parent`. Execution checks the rest of
-    /// the outcome against the parent state when this node asks it to.
+    /// Checks that a boundary block contains the DKG outcome that this node
+    /// calculates for the block's `parent`.
+    ///
+    /// The DKG actor gives the ceremony output, and the rest of the outcome is
+    /// read from the parent's state. The engine has that state once it has
+    /// executed the boundary block, also when the parent is on a fork that is
+    /// not canonical. So call this only after the executor has accepted the
+    /// boundary block. If this node cannot calculate the outcome, that says
+    /// nothing about the block. The future then stays pending and the vote is
+    /// not cast.
+    ///
+    /// `ceremony` is the request for the ceremony output on `parent`.
+    #[instrument(skip_all, err(Display))]
+    async fn verify_boundary_outcome(
+        &self,
+        parent: &Block,
+        ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
+        proposed_outcome: &OnchainDkgOutcome,
+    ) -> eyre::Result<()> {
+        info!("verifying that the boundary block contains the correct DKG outcome");
+        let output = match ceremony.await {
+            Ok(output) => output,
+            Err(reason) => {
+                warn!(%reason, "DKG ceremony output unavailable; abstaining");
+                return std::future::pending().await;
+            }
+        };
+        let our_outcome =
+            match self
+                .parent_state
+                .boundary_outcome(&self.epoch_strategy, parent, output)
+            {
+                Ok(outcome) => outcome,
+                Err(reason) => {
+                    warn!(%reason, "DKG outcome unavailable; abstaining");
+                    return std::future::pending().await;
+                }
+            };
+        if &our_outcome != proposed_outcome {
+            // Emit the log here so that it's structured. The error would be annoying to read.
+            warn!(
+                our.epoch = %our_outcome.epoch,
+                our.players = ?our_outcome.players(),
+                our.next_players = ?our_outcome.next_players(),
+                our.sharing = ?our_outcome.sharing(),
+                our.is_next_full_dkg = ?our_outcome.is_next_full_dkg,
+                proposed.epoch = %proposed_outcome.epoch,
+                proposed.players = ?proposed_outcome.players(),
+                proposed.next_players = ?proposed_outcome.next_players(),
+                proposed.sharing = ?proposed_outcome.sharing(),
+                proposed.is_next_full_dkg = ?proposed_outcome.is_next_full_dkg,
+                "our public dkg outcome does not match what's stored \
+                in the block",
+            );
+            return Err(eyre!(
+                "our public dkg outcome does not match what's \
+                stored in the block header extra_data field; they must \
+                match so that the end-of-block is valid",
+            ));
+        }
+        Ok(())
+    }
+
+    /// From T15, checks that the boundary block carries the DKG ceremony
+    /// output this node calculates for its parent. Execution has already
+    /// checked the rest of the outcome against the parent state.
     ///
     /// If this node cannot calculate the output, that says nothing about the
     /// block. The future then stays pending and the vote is not cast.
@@ -462,31 +597,18 @@ where
         };
         tracing::Span::current().record("digest", tracing::field::display(block.digest()));
 
-        // Only a boundary block needs its parent, to request the ceremony
-        // output on it. The DKG actor reads no chain state, so it can work on
-        // the ceremony output while the header is checked and the block is
-        // executed.
-        //
-        // Execution keeps its verdict on the outcome of a boundary block only
-        // while the block is registered, so register it as soon as the block
-        // is known, before waiting for the parent, and hold the registration
-        // until the verdict is read. A block the engine executed before that
-        // has no verdict, and this node abstains on it. The executor runs a
-        // block outside verification only once it is finalized or named as
-        // the parent of a later round, so a certificate for it exists already
-        // and its vote is not needed.
-        let (ceremony, registration) = if self.is_boundary(block.height()) {
-            let registration = self.boundary_outcome_checks.register(block.digest().0);
+        // Only a boundary block needs its parent. The DKG actor reads no chain
+        // state, so it can work on the ceremony output of a boundary block
+        // while the header is checked and the block is executed.
+        let boundary = if self.is_boundary(block.height()) {
             let Some(parent) = ancestry.next().await else {
                 warn!("ancestry ended before yielding the parent; abstaining");
                 return std::future::pending().await;
             };
-            (
-                Some(self.dkg_manager.subscribe_dkg_ceremony(parent)),
-                Some(registration),
-            )
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
+            Some((parent, ceremony))
         } else {
-            (None, None)
+            None
         };
 
         let proposed_outcome = match self.verify_header(block.inner(), &context).await {
@@ -519,37 +641,25 @@ where
             }
         }
 
-        // Only a boundary block carries a DKG outcome. Every execution of it
-        // checks all of it but the ceremony output against the parent state,
-        // including one the execution layer ran without being asked to enforce
-        // the check, such as a block it buffered until its parent arrived.
+        // Only a boundary block carries a DKG outcome. Compare it after
+        // `verify_block`: our outcome reads the parent's state, which the
+        // engine has only once it has executed the block.
         match proposed_outcome {
             None => true,
             Some(outcome) => {
-                let registration = registration
-                    .expect("`verify_header` decodes an outcome only for a boundary block");
-                match registration.verdict() {
-                    Some(true) => {}
-                    Some(false) => {
-                        warn!(
-                            "the boundary block's DKG outcome does not match the parent \
-                            state; failing block"
-                        );
-                        return false;
-                    }
-                    None => {
-                        warn!(
-                            "execution recorded no verdict on the boundary block's DKG \
-                            outcome; abstaining"
-                        );
-                        return std::future::pending().await;
-                    }
+                let (parent, ceremony) =
+                    boundary.expect("`verify_header` decodes an outcome only for a boundary block");
+                if self.is_t15(block.inner().header().timestamp()) {
+                    // Execution has checked the rest of the outcome against
+                    // the parent state.
+                    self.verify_boundary_output(ceremony, &outcome)
+                        .await
+                        .is_ok()
+                } else {
+                    self.verify_boundary_outcome(parent.inner(), ceremony, &outcome)
+                        .await
+                        .is_ok()
                 }
-                let ceremony =
-                    ceremony.expect("`verify_header` decodes an outcome only for a boundary block");
-                self.verify_boundary_output(ceremony, &outcome)
-                    .await
-                    .is_ok()
             }
         }
     }
@@ -623,15 +733,16 @@ impl Metrics {
     }
 }
 
-/// Defers the DKG ceremony output on the parent `parent_digest` until the
-/// executor has delivered that parent.
+/// From T15, defers the DKG ceremony output on the parent `parent_digest`
+/// until the executor has delivered that parent. The payload builder fills in
+/// the rest of the outcome from the parent state.
 ///
 /// `ceremony` is the request for the ceremony output on that parent.
 fn deferred_ceremony_output(
     parent_digest: Digest,
     ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
-) -> DeferredCeremonyOutput {
-    DeferredCeremonyOutput::new(move |parent| {
+) -> DeferredExtraData {
+    DeferredExtraData::new(move |parent| {
         async move {
             ensure!(
                 parent.digest() == parent_digest,
@@ -648,7 +759,7 @@ fn deferred_ceremony_output(
                 output.players = ?output.players(),
                 "received DKG ceremony output; will include in payload builder attributes",
             );
-            Ok(output)
+            Ok(ProposalExtraData::DkgCeremonyOutput(output))
         }
         .boxed()
     })

@@ -346,19 +346,19 @@ where
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
-        // Consensus passes only the DKG ceremony output for a boundary block, and the builder
-        // fills in the rest of the outcome from the parent state. Verifying validators check it.
-        // Attributes without a ceremony output, such as the dev-mode miner's, keep their extra
-        // data as they are.
+        // From T15, consensus passes only the DKG ceremony output for a boundary block, and the
+        // builder fills in the rest of the outcome from the parent state, which execution checks.
+        // Other attributes, such as those of earlier boundaries or the dev-mode miner's, keep
+        // their extra data as they are.
         let block_number = parent_header.number() + 1;
         let epoch_length = chain_spec
             .info
             .epoch_length()
             .unwrap_or(NonZeroU64::MIN)
             .get();
-        let ceremony_output = attributes
-            .dkg_ceremony_output()
-            .filter(|_| block_number.saturating_add(1).is_multiple_of(epoch_length));
+        let ceremony_output = attributes.dkg_ceremony_output().filter(|_| {
+            hardfork.is_t15() && block_number.saturating_add(1).is_multiple_of(epoch_length)
+        });
         let extra_data = if let Some(output) = ceremony_output {
             let output = output.clone();
             let current_epoch = block_number / epoch_length;

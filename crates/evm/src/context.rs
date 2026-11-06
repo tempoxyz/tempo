@@ -14,23 +14,6 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub shared_gas_limit: u64,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
-    /// Checks a boundary block's DKG outcome against the parent state and records the verdict in
-    /// [`crate::BoundaryOutcomeChecks`] if consensus registered the block. Set for every block
-    /// executed from a sealed block, `None` when building one.
-    pub check_boundary_outcome: Option<BoundaryOutcomeCheck>,
-}
-
-/// The DKG outcome check of a boundary block, see [`TempoBlockExecutionCtx::check_boundary_outcome`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BoundaryOutcomeCheck {
-    /// The hash of the block, under which the verdict is recorded.
-    pub block_hash: alloy_primitives::B256,
-    /// Whether a mismatch rejects the block. The check is a voting rule, not a block validity rule:
-    /// rejecting blocks on it everywhere would change validity without a hardfork and could reject
-    /// historical blocks. So only a validator verifying a proposal enforces it. Other executions
-    /// record the verdict, which matters when the engine runs a proposal consensus registered
-    /// outside that request, such as one it buffered until its parent arrived.
-    pub enforce: bool,
 }
 
 /// Context required for next block environment.

@@ -72,6 +72,7 @@ pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
     execution_node: Arc<TempoFullNode>,
+    executed_state: tempo_node::ExecutedState,
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
     estimator: tempo_payload_types::Estimator,
@@ -118,6 +119,7 @@ pub async fn run_consensus_stack(
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,
         execution_node: Some(execution_node),
+        executed_state,
         gossip: gossip_transport.map(|transport| gossip::Config {
             transport,
             verify_rate: config.gossip_verify_rate,

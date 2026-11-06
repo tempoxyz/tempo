@@ -92,7 +92,6 @@ antithesis_sdk = { workspace = true, optional = true }
 serde_json = { workspace = true, default-features = true, optional = true }
 
 [dev-dependencies]
-tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 

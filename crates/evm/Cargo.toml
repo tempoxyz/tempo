@@ -27,7 +27,6 @@ tempo-primitives = { workspace = true, features = ["reth"] }
 commonware-codec.workspace = true
 commonware-cryptography = { workspace = true, features = ["bls12381", "std"] }
 commonware-utils.workspace = true
-parking_lot.workspace = true
 
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true

@@ -136,7 +136,9 @@ impl PayloadTypes for ZonePayloadTypes {
         block: SealedBlock<Block>,
         _bal: Option<alloy_primitives::Bytes>,
     ) -> Self::ExecutionData {
-        TempoExecutionData::new(block)
+        TempoExecutionData {
+            block: block.into(),
+        }
     }
 }
 

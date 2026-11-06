@@ -30,11 +30,8 @@ pub use action_replay::{
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
-pub use common::{
-    BoundaryOutcomeChecks, BoundaryOutcomeRegistration, DkgCeremonyConfig, TempoStateAccess,
-    TempoTx,
-};
-pub use context::{BoundaryOutcomeCheck, TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
+pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
 pub use fee_manager::{
@@ -79,7 +76,6 @@ pub struct TempoEvmConfig {
     chain_spec: Arc<TempoChainSpec>,
     evm_factory: TempoEvmFactory,
     sender_recovery_cache: Option<SenderRecoveryCache>,
-    boundary_outcome_checks: BoundaryOutcomeChecks,
     /// Block assembler used by payload construction.
     pub block_assembler: TempoBlockAssembler,
 }
@@ -106,7 +102,6 @@ impl TempoEvmConfig {
         Self {
             evm_factory: TempoEvmFactory::default(),
             sender_recovery_cache: None,
-            boundary_outcome_checks: BoundaryOutcomeChecks::default(),
             block_assembler: TempoBlockAssembler::new(chain_spec.clone()),
             chain_spec,
         }
@@ -122,12 +117,6 @@ impl TempoEvmConfig {
     pub fn with_evm_factory(mut self, factory: TempoEvmFactory) -> Self {
         self.evm_factory = factory;
         self
-    }
-
-    /// Returns the boundary blocks whose DKG outcome passed the check a validator asked for. Clones
-    /// of this config, such as the execution layer's, record into the same set.
-    pub const fn boundary_outcome_checks(&self) -> &BoundaryOutcomeChecks {
-        &self.boundary_outcome_checks
     }
 
     /// Returns the chain spec
@@ -179,12 +168,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
     where
         Self: 'a,
     {
-        TempoBlockExecutor::new(
-            evm,
-            ctx,
-            self.chain_spec(),
-            self.boundary_outcome_checks.clone(),
-        )
+        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
     }
 
     fn evm_factory(&self) -> &Self::EvmFactory {
@@ -344,10 +328,6 @@ impl ConfigureEvm for TempoEvmConfig {
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
             consensus_context: block.header().consensus_context,
-            check_boundary_outcome: Some(BoundaryOutcomeCheck {
-                block_hash: block.hash(),
-                enforce: false,
-            }),
         })
     }
 
@@ -372,7 +352,6 @@ impl ConfigureEvm for TempoEvmConfig {
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
             consensus_context: attributes.consensus_context,
-            check_boundary_outcome: None,
         })
     }
 }

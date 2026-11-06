@@ -1,8 +1,8 @@
 use std::{num::NonZeroU64, sync::Arc};
 
 use crate::{
-    BoundaryOutcomeCheck, BoundaryOutcomeChecks, TempoBlockEnv, TempoBlockExecutionCtx,
-    TempoBlockExecutor, TempoBlockExt, TempoEvmConfig, TempoEvmEnv, block::BlockSection,
+    TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt, TempoEvmConfig,
+    TempoEvmEnv, block::BlockSection,
 };
 use alloy_primitives::{B256, Bytes, U256};
 use evm2::{EvmFeatures, SpecId, evm::DynDatabase};
@@ -27,8 +27,6 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) amsterdam_eip8037_enabled: bool,
     pub(crate) spec: TempoHardfork,
     pub(crate) extra_data: Bytes,
-    pub(crate) check_boundary_outcome: Option<BoundaryOutcomeCheck>,
-    pub(crate) boundary_outcome_checks: BoundaryOutcomeChecks,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
 }
@@ -46,8 +44,6 @@ impl Default for TestExecutorBuilder {
             amsterdam_eip8037_enabled: false,
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
-            check_boundary_outcome: None,
-            boundary_outcome_checks: BoundaryOutcomeChecks::default(),
             initial_section: None,
         }
     }
@@ -66,22 +62,6 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_extra_data(mut self, extra_data: Bytes) -> Self {
         self.extra_data = extra_data;
-        self
-    }
-
-    /// Checks the boundary DKG outcome of the block `block_hash`, enforcing it as a verifying
-    /// validator does or only recording the verdict as any other execution does.
-    pub(crate) fn with_boundary_outcome_check(mut self, block_hash: B256, enforce: bool) -> Self {
-        self.check_boundary_outcome = Some(BoundaryOutcomeCheck {
-            block_hash,
-            enforce,
-        });
-        self
-    }
-
-    /// Records the verdicts of the boundary DKG outcome check in `checks`.
-    pub(crate) fn with_boundary_outcome_checks(mut self, checks: BoundaryOutcomeChecks) -> Self {
-        self.boundary_outcome_checks = checks;
         self
     }
 
@@ -165,11 +145,9 @@ impl TestExecutorBuilder {
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
             consensus_context: None,
-            check_boundary_outcome: self.check_boundary_outcome,
         };
 
-        let mut executor =
-            TempoBlockExecutor::new(evm, ctx, chainspec, self.boundary_outcome_checks);
+        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {

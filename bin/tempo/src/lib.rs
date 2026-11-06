@@ -315,6 +315,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     let (consensus_startup_tx, consensus_startup_rx) = oneshot::channel::<(
         TempoFullNode,
+        tempo_node::ExecutedState,
         TempoArgs,
         Option<tempo_node::gossip::TransportHandle>,
         tempo_node::Estimator,
@@ -333,7 +334,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, args, gossip_transport, estimator) =
+        let (node, executed_state, args, gossip_transport, estimator) =
             consensus_startup_rx.blocking_recv().wrap_err(
                 "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
@@ -432,6 +433,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     ctx.child("consensus"),
                     args.consensus,
                     Arc::new(node),
+                    executed_state,
                     cl_feed_state_clone,
                     gossip_transport,
                     estimator,
@@ -585,6 +587,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             .wrap_err("invalid --consensus.network-budget or --consensus.target-block-time")?;
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
+        let executed_state = tempo_node.executed_state();
 
         let NodeHandle {
             node,
@@ -718,7 +721,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         // The receiver is only dropped when the consensus thread has already
         // exited, which `consensus_dead_rx` below reports.
-        let _ = consensus_startup_tx.send((node, args, gossip_transport, estimator));
+        let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
         tokio::select! {

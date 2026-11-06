@@ -14,11 +14,7 @@ use evm2::{
     evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
-use std::{
-    collections::HashMap,
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-};
+use std::net::{IpAddr, SocketAddr};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
@@ -31,94 +27,6 @@ use tempo_precompiles::{
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2, ValidatorConfigV2Error},
 };
 use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
-
-/// Verdicts of the DKG outcome check (see [`crate::TempoBlockExecutionCtx::check_boundary_outcome`])
-/// on the boundary blocks a validator is verifying: whether each outcome matches the parent state.
-///
-/// Consensus registers a boundary block before it hands the block to execution and holds the
-/// [`BoundaryOutcomeRegistration`] until it has read the verdict. Every execution of a registered
-/// block records its verdict, including one the execution layer ran without being asked to enforce
-/// the check, such as a block it buffered until its parent arrived; the execution layer reports a
-/// block it already knows as valid without executing it again. Executions of other blocks, such as
-/// RPC re-executions, record nothing, so they cannot displace a verdict consensus waits for. Clones
-/// share their contents.
-#[derive(Clone, Debug, Default)]
-pub struct BoundaryOutcomeChecks(Arc<parking_lot::Mutex<HashMap<B256, Registered>>>);
-
-#[derive(Debug)]
-struct Registered {
-    /// Registrations held for the block.
-    holders: usize,
-    verdict: Option<bool>,
-}
-
-impl BoundaryOutcomeChecks {
-    /// Keeps the verdicts on the boundary block `block_hash` until the returned registration is
-    /// dropped.
-    pub fn register(&self, block_hash: B256) -> BoundaryOutcomeRegistration {
-        self.lock()
-            .entry(block_hash)
-            .or_insert(Registered {
-                holders: 0,
-                verdict: None,
-            })
-            .holders += 1;
-        BoundaryOutcomeRegistration {
-            checks: self.clone(),
-            block_hash,
-        }
-    }
-
-    /// Records whether the outcome of the boundary block `block_hash` matches the parent state, if
-    /// the block is registered.
-    pub fn record(&self, block_hash: B256, matches: bool) {
-        if let Some(registered) = self.lock().get_mut(&block_hash) {
-            registered.verdict = Some(matches);
-        }
-    }
-
-    /// Whether the outcome of the boundary block `block_hash` matches the parent state, or `None`
-    /// if the block is not registered or no execution of it recorded a verdict.
-    pub fn verdict(&self, block_hash: B256) -> Option<bool> {
-        self.lock()
-            .get(&block_hash)
-            .and_then(|registered| registered.verdict)
-    }
-
-    fn lock(&self) -> parking_lot::MutexGuard<'_, HashMap<B256, Registered>> {
-        self.0.lock()
-    }
-}
-
-/// Keeps the verdicts on a boundary block in [`BoundaryOutcomeChecks`] while it is held.
-#[derive(Debug)]
-#[must_use = "the verdicts are forgotten when the registration is dropped"]
-pub struct BoundaryOutcomeRegistration {
-    checks: BoundaryOutcomeChecks,
-    block_hash: B256,
-}
-
-impl BoundaryOutcomeRegistration {
-    /// Whether the outcome of the registered block matches the parent state, or `None` if no
-    /// execution of it recorded a verdict yet.
-    pub fn verdict(&self) -> Option<bool> {
-        self.checks.verdict(self.block_hash)
-    }
-}
-
-impl Drop for BoundaryOutcomeRegistration {
-    fn drop(&mut self) {
-        let mut registered = self.checks.lock();
-        if let std::collections::hash_map::Entry::Occupied(mut entry) =
-            registered.entry(self.block_hash)
-        {
-            entry.get_mut().holders -= 1;
-            if entry.get().holders == 0 {
-                entry.remove();
-            }
-        }
-    }
-}
 
 /// The part of `ValidatorConfigV2` in the pre-state of a boundary block that sets the next DKG
 /// ceremony.
@@ -695,33 +603,6 @@ mod tests {
     use tempo_primitives::{
         AASigned, TempoSignature, TempoTransaction, transaction::tt_signature::PrimitiveSignature,
     };
-
-    #[test]
-    fn boundary_outcome_checks_keep_only_registered_verdicts() {
-        let checks = BoundaryOutcomeChecks::default();
-        let block = B256::repeat_byte(1);
-
-        // Verdicts on blocks nobody registered are not kept, however many there are.
-        checks.record(block, true);
-        assert_eq!(checks.verdict(block), None);
-
-        let first = checks.register(block);
-        assert_eq!(first.verdict(), None);
-        for other in 0..1_000u64 {
-            checks.record(B256::left_padding_from(&other.to_be_bytes()), false);
-        }
-        checks.record(block, true);
-        assert_eq!(first.verdict(), Some(true));
-        assert_eq!(checks.0.lock().len(), 1);
-
-        // The verdict is kept while any registration for the block is held.
-        let second = checks.register(block);
-        drop(first);
-        assert_eq!(second.verdict(), Some(true));
-        drop(second);
-        assert_eq!(checks.verdict(block), None);
-        assert!(checks.0.lock().is_empty());
-    }
 
     fn legacy_env(caller: Address, to: TxKind, input: Bytes) -> TempoTxEnv {
         Recovered::new_unchecked(

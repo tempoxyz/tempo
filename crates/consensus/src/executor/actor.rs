@@ -26,8 +26,9 @@
 //!
 //! Builds fetch and deliver their parent, then issue the forkchoice update
 //! with payload attributes on VALID, using the finalized state captured when
-//! the build was scheduled. A boundary proposal first waits for the DKG
-//! ceremony output, which consensus produces while the parent is delivered. The build holds the slot while it waits, so no
+//! the build was scheduled. A proposal whose extra data depends on the
+//! post-state of its parent, such as the DKG outcome of a boundary block,
+//! first waits for that data. The build holds the slot while it waits, so no
 //! other forkchoice update can move the finalized state that it captured.
 //!
 //! # Block verification
@@ -118,7 +119,7 @@ use tracing::{
 
 use super::{
     Config, ExecutionLayer, Marshal,
-    ingress::{Build, Command, Message, VerifyBlock},
+    ingress::{Build, Command, Message, ProposalExtraData, VerifyBlock},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -1718,15 +1719,12 @@ where
         if let Some(active) = &mut self.active_verification
             && matches!(active.walk.step, WalkStep::Probe)
         {
-            // Only the proposal itself is verified, not the ancestors its walk delivers.
-            let is_proposal = active.walk.cursor.digest() == active.walk.target.digest();
             let block = active.walk.probe();
             let fut = execute_delivery(
                 self.execution_node.clone(),
                 WalkOwner::Verification(active.round),
                 active.walk.cause.clone(),
                 block,
-                is_proposal,
             );
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Verify, fut));
             return;
@@ -1741,7 +1739,6 @@ where
                 WalkOwner::Convergence,
                 walk.cause.clone(),
                 block,
-                false,
             );
             self.set_execution_task(ExecutionTask::new(ExecutionTaskType::Deliver, fut));
         }
@@ -2436,9 +2433,9 @@ async fn execute_forkchoice(
 /// Owns the execution slot while fetching and delivering the parent, then
 /// starts the payload build if the parent is VALID.
 ///
-/// A build with [`Build::deferred_ceremony_output`] resolves the DKG ceremony
-/// output between the VALID answer and the forkchoice update. The wait counts
-/// against the build budget.
+/// A build with [`Build::deferred_extra_data`] resolves that extra data
+/// between the VALID answer and the forkchoice update. The wait counts against
+/// the build budget.
 #[instrument(skip_all, parent = &cause, fields(
     round = %build.context.round,
     parent = %build.context.parent.1,
@@ -2454,7 +2451,7 @@ async fn execute_build(
     let Build {
         context,
         attributes,
-        deferred_ceremony_output,
+        deferred_extra_data,
         mut response,
     } = *build;
     let mut attributes = *attributes;
@@ -2482,7 +2479,7 @@ async fn execute_build(
         };
     };
     target.head = (block.height(), parent_digest);
-    let status = match deliver_block(&execution_node, block.clone(), false)
+    let status = match deliver_block(&execution_node, block.clone())
         .await
         .wrap_err("failed delivering build parent")
     {
@@ -2501,28 +2498,33 @@ async fn execute_build(
             delivery_attempted: true,
         };
     }
-    if let Some(deferred) = deferred_ceremony_output {
-        let output = select! {
+    if let Some(deferred) = deferred_extra_data {
+        let extra_data = select! {
             biased;
 
             () = response.cancellation() => {
-                info!("build subscriber went away while the build waited for the DKG ceremony output");
+                info!("build subscriber went away while the build waited for extra data");
                 return BuildOutcome::Aborted {
                     delivery_attempted: true,
                 };
             },
-            output = deferred.resolve(block) => output,
+            extra_data = deferred.resolve(block) => extra_data,
         };
-        let output = match output {
-            Ok(output) => output,
+        let extra_data = match extra_data {
+            Ok(extra_data) => extra_data,
             Err(error) => {
-                warn!(%error, "failed to get the DKG ceremony output of the proposal");
+                warn!(%error, "failed to get the extra data of the proposal");
                 return BuildOutcome::Aborted {
                     delivery_attempted: true,
                 };
             }
         };
-        attributes = attributes.with_dkg_ceremony_output(output);
+        attributes = match extra_data {
+            ProposalExtraData::Encoded(extra_data) => attributes.with_extra_data(extra_data),
+            ProposalExtraData::DkgCeremonyOutput(output) => {
+                attributes.with_dkg_ceremony_output(output)
+            }
+        };
     }
     BuildOutcome::Forkchoice(
         execute_forkchoice(
@@ -2550,14 +2552,11 @@ async fn execute_finalization(
     execution_node: impl ExecutionLayer,
     request: FinalizedBlockRequest,
 ) -> ExecutionTaskOutcome {
-    let status = deliver_block(&execution_node, request.block.clone(), false).await;
+    let status = deliver_block(&execution_node, request.block.clone()).await;
     ExecutionTaskOutcome::FinalizedDelivered { request, status }
 }
 
 /// Delivers a walk's cursor through a bare new-payload request.
-///
-/// `check_boundary_outcome` asks execution to check a boundary block's DKG outcome against the
-/// parent state, see [`TempoExecutionData::check_boundary_outcome`].
 #[instrument(
     skip_all,
     parent = &cause,
@@ -2575,11 +2574,10 @@ async fn execute_delivery(
     owner: WalkOwner,
     cause: Span,
     block: Digested<Block>,
-    check_boundary_outcome: bool,
 ) -> ExecutionTaskOutcome {
     let digest = block.digest();
     let started = Instant::now();
-    let status = deliver_block(&execution_node, block, check_boundary_outcome)
+    let status = deliver_block(&execution_node, block)
         .await
         .map(|status| (status, started.elapsed()));
     ExecutionTaskOutcome::Delivered {
@@ -2594,14 +2592,10 @@ async fn execute_delivery(
 async fn deliver_block(
     execution_node: &impl ExecutionLayer,
     block: Digested<Block>,
-    check_boundary_outcome: bool,
 ) -> eyre::Result<PayloadStatusEnum> {
     let block = block.inner().execution_block();
     let payload_status = execution_node
-        .new_payload(TempoExecutionData {
-            block,
-            check_boundary_outcome,
-        })
+        .new_payload(TempoExecutionData { block })
         .await
         .wrap_err("failed sending new-payload request to execution layer")?;
     if payload_status.is_valid() {

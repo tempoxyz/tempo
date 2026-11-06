@@ -21,7 +21,7 @@ use commonware_runtime::{
     spawn_cell,
 };
 use commonware_utils::NZDuration;
-use eyre::{OptionExt as _, WrapErr as _};
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
@@ -49,6 +49,11 @@ const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
 // because there doesn't really seem to be a point putting it into an extra initializer.
 pub struct Builder<TBlocker, TPeerManager> {
     pub execution_node: Option<Arc<TempoFullNode>>,
+
+    /// Reads the state of blocks that the execution node's engine has
+    /// executed, including blocks on forks. Get it from the
+    /// [`tempo_node::TempoNode`] that launched `execution_node`.
+    pub executed_state: tempo_node::ExecutedState,
 
     /// Trusted network identity to register before initializing consensus actors.
     pub network_identity: tempo_chainspec::NetworkIdentity,
@@ -118,6 +123,11 @@ where
             .execution_node
             .clone()
             .ok_or_eyre("execution_node must be set using with_execution_node()")?;
+        ensure!(
+            self.executed_state.is_launched(),
+            "the engine of the execution node is not launched; `executed_state` \
+            must come from the `TempoNode` that launched `execution_node`",
+        );
 
         let epoch_length = execution_node
             .chain_spec()
@@ -292,9 +302,12 @@ where
             public_key: self.signer.public_key(),
             executor: executor_mailbox.clone(),
             dkg_manager: dkg_manager_mailbox.clone(),
+            parent_state: application::TempoParentState {
+                node: execution_node.clone(),
+                executed_state: self.executed_state.clone(),
+            },
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
-            boundary_outcome_checks: execution_node.evm_config.boundary_outcome_checks().clone(),
         });
         let application = application::Factory::new(
             &context,

@@ -823,6 +823,8 @@ pub struct ExecutionNode {
     /// The consensus layer takes this when it starts. It carries receivers, so
     /// only one consensus instance can own it.
     pub gossip: Option<tempo_node::gossip::TransportHandle>,
+    /// Reads the state of blocks that this node's engine has executed.
+    pub executed_state: tempo_node::ExecutedState,
 }
 
 impl ExecutionNode {
@@ -988,6 +990,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,
     };
+    let executed_state = tempo_node.executed_state();
 
     let builder = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
@@ -1020,6 +1023,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         runtime,
         exit_fut: node_handle.node_exit_future,
         gossip: gossip_transport,
+        executed_state,
     })
 }
 

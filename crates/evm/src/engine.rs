@@ -24,15 +24,8 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &'a TempoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        let TempoExecutionData {
-            block,
-            check_boundary_outcome,
-        } = payload;
-        let mut ctx = self.context_for_block(block)?;
-        if let Some(check) = &mut ctx.check_boundary_outcome {
-            check.enforce = *check_boundary_outcome;
-        }
-        Ok(ctx)
+        let TempoExecutionData { block } = payload;
+        self.context_for_block(block)
     }
 
     fn tx_iterator_for_payload(
@@ -218,7 +211,9 @@ mod tests {
 
         let block = create_test_block(vec![tx1, tx2, system_tx]);
 
-        let payload = TempoExecutionData::new(block);
+        let payload = TempoExecutionData {
+            block: block.into(),
+        };
 
         let result = evm_config.tx_iterator_for_payload(&payload);
         assert!(result.is_ok());
@@ -252,7 +247,9 @@ mod tests {
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain_id(), 1);
         let block = create_test_block(vec![system_tx]);
-        let payload = TempoExecutionData::new(block);
+        let payload = TempoExecutionData {
+            block: block.into(),
+        };
 
         let result = evm_config.context_for_payload(&payload);
         assert!(result.is_ok());
@@ -272,7 +269,9 @@ mod tests {
         let system_tx = create_subblock_metadata_tx(chainspec.chain_id(), 1);
         let block = create_test_block(vec![system_tx]);
 
-        let payload = TempoExecutionData::new(block.clone());
+        let payload = TempoExecutionData {
+            block: block.clone().into(),
+        };
 
         let result = evm_config.evm_env_for_payload(&payload);
         assert!(result.is_ok());
