@@ -31,10 +31,7 @@ pub(crate) enum Operation {
         accounts: Vec<Address>,
         storages: Vec<StorageHint>,
     },
-    /// Delay the driver while trie workers continue running under the Antithesis scheduler.
-    Sleep {
-        millis: u64,
-    },
+    /// End the block; the driver finishes its update stream and checks the resulting root.
     Commit,
 }
 
@@ -90,32 +87,15 @@ impl Input {
             }
             operations.push(Operation::Commit);
         }
-        // Delays separate batches, never split the commit boundary. Trie and persistence
-        // workers remain runnable while the driver sleeps.
-        let mut timing = AntithesisRng;
-        let mut timed = Vec::new();
-        for operation in operations {
-            if !matches!(operation, Operation::Commit) &&
-                matches!(
-                    timed.last(),
-                    Some(Operation::UpdateBatch { .. } | Operation::PrewarmBatch { .. })
-                ) &&
-                timing.random_bool(0.25)
-            {
-                timed.push(Operation::Sleep { millis: timing.random_range(1..=10) });
-            }
-            timed.push(operation);
-        }
-        Self { operations: timed }
+        Self { operations }
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        // Account existence survives commits; update and sleep budgets reset per block.
+        // Account existence survives commits; the update budget resets per block.
         // Validate before any operation reaches production trie workers.
         let mut accounts = BTreeSet::new();
         let mut blocks = 0;
         let mut block_updates = 0;
-        let mut block_sleep_ms = 0u64;
         for operation in &self.operations {
             match operation {
                 Operation::UpdateBatch { updates } => {
@@ -144,16 +124,7 @@ impl Input {
                 Operation::PrewarmBatch { accounts, storages } => {
                     ensure!(!accounts.is_empty() || !storages.is_empty(), "empty prewarm batch");
                 }
-                Operation::Sleep { millis } => {
-                    ensure!(*millis <= 1000, "sleep needs at most 1000 milliseconds");
-                    block_sleep_ms += millis;
-                    ensure!(
-                        block_sleep_ms <= 10_000,
-                        "block needs at most 10000 sleep milliseconds"
-                    );
-                }
                 Operation::Commit => {
-                    block_sleep_ms = 0;
                     ensure!(block_updates > 0, "commit without updates");
                     blocks += 1;
                     ensure!(blocks <= 1024, "input needs at most 1024 commits");

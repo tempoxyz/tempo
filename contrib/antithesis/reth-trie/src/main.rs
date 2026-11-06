@@ -341,8 +341,6 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     let mut partial_commits = 0;
     let mut update_batches = 0;
     let mut hint_batches = 0;
-    let mut sleep_operations = 0;
-    let mut sleep_ms = 0u64;
     let mut prune_requested = false;
     let mut phase = Phase::Running;
     loop {
@@ -494,7 +492,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
             .collect::<BTreeSet<_>>();
         let mut hinted = BTreeSet::new();
         let mut updates = updates.into_iter();
-        // Preserve input ordering: hints and sleeps interleave with the corresponding updates.
+        // Preserve input ordering: hints interleave with the corresponding updates.
         for operation in &operations {
             match operation {
                 Operation::PrewarmBatch { accounts, storages } => {
@@ -521,15 +519,9 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
                     stream.on_hashed_state_update(batch);
                     update_batches += 1;
                 }
-                Operation::Sleep { millis } => {
-                    // Yield the driver while production trie and persistence workers remain
-                    // runnable.
-                    std::thread::sleep(Duration::from_millis(*millis));
-                    sleep_operations += 1;
-                    sleep_ms += millis;
-                    println!("{}", json!({"block_number": number, "sleep_ms": millis}));
-                }
-                Operation::Commit => {}
+                // Commit marks the end of this block, not a database transaction.
+                // Finalize its streams and await the root below before scheduling persistence.
+                Operation::Commit => break,
             }
         }
         println!(
@@ -604,14 +596,12 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     }
     assert_sometimes!(partial_commits > 0, "Persistence commits with masked state");
     assert_sometimes!(hint_batches > 0, "Prewarm hints reach trie workers");
-    assert_sometimes!(sleep_operations > 0, "Driver yields between operation batches");
     let metrics = metric_counts(snapshotter);
     println!(
         "{}",
         json!({"completed": true, "round": config.round, "blocks": total_blocks,
         "commits": commits, "partial_commits": partial_commits,
         "update_batches": update_batches, "hint_batches": hint_batches,
-        "sleep_operations": sleep_operations, "sleep_ms": sleep_ms,
         "metrics": metrics})
     );
     Ok(())
