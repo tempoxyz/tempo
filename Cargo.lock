@@ -1245,6 +1245,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "antithesis-instrumentation"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009bd9354d773dea6b85c08fa0d929ff6c52003cbe3cf496614eff79d2895eb5"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "antithesis_sdk"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14273,6 +14282,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-signer-trezor",
  "alloy-sol-types",
+ "antithesis-instrumentation",
  "antithesis_sdk",
  "base64 0.22.1",
  "blake3",
@@ -15207,6 +15217,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-eth",
+ "antithesis-instrumentation",
  "antithesis_sdk",
  "base64 0.22.1",
  "bytes",
@@ -15265,6 +15276,7 @@ name = "tempo-zone"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
+ "antithesis-instrumentation",
  "antithesis_sdk",
  "reth-cli-util",
  "reth-node-core",

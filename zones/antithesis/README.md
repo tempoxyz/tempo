@@ -3,6 +3,11 @@
 A multi-sequencer zone in Docker Compose, for fault-injection testing of the L1 and zone nodes built with
 `--features fuzz` (SDK assertions enabled). `docker-compose.yaml` describes the topology.
 
+The Dockerfile builds every binary with Antithesis [coverage instrumentation](https://antithesis.com/docs/reference/sdk/rust/instrumentation/)
+(`--features antithesis-coverage` and its sancov `RUSTFLAGS`, in the `antithesis` profile: no LTO, one codegen unit)
+and links them into `/symbols`. Coverage guides the exploration, and Antithesis only pauses threads in
+instrumented processes. Outside Antithesis the shim finds no `libvoidstar` and does nothing.
+
 Build the images from the repository root, with the contract submodules checked out:
 
 ```bash
