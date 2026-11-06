@@ -48,7 +48,7 @@ use reth_trie_common::{HashedPostState, HashedPostStateSorted, updates::TrieUpda
 use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseHashedPostState as _};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tempo_qmdb_state::{
-    BlockRef, QmdbBatch, Store, diff, import,
+    BlockRef, QmdbBatch, StageId, Store, diff, import,
     layout::{self, AccountRecord},
 };
 
@@ -109,11 +109,13 @@ where
     ) -> ProviderResult<PreparedStateRootJob<TempoPrimitives>> {
         let timestamp: u64 = ctx.env().evm_env.block_env().timestamp.saturating_to();
         if self.is_active_at(timestamp) {
+            let stage = open_stage(&self.store, ctx.parent_header().hash(), false);
             let job = ActiveJob {
                 store: self.store.clone(),
                 metrics: self.metrics.clone(),
+                stage,
             };
-            let mut prefetch = spawn_prefetch(self.store.clone(), self.metrics.clone());
+            let mut prefetch = spawn_prefetch(self.store.clone(), self.metrics.clone(), stage);
             return Ok(PreparedStateRootJob::new(Box::new(job), None)
                 .with_execution_hook(prefetch.take_execution_hook())
                 .with_hint_stream(prefetch.take_hint_stream()));
@@ -151,7 +153,8 @@ where
         // itself. The handle only streams its execution into the prefetch and never yields a
         // root.
         if self.is_active_at(ctx.timestamp()) {
-            let mut prefetch = spawn_prefetch(self.store.clone(), self.metrics.clone());
+            let stage = open_stage(&self.store, ctx.parent_hash(), true);
+            let mut prefetch = spawn_prefetch(self.store.clone(), self.metrics.clone(), stage);
             let (_, state_root_rx) = std::sync::mpsc::channel();
             return Ok(Some(PayloadStateRootHandle::new(
                 "qmdb-prefetch",
@@ -209,6 +212,8 @@ impl StateRootJob<TempoPrimitives> for ShadowJob {
 struct ActiveJob {
     store: Arc<Store>,
     metrics: Arc<QmdbMetrics>,
+    /// The stage the block's execution streams its keys into.
+    stage: Option<StageId>,
 }
 
 impl StateRootJob<TempoPrimitives> for ActiveJob {
@@ -226,7 +231,7 @@ impl StateRootJob<TempoPrimitives> for ActiveJob {
         let writes = diff::block_writes(&output.state).map_err(ProviderError::other)?;
         let batch = self
             .store
-            .build(block_ref(block), writes)
+            .build_staged(block_ref(block), writes, self.stage.take())
             .map_err(ProviderError::other)?;
         self.metrics.build_duration.record(started.elapsed());
         // The MPT trie tables are no longer maintained from here on. The block carries its batch
@@ -238,14 +243,27 @@ impl StateRootJob<TempoPrimitives> for ActiveJob {
     }
 }
 
-/// Streams a block's execution into [`Store::prefetch`] while it runs, the way reth's sparse-trie
+/// Opens a stage for a block on `parent_hash`, or returns `None` when the store is gone.
+fn open_stage(store: &Store, parent_hash: B256, builder: bool) -> Option<StageId> {
+    store
+        .open_stage(parent_hash, builder)
+        .inspect_err(|err| debug!(target: "qmdb", %err, "failed opening a QMDB stage"))
+        .ok()
+}
+
+/// Streams a block's execution into [`Store::stage`], or without a stage [`Store::prefetch`],
+/// while it runs, the way reth's sparse-trie
 /// task reveals proofs as transactions execute, so that building the block's batch finds what it
 /// reads cached.
 ///
 /// The returned handle's execution hook carries each transaction's state update and its hint
 /// stream the prewarming hints. The task prefetches the keys of everything that arrived while its
 /// previous prefetch ran, and ends when the hook finishes the stream or both are dropped.
-fn spawn_prefetch(store: Arc<Store>, metrics: Arc<QmdbMetrics>) -> StateRootHandle {
+fn spawn_prefetch(
+    store: Arc<Store>,
+    metrics: Arc<QmdbMetrics>,
+    stage: Option<StageId>,
+) -> StateRootHandle {
     let (updates_tx, updates_rx) = crossbeam_channel::unbounded();
     // Nothing waits on a root or a hashed state from this task, so their senders drop here.
     let (cancel_guard, _) = StateRootTaskCancelGuard::channel();
@@ -285,7 +303,11 @@ fn spawn_prefetch(store: Arc<Store>, metrics: Arc<QmdbMetrics>) -> StateRootHand
             )
             .entered();
             let started = Instant::now();
-            if let Err(err) = store.prefetch(accounts, slots) {
+            let result = match stage {
+                Some(stage) => store.stage(stage, accounts, slots),
+                None => store.prefetch(accounts, slots),
+            };
+            if let Err(err) = result {
                 debug!(target: "qmdb", %err, "QMDB prefetch failed");
                 return;
             }

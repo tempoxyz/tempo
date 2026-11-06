@@ -23,4 +23,4 @@ pub mod import;
 pub mod layout;
 mod store;
 
-pub use store::{BlockRef, Config, Error, QmdbBatch, Status, Store};
+pub use store::{BlockRef, Config, Error, QmdbBatch, StageId, Status, Store};

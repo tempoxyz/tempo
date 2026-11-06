@@ -1,10 +1,14 @@
 //! The two QMDB databases, their unapplied per-block batches, and the thread that runs them.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     num::{NonZeroU16, NonZeroU64, NonZeroUsize},
     path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread::JoinHandle,
 };
 
@@ -28,7 +32,11 @@ use commonware_storage::{
     qmdb::{
         self,
         any::ordered::fixed::Update,
-        current::{FixedConfig, batch::MerkleizedBatch, ordered::fixed::partitioned},
+        current::{
+            FixedConfig,
+            batch::{MerkleizedBatch, Staged},
+            ordered::fixed::partitioned,
+        },
     },
     translator::EightCap,
 };
@@ -73,6 +81,8 @@ type Batch<const N: usize> = Arc<
     MerkleizedBatch<Family, <Sha256 as Hasher>::Digest, Update<Key, FixedBytes<N>>, CHUNK, Rayon>,
 >;
 type Commits = fixed::Journal<Context, FixedBytes<COMMIT_LEN>>;
+/// Most open stages: opening another drops the oldest, whose block then builds without it.
+const MAX_STAGES: usize = 32;
 /// A database shared between the store thread, which alone writes it, and concurrent reads.
 /// `None` only after a failed apply, import or rewind consumed it.
 type Shared<D> = Arc<RwLock<Option<D>>>;
@@ -236,6 +246,10 @@ pub enum Error {
 pub struct Store {
     commands: async_mpsc::UnboundedSender<Command>,
     thread: Option<JoinHandle<()>>,
+    next_stage: AtomicU64,
+    /// The latest stage the payload builder opened on each parent, which
+    /// [`Self::build_unregistered`] builds with.
+    builder_stages: Mutex<HashMap<B256, StageId>>,
 }
 
 impl Store {
@@ -277,6 +291,8 @@ impl Store {
         Ok(Self {
             commands,
             thread: Some(thread),
+            next_stage: AtomicU64::new(0),
+            builder_stages: Mutex::new(HashMap::new()),
         })
     }
 
@@ -348,9 +364,21 @@ impl Store {
     /// Blocks until both databases' batches are merkleized, which runs in parallel. Building a
     /// block again replaces its batch.
     pub fn build(&self, block: BlockRef, writes: Writes) -> Result<QmdbBatch, Error> {
+        self.build_staged(block, writes, None)
+    }
+
+    /// Like [`Self::build`], merkleizing with the reads of `stage` when it is still open on the
+    /// block's parent and no read into it is running, and without them otherwise.
+    pub fn build_staged(
+        &self,
+        block: BlockRef,
+        writes: Writes,
+        stage: Option<StageId>,
+    ) -> Result<QmdbBatch, Error> {
         self.call(|reply| Command::Build {
             block,
             writes,
+            stage,
             reply,
         })
     }
@@ -365,10 +393,16 @@ impl Store {
         parent_hash: B256,
         writes: Writes,
     ) -> Result<QmdbBatch, Error> {
+        let stage = self
+            .builder_stages
+            .lock()
+            .expect("never poisoned")
+            .remove(&parent_hash);
         self.call(|reply| Command::BuildUnregistered {
             number,
             parent_hash,
             writes,
+            stage,
             reply,
         })
     }
@@ -389,6 +423,7 @@ impl Store {
         self.send(Command::Build {
             block,
             writes,
+            stage: None,
             reply: Box::new(move |result| on_done(result.map(|batch| batch.root()))),
         })
     }
@@ -462,6 +497,36 @@ impl Store {
         })
     }
 
+    /// Opens a stage for a block on `parent_hash`: [`Self::stage`] reads keys into it while
+    /// the block executes, so building the block resolves them without reading them again.
+    ///
+    /// A `builder` stage, the payload builder's, replaces its earlier one on the same parent and
+    /// is the one [`Self::build_unregistered`] builds with; others are passed to
+    /// [`Self::build_staged`]. A stage on an unknown parent stays closed.
+    pub fn open_stage(&self, parent_hash: B256, builder: bool) -> Result<StageId, Error> {
+        let id = StageId(self.next_stage.fetch_add(1, Ordering::Relaxed));
+        self.send(Command::OpenStage { id, parent_hash })?;
+        if builder {
+            self.builder_stages
+                .lock()
+                .expect("never poisoned")
+                .insert(parent_hash, id);
+        }
+        Ok(id)
+    }
+
+    /// Reads account keys `accounts` and slot keys `slots` into `stage`, then prefetches
+    /// the rest of what building the block reads for them like [`Self::prefetch`], which is all
+    /// it does once the stage is closed.
+    pub fn stage(&self, stage: StageId, accounts: Vec<Key>, slots: Vec<Key>) -> Result<(), Error> {
+        self.call(|reply| Command::Stage {
+            stage,
+            accounts,
+            slots,
+            reply,
+        })
+    }
+
     fn call<T: Send + 'static>(
         &self,
         command: impl FnOnce(Reply<T>) -> Command,
@@ -505,12 +570,14 @@ enum Command {
     Build {
         block: BlockRef,
         writes: Writes,
+        stage: Option<StageId>,
         reply: Reply<QmdbBatch>,
     },
     BuildUnregistered {
         number: u64,
         parent_hash: B256,
         writes: Writes,
+        stage: Option<StageId>,
         reply: Reply<QmdbBatch>,
     },
     Register {
@@ -548,7 +615,39 @@ enum Command {
         slots: Vec<Key>,
         reply: Reply<()>,
     },
+    OpenStage {
+        id: StageId,
+        parent_hash: B256,
+    },
+    Stage {
+        stage: StageId,
+        accounts: Vec<Key>,
+        slots: Vec<Key>,
+        reply: Reply<()>,
+    },
 }
+
+/// Identifies a block's stage, opened with [`Store::open_stage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StageId(u64);
+
+/// One database's staged reads, and the read index of each key read.
+struct StagedDb<const N: usize> {
+    staged: Staged<Family, Sha256, Update<Key, FixedBytes<N>>, CHUNK, Rayon>,
+    index: HashMap<Key, usize>,
+}
+
+/// The staged reads of a block on `parent_hash`.
+struct Stage {
+    parent_hash: B256,
+    /// The applied block when the stage opened on the applied state rather than on a batch:
+    /// applying any block since invalidates its reads.
+    on_applied: Option<Option<u64>>,
+    /// `None` once reading into it failed.
+    reads: Option<(StagedDb<ACCOUNT_LEN>, StagedDb<SLOT_LEN>)>,
+}
+
+type SharedStage = Arc<tokio::sync::Mutex<Stage>>;
 
 struct Actor {
     context: Context,
@@ -563,6 +662,7 @@ struct Actor {
     base: Option<B256>,
     pending: HashMap<B256, QmdbBatch>,
     max_pending: usize,
+    stages: BTreeMap<StageId, SharedStage>,
 }
 
 impl Actor {
@@ -659,6 +759,7 @@ impl Actor {
             base,
             pending: HashMap::new(),
             max_pending: config.max_pending.get(),
+            stages: BTreeMap::new(),
         })
     }
 
@@ -673,14 +774,22 @@ impl Actor {
                 Command::Build {
                     block,
                     writes,
+                    stage,
                     reply,
-                } => reply(self.build(block, writes).await),
+                } => {
+                    let reads = self.take_stage(stage, block.parent_hash);
+                    reply(self.build(block, writes, reads).await)
+                }
                 Command::BuildUnregistered {
                     number,
                     parent_hash,
                     writes,
+                    stage,
                     reply,
-                } => reply(self.merkleize(number, parent_hash, writes).await),
+                } => {
+                    let reads = self.take_stage(stage, parent_hash);
+                    reply(self.merkleize(number, parent_hash, writes, reads).await)
+                }
                 Command::Register { hash, batch, reply } => reply(self.register(hash, batch)),
                 Command::Root { hash, reply } => reply(Ok(self.root(hash))),
                 Command::Finalize { hash, reply } => reply(self.finalize(hash).await),
@@ -697,6 +806,20 @@ impl Actor {
                     slots,
                     reply,
                 } => self.spawn_prefetch(accounts, slots, reply),
+                Command::OpenStage { id, parent_hash } => {
+                    if let Err(err) = self.open_stage(id, parent_hash).await {
+                        debug!(%err, %parent_hash, "failed opening a QMDB stage");
+                    }
+                }
+                Command::Stage {
+                    stage,
+                    accounts,
+                    slots,
+                    reply,
+                } => match self.stages.get(&stage) {
+                    Some(stage) => self.spawn_stage(stage.clone(), accounts, slots, reply),
+                    None => self.spawn_prefetch(accounts, slots, reply),
+                },
             }
         }
         if let Some(db) = self.accounts.write().await.take()
@@ -761,6 +884,111 @@ impl Actor {
         });
     }
 
+    /// Opens stage `id` on block `parent_hash`'s batches, or on the applied state, dropping the
+    /// oldest stage past [`MAX_STAGES`]. Leaves it closed when the parent is unknown.
+    async fn open_stage(&mut self, id: StageId, parent_hash: B256) -> Result<(), Error> {
+        let parent = if self.base == Some(parent_hash) {
+            None
+        } else {
+            let Some(parent) = self.pending.get(&parent_hash) else {
+                return Ok(());
+            };
+            Some(parent)
+        };
+        let (accounts_db, slots_db) = (self.accounts(), self.slots());
+        let accounts = match parent {
+            Some(parent) => parent.accounts.new_batch::<Sha256>(),
+            None => accounts_db.new_batch(),
+        };
+        let slots = match parent {
+            Some(parent) => parent.slots.new_batch::<Sha256>(),
+            None => slots_db.new_batch(),
+        };
+        let ((_, accounts), (_, slots)) = try_join!(
+            async { Ok::<_, Error>(accounts.stage(&[], &*accounts_db).await?) },
+            async { Ok::<_, Error>(slots.stage(&[], &*slots_db).await?) },
+        )?;
+        drop((accounts_db, slots_db));
+        while self.stages.len() >= MAX_STAGES {
+            self.stages.pop_first();
+        }
+        let stage = Stage {
+            parent_hash,
+            on_applied: parent.is_none().then_some(self.applied),
+            reads: Some((
+                StagedDb {
+                    staged: accounts,
+                    index: HashMap::new(),
+                },
+                StagedDb {
+                    staged: slots,
+                    index: HashMap::new(),
+                },
+            )),
+        };
+        self.stages
+            .insert(id, Arc::new(tokio::sync::Mutex::new(stage)));
+        Ok(())
+    }
+
+    /// Closes stage `id` and returns its reads when they still hold for a block on
+    /// `parent_hash` and nothing reads into them.
+    fn take_stage(
+        &mut self,
+        id: Option<StageId>,
+        parent_hash: B256,
+    ) -> Option<(StagedDb<ACCOUNT_LEN>, StagedDb<SLOT_LEN>)> {
+        let stage = self.stages.remove(&id?)?;
+        let mut stage = stage.try_lock().ok()?;
+        let holds = stage.parent_hash == parent_hash
+            && match stage.on_applied {
+                Some(applied) => applied == self.applied && self.base == Some(parent_hash),
+                // A batch's reads hold once its ancestors, or it, are applied.
+                None => self.pending.contains_key(&parent_hash) || self.base == Some(parent_hash),
+            };
+        holds.then(|| stage.reads.take()).flatten()
+    }
+
+    /// Reads `accounts` and `slots` into `stage` on its own task, then prefetches what
+    /// building the block reads for them, like [`Self::spawn_prefetch`].
+    fn spawn_stage(
+        &self,
+        stage: SharedStage,
+        accounts: Vec<Key>,
+        slots: Vec<Key>,
+        reply: Reply<()>,
+    ) {
+        let (accounts_db, slots_db) = (self.accounts.clone(), self.slots.clone());
+        self.context.child("stage").spawn(move |_| async move {
+            // The stage before the databases, which finalize never waits on with a database
+            // locked, and the databases in finalize's order, like `spawn_prefetch`.
+            let mut stage = stage.lock().await;
+            let accounts_db = accounts_db.read().await;
+            let slots_db = slots_db.read().await;
+            let (Some(accounts_db), Some(slots_db)) = (accounts_db.as_ref(), slots_db.as_ref())
+            else {
+                return reply(Err(Error::Stopped));
+            };
+            if let Some((staged_accounts, staged_slots)) = stage.reads.take() {
+                match try_join!(
+                    stage_db(accounts_db, staged_accounts, &accounts),
+                    stage_db(slots_db, staged_slots, &slots),
+                ) {
+                    Ok(reads) => stage.reads = Some(reads),
+                    Err(err) => debug!(%err, "failed staging QMDB reads"),
+                }
+            }
+            drop(stage);
+            reply(
+                try_join!(
+                    async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
+                    async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
+                )
+                .map(|_| ()),
+            );
+        });
+    }
+
     fn applied_root(&self) -> B256 {
         layout::state_root(
             digest_to_b256(self.accounts().root()),
@@ -784,9 +1012,14 @@ impl Actor {
         self.pending.get(&hash).map(QmdbBatch::root)
     }
 
-    async fn build(&mut self, block: BlockRef, writes: Writes) -> Result<QmdbBatch, Error> {
+    async fn build(
+        &mut self,
+        block: BlockRef,
+        writes: Writes,
+        reads: Option<(StagedDb<ACCOUNT_LEN>, StagedDb<SLOT_LEN>)>,
+    ) -> Result<QmdbBatch, Error> {
         let batch = self
-            .merkleize(block.number, block.parent_hash, writes)
+            .merkleize(block.number, block.parent_hash, writes, reads)
             .await
             .map_err(|err| match err {
                 Error::UnknownParent {
@@ -804,12 +1037,14 @@ impl Actor {
         Ok(batch)
     }
 
-    /// Merkleizes block `number`'s `writes` on its parent's batches, or on the applied state.
+    /// Merkleizes block `number`'s `writes` on its parent's batches, or on the applied state,
+    /// resolving the keys `reads` staged on the same parent from it.
     async fn merkleize(
         &self,
         number: u64,
         parent_hash: B256,
         writes: Writes,
+        reads: Option<(StagedDb<ACCOUNT_LEN>, StagedDb<SLOT_LEN>)>,
     ) -> Result<QmdbBatch, Error> {
         let base = self.base.ok_or(Error::NoBase)?;
         if let Some(applied) = self.applied
@@ -827,16 +1062,19 @@ impl Actor {
             })?)
         };
         let (accounts_db, slots_db) = (self.accounts(), self.slots());
+        let (staged_accounts, staged_slots) = reads.unzip();
         let (accounts, slots) = try_join!(
             merkleize_db(
                 &accounts_db,
                 parent.map(|parent| &parent.accounts),
+                staged_accounts,
                 writes.accounts,
                 Some(number),
             ),
             merkleize_db(
                 &slots_db,
                 parent.map(|parent| &parent.slots),
+                staged_slots,
                 writes.slots,
                 Some(number),
             ),
@@ -935,7 +1173,7 @@ impl Actor {
             async {
                 match writes.accounts.is_empty() && end.is_none() {
                     true => Ok(None),
-                    false => merkleize_db(&self.accounts(), None, writes.accounts, number)
+                    false => merkleize_db(&self.accounts(), None, None, writes.accounts, number)
                         .await
                         .map(Some),
                 }
@@ -943,7 +1181,7 @@ impl Actor {
             async {
                 match writes.slots.is_empty() && end.is_none() {
                     true => Ok(None),
-                    false => merkleize_db(&self.slots(), None, writes.slots, number)
+                    false => merkleize_db(&self.slots(), None, None, writes.slots, number)
                         .await
                         .map(Some),
                 }
@@ -1063,12 +1301,32 @@ async fn applied_block<const N: usize, const P: usize>(
 
 /// Merkleizes `writes` on `parent`, or on the database's applied state, committing to block
 /// `number` as metadata when given.
+///
+/// With `staged`, read on the same parent, the keys it read are not resolved again.
 async fn merkleize_db<const N: usize, const P: usize>(
     db: &Db<N, P>,
     parent: Option<&Batch<N>>,
+    staged: Option<StagedDb<N>>,
     writes: Vec<Write<FixedBytes<N>>>,
     number: Option<u64>,
 ) -> Result<Batch<N>, Error> {
+    if let Some(StagedDb { staged, index }) = staged {
+        let (mut updates, mut upserts) = (Vec::new(), Vec::new());
+        for write in writes {
+            match index.get(&write.key) {
+                Some(&read) => updates.push((read, write.value)),
+                None => upserts.push((write.key, write.value)),
+            }
+        }
+        return Ok(staged
+            .merkleize(
+                updates,
+                upserts,
+                number.map(layout::block_metadata::<N>),
+                db,
+            )
+            .await?);
+    }
     let mut batch = match parent {
         Some(parent) => parent.new_batch::<Sha256>(),
         None => db.new_batch(),
@@ -1079,6 +1337,30 @@ async fn merkleize_db<const N: usize, const P: usize>(
     Ok(batch
         .merkleize(db, number.map(layout::block_metadata::<N>))
         .await?)
+}
+
+/// Reads the keys of `keys` that `staged` has not read yet into it.
+async fn stage_db<const N: usize, const P: usize>(
+    db: &Db<N, P>,
+    staged: StagedDb<N>,
+    keys: &[Key],
+) -> Result<StagedDb<N>, Error> {
+    let StagedDb { staged, mut index } = staged;
+    let mut new = Vec::new();
+    for key in keys {
+        if !index.contains_key(key) {
+            index.insert(key.clone(), usize::MAX);
+            new.push(key);
+        }
+    }
+    if new.is_empty() {
+        return Ok(StagedDb { staged, index });
+    }
+    let (reads, _, staged) = staged.expand(&new, db).await?;
+    for (key, read) in new.into_iter().zip(reads) {
+        index.insert(key.clone(), read);
+    }
+    Ok(StagedDb { staged, index })
 }
 
 /// Applies `batch` to `db` and commits it, which also flushes its Merkle nodes out of memory.
@@ -1305,6 +1587,83 @@ mod tests {
         assert_eq!(
             store.build(block(1, 1, 0), writes().into()).unwrap().root(),
             expected
+        );
+    }
+
+    #[test]
+    fn staged_builds_match_plain_builds() {
+        let (dir, plain_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (store, plain) = (imported(dir.path(), 8), imported(plain_dir.path(), 8));
+        let keys = |keys: &[u8]| {
+            keys.iter()
+                .map(|key| Key::new([*key; 32]))
+                .collect::<Vec<_>>()
+        };
+
+        // On the applied state: staged updates, a staged key read twice, an unstaged delete,
+        // staged and unstaged new keys, and a staged key left unwritten.
+        let stage = store.open_stage(B256::ZERO, false).unwrap();
+        store
+            .stage(stage, keys(&[2, 4, 9]), keys(&[2, 4, 9]))
+            .unwrap();
+        store.stage(stage, keys(&[2, 5]), keys(&[2, 5])).unwrap();
+        let writes = || {
+            vec![
+                write(2, Some(20)),
+                write(3, None),
+                write(4, Some(4)),
+                write(5, Some(5)),
+                write(6, Some(6)),
+            ]
+        };
+        let root1 = store
+            .build_staged(block(1, 1, 0), writes().into(), Some(stage))
+            .unwrap()
+            .root();
+        assert_eq!(
+            root1,
+            plain.build(block(1, 1, 0), writes().into()).unwrap().root()
+        );
+
+        // On an unapplied parent, including a key its batch wrote.
+        let stage = store.open_stage(B256::repeat_byte(1), false).unwrap();
+        store.stage(stage, keys(&[2, 7]), keys(&[2, 7])).unwrap();
+        let writes = || vec![write(1, Some(10)), write(2, None), write(7, Some(7))];
+        assert_eq!(
+            store
+                .build_staged(block(2, 2, 1), writes().into(), Some(stage))
+                .unwrap()
+                .root(),
+            plain.build(block(2, 2, 1), writes().into()).unwrap().root()
+        );
+
+        // The payload builder's stage.
+        let stage = store.open_stage(B256::repeat_byte(2), true).unwrap();
+        store.stage(stage, keys(&[1, 8]), keys(&[1, 8])).unwrap();
+        let writes = || vec![write(1, None), write(8, Some(8))];
+        assert_eq!(
+            store
+                .build_unregistered(3, B256::repeat_byte(2), writes().into())
+                .unwrap()
+                .root(),
+            plain
+                .build_unregistered(3, B256::repeat_byte(2), writes().into())
+                .unwrap()
+                .root()
+        );
+
+        // A stage on another parent is not used.
+        let stage = store.open_stage(B256::repeat_byte(2), false).unwrap();
+        store.stage(stage, keys(&[5]), keys(&[5])).unwrap();
+        assert_eq!(
+            store
+                .build_staged(block(2, 3, 1), vec![write(5, None)].into(), Some(stage))
+                .unwrap()
+                .root(),
+            plain
+                .build(block(2, 3, 1), vec![write(5, None)].into())
+                .unwrap()
+                .root()
         );
     }
 
