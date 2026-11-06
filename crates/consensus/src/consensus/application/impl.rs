@@ -10,7 +10,7 @@ use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epoch, Epocher as _, FixedEpocher, Height},
+    types::{Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Digested, Digestible as _,
@@ -38,7 +38,7 @@ use tracing::{Level, debug, info, instrument, warn};
 use super::parent_state::TempoParentState;
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{DeferredExtraData, ProposalExtraData},
+    executor::DeferredCeremonyOutput,
 };
 
 pub(in crate::consensus) struct Config<TContext> {
@@ -122,17 +122,17 @@ impl Inner {
             parent: (parent_view, parent_digest),
         } = context;
 
-        let (extra_data, ceremony) = if self.is_boundary(parent.height().next()) {
-            // The boundary block carries the DKG outcome.
-            //
-            // Part of it is read from the post-state of the parent,
-            // so the executor resolves it only after the parent returned VALID.
+        let (extra_data, ceremony_output) = if self.is_boundary(parent.height().next()) {
+            // The boundary block carries the DKG outcome. Consensus supplies
+            // the ceremony output, and the payload builder fills in the rest
+            // from the parent state.
             //
             // The DKG actor reads no chain state, so it starts on the
             // ceremony output now, while the executor works on the parent.
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
             (
                 Bytes::default(),
-                Some(self.dkg_manager.subscribe_dkg_ceremony(parent.clone())),
+                Some(deferred_ceremony_output(parent.digest(), ceremony)),
             )
         } else {
             // Regular block: try to include DKG dealer log.
@@ -174,17 +174,6 @@ impl Inner {
         let window_opened_millis = epoch_millis;
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
-        // From T15, consensus supplies only the ceremony output, and the
-        // payload builder fills in the rest of the outcome from the parent
-        // state. Before T15, consensus reads the parent state itself.
-        let deferred_extra_data = ceremony.map(|ceremony| {
-            if self.is_t15(timestamp) {
-                deferred_ceremony_output(parent.digest(), ceremony)
-            } else {
-                self.boundary_dkg_outcome(round.epoch(), parent.digest(), ceremony)
-            }
-        });
-
         let consensus_context = Some(TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
@@ -224,7 +213,7 @@ impl Inner {
                     parent: (parent_view, parent_digest),
                 },
                 attrs,
-                deferred_extra_data,
+                ceremony_output,
             )?
             .await
             .wrap_err(
@@ -299,58 +288,9 @@ impl Inner {
         Ok(proposal)
     }
 
-    /// Returns the DKG outcome of a boundary block in `epoch` as deferred
-    /// extra data. The executor resolves it with the parent once the parent
-    /// returned VALID, so the post-state of the parent is available.
-    ///
-    /// `ceremony` is the request for the ceremony output on the parent
-    /// `parent_digest`.
-    fn boundary_dkg_outcome(
-        &self,
-        epoch: Epoch,
-        parent_digest: Digest,
-        ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
-    ) -> DeferredExtraData {
-        let parent_state = self.parent_state.clone();
-        let epoch_strategy = self.epoch_strategy.clone();
-        DeferredExtraData::new(move |parent| {
-            async move {
-                ensure!(
-                    parent.digest() == parent_digest,
-                    "the executor built on `{}`, but the DKG ceremony was requested \
-                    for `{parent_digest}`",
-                    parent.digest(),
-                );
-                let output = ceremony
-                    .await
-                    .wrap_err("failed getting public dkg ceremony outcome")?;
-                let outcome =
-                    parent_state.boundary_outcome(&epoch_strategy, parent.inner(), output)?;
-                ensure!(
-                    epoch.next() == outcome.epoch(),
-                    "outcome is for epoch `{}`, but we are trying to include the \
-                    outcome for epoch `{}`",
-                    outcome.epoch,
-                    epoch.next(),
-                );
-                info!(
-                    %outcome.epoch,
-                    outcome.network_identity = %outcome.network_identity(),
-                    outcome.dealers = ?outcome.dealers(),
-                    outcome.players = ?outcome.players(),
-                    outcome.next_players = ?outcome.next_players(),
-                    "received DKG outcome; will include in payload builder attributes",
-                );
-                Ok(ProposalExtraData::Encoded(outcome.encode().into()))
-            }
-            .boxed()
-        })
-    }
-
     /// Returns whether T15 is active at `timestamp`, in seconds. From T15,
     /// execution checks the DKG outcome of a boundary block against the
-    /// parent state, and consensus supplies and compares only the ceremony
-    /// output.
+    /// parent state, and consensus compares only the ceremony output.
     fn is_t15(&self, timestamp: u64) -> bool {
         self.parent_state
             .node
@@ -733,16 +673,16 @@ impl Metrics {
     }
 }
 
-/// From T15, defers the DKG ceremony output on the parent `parent_digest`
-/// until the executor has delivered that parent. The payload builder fills in
-/// the rest of the outcome from the parent state.
+/// Defers the DKG ceremony output on the parent `parent_digest` until the
+/// executor has delivered that parent. The payload builder fills in the rest
+/// of the boundary block's outcome from the parent state.
 ///
 /// `ceremony` is the request for the ceremony output on that parent.
 fn deferred_ceremony_output(
     parent_digest: Digest,
     ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
-) -> DeferredExtraData {
-    DeferredExtraData::new(move |parent| {
+) -> DeferredCeremonyOutput {
+    DeferredCeremonyOutput::new(move |parent| {
         async move {
             ensure!(
                 parent.digest() == parent_digest,
@@ -759,7 +699,7 @@ fn deferred_ceremony_output(
                 output.players = ?output.players(),
                 "received DKG ceremony output; will include in payload builder attributes",
             );
-            Ok(ProposalExtraData::DkgCeremonyOutput(output))
+            Ok(output)
         }
         .boxed()
     })
