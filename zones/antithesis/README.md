@@ -171,10 +171,12 @@ before opening its database, use the same binary, genesis and datadir, and then 
 Offline Zone execution uses `L1_OFFLINE=true`, which skips L1 deposit/token validation; this
 is an operator-recovery drill, not an independent execution oracle.
 
-The supervisor reports armed, fired, recovered and failed separately. Recovery must restore
-the pre-operation finalized height and hash within 120 seconds. Each completed operation
-reports Always (every result must pass) and Sometimes (at least one must complete) SDK
-assertions through the node-local `report-maintenance` xtask command; existing eventual
+The supervisor reports armed, fired, recovered and failed separately. Requests rejected before
+arming and normal shutdown interruptions do not fail safety assertions. Recovery must restore
+the pre-operation finalized height and hash within 120 seconds. Arming declares the operation's
+Always (every result must pass) and Sometimes (at least one must complete) SDK assertions
+through the node-local `report-maintenance` xtask command. Unregistered, unused drills do not
+add missing-coverage properties to ordinary payments campaigns; existing eventual
 `CheckProofs` and settlement checks still verify cross-node recovery after faults stop.
 A concurrent partition can prevent this node-local recovery check from completing; register
 these drills in a fault-free recovery window rather than scheduling overlapping faults.

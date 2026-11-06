@@ -2,11 +2,13 @@
 """Node-local, fixed-operation maintenance for the nonvoting Zone RPC follower."""
 import argparse
 import ctypes
+import fcntl
 import json
 import os
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -26,7 +28,7 @@ def event(state, operation, **fields):
 
 
 def report(result):
-    if result['operation'] not in ('repair-trie', 'unwind') or result['state'] == 'interrupted':
+    if result['operation'] not in ('repair-trie', 'unwind') or result['state'] in ('interrupted', 'rejected'):
         return result
     try:
         subprocess.run(['/usr/local/bin/tempo-zone-xtask', 'antithesis',
@@ -75,6 +77,7 @@ class Supervisor:
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self.node = self.offline = None
         self.shutting_down = False
+        self.armed = False
 
     def signal(self, signum, frame):
         self.shutting_down = True
@@ -172,13 +175,16 @@ class Supervisor:
         if blocks and blocks >= latest:
             raise ValueError('unwind must retain block 1')
         target = latest - blocks if blocks else None
-        event('armed', operation, finalized=before[0], latest=latest, target=target)
+        self.armed = True
+        armed = report(event('armed', operation, finalized=before[0], latest=latest, target=target))
+        if armed['state'] != 'armed':
+            raise RuntimeError('could not report armed maintenance')
         # Never enter offline mode unless this exact child stopped gracefully.
-        self.alive()
-        self.stop(self.node)
-        self.node = None
         error = None
         try:
+            self.alive()
+            self.stop(self.node)
+            self.node = None
             if self.shutting_down:
                 raise RuntimeError('supervisor shutting down')
             if blocks is None:
@@ -202,7 +208,9 @@ class Supervisor:
         except Exception as exc:
             error = exc
         finally:
-            self.start()  # Explicit maintenance is the only restart path.
+            # A timed-out graceful stop still reaps the child before raising.
+            if self.node is None or self.node.poll() is not None:
+                self.start()  # Explicit maintenance is the only restart path.
         if not self.shutting_down:
             self.recover(before)
         if error:
@@ -217,10 +225,16 @@ class Supervisor:
             raise RuntimeError('cannot enable child subreaper')
         signal.signal(signal.SIGTERM, self.signal)
         signal.signal(signal.SIGINT, self.signal)
-        with socket.socket(socket.AF_UNIX) as server:
+        # The lock survives stale sockets but is released by the kernel on SIGKILL.
+        with open(path + '.lock', 'a') as lock, socket.socket(socket.AF_UNIX) as server:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if os.path.lexists(path):
+                if not stat.S_ISSOCK(os.lstat(path).st_mode):
+                    raise RuntimeError('control path exists and is not a socket')
+                os.unlink(path)
             old_umask = os.umask(0o177)
             try:
-                server.bind(path)  # Refuse an existing socket rather than stealing it.
+                server.bind(path)
             finally:
                 os.umask(old_umask)
             server.listen(1)
@@ -236,6 +250,7 @@ class Supervisor:
                     with conn:
                         conn.settimeout(2)
                         request = {}
+                        self.armed = False
                         try:
                             request = receive(conn)
                             if not isinstance(request, dict):
@@ -243,7 +258,8 @@ class Supervisor:
                             result = self.maintenance(request)
                         except Exception as exc:
                             op = request.get('operation', 'invalid') if isinstance(request, dict) else 'invalid'
-                            result = event('interrupted' if self.shutting_down else 'failed', op, error=str(exc))
+                            state = 'interrupted' if self.shutting_down else ('failed' if self.armed else 'rejected')
+                            result = event(state, op, error=str(exc))
                         result = report(result)
                         try:
                             conn.sendall(json.dumps(result).encode() + b'\n')

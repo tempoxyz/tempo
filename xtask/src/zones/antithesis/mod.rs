@@ -151,6 +151,7 @@ enum MaintenanceOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum MaintenanceOutcome {
+    Armed,
     Recovered,
     Failed,
 }
@@ -166,29 +167,54 @@ impl Antithesis {
         {
             let recovered = *outcome == MaintenanceOutcome::Recovered;
             let details = json!({ "details": details });
-            match operation {
-                MaintenanceOperation::RepairTrie => {
-                    assert_always!(
-                        recovered,
-                        "Offline trie check is clean and recovers",
-                        &details
-                    );
-                    assert_sometimes!(
-                        recovered,
-                        "Offline trie check completes and recovers",
-                        &details
-                    );
-                }
-                MaintenanceOperation::Unwind => {
-                    assert_always!(
-                        recovered,
-                        "Offline unwind restores finalized history",
-                        &details
-                    );
-                    assert_sometimes!(recovered, "Offline unwind executes and recovers", &details);
-                }
+            let messages = match operation {
+                MaintenanceOperation::RepairTrie => (
+                    "Offline trie check is clean and recovers",
+                    "Offline trie check completes and recovers",
+                ),
+                MaintenanceOperation::Unwind => (
+                    "Offline unwind restores finalized history",
+                    "Offline unwind executes and recovers",
+                ),
+            };
+            // These optional fault properties exist only after a custom drill is armed.
+            // Macros would register them in every payments campaign's static catalog.
+            for (message, condition, assert_type, display_type, must_hit) in [
+                (
+                    messages.0,
+                    *outcome != MaintenanceOutcome::Failed,
+                    antithesis_sdk::assert::AssertType::Always,
+                    "Always",
+                    false,
+                ),
+                (
+                    messages.1,
+                    recovered,
+                    antithesis_sdk::assert::AssertType::Sometimes,
+                    "Sometimes",
+                    true,
+                ),
+            ] {
+                antithesis_sdk::assert::assert_raw(
+                    condition,
+                    message.into(),
+                    &details,
+                    module_path!().into(),
+                    "report-maintenance".into(),
+                    file!().into(),
+                    line!(),
+                    column!(),
+                    true,
+                    must_hit,
+                    assert_type,
+                    display_type.into(),
+                    message.into(),
+                );
             }
-            eyre::ensure!(recovered, "node-local maintenance failed: {details}");
+            eyre::ensure!(
+                *outcome != MaintenanceOutcome::Failed,
+                "node-local maintenance failed: {details}"
+            );
             return Ok(());
         }
         let ctx = Context::init(&self).await?;
