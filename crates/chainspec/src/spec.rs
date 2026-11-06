@@ -70,12 +70,21 @@ tempo_hardfork::tempo_post_genesis_hardforks!(tempo_genesis_info);
 
 impl TempoGenesisInfo {
     /// Extract Tempo genesis info from genesis extra_fields
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `recovery` entry is malformed. It is parsed on its own, so a bad entry
+    /// cannot silently reset the other fields to their defaults.
     fn extract_from(genesis: &Genesis) -> Self {
-        genesis
-            .config
-            .extra_fields
-            .deserialize_as::<Self>()
-            .unwrap_or_default()
+        let mut fields = genesis.config.extra_fields.clone();
+        let recovery = fields.remove("recovery").map(|value| {
+            serde_json::from_value::<Recovery>(value)
+                .unwrap_or_else(|error| panic!("chainspec `recovery` entry is malformed: {error}"))
+        });
+
+        let mut info = fields.deserialize_as::<Self>().unwrap_or_default();
+        info.recovery = recovery;
+        info
     }
 
     pub fn epoch_length(&self) -> Option<NonZeroU64> {
@@ -609,6 +618,22 @@ mod tests {
 
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
         assert!(chainspec.network_identity.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "chainspec `recovery` entry is malformed")]
+    fn malformed_recovery_fails_loudly() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "epochLength": 10,
+                "recovery": { "finalizedHeight": "13" },
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+
+        super::TempoChainSpec::from_genesis(genesis);
     }
 
     #[test]
