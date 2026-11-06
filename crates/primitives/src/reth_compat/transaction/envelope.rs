@@ -23,7 +23,7 @@ mod codec {
     use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
     use alloy_primitives::{
         Bytes, Signature,
-        bytes::{self, BufMut},
+        bytes::{Buf, BufMut},
     };
     use reth_codecs::{
         Compact, DecompressError,
@@ -42,8 +42,6 @@ mod codec {
             tx_type: Self::TxType,
             signature: Signature,
         ) -> (Self, &[u8]) {
-            use reth_codecs::Compact;
-
             match tx_type {
                 TempoTxType::Legacy => {
                     let (tx, buf) = TxLegacy::from_compact(buf, buf.len());
@@ -143,7 +141,6 @@ mod codec {
         }
 
         fn from_compact(mut buf: &[u8], identifier: usize) -> (Self, &[u8]) {
-            use bytes::Buf;
             (
                 match identifier {
                     COMPACT_IDENTIFIER_LEGACY => Self::Legacy,

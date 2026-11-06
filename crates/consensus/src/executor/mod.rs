@@ -10,7 +10,7 @@ use commonware_consensus::{
     marshal::{Identifier, core::DigestFallback},
     types::{Height, Round},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digested, ed25519::PublicKey};
 use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
@@ -139,7 +139,7 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send;
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send;
 
     /// Retrieves `(height, digest)` finalization info for `height` from
     /// marshal's local storage.
@@ -154,7 +154,7 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> oneshot::Receiver<Arc<Block>>;
+    ) -> oneshot::Receiver<Digested<Block>>;
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
@@ -291,7 +291,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send {
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let mailbox = self.clone();
         let identifier = identifier.into();
         async move { mailbox.get_block(identifier).await }
@@ -306,7 +306,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         Self::subscribe_by_digest(
             self,
             digest,

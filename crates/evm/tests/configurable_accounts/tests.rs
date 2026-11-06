@@ -5573,3 +5573,22 @@ fn native_granted_configurable_account_access_is_charged_once() {
         gas(GrantUser::AccessKey, true, false) + gas(GrantUser::Delegate, false, false)
     );
 }
+
+/// A granted delegate that is also the block beneficiary pays the same cold access as any other.
+#[test]
+fn granted_configurable_account_access_ignores_beneficiary_warmth() {
+    let delegate = Address::repeat_byte(0xbe);
+    let gas = |beneficiary: Address| {
+        let mut f = Fixture::with_parent(false);
+        f.update_block(|block| block.beneficiary = beneficiary);
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate);
+        let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        let result = f.run(&f.sign_primitive(TempoTransaction {
+            key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
+            ..aa_tx(3, vec![f.getter()])
+        }));
+        assert!(result.status, "{result:?}");
+        result.total_gas_spent
+    };
+    assert_eq!(gas(delegate), gas(Address::repeat_byte(0x77)));
+}

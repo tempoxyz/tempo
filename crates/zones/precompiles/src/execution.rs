@@ -33,8 +33,9 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     input_cost,
     storage::{
-        PrecompileStorageProvider, StorageCtx, actions::StorageActions,
-        evm::EvmPrecompileStorageProvider,
+        PrecompileStorageProvider, StorageCtx,
+        actions::StorageActions,
+        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
     storage_credits::NonCreditableSlots,
 };
@@ -102,6 +103,7 @@ pub(crate) fn execute_precompile<T>(
 ) -> PrecompileResult
 where
     T: EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     if message.destination != message.call_target {
         return Err(PrecompileError::Revert(

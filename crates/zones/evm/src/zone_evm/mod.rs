@@ -15,6 +15,7 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
+use tempo_precompiles::tip20::{self, is_tip20_prefix};
 use zone_precompiles::{
     L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     tx_context,
@@ -71,24 +72,25 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .state_mut()
             .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
 
-        // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
-        // only. Keep its entries only while they were loaded at this transaction's anchor.
-        // Anchor-changing transactions switch anchors mid-transaction, and a cache hit skips
-        // `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
+        // Mirrored registry and TIP-20 pause values depend on the anchor, but the accepted cache is
+        // keyed by slot only. Keep its entries only while they were loaded at this transaction's
+        // anchor. Anchor-changing transactions switch anchors mid-transaction, and a cache hit
+        // skips `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
         let changes_anchor = matches!(
             ZoneTransactionKind::classify(request.envelope.evm_tx().is_system_tx(), || {
                 request.envelope.evm_tx().calls()
             }),
             ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
         );
-        if self.l1.select_registry_cache_anchor(initial_anchor) || changes_anchor {
-            request
-                .host
-                .state_mut()
-                .overlay_db_mut()
-                .cache
-                .storage
-                .remove(&TIP403_REGISTRY_ADDRESS);
+        if self.l1.select_mirror_cache_anchor(initial_anchor) || changes_anchor {
+            let cache = &mut request.host.state_mut().overlay_db_mut().cache.storage;
+            cache.remove(&TIP403_REGISTRY_ADDRESS);
+            // The Zone never writes pause flags, so dropping them loses no local change.
+            for (address, storage) in cache.iter_mut() {
+                if is_tip20_prefix(*address) {
+                    storage.slots.remove(&tip20::slots::PAUSED);
+                }
+            }
         }
         self.l1.begin_transaction(initial_anchor);
 
@@ -165,9 +167,9 @@ pub(crate) mod tests {
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
     };
-    use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
+    use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, storage::StorageCtx};
     use tempo_primitives::{
-        TempoTxEnvelope,
+        TempoEvmKind, TempoTxEnvelope,
         transaction::{
             Authorization, TempoSignature, TempoSignedAuthorization, TempoTransaction,
             envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
@@ -250,6 +252,21 @@ pub(crate) mod tests {
             transaction(Address::ZERO, eip7702),
             transaction(Address::ZERO, tempo),
         ]
+    }
+
+    /// The handler's own storage contexts over a zone EVM follow zone rules too, not only zone
+    /// precompile calls.
+    #[test]
+    fn handler_storage_contexts_follow_zone_rules() {
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &config(),
+            InMemoryDB::default(),
+            TempoEvmEnv::default(),
+        );
+        assert_eq!(
+            StorageCtx::enter_evm(&mut evm, || StorageCtx::default().kind()),
+            TempoEvmKind::Zone
+        );
     }
 
     #[test]

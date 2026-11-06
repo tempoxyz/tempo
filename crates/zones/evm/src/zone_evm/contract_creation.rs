@@ -5,7 +5,9 @@ use evm2::{
     EvmConfig, ExecutionConfig, OpcodeConfig, SpecId, Version,
     interpreter::{
         InstrStop, InterpreterState, Pc, Result, StackMut,
-        instructions::create as CreateInstruction, op, private::Instruction,
+        instructions::create as CreateInstruction,
+        op,
+        private::{Instruction, InstructionFlags},
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -44,7 +46,7 @@ const fn zone_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<TempoEvmT
 struct ZoneCreate<const IS_CREATE2: bool>;
 
 impl<const IS_CREATE2: bool> Instruction<TempoEvmTypes> for ZoneCreate<IS_CREATE2> {
-    const DYNAMIC_GAS: bool = true;
+    const FLAGS: InstructionFlags = CreateInstruction::<TempoEvmTypes, IS_CREATE2>::FLAGS;
 
     fn execute(
         pc: &mut Pc,
@@ -94,7 +96,7 @@ mod tests {
 
     struct TestCreate<const IS_CREATE2: bool>;
     impl<const IS_CREATE2: bool> Instruction<TempoEvmTypes> for TestCreate<IS_CREATE2> {
-        const DYNAMIC_GAS: bool = true;
+        const FLAGS: InstructionFlags = CreateInstruction::<TempoEvmTypes, IS_CREATE2>::FLAGS;
         fn execute(
             pc: &mut Pc,
             stack: StackMut<'_>,

@@ -11,10 +11,13 @@ use reth_e2e_test_utils::{
     wallet::test_signer,
 };
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
+use tempo_contracts::precompiles::{
+    IAddressRegistry, IFeeManager, IRolesAuth, ITIP20, ITIP403Registry, ITIPFeeAMM, TIP20Error,
+};
 use tempo_precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
+    tip20::PAUSE_ROLE,
 };
 use tempo_primitives::TempoAddressExt;
 
@@ -758,9 +761,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 /// and subsequent transactions fail at fee collection.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIPFeeAMM};
-    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::PAUSE_ROLE};
-
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;

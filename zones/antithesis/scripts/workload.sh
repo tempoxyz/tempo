@@ -1,6 +1,7 @@
 #!/bin/sh
 # Waits until the RPC follower has imported zone blocks from the leader, then tells the test
-# platform that setup is complete and stays up for test commands.
+# platform that setup is complete and stays up for test commands. The test template is part of
+# the workload image, in /opt/antithesis/test.
 set -eu
 
 ZONE_RPC=http://10.20.0.20:8545
