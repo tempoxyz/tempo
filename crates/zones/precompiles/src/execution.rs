@@ -111,7 +111,7 @@ where
         ));
     }
 
-    let (data, caller) = (message.input.as_ref(), message.caller);
+    let (data, caller): (&[u8], Address) = (&message.input, message.caller);
     let Ok(input_gas) = input_cost(env.spec, data.len()) else {
         return Err(PrecompileHalt::OutOfGas.into());
     };
