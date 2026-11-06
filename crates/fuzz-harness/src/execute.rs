@@ -106,17 +106,6 @@ pub(crate) fn reject(class: ErrorClass, why: impl Debug + Display) -> ErrorClass
     class
 }
 
-/// Rejects with `class` and the error, for `?`.
-trait OrReject<T> {
-    fn or_reject(self, class: ErrorClass) -> Result<T, ErrorClass>;
-}
-
-impl<T, E: Debug + Display> OrReject<T> for Result<T, E> {
-    fn or_reject(self, class: ErrorClass) -> Result<T, ErrorClass> {
-        self.map_err(|err| reject(class, err))
-    }
-}
-
 /// Calls `f` with why the last input this thread ran was not fully executed, such as the
 /// validation error of the transaction that failed its block. Empty when every block applied.
 pub(crate) fn with_rejection<T>(f: impl FnOnce(&str) -> T) -> T {
@@ -185,7 +174,7 @@ fn transaction(input: &TempoTransactionInput) -> TransactionOutcome {
 }
 
 fn decode_tx(bytes: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
-    TempoTxEnvelope::decode_2718_exact(bytes).or_reject(ErrorClass::RlpDecode)
+    TempoTxEnvelope::decode_2718_exact(bytes).map_err(|err| reject(ErrorClass::RlpDecode, err))
 }
 
 /// Executes `blocks` in order on `pre_state`, stopping at the first block that fails. An input that
@@ -300,7 +289,10 @@ pub(crate) fn recover_block(
         .collect::<Result<Vec<_>, _>>()?;
     let senders = if block.senders.is_empty() {
         txs.iter()
-            .map(|tx| tx.try_recover().or_reject(ErrorClass::Rejected))
+            .map(|tx| {
+                tx.try_recover()
+                    .map_err(|err| reject(ErrorClass::Rejected, err))
+            })
             .collect::<Result<Vec<_>, _>>()?
     } else if block.senders.len() == txs.len() {
         block.senders.clone()
@@ -392,16 +384,16 @@ fn execute_block(
 ) -> Result<(Vec<StateUpdate>, BlockOutputs), ErrorClass> {
     consensus
         .validate_header(block.sealed_block().sealed_header())
-        .or_reject(ErrorClass::Rejected)?;
+        .map_err(|err| reject(ErrorClass::Rejected, err))?;
     consensus
         .validate_block_pre_execution(block.sealed_block())
-        .or_reject(ErrorClass::Rejected)?;
+        .map_err(|err| reject(ErrorClass::Rejected, err))?;
     let evm = evm_config
         .evm_for_block(db.reader(), block.header())
-        .or_reject(ErrorClass::Rejected)?;
+        .map_err(|err| reject(ErrorClass::Rejected, err))?;
     let ctx = evm_config
         .context_for_block(block.sealed_block())
-        .or_reject(ErrorClass::Rejected)?;
+        .map_err(|err| reject(ErrorClass::Rejected, err))?;
     let mut executor = evm_config.create_executor(evm, ctx);
     let hooked = Updates::default();
     let installed = executor.set_state_hook({
