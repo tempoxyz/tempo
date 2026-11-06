@@ -150,9 +150,9 @@ class Supervisor:
                     if self.shutting_down or time.monotonic() >= deadline:
                         raise RuntimeError('offline operation interrupted or timed out')
                     time.sleep(0.1)
+                if self.shutting_down:
+                    raise Incomplete('offline CLI interrupted by shutdown')
                 if self.offline.returncode:
-                    if self.shutting_down:
-                        raise Incomplete('offline CLI interrupted by shutdown')
                     output.seek(0)
                     raise SafetyFailure('offline CLI exited ' + str(self.offline.returncode) + ': ' + output.read().decode(errors='replace')[-4096:])
                 output.seek(0)
