@@ -161,6 +161,10 @@ impl BlockTransactionResult<TempoEvmTypes> for ZoneTxResult {
     fn result(&self) -> &TxResultWithState<TempoEvmTypes> {
         self.inner.result()
     }
+
+    fn into_result(self) -> TxResultWithState<TempoEvmTypes> {
+        self.inner.into_result()
+    }
 }
 
 /// Simplified block executor for zone nodes.
@@ -717,6 +721,7 @@ mod tests {
         executor.phase = ZoneBlockPhase::Executing;
         executor
             .inner
+            .inner
             .receipts
             .push(withdrawal_requested_receipt(ZONE_OUTBOX_ADDRESS));
 
@@ -832,7 +837,7 @@ mod tests {
             } else {
                 event.encode_log_data()
             };
-            executor.inner.receipts.push(TempoReceipt {
+            executor.inner.inner.receipts.push(TempoReceipt {
                 tx_type: TempoTxType::Legacy,
                 success: true,
                 cumulative_gas_used: 0,
@@ -1402,9 +1407,9 @@ mod tests {
                         )]
                     },
                 };
-                executor.inner.receipts.push(receipt.clone());
-                executor.inner.cumulative_gas_used = 21_000;
-                executor.inner.blob_gas_used = 131_072;
+                executor.inner.inner.receipts.push(receipt.clone());
+                executor.inner.inner.cumulative_gas_used = 21_000;
+                executor.inner.inner.blob_gas_used = 131_072;
                 let output = executor.finish().unwrap();
                 db.commit_source(&reth_execution_types::BundleSource(&output.state));
                 let result = output.result;
