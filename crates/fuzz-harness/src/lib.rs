@@ -85,6 +85,24 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
     unsafe { write_output(out_ptr, out_len, out_written, &capabilities) }
 }
 
+/// Writes why the last input this thread executed stopped short, as UTF-8 (empty when every block
+/// applied), with the same return values and safety contract as [`tempo_fuzz_capabilities_v1`].
+/// The outcome's [`tempo_fuzz_types::ErrorClass`] says only that it was rejected. This says which
+/// check rejected it, such as a transaction's nonce or its fee payment.
+///
+/// # Safety
+///
+/// `out_ptr` must be writable for `out_len` bytes, and `out_written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tempo_fuzz_last_rejection_v1(
+    out_ptr: *mut u8,
+    out_len: usize,
+    out_written: *mut usize,
+) -> c_int {
+    let why = execute::last_rejection();
+    unsafe { write_output(out_ptr, out_len, out_written, why.as_bytes()) }
+}
+
 /// `bincode::serialize`'s encoding, rejecting trailing bytes.
 fn bincode_options() -> impl bincode::Options {
     bincode::DefaultOptions::new()
