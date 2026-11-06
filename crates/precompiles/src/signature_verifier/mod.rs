@@ -30,7 +30,17 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        let verify_gas = sig.base_verification_gas();
+        let verify_gas = if self.storage.spec().is_t15() {
+            match &sig {
+                PrimitiveSignature::Secp256k1(_) => crate::tip1102::ECRECOVER_GAS,
+                PrimitiveSignature::P256(_) => crate::tip1102::P256_VERIFY_GAS,
+                PrimitiveSignature::WebAuthn(inner) => crate::tip1102::P256_VERIFY_GAS
+                    .checked_add(crate::tip1102::sha256_gas(inner.webauthn_data.len()))
+                    .ok_or(TempoPrecompileError::OutOfGas)?,
+            }
+        } else {
+            sig.base_verification_gas()
+        };
         self.storage.deduct_gas(verify_gas)?;
 
         // Verify and recover signer.

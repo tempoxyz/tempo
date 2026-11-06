@@ -21,7 +21,7 @@ pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
-mod tip1102;
+pub mod tip1102;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -186,10 +186,7 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             SpecId::PRAGUE
         };
         let mut base = BasePrecompiles::base(base_spec);
-        if spec.is_t15() {
-            // TIP-1102 removes the point-evaluation precompile.
-            base.as_map_mut().remove(Address::with_last_byte(0x0a));
-        }
+        tip1102::configure_base_precompiles(&mut base, spec);
         Self {
             base,
             spec,
@@ -278,15 +275,6 @@ where
     ) -> Option<PrecompileResult> {
         // `contains` checks short addresses without hashing, so Tempo calls skip the map lookup.
         if self.base.contains(&message.call_target) {
-            if self.spec.is_t15() {
-                let p256 = Address::from_word(alloy::primitives::U256::from(256).into());
-                if message.call_target == p256 {
-                    return Some(tip1102::run_p256(&message.input, gas));
-                }
-                if let Some(result) = tip1102::run(message.call_target, &message.input, gas) {
-                    return Some(result);
-                }
-            }
             return self.base.execute(evm, message, gas);
         }
         // Dispatch on the requested callee like evm2's membership check: code stored at a
@@ -336,6 +324,8 @@ mod tests {
         primitives::{Bytes, U256, bytes},
         sol_types::SolCall,
     };
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use evm2::{
         BaseEvmConfigSelector, ExecutionConfig,
         bytecode::Bytecode,
@@ -345,7 +335,7 @@ mod tests {
         },
         registry::TxRegistry,
     };
-    use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
+    use tempo_contracts::precompiles::{ISignatureVerifier, ITIP20, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
     struct TestTypes;
@@ -1068,13 +1058,84 @@ mod tests {
     }
 
     #[test]
-    fn tip1102_removes_point_evaluation_at_t15() {
+    fn tip1102_rejects_point_evaluation_at_t15() {
         let address = Address::with_last_byte(0x0a);
         assert!(test_tempo_precompiles(TempoHardfork::T14).contains(&address));
-        assert!(!test_tempo_precompiles(TempoHardfork::T15).contains(&address));
+        assert!(test_tempo_precompiles(TempoHardfork::T15).contains(&address));
         assert!(
             test_tempo_precompiles(TempoHardfork::T15).contains(&Address::with_last_byte(0x0b))
         );
+
+        let (result, _) = call_tempo(
+            TempoHardfork::T15,
+            Bytes::new(),
+            MessageKind::Call,
+            address,
+            address,
+            false,
+        );
+        assert!(matches!(
+            result,
+            Err(PrecompileError::Halt(
+                PrecompileHalt::BlobVerifyKzgProofFailed
+            ))
+        ));
+    }
+
+    #[test]
+    fn tip1102_repricing_follows_relocated_precompile() {
+        let identity = Address::with_last_byte(0x04);
+        let relocated = Address::with_last_byte(0x40);
+        let mut precompiles = test_tempo_precompiles(TempoHardfork::T15);
+        precompiles
+            .move_precompiles(&[(identity, relocated)])
+            .unwrap();
+
+        let mut evm = test_evm(TempoHardfork::T15, false);
+        let message = Message::<TestTypes> {
+            gas_limit: 1_000_000,
+            destination: relocated,
+            call_target: relocated,
+            code_address: relocated,
+            input: Bytes::from_static(&[0x42]),
+            ..Default::default()
+        };
+        let mut gas = GasTracker::new(message.gas_limit);
+        let result = precompiles
+            .execute(&mut evm, &message, &mut gas)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.bytes(), &[0x42]);
+        assert_eq!(gas.spent(), 51);
+    }
+
+    #[test]
+    fn tip1102_reprices_native_signature_verifier() {
+        let hash = alloy::primitives::B256::repeat_byte(0x42);
+        let signer = PrivateKeySigner::random();
+        let signature = signer.sign_hash_sync(&hash).unwrap();
+        let calldata = ISignatureVerifier::recoverCall {
+            hash,
+            signature: Bytes::copy_from_slice(&signature.as_bytes()),
+        }
+        .abi_encode();
+
+        for (spec, verification_gas) in [(TempoHardfork::T14, 3_000), (TempoHardfork::T15, 25_000)]
+        {
+            let (result, gas) = call_tempo(
+                spec,
+                calldata.clone().into(),
+                MessageKind::Call,
+                SIGNATURE_VERIFIER_ADDRESS,
+                SIGNATURE_VERIFIER_ADDRESS,
+                false,
+            );
+            assert!(result.is_ok(), "{spec:?}: {result:?}");
+            assert_eq!(
+                gas.spent(),
+                input_cost(spec, calldata.len()).unwrap() + verification_gas
+            );
+        }
     }
 
     #[test]

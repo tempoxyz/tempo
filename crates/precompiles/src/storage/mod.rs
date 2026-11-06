@@ -242,7 +242,12 @@ pub trait PrecompileStorageProvider {
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
     fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
-        self.deduct_gas(keccak_cost(data.len())?)?;
+        let cost = if self.spec().is_t15() {
+            crate::tip1102::keccak_gas(data.len()).ok_or(TempoPrecompileError::OutOfGas)?
+        } else {
+            keccak_cost(data.len())?
+        };
+        self.deduct_gas(cost)?;
         Ok(keccak256(data))
     }
 
@@ -253,7 +258,12 @@ pub trait PrecompileStorageProvider {
     ///
     /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
     fn recover_signer(&mut self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
-        self.deduct_gas(crate::ECRECOVER_GAS)?;
+        let cost = if self.spec().is_t15() {
+            crate::tip1102::ECRECOVER_GAS
+        } else {
+            crate::ECRECOVER_GAS
+        };
+        self.deduct_gas(cost)?;
 
         if v != 27 && v != 28 {
             return Ok(None);

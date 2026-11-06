@@ -2,14 +2,77 @@
 
 use alloy_primitives::{Address, U256};
 use evm2::{
-    interpreter::GasTracker,
+    Evm, EvmTypesHost, Precompiles,
+    interpreter::{GasTracker, Message},
     precompiles::{
-        PrecompileResult, blake2, bls12_381, bn254, hash, identity, modexp, secp256k1, secp256r1,
+        PrecompileError, PrecompileHalt, PrecompileResult, blake2, bls12_381, bn254, hash,
+        identity, modexp, secp256k1, secp256r1,
     },
 };
+use tempo_chainspec::hardfork::TempoHardfork;
+
+pub(crate) const ECRECOVER_GAS: u64 = 25_000;
+pub(crate) const P256_VERIFY_GAS: u64 = 27_000;
+const KECCAK256_BASE_GAS: u64 = 205;
+const KECCAK256_WORD_GAS: u64 = 41;
 
 const G1_MSM_BASE: u64 = 78_000;
 const G2_MSM_BASE: u64 = 143_000;
+
+/// Installs TIP-1102 pricing on built-in descriptors for the active Tempo fork.
+/// The implementation stays attached when a precompile is relocated.
+pub fn configure_base_precompiles<T: EvmTypesHost>(base: &mut Precompiles<T>, spec: TempoHardfork) {
+    if !spec.is_t15() {
+        return;
+    }
+
+    macro_rules! install {
+        ($($address:literal),* $(,)?) => {
+            $(
+                base.as_map_mut().map_precompile(
+                    &Address::from_word(U256::from($address).into()),
+                    |data| data.with_run(execute_registered::<$address, T>),
+                );
+            )*
+        };
+    }
+    install!(
+        0x01, 0x02, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x11, 0x100,
+    );
+}
+
+fn execute_registered<const ADDRESS: u16, T: EvmTypesHost>(
+    _evm: &mut Evm<'_, T>,
+    message: &Message<T>,
+    gas: &mut GasTracker,
+) -> PrecompileResult {
+    if ADDRESS == 0x0a {
+        return Err(PrecompileError::Halt(
+            PrecompileHalt::BlobVerifyKzgProofFailed,
+        ));
+    }
+    if ADDRESS == 0x100 {
+        return run_p256(&message.input, gas);
+    }
+    run(
+        Address::from_word(U256::from(ADDRESS).into()),
+        &message.input,
+        gas,
+    )
+    .expect("registered TIP-1102 precompile has a price")
+}
+
+pub(crate) fn keccak_gas(len: usize) -> Option<u64> {
+    let words = u64::try_from(len.div_ceil(32)).ok()?;
+    KECCAK256_WORD_GAS
+        .checked_mul(words)?
+        .checked_add(KECCAK256_BASE_GAS)
+}
+
+pub(crate) fn sha256_gas(len: usize) -> u64 {
+    linear(len, 104, 13)
+}
 
 /// Reprices built-in precompiles while retaining EVM2's input validation and cryptography.
 pub(super) fn run(
@@ -22,12 +85,12 @@ pub(super) fn run(
         return None;
     }
     let result = match last {
-        0x01 => repriced(input, gas, 25_000, secp256k1::run),
-        0x02 => repriced(input, gas, linear(input.len(), 104, 13), hash::run_sha256),
+        0x01 => repriced(input, gas, ECRECOVER_GAS, secp256k1::run),
+        0x02 => repriced(input, gas, sha256_gas(input.len()), hash::run_sha256),
         0x04 => repriced(input, gas, linear(input.len(), 50, 1), identity::run),
         0x05 => modexp::run_inner(input, gas, 500, true, modexp_gas),
-        0x06 => bn254::run_add(input, 750, gas),
-        0x07 => bn254::run_mul(input, 30_000, gas),
+        0x06 => bn254::run_add(input, 2_000, gas),
+        0x07 => bn254::run_mul(input, 45_000, gas),
         0x08 => bn254::run_pair(input, 243_000, 285_000, gas),
         0x09 => {
             if input.len() != 213 {
@@ -37,7 +100,7 @@ pub(super) fn run(
                 repriced(
                     input,
                     gas,
-                    u64::from(rounds).saturating_mul(10),
+                    u64::from(rounds).saturating_mul(10).saturating_add(64),
                     blake2::run,
                 )
             }
@@ -82,7 +145,7 @@ pub(super) fn run(
 
 /// P-256 lives at address 0x100, outside the one-byte precompile range.
 pub(super) fn run_p256(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
-    repriced(input, gas, 27_000, secp256r1::run_osaka)
+    repriced(input, gas, P256_VERIFY_GAS, secp256r1::run_osaka)
 }
 
 fn linear(len: usize, base: u64, per_word: u64) -> u64 {
@@ -118,12 +181,8 @@ fn msm(
 
 fn modexp_gas(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: &U256) -> u64 {
     let max_len = base_len.max(mod_len);
-    let complexity = if max_len <= 32 {
-        U256::from(81)
-    } else {
-        let words = U256::from(max_len.div_ceil(8));
-        words * words * U256::from(2)
-    };
+    let words = U256::from(max_len.div_ceil(8));
+    let complexity = (words * words * U256::from(2)).max(U256::from(81));
     let iteration = if exp_len <= 32 {
         exp_highp.bit_len().saturating_sub(1) as u64
     } else {
@@ -132,7 +191,8 @@ fn modexp_gas(base_len: u64, exp_len: u64, mod_len: u64, exp_highp: &U256) -> u6
             .saturating_add(exp_highp.bit_len().max(1) as u64 - 1)
     }
     .max(1);
-    let price = complexity * U256::from(iteration);
+    let size_floor = words * words * U256::from(16);
+    let price = (complexity * U256::from(iteration)).max(size_floor);
     500.max(price.saturating_to())
 }
 
@@ -179,8 +239,8 @@ mod tests {
         assert_price(Address::with_last_byte(2), &[], 104, 32);
         assert_price(Address::with_last_byte(2), &[0; 33], 130, 32);
         assert_price(Address::with_last_byte(4), &[0; 33], 52, 33);
-        assert_price(Address::with_last_byte(6), &[], 750, 64);
-        assert_price(Address::with_last_byte(7), &[], 30_000, 64);
+        assert_price(Address::with_last_byte(6), &[], 2_000, 64);
+        assert_price(Address::with_last_byte(7), &[], 45_000, 64);
         assert_price(Address::with_last_byte(8), &[], 285_000, 32);
         let mut gas = GasTracker::new(27_000);
         assert_eq!(run_p256(&[], &mut gas).unwrap().bytes().len(), 0);
@@ -191,7 +251,7 @@ mod tests {
     fn blake_and_bls_prices() {
         let mut blake_input = [0u8; 213];
         blake_input[..4].copy_from_slice(&12u32.to_be_bytes());
-        assert_price(Address::with_last_byte(9), &blake_input, 120, 64);
+        assert_price(Address::with_last_byte(9), &blake_input, 184, 64);
         assert_price(Address::with_last_byte(0x0b), &[0; 256], 2_300, 128);
         assert_price(Address::with_last_byte(0x0c), &[0; 160], 78_000, 128);
         assert_price(Address::with_last_byte(0x0d), &[0; 512], 3_500, 256);
@@ -203,6 +263,10 @@ mod tests {
 
     #[test]
     fn modexp_prices() {
+        assert_eq!(modexp_gas(32, 33, 32, &U256::MAX), 81 * 275);
+        assert_eq!(modexp_gas(33, 33, 33, &U256::MAX), 81 * 275);
+        assert_eq!(modexp_gas(1_024, 1, 1_024, &U256::from(3)), 262_144);
+
         fn input(size: usize) -> Vec<u8> {
             let mut input = Vec::new();
             let encoded_size = U256::from(size).to_be_bytes::<32>();

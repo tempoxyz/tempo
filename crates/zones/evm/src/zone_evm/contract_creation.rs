@@ -13,13 +13,15 @@ use tempo_evm::{TempoEvmTypes, tempo_opcode_config};
 use zone_primitives::constants::CONTRACT_DEPLOYER_ALLOWLIST;
 
 /// Zone opcode configuration over Tempo and an inherited Ethereum specification.
-pub(crate) struct ZoneConfig<const BASE_SPEC_ID: u32>(());
+pub(crate) struct ZoneConfig<const BASE_SPEC_ID: u32, const REPRICED: bool>(());
 
-impl<const BASE_SPEC_ID: u32> EvmConfig<TempoEvmTypes> for ZoneConfig<BASE_SPEC_ID> {
+impl<const BASE_SPEC_ID: u32, const REPRICED: bool> EvmConfig<TempoEvmTypes>
+    for ZoneConfig<BASE_SPEC_ID, REPRICED>
+{
     const BASE_SPEC_ID: SpecId =
         SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid Zone base spec id");
     const OPCODE_CONFIG: &'static OpcodeConfig<TempoEvmTypes> =
-        &zone_opcode_config::<BASE_SPEC_ID>();
+        &zone_opcode_config::<BASE_SPEC_ID, REPRICED>();
 }
 
 /// Selects the Zone opcode table for the active Tempo specification.
@@ -28,14 +30,16 @@ pub(crate) fn zone_execution_config(
     version: Version,
 ) -> ExecutionConfig<TempoEvmTypes> {
     let base_spec = SpecId::from(spec);
-    evm2::spec_to_generic!(base_spec, |BASE_SPEC_ID| ExecutionConfig::for_config::<
-        ZoneConfig<BASE_SPEC_ID>,
-    >()
-    .with_version(version))
+    evm2::spec_to_generic!(base_spec, |BASE_SPEC_ID| if spec.is_t15() {
+        ExecutionConfig::for_config::<ZoneConfig<BASE_SPEC_ID, true>>().with_version(version)
+    } else {
+        ExecutionConfig::for_config::<ZoneConfig<BASE_SPEC_ID, false>>().with_version(version)
+    })
 }
 
-const fn zone_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<TempoEvmTypes> {
-    let mut config = tempo_opcode_config::<BASE_SPEC_ID>();
+const fn zone_opcode_config<const BASE_SPEC_ID: u32, const REPRICED: bool>()
+-> OpcodeConfig<TempoEvmTypes> {
+    let mut config = tempo_opcode_config::<BASE_SPEC_ID, REPRICED>();
     config.set_instruction::<ZoneCreate<false>>(op::CREATE, 0);
     config.set_instruction::<ZoneCreate<true>>(op::CREATE2, 0);
     config
@@ -90,6 +94,18 @@ mod tests {
         zone_fee_manager,
     };
 
+    #[test]
+    fn zone_tip1102_opcode_prices_activate_at_t15() {
+        for (spec, mod_gas, keccak_gas) in
+            [(TempoHardfork::T14, 5, 30), (TempoHardfork::T15, 40, 205)]
+        {
+            let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
+            let config = zone_execution_config(spec, version);
+            assert_eq!(config.opcode_config().static_gas(op::MOD), mod_gas);
+            assert_eq!(config.opcode_config().static_gas(op::KECCAK256), keccak_gas);
+        }
+    }
+
     const TEST_DEPLOYER: Address = Address::repeat_byte(0x42);
 
     struct TestCreate<const IS_CREATE2: bool>;
@@ -108,7 +124,7 @@ mod tests {
     impl EvmConfig<TempoEvmTypes> for TestConfig {
         const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
         const OPCODE_CONFIG: &'static OpcodeConfig<TempoEvmTypes> = &{
-            let mut config = zone_opcode_config::<{ SpecId::OSAKA as u32 }>();
+            let mut config = zone_opcode_config::<{ SpecId::OSAKA as u32 }, false>();
             config.set_instruction::<TestCreate<false>>(op::CREATE, 0);
             config.set_instruction::<TestCreate<true>>(op::CREATE2, 0);
             config
