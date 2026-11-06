@@ -26,7 +26,7 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
-pub use analysis::ReplayReport;
+pub use analysis::Report;
 use evm2::evm::{Cache, Database, PendingState, TxResultExt};
 use parking_lot::Mutex;
 use reth_chainspec::ForkCondition;
@@ -85,7 +85,7 @@ impl ShadowReplayer {
         block: &RecoveredBlock<Block>,
         receipts: &[TempoReceipt],
         parent_state: impl Fn() -> Result<DB, String> + Sync,
-    ) -> Result<(ReplayOutcome, ReplayReport), String> {
+    ) -> Result<(ReplayOutcome, Report), String> {
         let (real, shadow) = self.execute(block, &parent_state)?;
         if let Some(f) = &real.failure {
             return Err(format!(
@@ -102,7 +102,7 @@ impl ShadowReplayer {
             .chain_spec()
             .tempo_hardfork_at(block.timestamp());
         let rules = expectations::between(canonical, self.shadow_hardfork);
-        let report = ReplayReport::analyze(&real, &shadow, &rules, block);
+        let report = Report::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
             debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");

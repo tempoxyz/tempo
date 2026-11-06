@@ -18,15 +18,15 @@ pub(super) const MAX_SAMPLES: usize = 8;
 ///
 /// Each sample carries the first accepting rule's ID, or `None` for an unexplained difference.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct ReplayReport {
-    pub(super) unexplained: usize,
-    pub(super) expected: BTreeMap<&'static str, usize>,
-    pub(super) boundaries_evaluated: usize,
-    pub(super) boundaries_not_evaluated: usize,
+pub struct Report {
+    pub unexplained: usize,
+    pub expected: BTreeMap<&'static str, usize>,
+    pub boundaries_evaluated: usize,
+    pub boundaries_not_evaluated: usize,
     pub(super) samples: Vec<(Boundary, Difference, Option<&'static str>)>,
 }
 
-impl ReplayReport {
+impl Report {
     pub(super) fn outcome(&self, shadow: &Evidence) -> ReplayOutcome {
         if self.unexplained > 0 || shadow.failure.is_some() {
             ReplayOutcome::Findings
@@ -211,7 +211,7 @@ pub(super) struct Difference {
 }
 
 struct Comparison<'a, T> {
-    report: &'a mut ReplayReport,
+    report: &'a mut Report,
     ctx: &'a Context<'a>,
     rules: &'a [&'a Expectation],
     address: Option<Address>,
@@ -222,7 +222,7 @@ struct Comparison<'a, T> {
 
 impl<'a, T> Comparison<'a, T> {
     fn new(
-        report: &'a mut ReplayReport,
+        report: &'a mut Report,
         ctx: &'a Context<'a>,
         rules: &'a [&'a Expectation],
         address: Option<Address>,
