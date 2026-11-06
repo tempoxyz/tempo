@@ -751,7 +751,6 @@ mod tests {
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
     const BOB: Address = address!("0x0000000000000000000000000000000000000b0b");
-    const CAROL: Address = address!("0x00000000000000000000000000000000000ca201");
     const ZONE_CHAIN_ID: u64 = 421_700_003;
 
     fn admin_signer() -> PrivateKeySigner {
@@ -1148,36 +1147,6 @@ mod tests {
 
         let err = allowlist.reject_unlisted(&[ALICE], &mut []).unwrap_err();
         assert_eq!(err.to_string(), "1 deposit senders but 0 decryptions");
-    }
-
-    #[test]
-    fn mirror_admits_everyone_until_it_holds_a_written_list() {
-        let mirror = AllowlistMirror::default();
-        assert_eq!(mirror.status(), None);
-        assert!(mirror.allows_all(&[CAROL]));
-        assert!(!mirror.clear());
-
-        // The leader runs the allowlist but has not written it.
-        let dir = tempfile::tempdir().unwrap();
-        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
-        assert!(mirror.replace(allowlist.snapshot()));
-        assert!(mirror.status().is_some());
-        assert!(mirror.allows_all(&[CAROL]));
-
-        allowlist.replace(vec![ALICE, BOB]).unwrap();
-        let mut snapshot = allowlist.snapshot();
-        // Lookups do not rely on the sequencer sending addresses in order.
-        snapshot.addresses.reverse();
-        assert!(mirror.replace(snapshot.clone()));
-        assert_eq!(mirror.status(), Some(allowlist.status()));
-        assert!(mirror.allows_all(&[ALICE]));
-        assert!(mirror.allows_all(&[BOB]));
-        assert!(!mirror.allows_all(&[CAROL]));
-        assert!(!mirror.replace(snapshot));
-
-        assert!(mirror.clear());
-        assert_eq!(mirror.status(), None);
-        assert!(mirror.allows_all(&[CAROL]));
     }
 
     #[tokio::test]

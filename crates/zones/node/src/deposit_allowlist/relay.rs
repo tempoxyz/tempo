@@ -876,6 +876,7 @@ mod tests {
             .await;
         assert!(changed(refresh).await);
         assert_eq!(fixture.relay.mirror.status(), None);
+        assert!(fixture.relay.mirror.allows_all(&[old, new]));
     }
 
     #[tokio::test]
