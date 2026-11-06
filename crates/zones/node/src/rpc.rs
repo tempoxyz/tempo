@@ -17,10 +17,11 @@ use alloy_consensus::{BlockHeader, Sealable as _, Transaction as _, transaction:
 use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
 use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U64, U256, keccak256};
-use alloy_provider::{DynProvider, Provider};
+use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
     Filter, FilterChanges, FilterId, TransactionRequest,
+    error::EthRpcErrorCode,
     state::{EvmOverrides, StateOverride},
 };
 use alloy_sol_types::SolCall;
@@ -63,7 +64,11 @@ use tokio::{
 };
 use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
 
-use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
+use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
+use alloy_transport::{
+    TransportError,
+    layers::{RateLimitRetryPolicy, RetryBackoffLayer},
+};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
@@ -1602,6 +1607,41 @@ fn redact_block(block: &mut RpcBlock) {
     block.withdrawals = block.withdrawals.take().map(|_| Default::default());
 }
 
+/// Retries of an L1 request that the witness provider's node cannot serve yet.
+const WITNESS_L1_MAX_RETRIES: u32 = 20;
+/// Delay between retries of a witness L1 request, in milliseconds.
+const WITNESS_L1_RETRY_BACKOFF_MS: u64 = 50;
+
+/// Connect the L1 provider that collects Tempo witnesses.
+///
+/// The L1 subscriber and this provider can reach different nodes behind one L1 RPC endpoint, so a
+/// Tempo block the subscriber has seen may not be imported yet on this provider's node, which then
+/// answers `-32001` (resource not found). Such errors and rate limits are retried for about a
+/// second before collection fails.
+pub(crate) async fn connect_witness_l1_provider(
+    l1_rpc_url: &str,
+    retry_connection_interval: Duration,
+) -> eyre::Result<DynProvider<TempoNetwork>> {
+    let retry = RetryBackoffLayer::new_with_policy(
+        WITNESS_L1_MAX_RETRIES,
+        WITNESS_L1_RETRY_BACKOFF_MS,
+        u64::MAX,
+        RateLimitRetryPolicy::default().or(|error: &TransportError| {
+            error.as_error_resp().is_some_and(|error| {
+                error.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+            })
+        }),
+    );
+    let client = RpcClient::builder()
+        .layer(retry)
+        .connect_with_config(l1_rpc_url, rpc_connection_config(retry_connection_interval))
+        .await
+        .wrap_err_with(|| format!("connect witness L1 provider at {l1_rpc_url}"))?;
+    Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect_client(client)
+        .erased())
+}
+
 pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> ConnectionConfig {
     ConnectionConfig::new()
         .with_max_retries(u32::MAX)
@@ -1616,9 +1656,8 @@ pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> Conn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_provider::ProviderBuilder;
     use reth_provider::test_utils::MockEthProvider;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempo_alloy::rpc::ForkSchedule;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
@@ -1743,6 +1782,52 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("checkpoint hash mismatch"));
+        handle.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn witness_l1_provider_retries_blocks_not_imported_yet() -> eyre::Result<()> {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut module = RpcModule::new(attempts.clone());
+        module.register_method("eth_getMultiProof", |_, attempts, _| {
+            match attempts.fetch_add(1, Ordering::Relaxed) {
+                0 => Err(ErrorObjectOwned::owned(
+                    EthRpcErrorCode::ResourceNotFound.code(),
+                    "block not found: 0xa",
+                    None::<()>,
+                )),
+                1 => Ok(Vec::<serde_json::Value>::new()),
+                _ => Err(ErrorObjectOwned::owned(
+                    -32000,
+                    "proof unavailable",
+                    None::<()>,
+                )),
+            }
+        })?;
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build("127.0.0.1:0")
+            .await?;
+        let address = server.local_addr()?;
+        let handle = server.start(module);
+        let provider =
+            connect_witness_l1_provider(&format!("http://{address}"), Duration::from_millis(10))
+                .await?;
+        let request = || {
+            provider
+                .client()
+                .request::<_, Vec<EIP1186AccountProofResponse>>(
+                    "eth_getMultiProof",
+                    (Vec::<(Address, Vec<B256>)>::new(), BlockId::number(10)),
+                )
+        };
+
+        assert!(request().await?.is_empty());
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        // Other errors fail at once.
+        let error = request().await.unwrap_err();
+        assert!(error.to_string().contains("proof unavailable"));
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
         handle.stop()?;
         Ok(())
     }
