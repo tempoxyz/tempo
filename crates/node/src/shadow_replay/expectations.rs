@@ -395,7 +395,7 @@ mod tests {
             }),
             StorageAction::Marker(Marker::FeeHookEnd),
             StorageAction::Marker(Marker::PostTxFee {
-                refunded: U256::ZERO,
+                refund: U256::ZERO,
                 log: 0,
             }),
             StorageAction::Sstore(address, slot, U256::from(1_000), U256::from(value)),
@@ -444,7 +444,7 @@ mod tests {
             }),
             StorageAction::Marker(Marker::FeeHookEnd),
             StorageAction::Marker(Marker::PostTxFee {
-                refunded: U256::ZERO,
+                refund: U256::ZERO,
                 log,
             }),
             StorageAction::Marker(Marker::FeeHookEnd),

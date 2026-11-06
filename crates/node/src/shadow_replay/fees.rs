@@ -60,14 +60,14 @@ pub(super) fn post_tx_fee(actions: &[StorageAction]) -> Option<PostTxFee<'_>> {
         return None;
     };
     let post = hooks.next()?;
-    let Marker::PostTxFee { refunded, log } = post.start else {
+    let Marker::PostTxFee { refund, log } = post.start else {
         return None;
     };
     Some(PostTxFee {
         payer,
         token,
         max: amount,
-        charged: amount.checked_sub(refunded)?,
+        charged: amount.checked_sub(refund)?,
         log,
         actions: post.actions,
     })
@@ -193,7 +193,7 @@ mod tests {
             StorageAction::Marker(Marker::FeeHookEnd),
             write(2),
             StorageAction::Marker(Marker::PostTxFee {
-                refunded: U256::from(3),
+                refund: U256::from(3),
                 log: 3,
             }),
             write(3),

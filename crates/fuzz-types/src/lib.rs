@@ -459,8 +459,8 @@ pub enum StorageActionOutput {
         token: Address,
         amount: U256,
     },
-    /// Post-tx fee hook starts, refunding `refunded` of `amount`. Its fee transfer is log `log`.
-    PostTxFee { refunded: U256, log: u64 },
+    /// Post-tx fee hook starts, refunding `refund` of `amount`. Its fee transfer is log `log`.
+    PostTxFee { refund: U256, log: u64 },
     /// The fee hook the last marker started returned.
     FeeHookEnd,
 }

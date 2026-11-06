@@ -285,23 +285,17 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            record_marker(
-                host,
-                Marker::PostTxFee {
-                    refunded: refund,
-                    log: host.logs().len(),
-                },
-            );
-            let validator_fee = fee_manager.collect_fee_post_tx(
-                ProtocolFeeContext { host: &mut *host },
-                fee_payer,
-                actual_spending,
-                refund,
-                fee_token,
-                beneficiary,
-            )?;
-            record_marker(host, Marker::FeeHookEnd);
-            validator_fee
+            let log = host.logs().len();
+            fee_hook(host, Marker::PostTxFee { refund, log }, |host| {
+                fee_manager.collect_fee_post_tx(
+                    ProtocolFeeContext { host },
+                    fee_payer,
+                    actual_spending,
+                    refund,
+                    fee_token,
+                    beneficiary,
+                )
+            })?
         };
         result.ext.validator_fee = validator_fee;
         Ok(result)
@@ -390,26 +384,22 @@ impl TempoHandlerHooks {
         let beneficiary = host.block().beneficiary;
         let skip_liquidity_check = host.ext().skip_liquidity_check;
         let fee_manager = host.ext().fee_manager.clone();
-        let charges = !context.collected.is_zero();
-        if charges {
-            record_marker(
-                host,
-                Marker::PreTxFee {
-                    payer: context.fee_payer,
-                    token: context.fee_token,
-                    amount: context.collected,
-                },
-            );
-        }
-        if charges
-            && let Err(error) = fee_manager.collect_fee_pre_tx(
-                ProtocolFeeContext { host },
-                context.fee_payer,
-                context.fee_token,
-                context.collected,
-                beneficiary,
-                skip_liquidity_check,
-            )
+        let marker = Marker::PreTxFee {
+            payer: context.fee_payer,
+            token: context.fee_token,
+            amount: context.collected,
+        };
+        if !context.collected.is_zero()
+            && let Err(error) = fee_hook(host, marker, |host| {
+                fee_manager.collect_fee_pre_tx(
+                    ProtocolFeeContext { host },
+                    context.fee_payer,
+                    context.fee_token,
+                    context.collected,
+                    beneficiary,
+                    skip_liquidity_check,
+                )
+            })
         {
             host.state_mut().rollback(checkpoint, features);
             return Err(match error {
@@ -442,9 +432,6 @@ impl TempoHandlerHooks {
                 }
             });
         }
-        if charges {
-            record_marker(host, Marker::FeeHookEnd);
-        }
 
         if host.config_spec_id().is_t7() && !context.collected.is_zero() {
             host.ext().non_creditable_slots.borrow_mut().initialize(
@@ -458,12 +445,20 @@ impl TempoHandlerHooks {
     }
 }
 
-/// Records a fee hook marker, when storage actions are recorded.
-fn record_marker(host: &Evm<'_, TempoEvmTypes>, marker: Marker) {
-    let actions = &host.ext().actions;
-    if actions.is_enabled() {
-        actions.record_always(StorageAction::Marker(marker));
-    }
+/// Runs a fee hook between `start` and [`Marker::FeeHookEnd`], when storage actions are recorded.
+fn fee_hook<'a, T, E>(
+    host: &mut Evm<'a, TempoEvmTypes>,
+    start: Marker,
+    hook: impl FnOnce(&mut Evm<'a, TempoEvmTypes>) -> Result<T, E>,
+) -> Result<T, E> {
+    host.ext()
+        .actions
+        .record_always(StorageAction::Marker(start));
+    let out = hook(host)?;
+    host.ext()
+        .actions
+        .record_always(StorageAction::Marker(Marker::FeeHookEnd));
+    Ok(out)
 }
 
 fn settle_storage_credit_refunds(

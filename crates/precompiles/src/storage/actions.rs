@@ -67,8 +67,8 @@ pub enum Marker {
         token: Address,
         amount: U256,
     },
-    /// Post-tx fee hook starts, refunding `refunded` of `amount`. Its fee transfer is log `log`.
-    PostTxFee { refunded: U256, log: usize },
+    /// Post-tx fee hook starts, refunding `refund` of `amount`. Its fee transfer is log `log`.
+    PostTxFee { refund: U256, log: usize },
     /// The fee hook the last marker started returned.
     FeeHookEnd,
 }
