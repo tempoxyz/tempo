@@ -746,7 +746,10 @@ impl Actor {
     fn spawn_prefetch(&self, accounts: Vec<Key>, slots: Vec<Key>, reply: Reply<()>) {
         let (accounts_db, slots_db) = (self.accounts.clone(), self.slots.clone());
         self.context.child("prefetch").spawn(move |_| async move {
-            let (accounts_db, slots_db) = futures::join!(accounts_db.read(), slots_db.read());
+            // Lock in the order finalize takes its write locks, accounts then slots: holding
+            // slots while waiting for accounts deadlocks against a finalize that holds accounts.
+            let accounts_db = accounts_db.read().await;
+            let slots_db = slots_db.read().await;
             reply(match (accounts_db.as_ref(), slots_db.as_ref()) {
                 (Some(accounts_db), Some(slots_db)) => try_join!(
                     async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
