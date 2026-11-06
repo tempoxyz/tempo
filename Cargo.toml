@@ -240,10 +240,10 @@ reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc9104
 reth-codecs = { version = "0.8.1", default-features = false, features = ["account-ext"] }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
-reth-db-common = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
+reth-db-common = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
