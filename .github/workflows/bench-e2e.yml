@@ -139,11 +139,12 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
+      # Replaces clickhouse-run (workflow_dispatch allows at most 25 inputs); its default holds.
+      run-side:
+        description: "Phases to run: comparison, feature or baseline."
         type: string
         required: false
-        default: "feature-1"
+        default: comparison
   workflow_call:
     inputs:
       pr:
