@@ -15,7 +15,6 @@ mod max_gas_limit;
 mod operator;
 mod payment_lane;
 mod pool;
-mod shadow_replay_corpus;
 mod simulate;
 mod stablecoin_dex;
 mod storage_credits;
