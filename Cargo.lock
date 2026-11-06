@@ -14717,7 +14717,6 @@ dependencies = [
  "reth-chainspec",
  "reth-consensus",
  "reth-evm",
- "reth-evm-ethereum",
  "reth-execution-types",
  "reth-primitives-traits",
  "reth-trie-common",

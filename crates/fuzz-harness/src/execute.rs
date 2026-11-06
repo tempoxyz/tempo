@@ -15,10 +15,9 @@ use evm2::bytecode::Bytecode;
 use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
-    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory, BlockValidationError,
+    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, BlockValidationError,
     ConfigureEvm as _,
 };
-use reth_evm_ethereum::EvmFactory as _;
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
 use tempo_chainspec::TempoChainSpec;
@@ -27,13 +26,11 @@ use tempo_evm::{
     consensus::TempoConsensus,
 };
 use tempo_fuzz_types::{
-    BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, FeeHookOutput, InvariantFailure,
-    InvariantScope, PreState, ResultGas, StateChanges, StorageActionOutput, TempoBlock,
-    TempoExecutionOutcome, TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput,
-    TransactionOutcome, TxOutcome, TxReceiptOutput,
+    BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, InvariantFailure, InvariantScope,
+    PreState, ResultGas, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
+    TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
 use tempo_invariants::Tx;
-use tempo_precompiles::storage::{FeeHook, StorageAction};
 use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
 
 use crate::{
@@ -391,12 +388,9 @@ fn execute_block(
     consensus
         .validate_block_pre_execution(block.sealed_block())
         .map_err(|err| reject(ErrorClass::Rejected, err))?;
-    let mut evm = evm_config
+    let evm = evm_config
         .evm_for_block(db.reader(), block.header())
         .map_err(|err| reject(ErrorClass::Rejected, err))?;
-    evm.ext_mut().actions.enable();
-    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
-    BlockExecutorFactory::evm_factory(evm_config).configure_evm(&mut evm);
     let ctx = evm_config
         .context_for_block(block.sealed_block())
         .map_err(|err| reject(ErrorClass::Rejected, err))?;
@@ -466,9 +460,7 @@ fn execute_txs(
         let tx_index = tx_index as u64;
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
-        executor.evm().ext().actions.clear();
         let result = executor.execute_transaction_without_commit(tx)?;
-        let actions = executor.evm().ext().actions.take().unwrap_or_default();
         let execution = result.result();
         let outcome = if execution.status {
             TxOutcome::Success
@@ -499,7 +491,6 @@ fn execute_txs(
             effective_gas_price,
             output,
             logs: receipt.logs.clone(),
-            actions: actions.into_iter().map(action_output).collect(),
         });
         let scope = InvariantScope::Transaction {
             block_index,
@@ -580,73 +571,6 @@ fn step(
     );
     updates.extend(step);
     changes
-}
-
-/// `action` as the harness reports it.
-fn action_output(action: StorageAction) -> StorageActionOutput {
-    match action {
-        StorageAction::Sload(address, slot, value) => StorageActionOutput::Sload {
-            address,
-            slot,
-            value,
-        },
-        StorageAction::FeeTokenBalanceCheck(token, slot, balance, required, sufficient) => {
-            StorageActionOutput::FeeTokenBalanceCheck {
-                token,
-                slot,
-                balance,
-                required,
-                sufficient,
-            }
-        }
-        StorageAction::Sstore(address, slot, before, after) => StorageActionOutput::Sstore {
-            address,
-            slot,
-            before,
-            after,
-        },
-        StorageAction::Sinc(address, slot, before, delta) => StorageActionOutput::Sinc {
-            address,
-            slot,
-            before,
-            delta,
-        },
-        StorageAction::Sdec(address, slot, before, delta) => StorageActionOutput::Sdec {
-            address,
-            slot,
-            before,
-            delta,
-        },
-        StorageAction::FeeAmmSwap(slot, before, amount_in) => StorageActionOutput::FeeAmmSwap {
-            slot,
-            before,
-            amount_in,
-        },
-        StorageAction::FeeAmmLiquidityCheck(slot, before, amount_out, sufficient) => {
-            StorageActionOutput::FeeAmmLiquidityCheck {
-                slot,
-                before,
-                amount_out,
-                sufficient,
-            }
-        }
-        StorageAction::Marker(hook) => StorageActionOutput::Marker(match hook {
-            FeeHook::PreTx {
-                payer,
-                token,
-                amount,
-            } => FeeHookOutput::PreTx {
-                payer,
-                token,
-                amount,
-            },
-            FeeHook::PostTx { refund, log } => FeeHookOutput::PostTx {
-                refund,
-                log: log as u64,
-            },
-            FeeHook::End => FeeHookOutput::End,
-        }),
-    }
 }
 
 /// A block the node would reject is `Rejected`; anything else went wrong in the executor.
