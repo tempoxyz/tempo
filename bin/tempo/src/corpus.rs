@@ -19,7 +19,12 @@ use tempo_chainspec::{
     spec::{TempoChainSpec, TempoChainSpecParser, TempoHardforks as _},
 };
 use tempo_corpus::{
-    exec::{db::View, fill, replay, shadow::ShadowReplayer},
+    exec::{
+        db::View,
+        fill,
+        replay::{self, noop},
+        shadow::{ReplayOutcome, ShadowReplayer},
+    },
     fuzz, gc,
     store::{Catalog, Store},
 };
@@ -219,15 +224,7 @@ impl ReplayCommand {
         let (config, consensus) = components(self.chain);
         if let Some(blocks) = blocks {
             return tokio::task::spawn_blocking(move || {
-                replay::run_blocks(
-                    store,
-                    catalog,
-                    &blocks,
-                    config,
-                    consensus,
-                    workers,
-                    |_, _, _| Ok(()),
-                )
+                replay::run_blocks(store, catalog, &blocks, config, consensus, workers, noop)
             })
             .await?;
         }
@@ -262,8 +259,7 @@ fn shadow_replay(
     fail_on_findings: bool,
 ) -> eyre::Result<()> {
     let replayer = ShadowReplayer::new(chain.clone(), hardfork);
-    // Blocks per ReplayOutcome, then blocks skipped as already canonical.
-    let counts: [AtomicU64; 5] = Default::default();
+    let (matched, expected, inconclusive, findings, skipped) = Default::default();
     let (config, consensus) = components(chain.clone());
     replay::run_blocks(
         store,
@@ -273,23 +269,30 @@ fn shadow_replay(
         consensus,
         workers,
         |input, block, executed| {
-            let slot = if chain.tempo_hardfork_at(block.timestamp()) >= hardfork {
-                4
+            let counter: &AtomicU64 = if chain.tempo_hardfork_at(block.timestamp()) >= hardfork {
+                &skipped
             } else {
-                replayer
+                match replayer
                     .replay(block, &executed.receipts()?, || {
                         Ok(View::new(input.clone()))
                     })
                     .map_err(|err| {
                         eyre::eyre!("shadow replay failed at block {}: {err}", block.number())
                     })?
-                    .0 as usize
+                    .0
+                {
+                    ReplayOutcome::Match => &matched,
+                    ReplayOutcome::Expected => &expected,
+                    ReplayOutcome::Inconclusive => &inconclusive,
+                    ReplayOutcome::Findings => &findings,
+                }
             };
-            counts[slot].fetch_add(1, Ordering::Relaxed);
+            counter.fetch_add(1, Ordering::Relaxed);
             Ok(())
         },
     )?;
-    let [matched, expected, inconclusive, findings, skipped] = counts.map(AtomicU64::into_inner);
+    let [matched, expected, inconclusive, findings, skipped] =
+        [matched, expected, inconclusive, findings, skipped].map(AtomicU64::into_inner);
     info!(
         blocks = blocks.len(),
         %hardfork,

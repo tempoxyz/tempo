@@ -630,6 +630,11 @@ fn decode_record<'a>(
     Ok((cases, block, phases))
 }
 
+/// A [`run_blocks`] callback that does nothing with each verified block.
+pub fn noop(_: &Arc<Input>, _: &RecoveredBlock<Block>, _: &Executed) -> eyre::Result<()> {
+    Ok(())
+}
+
 /// Verifies one published block: executes it from its record alone and checks every
 /// transaction against its stored record, consensus rules and the historical changesets.
 /// Returns the block and its execution.
