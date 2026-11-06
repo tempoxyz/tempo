@@ -44,6 +44,7 @@ use crate::{
     epoch::SchemeProvider,
     feed::{self, FeedStateHandle},
     follow::upstream,
+    recovery::Recovery,
     storage,
 };
 
@@ -96,11 +97,28 @@ impl<TUpstream> Config<TUpstream> {
     where
         TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + Send + 'static,
     {
+        // Like validators, followers rebuild a chain recovery's fill blocks and trust the identity
+        // it hands the next epoch.
+        let mut network_identity = self.network_identity;
+        if let Some(recovery) =
+            Recovery::from_chainspec(&self.execution_node.chain_spec(), &self.epoch_strategy)
+                .wrap_err("invalid chain recovery in chainspec")?
+        {
+            recovery
+                .fill_to_boundary(&self.execution_node)
+                .await
+                .wrap_err("failed filling the halted epoch up to the recovery boundary")?;
+            // A configured identity from a later full DKG ceremony still takes precedence.
+            if recovery.network_identity().from_epoch > network_identity.from_epoch {
+                network_identity = recovery.network_identity();
+            }
+        }
+
         let scheme_provider = SchemeProvider::new();
         // Pin the binary's identity before marshal or any actor registers an epoch scheme.
         scheme_provider.register(
-            Epoch::new(self.network_identity.from_epoch),
-            Scheme::certificate_verifier(crate::config::NAMESPACE, self.network_identity.identity),
+            Epoch::new(network_identity.from_epoch),
+            Scheme::certificate_verifier(crate::config::NAMESPACE, network_identity.identity),
         );
 
         let page_cache_ref = CacheRef::new(
@@ -192,7 +210,7 @@ impl<TUpstream> Config<TUpstream> {
             driver::Config {
                 execution_provider: self.execution_node.provider.clone(),
                 scheme_provider: scheme_provider.clone(),
-                network_identity: self.network_identity,
+                network_identity,
                 last_finalized_height,
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),

@@ -22,6 +22,7 @@ use crate::{
     consensus_snapshot::write_consensus_snapshot,
     metrics::{wait_for_height, wait_for_metrics},
     setup_validators,
+    tests::follow::Follower,
 };
 
 /// Every node loses its share in the middle of an epoch and the chain halts. A chainspec recovery
@@ -148,8 +149,17 @@ fn restart_after_epoch_lost_its_signing_key(t14_fee_recipient: Option<Address>) 
         context.sleep(Duration::from_secs(5)).await;
         validators[1].stop().await;
 
+        // The last node follows the recovery instead of validating it.
+        let donor = validators.pop().unwrap();
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
         connect_execution_peers(&validators).await;
+        let follower = Follower::builder()
+            .epoch_length(epoch_length)
+            .runtime(execution_runtime.handle())
+            .donor(donor)
+            .follow(&mut context, &validators[0])
+            .await;
+        follower.connect_peers(&validators).await;
 
         // The next epoch runs on the member alone; its ceremony reshares to the full committee.
         let full_committee_epoch = halted_epoch + 2;
@@ -172,6 +182,18 @@ fn restart_after_epoch_lost_its_signing_key(t14_fee_recipient: Option<Address>) 
                 validator.uid(),
             );
         }
+
+        wait_for_height(
+            &context,
+            &follower,
+            (full_committee_epoch + 1) * epoch_length,
+        )
+        .await;
+        assert_eq!(
+            follower.block_hash(boundary),
+            Some(recovery.boundary_hash),
+            "the follower must have the recovery boundary",
+        );
 
         let provider = validators[0].execution_provider();
         for height in finalized_height + 1..=boundary {
