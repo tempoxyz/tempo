@@ -1,8 +1,5 @@
 use crate::{
-    configurable_account::{
-        CONFIGURABLE_ACCOUNT_CODE, is_account_code_hash, l1_commitment_read_gas,
-        record_l1_commitment_read,
-    },
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
     storage::{
         ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
@@ -286,26 +283,6 @@ where
         address: Address,
         f: impl FnOnce(&AccountInfo) -> R,
     ) -> Result<R, TempoPrecompileError> {
-        // A zone reads an eligible account's commitment from Tempo without loading it as an EVM
-        // account (TIP-1154).
-        if let Some(read_gas) = l1_commitment_read_gas(self.evm, address, self.spec) {
-            // No read goes unpaid, even when the account turns out to hold contract code.
-            if self.gas_tracker.remaining() < read_gas {
-                return Err(TempoPrecompileError::OutOfGas);
-            }
-            let info = self
-                .evm
-                .state_mut()
-                .account_info_untracked(&address)?
-                .unwrap_or_default();
-            if record_l1_commitment_read(self.evm, address, info.code_hash) {
-                self.gas_tracker.deduct_gas(read_gas)?;
-            }
-            if is_account_code_hash(info.code_hash) {
-                return Ok(f(&info));
-            }
-        }
-
         let additional_cost = self.version.gas_params.cold_account_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
@@ -689,7 +666,7 @@ where
     }
 
     #[inline]
-    fn kind(&self) -> &TempoEvmKind {
+    fn kind(&self) -> TempoEvmKind {
         self.evm.ext().kind()
     }
 
@@ -746,11 +723,7 @@ pub trait EvmStorageExt {
     fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>>;
 
     /// Returns the kind of the EVM, whose rules every storage context over it follows.
-    fn kind(&self) -> &TempoEvmKind;
-
-    /// Mutable access to [`Self::kind`], whose zone variant tracks the transaction's Tempo
-    /// commitment reads.
-    fn kind_mut(&mut self) -> &mut TempoEvmKind;
+    fn kind(&self) -> TempoEvmKind;
 }
 
 bitflags! {
@@ -905,7 +878,7 @@ impl DerefMut for GasTrackerStorage<'_> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::{EvmPrecompileStorageProvider, EvmStorageExt, GasTrackerStorage};
     use crate::{
         STORAGE_CREDITS_ADDRESS,
@@ -914,32 +887,25 @@ pub(crate) mod tests {
         storage_credits::{NonCreditableSlots, StorageCredits},
     };
     use alloy::primitives::{
-        Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256, bytes, keccak256, map::AddressSet,
+        Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256, bytes, keccak256,
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use evm2::{
-        BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, LoadError, SpecId, Version,
-        bytecode::Bytecode,
-        evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
+        BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId, Version,
+        evm::{InMemoryDB, precompile::NoPrecompiles},
         interpreter::GasTracker,
         registry::TxRegistry,
         version::{GasId, GasParams},
     };
     use std::{cell::RefCell, rc::Rc};
-    use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
-    use tempo_contracts::precompiles::PATH_USD_ADDRESS;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
     struct TestTypes;
 
-    /// Extension state of unit-test EVMs: no storage actions, executing as `kind`.
-    #[derive(Default)]
-    pub(crate) struct TestExt {
-        kind: TempoEvmKind,
-    }
-
-    impl EvmStorageExt for TestExt {
+    /// Unit-test EVMs without extension state record no storage actions and execute Tempo L1.
+    impl EvmStorageExt for () {
         fn storage_actions(&self) -> StorageActions {
             StorageActions::disabled()
         }
@@ -948,12 +914,8 @@ pub(crate) mod tests {
             Rc::new(RefCell::new(NonCreditableSlots::empty()))
         }
 
-        fn kind(&self) -> &TempoEvmKind {
-            &self.kind
-        }
-
-        fn kind_mut(&mut self) -> &mut TempoEvmKind {
-            &mut self.kind
+        fn kind(&self) -> TempoEvmKind {
+            TempoEvmKind::L1
         }
     }
 
@@ -961,7 +923,7 @@ pub(crate) mod tests {
         type ConfigSelector = BaseEvmConfigSelector;
         type SpecId = SpecId;
         type Tx = ();
-        type EvmExt = TestExt;
+        type EvmExt = ();
         type MessageExt = ();
         type MessageResultExt = ();
         type TxEnvExt = ();
@@ -1230,59 +1192,6 @@ pub(crate) mod tests {
         );
         assert_eq!(provider.gas_used(), 0);
 
-        Ok(())
-    }
-
-    /// On a zone, a precompile's first read in a transaction of an account that can hold a Tempo
-    /// commitment pays the Tempo read and no EVM access, since it doesn't load the account.
-    /// Rereads are free, contracts and invalid accounts pay a normal load, and a read that cannot
-    /// be paid fails before reaching Tempo.
-    #[test]
-    fn zone_commitment_reads_charge_first_reads() -> eyre::Result<()> {
-        let (eligible, contract, unpaid) = (
-            Address::repeat_byte(0x44),
-            Address::repeat_byte(0x55),
-            Address::repeat_byte(0x66),
-        );
-        let mut database = InMemoryDB::default();
-        database.insert_account_info(
-            &contract,
-            AccountInfo::default().with_code(Bytecode::new_raw(bytes!("0x00"))),
-        );
-        let mut evm = TestEvm::with_database(TempoHardfork::T14, false, database);
-        evm.evm.ext_mut().kind = TempoEvmKind::zone();
-        let cold = evm.gas_params().get(GasId::WarmStorageReadCost)
-            + evm.gas_params().cold_account_additional_cost();
-
-        let mut provider = evm.provider_max_gas();
-        let mut load_gas = |address| -> eyre::Result<u64> {
-            let before = provider.gas_used();
-            provider.with_account_info(address, &mut |_| {})?;
-            Ok(provider.gas_used() - before)
-        };
-        assert_eq!(load_gas(eligible)?, L1_COMMITMENT_READ_GAS);
-        assert_eq!(load_gas(eligible)?, 0);
-        assert_eq!(load_gas(contract)?, cold);
-        assert_eq!(load_gas(PATH_USD_ADDRESS)?, cold);
-
-        let mut provider = evm.provider_with_gas_limit(L1_COMMITMENT_READ_GAS - 1, 0);
-        assert_eq!(
-            provider.with_account_info(unpaid, &mut |_| {}),
-            Err(TempoPrecompileError::OutOfGas)
-        );
-        drop(provider);
-        assert_eq!(
-            evm.evm.ext().kind,
-            TempoEvmKind::Zone {
-                l1_commitments: AddressSet::from_iter([eligible])
-            }
-        );
-        for address in [eligible, unpaid] {
-            assert!(matches!(
-                evm.evm.state_mut().account_with_skip(&address, true),
-                Err(LoadError::ColdLoadSkipped)
-            ));
-        }
         Ok(())
     }
 

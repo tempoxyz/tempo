@@ -1790,11 +1790,7 @@ pub(crate) mod tests {
                 TempoHardfork::T13,
                 AuthRole::MintRecipient,
             ),
-            (
-                TempoEvmKind::zone(),
-                TempoHardfork::T13,
-                AuthRole::Recipient,
-            ),
+            (TempoEvmKind::Zone, TempoHardfork::T13, AuthRole::Recipient),
         ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec).with_kind(kind);
             let admin = Address::random();
@@ -2228,7 +2224,7 @@ pub(crate) mod tests {
         #[test]
         fn test_zone_blocked_inbound_reverts_instead_of_guarding() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6)
-                .with_kind(TempoEvmKind::zone());
+                .with_kind(TempoEvmKind::Zone);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
             let sender = Address::random();
