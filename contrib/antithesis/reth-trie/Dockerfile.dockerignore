@@ -13,6 +13,8 @@
 !xtask/**
 !contrib/antithesis/reth-trie/Cargo.toml
 !contrib/antithesis/reth-trie/src/**
+!contrib/antithesis/exec-diff/Cargo.toml
+!contrib/antithesis/exec-diff/src/**
 
 # Apply these exclusions after the source allowlist, including nested copies.
 **/target/

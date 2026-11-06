@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+tempo-zone-xtask antithesis seed
+exec tempo-zone-xtask antithesis exec-diff-config

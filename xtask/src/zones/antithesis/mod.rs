@@ -28,7 +28,7 @@ use tempo_contracts::{
         ZonePortal,
     },
 };
-use tempo_precompiles::PATH_USD_ADDRESS;
+use tempo_precompiles::{PATH_USD_ADDRESS, tip20::TIP20Token};
 use tempo_primitives::transaction::calc_gas_balance_spending;
 use zone_precompiles::ecies::encrypt_deposit;
 
@@ -98,6 +98,8 @@ pub(crate) struct Antithesis {
 enum Command {
     /// Approves the portal for every funder and funds the first zone accounts.
     Seed,
+    /// Writes the execution differential checker config from the current ledger accounts.
+    ExecDiffConfig,
     /// Deposits from a funder or a new L1 account to a new or existing zone account.
     Deposit,
     /// Transfers pathUSD inside the zone to a new or existing account.
@@ -121,6 +123,7 @@ impl Antithesis {
         let ctx = Context::init(&self).await?;
         let driver = match self.command {
             Command::Seed => return ctx.seed().await,
+            Command::ExecDiffConfig => return ctx.exec_diff_config(&self.state_dir),
             Command::CheckConsistency => return ctx.check_consistency().await,
             Command::CheckSettled => return ctx.check_settled().await,
             Command::CheckLedger => return ctx.check_ledger().await,
@@ -179,6 +182,48 @@ impl Context {
             http,
             portal,
         })
+    }
+
+    fn exec_diff_config(&self, state_dir: &std::path::Path) -> eyre::Result<()> {
+        eyre::ensure!(
+            self.zone_urls.len() == 4,
+            "engine differential requires four zone nodes"
+        );
+        let accounts = self.ledger.accounts()?;
+        eyre::ensure!(
+            !accounts.is_empty(),
+            "seed the payment workload before generating the config"
+        );
+        let token = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS);
+        // Bound one proof to 64 slots and follow newly created accounts as the ledger grows.
+        let mut slots = vec![B256::from(token.total_supply.slot())];
+        slots.extend(
+            accounts
+                .iter()
+                .rev()
+                .take(63)
+                .map(|account| B256::from(token.balances[account.address()].slot())),
+        );
+        let endpoints: Vec<_> = ["optimized", "simple", "compare", "race"]
+            .into_iter()
+            .zip(&self.zone_urls)
+            .map(|(profile, url)| json!({ "profile": profile, "url": url }))
+            .collect();
+        let config = json!({
+            "endpoints": endpoints,
+            "subjects": [{ "address": PATH_USD_ADDRESS, "slots": slots }],
+            "rpc_timeout_ms": 5000,
+            "eventual_timeout_ms": 120000,
+            "retry_interval_ms": 500,
+        });
+        let output = state_dir.join("exec-diff.json");
+        let temporary = state_dir.join(format!("exec-diff.{}.tmp", std::process::id()));
+        std::fs::write(&temporary, serde_json::to_vec_pretty(&config)?)
+            .wrap_err("failed writing execution differential config")?;
+        std::fs::rename(&temporary, &output)
+            .wrap_err("failed publishing execution differential config")?;
+        println!("execution differential config: {}", output.display());
+        Ok(())
     }
 
     async fn seed(&self) -> eyre::Result<()> {

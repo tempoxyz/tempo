@@ -47,12 +47,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     case "${TARGETARCH}" in arm64) target=aarch64-unknown-linux-gnu ;; *) target=x86_64-unknown-linux-gnu ;; esac \
     && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${COVERAGE_RUSTFLAGS}" \
     cargo build --locked --profile ${RUST_PROFILE} --target "$target" \
-        -p tempo -p tempo-zone -p tempo-xtask \
-        --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask \
+        -p tempo -p tempo-zone -p tempo-xtask -p exec-diff-antithesis \
+        --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask --bin exec-diff-antithesis \
         --features tempo/fuzz-execution,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
     && mkdir -p /out \
     && cd "target/$target/${RUST_PROFILE}" \
-    && cp tempo tempo-zone tempo-xtask tempo-zone-xtask /out/
+    && cp tempo tempo-zone tempo-xtask tempo-zone-xtask exec-diff-antithesis /out/
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -89,7 +89,7 @@ COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
 COPY zones/antithesis/scripts/ /opt/zones/
 
 # Antithesis reads the symbols of instrumented binaries from /symbols; the binaries keep theirs.
-RUN mkdir /symbols && for bin in tempo tempo-zone tempo-xtask tempo-zone-xtask; do \
+RUN mkdir /symbols && for bin in tempo tempo-zone tempo-xtask tempo-zone-xtask exec-diff-antithesis; do \
         ln -s /usr/local/bin/$bin /symbols/$bin; \
     done
 
@@ -102,6 +102,10 @@ WORKDIR /app
 # --target workload.
 FROM runtime AS workload
 COPY --chmod=755 zones/antithesis/test/ /opt/antithesis/test/
+
+# Opt-in workload: the payment drivers plus independent execution/proof checks.
+FROM workload AS execdiff-workload
+COPY --chmod=755 zones/antithesis/execdiff-test/ /opt/antithesis/test/
 
 # The default target stays the image the nodes run.
 FROM runtime

@@ -5189,6 +5189,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "exec-diff-antithesis"
+version = "0.1.0"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-provider",
+ "alloy-rlp",
+ "alloy-rpc-types-eth",
+ "alloy-trie",
+ "antithesis-instrumentation",
+ "antithesis_sdk",
+ "eyre",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "exithatch"
 version = "0.4.0"
 

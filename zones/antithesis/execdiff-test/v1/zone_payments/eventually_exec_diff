@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+tempo-zone-xtask antithesis exec-diff-config
+exec exec-diff-antithesis /state/exec-diff.json eventually

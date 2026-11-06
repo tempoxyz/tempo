@@ -23,10 +23,26 @@ case "$NODE" in
         P2P_KEY=$S/p2p-rpc.key
         ;;
     *)
-        echo "zone-node: unknown node $NODE" >&2
+        # Finalized samples can trail the tip; permit bounded historical proof generation.
+    ENGINE_ARGS="$ENGINE_ARGS --rpc.eth-proof-window 10000"
+    echo "zone-node: unknown node $NODE" >&2
         exit 1
         ;;
 esac
+
+# Profiles change execution only; every node still shares the provisioned chain and manifest.
+ENGINE_ARGS=""
+if [ "${ENGINE_DIFF:-0}" = 1 ]; then
+    case "$NODE" in
+        0) ENGINE_ARGS="--engine.state-root-task-compare-updates" ;;
+        1) ENGINE_ARGS="--engine.state-root-fallback --engine.disable-prewarming --engine.disable-precompile-cache --engine.disable-state-cache --engine.num-state-masking-blocks 0" ;;
+        2) ENGINE_ARGS="--engine.state-root-task-compare-updates --engine.disable-state-cache" ;;
+        rpc) ENGINE_ARGS="--engine.state-root-task-timeout 1ms" ;;
+    esac
+    # Finalized samples can trail the tip; permit bounded historical proof generation.
+    ENGINE_ARGS="$ENGINE_ARGS --rpc.eth-proof-window 10000"
+    echo "zone-node: node=$NODE engine-diff=1 flags=$ENGINE_ARGS" >&2
+fi
 
 # shellcheck disable=SC2086
 exec /usr/local/bin/tempo-zone node \
@@ -43,4 +59,4 @@ exec /usr/local/bin/tempo-zone node \
     --disable-discovery \
     --ipcdisable \
     --color never \
-    $ROLE_ARGS
+    $ROLE_ARGS $ENGINE_ARGS
