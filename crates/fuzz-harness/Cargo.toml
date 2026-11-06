@@ -29,13 +29,14 @@ reth-primitives-traits.workspace = true
 reth-chainspec.workspace = true
 reth-consensus.workspace = true
 reth-evm.workspace = true
+reth-evm-ethereum.workspace = true
 reth-execution-types.workspace = true
 reth-trie-common.workspace = true
 tempo-fuzz-types.workspace = true
 tempo-invariants.workspace = true
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
-tempo-evm = { workspace = true, features = ["fee-recording"] }
+tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 

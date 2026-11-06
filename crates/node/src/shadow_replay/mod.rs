@@ -21,6 +21,7 @@
 
 mod analysis;
 mod expectations;
+mod fees;
 
 use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -30,10 +31,9 @@ use evm2::evm::{Cache, Database, PendingState, TxResultExt};
 use metrics::{Counter, Gauge, Histogram};
 use parking_lot::Mutex;
 use reth_chainspec::ForkCondition;
-use reth_ethereum::tasks::TaskExecutor;
+use reth_ethereum::{evm::EvmFactory as _, tasks::TaskExecutor};
 use reth_evm::{
-    BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
-    database::StateProviderDatabase,
+    BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _, database::StateProviderDatabase,
 };
 use reth_execution_types::{BlockState, StateUpdate};
 use reth_primitives_traits::RecoveredBlock;
@@ -48,7 +48,8 @@ use tempo_chainspec::{
     spec::{TempoChainSpec, TempoHardforks as _},
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
-use tempo_evm::{FeeWrites, RecordingFeeManager, TempoEvmConfig, TempoTxResult};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult, evm::TempoEvm};
+use tempo_precompiles::storage::StorageAction;
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -331,12 +332,11 @@ impl<P: Sync> ShadowReplayer<P> {
         block: &RecoveredBlock<Block>,
         parent_state: &(impl Fn() -> Result<DB, String> + Sync),
     ) -> Result<(Evidence, Evidence), String> {
-        let writes = Arc::new(Mutex::new(FeeWrites::default()));
         let mut evm = self
             .real_config
             .evm_for_block(parent_state()?, block.header())
             .map_err(|e| format!("failed to configure control EVM: {e}"))?;
-        evm.ext_mut().fee_manager = Arc::new(RecordingFeeManager(Arc::clone(&writes)));
+        record_actions(&self.real_config, &mut evm);
         let context = self
             .real_config
             .context_for_block(block.sealed_block())
@@ -355,6 +355,7 @@ impl<P: Sync> ShadowReplayer<P> {
             ));
         }
         real.pre_block = Some(take_updates(&updates));
+        executor.evm().ext().actions.clear();
 
         // A one-entry queue pipelines the two arms without retaining an unbounded number of cloned
         // control results when one arm runs ahead.
@@ -373,8 +374,7 @@ impl<P: Sync> ShadowReplayer<P> {
                         break;
                     }
                 };
-                let observed =
-                    ObservedTx::from_result(&result, std::mem::take(&mut *writes.lock()));
+                let observed = ObservedTx::from_result(&result, take_actions(&executor));
                 if results
                     .as_ref()
                     .is_some_and(|sender| sender.send(result.clone()).is_err())
@@ -409,12 +409,11 @@ impl<P: Sync> ShadowReplayer<P> {
         canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
     ) -> Result<Evidence, String> {
         let parent_state = parent_state().map_err(|e| format!("shadow arm: {e}"))?;
-        let writes = Arc::new(Mutex::new(FeeWrites::default()));
         let mut evm = self
             .shadow_config
             .evm_for_block(parent_state, block.header())
             .map_err(|e| format!("failed to configure shadow EVM: {e}"))?;
-        evm.ext_mut().fee_manager = Arc::new(RecordingFeeManager(Arc::clone(&writes)));
+        record_actions(&self.shadow_config, &mut evm);
         let context = self
             .shadow_config
             .context_for_block(block.sealed_block())
@@ -430,20 +429,20 @@ impl<P: Sync> ShadowReplayer<P> {
             return Ok(shadow.fail(Boundary::PreBlock, e.to_string()));
         }
         shadow.pre_block = Some(take_updates(&updates));
+        executor.evm().ext().actions.clear();
         // Keep candidate pre-block changes in the cache; only transaction results are discarded.
         executor.evm_mut().overlay_db_mut().bal_context = canonical_bal;
 
         for tx in block.transactions_recovered() {
             match executor.execute_transaction_without_commit(tx) {
                 Ok(result) => {
-                    let observed =
-                        ObservedTx::from_result(&result, std::mem::take(&mut *writes.lock()));
+                    let observed = ObservedTx::from_result(&result, take_actions(&executor));
                     shadow.txs.push(Ok(
                         observed.with_state(transition_pending(result.pending_state()))
                     ));
                 }
                 Err(e) => {
-                    let _ = std::mem::take(&mut *writes.lock());
+                    executor.evm().ext().actions.clear();
                     shadow.txs.push(Err(e.to_string()));
                 }
             }
@@ -646,17 +645,17 @@ struct ObservedTx {
     output_hash: B256,
     /// Full receipt hash with only the validated post-fee amount zeroed.
     fee_normalized: Option<B256>,
-    /// Fee-hook log, storage, and charge provenance for this transaction.
-    fee: FeeWrites,
+    /// Storage actions the transaction recorded, with the handler's fee hook markers.
+    actions: Vec<StorageAction>,
     /// Net account and storage transitions observed at this transaction boundary.
     state: TransitionState,
 }
 
 impl ObservedTx {
-    fn from_result(result: &TempoTxResult, writes: FeeWrites) -> Self {
+    fn from_result(result: &TempoTxResult, actions: Vec<StorageAction>) -> Self {
         let execution = result.result();
         let logs = &execution.logs;
-        let fee_normalized = normalized_fee_transfer(logs, &writes);
+        let fee_normalized = normalized_fee_transfer(logs, &actions);
         Self {
             outcome: if execution.status {
                 TxOutcome::Success
@@ -675,7 +674,7 @@ impl ObservedTx {
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(&execution.output),
             fee_normalized,
-            fee: writes,
+            actions,
             state: TransitionState::default(),
         }
     }
@@ -742,16 +741,20 @@ fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
 
 /// Only the post-fee hook's expected TIP-20 transfer amount can be normalized. Every other
 /// byte and the log positions remain committed by the returned full-receipt hash.
-fn normalized_fee_transfer(logs: &[alloy_primitives::Log], writes: &FeeWrites) -> Option<B256> {
-    let (index, token, payer, amount, _) = writes.post_tx_transfer?;
+fn normalized_fee_transfer(
+    logs: &[alloy_primitives::Log],
+    actions: &[StorageAction],
+) -> Option<B256> {
+    let fee = fees::post_tx_fee(actions)?;
+    let index = fee.logs.start;
     let log = logs.get(index)?;
-    if log.address != token || !writes.log_ranges.iter().any(|range| range.contains(&index)) {
+    if log.address != fee.token || !fee.logs.contains(&index) {
         return None;
     }
     let mut transfer = ITIP20::Transfer::decode_log_validate(log).ok()?;
-    if transfer.data.from != payer
+    if transfer.data.from != fee.payer
         || transfer.data.to != TIP_FEE_MANAGER_ADDRESS
-        || transfer.data.amount != amount
+        || transfer.data.amount != fee.charged
         || transfer.data.encode_log_data() != log.data
     {
         return None;
@@ -760,6 +763,18 @@ fn normalized_fee_transfer(logs: &[alloy_primitives::Log], writes: &FeeWrites) -
     let mut normalized = logs.to_vec();
     normalized[index] = ITIP20::Transfer::encode_log(&transfer);
     Some(hash_logs(&normalized))
+}
+
+/// Records the EVM's storage actions from now on, including the handler's fee hook markers.
+fn record_actions(config: &TempoEvmConfig, evm: &mut TempoEvm<'_>) {
+    evm.ext_mut().actions.enable();
+    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
+    BlockExecutorFactory::evm_factory(config).configure_evm(evm);
+}
+
+/// The storage actions the executor recorded since they were last taken.
+fn take_actions(executor: &TempoBlockExecutor<'_>) -> Vec<StorageAction> {
+    executor.evm().ext().actions.take().unwrap_or_default()
 }
 
 fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {
@@ -800,6 +815,7 @@ mod tests {
         },
         zones::{T13_ZONE_PORTAL_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
+    use tempo_precompiles::storage::Marker;
 
     #[test]
     fn fee_log_normalization_preserves_order_and_non_amount_fields() {
@@ -819,10 +835,17 @@ mod tests {
                 },
             ]
         };
-        let writes = |amount| FeeWrites {
-            log_ranges: std::iter::once(1..2).collect(),
-            post_tx_transfer: Some((1, token, payer, amount, U256::ZERO)),
-            ..Default::default()
+        let writes = |amount| {
+            vec![
+                StorageAction::Marker(Marker::PostTxFee {
+                    payer,
+                    token,
+                    charged: amount,
+                    refunded: U256::ZERO,
+                    logs: 1,
+                }),
+                StorageAction::Marker(Marker::FeeHookEnd { logs: 2 }),
+            ]
         };
         let (canonical, candidate) = (logs(U256::from(85)), logs(U256::from(79)));
         let candidate_writes = writes(U256::from(79));

@@ -14,8 +14,6 @@ mod engine;
 pub mod error;
 pub mod evm;
 mod fee_manager;
-#[cfg(feature = "fee-recording")]
-mod fee_recording;
 mod handler;
 mod instructions;
 #[cfg(feature = "jit")]
@@ -39,8 +37,6 @@ pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFacto
 pub use fee_manager::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoFeeManager,
 };
-#[cfg(feature = "fee-recording")]
-pub use fee_recording::{FeeWrites, RecordingFeeManager, fee_hook_slot_change};
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
     TempoTxResultExt, build_tempo_evm, configurable_account::account_access_gas,

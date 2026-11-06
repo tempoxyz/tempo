@@ -6,28 +6,24 @@ use alloy_consensus::{
     BlockHeader as _, proofs::calculate_transaction_root, transaction::Transaction as _,
 };
 use alloy_eips::Decodable2718 as _;
-use alloy_primitives::{Address, Log, U256};
+use alloy_primitives::{Address, Log};
 use evm2::bytecode::Bytecode;
 use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
-use reth_evm::{
-    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
-};
+use reth_evm::{BlockExecutionError, BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _};
+use reth_evm_ethereum::EvmFactory as _;
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
 use tempo_chainspec::TempoChainSpec;
-use tempo_evm::{
-    FeeWrites, RecordingFeeManager, TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv,
-    consensus::TempoConsensus, fee_hook_slot_change,
-};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, consensus::TempoConsensus};
 use tempo_fuzz_types::{
-    BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, FeeOutput, FeeSwapOutput,
-    InvariantFailure, InvariantScope, PreState, ResultGas, StateChanges, StorageChangeOutput,
-    TempoBlock, TempoExecutionOutcome, TempoHarnessInput, TempoHarnessOutcome,
-    TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
+    BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, InvariantFailure, InvariantScope,
+    PreState, ResultGas, StateChanges, StorageActionOutput, TempoBlock, TempoExecutionOutcome,
+    TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome,
+    TxReceiptOutput,
 };
 use tempo_invariants::Tx;
-use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
+use tempo_precompiles::storage::{Marker, StorageAction};
 use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
 
 use crate::{
@@ -295,8 +291,9 @@ fn execute_block(
     let mut evm = evm_config
         .evm_for_block(db.reader(), block.header())
         .map_err(|_| ErrorClass::Rejected)?;
-    let fees = RecordingFeeManager(Arc::default());
-    evm.ext_mut().fee_manager = Arc::new(fees.clone());
+    evm.ext_mut().actions.enable();
+    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
+    BlockExecutorFactory::evm_factory(evm_config).configure_evm(&mut evm);
     let ctx = evm_config
         .context_for_block(block.sealed_block())
         .map_err(|_| ErrorClass::Rejected)?;
@@ -315,7 +312,6 @@ fn execute_block(
         &mut executor,
         db,
         &hooked,
-        &fees,
         block,
         block_index,
         &mut updates,
@@ -342,7 +338,6 @@ fn execute_txs(
     executor: &mut TempoBlockExecutor<'_>,
     db: &Db,
     hooked: &Updates,
-    fees: &RecordingFeeManager,
     block: &ExecutionBlock,
     block_index: u64,
     updates: &mut Vec<StateUpdate>,
@@ -368,8 +363,9 @@ fn execute_txs(
         let tx_index = tx_index as u64;
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
+        executor.evm().ext().actions.clear();
         let result = executor.execute_transaction_without_commit(tx)?;
-        let fee = fee_output(std::mem::take(&mut *fees.0.lock()));
+        let actions = executor.evm().ext().actions.take().unwrap_or_default();
         let execution = result.result();
         let outcome = if execution.status {
             TxOutcome::Success
@@ -400,7 +396,7 @@ fn execute_txs(
             effective_gas_price,
             output,
             logs: receipt.logs.clone(),
-            fee,
+            actions: actions.into_iter().map(action_output).collect(),
         });
         let scope = InvariantScope::Transaction {
             block_index,
@@ -483,66 +479,82 @@ fn step(
     changes
 }
 
-/// What the fee hooks of one transaction did, from what they recorded in `fees`. `None` when a
-/// hook did not run, or when a hook's writes to a slot do not chain, which a hook that runs without
-/// interruption never does.
-fn fee_output(fees: FeeWrites) -> Option<FeeOutput> {
-    let (_, token, payer, charged, refunded) = fees.post_tx_transfer?;
-    let swaps = fees
-        .pre_tx_actions
-        .iter()
-        .chain(&fees.post_tx_actions)
-        .filter_map(|action| match *action {
-            StorageAction::FeeAmmSwap(pool_slot, _, amount_in) => Some(
-                compute_amount_out(amount_in)
-                    .ok()
-                    .map(|amount_out| FeeSwapOutput {
-                        pool_slot,
-                        amount_in,
-                        amount_out,
-                    }),
-            ),
-            _ => None,
-        })
-        .collect::<Option<_>>()?;
-    Some(FeeOutput {
-        token,
-        payer,
-        max_amount: fees.pre_tx_max?,
-        charged,
-        refunded,
-        pre_tx_writes: hook_writes(&fees.pre_tx_actions)?,
-        post_tx_writes: hook_writes(&fees.post_tx_actions)?,
-        swaps,
-    })
-}
-
-/// Each slot one fee hook wrote, with its values when the hook started and ended, in the order
-/// the hook first wrote them.
-fn hook_writes(actions: &[StorageAction]) -> Option<Vec<StorageChangeOutput>> {
-    let mut slots: Vec<(Address, U256)> = Vec::new();
-    for action in actions {
-        if let StorageAction::Sstore(_, slot, ..)
-        | StorageAction::Sinc(_, slot, ..)
-        | StorageAction::Sdec(_, slot, ..)
-        | StorageAction::FeeAmmSwap(slot, ..) = *action
-            && !slots.contains(&(action.address(), slot))
-        {
-            slots.push((action.address(), slot));
+/// `action` as the harness reports it.
+fn action_output(action: StorageAction) -> StorageActionOutput {
+    match action {
+        StorageAction::Sload(address, slot, value) => StorageActionOutput::Sload {
+            address,
+            slot,
+            value,
+        },
+        StorageAction::FeeTokenBalanceCheck(token, slot, balance, required, sufficient) => {
+            StorageActionOutput::FeeTokenBalanceCheck {
+                token,
+                slot,
+                balance,
+                required,
+                sufficient,
+            }
         }
-    }
-    slots
-        .into_iter()
-        .map(|(address, slot)| {
-            let (before, after) = fee_hook_slot_change(actions, address, slot)?;
-            Some(StorageChangeOutput {
-                address,
+        StorageAction::Sstore(address, slot, before, after) => StorageActionOutput::Sstore {
+            address,
+            slot,
+            before,
+            after,
+        },
+        StorageAction::Sinc(address, slot, before, delta) => StorageActionOutput::Sinc {
+            address,
+            slot,
+            before,
+            delta,
+        },
+        StorageAction::Sdec(address, slot, before, delta) => StorageActionOutput::Sdec {
+            address,
+            slot,
+            before,
+            delta,
+        },
+        StorageAction::FeeAmmSwap(slot, before, amount_in) => StorageActionOutput::FeeAmmSwap {
+            slot,
+            before,
+            amount_in,
+        },
+        StorageAction::FeeAmmLiquidityCheck(slot, before, amount_out, sufficient) => {
+            StorageActionOutput::FeeAmmLiquidityCheck {
                 slot,
                 before,
-                after,
-            })
-        })
-        .collect()
+                amount_out,
+                sufficient,
+            }
+        }
+        StorageAction::Marker(Marker::PreTxFee {
+            payer,
+            token,
+            max_amount,
+            logs,
+        }) => StorageActionOutput::PreTxFee {
+            payer,
+            token,
+            max_amount,
+            logs: logs as u64,
+        },
+        StorageAction::Marker(Marker::PostTxFee {
+            payer,
+            token,
+            charged,
+            refunded,
+            logs,
+        }) => StorageActionOutput::PostTxFee {
+            payer,
+            token,
+            charged,
+            refunded,
+            logs: logs as u64,
+        },
+        StorageAction::Marker(Marker::FeeHookEnd { logs }) => {
+            StorageActionOutput::FeeHookEnd { logs: logs as u64 }
+        }
+    }
 }
 
 /// A block the node would reject is `Rejected`; anything else went wrong in the executor.

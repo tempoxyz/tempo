@@ -53,6 +53,35 @@ pub enum StorageAction {
     /// `amount_out` - Amount of tokens to swap out.
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
     FeeAmmLiquidityCheck(U256, U256, U256, bool),
+    /// Marks where a step of the transaction's fee lifecycle starts or ends. It changes no state.
+    Marker(Marker),
+}
+
+/// A step of a transaction's protocol fee lifecycle, recorded by the handler around each fee hook
+/// so that the actions between a hook's start marker and its [`Self::FeeHookEnd`] are the hook's
+/// own. A hook that fails records no [`Self::FeeHookEnd`].
+///
+/// Each marker holds `logs`, the number of logs the transaction had emitted when it was recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Marker {
+    /// The pre-transaction fee hook starts charging `max_amount` of `token` to `payer`.
+    PreTxFee {
+        payer: Address,
+        token: Address,
+        max_amount: U256,
+        logs: usize,
+    },
+    /// The post-transaction fee hook starts keeping `charged` of `token` and refunding
+    /// `refunded` to `payer`. Its fee transfer, if it emits one, is the log at index `logs`.
+    PostTxFee {
+        payer: Address,
+        token: Address,
+        charged: U256,
+        refunded: U256,
+        logs: usize,
+    },
+    /// The fee hook the last marker started returned successfully.
+    FeeHookEnd { logs: usize },
 }
 
 impl StorageAction {
@@ -64,7 +93,9 @@ impl StorageAction {
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
             | Self::Sdec(address, ..) => *address,
-            Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => TIP_FEE_MANAGER_ADDRESS,
+            Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) | Self::Marker(_) => {
+                TIP_FEE_MANAGER_ADDRESS
+            }
         }
     }
 }
