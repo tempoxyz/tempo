@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs one zone node from the files provision.sh wrote: "0", "1" or "2" for a quorum
-# sequencer, "rpc" for the RPC follower that runs the native prover and the checker.
+# sequencer, "rpc" for the RPC follower that runs the checker.
 # Restarts reuse the same datadir.
 set -eu
 
@@ -18,8 +18,7 @@ case "$NODE" in
         P2P_KEY=$S/p2p-$NODE.key
         ;;
     rpc)
-        # Without --sequencer.prover-address the shadow prover runs the native prover in-process.
-        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe"
+        ROLE_ARGS="--checker.mode observe"
         P2P_KEY=$S/p2p-rpc.key
         ;;
     *)

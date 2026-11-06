@@ -980,7 +980,7 @@ provision_up() {
                 || die "verified L1 snapshot has no Tempo hardfork"
             prover_address="T${hardfork#t}=$prover_address"
         fi
-        prover_args=(--sequencer.enable-prover --sequencer.prover-address "$prover_address")
+        prover_args=(--sequencer.prover-address "$prover_address")
     fi
 
     # The pinned Reth revision predates the retained-branch pruning fix. Its
