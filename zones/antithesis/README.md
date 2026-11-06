@@ -92,7 +92,9 @@ keeps the existing L1 endpoint, so provisioning, deposit/withdrawal drivers, and
 the same interface. The existing four Zone nodes remain in place. There is one Compose topology,
 one workload image, and one launch configuration.
 
-The node scripts print their execution and persistence flags. The persistence threshold is
+The launchers `scripts/l1-node.sh` and `scripts/zone-node.sh` print their execution flags.
+Profiles below list `--engine.persistence-threshold`, `--engine.num-state-masking-blocks`
+and `--engine.memory-block-buffer-target`, in that order. The persistence threshold is
 the number of in-memory canonical blocks ahead of disk that triggers another flush. Masking
 defers state/trie writes for a configured number of blocks in that flush; the buffer is the
 target number of blocks retained in memory. All three settings are measured in blocks.
@@ -186,3 +188,71 @@ The supervisor does not automatically restart an unexpectedly exited node: Antit
 controls ordinary node failures and their duration. Its control socket is local-only and
 accepts no arbitrary commands. Register custom faults with the Antithesis team before
 claiming campaign coverage; building this image alone does not schedule them.
+
+
+### Opt-in torn-write storage layer
+
+The storage variant keeps the same payments, solvency and proof workload. It changes only
+`zone-rpc`: only its MDBX data file is bind-mounted from LazyFS, a filesystem that delays
+unsynced writes and can persist only part of an actual write. Lock files, version metadata,
+the solvency checker and RocksDB stay on normal storage, as do all voting nodes.
+
+Build it on the node image from this stack, then merge the storage overlay:
+
+```sh
+docker build -f zones/antithesis/Dockerfile.storage \
+  --build-arg ZONES_IMAGE=tempo-zones-antithesis:latest \
+  -t tempo-zones-antithesis-storage:latest .
+docker compose -f zones/antithesis/docker-compose.yaml \
+  -f zones/antithesis/docker-compose.storage.yaml config
+```
+
+Give Antithesis the merged Compose configuration and both node image variants, not the
+overlay alone. The regular workload image does not change. Confirm with the Antithesis team
+that the campaign permits `/dev/fuse`, `SYS_ADMIN` and the mount security policy in the overlay;
+these privileges apply only to the test follower and are not enabled by the base configuration.
+Use a fresh campaign volume: the underlying `/data/node/db/mdbx.dat` mountpoint must be
+empty. Durable MDBX bytes live separately in `/data/durable/db/mdbx.dat`; all other node
+files remain under `/data/node`. The launcher refuses to hide a populated normal MDBX file.
+
+Register this fixed command as a custom fault inside `zone-rpc`, in a fault-free window:
+
+```sh
+python3 /opt/zones/storage-fault.py torn-op
+```
+
+The command arms a fault targeting the next `db/mdbx.dat` write, splitting that real write
+in two and keeping its first part. LazyFS acknowledges arming before the write happens.
+It logs which bytes it persisted, then logs a write-after fault trigger and kills itself
+with SIGKILL. The supervisor process inside `zone-rpc`, which owns the node child, checks
+all three signals in new log output for the exact MDBX path before reporting fired.
+An acknowledgment alone proves only that the fault was armed. A missing write, timeout,
+or unrelated daemon exit is not torn-write coverage. There is no disarm API: timeout cleanup
+can itself trigger the pending fault, but never upgrades the incomplete attempt to success.
+
+After a tear, the supervisor kills and reaps database holders without a graceful flush,
+unmounts the data-file bind and filesystem normally, mounts a fresh filesystem instance,
+and restarts the original node.
+Recovery must restore the pre-fault finalized hash and advance beyond the pre-fault latest
+height. Timeouts leave completion coverage unmet rather than failing safety; a changed finalized
+hash fails immediately. SDK assertions distinguish actual fired-and-recovered coverage from
+failed or incomplete attempts;
+existing eventual proof and settlement checks remain required. A normal container shutdown
+interrupts the drill rather than reporting a safety failure.
+
+LazyFS and its unmodified Bedrock patch are pinned to Bedrock commit
+`0e92d1b1c9070c1e80d899592e0574ce7da2bc95`; downloads use immutable commits and SHA-256
+checks. The optional image includes corresponding source archives and both patches under
+`/opt/lazyfs-source`. This models partial writes through FUSE, not a hardware power-cut
+proof: namespace changes are immediately durable, syncfs needs explicit checkpoint
+compensation, and this initial drill targets MDBX only, not every Bedrock storage fault.
+It does not truncate consensus archives or claim that process SIGKILL alone tears writes.
+
+LRU eviction is disabled: the pinned cache's dirty-eviction path loses writes even without
+a fault. Its bounded 128 MiB cache instead uses LazyFS's checked write-through fallback
+when full. Unsynced writes may therefore reach backing storage before a checkpoint; the
+drill does not claim to hold every unsynced write in memory.
+
+The adapter patch applies the torn operation before cache or overflow writes, so a full
+cache cannot persist the entire write before reporting a tear. It also propagates failed
+write-through operations instead of acknowledging bytes that were not written.

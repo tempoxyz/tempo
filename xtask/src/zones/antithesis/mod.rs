@@ -147,6 +147,7 @@ enum Command {
 enum MaintenanceOperation {
     RepairTrie,
     Unwind,
+    TornWrite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -176,6 +177,10 @@ impl Antithesis {
                 MaintenanceOperation::Unwind => (
                     "Offline unwind preserves finalized history",
                     "Offline unwind executes and recovers",
+                ),
+                MaintenanceOperation::TornWrite => (
+                    "Torn write restores finalized history",
+                    "Actual torn write fires and recovers",
                 ),
             };
             // These optional fault properties exist only after a custom drill is armed.

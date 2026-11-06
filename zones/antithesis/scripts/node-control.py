@@ -40,7 +40,7 @@ def event(state, operation, **fields):
 
 
 def report(result):
-    if result['operation'] not in ('repair-trie', 'unwind') or result['state'] in ('interrupted', 'rejected'):
+    if result['operation'] not in ('repair-trie', 'unwind', 'torn-write') or result['state'] in ('interrupted', 'rejected'):
         return result
     try:
         subprocess.run(['/usr/local/bin/tempo-zone-xtask', 'antithesis',
@@ -248,6 +248,18 @@ class Supervisor:
             raise RuntimeError('supervisor shutting down')
         return event('recovered', operation, finalized=before[0], hash=before[1])
 
+    def cleanup(self):
+        for child in (self.offline, self.node):
+            try:
+                self.stop(child)
+            except (RuntimeError, TimeoutError):
+                pass
+        while True:
+            try:
+                os.waitpid(-1, 0)
+            except ChildProcessError:
+                break
+
     def serve(self, path):
         # Adopt and reap descendants if a node exits before its subprocesses.
         if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
@@ -299,16 +311,7 @@ class Supervisor:
                             pass
             finally:
                 self.shutting_down = True
-                for child in (self.offline, self.node):
-                    try:
-                        self.stop(child)
-                    except (RuntimeError, TimeoutError):
-                        pass
-                while True:
-                    try:
-                        os.waitpid(-1, 0)
-                    except ChildProcessError:
-                        break
+                self.cleanup()
                 os.unlink(path)
 
 

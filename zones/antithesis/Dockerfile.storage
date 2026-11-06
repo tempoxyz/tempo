@@ -1,0 +1,17 @@
+# Optional storage-fault variant of the SAME nodes/workload, not a second workload.
+ARG ZONES_IMAGE=tempo-zones-antithesis:latest
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS lazyfs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl g++ libfuse3-dev patch pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY zones/antithesis/storage/ /build/
+RUN sh /build/build-lazyfs.sh /source
+
+FROM ${ZONES_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends fuse3 libstdc++6 util-linux \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=lazyfs /source/lazyfs/lazyfs.bin /usr/local/bin/lazyfs
+# Supply corresponding sources, including the exact local changes, with the binary.
+COPY --from=lazyfs /source/*.tar.gz /opt/lazyfs-source/
+COPY zones/antithesis/storage/ /opt/lazyfs-source/
+COPY zones/antithesis/scripts/storage-fault.py zones/antithesis/scripts/zone-node.sh /opt/zones/

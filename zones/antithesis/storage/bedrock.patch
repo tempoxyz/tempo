@@ -1,0 +1,385 @@
+diff --git a/lazyfs/include/lazyfs/lazyfs.hpp b/lazyfs/include/lazyfs/lazyfs.hpp
+index 6e77341..a249d30 100644
+--- a/lazyfs/include/lazyfs/lazyfs.hpp
++++ b/lazyfs/include/lazyfs/lazyfs.hpp
+@@ -201,6 +201,13 @@ class LazyFS : public Fusepp::Fuse<LazyFS> {
+      */
+     void command_fault_clear_cache ();
+ 
++    /**
++     * @brief bedrock: `crash <keep_permille> <seed>`, `torn-op <file> <parts>
++     * <persist> <occurrence>`, `torn-seq <file> <persist> <occurrence>`,
++     * `checkpoint`, `stats`. Returns the JSON reply.
++     */
++    string command_bedrock (const vector<string>& args);
++
+     /**
+      * @brief Fifo: (info) Display the cache usage
+      *
+diff --git a/lazyfs/src/lazyfs.cpp b/lazyfs/src/lazyfs.cpp
+index 0d4d48f..1533c3f 100644
+--- a/lazyfs/src/lazyfs.cpp
++++ b/lazyfs/src/lazyfs.cpp
+@@ -439,6 +439,41 @@ void LazyFS::command_fault_clear_cache () {
+     spdlog::warn ("[lazyfs.cmds]: cache is cleared.");
+ }
+ 
++string LazyFS::command_bedrock (const vector<string>& args) {
++
++    // Exclusive: write handlers read the faults map and cache under the
++    // shared lock.
++    std::unique_lock<std::shared_mutex> lock (cache_command_lock);
++    vector<string> errors;
++
++    if (args.size () == 3 && args[0] == "crash") {
++        // Keeps a subset of the un-synced data; the caller exits right after
++        // the reply, dropping the rest with the process.
++        string stats = FSCache->bedrock_crash (std::min (std::stoul (args[1]), 1000UL),
++                                               std::stoull (args[2]));
++        return "{\"ok\":true,\"stats\":" + stats + "}";
++    } else if (args.size () == 1 && args[0] == "stats") {
++        return "{\"ok\":true}";
++    } else if (args.size () == 1 && args[0] == "checkpoint") {
++        // syncfs(2) of the mount: every file's cached data reaches the
++        // backing files, as an fsync of each would.
++        FSCache->full_checkpoint ();
++        return "{\"ok\":true}";
++    } else if (args.size () == 5 && args[0] == "torn-op") {
++        errors = add_torn_op_fault (args[1], args[2], "none", args[3], args[4]);
++    } else if (args.size () == 4 && args[0] == "torn-seq") {
++        errors = add_torn_seq_fault (args[1], "write", args[2], args[3]);
++    } else {
++        errors.push_back ("unknown command");
++    }
++    if (errors.empty ())
++        return "{\"ok\":true}";
++    string joined;
++    for (auto const& e : errors)
++        joined += (joined.empty () ? "" : "; ") + e;
++    return "{\"ok\":false,\"error\":\"" + joined + "\"}";
++}
++
+ void LazyFS::command_display_cache_usage () {
+ 
+     std::unique_lock<std::shared_mutex> lock (cache_command_lock);
+@@ -1733,7 +1768,10 @@ int LazyFS::lfs_truncate (const char* path, off_t truncate_size, struct fuse_fil
+         spdlog::info ("[lazyfs.ops]: {}(path={},size={})", __FUNCTION__, path, truncate_size);
+     }
+ 
+-    int res;
++    // bedrock: was uninitialized. A truncate served from the cache (e.g. a
++    // new file's set_len(0)) never assigns it, so the final check returned
++    // -errno (a stale ENOENT, say) whenever the stack held -1.
++    int res = 0;
+ 
+     string owner (path);
+     string inode = this_ ()->FSCache->get_original_inode (owner);
+@@ -1811,8 +1849,7 @@ int LazyFS::lfs_truncate (const char* path, off_t truncate_size, struct fuse_fil
+ 
+         if (r != add_bytes_total) {
+ 
+-            int res;
+-
++            // bedrock: the outer res, so a failed fallback is reported.
+             if (fi != NULL)
+                 res = ftruncate (fi->fh, truncate_size);
+             else
+diff --git a/lazyfs/src/main.cpp b/lazyfs/src/main.cpp
+index 58499e1..c809844 100644
+--- a/lazyfs/src/main.cpp
++++ b/lazyfs/src/main.cpp
+@@ -17,6 +17,7 @@
+ #include <regex>
+ #include <spdlog/spdlog.h>
+ #include <string>
++#include <sstream>
+ #include <thread>
+ #include <unistd.h>
+ 
+@@ -43,7 +44,8 @@ void fht_worker (LazyFS* filesystem) {
+     bool write_completed_faults = (std_config.FIFO_PATH_COMPLETED != "");
+ 
+     if (write_completed_faults) {
+-        fd_fifo_completed = open (std_config.FIFO_PATH_COMPLETED.c_str (), O_WRONLY);
++        // bedrock: O_RDWR does not wait for a reader; replies queue in the pipe.
++        fd_fifo_completed = open (std_config.FIFO_PATH_COMPLETED.c_str (), O_RDWR);
+         if (fd_fifo_completed < 0) {
+             spdlog::critical ("[lazyfs.fifo]: failed to open fifo '{}' (error: {})",
+                             std_config.FIFO_PATH_COMPLETED.c_str (),
+@@ -62,7 +64,34 @@ void fht_worker (LazyFS* filesystem) {
+             buffer[ret - 1] = '\0';
+ 
+             std::string command_str = string (buffer);
+-            if (command_str.rfind ("lazyfs::crash", 0) == 0) {
++            if (command_str.rfind ("bedrock ", 0) == 0) {
++
++                // bedrock <id> <command...>: the reply, "<id> <json>", goes to
++                // the completion fifo.
++                std::istringstream words (command_str);
++                std::vector<string> args;
++                string word, id;
++                words >> word >> id;
++                while (words >> word)
++                    args.push_back (word);
++                string reply;
++                try {
++                    reply = filesystem->command_bedrock (args);
++                } catch (const std::exception& e) {
++                    reply = "{\"ok\":false,\"error\":\"bad arguments\"}";
++                }
++                reply = id + " " + reply + "\n";
++                if (write_completed_faults &&
++                    write (fd_fifo_completed, reply.c_str (), reply.size ()) < 0)
++                    spdlog::warn ("[lazyfs.faults.worker]: failed to write to notifier fifo");
++                if (!args.empty () && args[0] == "crash" &&
++                    reply.find ("\"ok\":true") != string::npos) {
++                    // The machine is gone: whatever was not kept is lost
++                    // with this process.
++                    _exit (0);
++                }
++
++            } else if (command_str.rfind ("lazyfs::crash", 0) == 0) {
+ 
+                 std::regex rgx_global ("::");
+                 std::regex rgx_attrib ("=");
+diff --git a/libs/libpcache/include/bedrock.hpp b/libs/libpcache/include/bedrock.hpp
+new file mode 100644
+index 0000000..161cdf6
+--- /dev/null
++++ b/libs/libpcache/include/bedrock.hpp
+@@ -0,0 +1,26 @@
++// Bedrock DST addition to LazyFS (see bedrock's nix/lazyfs.nix): a machine
++// crash that keeps a seed-chosen subset of the un-synced blocks.
++// Deterministic: the only randomness is the seed the harness passes in.
++#ifndef BEDROCK_HPP
++#define BEDROCK_HPP
++
++#include <cstdint>
++
++namespace bedrock {
++
++// SplitMix64, as tempo-dst's.
++struct Rng {
++    uint64_t s;
++    uint64_t next () {
++        s += 0x9e3779b97f4a7c15ULL;
++        uint64_t z = s;
++        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
++        z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
++        return z ^ (z >> 31);
++    }
++    bool chance (uint32_t permille) { return next () % 1000 < permille; }
++};
++
++} // namespace bedrock
++
++#endif
+diff --git a/libs/libpcache/include/cache/cache.hpp b/libs/libpcache/include/cache/cache.hpp
+index 68dce2d..b5641cc 100644
+--- a/libs/libpcache/include/cache/cache.hpp
++++ b/libs/libpcache/include/cache/cache.hpp
+@@ -309,6 +309,13 @@ class Cache {
+      * @return vector<string> files mapped to that inode
+      */
+     vector<string> find_files_mapped_to_inode (string inode);
++
++    /**
++     * @brief bedrock: a machine crash: writes a seed-chosen subset of the
++     * dirty blocks (and file sizes) to the backing files; returns JSON stats.
++     * The caller then exits, dropping the rest.
++     */
++    string bedrock_crash (uint32_t keep_permille, uint64_t seed);
+ };
+ 
+ } // namespace cache
+diff --git a/libs/libpcache/include/cache/engine/backends/custom/custom_cache.hpp b/libs/libpcache/include/cache/engine/backends/custom/custom_cache.hpp
+index 361977b..30600e2 100644
+--- a/libs/libpcache/include/cache/engine/backends/custom/custom_cache.hpp
++++ b/libs/libpcache/include/cache/engine/backends/custom/custom_cache.hpp
+@@ -182,6 +182,14 @@ class CustomCacheEngine : public PageCacheEngine {
+                                  int from_block_id,
+                                  off_t index_inside_block);
+     vector<tuple<int, pair<int, int>, int>> get_dirty_blocks_info (string owner);
++    void persist_subset (string owner,
++                         int fd,
++                         off_t limit,
++                         bedrock::Rng& rng,
++                         uint32_t keep_permille,
++                         size_t* dirty,
++                         size_t* kept,
++                         size_t* errors);
+ };
+ 
+ } // namespace cache::engine::backends::custom
+diff --git a/libs/libpcache/include/cache/engine/page_cache.hpp b/libs/libpcache/include/cache/engine/page_cache.hpp
+index d05b700..86fc208 100644
+--- a/libs/libpcache/include/cache/engine/page_cache.hpp
++++ b/libs/libpcache/include/cache/engine/page_cache.hpp
+@@ -16,6 +16,8 @@
+ #include <unordered_map>
+ #include <vector>
+ 
++#include <bedrock.hpp>
++
+ using namespace std;
+ 
+ namespace cache::engine {
+@@ -172,6 +174,19 @@ class PageCacheEngine {
+      *
+      */
+     virtual vector<tuple<int, pair<int, int>, int>> get_dirty_blocks_info (string owner) = 0;
++
++    /**
++     * @brief bedrock: writes each dirty block of the owner below `limit` to
++     * `fd` with probability keep_permille/1000 (a machine crash keeping it).
++     */
++    virtual void persist_subset (string owner,
++                                 int fd,
++                                 off_t limit,
++                                 bedrock::Rng& rng,
++                                 uint32_t keep_permille,
++                                 size_t* dirty,
++                                 size_t* kept,
++                                 size_t* errors) = 0;
+ };
+ 
+ } // namespace cache::engine
+diff --git a/libs/libpcache/src/cache.cpp b/libs/libpcache/src/cache.cpp
+index 08d79e3..38fdc12 100644
+--- a/libs/libpcache/src/cache.cpp
++++ b/libs/libpcache/src/cache.cpp
+@@ -9,6 +9,10 @@
+ 
+ #include <algorithm>
+ #include <cache/cache.hpp>
++#include <bedrock.hpp>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ #include <cache/constants/constants.hpp>
+ #include <cache/item/item.hpp>
+ #include <chrono>
+@@ -591,4 +595,79 @@ vector<string> Cache::find_files_mapped_to_inode (string inode) {
+     return res;
+ }
+ 
++string Cache::bedrock_crash (uint32_t keep_permille, uint64_t seed) {
++
++    std::unique_lock<shared_mutex> lock (lock_cache_mtx);
++
++    // One path per cached inode, in inode order: the draws are a function of
++    // the seed and the cache contents only.
++    std::map<string, string> paths;
++    for (auto const& it : this->file_inode_mapping) {
++        auto p = paths.find (it.second);
++        if (p == paths.end () || it.first < p->second)
++            paths[it.second] = it.first;
++    }
++
++    bedrock::Rng rng{seed};
++    size_t dirty_files = 0, dirty_pages = 0, kept_pages = 0, errors = 0;
++    size_t reverted_sizes = 0, truncated_bytes = 0;
++
++    for (auto const& it : paths) {
++        Item* item = _get_content_ptr (it.first);
++        if (item == nullptr)
++            continue;
++        int fd = open (it.second.c_str (), O_WRONLY);
++        if (fd < 0) {
++            errors++;
++            continue;
++        }
++        struct stat st;
++        off_t durable  = fstat (fd, &st) == 0 ? st.st_size : 0;
++        Metadata* meta = item->get_metadata ();
++        off_t size     = meta != nullptr ? meta->size : durable;
++        // The size, and blocks past the durable size, survive together
++        // (ext4 ordered mode).
++        bool keep_size = rng.chance (keep_permille);
++        size_t dirty = 0, kept = 0;
++        this->engine->persist_subset (it.first,
++                                      fd,
++                                      keep_size ? size : std::min (size, durable),
++                                      rng,
++                                      keep_permille,
++                                      &dirty,
++                                      &kept,
++                                      &errors);
++        if (size != durable) {
++            if (keep_size) {
++                if (ftruncate (fd, size) < 0)
++                    errors++;
++            } else {
++                reverted_sizes++;
++                if (size > durable)
++                    truncated_bytes += size - durable;
++            }
++        }
++        close (fd);
++        if (dirty > 0 || size != durable)
++            dirty_files++;
++        dirty_pages += dirty;
++        kept_pages += kept;
++    }
++
++    char buf[384];
++    snprintf (buf,
++              sizeof (buf),
++              "{\"dirty_files\":%zu,\"dirty_pages\":%zu,\"kept_pages\":%zu,"
++              "\"reverted_pages\":%zu,\"reverted_sizes\":%zu,\"truncated_bytes\":%zu,"
++              "\"undo_errors\":%zu}",
++              dirty_files,
++              dirty_pages,
++              kept_pages,
++              dirty_pages - kept_pages,
++              reverted_sizes,
++              truncated_bytes,
++              errors);
++    return string (buf);
++}
++
+ } // namespace cache
+\ No newline at end of file
+diff --git a/libs/libpcache/src/engine/backends/custom/custom_cache.cpp b/libs/libpcache/src/engine/backends/custom/custom_cache.cpp
+index 68ec7d9..7ee8d84 100644
+--- a/libs/libpcache/src/engine/backends/custom/custom_cache.cpp
++++ b/libs/libpcache/src/engine/backends/custom/custom_cache.cpp
+@@ -676,4 +676,38 @@ vector<tuple<int, pair<int, int>, int>> CustomCacheEngine::get_dirty_blocks_info
+     return res;
+ }
+ 
++void CustomCacheEngine::persist_subset (string owner,
++                                        int fd,
++                                        off_t limit,
++                                        bedrock::Rng& rng,
++                                        uint32_t keep_permille,
++                                        size_t* dirty,
++                                        size_t* kept,
++                                        size_t* errors) {
++
++    std::unique_lock<std::shared_mutex> lock (lock_cache_mtx);
++
++    auto it = this->owner_ordered_pages_mapping.find (owner);
++    if (it == this->owner_ordered_pages_mapping.end ())
++        return;
++    for (auto& blk : it->second) {
++        Page* page = std::get<1> (blk.second);
++        if (!page->is_page_dirty ())
++            continue;
++        (*dirty)++;
++        if (!rng.chance (keep_permille))
++            continue;
++        off_t off = (off_t)blk.first * this->config->IO_BLOCK_SIZE;
++        off_t len = page->allocated_block_ids.get_readable_to (blk.first) + 1;
++        if (off >= limit)
++            continue;
++        if (off + len > limit)
++            len = limit - off;
++        if (pwrite (fd, page->data + std::get<2> (blk.second).first, len, off) == len)
++            (*kept)++;
++        else
++            (*errors)++;
++    }
++}
++
+ } // namespace cache::engine::backends::custom

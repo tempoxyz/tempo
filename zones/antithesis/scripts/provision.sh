@@ -25,7 +25,19 @@ P2P_PUBS="0xd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737 0xa
 
 nth() { echo "$2" | tr ' ' '\n' | sed -n "$(($1 + 1))p"; }
 
-until cast block-number --rpc-url "$L1_HTTP" >/dev/null 2>&1; do sleep 1; done
+# Certified following can advance blocks before transaction gossip connects.
+# Do not submit the first migration into an isolated follower's local pool.
+ready=0
+for attempt in $(seq 1 120); do
+    if cast block-number --rpc-url "$L1_HTTP" >/dev/null 2>&1 &&
+        cast rpc net_peerCount --rpc-url "$L1_HTTP" 2>/dev/null |
+            jq -e 'type == "string" and . != "0x0"' >/dev/null; then
+        ready=1
+        break
+    fi
+    sleep 1
+done
+[ "$ready" = 1 ] || { echo "provision: L1 RPC or transaction peers unavailable" >&2; exit 1; }
 
 rm -rf "$S/xtask"
 seqs=""

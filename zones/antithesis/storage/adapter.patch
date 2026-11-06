@@ -1,0 +1,128 @@
+--- a/lazyfs/src/lazyfs.cpp
++++ b/lazyfs/src/lazyfs.cpp
+@@ -994,7 +994,8 @@
+     }
+ 
+     int fd;
+-    int res;
++    int res = size;
++    int write_error = 0;
+ 
+     (void)fi;
+     if (fi == NULL) {
+@@ -1005,6 +1006,15 @@
+     if (fd == -1)
+         return -errno;
+ 
++    // A torn operation must run before cache updates or write-through overflow.
++    // Otherwise the ordinary path can persist the entire write before the split.
++    if (this_ ()->split_write (path, buf, size, offset)) {
++        this_ ()->trigger_crash_fault ("write", "after", path, "", TORN_OP);
++        if (fi == NULL)
++            close (fd);
++        return -EIO; // Fail closed if the configured crash unexpectedly returns.
++    }
++
+     std::string OWNER (path);
+ 
+     struct stat stats;
+@@ -1022,6 +1032,8 @@
+         // std::printf ("\t[write] direct_io=1, flushing data...");
+ 
+         res = pwrite (fd, buf, size, offset);
++        if (res < 0)
++            write_error = errno;
+ 
+     } else {
+ 
+@@ -1064,8 +1076,13 @@
+                 if (size_to_fill > 0) {
+ 
+                     char* fill_zeros = (char*)calloc (size_to_fill, 1);
+-                    lfs_write (path, fill_zeros, size_to_fill, FILE_SIZE_BEFORE, NULL);
++                    int fill_res = lfs_write (path, fill_zeros, size_to_fill, FILE_SIZE_BEFORE, NULL);
+                     free (fill_zeros);
++                    if (fill_res < 0 || (size_t)fill_res != size_to_fill) {
++                        if (fi == NULL)
++                            close (fd);
++                        return fill_res < 0 ? fill_res : -EIO;
++                    }
+                 }
+             }
+         }
+@@ -1148,7 +1165,7 @@
+                         // Read failed for this file,
+                         // We assume that the file is not reachable
+ 
+-                        res = -1;
++                        write_error = errno;
+                         break;
+ 
+                     } else {
+@@ -1213,7 +1230,7 @@
+                                                      CURR_BLK_IDX * IO_BLOCK_SIZE + cache_from);
+ 
+                             if (pwrite_res != cache_wr_sz) {
+-                                res = -1;
++                                write_error = pwrite_res < 0 ? errno : EIO;
+                                 break;
+                             }
+                         }
+@@ -1224,7 +1241,7 @@
+                     // Read failed for this file,
+                     // We assume that the file is not reachable
+ 
+-                    res = -1;
++                    write_error = errno;
+                     break;
+                 }
+ 
+@@ -1258,7 +1275,7 @@
+                                              CURR_BLK_IDX * IO_BLOCK_SIZE + blk_readable_from);
+ 
+                     if (pwrite_res != (blk_readable_to - blk_readable_from + 1)) {
+-                        res = -1;
++                        write_error = pwrite_res < 0 ? errno : EIO;
+                         break;
+                     }
+                 }
+@@ -1273,7 +1290,7 @@
+ 
+         // ----------------------------------------------------------------------------------
+ 
+-        bool locked = this_ ()->FSCache->lockItemCheckExists (inode);
++        bool locked = !write_error && this_ ()->FSCache->lockItemCheckExists (inode);
+ 
+         if (locked) {
+ 
+@@ -1309,22 +1326,16 @@
+ 
+     // ----------------------------------------------------------------------------------
+     
+-    string fault_type = CLEAR;
+-    bool crash_added = this_ () -> persist_write(path,buf,size,offset);
+-    if (!crash_added) { //At the moment only one fault type can be injected
+-        crash_added =  this_ () -> split_write(path,buf,size,offset);
+-        fault_type = TORN_OP;
+-    } else {
+-        fault_type = TORN_SEQ; 
++    if (write_error) {
++        if (fi == NULL)
++            close (fd);
++        return -write_error;
+     }
+ 
+-    // res should be = actual bytes written as pwrite could fail...
+-    res = size;
+-
+-    // std::printf ("\twrite: returning %d bytes\n", res);
+-
+-    if (res == -1)
+-        res = -errno;
++    string fault_type = CLEAR;
++    bool crash_added = this_ () -> persist_write(path,buf,size,offset);
++    if (crash_added)
++        fault_type = TORN_SEQ;
+ 
+     if (fi == NULL)
+         close (fd);

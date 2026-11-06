@@ -1,0 +1,12 @@
+# Merge with docker-compose.yaml; only the nonvoting Zone RPC follower gets mount authority.
+services:
+  zone-rpc:
+    image: ${STORAGE_IMAGE:-tempo-zones-antithesis-storage:latest}
+    environment:
+      TORN_WRITES: "1"
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined

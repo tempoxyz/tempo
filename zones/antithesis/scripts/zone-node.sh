@@ -58,6 +58,9 @@ set -- /usr/local/bin/tempo-zone node \
     $ROLE_ARGS $ENGINE_ARGS
 
 if [ "$NODE" = rpc ]; then
+    if [ "${TORN_WRITES:-0}" = 1 ]; then
+        exec python3 /opt/zones/storage-fault.py serve -- "$@"
+    fi
     exec python3 /opt/zones/node-control.py serve -- "$@"
 fi
 exec "$@"
