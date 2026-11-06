@@ -246,6 +246,7 @@ pub enum Error {
 pub struct Store {
     commands: async_mpsc::UnboundedSender<Command>,
     thread: Option<JoinHandle<()>>,
+    readers: Readers,
     next_stage: AtomicU64,
     /// The latest stage the payload builder opened on each parent, which
     /// [`Self::build_unregistered`] builds with.
@@ -273,7 +274,12 @@ impl Store {
                 Runner::new(runtime).start(|context| async move {
                     match Actor::init(context, &config).await {
                         Ok(actor) => {
-                            if opened_tx.send(Ok(())).is_ok() {
+                            let readers = Readers {
+                                runtime: tokio::runtime::Handle::current(),
+                                accounts: actor.accounts.clone(),
+                                slots: actor.slots.clone(),
+                            };
+                            if opened_tx.send(Ok(readers)).is_ok() {
                                 actor.run(receiver).await;
                             }
                         }
@@ -287,10 +293,11 @@ impl Store {
                 })
             })
             .expect("spawning a thread only fails when the OS is out of resources");
-        opened_rx.recv().map_err(|_| Error::Stopped)??;
+        let readers = opened_rx.recv().map_err(|_| Error::Stopped)??;
         Ok(Self {
             commands,
             thread: Some(thread),
+            readers,
             next_stage: AtomicU64::new(0),
             builder_stages: Mutex::new(HashMap::new()),
         })
@@ -469,7 +476,7 @@ impl Store {
     /// Returns the values of account `keys` in the applied state, in the same order, ignoring
     /// unapplied batches.
     pub fn get_accounts(&self, keys: Vec<Key>) -> Result<Vec<Option<AccountValue>>, Error> {
-        self.call(|reply| Command::GetAccounts { keys, reply })
+        self.readers.read(&self.readers.accounts, &keys)
     }
 
     /// Returns the value of slot `key` in the applied state, ignoring unapplied batches.
@@ -480,7 +487,7 @@ impl Store {
     /// Returns the values of slot `keys` in the applied state, in the same order, ignoring
     /// unapplied batches.
     pub fn get_slots(&self, keys: Vec<Key>) -> Result<Vec<Option<SlotValue>>, Error> {
-        self.call(|reply| Command::GetSlots { keys, reply })
+        self.readers.read(&self.readers.slots, &keys)
     }
 
     /// Reads from disk what building a batch that writes account keys `accounts` and slot keys
@@ -559,6 +566,39 @@ impl Drop for Store {
     }
 }
 
+/// Reads the applied state on the calling thread, concurrently with one another and with every
+/// command but the actor's applies, imports and rewinds, which they wait for and then see.
+///
+/// Execution and prewarming read through it, so it never waits on the actor's command queue.
+struct Readers {
+    /// The store thread's runtime, whose blocking pool serves reads that miss the page cache.
+    runtime: tokio::runtime::Handle,
+    accounts: Shared<AccountsDb>,
+    slots: Shared<SlotsDb>,
+}
+
+impl Readers {
+    fn read<D: Readable>(
+        &self,
+        db: &Shared<D>,
+        keys: &[Key],
+    ) -> Result<Vec<Option<D::Value>>, Error> {
+        let _runtime = self.runtime.enter();
+        futures::executor::block_on(async {
+            match db.read().await.as_ref() {
+                Some(db) => db.read_many(keys).await,
+                None => Err(Error::Stopped),
+            }
+        })
+    }
+}
+
+impl std::fmt::Debug for Readers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Readers").finish_non_exhaustive()
+    }
+}
+
 enum Command {
     Status {
         reply: Reply<Status>,
@@ -601,14 +641,6 @@ enum Command {
     RewindTo {
         number: u64,
         reply: Reply<()>,
-    },
-    GetAccounts {
-        keys: Vec<Key>,
-        reply: Reply<Vec<Option<AccountValue>>>,
-    },
-    GetSlots {
-        keys: Vec<Key>,
-        reply: Reply<Vec<Option<SlotValue>>>,
     },
     Prefetch {
         accounts: Vec<Key>,
@@ -795,12 +827,6 @@ impl Actor {
                 Command::Finalize { hash, reply } => reply(self.finalize(hash).await),
                 Command::Import { writes, end, reply } => reply(self.import(writes, end).await),
                 Command::RewindTo { number, reply } => reply(self.rewind_to(number).await),
-                Command::GetAccounts { keys, reply } => {
-                    self.spawn_read(self.accounts.clone(), keys, reply);
-                }
-                Command::GetSlots { keys, reply } => {
-                    self.spawn_read(self.slots.clone(), keys, reply)
-                }
                 Command::Prefetch {
                     accounts,
                     slots,
@@ -847,25 +873,7 @@ impl Actor {
         read_shared(&self.slots)
     }
 
-    /// Serves a read of `keys` in `db`'s applied state on its own task, so reads run
-    /// concurrently with one another and with commands that only read the databases. A read waits
-    /// while the actor applies, imports or rewinds, and then sees the new state.
-    fn spawn_read<D: Readable>(
-        &self,
-        db: Shared<D>,
-        keys: Vec<Key>,
-        reply: Reply<Vec<Option<D::Value>>>,
-    ) {
-        self.context.child("read").spawn(move |_| async move {
-            let db = db.read().await;
-            reply(match db.as_ref() {
-                Some(db) => db.read_many(&keys).await,
-                None => Err(Error::Stopped),
-            });
-        });
-    }
-
-    /// Serves a prefetch on its own task, like [`Self::spawn_read`].
+    /// Serves a prefetch on its own task, so it runs concurrently with other commands.
     fn spawn_prefetch(&self, accounts: Vec<Key>, slots: Vec<Key>, reply: Reply<()>) {
         let (accounts_db, slots_db) = (self.accounts.clone(), self.slots.clone());
         self.context.child("prefetch").spawn(move |_| async move {
@@ -1383,7 +1391,7 @@ fn read_shared<D>(shared: &Shared<D>) -> RwLockReadGuard<'_, D> {
     )
 }
 
-/// A database whose applied state [`Actor::spawn_read`] reads.
+/// A database whose applied state [`Readers::read`] reads.
 trait Readable: Send + Sync + 'static {
     type Value: Send + 'static;
 
@@ -1664,6 +1672,47 @@ mod tests {
                 .build(block(2, 3, 1), vec![write(5, None)].into())
                 .unwrap()
                 .root()
+        );
+    }
+
+    #[test]
+    fn reads_run_on_caller_threads_during_finalization() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(imported(dir.path(), 64));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..200 {
+                        let value = store.get_slot(Key::new([1; 32])).unwrap();
+                        assert!(value.is_some());
+                        assert_eq!(
+                            store.get_accounts(vec![Key::new([9; 32])]).unwrap(),
+                            vec![None]
+                        );
+                    }
+                })
+            })
+            .collect();
+        for number in 1..=20u8 {
+            store
+                .build(
+                    block(u64::from(number), number, number - 1),
+                    vec![
+                        write(1, Some(u64::from(number))),
+                        write(100 + number, Some(1)),
+                    ]
+                    .into(),
+                )
+                .unwrap();
+            store.finalize(B256::repeat_byte(number)).unwrap();
+        }
+        for reader in readers {
+            reader.join().unwrap();
+        }
+        assert_eq!(
+            store.get_slot(Key::new([1; 32])).unwrap(),
+            Some(layout::slot_value(U256::from(20)))
         );
     }
 
