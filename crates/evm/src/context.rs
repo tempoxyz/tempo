@@ -1,5 +1,6 @@
+use alloy_primitives::Bytes;
+use evm2::block::ethereum::EthBlockExecutionCtx;
 use reth_evm::NextBlockEnvAttributes;
-use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_primitives::TempoConsensusContext;
 
 /// Execution context for Tempo block.
@@ -8,6 +9,10 @@ pub struct TempoBlockExecutionCtx<'a> {
     /// Inner [`EthBlockExecutionCtx`].
     #[deref]
     pub inner: EthBlockExecutionCtx<'a>,
+    /// Extra data for the built block.
+    pub extra_data: Bytes,
+    /// Slot number for post-Amsterdam payloads.
+    pub slot_number: Option<u64>,
     /// Non-payment gas limit for the block.
     pub general_gas_limit: u64,
     /// Shared gas limit for the block.

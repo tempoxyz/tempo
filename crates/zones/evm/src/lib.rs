@@ -26,13 +26,12 @@ use crate::{
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, B256};
 use alloy_provider::{Provider, ProviderBuilder};
-use evm2::evm::DynDatabase;
+use evm2::{block::ethereum::EthBlockExecutionCtx, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
     BlockAssembler, BlockAssemblerInput, BlockExecutorFactory, ConfigureEngineEvm, ConfigureEvm,
     EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
 };
-use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use std::{
     borrow::Cow,
@@ -347,16 +346,16 @@ where
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
                 parent_beacon_block_root: block.header().parent_beacon_block_root(),
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: block
                     .body()
                     .withdrawals
                     .as_ref()
                     .map(|withdrawals| Cow::Borrowed(withdrawals.as_slice())),
-                extra_data: block.header().extra_data().clone(),
                 tx_count_hint: Some(block.transaction_count()),
-                slot_number: block.slot_number(),
             },
+            extra_data: block.header().extra_data().clone(),
+            slot_number: block.slot_number(),
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: block.header().consensus_context,

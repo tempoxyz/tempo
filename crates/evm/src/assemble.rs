@@ -6,7 +6,9 @@ use reth_evm::{
     BlockExecutionError, EvmEnv,
     execute::{BlockAssembler, BlockAssemblerInput},
 };
-use reth_evm_ethereum::{EthBlockAssembler, EthBlockExecutorFactory};
+use reth_evm_ethereum::{
+    EthBlockAssembler, EthBlockExecutionCtx, EthBlockExecutorFactory, EthEvmEnv,
+};
 use reth_primitives_traits::SealedHeader;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
@@ -37,6 +39,8 @@ impl TempoBlockAssembler {
             execution_ctx:
                 TempoBlockExecutionCtx {
                     inner,
+                    extra_data,
+                    slot_number,
                     general_gas_limit,
                     shared_gas_limit,
                     consensus_context,
@@ -55,6 +59,17 @@ impl TempoBlockAssembler {
 
         let timestamp_millis_part = evm_env.block_env().ext.timestamp_millis_part;
 
+        let evm_env = EthEvmEnv::new_with_version(evm_env.spec, evm_env.block, evm_env.version);
+        let ctx = EthBlockExecutionCtx {
+            tx_count_hint: inner.tx_count_hint,
+            parent_hash: inner.parent_hash,
+            parent_beacon_block_root: inner.parent_beacon_block_root,
+            ommers: &inner.ommers,
+            withdrawals: inner.withdrawals,
+            extra_data,
+            slot_number,
+        };
+
         // Delegate block building to the inner assembler
         let block = self.inner.assemble_block(
             BlockAssemblerInput::<
@@ -65,7 +80,7 @@ impl TempoBlockAssembler {
                 >,
             >::new(
                 evm_env,
-                inner,
+                ctx,
                 &parent,
                 transactions,
                 output,
@@ -107,12 +122,11 @@ mod tests {
     use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
     use evm2::{
-        block::{BlockExecutionResult, BundleState},
+        block::{BlockExecutionResult, BundleState, ethereum::EthBlockExecutionCtx},
         env::BlockEnvExt,
     };
     use reth_chainspec::EthChainSpec;
     use reth_evm::execute::BlockAssembler;
-    use reth_evm_ethereum::EthBlockExecutionCtx;
     use reth_primitives_traits::SealedHeader;
     use reth_storage_api::noop::NoopProvider;
     use tempo_chainspec::spec::MODERATO;
@@ -188,12 +202,12 @@ mod tests {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: None,
-                extra_data: Bytes::new(),
                 tx_count_hint: None,
-                slot_number: None,
             },
+            extra_data: Bytes::new(),
+            slot_number: None,
             general_gas_limit,
             shared_gas_limit,
             consensus_context: None,
@@ -293,12 +307,12 @@ mod tests {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: None,
-                extra_data: Bytes::new(),
                 tx_count_hint: None,
-                slot_number: None,
             },
+            extra_data: Bytes::new(),
+            slot_number: None,
             general_gas_limit,
             shared_gas_limit,
             consensus_context: Some(ctx),
@@ -369,12 +383,12 @@ mod tests {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: None,
-                extra_data: Bytes::new(),
                 tx_count_hint: None,
-                slot_number: None,
             },
+            extra_data: Bytes::new(),
+            slot_number: None,
             general_gas_limit,
             shared_gas_limit,
             consensus_context: None,

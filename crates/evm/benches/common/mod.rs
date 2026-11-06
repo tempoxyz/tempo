@@ -7,9 +7,11 @@ use alloy_primitives::{
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
-use evm2::evm::{AccountInfo, InMemoryDB};
+use evm2::{
+    block::ethereum::EthBlockExecutionCtx,
+    evm::{AccountInfo, InMemoryDB},
+};
 use reth_evm::{BlockExecutor, BlockExecutorFactory, database::StateProviderDatabase};
-use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_execution_cache::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
 };
@@ -418,12 +420,12 @@ pub(crate) fn execute_txs(
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
             parent_beacon_block_root: Some(B256::ZERO),
-            ommers: &[],
+            ommers: Default::default(),
             withdrawals: None,
-            extra_data: Bytes::new(),
             tx_count_hint: Some(txs.len()),
-            slot_number: None,
         },
+        extra_data: Bytes::new(),
+        slot_number: None,
         general_gas_limit: 10_000_000_000,
         shared_gas_limit: 0,
         consensus_context: None,
