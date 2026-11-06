@@ -216,10 +216,12 @@ if [[ -f "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs" ]]; then
 fi
 
 # Tracing now uses evm2's OpcodeSet instead of the inspectors' OpcodeFilter.
+# The precompile flag still controls tagging for exclusion, not call recording.
 if [[ -f "$FOUNDRY_ROOT/crates/evm/traces/src/lib.rs" ]]; then
   sed -i \
     -e 's/use evm2_inspectors::{ColorChoice, tracing::OpcodeFilter};/use evm2_inspectors::ColorChoice;/' \
     -e 's/OpcodeFilter::new().enabled(OpCode::JUMP).enabled(OpCode::JUMPDEST)/[OpCode::JUMP.get(), OpCode::JUMPDEST.get()].into_iter().collect()/' \
+    -e 's/exclude_precompile_calls: false/record_precompile_calls: false/' \
     "$FOUNDRY_ROOT/crates/evm/traces/src/lib.rs"
 fi
 
@@ -238,6 +240,16 @@ if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs" ]]; then
     -e 's/(0\.\.=u8::MAX).filter(|\&op| filter.is_enabled(OpCode::new_or_unknown(op))).collect()/*filter/' \
     -e 's/, opcode::OpCode//' \
     "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs"
+fi
+
+# The interpreter no longer tracks step costs; match the tracer's gas accounting.
+if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs" ]] &&
+  grep -q 'interp.step_cost()' "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs"; then
+  sed -i \
+    -e 's/^    gas: u64,$/    gas: u64,\n    gas_before: u64,/' \
+    -e 's/^            gas,$/            gas,\n            gas_before: interp.gas().remaining_excluding_state_spill(),/' \
+    -e 's/interp.step_cost()/if interp.result().is_err_and(InstrStop::is_out_of_gas) {\n                step.gas\n            } else {\n                step.gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill())\n            }/' \
+    "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs"
 fi
 
 echo "Updated Cargo.toml patch sections:"

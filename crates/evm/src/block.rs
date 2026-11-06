@@ -1414,11 +1414,13 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let executor = TestExecutorBuilder::default()
+            let mut executor = TestExecutorBuilder::default()
                 .with_epoch_length(5)
+                .with_parent_beacon_block_root(B256::ZERO)
                 .with_spec(fork)
                 .build(&mut db, &chainspec);
 
+            executor.apply_pre_execution_changes().unwrap();
             let output = executor.finish().unwrap();
             db.commit_source(&reth_execution_types::BundleSource(&output.state));
             assert_eq!(
