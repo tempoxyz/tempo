@@ -4,7 +4,10 @@
 //! accepts it.
 
 use super::analysis::{AccountDelta, Field};
-use crate::shadow_replay::{Boundary, Evidence, ObservedTx};
+use crate::shadow_replay::{
+    Boundary, Evidence, ObservedTx,
+    fees::{fee_hook_slot_change, fee_log_ranges, post_tx_fee, pre_tx_max},
+};
 use alloy::{
     consensus::Transaction as _,
     primitives::{Address, B256, Bytes, U256, keccak256},
@@ -18,7 +21,6 @@ use tempo_contracts::{
         ZONE_VERIFIER_RUNTIME,
     },
 };
-use tempo_evm::fee_hook_slot_change;
 use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
@@ -53,10 +55,13 @@ impl Context<'_> {
     /// Normalization already checked each logged amount against its recorded hook charge.
     pub(super) fn verified_fee_log_hashes(&self) -> Option<(B256, B256)> {
         let (real, shadow) = self.observed_txs()?;
-        let (real_hash, real_amount) = (real.fee_normalized?, real.fee.post_tx_transfer?.3);
-        let (shadow_hash, shadow_amount) = (shadow.fee_normalized?, shadow.fee.post_tx_transfer?.3);
+        let (real_hash, real_amount) = (real.fee_normalized?, post_tx_fee(&real.actions)?.charged);
+        let (shadow_hash, shadow_amount) = (
+            shadow.fee_normalized?,
+            post_tx_fee(&shadow.actions)?.charged,
+        );
         let price = self.tx?.effective_gas_price(self.base_fee);
-        (real.fee.log_ranges == shadow.fee.log_ranges
+        (fee_log_ranges(&real.actions) == fee_log_ranges(&shadow.actions)
             && real_amount == calc_gas_balance_spending(real.gas.tx_gas_used(), price)
             && shadow_amount == calc_gas_balance_spending(shadow.gas.tx_gas_used(), price))
         .then_some((real_hash, shadow_hash))
@@ -73,17 +78,16 @@ const FEE_STATE: Expectation = Expectation {
         let (address, slot) = (field.address?, field.slot?);
         let (real, shadow) = ctx.observed_txs()?;
         ctx.verified_fee_log_hashes()?;
-        let (real_log, real_token, real_payer, real_charge, real_refund) =
-            real.fee.post_tx_transfer?;
-        let (shadow_log, shadow_token, shadow_payer, shadow_charge, shadow_refund) =
-            shadow.fee.post_tx_transfer?;
-        if (real_log, real_token, real_payer) != (shadow_log, shadow_token, shadow_payer) {
+        let (real_fee, shadow_fee) = (post_tx_fee(&real.actions)?, post_tx_fee(&shadow.actions)?);
+        if (real_fee.logs.start, real_fee.token, real_fee.payer)
+            != (shadow_fee.logs.start, shadow_fee.token, shadow_fee.payer)
+        {
             return None;
         }
-        let max = real.fee.pre_tx_max?;
-        if shadow.fee.pre_tx_max != Some(max)
-            || max.checked_sub(real_charge) != Some(real_refund)
-            || max.checked_sub(shadow_charge) != Some(shadow_refund)
+        let max = pre_tx_max(&real.actions)?;
+        if pre_tx_max(&shadow.actions) != Some(max)
+            || max.checked_sub(real_fee.charged) != Some(real_fee.refunded)
+            || max.checked_sub(shadow_fee.charged) != Some(shadow_fee.refunded)
         {
             return None;
         }
@@ -101,15 +105,14 @@ const FEE_STATE: Expectation = Expectation {
             }
             Some(keys)
         };
-        if route(&real.fee.post_tx_actions, real_charge)?
-            != route(&shadow.fee.post_tx_actions, shadow_charge)?
+        if route(real_fee.actions, real_fee.charged)?
+            != route(shadow_fee.actions, shadow_fee.charged)?
         {
             return None;
         }
-        let (real_before, real_after) =
-            fee_hook_slot_change(&real.fee.post_tx_actions, address, slot)?;
+        let (real_before, real_after) = fee_hook_slot_change(real_fee.actions, address, slot)?;
         let (shadow_before, shadow_after) =
-            fee_hook_slot_change(&shadow.fee.post_tx_actions, address, slot)?;
+            fee_hook_slot_change(shadow_fee.actions, address, slot)?;
         // Compare application state at hook entry, not merely the transaction's initial state.
         if real_before != shadow_before {
             return None;
@@ -215,6 +218,7 @@ mod tests {
     use alloy::primitives::{Address, KECCAK256_EMPTY, Signature};
     use evm2::evm::{AccountInfo, TxResultExt};
     use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
+    use tempo_precompiles::storage::Marker;
     use tempo_primitives::{TempoTransaction, transaction::Call};
 
     #[test]
@@ -389,7 +393,17 @@ mod tests {
                 ..Default::default()
             },
         );
-        tx.fee.slots.insert((address, slot));
+        tx.actions = vec![
+            StorageAction::Marker(Marker::PostTxFee {
+                payer: Address::ZERO,
+                token: Address::ZERO,
+                charged: U256::ZERO,
+                refunded: U256::ZERO,
+                logs: 0,
+            }),
+            StorageAction::Sstore(address, slot, U256::from(1_000), U256::from(value)),
+            StorageAction::Marker(Marker::FeeHookEnd { logs: 0 }),
+        ];
     }
 
     #[test]
@@ -423,6 +437,20 @@ mod tests {
         assert!(field.fee_associated);
     }
 
+    /// A post-transaction fee hook charging `charged` that emits one log at `log`.
+    fn post_fee(charged: U256, log: usize) -> Vec<StorageAction> {
+        vec![
+            StorageAction::Marker(Marker::PostTxFee {
+                payer: Address::ZERO,
+                token: Address::ZERO,
+                charged,
+                refunded: U256::ZERO,
+                logs: log,
+            }),
+            StorageAction::Marker(Marker::FeeHookEnd { logs: log + 1 }),
+        ]
+    }
+
     fn signed_tx(calls: Vec<Call>) -> TempoTxEnvelope {
         TempoTransaction {
             max_priority_fee_per_gas: 1_000_000_000_000,
@@ -447,14 +475,7 @@ mod tests {
             (tx_mut(&mut shadow, 0), 1_200, changed),
         ] {
             tx.receipt_logs_hash = hash;
-            tx.fee.log_ranges = std::iter::once(0..1).collect();
-            tx.fee.post_tx_transfer = Some((
-                0,
-                Address::ZERO,
-                Address::ZERO,
-                U256::from(amount),
-                U256::ZERO,
-            ));
+            tx.actions = post_fee(U256::from(amount), 0);
             tx.fee_normalized = Some(normalized);
         }
         let block = block(vec![signed_tx(vec![])]);
@@ -465,12 +486,9 @@ mod tests {
         tx_mut(&mut wrong, 0).fee_normalized = Some(B256::repeat_byte(4));
         assert_eq!(report(&wrong).unexplained, 1);
         tx_mut(&mut wrong, 0).fee_normalized = Some(normalized);
-        let fee = &mut tx_mut(&mut wrong, 0).fee;
-        fee.post_tx_transfer.as_mut().unwrap().3 = U256::ZERO;
+        tx_mut(&mut wrong, 0).actions = post_fee(U256::ZERO, 0);
         assert_eq!(report(&wrong).unexplained, 1);
-        let fee = &mut tx_mut(&mut wrong, 0).fee;
-        fee.post_tx_transfer.as_mut().unwrap().3 = U256::from(1_000);
-        tx_mut(&mut wrong, 0).fee.log_ranges = std::iter::once(1..2).collect();
+        tx_mut(&mut wrong, 0).actions = post_fee(U256::from(1_200), 1);
         assert_eq!(report(&wrong).unexplained, 1);
     }
 

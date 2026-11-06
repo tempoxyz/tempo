@@ -24,7 +24,7 @@ use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::TempoPrecompileError,
-    storage::{FromWord, StorageActions, StorageCtx},
+    storage::{FromWord, Marker, StorageAction, StorageActions, StorageCtx},
     storage_credits::{NonCreditableSlots, TransientState},
     tip20::TIP20Error,
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -285,14 +285,23 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            fee_manager.collect_fee_post_tx(
-                ProtocolFeeContext { host },
+            record_marker(host, |logs| Marker::PostTxFee {
+                payer: fee_payer,
+                token: fee_token,
+                charged: actual_spending,
+                refunded: refund,
+                logs,
+            });
+            let validator_fee = fee_manager.collect_fee_post_tx(
+                ProtocolFeeContext { host: &mut *host },
                 fee_payer,
                 actual_spending,
                 refund,
                 fee_token,
                 beneficiary,
-            )?
+            )?;
+            record_marker(host, |logs| Marker::FeeHookEnd { logs });
+            validator_fee
         };
         result.ext.validator_fee = validator_fee;
         Ok(result)
@@ -381,7 +390,16 @@ impl TempoHandlerHooks {
         let beneficiary = host.block().beneficiary;
         let skip_liquidity_check = host.ext().skip_liquidity_check;
         let fee_manager = host.ext().fee_manager.clone();
-        if !context.collected.is_zero()
+        let charges = !context.collected.is_zero();
+        if charges {
+            record_marker(host, |logs| Marker::PreTxFee {
+                payer: context.fee_payer,
+                token: context.fee_token,
+                max_amount: context.collected,
+                logs,
+            });
+        }
+        if charges
             && let Err(error) = fee_manager.collect_fee_pre_tx(
                 ProtocolFeeContext { host },
                 context.fee_payer,
@@ -422,6 +440,9 @@ impl TempoHandlerHooks {
                 }
             });
         }
+        if charges {
+            record_marker(host, |logs| Marker::FeeHookEnd { logs });
+        }
 
         if host.config_spec_id().is_t7() && !context.collected.is_zero() {
             host.ext().non_creditable_slots.borrow_mut().initialize(
@@ -432,6 +453,15 @@ impl TempoHandlerHooks {
         }
 
         Ok(())
+    }
+}
+
+/// Records the fee lifecycle marker that `marker` builds from the number of logs the transaction
+/// has emitted, when storage actions are recorded.
+fn record_marker(host: &Evm<'_, TempoEvmTypes>, marker: impl FnOnce(usize) -> Marker) {
+    let actions = &host.ext().actions;
+    if actions.is_enabled() {
+        actions.record_always(StorageAction::Marker(marker(host.logs().len())));
     }
 }
 

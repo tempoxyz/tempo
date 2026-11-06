@@ -393,43 +393,85 @@ pub struct TxReceiptOutput {
     pub effective_gas_price: u128,
     pub output: Bytes,
     pub logs: Vec<Log>,
-    /// What the protocol fee hooks did. `None` when the transaction paid no fee through them.
-    pub fee: Option<FeeOutput>,
+    /// The storage actions of Tempo's precompiles during the transaction, in order, including the
+    /// markers around its fee hooks.
+    pub actions: Vec<StorageActionOutput>,
 }
 
-/// What a transaction's protocol fee hooks did, taken from the storage actions they recorded, so
-/// a runner can check the fee without decoding slot diffs. The pre-transaction hook charges
-/// `max_amount` to `payer`. The post-transaction hook keeps `charged`, refunds the rest and
-/// credits the validator, swapping through the fee AMM when the validator takes another token.
+/// A storage action a Tempo precompile recorded during a transaction, so a runner can follow its
+/// fee without decoding slot diffs. A fee hook's own actions are the ones between its start marker
+/// ([`Self::PreTxFee`] or [`Self::PostTxFee`]) and the next [`Self::FeeHookEnd`]. A hook that
+/// fails records no end marker. Each marker's `logs` is the number of logs the transaction had
+/// emitted when it was recorded.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct FeeOutput {
-    /// The TIP-20 the fee is paid in.
-    pub token: Address,
-    pub payer: Address,
-    /// What the pre-transaction hook charged before execution.
-    pub max_amount: U256,
-    /// What the post-transaction hook kept, the gas-derived fee.
-    pub charged: U256,
-    /// What the post-transaction hook refunded to `payer`.
-    pub refunded: U256,
-    /// Each slot the pre-transaction hook wrote, with its value when the hook started and when it
-    /// ended, in the order the hook first wrote them.
-    pub pre_tx_writes: Vec<StorageChangeOutput>,
-    /// Each slot the post-transaction hook wrote, as in `pre_tx_writes`. A slot's `before` is
-    /// its value after the transaction's call.
-    pub post_tx_writes: Vec<StorageChangeOutput>,
-    /// The fee AMM swaps the hooks made, in order.
-    pub swaps: Vec<FeeSwapOutput>,
-}
-
-/// One fee AMM swap a fee hook made.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct FeeSwapOutput {
-    /// The fee manager's pool slot the swap changed.
-    pub pool_slot: U256,
-    pub amount_in: U256,
-    /// `amount_in` at the fee AMM's fixed price.
-    pub amount_out: U256,
+pub enum StorageActionOutput {
+    /// A slot read.
+    Sload {
+        address: Address,
+        slot: U256,
+        value: U256,
+    },
+    /// A check of whether `payer`'s `balance` of fee `token` covers the `required` fee.
+    FeeTokenBalanceCheck {
+        token: Address,
+        slot: U256,
+        balance: U256,
+        required: U256,
+        sufficient: bool,
+    },
+    /// A slot write.
+    Sstore {
+        address: Address,
+        slot: U256,
+        before: U256,
+        after: U256,
+    },
+    /// A slot raised by `delta`.
+    Sinc {
+        address: Address,
+        slot: U256,
+        before: U256,
+        delta: U256,
+    },
+    /// A slot lowered by `delta`.
+    Sdec {
+        address: Address,
+        slot: U256,
+        before: U256,
+        delta: U256,
+    },
+    /// A fee AMM swap of `amount_in` over the fee manager's packed pool `slot`, which held
+    /// `before`.
+    FeeAmmSwap {
+        slot: U256,
+        before: U256,
+        amount_in: U256,
+    },
+    /// A check of whether the fee manager's pool `slot` can pay out `amount_out`.
+    FeeAmmLiquidityCheck {
+        slot: U256,
+        before: U256,
+        amount_out: U256,
+        sufficient: bool,
+    },
+    /// The pre-transaction fee hook starts charging `max_amount` of `token` to `payer`.
+    PreTxFee {
+        payer: Address,
+        token: Address,
+        max_amount: U256,
+        logs: u64,
+    },
+    /// The post-transaction fee hook starts keeping `charged` of `token` and refunding
+    /// `refunded` to `payer`. Its fee transfer, if it emits one, is the log at index `logs`.
+    PostTxFee {
+        payer: Address,
+        token: Address,
+        charged: U256,
+        refunded: U256,
+        logs: u64,
+    },
+    /// The fee hook the last marker started returned successfully.
+    FeeHookEnd { logs: u64 },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

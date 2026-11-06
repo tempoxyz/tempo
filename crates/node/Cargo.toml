@@ -17,7 +17,7 @@ workspace = true
 
 [dependencies]
 tempo-alloy = { workspace = true, features = ["reth"] }
-tempo-evm = { workspace = true, features = ["rpc", "engine", "fee-recording"] }
+tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
