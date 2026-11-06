@@ -24,7 +24,9 @@ const FIRST_WORKLOAD_INDEX: u32 = 1_000;
 
 /// One confirmed workload fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+// Externally tagged: serde buffers an internally tagged enum before picking the variant, and
+// that buffer rejects the u128 amounts, which would drop every deposit, withdrawal and transfer.
+#[serde(rename_all = "snake_case")]
 pub(super) enum Record {
     /// A new account was derived at this mnemonic index. Written before the account is used.
     Account { index: u32 },
@@ -228,13 +230,49 @@ mod tests {
             .append(true)
             .open(dir.path().join("ledger.jsonl"))
             .unwrap()
-            .write_all(b"{\"kind\":\"acc")
+            .write_all(b"{\"accou")
             .unwrap();
         assert_eq!(
             ledger.new_account().unwrap().index,
             FIRST_WORKLOAD_INDEX + 1
         );
         assert_eq!(ledger.accounts().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn every_record_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(dir.path()).unwrap();
+        let records = [
+            Record::Account {
+                index: FIRST_WORKLOAD_INDEX,
+            },
+            Record::Deposit {
+                l1_tx: B256::repeat_byte(1),
+                queue_hash: B256::repeat_byte(2),
+                sender: Address::repeat_byte(3),
+                to: Address::repeat_byte(4),
+                net_amount: u128::MAX,
+            },
+            Record::Withdrawal {
+                zone_tx: B256::repeat_byte(5),
+                zone_block: 6,
+                sender: Address::repeat_byte(7),
+                to: Address::repeat_byte(8),
+                amount: u128::MAX,
+            },
+            Record::Transfer {
+                zone_tx: B256::repeat_byte(9),
+                zone_block: 10,
+                from: Address::repeat_byte(11),
+                to: Address::repeat_byte(12),
+                amount: u128::MAX,
+            },
+        ];
+        for record in &records {
+            ledger.append(record).unwrap();
+        }
+        assert_eq!(ledger.records().unwrap(), records);
     }
 
     #[test]
