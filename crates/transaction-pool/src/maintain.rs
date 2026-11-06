@@ -487,7 +487,6 @@ where
         + 'static,
 {
     let mut pending_staleness = PendingStalenessTracker::default();
-    let mut tip1124_active = false;
     let metrics = TempoPoolMaintenanceMetrics::default();
 
     // Subscribe to canonical chain events.
@@ -554,10 +553,9 @@ where
         // normal mined path rather than being discarded from the pool.
         let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
-        // TIP-1124 changes transaction validity at T15. Recheck every subpool, including
-        // queued and 2D nonce transactions admitted before activation.
-        let new_tip1124_active = spec.is_t15();
-        if new_tip1124_active && !tip1124_active {
+        // Admission can briefly use the previous fork's cached environment after activation.
+        // Recheck every subpool on each T15 update so those transactions cannot persist.
+        if spec.is_t15() {
             let snapshot = all_txs.get_or_insert_with(|| pool.all_transactions());
             let hashes: Vec<_> = snapshot
                 .iter()
@@ -568,8 +566,6 @@ where
             removed_this_iteration.extend(hashes.iter().copied());
             removed_txs.push(pool.remove_transactions(hashes));
         }
-        tip1124_active = new_tip1124_active;
-
         let mut revalidate_txs = Vec::new();
 
         // Refresh implicit fee-token choices before eviction checks the cached token.
