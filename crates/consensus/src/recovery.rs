@@ -131,15 +131,21 @@ impl Recovery {
             .ok_or_eyre("execution layer has not finalized any block")?;
 
         if finalized.number >= boundary.get() {
-            let hash = node
+            let header = node
                 .provider
-                .block_hash(boundary.get())
-                .wrap_err("failed reading the boundary hash")?
+                .sealed_header(boundary.get())
+                .wrap_err("failed reading the boundary header")?
                 .ok_or_eyre("execution layer finalized past the boundary but does not have it")?;
+            let hash = header.hash();
             ensure!(
                 hash == boundary_hash,
                 "execution layer finalized boundary `{hash}`, but the recovery pins `{}`",
                 boundary_hash,
+            );
+            // The pinned hash commits to the outcome only through the boundary's extra data.
+            ensure!(
+                header.extra_data().as_ref() == self.outcome.encode().as_ref(),
+                "the finalized boundary `{hash}` carries another DKG outcome than the recovery",
             );
             info!("execution layer already finalized the recovery boundary");
             return Ok(());
