@@ -35,8 +35,8 @@ use zone_precompiles::{
 /// too, so upstream pause checks block on the Zone exactly what they block on Tempo.
 ///
 /// From T14, account loads also carry Tempo's TIP-1108 commitment and the account marker code
-/// (TIP-1154). Block outputs drop them again through [`strip_bundle_commitment_overlays`] and
-/// [`strip_update_commitment_overlays`], so zone state never stores them.
+/// (TIP-1154). Block outputs drop them again through `strip_bundle_commitment_overlays` and
+/// `strip_update_commitment_overlays`, so zone state never stores them.
 pub struct L1OverlayDB<DB, L1> {
     inner: DB,
     l1: L1State<L1>,
