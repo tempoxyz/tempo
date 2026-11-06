@@ -762,6 +762,7 @@ mod tests {
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
     use alloy_rlp::{Decodable, Encodable};
+    use arbitrary::{Arbitrary, Unstructured};
 
     fn nonzero(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test expiry must be non-zero")
@@ -769,8 +770,6 @@ mod tests {
 
     #[test]
     fn arbitrary_expiry_boundaries() {
-        use arbitrary::{Arbitrary, Unstructured};
-
         for value in [None, Some(0u64), Some(1), Some(u64::MAX)] {
             // Default chain ID, key type and key ID, followed by Some's tag.
             let mut input = vec![0; 32];

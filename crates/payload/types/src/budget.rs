@@ -58,6 +58,11 @@ fn percentile_from_counts<T: Copy + Ord>(
             return Some(*value);
         }
     }
+    #[cfg(feature = "fuzz")]
+    antithesis_sdk::assert_unreachable!(
+        "Validation latency percentile rank exceeds its sample counts",
+        &serde_json::json!({ "len": len, "target": target, "seen": seen })
+    );
     debug_assert!(false, "validation latency sample index out of sync");
     None
 }

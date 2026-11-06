@@ -13,6 +13,7 @@ use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
 use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
+use tempo_precompiles::VALIDATOR_CONFIG_ADDRESS;
 use tempo_state_bloat::GenerateStateBloat;
 
 mod bootstrap_shadowfork;
@@ -125,9 +126,10 @@ fn generate_config_to_add_peer(
         mnemonic,
     }: GenerateAddPeer,
 ) -> eyre::Result<()> {
-    use tempo_precompiles::VALIDATOR_CONFIG_ADDRESS;
     let public_key_bytes = const_hex::decode(&public_key)?;
-    let public_key = commonware_cryptography::ed25519::PublicKey::decode(&public_key_bytes[..])?;
+    let public_key = commonware_cryptography::ed25519::PublicKey::decode(
+        commonware_codec::Copying(&public_key_bytes[..]),
+    )?;
 
     let admin_key = const_hex::encode(
         MnemonicBuilder::from_phrase_nth(&mnemonic, admin_index)

@@ -9,6 +9,7 @@ use evm2::{
     precompiles::{PrecompileError, PrecompileHalt},
 };
 use k256::{AffinePoint, ProjectivePoint, Scalar, elliptic_curve::ops::Reduce};
+use sha2::{Digest, Sha256};
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{TempoEvmExt, TempoEvmTypes, tempo_tx_registry};
@@ -16,7 +17,7 @@ use tempo_precompiles::{
     storage::{actions::StorageActions, evm::EvmPrecompileStorageProvider},
     storage_credits::NonCreditableSlots,
 };
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, TempoEvmKind};
 
 use crate::{
     ZonePrecompiles,
@@ -61,7 +62,10 @@ pub(crate) fn test_context_with_hardfork(hardfork: TempoHardfork) -> TestContext
             tempo_tx_registry(SpecId::OSAKA),
             InMemoryDB::default(),
             NoPrecompiles::default(),
-            TempoEvmExt::default(),
+            TempoEvmExt {
+                kind: TempoEvmKind::Zone,
+                ..Default::default()
+            },
         ),
         gas: GasTracker::new(u64::MAX),
     }
@@ -246,8 +250,6 @@ pub(crate) struct EncryptedDepositFixture {
 impl EncryptedDepositFixture {
     /// Create a fixture with deterministic keys for reproducible tests.
     pub(crate) fn new() -> Self {
-        use sha2::{Digest, Sha256};
-
         // Deterministic sequencer key
         let seq_bytes: [u8; 32] = Sha256::digest(b"test-sequencer-key").into();
         let seq_key = k256::SecretKey::from_slice(&seq_bytes).expect("valid key");

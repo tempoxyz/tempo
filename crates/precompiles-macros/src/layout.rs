@@ -256,7 +256,7 @@ fn gen_collision_checks(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::To
     // Always generate the function, even if empty, so the constructor can call it
     generated.extend(quote! {
         #[cfg(all(debug_assertions, not(feature = "fuzz")))]
-        #[inline(always)]
+        #[inline(never)]
         pub(super) fn __check_all_collisions() {
             #(#check_fn_calls();)*
         }
