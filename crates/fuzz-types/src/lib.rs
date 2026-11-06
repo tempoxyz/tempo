@@ -9,6 +9,7 @@ use evm2::interpreter::InstrStop;
 pub use invariants_core::Counts;
 use serde::{Deserialize, Serialize};
 use tempo_hardfork::{TempoHardfork, constants::moderato::MODERATO_CHAIN_ID};
+pub use tempo_primitives::{FeeHook, StorageAction};
 
 /// What a C ABI function returns.
 pub type FuzzStatus = i32;
@@ -395,80 +396,7 @@ pub struct TxReceiptOutput {
     pub logs: Vec<Log>,
     /// The storage actions of Tempo's precompiles during the transaction, in order, including the
     /// markers around its fee hooks.
-    pub actions: Vec<StorageActionOutput>,
-}
-
-/// A storage action a Tempo precompile recorded during a transaction, so a runner can follow its
-/// fee without decoding slot diffs. A fee hook's own actions are the ones between its start marker
-/// and the next [`FeeHookOutput::End`]. A hook that fails records no end marker.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub enum StorageActionOutput {
-    /// A slot read.
-    Sload {
-        address: Address,
-        slot: U256,
-        value: U256,
-    },
-    /// A check of whether `payer`'s `balance` of fee `token` covers the `required` fee.
-    FeeTokenBalanceCheck {
-        token: Address,
-        slot: U256,
-        balance: U256,
-        required: U256,
-        sufficient: bool,
-    },
-    /// A slot write.
-    Sstore {
-        address: Address,
-        slot: U256,
-        before: U256,
-        after: U256,
-    },
-    /// A slot raised by `delta`.
-    Sinc {
-        address: Address,
-        slot: U256,
-        before: U256,
-        delta: U256,
-    },
-    /// A slot lowered by `delta`.
-    Sdec {
-        address: Address,
-        slot: U256,
-        before: U256,
-        delta: U256,
-    },
-    /// A fee AMM swap of `amount_in` over the fee manager's packed pool `slot`, which held
-    /// `before`.
-    FeeAmmSwap {
-        slot: U256,
-        before: U256,
-        amount_in: U256,
-    },
-    /// A check of whether the fee manager's pool `slot` can pay out `amount_out`.
-    FeeAmmLiquidityCheck {
-        slot: U256,
-        before: U256,
-        amount_out: U256,
-        sufficient: bool,
-    },
-    /// Marks where a fee hook starts or ends. It changes no state.
-    Marker(FeeHookOutput),
-}
-
-/// A step of a transaction's protocol fee hooks.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub enum FeeHookOutput {
-    /// Pre-tx fee hook starts, charging `amount` of `token` to `payer`. Emits no logs.
-    PreTx {
-        payer: Address,
-        token: Address,
-        amount: U256,
-    },
-    /// Post-tx fee hook starts, refunding `refund` of `amount`. Its fee transfer is log `log`.
-    PostTx { refund: U256, log: u64 },
-    /// The fee hook the last marker started returned.
-    End,
+    pub actions: Vec<StorageAction>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

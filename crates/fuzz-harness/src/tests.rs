@@ -27,8 +27,8 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_fuzz_types::{
     AccountDiff, AccountInput, BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass,
-    FUZZ_ACCEPT, FUZZ_REJECT, FeeHookOutput, InvariantScope, NonEmpty, PreState, StateChanges,
-    StateInput, StorageActionOutput, StorageChangeOutput, TempoBlock, TempoBlockchainInput,
+    FUZZ_ACCEPT, FUZZ_REJECT, FeeHook, InvariantScope, NonEmpty, PreState, StateChanges,
+    StateInput, StorageAction, StorageChangeOutput, TempoBlock, TempoBlockchainInput,
     TempoExecutionOutcome, TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome,
     TempoTransactionInput, TxOutcome,
 };
@@ -312,12 +312,12 @@ fn receipts_report_what_the_fee_hooks_did() {
     // Each hook's actions are the ones between its start marker and the next end marker.
     let actions = &receipt.actions;
     let markers: Vec<usize> = (0..actions.len())
-        .filter(|&at| matches!(actions[at], StorageActionOutput::Marker(_)))
+        .filter(|&at| matches!(actions[at], StorageAction::Marker(_)))
         .collect();
     let [pre_start, pre_end, post_start, post_end] = markers[..] else {
         panic!("two fee hooks: {actions:#?}");
     };
-    let StorageActionOutput::Marker(FeeHookOutput::PreTx {
+    let StorageAction::Marker(FeeHook::PreTx {
         payer,
         token,
         amount: charged_up_front,
@@ -329,11 +329,8 @@ fn receipts_report_what_the_fee_hooks_did() {
         );
     };
     assert_eq!((payer, charged_up_front), (SENDER, max_amount));
-    assert_eq!(
-        actions[pre_end],
-        StorageActionOutput::Marker(FeeHookOutput::End)
-    );
-    let StorageActionOutput::Marker(FeeHookOutput::PostTx {
+    assert_eq!(actions[pre_end], StorageAction::Marker(FeeHook::End));
+    let StorageAction::Marker(FeeHook::PostTx {
         refund: returned,
         log: transfer_log,
     }) = actions[post_start]
@@ -344,14 +341,10 @@ fn receipts_report_what_the_fee_hooks_did() {
         );
     };
     assert_eq!(returned, refunded);
-    assert_eq!(
-        actions[post_end],
-        StorageActionOutput::Marker(FeeHookOutput::End)
-    );
+    assert_eq!(actions[post_end], StorageAction::Marker(FeeHook::End));
 
     // The post-transaction hook's first log is its fee transfer.
-    let transfer =
-        ITIP20::Transfer::decode_log(&receipt.logs[transfer_log as usize]).expect("a transfer");
+    let transfer = ITIP20::Transfer::decode_log(&receipt.logs[transfer_log]).expect("a transfer");
     assert_eq!(
         (
             transfer.address,
@@ -369,18 +362,17 @@ fn receipts_report_what_the_fee_hooks_did() {
     let payer_slot = pre
         .iter()
         .find_map(|action| match *action {
-            StorageActionOutput::Sdec {
-                address,
-                slot,
-                delta,
-                ..
-            } if address == token && delta == max_amount => Some(slot),
+            StorageAction::Sdec(address, slot, _, delta)
+                if address == token && delta == max_amount =>
+            {
+                Some(slot)
+            }
             _ => None,
         })
         .expect("the payer is debited");
     assert!(post.iter().any(|action| matches!(
         *action,
-        StorageActionOutput::Sinc { address, slot, delta, .. }
+        StorageAction::Sinc(address, slot, _, delta)
             if address == token && slot == payer_slot && delta == refunded
     )));
 
@@ -389,7 +381,7 @@ fn receipts_report_what_the_fee_hooks_did() {
     let swaps: Vec<_> = post
         .iter()
         .filter_map(|action| match *action {
-            StorageActionOutput::FeeAmmSwap { amount_in, .. } => Some(amount_in),
+            StorageAction::FeeAmmSwap(_, _, amount_in) => Some(amount_in),
             _ => None,
         })
         .collect();
@@ -397,7 +389,7 @@ fn receipts_report_what_the_fee_hooks_did() {
     let swapped = compute_amount_out(charged).unwrap();
     assert!(post.iter().any(|action| matches!(
         *action,
-        StorageActionOutput::Sstore { address, before, after, .. }
+        StorageAction::Sstore(address, _, before, after)
             if address == TIP_FEE_MANAGER_ADDRESS && after.checked_sub(before) == Some(swapped)
     )));
 

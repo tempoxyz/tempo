@@ -14744,6 +14744,7 @@ dependencies = [
  "invariants-core",
  "serde",
  "tempo-hardfork",
+ "tempo-primitives",
 ]
 
 [[package]]
