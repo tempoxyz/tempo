@@ -541,7 +541,7 @@ where
     N: FullNodeTypes<Types = ZoneNode>,
 {
     /// Creates a new ZoneAddOns instance.
-    pub fn new(
+    pub(crate) fn new(
         deposit_queue: DepositQueue,
         l1_config: L1SubscriberConfig,
         l1_state_cache: L1StateCache,

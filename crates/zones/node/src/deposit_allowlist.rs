@@ -498,7 +498,7 @@ impl TransferAllowlist for DepositAllowlist {
 /// It admits every transfer until the leader reports a written list, and again once it no longer
 /// holds one; the leader still enforces its own list. Cloning shares the same copy.
 #[derive(Debug, Clone, Default)]
-pub struct AllowlistMirror {
+pub(crate) struct AllowlistMirror {
     inner: Arc<MirrorInner>,
 }
 
