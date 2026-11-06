@@ -12,7 +12,8 @@ use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use reth_evm::Database;
 use reth_primitives_traits::Account;
 use reth_trie_common::{HashedPostState, KeccakKeyHasher, bundle_state::BundleState};
-use tempo_primitives::TempoHeader;
+use tempo_contracts::TempoHardfork;
+use tempo_primitives::{TempoHeader, account::decode_config_commitment};
 use zone_precompiles::{L1StateError, L1StorageReader};
 
 use crate::{
@@ -177,7 +178,8 @@ pub struct TempoWitnessDatabase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MissingTempoStorageRead {
     pub(crate) account: Address,
-    pub(crate) slot: B256,
+    /// Slot whose proof is missing, or `None` when the read needed only the account proof.
+    pub(crate) slot: Option<B256>,
     pub(crate) block_number: u64,
 }
 
@@ -228,7 +230,7 @@ impl TempoWitnessDatabase {
             .expect("missing Tempo storage read mutex poisoned")
     }
 
-    fn record_missing_read(&self, account: Address, slot: B256, block_number: u64) {
+    fn record_missing_read(&self, account: Address, slot: Option<B256>, block_number: u64) {
         let mut missing = self
             .missing_read
             .lock()
@@ -238,6 +240,24 @@ impl TempoWitnessDatabase {
             slot,
             block_number,
         });
+    }
+
+    /// Describes a failed read of `account`, and of `slot` if any, from the checkpoint trie,
+    /// recording it as missing when the witness lacks its proof.
+    fn witness_read_failure(
+        &self,
+        error: StatelessSparseTrieError,
+        account: Address,
+        slot: Option<B256>,
+    ) -> String {
+        match error {
+            StatelessSparseTrieError::IncompleteAccountProof { .. }
+            | StatelessSparseTrieError::IncompleteStorageProof { .. } => {
+                self.record_missing_read(account, slot, self.tempo_block_number);
+                format!("incomplete Tempo witness: {error}")
+            }
+            error => format!("invalid Tempo witness: {error}"),
+        }
     }
 }
 
@@ -275,7 +295,7 @@ impl L1StorageReader for TempoWitnessDatabase {
         }
 
         let state = self.state.as_ref().ok_or_else(|| {
-            self.record_missing_read(account, slot, tempo_block_number);
+            self.record_missing_read(account, Some(slot), tempo_block_number);
             storage_unavailable(
                 account,
                 slot,
@@ -283,30 +303,45 @@ impl L1StorageReader for TempoWitnessDatabase {
                 "witness does not include the checkpoint state root",
             )
         })?;
-        let value = match state.storage(account, slot.into()) {
-            Ok(value) => value,
-            Err(
-                error @ (StatelessSparseTrieError::IncompleteAccountProof { .. }
-                | StatelessSparseTrieError::IncompleteStorageProof { .. }),
-            ) => {
-                self.record_missing_read(account, slot, tempo_block_number);
-                return Err(L1StateError::StorageUnavailable {
-                    account,
-                    slot,
-                    block_number: tempo_block_number,
-                    reason: format!("incomplete Tempo witness: {error}"),
-                });
+        let value = state.storage(account, slot.into()).map_err(|error| {
+            L1StateError::StorageUnavailable {
+                account,
+                slot,
+                block_number: tempo_block_number,
+                reason: self.witness_read_failure(error, account, Some(slot)),
             }
-            Err(error) => {
-                return Err(L1StateError::StorageUnavailable {
-                    account,
-                    slot,
-                    block_number: tempo_block_number,
-                    reason: format!("invalid Tempo witness: {error}"),
-                });
-            }
-        };
+        })?;
         Ok(value.into())
+    }
+
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        tempo_block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        let unavailable = |reason: String| L1StateError::AccountUnavailable {
+            account,
+            block_number: tempo_block_number,
+            reason,
+        };
+        if tempo_block_number != self.tempo_block_number {
+            return Err(unavailable(
+                "witness has no root for the requested checkpoint".into(),
+            ));
+        }
+        let state = self.state.as_ref().ok_or_else(|| {
+            self.record_missing_read(account, None, tempo_block_number);
+            unavailable("witness does not include the checkpoint state root".into())
+        })?;
+        let trie_account = state
+            .account(account)
+            .map_err(|error| unavailable(self.witness_read_failure(error, account, None)))?;
+        // A proven absence has no commitment. A present account's extension follows TIP-1108,
+        // which T14 accepts; earlier forks never write one.
+        trie_account.map_or(Ok(B256::ZERO), |trie_account| {
+            decode_config_commitment(&trie_account.extension, TempoHardfork::T14)
+                .map_err(|error| unavailable(format!("invalid Tempo account commitment: {error}")))
+        })
     }
 }
 
@@ -350,5 +385,42 @@ mod tests {
                 WitnessDatabaseError::InvalidTempoHeader.into()
             );
         }
+    }
+
+    #[test]
+    fn only_incomplete_witness_reads_are_recorded_missing() {
+        let mut header = TempoHeader::default();
+        header.inner.state_root = EMPTY_ROOT_HASH;
+        header.inner.number = 9;
+        let database = TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
+            initial_tempo_header_rlp: alloy_rlp::encode(header).into(),
+            node_pool: Vec::new(),
+        })
+        .unwrap();
+        let account = Address::repeat_byte(0x33);
+
+        let invalid = StatelessSparseTrieError::StateRootMismatch {
+            expected: B256::ZERO,
+            actual: EMPTY_ROOT_HASH,
+        };
+        assert_eq!(
+            database.witness_read_failure(invalid, account, None),
+            format!("invalid Tempo witness: {invalid}")
+        );
+        assert_eq!(database.missing_read(), None);
+
+        let incomplete = StatelessSparseTrieError::IncompleteAccountProof { account };
+        assert_eq!(
+            database.witness_read_failure(incomplete, account, None),
+            format!("incomplete Tempo witness: {incomplete}")
+        );
+        assert_eq!(
+            database.missing_read(),
+            Some(MissingTempoStorageRead {
+                account,
+                slot: None,
+                block_number: 9,
+            })
+        );
     }
 }
