@@ -3,6 +3,7 @@
 mod harness;
 mod startup;
 
+use commonware_cryptography::Digested;
 use std::time::Duration;
 
 use commonware_consensus::{
@@ -473,7 +474,7 @@ fn local_share_storage_failures_panic_and_allow_recovery() {
                 harness
                     .mailbox()
                     .clone()
-                    .report(Update::Block(Arc::new(block(header(Height::new(10)))), ack))
+                    .report(Update::Block(block(header(Height::new(10))).into(), ack))
                     .accepted()
             );
             let mut harness = context
@@ -1184,7 +1185,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
                 let (dealer, log) = signed.clone().check(&info).unwrap();
                 logs.record(dealer, log);
             }
-            let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+            let output = observe::<_, _, N3f1>(&mut context, logs, &Sequential).unwrap();
             (signed, output)
         };
         let (new_logs, new_output) = reference(dkg::Reveal::V1);
@@ -1234,7 +1235,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         assert!(selected_logs.next().is_none());
         let actual = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(previous.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(previous.clone())))
             .await
             .unwrap();
 
@@ -1254,7 +1255,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         harness.start().await;
         let restarted = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(previous.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(previous.clone())))
             .await
             .unwrap();
         assert_eq!(restarted, actual);
@@ -1920,9 +1921,9 @@ fn duplicate_outcome_requests_keep_all_live_waiters() {
         parent.inner.parent_hash = finalized.hash_slow();
         let parent = block(parent);
         let mailbox = harness.mailbox().clone();
-        let mut first = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
-        let mut second = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
-        let canceled = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
+        let mut first = mailbox.subscribe_dkg_ceremony(Digested::from(parent.clone()));
+        let mut second = mailbox.subscribe_dkg_ceremony(Digested::from(parent.clone()));
+        let canceled = mailbox.subscribe_dkg_ceremony(Digested::from(parent.clone()));
         assert!(!harness.has_dealer_log(state.epoch).await);
         drop(canceled);
         assert!(futures::poll!(&mut first).is_pending());
@@ -1954,7 +1955,7 @@ fn finalized_logs_of_all_dealers_conclude_the_ceremony_for_every_parent() {
             let (dealer, log) = signed.clone().check(round.info()).unwrap();
             logs.record(dealer, log);
         }
-        let expected = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+        let expected = observe::<_, _, N3f1>(&mut context, logs, &Sequential).unwrap();
 
         let mut harness = Harness::builder(context.child("test"), "concluded_ceremony")
             .initial_state(state.clone())
@@ -2062,7 +2063,7 @@ fn outcome_request_fills_gap_from_notarized_ancestry() {
 
         let output = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(tip.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(tip.clone())))
             .await
             .unwrap();
 
@@ -2105,7 +2106,7 @@ fn outcome_request_waits_for_blocks_without_stalling_actor() {
         harness.start().await;
         let mut response = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(tip.clone())));
+            .subscribe_dkg_ceremony(Digested::from(block(tip.clone())));
 
         // Both the starting block and its ancestors can arrive after the
         // request. Waiting for either must leave the actor responsive.
@@ -2176,7 +2177,7 @@ fn outcome_walk_fetches_blocks_after_its_requests_go_away() {
         }
         harness.start().await;
 
-        let parent = Arc::new(block(tip));
+        let parent = Digested::from(block(tip));
         let request = harness.mailbox().subscribe_dkg_ceremony(parent.clone());
         let marshal = harness.marshal.clone();
         let wait_ctx = context.child("wait_for_subscription");
@@ -2246,7 +2247,7 @@ fn outcome_request_drops_ancestry_with_wrong_parent_height() {
                 Duration::from_secs(1),
                 harness
                     .mailbox()
-                    .subscribe_dkg_ceremony(Arc::new(block(tip.clone()))),
+                    .subscribe_dkg_ceremony(Digested::from(block(tip.clone()))),
             )
             .await
             .expect("a mismatched ancestor must close the outcome subscription");
@@ -2317,7 +2318,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         let first_output = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(first_tip.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(first_tip.clone())))
             .await
             .unwrap();
 
@@ -2349,7 +2350,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         let second_output = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(second_tip.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(second_tip.clone())))
             .await
             .unwrap();
 
@@ -2375,7 +2376,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         // DKG Outcomes are cached, thus we can request the outcome without re-reading state
         let cached_first_output = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(first_tip.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(first_tip.clone())))
             .await
             .unwrap();
 

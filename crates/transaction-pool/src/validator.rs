@@ -591,6 +591,10 @@ where
             ) {
                 Ok(true) => {}
                 Ok(false) => {
+                    #[cfg(feature = "fuzz")]
+                    antithesis_sdk::assert_reachable!(
+                        "Pool rejects a transaction for insufficient fee AMM liquidity"
+                    );
                     return TransactionValidationOutcome::Invalid(
                         transaction,
                         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(

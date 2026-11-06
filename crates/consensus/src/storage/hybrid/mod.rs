@@ -93,9 +93,11 @@
 //!
 //! [`alias::marshal::init`]: crate::alias::marshal::init
 
+use std::sync::Arc;
+
 use alloy_primitives::B256;
 use commonware_consensus::{Heightable as _, marshal::store::Blocks, types::Height};
-use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
+use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::{
     archive::{self, Identifier, prunable},
     translator::TwoCap,
@@ -264,7 +266,7 @@ pub(crate) type Prunable<TContext> = prunable::Archive<TwoCap, TContext, Digest,
 /// Configuration for [`Hybrid`].
 pub(crate) struct Config<TContext, TExecutionBlockProvider>
 where
-    TContext: BufferPooler + Storage + Metrics + Clock,
+    TContext: Storage + Metrics + Clock,
 {
     /// Prunable archive backing the most recently finalized blocks.
     pub(crate) prunable: Prunable<TContext>,
@@ -286,7 +288,7 @@ where
 /// finalized blocks).
 pub(crate) struct Hybrid<TContext, TExecutionBlockProvider>
 where
-    TContext: BufferPooler + Storage + Metrics + Clock,
+    TContext: Storage + Metrics + Clock,
 {
     /// Hot cache of recently finalized blocks. Bounded to roughly
     /// `retention_blocks` items above reth's finalized watermark via
@@ -307,7 +309,7 @@ where
 
 impl<TContext, P> Hybrid<TContext, P>
 where
-    TContext: BufferPooler + Storage + Metrics + Clock,
+    TContext: Storage + Metrics + Clock,
     P: FinalizedBlocksProvider + 'static,
 {
     pub(crate) fn new(config: Config<TContext, P>) -> Self {
@@ -407,17 +409,17 @@ where
 
 impl<TContext, TExecutionBlockProvider> Blocks for Hybrid<TContext, TExecutionBlockProvider>
 where
-    TContext: BufferPooler + Storage + Metrics + Clock + Send + Sync + 'static,
+    TContext: Storage + Metrics + Clock + Send + Sync + 'static,
     TExecutionBlockProvider: FinalizedBlocksProvider + 'static,
 {
-    type Block = Block;
+    type Block = Arc<Block>;
     type Error = Error;
 
     #[instrument(skip_all, err)]
-    async fn put(mut self, block: Self::Block) -> Result<Self, Self::Error> {
+    async fn put(mut self, digest: Digest, block: &Self::Block) -> Result<Self, Self::Error> {
         let height = block.height();
-        let digest = block.digest();
-        self.prunable = archive::Archive::put(self.prunable, height.get(), digest, block).await?;
+        self.prunable =
+            archive::Archive::put(self.prunable, height.get(), digest, block.as_ref()).await?;
 
         self = self.evict_below_execution_finalized_floor().await?;
         Ok(self)
@@ -437,17 +439,23 @@ where
                 if let Some(block) =
                     archive::Archive::get(&self.prunable, Identifier::Index(height)).await?
                 {
-                    return Ok(Some(block));
+                    return Ok(Some(Arc::new(block)));
                 }
-                Ok(self.execution_block_provider.block_by_height(height)?)
+                Ok(self
+                    .execution_block_provider
+                    .block_by_height(height)?
+                    .map(Arc::new))
             }
             Identifier::Key(digest) => {
                 if let Some(block) =
                     archive::Archive::get(&self.prunable, Identifier::Key(digest)).await?
                 {
-                    return Ok(Some(block));
+                    return Ok(Some(Arc::new(block)));
                 }
-                Ok(self.execution_block_provider.block_by_hash(digest.0)?)
+                Ok(self
+                    .execution_block_provider
+                    .block_by_hash(digest.0)?
+                    .map(Arc::new))
             }
         }
     }

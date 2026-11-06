@@ -6,13 +6,13 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Round, View},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digested, ed25519::PublicKey};
 use eyre::WrapErr as _;
 use futures::{
     channel::{mpsc, oneshot},
     future::BoxFuture,
 };
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tracing::Span;
 
@@ -47,13 +47,13 @@ impl Mailbox {
     pub(crate) async fn verify_block(
         &self,
         context: Context<Digest, PublicKey>,
-        block: Block,
+        block: Digested<Block>,
     ) -> eyre::Result<Option<Duration>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(VerifyBlock {
                 context,
-                block: Arc::new(block),
+                block,
                 response,
             }))
             .wrap_err("failed sending validate-block request to agent, this means it exited")?;
@@ -151,18 +151,24 @@ pub(super) struct Build {
 ///
 /// It must be `Sync` because it travels in the executor's mailbox messages.
 pub(crate) struct DeferredExtraData(
-    Box<dyn FnOnce(Arc<Block>) -> BoxFuture<'static, eyre::Result<Bytes>> + Send + Sync>,
+    Box<dyn FnOnce(Digested<Block>) -> BoxFuture<'static, eyre::Result<Bytes>> + Send + Sync>,
 );
 
 impl DeferredExtraData {
     pub(crate) fn new<F>(make: F) -> Self
     where
-        F: FnOnce(Arc<Block>) -> BoxFuture<'static, eyre::Result<Bytes>> + Send + Sync + 'static,
+        F: FnOnce(Digested<Block>) -> BoxFuture<'static, eyre::Result<Bytes>>
+            + Send
+            + Sync
+            + 'static,
     {
         Self(Box::new(make))
     }
 
-    pub(super) fn resolve(self, parent: Arc<Block>) -> BoxFuture<'static, eyre::Result<Bytes>> {
+    pub(super) fn resolve(
+        self,
+        parent: Digested<Block>,
+    ) -> BoxFuture<'static, eyre::Result<Bytes>> {
         (self.0)(parent)
     }
 }
@@ -176,7 +182,7 @@ impl std::fmt::Debug for DeferredExtraData {
 #[derive(Debug)]
 pub(super) struct VerifyBlock {
     pub(super) context: Context<Digest, PublicKey>,
-    pub(super) block: Arc<Block>,
+    pub(super) block: Digested<Block>,
     pub(super) response: oneshot::Sender<Option<Duration>>,
 }
 

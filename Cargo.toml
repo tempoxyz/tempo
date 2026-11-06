@@ -325,19 +325,20 @@ alloy-signer-local = "2.5.0"
 alloy-signer-trezor = "2.5.0"
 alloy-transport = "2.5.0"
 
-commonware-actor = "2026.9.0"
-commonware-broadcast = "2026.9.0"
-commonware-codec = "2026.9.0"
-commonware-consensus = "2026.9.0"
-commonware-cryptography = { version = "2026.9.0", default-features = false }
-commonware-macros = "2026.9.0"
-commonware-math = "2026.9.0"
-commonware-p2p = "2026.9.0"
-commonware-parallel = "2026.9.0"
-commonware-resolver = "2026.9.0"
-commonware-runtime = "2026.9.0"
-commonware-storage = "2026.9.0"
-commonware-utils = "2026.9.0"
+commonware-actor = "2026.10.0"
+commonware-broadcast = "2026.10.0"
+commonware-codec = "2026.10.0"
+commonware-consensus = "2026.10.0"
+commonware-cryptography = { version = "2026.10.0", default-features = false }
+commonware-macros = "2026.10.0"
+commonware-math = "2026.10.0"
+commonware-p2p = "2026.10.0"
+commonware-parallel = "2026.10.0"
+commonware-resolver = "2026.10.0"
+commonware-runtime = "2026.10.0"
+commonware-stream = "2026.10.0"
+commonware-storage = "2026.10.0"
+commonware-utils = "2026.10.0"
 
 antithesis_sdk = { version = "0.3.0", default-features = false }
 arbitrary = { version = "1.4", features = ["derive"] }

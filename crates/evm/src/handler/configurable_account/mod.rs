@@ -163,7 +163,7 @@ impl TempoTxEnv {
 /// simulation skips only the sender check.
 /// Loads and warms accounts, but does not register commitments.
 /// Caller must charge both components.
-/// Transaction access-list and beneficiary warmth must be initialized before loading non-caller
+/// Transaction warmth, but not the beneficiary's, must be initialized before loading non-caller
 /// accounts.
 pub(crate) fn validate_state(
     host: &mut Evm<'_, TempoEvmTypes>,
