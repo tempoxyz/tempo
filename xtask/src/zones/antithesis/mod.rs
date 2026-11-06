@@ -6,7 +6,7 @@
 //! [`Ledger`] in the workload container.
 
 use alloy::{
-    primitives::{Address, B256, Bytes, U256},
+    primitives::{Address, B256, Bytes, I256, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
     },
@@ -20,7 +20,7 @@ use antithesis_sdk::{
 };
 use eyre::{OptionExt as _, WrapErr as _, eyre};
 use serde_json::json;
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{
@@ -473,18 +473,14 @@ impl Context {
             nonce += 1;
             pending.push((to, tx));
         }
-        // What this command's earlier transfers spent in each block, which a later revert in the
-        // same block had to leave room for.
-        let mut spent_in_block: BTreeMap<u64, u128> = BTreeMap::new();
         // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
         let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
         for (to, tx) in pending {
             let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
             let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
-            let spent = spent_in_block.entry(zone_block).or_default();
             let funded_revert = !receipt.status()
                 && self
-                    .covered_before(&zone, &receipt, sender.address(), *spent + amount + max_fee)
+                    .covered_before(&zone, &receipt, sender.address(), amount + max_fee)
                     .await?;
             assert_always!(
                 !funded_revert,
@@ -492,7 +488,6 @@ impl Context {
                 &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
             );
             if receipt.status() {
-                *spent += amount + max_fee;
                 self.ledger.append(&Record::Transfer {
                     zone_tx: receipt.transaction_hash,
                     zone_block,
@@ -714,8 +709,10 @@ impl Context {
         Ok(None)
     }
 
-    /// Whether `sender` held at least `required` on `zone` just before the block that mined the
-    /// reverted `receipt`, so the revert cannot be blamed on a stale balance read.
+    /// Whether `sender` held at least `required` on `zone` just before the reverted `receipt`
+    /// ran, so the revert cannot be blamed on a stale balance read. That is its balance at the
+    /// parent block less what its earlier transactions in the same block spent, which includes
+    /// sends from earlier commands that gave up waiting for their receipts.
     async fn covered_before(
         &self,
         zone: &DynProvider,
@@ -724,6 +721,9 @@ impl Context {
         required: u128,
     ) -> eyre::Result<bool> {
         let block = receipt.block_number.ok_or_eyre("receipt has no block")?;
+        let index = receipt
+            .transaction_index
+            .ok_or_eyre("receipt has no transaction index")?;
         let parent = block
             .checked_sub(1)
             .ok_or_eyre("transaction mined in genesis")?;
@@ -733,7 +733,37 @@ impl Context {
             .block(BlockId::number(parent))
             .call()
             .await?;
-        Ok(balance >= U256::from(required))
+        let receipts = zone
+            .get_block_receipts(BlockId::number(block))
+            .await?
+            .ok_or_eyre("block receipts not found")?;
+        let mut balance = I256::try_from(balance)?;
+        for earlier in receipts.iter().filter(|earlier| {
+            earlier.from == sender && earlier.transaction_index.is_some_and(|i| i < index)
+        }) {
+            let mut paid_fee = false;
+            for log in earlier.inner.logs() {
+                if log.address() != PATH_USD_ADDRESS {
+                    continue;
+                }
+                let Ok(transfer) = ITIP20::Transfer::decode_log(&log.inner) else {
+                    continue;
+                };
+                if transfer.from == sender {
+                    balance -= I256::try_from(transfer.amount)?;
+                    paid_fee = true;
+                }
+                if transfer.to == sender {
+                    balance += I256::try_from(transfer.amount)?;
+                }
+            }
+            // A reverted transaction keeps no logs but still pays its fee.
+            if !paid_fee {
+                let fee = calc_gas_balance_spending(earlier.gas_used, earlier.effective_gas_price);
+                balance -= I256::try_from(fee)?;
+            }
+        }
+        Ok(balance >= I256::try_from(required)?)
     }
 
     /// Picks a recipient other than `sender`: a new account half of the time, otherwise an

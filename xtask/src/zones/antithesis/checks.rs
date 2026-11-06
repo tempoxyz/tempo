@@ -17,7 +17,7 @@ use tempo_contracts::{
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
 
-use super::{Context, Record, poll_until, shuffled};
+use super::{Context, Record, is_rpc_error, poll_until, shuffled};
 
 /// How long `check-settled` waits for the system to recover once faults stop.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -30,7 +30,15 @@ const BALANCE_READS: usize = 32;
 
 impl Context {
     pub(super) async fn check_consistency(&self) -> eyre::Result<()> {
-        let (height, hash) = self.settled_block().await?;
+        // L1 can be paused or partitioned while faults run, like the zone nodes skipped below.
+        let (height, hash) = match self.settled_block().await {
+            Ok(settled) => settled,
+            Err(error) if is_rpc_error(&error) => {
+                println!("check-consistency: L1 unavailable: {error:#}");
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         // Until the first batch settles the portal holds no zone block hash to compare against.
         if hash.is_zero() {
             println!("check-consistency: nothing settled yet");
