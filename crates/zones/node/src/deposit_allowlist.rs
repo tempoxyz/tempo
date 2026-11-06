@@ -23,25 +23,18 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, keccak256};
-use alloy_sol_types::{
-    Eip712Domain, SolCall as _, SolInterface as _, SolStruct as _, eip712_domain, sol,
-};
+use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
+use alloy_sol_types::{Eip712Domain, SolStruct as _, eip712_domain, sol};
 use eyre::{WrapErr as _, ensure};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use parking_lot::{Mutex, RwLock};
-use reth_transaction_pool::{
-    PoolTransaction as _, TransactionPool, error::InvalidPoolTransactionError,
-};
+use reth_transaction_pool::TransactionPool;
 use serde::{Deserialize, Serialize};
-use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
-use tempo_precompiles::tip20::ITIP20;
-use tempo_primitives::TempoAddressExt as _;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 use zone_l1::{FAILED_DECRYPTION, abi::DecryptionData};
-use zone_payload::{TransferAllowlist, unlisted_transfer_error};
+use zone_payload::{TransferAllowlist, validate_transfer_calls};
 
 mod relay;
 pub(crate) use relay::{AllowlistRelay, apply_relayed_requests, mirror_leader};
@@ -573,51 +566,6 @@ impl TransferAllowlist for AllowlistMirror {
     }
 }
 
-/// Reject on submission a transaction whose calls move TIP-20 funds or name a withdrawal fallback
-/// recipient outside `allowlist`, or call `transferFrom` from an unlisted account.
-pub(crate) fn validate_transfer_calls(
-    allowlist: &dyn TransferAllowlist,
-    tx: &TempoPooledTransaction,
-) -> Result<(), InvalidPoolTransactionError> {
-    let sender = *tx.sender_ref();
-    let allowed = tx.inner().calls().all(|(kind, input)| {
-        let TxKind::Call(target) = kind else {
-            return true;
-        };
-        if target.is_tip20() {
-            return match ITIP20::ITIP20Calls::abi_decode(input) {
-                Ok(ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. }))
-                | Ok(ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
-                    to,
-                    ..
-                })) => allowlist.allows_transfer(sender, to),
-                // A listed caller is required, so `transferFrom(a, b, 0)` cannot probe the list.
-                Ok(ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall {
-                    from,
-                    to,
-                    ..
-                }))
-                | Ok(ITIP20::ITIP20Calls::transferFromWithMemo(
-                    ITIP20::transferFromWithMemoCall { from, to, .. },
-                )) => allowlist.allows_all(&[sender]) && allowlist.allows_transfer(from, to),
-                _ => true,
-            };
-        }
-        if target != ZONE_OUTBOX_ADDRESS {
-            return true;
-        }
-        match IZoneOutbox::requestWithdrawalCall::abi_decode(input) {
-            Ok(call) => allowlist.allows_withdrawal_fallback(sender, call.zoneFallbackRecipient),
-            Err(_) => true,
-        }
-    });
-    if allowed {
-        Ok(())
-    } else {
-        Err(unlisted_transfer_error())
-    }
-}
-
 /// Remove pooled transactions that `allowlist` no longer admits, so this node stops forwarding
 /// them after the list changes. Returns how many were removed.
 ///
@@ -784,20 +732,21 @@ fn persist(path: &Path, state: &State) -> eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{Signed, TxEip1559};
-    use alloy_primitives::{U256, address};
+    use alloy_primitives::{TxKind, U256, address};
     use alloy_signer::SignerSync as _;
     use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::SolCall as _;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::{
         Pool, PoolConfig, TransactionOrigin, blobstore::InMemoryBlobStore,
         noop::MockTransactionValidator,
     };
+    use tempo_precompiles::tip20::ITIP20;
     use tempo_primitives::{
-        TempoTxEnvelope,
+        TempoAddressExt as _,
         transaction::{Call, TempoTransaction},
     };
-    use tempo_transaction_pool::ordering::TempoTipOrdering;
+    use tempo_transaction_pool::{ordering::TempoTipOrdering, transaction::TempoPooledTransaction};
     use zone_l1::abi::ChaumPedersenProof;
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
@@ -1231,137 +1180,6 @@ mod tests {
         assert!(mirror.allows_all(&[CAROL]));
     }
 
-    fn call(to: Address, input: impl Into<Bytes>) -> Call {
-        Call {
-            to: TxKind::Call(to),
-            value: U256::ZERO,
-            input: input.into(),
-        }
-    }
-
-    fn token_transfer(to: Address) -> Call {
-        call(
-            Address::new_tip20(0),
-            ITIP20::transferCall {
-                to,
-                amount: U256::ONE,
-            }
-            .abi_encode(),
-        )
-    }
-
-    fn token_transfer_from(from: Address, to: Address) -> Call {
-        call(
-            Address::new_tip20(0),
-            ITIP20::transferFromWithMemoCall {
-                from,
-                to,
-                amount: U256::ONE,
-                memo: Default::default(),
-            }
-            .abi_encode(),
-        )
-    }
-
-    fn request_withdrawal(fallback_recipient: Address) -> Call {
-        call(
-            ZONE_OUTBOX_ADDRESS,
-            IZoneOutbox::requestWithdrawalCall {
-                token: Address::new_tip20(0),
-                to: fallback_recipient,
-                amount: 1,
-                memo: Default::default(),
-                gasLimit: 0,
-                zoneFallbackRecipient: fallback_recipient,
-                data: Bytes::new(),
-                revealTo: Bytes::new(),
-            }
-            .abi_encode(),
-        )
-    }
-
-    fn pooled_transaction(envelope: TempoTxEnvelope, sender: Address) -> TempoPooledTransaction {
-        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender))
-    }
-
-    /// Checks an AA transaction from `sender` against a list holding ALICE and BOB.
-    fn admits_calls(sender: Address, calls: Vec<Call>) -> bool {
-        let dir = tempfile::tempdir().unwrap();
-        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
-        allowlist.replace(vec![ALICE, BOB]).unwrap();
-        let transaction = TempoTransaction {
-            calls,
-            ..Default::default()
-        };
-        let transaction = pooled_transaction(
-            transaction
-                .into_signed(Signature::test_signature().into())
-                .into(),
-            sender,
-        );
-        match validate_transfer_calls(&allowlist, &transaction) {
-            Ok(()) => true,
-            Err(err) => {
-                assert_eq!(err.to_string(), unlisted_transfer_error().to_string());
-                false
-            }
-        }
-    }
-
-    #[test]
-    fn submission_admits_transfers_only_between_listed_accounts() {
-        assert!(admits_calls(ALICE, vec![token_transfer(BOB)]));
-        assert!(!admits_calls(ALICE, vec![token_transfer(CAROL)]));
-        assert!(!admits_calls(CAROL, vec![token_transfer(ALICE)]));
-        // Any unlisted call rejects the whole batch.
-        assert!(!admits_calls(
-            ALICE,
-            vec![token_transfer(BOB), token_transfer(CAROL)]
-        ));
-        // The spender, owner, and recipient must all be listed.
-        assert!(admits_calls(BOB, vec![token_transfer_from(ALICE, BOB)]));
-        assert!(!admits_calls(ALICE, vec![token_transfer_from(CAROL, BOB)]));
-        assert!(!admits_calls(
-            ALICE,
-            vec![token_transfer_from(ALICE, CAROL)]
-        ));
-        // An unlisted spender is rejected whatever parties it names, so it cannot use the result
-        // to learn whether they are listed.
-        assert!(!admits_calls(CAROL, vec![token_transfer_from(ALICE, BOB)]));
-        assert!(!admits_calls(
-            CAROL,
-            vec![token_transfer_from(ALICE, ALICE)]
-        ));
-        assert!(!admits_calls(
-            CAROL,
-            vec![token_transfer_from(CAROL, CAROL)]
-        ));
-        // Transfer calldata sent to a non-token contract moves no TIP-20 funds.
-        assert!(admits_calls(
-            ALICE,
-            vec![call(
-                CAROL,
-                ITIP20::transferCall {
-                    to: CAROL,
-                    amount: U256::ONE
-                }
-                .abi_encode()
-            )]
-        ));
-    }
-
-    #[test]
-    fn submission_admits_unlisted_withdrawals() {
-        assert!(admits_calls(
-            CAROL,
-            vec![token_transfer(ZONE_OUTBOX_ADDRESS)]
-        ));
-        assert!(admits_calls(CAROL, vec![request_withdrawal(CAROL)]));
-        assert!(!admits_calls(CAROL, vec![request_withdrawal(ALICE)]));
-        assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
-        assert!(admits_calls(ALICE, vec![request_withdrawal(BOB)]));
-    }
-
     #[tokio::test]
     async fn eviction_covers_local_transactions_that_do_not_propagate() {
         let pool = Pool::new(
@@ -1373,17 +1191,26 @@ mod tests {
         let transaction = TempoTransaction {
             gas_limit: 100_000,
             max_fee_per_gas: 2_000_000_000,
-            calls: vec![token_transfer(BOB)],
+            calls: vec![Call {
+                to: TxKind::Call(Address::new_tip20(0)),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: BOB,
+                    amount: U256::ONE,
+                }
+                .abi_encode()
+                .into(),
+            }],
             ..Default::default()
         };
         pool.add_transaction(
             TransactionOrigin::Local,
-            pooled_transaction(
+            TempoPooledTransaction::new(Recovered::new_unchecked(
                 transaction
                     .into_signed(Signature::test_signature().into())
                     .into(),
                 ALICE,
-            ),
+            )),
         )
         .await
         .unwrap();
@@ -1396,28 +1223,5 @@ mod tests {
             pool.get_transactions_by_origin(TransactionOrigin::Local)
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn submission_checks_non_aa_transfers() {
-        let dir = tempfile::tempdir().unwrap();
-        let allowlist = alice_only(dir.path());
-        let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
-            TxEip1559 {
-                to: TxKind::Call(Address::new_tip20(0)),
-                input: ITIP20::transferCall {
-                    to: BOB,
-                    amount: U256::ONE,
-                }
-                .abi_encode()
-                .into(),
-                ..Default::default()
-            },
-            Signature::test_signature(),
-        ));
-        let transaction = pooled_transaction(envelope, ALICE);
-        assert!(validate_transfer_calls(&allowlist, &transaction).is_err());
-        allowlist.set(&[BOB], true).unwrap();
-        assert!(validate_transfer_calls(&allowlist, &transaction).is_ok());
     }
 }

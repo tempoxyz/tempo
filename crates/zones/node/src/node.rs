@@ -7,7 +7,7 @@ use crate::{
     DepositAllowlist, DepositAllowlistAdmin, ZoneConsensus, ZoneEngine,
     deposit_allowlist::{
         AllowlistMirror, AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests,
-        mirror_leader, validate_transfer_calls,
+        mirror_leader,
     },
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
@@ -104,7 +104,7 @@ use zone_p2p::{
 };
 use zone_payload::{
     DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, TransferAllowlist, WithdrawalRevealEncryptor,
-    ZonePayloadAttributes, ZonePayloadFactory, ZonePayloadTypes,
+    ZonePayloadAttributes, ZonePayloadFactory, ZonePayloadTypes, validate_transfer_calls,
 };
 use zone_primitives::constants::{decode_l1_chain_id, zone_chain_id};
 use zone_rpc::ZoneDebugApiRpcServer;

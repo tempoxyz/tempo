@@ -2880,8 +2880,9 @@ async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::R
 
 /// Sequencers enforce their allowlist on Zone transfers: a transfer to an unlisted recipient is
 /// rejected when it is submitted, and one admitted before its recipient was removed is dropped by
-/// the leader's block builder instead of being included. Withdrawals naming the sender or a listed
-/// account as fallback recipient are still included.
+/// the leader's block builder, which checks it against the current list, instead of being
+/// included. Withdrawals naming the sender or a listed account as fallback recipient are still
+/// included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     use alloy::providers::ProviderBuilder;
@@ -2946,9 +2947,8 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
         );
     }
 
-    // The builder reads each withdrawal's fallback recipient from the outbox storage the
-    // transaction wrote. If that read broke, the recipient would read as zero and every
-    // withdrawal would be left out, including one naming the sender itself.
+    // Withdrawals naming the sender or a listed account as fallback recipient pass both the
+    // submission check and the leader's check before execution.
     for fallback in [alice, bob] {
         let mut withdrawal = WithdrawalArgs::new(WITHDRAWAL_AMOUNT);
         withdrawal.zone_fallback_recipient = Some(fallback);
@@ -3020,8 +3020,8 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     )
     .await?;
 
-    // Whichever sequencer builds the next blocks executes the transfer, drops it, and removes it
-    // from its pool. The others only hold it, and re-admission rejects it now that Bob is unlisted.
+    // Whichever sequencer builds the next blocks skips the transfer and removes it from its pool.
+    // The others only hold it, and re-admission rejects it now that Bob is unlisted.
     poll_until(
         L1_TIMEOUT,
         Duration::from_millis(250),

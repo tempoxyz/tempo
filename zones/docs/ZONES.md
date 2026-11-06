@@ -349,11 +349,15 @@ Users keep the same address on Tempo and the zone, so the list also restricts zo
 transfers once [transfers are enabled](#enabling-zone-transfers). A sequencer with
 `--deposits.allowlist` rejects a transaction on submission when one of its calls (including the
 calls of an AA batch) is a `transfer`, `transferFrom`, or memo variant whose `from` or `to` is not
-listed. While it leads, it also executes each pool transaction and leaves it out of the block,
-dropping it from its pool, when any TIP-20 `Transfer` it emits names an unlisted `from` or `to`.
-Submission also rejects a `transferFrom` from an unlisted caller, whatever parties it names, so
-an unlisted account cannot learn whether an address is listed from whether its transaction is
-accepted.
+listed, or a `ReceivePolicyGuard` `claim` whose caller or `to` is not listed. While it leads, it
+checks each pool transaction again against its current list before executing it, and leaves out
+and drops from its pool any that the list now rejects. Submission also rejects a `transferFrom`
+from an unlisted caller, whatever parties it names, so an unlisted account cannot learn whether
+an address is listed from whether its transaction is accepted.
+
+Checking calls is enough because zones disable contract creation and authorization lists, and
+T15, which enables transfers, removes the Multicall3 and Permit2 predeploys. No contract can move
+funds on a user's behalf through calls the check does not see.
 
 Every RPC follower keeps an in-memory copy of the leader's list so it can reject the same
 transactions on submission, returning `transfer sender or recipient is not allowlisted` instead of
@@ -365,11 +369,11 @@ none once the leader runs without `--deposits.allowlist`, and keeps its last lis
 does not answer. While it holds no written list it admits every transfer, and the leader still
 enforces its own list.
 
-Removing an account from the list does not trap its funds. Transfers to the outbox and to the
-block's fee recipient (the leading sequencer's fee address) are exempt, so it can still pay fees
-and withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if the withdrawal
-bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback recipient must
-both be listed.
+Removing an account from the list does not trap its funds. Fees and transfers to the outbox are
+exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if
+the withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback
+recipient must both be listed. Funds that a receive policy held in the `ReceivePolicyGuard` can be
+claimed only while the claimer and the destination are both listed.
 
 Limits:
 
@@ -377,9 +381,6 @@ Limits:
 - The submission error tells a listed sender that a counterparty is not listed, so a listed
   account can check addresses one at a time.
 - Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
-- The leader exempts every transfer to the block's fee recipient, not only fee payments.
-  Submission still requires both parties to be listed, so this only lets an account removed
-  after its transaction was admitted also pay the leader's fee address in that transaction.
 - Deposit recipients are not checked, so a listed depositor can still credit an unlisted zone
   address. That address can only withdraw.
 

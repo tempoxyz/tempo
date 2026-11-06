@@ -1,22 +1,23 @@
-//! Leader-side allowlist for Zone TIP-20 transfers.
+//! Sequencer-local allowlist for Zone TIP-20 transfers.
 //!
-//! The allowlist is sequencer-local policy that consensus does not replicate, so the leader
-//! enforces it while building blocks; followers and the prover accept any block. After executing
-//! a pool transaction, the builder leaves it out of the block if any of its TIP-20 `Transfer`
-//! events moves funds between accounts that are not both allowed, or if it requests a withdrawal
-//! whose Zone fallback recipient is another account and the two are not both allowed. Checking
-//! executed events rather than calldata covers AA batches and transfers made by predeploys.
+//! The allowlist is sequencer-local policy that consensus does not replicate, so only the leader
+//! enforces it; followers and the prover accept any block. Pool admission rejects a transaction
+//! whose calls move TIP-20 funds to or from an unlisted account, and the leader's builder checks
+//! each pool transaction again against the current list before executing it, which catches list
+//! changes after admission.
+//!
+//! Checking calldata is enough on Zones: contract creation and authorization lists are disabled,
+//! and T15, which enables transfers, removes the Multicall3 and Permit2 predeploys. Funds can only
+//! move through the TIP-20 and `ReceivePolicyGuard` calls screened here, the outbox, and fees.
 
-use alloy_primitives::{Address, B256};
-use alloy_sol_types::SolEvent;
-use evm2::{TxResultWithState, registry::HandlerError};
-use reth_transaction_pool::error::InvalidPoolTransactionError;
+use alloy_primitives::{Address, TxKind};
+use alloy_sol_types::{SolCall as _, SolInterface as _};
+use evm2::registry::HandlerError;
+use reth_transaction_pool::{PoolTransaction as _, error::InvalidPoolTransactionError};
 use std::fmt;
-use tempo_contracts::precompiles::ITIP20;
-use tempo_evm::TempoEvmTypes;
+use tempo_contracts::precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS};
 use tempo_primitives::TempoAddressExt as _;
-use tempo_transaction_pool::transaction::TempoPoolTransactionError;
-use zone_precompiles::ZoneOutbox;
+use tempo_transaction_pool::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 
 use crate::abi::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 
@@ -45,76 +46,89 @@ pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
     }
 }
 
+/// Reject a transaction whose calls move TIP-20 funds (including `ReceivePolicyGuard` claims) or
+/// name a withdrawal fallback recipient outside `allowlist`, or call `transferFrom` from an
+/// unlisted account.
+///
+/// Pool admission calls this on submission, and the leader's builder calls it again before
+/// executing each pool transaction.
+pub fn validate_transfer_calls(
+    allowlist: &dyn TransferAllowlist,
+    tx: &TempoPooledTransaction,
+) -> Result<(), InvalidPoolTransactionError> {
+    let sender = *tx.sender_ref();
+    let allowed = tx.inner().calls().all(|(kind, input)| {
+        let TxKind::Call(target) = kind else {
+            return true;
+        };
+        if target.is_tip20() {
+            return match ITIP20::ITIP20Calls::abi_decode(input) {
+                Ok(ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. }))
+                | Ok(ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
+                    to,
+                    ..
+                })) => allowlist.allows_transfer(sender, to),
+                // A listed caller is required, so `transferFrom(a, b, 0)` cannot probe the list.
+                Ok(ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall {
+                    from,
+                    to,
+                    ..
+                }))
+                | Ok(ITIP20::ITIP20Calls::transferFromWithMemo(
+                    ITIP20::transferFromWithMemoCall { from, to, .. },
+                )) => allowlist.allows_all(&[sender]) && allowlist.allows_transfer(from, to),
+                _ => true,
+            };
+        }
+        if target == RECEIVE_POLICY_GUARD_ADDRESS {
+            // Only the receipt's recovery authority can claim, and it picks where funds go. Unlike
+            // `transfer`, a claim to the outbox is not exempt, since it requests no withdrawal.
+            return match IReceivePolicyGuard::claimCall::abi_decode(input) {
+                Ok(call) => allowlist.allows_all(&[sender, call.to]),
+                Err(_) => true,
+            };
+        }
+        if target != ZONE_OUTBOX_ADDRESS {
+            return true;
+        }
+        match IZoneOutbox::requestWithdrawalCall::abi_decode(input) {
+            Ok(call) => allowlist.allows_withdrawal_fallback(sender, call.zoneFallbackRecipient),
+            Err(_) => true,
+        }
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(unlisted_transfer_error())
+    }
+}
+
 /// Pool error for a transaction that moves Zone funds to or from an account the allowlist does
 /// not allow. It does not say which account failed the check.
-pub fn unlisted_transfer_error() -> InvalidPoolTransactionError {
+fn unlisted_transfer_error() -> InvalidPoolTransactionError {
     InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(HandlerError::External(
         "transfer sender or recipient is not allowlisted".into(),
     )))
 }
 
-/// Whether every TIP-20 transfer and withdrawal fallback recipient in the executed transaction
-/// is allowed in a block whose fee recipient is `beneficiary`.
-///
-/// Transfers to `beneficiary` settle fees, so they are also exempt and an account removed from
-/// the list can still pay for its withdrawal. This exempts any transfer to `beneficiary`, not only
-/// the fee settlement; submission still requires both parties to be listed.
-pub(crate) fn allows_executed(
-    allowlist: &dyn TransferAllowlist,
-    beneficiary: Address,
-    result: &TxResultWithState<TempoEvmTypes>,
-) -> bool {
-    result.result.logs.iter().all(|log| {
-        // An event that matches but fails to decode is treated as a violation.
-        if log.address.is_tip20() && log.topics().first() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
-        {
-            let Ok(ITIP20::Transfer { from, to, .. }) =
-                ITIP20::Transfer::decode_log_data(&log.data)
-            else {
-                return false;
-            };
-            return to == beneficiary || allowlist.allows_transfer(from, to);
-        }
-        if log.address != ZONE_OUTBOX_ADDRESS
-            || log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH)
-        {
-            return true;
-        }
-        let Ok(withdrawal) = IZoneOutbox::WithdrawalRequested::decode_log_data(&log.data) else {
-            return false;
-        };
-        // Deposit bounce-backs carry no sender or fallback recipient.
-        if withdrawal.sender.is_zero() {
-            return true;
-        }
-        // `requestWithdrawal` writes the recipient in the same transaction. A missing slot reads
-        // as the zero address, which is never allowed, so the transaction is left out.
-        let slot = ZoneOutbox::new().fallback_recipient_slot(withdrawal.fallbackNonce);
-        let fallback_recipient = result
-            .pending_state
-            .account_changes_for(&ZONE_OUTBOX_ADDRESS)
-            .and_then(|outbox| outbox.storage.slots.get(&slot))
-            .map_or(Address::ZERO, |value| {
-                Address::from_word(B256::from(value.value.current))
-            });
-        allowlist.allows_withdrawal_fallback(withdrawal.sender, fallback_recipient)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Bytes, IntoLogData, Log, LogData, U256, address};
-    use evm2::{PendingState, TxResult};
+    use alloy_consensus::{Signed, TxEip1559};
+    use alloy_primitives::{Bytes, Signature, U256, address};
+    use reth_primitives_traits::Recovered;
     use std::{
         collections::BTreeSet,
         sync::atomic::{AtomicBool, Ordering},
+    };
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{Call, TempoTransaction},
     };
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
     const BOB: Address = address!("0x0000000000000000000000000000000000000b0b");
     const CAROL: Address = address!("0x00000000000000000000000000000000000ca201");
-    const SEQUENCER: Address = address!("0x0000000000000000000000000000000000005e01");
 
     /// Allows only the listed addresses.
     #[derive(Debug)]
@@ -148,139 +162,178 @@ mod tests {
         assert!(!Swapping::default().allows_withdrawal_fallback(ALICE, BOB));
     }
 
-    fn alice_and_bob() -> Listed {
-        Listed(BTreeSet::from([ALICE, BOB]))
-    }
-
-    fn transfer(from: Address, to: Address) -> Log {
-        Log {
-            address: Address::new_tip20(0),
-            data: ITIP20::Transfer {
-                from,
-                to,
-                amount: U256::from(1),
-            }
-            .into_log_data(),
+    fn call(to: Address, input: impl Into<Bytes>) -> Call {
+        Call {
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input: input.into(),
         }
     }
 
-    fn withdrawal(sender: Address, fallback_nonce: u64) -> Log {
-        Log {
-            address: ZONE_OUTBOX_ADDRESS,
-            data: IZoneOutbox::WithdrawalRequested {
-                withdrawalIndex: 0,
-                sender,
+    fn token_transfer(to: Address) -> Call {
+        call(
+            Address::new_tip20(0),
+            ITIP20::transferCall {
+                to,
+                amount: U256::ONE,
+            }
+            .abi_encode(),
+        )
+    }
+
+    fn token_transfer_from(from: Address, to: Address) -> Call {
+        call(
+            Address::new_tip20(0),
+            ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount: U256::ONE,
+                memo: Default::default(),
+            }
+            .abi_encode(),
+        )
+    }
+
+    fn request_withdrawal(fallback_recipient: Address) -> Call {
+        call(
+            ZONE_OUTBOX_ADDRESS,
+            IZoneOutbox::requestWithdrawalCall {
                 token: Address::new_tip20(0),
-                to: sender,
+                to: fallback_recipient,
                 amount: 1,
-                fee: 0,
-                memo: B256::ZERO,
+                memo: Default::default(),
                 gasLimit: 0,
-                fallbackNonce: fallback_nonce,
+                zoneFallbackRecipient: fallback_recipient,
                 data: Bytes::new(),
                 revealTo: Bytes::new(),
             }
-            .into_log_data(),
-        }
+            .abi_encode(),
+        )
     }
 
-    /// Outbox state after `requestWithdrawal` stored `recipient` under `fallback_nonce`.
-    fn fallback_recipient(fallback_nonce: u64, recipient: Address) -> PendingState {
-        let mut state = PendingState::default();
-        state.insert_account(ZONE_OUTBOX_ADDRESS, None, Some(Default::default()));
-        state.insert_storage(
-            ZONE_OUTBOX_ADDRESS,
-            ZoneOutbox::new().fallback_recipient_slot(fallback_nonce),
-            U256::ZERO,
-            U256::from_be_slice(recipient.as_slice()),
-        );
-        state
+    fn claim(to: Address) -> Call {
+        call(
+            RECEIVE_POLICY_GUARD_ADDRESS,
+            IReceivePolicyGuard::claimCall {
+                to,
+                receipt: Bytes::new(),
+            }
+            .abi_encode(),
+        )
     }
 
-    fn allows(logs: Vec<Log>, pending_state: PendingState) -> bool {
-        let result = TxResultWithState {
-            result: TxResult::<TempoEvmTypes> {
-                logs,
-                ..Default::default()
-            },
-            pending_state,
+    fn pooled_transaction(envelope: TempoTxEnvelope, sender: Address) -> TempoPooledTransaction {
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender))
+    }
+
+    /// Checks an AA transaction from `sender` against a list holding ALICE and BOB.
+    fn admits_calls(sender: Address, calls: Vec<Call>) -> bool {
+        let transaction = TempoTransaction {
+            calls,
             ..Default::default()
         };
-        allows_executed(&alice_and_bob(), SEQUENCER, &result)
+        let transaction = pooled_transaction(
+            transaction
+                .into_signed(Signature::test_signature().into())
+                .into(),
+            sender,
+        );
+        match validate_transfer_calls(&Listed(BTreeSet::from([ALICE, BOB])), &transaction) {
+            Ok(()) => true,
+            Err(err) => {
+                assert_eq!(err.to_string(), unlisted_transfer_error().to_string());
+                false
+            }
+        }
     }
 
     #[test]
     fn transfers_need_both_parties_listed() {
-        assert!(allows(vec![transfer(ALICE, BOB)], PendingState::default()));
-        assert!(!allows(
-            vec![transfer(ALICE, CAROL)],
-            PendingState::default()
+        assert!(admits_calls(ALICE, vec![token_transfer(BOB)]));
+        assert!(!admits_calls(ALICE, vec![token_transfer(CAROL)]));
+        assert!(!admits_calls(CAROL, vec![token_transfer(ALICE)]));
+        // Any unlisted call rejects the whole batch.
+        assert!(!admits_calls(
+            ALICE,
+            vec![token_transfer(BOB), token_transfer(CAROL)]
         ));
-        assert!(!allows(
-            vec![transfer(CAROL, ALICE)],
-            PendingState::default()
+        // The spender, owner, and recipient must all be listed.
+        assert!(admits_calls(BOB, vec![token_transfer_from(ALICE, BOB)]));
+        assert!(!admits_calls(ALICE, vec![token_transfer_from(CAROL, BOB)]));
+        assert!(!admits_calls(
+            ALICE,
+            vec![token_transfer_from(ALICE, CAROL)]
         ));
-        // One unlisted transfer leaves out the whole transaction, e.g. an AA batch.
-        assert!(!allows(
-            vec![transfer(ALICE, BOB), transfer(BOB, CAROL)],
-            PendingState::default()
+        // An unlisted spender is rejected whatever parties it names, so it cannot use the result
+        // to learn whether they are listed.
+        assert!(!admits_calls(CAROL, vec![token_transfer_from(ALICE, BOB)]));
+        assert!(!admits_calls(
+            CAROL,
+            vec![token_transfer_from(ALICE, ALICE)]
+        ));
+        assert!(!admits_calls(
+            CAROL,
+            vec![token_transfer_from(CAROL, CAROL)]
+        ));
+        // Transfer calldata sent to a non-token contract moves no TIP-20 funds.
+        assert!(admits_calls(
+            ALICE,
+            vec![call(
+                CAROL,
+                ITIP20::transferCall {
+                    to: CAROL,
+                    amount: U256::ONE
+                }
+                .abi_encode()
+            )]
         ));
     }
 
     #[test]
-    fn fees_burns_and_withdrawals_are_exempt() {
-        for log in [
-            transfer(CAROL, SEQUENCER),
-            transfer(CAROL, ZONE_OUTBOX_ADDRESS),
-            transfer(ZONE_OUTBOX_ADDRESS, Address::ZERO),
-            transfer(Address::ZERO, CAROL),
-        ] {
-            assert!(allows(vec![log], PendingState::default()));
-        }
-    }
-
-    #[test]
-    fn transfer_events_from_other_contracts_are_ignored() {
-        let mut log = transfer(ALICE, CAROL);
-        log.address = CAROL;
-        assert!(allows(vec![log], PendingState::default()));
-    }
-
-    #[test]
-    fn malformed_transfer_events_are_left_out() {
-        let mut log = transfer(ALICE, BOB);
-        log.data = LogData::new_unchecked(vec![ITIP20::Transfer::SIGNATURE_HASH], Bytes::new());
-        assert!(!allows(vec![log], PendingState::default()));
+    fn unlisted_accounts_can_still_withdraw() {
+        assert!(admits_calls(
+            CAROL,
+            vec![token_transfer(ZONE_OUTBOX_ADDRESS)]
+        ));
+        assert!(admits_calls(CAROL, vec![request_withdrawal(CAROL)]));
     }
 
     #[test]
     fn withdrawal_fallback_recipients_need_both_parties_listed_unless_self() {
-        assert!(allows(
-            vec![withdrawal(ALICE, 1)],
-            fallback_recipient(1, BOB)
+        assert!(admits_calls(ALICE, vec![request_withdrawal(BOB)]));
+        assert!(!admits_calls(CAROL, vec![request_withdrawal(ALICE)]));
+        assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
+    }
+
+    #[test]
+    fn receipt_claims_need_the_claimer_and_destination_listed() {
+        assert!(admits_calls(ALICE, vec![claim(BOB)]));
+        assert!(admits_calls(ALICE, vec![claim(ALICE)]));
+        assert!(!admits_calls(ALICE, vec![claim(CAROL)]));
+        assert!(!admits_calls(CAROL, vec![claim(ALICE)]));
+        assert!(!admits_calls(CAROL, vec![claim(CAROL)]));
+        assert!(!admits_calls(CAROL, vec![claim(ZONE_OUTBOX_ADDRESS)]));
+    }
+
+    #[test]
+    fn non_aa_transfers_are_checked() {
+        let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+            TxEip1559 {
+                to: TxKind::Call(Address::new_tip20(0)),
+                input: ITIP20::transferCall {
+                    to: BOB,
+                    amount: U256::ONE,
+                }
+                .abi_encode()
+                .into(),
+                ..Default::default()
+            },
+            Signature::test_signature(),
         ));
-        assert!(!allows(
-            vec![withdrawal(ALICE, 1)],
-            fallback_recipient(1, CAROL)
-        ));
-        assert!(!allows(
-            vec![withdrawal(CAROL, 1)],
-            fallback_recipient(1, ALICE)
-        ));
-        // An unlisted account can still withdraw with itself as the fallback recipient.
-        assert!(allows(
-            vec![withdrawal(CAROL, 1)],
-            fallback_recipient(1, CAROL)
-        ));
-        // The slot is read for this withdrawal's nonce, not another one.
-        assert!(!allows(
-            vec![withdrawal(ALICE, 2)],
-            fallback_recipient(1, BOB)
-        ));
-        // Deposit bounce-backs have no sender.
-        assert!(allows(
-            vec![withdrawal(Address::ZERO, 0)],
-            PendingState::default()
-        ));
+        let transaction = pooled_transaction(envelope, ALICE);
+        assert!(validate_transfer_calls(&Listed(BTreeSet::from([ALICE])), &transaction).is_err());
+        assert!(
+            validate_transfer_calls(&Listed(BTreeSet::from([ALICE, BOB])), &transaction).is_ok()
+        );
     }
 }
