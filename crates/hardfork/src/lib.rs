@@ -109,6 +109,17 @@ macro_rules! tempo_hardfork {
             use alloy_hardforks::Hardfork;
 
             #[test]
+            fn t15_is_unscheduled_on_public_networks() {
+                assert_eq!(T15.mainnet_activation_block(), None);
+                assert_eq!(T15.mainnet_activation_timestamp(), None);
+                assert_eq!(T15.moderato_activation_block(), None);
+                assert_eq!(T15.moderato_activation_timestamp(), None);
+                for chain in [4217, 42431] {
+                    assert_ne!(TempoHardfork::from_chain_and_timestamp(chain, u64::MAX), Some(T15));
+                }
+            }
+
+            #[test]
             fn test_hardfork_name() {
                 assert_eq!(Genesis.name(), "Genesis");
                 $(assert_eq!($variant.name(), stringify!($variant));)*
@@ -249,7 +260,7 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t14>.
         T14,
-        /// T15 hardfork.
+        /// T15 hardfork. No public-network activation is scheduled.
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t15>.
         T15,
@@ -314,9 +325,14 @@ impl TempoHardfork {
     /// Returns the per-transaction gas limit cap.
     /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
     /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
+    /// - T15+: EIP-7825 Osaka limit again; TIP-1016 pays state creation from
+    ///   the reservoir, outside the execution budget.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
+        if self.is_t15() {
+            return Some(MAX_TX_GAS_LIMIT_OSAKA);
+        }
         if self.is_t1a() {
             return Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP);
         }
@@ -517,5 +533,22 @@ impl From<SpecId> for TempoHardfork {
         // Default to the default hardfork when converting from SpecId.
         // The actual hardfork should be passed explicitly where needed.
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests {
+    use super::*;
+
+    #[test]
+    fn tx_gas_limit_cap_drops_back_to_osaka_at_t15() {
+        assert_eq!(
+            TempoHardfork::T14.tx_gas_limit_cap(),
+            Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP)
+        );
+        assert_eq!(
+            TempoHardfork::T15.tx_gas_limit_cap(),
+            Some(MAX_TX_GAS_LIMIT_OSAKA)
+        );
     }
 }

@@ -167,29 +167,68 @@ done <<< "$CRATES_IO_PATCHES"
 # ── 5. Patch evm2 ────────────────────────────────────────────────────────────
 # Tempo's reth crates and Foundry must share one evm2, and Foundry may depend on
 # a fork or another revision of it. Redirect every evm2 source in the graph to
-# Tempo's pinned revision. The redirect goes through evm2's pre-transfer URL,
+# Tempo's effective revision, including its workspace patch when present. The
+# redirect goes through evm2's pre-transfer URL,
 # which Cargo treats as another source, because it rejects a patch from the same
 # source.
 EVM2_PATCH_URL="https://github.com/alloy-rs/evm2"
+EVM2_TARGET_URL="https://github.com/DaniPopes/evm2"
 EVM2_REV="$(sed -nE 's/^evm2 = \{.*rev = "([0-9a-f]+)".*/\1/p' "$TEMPO_CARGO" | head -n1)"
+EVM2_OVERRIDE="$(awk '
+  /^\[patch\."https:\/\/github\.com\/alloy-rs\/evm2"\]/ { in_section = 1; next }
+  in_section && /^\[/ { exit }
+  in_section && /^evm2 = \{/ { print; exit }
+' "$TEMPO_CARGO")"
+if [[ -n "$EVM2_OVERRIDE" ]]; then
+  EVM2_TARGET_URL="$(sed -nE 's/.*git = "([^"]+)".*/\1/p' <<< "$EVM2_OVERRIDE")"
+  EVM2_REV="$(sed -nE 's/.*rev = "([0-9a-f]+)".*/\1/p' <<< "$EVM2_OVERRIDE")"
+  if [[ -z "$EVM2_TARGET_URL" || -z "$EVM2_REV" ]]; then
+    echo "ERROR: Incomplete evm2 workspace patch in $TEMPO_CARGO" >&2
+    exit 1
+  fi
+fi
 EVM2_PATCHES=""
 if [[ -n "$EVM2_REV" ]]; then
   for crate in evm2 evm2-inspectors evm2-jit evm2-macros; do
-    EVM2_PATCHES+="$crate = { git = \"https://github.com/DaniPopes/evm2\", rev = \"$EVM2_REV\" }"$'\n'
+    EVM2_PATCHES+="$crate = { git = \"$EVM2_TARGET_URL\", rev = \"$EVM2_REV\" }"$'\n'
   done
 fi
 
 if [[ -n "$EVM2_PATCHES" ]]; then
   evm2_sources=("$EVM2_PATCH_URL")
-  if grep -Eq '^evm2[A-Za-z0-9_-]* = \{.*git = "https://github.com/mablr/evm2"' "$FOUNDRY_CARGO"; then
+  if grep -Eq '^evm2[A-Za-z0-9_-]* = \{.*git = "https://github.com/mablr/evm2"' "$FOUNDRY_CARGO" ||
+    grep -qF '[patch."https://github.com/mablr/evm2"]' "$FOUNDRY_CARGO"; then
     evm2_sources+=("https://github.com/mablr/evm2")
   fi
   for source in "${evm2_sources[@]}"; do
-    if grep -qF "[patch.\"$source\"]" "$FOUNDRY_CARGO"; then
-      echo "Foundry Cargo.toml already patches $source – keeping existing section."
-      continue
-    fi
-    printf '\n[patch."%s"]\n%s' "$source" "$EVM2_PATCHES" >> "$FOUNDRY_CARGO"
+    tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+    awk -v source="$source" -v target="$EVM2_TARGET_URL" -v rev="$EVM2_REV" '
+      function print_patches(    crate, i, crates) {
+        split("evm2 evm2-inspectors evm2-jit evm2-macros", crates, " ")
+        for (i = 1; i <= 4; i++) {
+          crate = crates[i]
+          print crate " = { git = \"" target "\", rev = \"" rev "\" }"
+        }
+      }
+      $0 == "[patch.\"" source "\"]" {
+        found = 1
+        in_section = 1
+        print
+        print_patches()
+        next
+      }
+      in_section && /^\[/ { in_section = 0 }
+      in_section && /^evm2(-inspectors|-jit|-macros)? = / { next }
+      { print }
+      END {
+        if (!found) {
+          print ""
+          print "[patch.\"" source "\"]"
+          print_patches()
+        }
+      }
+    ' "$FOUNDRY_CARGO" > "$tmp_cargo"
+    mv "$tmp_cargo" "$FOUNDRY_CARGO"
   done
 fi
 

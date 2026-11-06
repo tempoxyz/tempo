@@ -15,7 +15,7 @@ use crate::{
     error::TempoPrecompileError,
     storage::{
         ConfigCommitmentWriteGas, PrecompileStorageProvider, SstoreTransitionFlags,
-        account_config_commitment,
+        StorageCheckpoint, account_config_commitment,
     },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
@@ -251,14 +251,14 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn amsterdam_eip8037_enabled(&self) -> bool {
-        self.amsterdam_eip8037_enabled
+        self.amsterdam_eip8037_enabled || self.spec.is_t15()
     }
 
     fn is_static(&self) -> bool {
         self.is_static
     }
 
-    fn checkpoint(&mut self) -> StateCheckpoint {
+    fn checkpoint(&mut self) -> StorageCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
             accounts: self.accounts.clone(),
@@ -266,25 +266,32 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             transient: self.transient.clone(),
             events: self.events.clone(),
         });
-        StateCheckpoint::new(idx, 0)
+        StorageCheckpoint {
+            state: StateCheckpoint::new(idx, 0),
+            gas: None,
+        }
     }
 
-    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_commit(&mut self, checkpoint: StorageCheckpoint) {
         assert_eq!(
-            checkpoint.journal_len(),
+            checkpoint.state.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint commit (expected top of stack)"
         );
         self.snapshots.pop();
     }
 
-    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StorageCheckpoint) {
         assert_eq!(
-            checkpoint.journal_len(),
+            checkpoint.state.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint revert (expected top of stack)"
         );
-        if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_len()..).next() {
+        if let Some(snapshot) = self
+            .snapshots
+            .drain(checkpoint.state.journal_len()..)
+            .next()
+        {
             self.accounts = snapshot.accounts;
             self.internals = snapshot.internals;
             self.transient = snapshot.transient;
@@ -338,6 +345,10 @@ impl StorageCreditsBackend for HashMapStorageProvider {
 
     fn gas_params(&self) -> &GasParams {
         &self.gas_params
+    }
+
+    fn state_gas_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled()
     }
 
     fn gas_tracker(&mut self) -> &mut GasTracker {
