@@ -1607,8 +1607,10 @@ fn redact_block(block: &mut RpcBlock) {
     block.withdrawals = block.withdrawals.take().map(|_| Default::default());
 }
 
-/// Retries of an L1 request that the witness provider's node cannot serve yet.
-const WITNESS_L1_MAX_RETRIES: u32 = 20;
+/// Retries of an L1 request that the witness provider's node cannot serve yet. With
+/// [`WITNESS_L1_RETRY_BACKOFF_MS`] this stays below the sequencer's 500 ms pre-T15 optional
+/// witness timeout, so an abandoned collection does not delay the next block's.
+const WITNESS_L1_MAX_RETRIES: u32 = 8;
 /// Delay between retries of a witness L1 request, in milliseconds.
 const WITNESS_L1_RETRY_BACKOFF_MS: u64 = 50;
 
@@ -1616,8 +1618,8 @@ const WITNESS_L1_RETRY_BACKOFF_MS: u64 = 50;
 ///
 /// The L1 subscriber and this provider can reach different nodes behind one L1 RPC endpoint, so a
 /// Tempo block the subscriber has seen may not be imported yet on this provider's node, which then
-/// answers `-32001` (resource not found). Such errors and rate limits are retried for about a
-/// second before collection fails.
+/// answers `-32001` (resource not found). Such errors and rate limits are retried for up to
+/// 400 ms before collection fails.
 pub(crate) async fn connect_witness_l1_provider(
     l1_rpc_url: &str,
     retry_connection_interval: Duration,
