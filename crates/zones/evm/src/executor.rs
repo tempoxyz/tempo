@@ -161,6 +161,10 @@ impl BlockTransactionResult<TempoEvmTypes> for ZoneTxResult {
     fn result(&self) -> &TxResultWithState<TempoEvmTypes> {
         self.inner.result()
     }
+
+    fn into_result(self) -> TxResultWithState<TempoEvmTypes> {
+        self.inner.into_result()
+    }
 }
 
 /// Simplified block executor for zone nodes.

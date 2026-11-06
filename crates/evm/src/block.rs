@@ -239,6 +239,10 @@ impl BlockTransactionResult<TempoEvmTypes> for TempoTxResult {
     fn result(&self) -> &TxResultWithState<TempoEvmTypes> {
         self.inner.result()
     }
+
+    fn into_result(self) -> TxResultWithState<TempoEvmTypes> {
+        self.inner.into_result()
+    }
 }
 
 impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
