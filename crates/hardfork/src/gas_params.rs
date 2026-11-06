@@ -67,6 +67,12 @@ pub fn configure_version(
         }
     }
 
+    if spec.is_t15() {
+        // TIP-1124 applies with either the TIP-1000 or TIP-1016 gas schedule.
+        version.gas_params[GasId::TxFloorCostPerToken] = 16;
+        version.gas_params[GasId::TxFloorZeroByteMultiplier] = 4;
+    }
+
     if spec.is_t7() {
         version.gas_params[GasId::MaxRefundQuotient] = 1;
     }
@@ -150,6 +156,30 @@ fn apply_amsterdam(version: &mut Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tip1124_changes_calldata_floor_prices_at_t15() {
+        let before = version(SpecId::OSAKA, TempoHardfork::T14, false);
+        let after = version(SpecId::OSAKA, TempoHardfork::T15, false);
+        assert_eq!(before.gas_params[GasId::TxFloorCostPerToken], 10);
+        assert_eq!(before.gas_params[GasId::TxFloorZeroByteMultiplier], 1);
+        assert_eq!(after.gas_params[GasId::TxFloorCostPerToken], 16);
+        assert_eq!(after.gas_params[GasId::TxFloorZeroByteMultiplier], 4);
+        let (_, before_tokens) = before.gas_params.tx_calldata_tokens(&[0, 1]);
+        let (_, after_tokens) = after.gas_params.tx_calldata_tokens(&[0, 1]);
+        assert_eq!(
+            before
+                .gas_params
+                .tx_floor_cost_with_tokens(before_tokens, 0, 0),
+            21_050
+        );
+        assert_eq!(
+            after
+                .gas_params
+                .tx_floor_cost_with_tokens(after_tokens, 0, 0),
+            21_128
+        );
+    }
 
     #[test]
     fn test_tempo_override_gas_params_match_across_forks() {
