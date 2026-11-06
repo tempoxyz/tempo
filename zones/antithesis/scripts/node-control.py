@@ -21,6 +21,10 @@ OFFLINE_TIMEOUT = 120
 RECOVERY_TIMEOUT = 120
 
 
+class SafetyFailure(RuntimeError):
+    """An observed correctness failure cannot be cancelled by later shutdown."""
+
+
 class Rejected(RuntimeError):
     """No offline command ran; this attempt supplies no safety result."""
 
@@ -147,8 +151,10 @@ class Supervisor:
                         raise RuntimeError('offline operation interrupted or timed out')
                     time.sleep(0.1)
                 if self.offline.returncode:
+                    if self.shutting_down:
+                        raise Incomplete('offline CLI interrupted by shutdown')
                     output.seek(0)
-                    raise RuntimeError('offline CLI exited ' + str(self.offline.returncode) + ': ' + output.read().decode(errors='replace')[-4096:])
+                    raise SafetyFailure('offline CLI exited ' + str(self.offline.returncode) + ': ' + output.read().decode(errors='replace')[-4096:])
                 output.seek(0)
                 return output.read().decode(errors='replace')
             finally:
@@ -167,7 +173,7 @@ class Supervisor:
                 if finalized[0] >= before[0]:
                     restored = self.block(hex(before[0]))
                     if restored != before:
-                        raise RuntimeError('pre-maintenance finalized hash changed')
+                        raise SafetyFailure('pre-maintenance finalized hash changed')
                     return
             except (OSError, ValueError, KeyError, TypeError):
                 pass
@@ -208,7 +214,7 @@ class Supervisor:
                 output = self.run_offline(['db', *self.base, 'repair-trie', '--dry-run'])
                 if ('Found 0 inconsistencies (dry run - no changes made)' not in output
                         or 'Inconsistency found:' in output):
-                    raise RuntimeError('trie dry-run did not attest zero inconsistencies')
+                    raise SafetyFailure('trie dry-run did not attest zero inconsistencies')
                 evidence = dict(dry_run=True, inconsistencies=0)
             else:
                 output = self.run_offline(['stage', 'unwind', *self.base, 'num-blocks', str(blocks)])
@@ -219,7 +225,7 @@ class Supervisor:
                 requested = re.search(r'target=(\d+)', opened[0]) if opened else None
                 if not (start and end and requested and int(end[1]) == int(requested[1])
                         and int(start[1]) - int(end[1]) == blocks):
-                    raise RuntimeError('unwind output did not attest an effective bounded unwind')
+                    raise SafetyFailure('unwind output did not attest an effective bounded unwind')
                 evidence = dict(from_block=int(start[1]), to_block=int(end[1]))
             event('fired', operation, **evidence)
         except Exception as exc:
@@ -281,7 +287,8 @@ class Supervisor:
                             result = self.maintenance(request)
                         except Exception as exc:
                             op = request.get('operation', 'invalid') if isinstance(request, dict) else 'invalid'
-                            state = ('interrupted' if self.shutting_down else
+                            state = ('failed' if isinstance(exc, SafetyFailure) else
+                                     'interrupted' if self.shutting_down else
                                      'incomplete' if isinstance(exc, Incomplete) else
                                      'rejected' if isinstance(exc, Rejected) or not self.armed else 'failed')
                             result = event(state, op, error=str(exc))
