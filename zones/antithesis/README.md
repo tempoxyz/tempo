@@ -8,6 +8,8 @@ Build the images from the repository root, with the contract submodules checked 
 ```bash
 docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
+docker build -f zones/antithesis/Dockerfile --target workload -t tempo-zones-antithesis-workload:latest \
+    --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
 docker build -f zones/antithesis/Dockerfile.config -t tempo-zones-antithesis-config:latest zones/antithesis
 ```
 
@@ -17,20 +19,22 @@ Run it locally:
 docker compose -f zones/antithesis/docker-compose.yaml up
 ```
 
-`ZONES_IMAGE` overrides the image the services run.
+`ZONES_IMAGE` overrides the image the L1, provisioner and zone nodes run, and `WORKLOAD_IMAGE` the
+`workload` container's.
 
 ## Antithesis registry
 
-[`antithesis-zones.yml`](../../.github/workflows/antithesis-zones.yml) builds both images on every push to `main`
+[`antithesis-zones.yml`](../../.github/workflows/antithesis-zones.yml) builds the node, workload and config images on every push to `main`
 that touches the node or this directory, and on a manual dispatch of any branch, and pushes them to
 `us-central1-docker.pkg.dev/molten-verve-216720/tempo-repository` as `<branch>-<sha>` and `<branch>`. The
-config image adds an `.env` that pins `ZONES_IMAGE` to the test image's digest. It needs the registry's JSON
+config image adds an `.env` that pins `ZONES_IMAGE` and `WORKLOAD_IMAGE` to the digests just built. It needs the registry's JSON
 key in the `ANTITHESIS_REGISTRY_KEY` repository secret.
 
 ## Test template
 
-`test/v1/zone_payments` ships in the image outside `/opt/antithesis`; `scripts/workload.sh` installs it at
-`/opt/antithesis/test/v1`, so only the `workload` container offers it. Each command is a `tempo-zone-xtask antithesis` subcommand:
+`test/v1/zone_payments` ships at `/opt/antithesis/test/v1` in the workload image only (the Dockerfile's
+`workload` target), so only the `workload` container offers it. The test platform finds templates in the
+images it is given, so they must be in the image rather than copied in when a container starts. Each command is a `tempo-zone-xtask antithesis` subcommand:
 
 | Command | What it does |
 |---|---|

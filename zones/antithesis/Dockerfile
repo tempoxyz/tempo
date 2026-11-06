@@ -5,6 +5,9 @@
 # Build from the repository root (requires the crates/zones/contracts/lib submodules):
 #   docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
 #     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
+#   docker build -f zones/antithesis/Dockerfile --target workload \
+#     -t tempo-zones-antithesis-workload:latest \
+#     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
 
 FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS builder
 
@@ -63,7 +66,7 @@ RUN /out/tempo-xtask generate-genesis --output /genesis --accounts 20 --no-dkg-i
         --specs-out /app/crates/zones/contracts/out \
         --output /genesis/l1-genesis.json
 
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates jq \
@@ -74,9 +77,16 @@ COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
 COPY zones/antithesis/scripts/ /opt/zones/
-# workload.sh installs the test template in /opt/antithesis/test, so only the workload
-# container has one; see zones/antithesis/README.md.
-COPY --chmod=755 zones/antithesis/test/ /opt/zones/antithesis-test/
 
 ENV RUST_BACKTRACE=full
 WORKDIR /app
+
+# The workload container's image: the runtime image with the test template in
+# /opt/antithesis/test, where the test platform looks for it in the image it is given. Only
+# this image has it, so no other container offers test commands. Build it with
+# --target workload.
+FROM runtime AS workload
+COPY --chmod=755 zones/antithesis/test/ /opt/antithesis/test/
+
+# The default target stays the image the nodes run.
+FROM runtime
