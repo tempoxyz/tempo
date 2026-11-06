@@ -1,6 +1,6 @@
-# Zone test image: the Tempo L1 node and the zone node built with SDK assertions enabled (the L1
-# without the consensus ones, since it runs --dev and never starts consensus), the provisioning
-# tools, the scripts docker-compose.yaml runs and the test template.
+# Zone test image: the real-consensus Tempo L1 and zone nodes with SDK assertions enabled,
+# including L1 consensus assertions, the provisioning tools, the scripts docker-compose.yaml
+# runs and the test template.
 #
 # Build from the repository root (requires the crates/zones/contracts/lib submodules):
 #   docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
@@ -27,7 +27,7 @@ ARG RUST_PROFILE=antithesis
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
 ARG VERGEN_GIT_SHA_SHORT=00000000
-# Lower on small machines: parallel links of the five binaries need a lot of memory.
+# Lower on small machines: parallel links of the four binaries need a lot of memory.
 ARG CARGO_BUILD_JOBS=default
 
 WORKDIR /app
@@ -47,12 +47,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     case "${TARGETARCH}" in arm64) target=aarch64-unknown-linux-gnu ;; *) target=x86_64-unknown-linux-gnu ;; esac \
     && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${COVERAGE_RUSTFLAGS}" \
     cargo build --locked --profile ${RUST_PROFILE} --target "$target" \
-        -p tempo -p tempo-zone -p tempo-xtask -p exec-diff-antithesis \
-        --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask --bin exec-diff-antithesis \
-        --features tempo/fuzz-execution,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
+        -p tempo -p tempo-zone -p tempo-xtask \
+        --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask \
+        --features tempo/fuzz,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
     && mkdir -p /out \
     && cd "target/$target/${RUST_PROFILE}" \
-    && cp tempo tempo-zone tempo-xtask tempo-zone-xtask exec-diff-antithesis /out/
+    && cp tempo tempo-zone tempo-xtask tempo-zone-xtask /out/
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -65,16 +65,11 @@ WORKDIR /app/crates/zones/contracts
 COPY crates/zones/contracts .
 RUN forge build --skip test
 
-# Dev-mode L1 genesis with the native ZoneFactory owned by dev account 0, so the provisioner
-# can create the zone. Built once so every container starts from the same chain.
+# Consensus L1 genesis with the reference ZoneFactory owned by dev account 0.
+# Build once so all validators and the certified follower share one chain and DKG.
 FROM builder AS l1-genesis
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
-RUN /out/tempo-xtask generate-genesis --output /genesis --accounts 20 --no-dkg-in-genesis \
-    && /out/tempo-zone-xtask install-reference-zone-factory \
-        --genesis /genesis/genesis.json \
-        --owner 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
-        --specs-out /app/crates/zones/contracts/out \
-        --output /genesis/l1-genesis.json
+RUN sh zones/antithesis/scripts/build-l1-genesis.sh /genesis
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 
@@ -85,11 +80,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /out/ /usr/local/bin/
 COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
-COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
+COPY --from=l1-genesis /genesis/ /opt/zones/l1/
 COPY zones/antithesis/scripts/ /opt/zones/
 
 # Antithesis reads the symbols of instrumented binaries from /symbols; the binaries keep theirs.
-RUN mkdir /symbols && for bin in tempo tempo-zone tempo-xtask tempo-zone-xtask exec-diff-antithesis; do \
+RUN mkdir /symbols && for bin in tempo tempo-zone tempo-xtask tempo-zone-xtask; do \
         ln -s /usr/local/bin/$bin /symbols/$bin; \
     done
 

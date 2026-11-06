@@ -20,7 +20,7 @@ use antithesis_sdk::{
 };
 use eyre::{OptionExt as _, WrapErr as _, eyre};
 use serde_json::json;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{
@@ -28,7 +28,7 @@ use tempo_contracts::{
         ZonePortal,
     },
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, tip20::TIP20Token};
+use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::transaction::calc_gas_balance_spending;
 use zone_precompiles::ecies::encrypt_deposit;
 
@@ -36,6 +36,7 @@ use ledger::{Account, Lease, Ledger, Record};
 
 mod checks;
 mod ledger;
+mod proofs;
 
 /// Dev accounts 8..=19 of the test mnemonic fund deposits. 0 administers the portal and 5..=7
 /// are the sequencers, which pay their own settlement gas.
@@ -69,9 +70,18 @@ const SENDER_CANDIDATES: usize = 16;
 /// Antithesis test commands; see `zones/antithesis/README.md`.
 #[derive(Debug, clap::Parser)]
 pub(crate) struct Antithesis {
-    /// Tempo L1 HTTP RPC URL.
+    /// Certified Tempo L1 follower HTTP RPC URL.
     #[arg(long, env = "L1_RPC_URL", default_value = "http://10.20.0.10:8545")]
     l1_rpc_url: reqwest::Url,
+
+    /// Real L1 validator RPC endpoints, independently compared with the certified follower.
+    #[arg(
+        long,
+        env = "L1_VALIDATOR_RPC_URLS",
+        value_delimiter = ',',
+        default_value = "http://10.20.0.41:8545,http://10.20.0.42:8545,http://10.20.0.43:8545,http://10.20.0.44:8545"
+    )]
+    l1_validator_rpc_urls: Vec<reqwest::Url>,
 
     /// HTTP RPC URLs of every zone node. Drivers send to a random one; checks compare all.
     #[arg(
@@ -98,8 +108,12 @@ pub(crate) struct Antithesis {
 enum Command {
     /// Approves the portal for every funder and funds the first zone accounts.
     Seed,
-    /// Writes the execution differential checker config from the current ledger accounts.
-    ExecDiffConfig,
+    /// Verifies finalized payment-token proofs and compares state across execution profiles.
+    CheckProofs {
+        /// After faults stop, require all nodes to serve valid, matching proofs within 300 seconds.
+        #[arg(long)]
+        eventually: bool,
+    },
     /// Deposits from a funder or a new L1 account to a new or existing zone account.
     Deposit,
     /// Transfers pathUSD inside the zone to a new or existing account.
@@ -123,7 +137,7 @@ impl Antithesis {
         let ctx = Context::init(&self).await?;
         let driver = match self.command {
             Command::Seed => return ctx.seed().await,
-            Command::ExecDiffConfig => return ctx.exec_diff_config(&self.state_dir),
+            Command::CheckProofs { eventually } => return ctx.check_proofs(eventually).await,
             Command::CheckConsistency => return ctx.check_consistency().await,
             Command::CheckSettled => return ctx.check_settled().await,
             Command::CheckLedger => return ctx.check_ledger().await,
@@ -151,6 +165,7 @@ struct Context {
     http: reqwest::Client,
     l1_url: reqwest::Url,
     l1: DynProvider,
+    l1_validators: Vec<DynProvider>,
     zone_urls: Vec<reqwest::Url>,
     zones: Vec<DynProvider>,
     portal: Address,
@@ -159,6 +174,18 @@ struct Context {
 impl Context {
     async fn init(args: &Antithesis) -> eyre::Result<Self> {
         eyre::ensure!(!args.zone_rpc_urls.is_empty(), "no zone RPC URLs");
+        eyre::ensure!(
+            args.zone_rpc_urls.iter().collect::<HashSet<_>>().len() == args.zone_rpc_urls.len(),
+            "zone RPC endpoints must be distinct"
+        );
+        eyre::ensure!(
+            std::iter::once(&args.l1_rpc_url)
+                .chain(&args.l1_validator_rpc_urls)
+                .collect::<HashSet<_>>()
+                .len()
+                == args.l1_validator_rpc_urls.len() + 1,
+            "L1 follower and validator RPC endpoints must be distinct"
+        );
         let zone_json: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&args.zone_json)
                 .wrap_err_with(|| format!("failed reading {}", args.zone_json.display()))?,
@@ -176,54 +203,13 @@ impl Context {
         Ok(Self {
             ledger: Ledger::open(&args.state_dir)?,
             l1: connect(&args.l1_rpc_url),
+            l1_validators: args.l1_validator_rpc_urls.iter().map(connect).collect(),
             zones: args.zone_rpc_urls.iter().map(connect).collect(),
             l1_url: args.l1_rpc_url.clone(),
             zone_urls: args.zone_rpc_urls.clone(),
             http,
             portal,
         })
-    }
-
-    fn exec_diff_config(&self, state_dir: &std::path::Path) -> eyre::Result<()> {
-        eyre::ensure!(
-            self.zone_urls.len() == 4,
-            "engine differential requires four zone nodes"
-        );
-        let accounts = self.ledger.accounts()?;
-        eyre::ensure!(
-            !accounts.is_empty(),
-            "seed the payment workload before generating the config"
-        );
-        let token = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS);
-        // Bound one proof to 64 slots and follow newly created accounts as the ledger grows.
-        let mut slots = vec![B256::from(token.total_supply.slot())];
-        slots.extend(
-            accounts
-                .iter()
-                .rev()
-                .take(63)
-                .map(|account| B256::from(token.balances[account.address()].slot())),
-        );
-        let endpoints: Vec<_> = ["optimized", "simple", "compare", "race"]
-            .into_iter()
-            .zip(&self.zone_urls)
-            .map(|(profile, url)| json!({ "profile": profile, "url": url }))
-            .collect();
-        let config = json!({
-            "endpoints": endpoints,
-            "subjects": [{ "address": PATH_USD_ADDRESS, "slots": slots }],
-            "rpc_timeout_ms": 5000,
-            "eventual_timeout_ms": checks::SETTLE_TIMEOUT.as_millis(),
-            "retry_interval_ms": 500,
-        });
-        let output = state_dir.join("exec-diff.json");
-        let temporary = state_dir.join(format!("exec-diff.{}.tmp", std::process::id()));
-        std::fs::write(&temporary, serde_json::to_vec_pretty(&config)?)
-            .wrap_err("failed writing execution differential config")?;
-        std::fs::rename(&temporary, &output)
-            .wrap_err("failed publishing execution differential config")?;
-        println!("execution differential config: {}", output.display());
-        Ok(())
     }
 
     async fn seed(&self) -> eyre::Result<()> {

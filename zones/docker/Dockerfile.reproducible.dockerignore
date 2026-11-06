@@ -21,4 +21,3 @@ contrib/*
 !contrib/antithesis/
 contrib/antithesis/*
 !contrib/antithesis/reth-trie/
-!contrib/antithesis/exec-diff/

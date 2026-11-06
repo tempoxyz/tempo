@@ -40,7 +40,7 @@ echo "provision: portal $portal"
 PRIVATE_KEY=$(nth 0 "$SEQ_KEYS") tempo-zone-xtask set-encryption-key \
     --l1-rpc-url "$L1_HTTP" --portal "$portal"
 
-# Zone-internal TIP-20 transfers need the portal admin's opt-in (from T15, which the dev L1
+# Zone-internal TIP-20 transfers need the portal admin's opt-in (from T15, which the test L1
 # genesis activates at block 0); without it every zone transfer reverts.
 ADMIN_KEY=$DEV0 tempo-zone-xtask set-transfers-enabled \
     --l1-rpc-url "$L1_HTTP" --portal "$portal" --enabled
