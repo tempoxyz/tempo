@@ -170,7 +170,7 @@ pub(crate) fn call_precompile(
         kind,
         gas_limit: gas,
         caller,
-        input: Bytes::copy_from_slice(data),
+        input: Bytes::copy_from_slice(data).into(),
         value: U256::ZERO,
         destination: target,
         call_target: bytecode_address,
