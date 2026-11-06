@@ -27,7 +27,7 @@ use tempo_corpus::{
         shadow::{ReplayOutcome, ShadowReplayer},
     },
     fuzz, gc,
-    store::{Catalog, Store},
+    store::Store,
     types::Input,
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
