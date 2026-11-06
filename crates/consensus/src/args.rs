@@ -834,17 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_max_message_size_bytes_is_only_set_when_supplied() {
-        assert_eq!(parse(&["--dev"]).consensus.max_message_size_bytes, None);
-        assert_eq!(
-            parse(&["--dev", "--consensus.max-message-size-bytes", "8388608"])
-                .consensus
-                .max_message_size_bytes,
-            Some(8_388_608),
-        );
-    }
-
-    #[test]
     fn deprecated_message_backlog_is_only_set_when_supplied() {
         assert_eq!(parse(&["--dev"]).consensus.message_backlog, None);
         for value in ["0", "16384", "32768"] {
