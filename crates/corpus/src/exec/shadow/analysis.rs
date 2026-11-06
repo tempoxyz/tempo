@@ -5,7 +5,7 @@ use super::{
     expectations::{Context, Expectation},
     fees::fee_wrote,
 };
-use alloy::consensus::BlockHeader as _;
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, U256};
 use reth_primitives_traits::RecoveredBlock;
 use reth_trie_common::bundle_state::{TransitionAccount, TransitionState};

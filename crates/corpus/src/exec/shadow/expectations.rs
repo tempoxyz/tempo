@@ -3,15 +3,13 @@
 //! Checks receive one difference, not a transaction. `None` means unexplained and `Some(())`
 //! accepts it.
 
-use super::analysis::{AccountDelta, Field};
-use crate::shadow_replay::{
+use super::{
     Boundary, Evidence, ObservedTx,
+    analysis::{AccountDelta, Field},
     fees::{fee_hook_slot_change, post_tx_fee},
 };
-use alloy::{
-    consensus::Transaction as _,
-    primitives::{Address, B256, Bytes, U256, keccak256},
-};
+use alloy_consensus::Transaction as _;
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::*,
@@ -205,11 +203,13 @@ pub(crate) fn between(
 #[cfg(test)]
 mod tests {
     use super::{
-        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome},
+        super::{
+            Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome,
+            analysis::{MAX_SAMPLES, ReplayReport},
+        },
         *,
     };
-    use crate::shadow_replay::analysis::{MAX_SAMPLES, ReplayReport};
-    use alloy::primitives::{Address, KECCAK256_EMPTY, Signature};
+    use alloy_primitives::{Address, KECCAK256_EMPTY, Signature};
     use evm2::evm::{AccountInfo, TxResultExt};
     use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
     use tempo_precompiles::storage::FeeHook;

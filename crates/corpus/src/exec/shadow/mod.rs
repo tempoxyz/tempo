@@ -22,18 +22,18 @@ mod analysis;
 mod expectations;
 mod fees;
 
-use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
+use alloy_sol_types::SolEvent as _;
 pub use analysis::ReplayReport;
 use evm2::evm::{Cache, Database, PendingState, TxResultExt};
 use parking_lot::Mutex;
 use reth_chainspec::ForkCondition;
-use reth_ethereum::evm::EvmFactory as _;
 use reth_evm::{BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _};
+use reth_evm_ethereum::EvmFactory as _;
 use reth_execution_types::{BlockState, StateUpdate};
 use reth_primitives_traits::RecoveredBlock;
-use reth_tracing::tracing::{debug, warn};
 use reth_trie_common::bundle_state::{AccountStatus, TransitionAccount, TransitionState};
 use std::{collections::hash_map::Entry, sync::Arc};
 use tempo_chainspec::{
@@ -44,6 +44,7 @@ use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult, evm::TempoEvm};
 use tempo_precompiles::storage::StorageAction;
 use tempo_primitives::{Block, TempoReceipt};
+use tracing::{debug, warn};
 
 /// Result of replaying one canonical block under candidate hardfork rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

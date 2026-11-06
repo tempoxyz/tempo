@@ -11,11 +11,15 @@ use reth_provider::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_corpus::{
-    exec::{capture::capture, db::View, replay::verify},
+    exec::{
+        capture::capture,
+        db::View,
+        replay::verify,
+        shadow::{ReplayOutcome, ShadowReplayer},
+    },
     store,
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
-use tempo_node::{ReplayOutcome, ShadowReplayer};
 
 /// Captures each block the node built into the corpus format, replays it from the stored record
 /// alone, and checks that shadow replay over the record finds what shadow replay over the node's

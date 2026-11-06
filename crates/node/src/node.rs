@@ -564,7 +564,10 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 
 /// Builds a [`RuntimeConfig`] for `spec` from CLI [`JitArgs`].
 #[cfg(feature = "jit")]
-fn jit_runtime_config(jit: &JitArgs, spec: TempoHardfork) -> RuntimeConfig {
+fn jit_runtime_config(
+    jit: &JitArgs,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+) -> RuntimeConfig {
     let default_tuning = RuntimeTuning::default();
     let tuning = RuntimeTuning {
         channel_capacity: jit.channel_capacity,

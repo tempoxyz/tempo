@@ -19,12 +19,16 @@ use tempo_chainspec::{
     spec::{TempoChainSpec, TempoChainSpecParser, TempoHardforks as _},
 };
 use tempo_corpus::{
-    exec::{db::View, fill, replay},
+    exec::{
+        db::View,
+        fill, replay,
+        shadow::{ReplayOutcome, ShadowReplayer},
+    },
     fuzz, gc,
     store::{Catalog, Store},
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
-use tempo_node::{ReplayOutcome, ShadowReplayer, node::TempoNode};
+use tempo_node::node::TempoNode;
 use tracing::{info, warn};
 
 /// Historical execution corpus commands.
