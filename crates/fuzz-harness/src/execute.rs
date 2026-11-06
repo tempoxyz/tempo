@@ -41,7 +41,7 @@ thread_local! {
 }
 
 /// Records why the current input stopped short of executing, for [`last_rejection`].
-fn reject(class: ErrorClass, why: impl Display) -> ErrorClass {
+pub(crate) fn reject(class: ErrorClass, why: impl Display) -> ErrorClass {
     REJECTION.with(|r| *r.borrow_mut() = why.to_string());
     class
 }
@@ -52,10 +52,15 @@ pub(crate) fn last_rejection() -> String {
     REJECTION.with(|r| r.borrow().clone())
 }
 
+/// Forgets the last input's rejection, before running another.
+pub(crate) fn clear_rejection() {
+    REJECTION.with(|r| r.borrow_mut().clear());
+}
+
 /// Executes `input`.
 pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
-    REJECTION.with(|r| r.borrow_mut().clear());
-    match input {
+    clear_rejection();
+    let outcome = match input {
         TempoHarnessInput::Transaction(input) => {
             TempoHarnessOutcome::Transaction(transaction(&input))
         }
@@ -76,7 +81,19 @@ pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
             &input.pre_state,
             input.blocks.as_slice(),
         )),
+    };
+    // An error with no reason recorded still gets its class, so an empty reason always means the
+    // input applied in full.
+    let error = match &outcome {
+        TempoHarnessOutcome::Transaction(outcome) => outcome.error,
+        TempoHarnessOutcome::State(outcome) | TempoHarnessOutcome::Blockchain(outcome) => {
+            outcome.error
+        }
+    };
+    if error != ErrorClass::None && last_rejection().is_empty() {
+        reject(error, format_args!("{error:?}"));
     }
+    outcome
 }
 
 /// Decodes a transaction and finds its sender, without executing it.
@@ -90,14 +107,13 @@ fn transaction(input: &TempoTransactionInput) -> TransactionOutcome {
             };
         }
     };
-    let sender = input.sender.or_else(|| tx.try_recover().ok());
+    let sender = input.sender.map(Ok).unwrap_or_else(|| tx.try_recover());
     TransactionOutcome {
-        error: if sender.is_some() {
-            ErrorClass::None
-        } else {
-            ErrorClass::Rejected
+        error: match &sender {
+            Ok(_) => ErrorClass::None,
+            Err(err) => reject(ErrorClass::Rejected, format_args!("signature: {err}")),
         },
-        sender,
+        sender: sender.ok(),
         tx_type: Some(tx.tx_type() as u8),
     }
 }
@@ -114,20 +130,22 @@ fn execute(
     pre_state: &PreState,
     blocks: &[TempoBlock],
 ) -> TempoExecutionOutcome {
-    let prepared = chain::chain_spec(chain).and_then(|spec| {
-        let blocks = blocks
-            .iter()
-            .map(|block| recover_block(&spec, block))
-            .collect::<Result<Vec<_>, _>>()?;
-        if !blocks.is_sorted_by_key(|block| block.header().timestamp()) {
-            return Err(reject(
-                ErrorClass::InvalidInput,
-                "input: blocks out of timestamp order",
-            ));
-        }
-        let db = state::seed(pre_state).map_err(|class| reject(class, "input: pre-state"))?;
-        Ok((Arc::new(spec), blocks, db))
-    });
+    let prepared = chain::chain_spec(chain)
+        .map_err(|class| reject(class, "input: hardfork schedule out of order"))
+        .and_then(|spec| {
+            let blocks = blocks
+                .iter()
+                .map(|block| recover_block(&spec, block))
+                .collect::<Result<Vec<_>, _>>()?;
+            if !blocks.is_sorted_by_key(|block| block.header().timestamp()) {
+                return Err(reject(
+                    ErrorClass::InvalidInput,
+                    "input: blocks out of timestamp order",
+                ));
+            }
+            let db = state::seed(pre_state).map_err(|class| reject(class, "input: pre-state"))?;
+            Ok((Arc::new(spec), blocks, db))
+        });
     let (spec, blocks, db) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -147,7 +165,10 @@ fn execute(
         let invariant_failures = broken_start(&evm_config, pre_state, &blocks[0], &db, &outcome);
         if !invariant_failures.is_empty() {
             return TempoExecutionOutcome {
-                error: ErrorClass::InvalidInput,
+                error: reject(
+                    ErrorClass::InvalidInput,
+                    "input: pre-state breaks invariants",
+                ),
                 invariant_failures,
                 ..Default::default()
             };
