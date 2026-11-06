@@ -293,7 +293,7 @@ mod tests {
                     Ok(())
                 })?;
             }
-            ctx.evm().ext_mut().kind = TempoEvmKind::zone();
+            ctx.evm().ext_mut().kind = TempoEvmKind::Zone;
 
             let receipt = receipt(RECEIVER, RECEIVER);
             assert_eq!(receipt.version, BLOCKED_RECEIPT_VERSION);

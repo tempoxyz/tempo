@@ -344,7 +344,7 @@ mod tests {
         type ConfigSelector = BaseEvmConfigSelector;
         type SpecId = SpecId;
         type Tx = ();
-        type EvmExt = crate::storage::evm::tests::TestExt;
+        type EvmExt = ();
         type MessageExt = ();
         type MessageResultExt = ();
         type TxEnvExt = ();

@@ -279,15 +279,17 @@ where
             env.spec,
         );
         let l1 = db.l1_state().clone();
-        let ext = TempoEvmExt::new(TempoEvmKind::zone(), ZoneProtocolFeeManager::new());
+        let ext = TempoEvmExt::new(TempoEvmKind::Zone, ZoneProtocolFeeManager::new());
         let precompiles = ZonePrecompiles::<TempoEvmTypes, L1>::new(
             env.spec,
             ext.actions.clone(),
             ext.non_creditable_slots.clone(),
             l1.clone(),
         );
+        let mut version = env.version;
+        tempo_chainspec::gas_params::apply_zone(&mut version, env.spec);
         evm2::Evm::new_with_execution_config_and_ext(
-            zone_execution_config(env.spec, env.version),
+            zone_execution_config(env.spec, version),
             env.spec,
             env.block,
             zone_tx_registry(env.spec, l1),

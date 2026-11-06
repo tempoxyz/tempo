@@ -5,23 +5,18 @@ pub mod shim;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment, evm::EvmStorageExt},
+    storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment},
 };
 use alloy::primitives::{Address, B256, KECCAK256_EMPTY};
-use evm2::{Evm, EvmTypes};
 pub use tempo_chainspec::is_valid_native_account as is_valid_account;
-use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, ConfigurableAccountEvent,
     IConfigurableAccount,
 };
 use tempo_precompiles_macros::{Storable, contract};
-use tempo_primitives::{
-    TempoEvmKind,
-    transaction::{
-        ConfigurableAccountConfig, ConfigurableAccountOwner,
-        configurable_account::CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
-    },
+use tempo_primitives::transaction::{
+    ConfigurableAccountConfig, ConfigurableAccountOwner,
+    configurable_account::CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
 };
 
 pub use tempo_primitives::account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH};
@@ -276,52 +271,6 @@ pub fn registration_event(
 /// Whether `code_hash` is an account's rather than a contract's: no code, or the account marker.
 pub fn is_account_code_hash(code_hash: B256) -> bool {
     code_hash == KECCAK256_EMPTY || code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH
-}
-
-/// Returns the gas a load of `address` on a zone pays to read its Tempo L1 commitment (TIP-1154)
-/// when the account holds [account code](is_account_code_hash): [`L1_COMMITMENT_READ_GAS`], or zero when the
-/// transaction already read it. `None` when `address` cannot hold one: Tempo L1 owns its
-/// commitments, zones read none before T14, and `address` must be able to be a configurable
-/// account and not be one of the zone's precompiles.
-pub fn l1_commitment_read_gas<T>(
-    evm: &Evm<'_, T>,
-    address: Address,
-    spec: TempoHardfork,
-) -> Option<u64>
-where
-    T: EvmTypes,
-    T::EvmExt: EvmStorageExt,
-{
-    if let TempoEvmKind::Zone { l1_commitments } = evm.ext().kind()
-        && spec.is_t14()
-        && !evm.precompiles().contains(&address)
-        && is_valid_account(address, spec)
-    {
-        Some(if l1_commitments.contains(&address) {
-            0
-        } else {
-            L1_COMMITMENT_READ_GAS
-        })
-    } else {
-        None
-    }
-}
-
-/// Records the Tempo L1 commitment read of a load of `address` that found `code_hash`, returning
-/// whether the load pays for it: the account holds account code, and the transaction has not read
-/// its commitment yet.
-pub fn record_l1_commitment_read<T>(evm: &mut Evm<'_, T>, address: Address, code_hash: B256) -> bool
-where
-    T: EvmTypes,
-    T::EvmExt: EvmStorageExt,
-{
-    if let TempoEvmKind::Zone { l1_commitments } = evm.ext_mut().kind_mut()
-        && is_account_code_hash(code_hash)
-    {
-        l1_commitments.insert(address)
-    } else {
-        false
-    }
 }
 
 /// Whether code matches the account's registration state.

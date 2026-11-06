@@ -35,7 +35,9 @@ use reth_trie_db::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{num::NonZeroU64, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, constants::gas::L1_COMMITMENT_READ_GAS, spec::DEV};
+use tempo_chainspec::{
+    TempoChainSpec, constants::gas::L1_COMMITMENT_READ_GAS, gas_params::apply_zone, spec::DEV,
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, ISignatureVerifier, ITIP20ChannelReserve,
     PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -4411,8 +4413,16 @@ fn native_signature_verification_is_intrinsic_gas() {
 /// A fixture whose EVM is a zone's, which reads commitments from Tempo L1.
 fn zone_fixture(configurable: bool) -> Fixture {
     let mut f = Fixture::with_parent(configurable);
-    f.evm.ext_mut().kind = TempoEvmKind::zone();
+    f.evm.ext_mut().kind = TempoEvmKind::Zone;
+    f.reconfigure(|version| apply_zone(version, TempoHardfork::T14));
     f
+}
+
+/// The gas parameters of a zone's EVM at T14.
+fn zone_gas_params() -> GasParams {
+    let mut version = *tempo_execution_config(TempoHardfork::T14, CHAIN_ID).version();
+    apply_zone(&mut version, TempoHardfork::T14);
+    version.gas_params
 }
 
 /// A zone charges the sender's Tempo read with the cold access it skips, and the eligible call
@@ -4452,8 +4462,9 @@ fn zones_charge_the_sender_read_instead_of_registering() {
     );
 }
 
-/// On a zone, intrinsic gas charges one Tempo read for each distinct eligible call target.
-/// Precompiles, contracts, the sender and access-list entries read nothing before execution.
+/// On a zone, the first call target pays its Tempo read in intrinsic gas when it can hold a
+/// commitment. Later call targets and access-list entries pay it through the zone's cold access
+/// and access-list costs, whatever the address.
 #[test]
 fn zone_commitment_reads_are_charged_once_per_read_account() {
     let contract = Address::repeat_byte(0x55);
@@ -4487,12 +4498,16 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
         assert!(result.status, "{result:?}");
         result.tx_gas_used()
     };
-    let gas = tempo_gas_params(TempoHardfork::T14);
+    let gas = zone_gas_params();
     let access_list_entry = gas.get(GasId::TxAccessListAddressCost);
     let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
+    assert_eq!(
+        access_list_entry,
+        tempo_gas_params(TempoHardfork::T14).get(GasId::TxAccessListAddressCost)
+            + L1_COMMITMENT_READ_GAS
+    );
 
     let base = run(vec![], vec![contract]);
-    // Access-list entries are read only when execution loads them.
     assert_eq!(
         run(
             vec![CONFIGURABLE_ACCOUNT_ADDRESS, contract, other],
@@ -4501,7 +4516,7 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
         3 * access_list_entry
     );
     assert_eq!(run(vec![], vec![eligible]) - base, L1_COMMITMENT_READ_GAS);
-    // A repeated call target is read once, after the cold access of its second call.
+    // A second call pays the zone's cold access, whatever its target.
     assert_eq!(
         run(vec![], vec![eligible, eligible]) - base,
         L1_COMMITMENT_READ_GAS + cold_access

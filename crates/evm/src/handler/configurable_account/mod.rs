@@ -16,18 +16,15 @@ use evm2::{
 use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
 use tempo_precompiles::{
     configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, is_valid_account, is_valid_account_code,
-        l1_commitment_read_gas, record_l1_commitment_read, registration_event,
+        ConfigurableAccount, UpgradeEligibility, is_account_code_hash, is_valid_account,
+        is_valid_account_code, registration_event,
     },
     error::TempoPrecompileError,
     storage::{StorageCtx, account_config_commitment},
 };
-use tempo_primitives::{
-    TempoEvmKind,
-    transaction::{
-        ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature,
-        SignatureType, SignedKeyAuthorization, TempoSignature,
-    },
+use tempo_primitives::transaction::{
+    ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
+    SignedKeyAuthorization, TempoSignature,
 };
 
 /// An independently signed role. Repeated accounts still require both role digests.
@@ -163,8 +160,8 @@ impl TempoTxEnv {
 /// Configurable roles are checked first. At T14, bare primitive authority is then rejected with
 /// [`TempoInvalidTransaction::RootKeyRetired`] for any account with a nonzero configuration
 /// commitment, in the order sender, key authorization signer, fee payer, access key.
-/// RPC simulation skips only the sender check. On a zone, the L1 commitment reads of all accounts
-/// the transaction loads before execution are charged too (see [`l1_commitment_reads_gas`]).
+/// RPC simulation skips only the sender check. On a zone, the Tempo commitment reads of the
+/// accounts the transaction warms for free are charged too (see [`l1_commitment_reads_gas`]).
 ///
 /// Loads and warms accounts, but does not register commitments. Caller must charge both components.
 /// Tx warmth, but not the beneficiary's, must be initialized before loading non-caller accounts.
@@ -190,10 +187,8 @@ pub(crate) fn validate_state(
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
         if let Some(aa) = envelope.as_aa() {
             extra_gas += granted_configurable_account_access_gas(host, aa, spec, &accounts)?;
-            // A granted configurable account's commitment is read like an access key's.
-            accounts.extend(aa.granted_configurable_account());
         }
-        extra_gas += l1_commitment_reads_gas(host, envelope, spec, &accounts)?;
+        extra_gas += l1_commitment_reads_gas(host, envelope, spec)?;
     }
     Ok((extra_gas, state_gas))
 }
@@ -260,40 +255,35 @@ pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
         }
 }
 
-/// Intrinsic gas for the Tempo L1 commitment reads (TIP-1154) of the accounts a zone transaction
-/// reads before execution, [`L1_COMMITMENT_READ_GAS`] for each distinct one: the sender, which also pays
-/// the cold access it skips, then every `authorities` account and call target that holds an L1
-/// commitment. Loads those accounts and resets the transaction's Tempo-warm accounts to them.
-/// Zero on Tempo L1.
+/// Intrinsic gas for the Tempo commitment reads (TIP-1154) of the accounts a zone transaction warms
+/// without paying a cold access: a full cold access for the sender, and [`L1_COMMITMENT_READ_GAS`] for
+/// the first call target when it can hold a commitment. A zone's gas schedule charges every other
+/// read through the cold access (see [`tempo_chainspec::gas_params::apply_zone`]). Zero on Tempo L1.
 fn l1_commitment_reads_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
-    authorities: &[Address],
 ) -> HandlerResult<u64> {
-    let TempoEvmKind::Zone {
-        l1_commitments: reads,
-    } = &mut host.ext_mut().kind
-    else {
+    if host.ext().kind.is_l1() {
         return Ok(0);
-    };
-    reads.clear();
-    reads.insert(envelope.caller());
-    let mut gas = account_access_gas(&host.version().gas_params, true) + L1_COMMITMENT_READ_GAS;
-    let targets = envelope
+    }
+    let caller = envelope.caller();
+    let mut gas = account_access_gas(&host.version().gas_params, true);
+    let Some(to) = envelope
         .evm_tx()
         .calls()
-        .filter_map(|(kind, _)| kind.to().copied());
-    for address in authorities.iter().copied().chain(targets) {
-        if l1_commitment_read_gas(host, address, spec).is_none_or(|read_gas| read_gas == 0) {
-            continue;
-        }
+        .next()
+        .and_then(|(kind, _)| kind.to().copied())
+    else {
+        return Ok(gas);
+    };
+    if to != caller && is_valid_account(to, spec) && !host.precompiles().contains(&to) {
         let code_hash = host
             .state_mut()
-            .account(&address)?
+            .account(&to)?
             .get()
             .map_or(KECCAK256_EMPTY, |info| info.code_hash);
-        if record_l1_commitment_read(host, address, code_hash) {
+        if is_account_code_hash(code_hash) {
             gas += L1_COMMITMENT_READ_GAS;
         }
     }

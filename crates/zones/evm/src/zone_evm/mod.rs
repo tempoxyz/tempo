@@ -1,5 +1,6 @@
 //! Zone runtime EVM and its private execution policies.
 
+#[cfg(test)]
 mod commitment_reads;
 pub(crate) mod contract_creation;
 mod validation;
