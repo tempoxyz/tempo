@@ -1,4 +1,4 @@
-# Build from the repository root. This is a standalone workspace, not Tempo's workspace.
+# Build the trie workload from Tempo's root workspace and lockfile.
 FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS builder
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
@@ -6,7 +6,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 ARG CARGO_BUILD_JOBS=2
 WORKDIR /work
-COPY contrib/antithesis/reth-trie/ ./
+# The Dockerfile-specific allowlist includes every workspace member manifest.
+COPY . ./
 # Instrument target code only, not host build scripts/proc macros. Disable LTO: it can
 # optimize away compile-time coverage. Keep assertions and DWARF for Antithesis.
 ENV CARGO_PROFILE_ANTITHESIS_DEBUG=2 \
@@ -19,8 +20,9 @@ ENV CARGO_PROFILE_ANTITHESIS_DEBUG=2 \
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/work/target,sharing=locked \
-    touch src/main.rs \
-    && cargo build --locked --profile antithesis --features fuzz --bin reth-trie-antithesis \
+    touch contrib/antithesis/reth-trie/src/main.rs \
+    && cargo build --locked --profile antithesis -p reth-trie-antithesis \
+      --features reth-trie-antithesis/fuzz --bin reth-trie-antithesis \
       --target x86_64-unknown-linux-gnu \
       --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Ccodegen-units=1","-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
     && mkdir /out \

@@ -7,7 +7,7 @@ use alloy_primitives::{
 };
 use alloy_trie::{HashBuilder, Nibbles, TrieAccount};
 use evm2::evm::AccountInfo;
-use rand::Rng;
+use rand_09::Rng;
 use reth_primitives_traits::Account;
 use reth_trie::{bundle_state::BundleState, HashedPostState, HashedStorage};
 use serde::{Deserialize, Serialize};

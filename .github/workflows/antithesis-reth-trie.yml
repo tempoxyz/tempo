@@ -7,6 +7,14 @@ on:
   push:
     branches: [main]
     paths:
+      # The workload shares Cargo resolution with every root workspace member.
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "bin/**"
+      - "crates/**"
+      - "xtask/**"
+      - "mainnet-network-identity.json"
+      - "testnet-network-identity.json"
       - "contrib/antithesis/reth-trie/**"
       - ".github/workflows/antithesis-reth-trie.yml"
   workflow_dispatch:

@@ -4,7 +4,7 @@ use crate::model::{apply, generate, random_address, random_slot, Model, Update};
 use alloy_primitives::{Address, KECCAK256_EMPTY, U256};
 use antithesis_sdk::random::AntithesisRng;
 use eyre::{ensure, Result};
-use rand::{seq::SliceRandom, Rng};
+use rand_09::{seq::SliceRandom, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 

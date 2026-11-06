@@ -1245,6 +1245,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "antithesis-instrumentation"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009bd9354d773dea6b85c08fa0d929ff6c52003cbe3cf496614eff79d2895eb5"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "antithesis_sdk"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1255,6 +1264,7 @@ dependencies = [
  "linkme",
  "once_cell",
  "rand 0.8.8",
+ "rand_core 0.9.5",
  "rustc_version_runtime",
  "serde",
  "serde_json",
@@ -7781,7 +7791,9 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.16.1",
+ "indexmap 2.14.2",
  "metrics",
+ "ordered-float",
  "quanta 0.12.6",
  "rand 0.9.5",
  "rand_xoshiro",
@@ -8501,6 +8513,15 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "ordered-float"
+version = "5.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f59006ce1e204c30956638535b74d317bca99477b9356dfaec54c37f6f600ab"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -12579,6 +12600,44 @@ dependencies = [
  "reth-trie-sparse",
  "tracing",
  "triehash",
+]
+
+[[package]]
+name = "reth-trie-antithesis"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "antithesis-instrumentation",
+ "antithesis_sdk",
+ "evm2",
+ "eyre",
+ "metrics-util",
+ "rand 0.9.5",
+ "reth-chain-state",
+ "reth-chainspec",
+ "reth-db",
+ "reth-db-api",
+ "reth-db-common",
+ "reth-engine-primitives",
+ "reth-engine-tree",
+ "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-evm-ethereum",
+ "reth-execution-types",
+ "reth-node-builder",
+ "reth-node-core",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-stages-types",
+ "reth-storage-overlay",
+ "reth-tasks",
+ "reth-trie",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

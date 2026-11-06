@@ -12,6 +12,7 @@ publish = false
 
 [workspace]
 members = [
+  "contrib/antithesis/reth-trie",
   "bin/tempo",
   "crates/alloy",
   "crates/chainspec",
@@ -132,6 +133,16 @@ inherits = "profiling"
 debug-assertions = true
 overflow-checks = true
 
+# Coverage instrumentation needs one codegen unit, no LTO, and full symbols.
+[profile.antithesis]
+inherits = "profiling"
+debug = "full"
+incremental = false
+lto = "off"
+codegen-units = 1
+debug-assertions = true
+overflow-checks = true
+
 [profile.bench]
 inherits = "maxperf"
 debug = "line-tables-only"
@@ -243,6 +254,7 @@ reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "b2
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
+reth-db-common = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "b2f6dc91040beb1a60d5fcd3675ed5efc2aa4124" }
@@ -312,6 +324,7 @@ alloy-json-rpc = "2.5.0"
 alloy-network = { version = "2.5.0", default-features = false }
 alloy-provider = { version = "2.5.0", default-features = false }
 alloy-rlp = { version = "0.3.16", default-features = false }
+alloy-trie = { version = "0.9.8", default-features = false }
 alloy-rpc-client = { version = "2.5.0", default-features = false }
 alloy-rpc-types-admin = "2.5.0"
 alloy-rpc-types-engine = "2.5.0"
@@ -341,6 +354,7 @@ commonware-storage = "2026.10.0"
 commonware-utils = "2026.10.0"
 
 antithesis_sdk = { version = "0.3.0", default-features = false }
+antithesis-instrumentation = "=0.1.1"
 arbitrary = { version = "1.4", features = ["derive"] }
 async-trait = "0.1"
 auto_impl = "1"
@@ -369,6 +383,7 @@ jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 k256 = { version = "0.13.4", features = ["arithmetic", "ecdh"] }
 keccak-const = "0.2.0"
 metrics = "0.24.3"
+metrics-util = { version = "0.20.3", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 minisign = "0.8"
 minisign-verify = "0.2"
