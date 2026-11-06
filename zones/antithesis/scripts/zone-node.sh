@@ -2,6 +2,11 @@
 # Runs one zone node from the files provision.sh wrote: "0", "1" or "2" for a quorum
 # sequencer, "rpc" for the RPC follower that runs the native prover and the checker.
 # Restarts reuse the same datadir.
+#
+# Each node computes state roots on a different engine path, so a trie bug on one path shows up
+# as nodes disagreeing on a block instead of every node agreeing on the same wrong root:
+# zone-0 and zone-rpc use the default sparse-trie task, zone-1 the synchronous fallback over the
+# database trie, zone-2 the serial sparse trie.
 set -eu
 
 S=/shared
@@ -16,6 +21,11 @@ case "$NODE" in
     1 | 2)
         ROLE_ARGS="--secp256k1.key $S/seq-$NODE.key --sequencer-key-file $S/seq-$NODE.key --deposit-decryption-keys-file $S/decryption.keys"
         P2P_KEY=$S/p2p-$NODE.key
+        if [ "$NODE" = 1 ]; then
+            ROLE_ARGS="$ROLE_ARGS --engine.state-root-fallback"
+        else
+            ROLE_ARGS="$ROLE_ARGS --engine.disable-parallel-sparse-trie"
+        fi
         ;;
     rpc)
         # Without --sequencer.prover-address the shadow prover runs the native prover in-process.

@@ -36,6 +36,7 @@ use ledger::{Account, Lease, Ledger, Record};
 
 mod checks;
 mod ledger;
+mod proofs;
 
 /// Dev accounts 8..=19 of the test mnemonic fund deposits. 0 administers the portal and 5..=7
 /// are the sequencers, which pay their own settlement gas.
@@ -109,6 +110,10 @@ enum Command {
     Withdraw,
     /// Funds a batch of new zone accounts from one sender.
     Fanout,
+    /// Sends a sender's whole balance to another account, deleting its balance slot.
+    Sweep,
+    /// Checks that state proofs verify against the block's state root and that nodes agree.
+    CheckProofs,
     /// Checks that zone nodes agree with L1 settlement while faults run.
     CheckConsistency,
     /// After faults stop: every confirmed deposit and withdrawal lands and nodes converge.
@@ -127,10 +132,12 @@ impl Antithesis {
             Command::CheckConsistency => return ctx.check_consistency().await,
             Command::CheckSettled => return ctx.check_settled().await,
             Command::CheckLedger => return ctx.check_ledger().await,
+            Command::CheckProofs => return ctx.check_proofs().await,
             Command::Deposit => ctx.deposit().await,
             Command::Transfer => ctx.transfer().await,
             Command::Withdraw => ctx.withdraw().await,
             Command::Fanout => ctx.fanout().await,
+            Command::Sweep => ctx.sweep().await,
         };
         // Under faults, or on a node that lags the sequencer, a send can be rejected (nonce too
         // low) or never confirm. Drivers record only confirmed operations, so such an RPC error
@@ -527,6 +534,80 @@ impl Context {
         );
         println!(
             "fanout: {count} new accounts from {}, {accounts} total",
+            sender.address()
+        );
+        Ok(())
+    }
+
+    /// Empties one sender into another account, so its pathUSD balance slot is deleted from the
+    /// storage trie, and the recipient's slot changes.
+    async fn sweep(&self) -> eyre::Result<()> {
+        let node = random_index(self.zones.len());
+        let Some((sender, balance, _lease)) = self.lease_zone_sender(&self.zones[node]).await?
+        else {
+            return Ok(());
+        };
+        let Some(to) = self.random_existing_account(Some(sender.address()))? else {
+            return Ok(());
+        };
+        let to = to.address();
+        let url = &self.zone_urls[node];
+        let zone = self.wallet(&sender, url);
+        let gas_price = zone.get_gas_price().await?;
+        let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
+        // The fee is charged on gas used, so leaving exactly the estimated fee empties the
+        // account when the estimate holds.
+        let gas = token
+            .transfer(to, U256::from(1))
+            .gas_price(gas_price)
+            .estimate_gas()
+            .await?;
+        let fee: u128 = calc_gas_balance_spending(gas, gas_price).try_into()?;
+        let Some(amount) = balance.checked_sub(fee).filter(|amount| *amount > 0) else {
+            return Ok(());
+        };
+        let receipt = token
+            .transfer(to, U256::from(amount))
+            .gas(gas)
+            .gas_price(gas_price)
+            .send()
+            .await?
+            .with_timeout(Some(RECEIPT_TIMEOUT))
+            .get_receipt()
+            .await?;
+        let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
+        let funded_revert = !receipt.status()
+            && self
+                .covered_before(&zone, &receipt, sender.address(), amount + fee)
+                .await?;
+        assert_always!(
+            !funded_revert,
+            "Funded zone transfer succeeds",
+            &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
+        );
+        if !receipt.status() {
+            return Ok(());
+        }
+        self.ledger.append(&Record::Transfer {
+            zone_tx: receipt.transaction_hash,
+            zone_block,
+            from: sender.address(),
+            to,
+            amount,
+        })?;
+        let left = token
+            .balanceOf(sender.address())
+            .from(sender.address())
+            .block(BlockId::number(zone_block))
+            .call()
+            .await?;
+        assert_sometimes!(
+            left.is_zero(),
+            "Sweep empties a zone account",
+            &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "left": left })
+        );
+        println!(
+            "sweep: {amount} from {} to {to}, {left} left",
             sender.address()
         );
         Ok(())

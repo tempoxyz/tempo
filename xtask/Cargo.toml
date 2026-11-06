@@ -69,6 +69,7 @@ zone-p2p.workspace = true
 zone-rpc.workspace = true
 zone-sequencer.workspace = true
 alloy-rlp.workspace = true
+alloy-trie = { workspace = true, features = ["std"] }
 alloy-rpc-types-eth.workspace = true
 futures.workspace = true
 serde_yaml.workspace = true
