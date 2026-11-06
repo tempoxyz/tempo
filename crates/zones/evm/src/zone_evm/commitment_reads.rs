@@ -94,6 +94,8 @@ mod tests {
     use crate::zone_evm::tests::{config, fee_free_env, transaction};
     use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use alloy_sol_types::{SolCall, SolError};
     use evm2::{
         TxResult,
@@ -102,7 +104,14 @@ mod tests {
     };
     use reth_evm::BlockExecutorFactory;
     use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
-    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
+    use tempo_contracts::precompiles::{
+        CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount, IConfigurableAccountShim,
+        ISignatureVerifier, SIGNATURE_VERIFIER_ADDRESS,
+    };
+    use tempo_primitives::transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        PrimitiveSignature, TempoSignature, configurable_account_digest,
+    };
     use zone_precompiles::{ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader, zone_fee_manager};
 
     const SENDER: Address = Address::repeat_byte(0x01);
@@ -282,5 +291,123 @@ mod tests {
                 IConfigurableAccount::UnsupportedOnZone {}.abi_encode()
             );
         }
+    }
+
+    /// A configurable account whose single owner is \`owner\`, at \`version\`.
+    fn owned_config(owner: &PrivateKeySigner, version: u64) -> ConfigurableAccountConfig {
+        ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: owner.address(),
+                weight: 1,
+            }],
+        }
+    }
+
+    /// The \`0x05\` signature of \`account\` under \`config\` over \`hash\`, signed by \`owner\`.
+    fn sign(
+        owner: &PrivateKeySigner,
+        account: Address,
+        config: ConfigurableAccountConfig,
+        hash: B256,
+    ) -> Bytes {
+        let digest = configurable_account_digest(hash, account, config.version);
+        let approval = PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap());
+        TempoSignature::ConfigurableAccount(
+            ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap(),
+        )
+        .to_bytes()
+    }
+
+    /// Calls \`to\` with \`input\` at T14, reading Tempo through \`l1\`.
+    fn call(to: Address, input: Vec<u8>, l1: &MockL1Reader) -> TxResult<TempoEvmTypes> {
+        let tx = TxLegacy {
+            gas_limit: 1_000_000,
+            to: TxKind::Call(to),
+            input: input.into(),
+            ..Default::default()
+        };
+        execute(TempoHardfork::T14, tx, Bytes::new(), l1)
+    }
+
+    fn verify(account: Address, hash: B256, signature: Bytes, l1: &MockL1Reader) -> bool {
+        let result = call(
+            SIGNATURE_VERIFIER_ADDRESS,
+            ISignatureVerifier::verifyConfigurableAccountCall {
+                account,
+                hash,
+                signature,
+            }
+            .abi_encode(),
+            l1,
+        );
+        assert!(result.status, "{result:?}");
+        ISignatureVerifier::verifyConfigurableAccountCall::abi_decode_returns(&result.output)
+            .unwrap()
+    }
+
+    #[test]
+    fn signature_verifier_checks_configurable_accounts_against_tempo() {
+        let hash = B256::repeat_byte(0x42);
+        let owner = PrivateKeySigner::random();
+        let config = owned_config(&owner, 0);
+        let account = config.derive_account().unwrap();
+        let signature = sign(&owner, account, config, hash);
+
+        // Unregistered on Tempo: the version-zero owners verify by derivation.
+        let l1 = MockL1Reader::default();
+        assert!(verify(account, hash, signature.clone(), &l1));
+        assert_eq!(
+            l1.commitment_requests()
+                .into_iter()
+                .filter(|(read, _)| *read == account)
+                .count(),
+            1
+        );
+
+        // Rotated on Tempo: only the owners at the anchor verify.
+        let rotated_owner = PrivateKeySigner::random();
+        let rotated = owned_config(&rotated_owner, 1);
+        let l1 = MockL1Reader::default();
+        l1.insert_commitment(account, 0, rotated.commitment().unwrap());
+        assert!(!verify(account, hash, signature, &l1));
+        assert!(verify(
+            account,
+            hash,
+            sign(&rotated_owner, account, rotated, hash),
+            &l1
+        ));
+    }
+
+    #[test]
+    fn registered_account_answers_erc1271_from_tempo() {
+        let hash = B256::repeat_byte(0x42);
+        let owner = PrivateKeySigner::random();
+        let config = owned_config(&owner, 0);
+        let account = config.derive_account().unwrap();
+        let l1 = MockL1Reader::default();
+        l1.insert_commitment(account, 0, config.commitment().unwrap());
+
+        let is_valid = |signature: Bytes| {
+            let result = call(
+                account,
+                IConfigurableAccountShim::isValidSignatureCall { hash, signature }.abi_encode(),
+                &l1,
+            );
+            assert!(result.status, "{result:?}");
+            IConfigurableAccountShim::isValidSignatureCall::abi_decode_returns(&result.output)
+                .unwrap()
+        };
+        assert_eq!(
+            is_valid(sign(&owner, account, config, hash)),
+            IConfigurableAccountShim::isValidSignatureCall::SELECTOR
+        );
+        let stranger = PrivateKeySigner::random();
+        assert_eq!(
+            is_valid(sign(&stranger, account, owned_config(&stranger, 0), hash)),
+            [0xff; 4]
+        );
     }
 }
