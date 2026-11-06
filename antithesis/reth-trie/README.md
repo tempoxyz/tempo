@@ -89,3 +89,14 @@ inter-batch sleeps and recovery of persisted blocks. Inspect actual property
 observations rather than treating image startup as proof those paths ran. SDK
 local JSON output is useful for smoke checks but does not validate Antithesis's
 platform instrumentation or fault scheduling.
+
+## Known dependency-scan failures
+
+The imported Reth graph still triggers six unsuppressed advisories:
+`RUSTSEC-2026-0387` for crypto-bigint 0.5.5 (constant-time variability; the fix
+requires 0.7.6, outside elliptic-curve 0.13's compatible dependency range), and
+unmaintained-package notices for bincode, derivative, paste, pin-utils and
+proc-macro-error2. These are not evidence that this workload is exploitable, but
+they are unresolved findings, not passing security checks. Updating that
+cryptography graph requires an upstream-compatible dependency migration.
+The lockfile updates libz-sys to 1.1.31, which fixes `RUSTSEC-2026-0418`.
