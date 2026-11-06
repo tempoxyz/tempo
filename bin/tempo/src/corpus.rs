@@ -278,9 +278,7 @@ fn shadow_replay(
                     })
                     .map_err(|err| {
                         eyre::eyre!("shadow replay failed at block {}: {err}", block.number())
-                    })?
-                    .0
-                {
+                    })? {
                     ReplayOutcome::Match => &matched,
                     ReplayOutcome::Expected => &expected,
                     ReplayOutcome::Inconclusive => &inconclusive,

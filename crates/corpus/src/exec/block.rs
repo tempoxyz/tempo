@@ -49,9 +49,9 @@ impl Executed {
     }
 }
 
-pub(crate) type Updates = Arc<Mutex<Vec<StateUpdate>>>;
+pub type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
-pub(crate) fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
+pub fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
     let updates = Updates::default();
     let sink = updates.clone();
     eyre::ensure!(
@@ -61,7 +61,7 @@ pub(crate) fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Upda
     Ok(updates)
 }
 
-pub(crate) fn drain(updates: &Updates) -> Vec<StateUpdate> {
+pub fn drain(updates: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *updates.lock())
 }
 

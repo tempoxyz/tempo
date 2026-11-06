@@ -28,7 +28,7 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
-pub use analysis::Report;
+use analysis::Report;
 use evm2::evm::{Cache, Database, PendingState, TxResultExt};
 use reth_chainspec::ForkCondition;
 use reth_evm::{BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _};
@@ -79,14 +79,14 @@ impl ShadowReplayer {
     }
 
     /// Replays a canonical block under both rule sets. Each arm executes on its own copy of the
-    /// parent state, which `parent_state` opens. Returns the outcome and the differences behind it.
+    /// parent state, which `parent_state` opens.
     /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
     pub fn replay<DB: Database>(
         &self,
         block: &RecoveredBlock<Block>,
         receipts: &[TempoReceipt],
         parent_state: impl Fn() -> Result<DB, String> + Sync,
-    ) -> Result<(ReplayOutcome, Report), String> {
+    ) -> Result<ReplayOutcome, String> {
         let (real, shadow) = self.execute(block, &parent_state)?;
         if let Some(f) = &real.failure {
             return Err(format!(
@@ -107,7 +107,7 @@ impl ShadowReplayer {
         let outcome = report.outcome(&shadow);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
             debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");
-            return Ok((outcome, report));
+            return Ok(outcome);
         }
 
         let failure = shadow.failure.as_ref();
@@ -123,7 +123,7 @@ impl ShadowReplayer {
             shadow_processed_txs = shadow.txs.len(),
             "Shadow replay needs review; differences are not confirmed regressions"
         );
-        Ok((outcome, report))
+        Ok(outcome)
     }
 
     /// Executes each transaction under both rule sets from the same canonical prefix.

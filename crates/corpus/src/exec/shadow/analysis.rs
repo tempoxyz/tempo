@@ -17,13 +17,13 @@ pub(super) const MAX_SAMPLES: usize = 8;
 /// Difference counts, comparison coverage, and bounded diagnostic samples.
 ///
 /// Each sample carries the first accepting rule's ID, or `None` for an unexplained difference.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Report {
+#[derive(Debug, Default)]
+pub(super) struct Report {
     pub unexplained: usize,
     pub expected: BTreeMap<&'static str, usize>,
     pub boundaries_evaluated: usize,
     pub boundaries_not_evaluated: usize,
-    pub(super) samples: Vec<(Boundary, Difference, Option<&'static str>)>,
+    pub samples: Vec<(Boundary, Difference, Option<&'static str>)>,
 }
 
 impl Report {
