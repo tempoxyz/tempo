@@ -6,8 +6,11 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_network::ReceiptResponse;
+use reth_chainspec::EthChainSpec;
 use reth_e2e_test_utils::wallet::{TestAccount, Wallet};
 use reth_node_api::BuiltPayload;
+use std::time::Instant;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
 };
@@ -706,5 +709,60 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
     assert_eq!(payment, 5);
     assert_eq!(non_payment, 3);
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tempo_call_input_copy_node_poc() -> eyre::Result<()> {
+    const CODE: &str = "60006219ffff535b60006000621a0000600061dead5afa50600756";
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(crate::utils::make_genesis_at(TempoHardfork::T13))
+        .build_with_node_access()
+        .await?;
+    let chain_id = setup.node.inner.chain_spec().chain_id();
+    let wallet = Wallet::default().with_chain_id(chain_id);
+    let mut sender = t1_account(&wallet, 0);
+    let contract = sender.next_contract_address();
+    let init_code = format!("601b600c600039601b6000f3{CODE}");
+    let deploy_tx = sender
+        .deploy(alloy::primitives::Bytes::from(
+            alloy::primitives::hex::decode(init_code)?,
+        ))
+        .gas_limit(1_000_000)
+        .await;
+    let (deploy_hash, _) = setup.node.inject_and_advance(deploy_tx).await?;
+    let deploy_receipt = setup.node.transaction_receipt(deploy_hash).await?;
+    assert!(
+        deploy_receipt.is_some(),
+        "contract deployment must be mined"
+    );
+    let deployed_code = setup.node.rpc_provider().get_code_at(contract).await?;
+    assert_eq!(deployed_code.len(), 27);
+    let raw_tx = sender.tx().to(contract).gas_limit(30_000_000).await;
+    eprintln!(
+        "tempo_call_input_copy_node_poc raw_tx_bytes={}",
+        raw_tx.len()
+    );
+    let hash = setup.node.inject_tx(raw_tx).await?;
+    eprintln!("tempo_call_input_copy_node_poc pool_accepted={hash:#x}");
+    let started = Instant::now();
+    let payload = setup.node.new_payload().await?;
+    let build_elapsed = started.elapsed();
+    let import_started = Instant::now();
+    setup.node.import_payload(payload.clone()).await?;
+    let import_elapsed = import_started.elapsed();
+    let elapsed = started.elapsed();
+    let user_txs = extract_user_txs(payload.block().body().transactions().cloned().collect());
+    eprintln!(
+        "tempo_call_input_copy_node_poc build_elapsed={build_elapsed:?} import_elapsed={import_elapsed:?} total_elapsed={elapsed:?} user_txs={}",
+        user_txs.len()
+    );
+    assert_eq!(user_txs.len(), 1);
+    let receipt = setup
+        .node
+        .transaction_receipt(hash)
+        .await?
+        .expect("attack tx receipt");
+    assert_eq!(receipt.gas_used, 30_000_000);
     Ok(())
 }

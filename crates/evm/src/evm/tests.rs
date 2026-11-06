@@ -1,5 +1,7 @@
+use std::time::Instant;
+
 use crate::{TempoBlockEnv, TempoEvmTypes, tempo_tx_registry};
-use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+use alloy_consensus::{SignableTransaction, Signed, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
 use alloy_sol_types::{SolCall, SolError};
@@ -5050,4 +5052,94 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances() -> eyre::
         )));
     }
     Ok(())
+}
+
+#[test]
+fn tempo_call_input_copy_poc() {
+    const CALLER: Address = Address::repeat_byte(0x71);
+    const CONTRACT: Address = Address::repeat_byte(0x72);
+    const MEMORY_LEN: usize = 0x1a0000;
+
+    for (name, memory_len, input_len, gas_limit) in [
+        ("large_16m", MEMORY_LEN, MEMORY_LEN, 16_000_000),
+        ("zero_input_16m", MEMORY_LEN, 0, 16_000_000),
+        ("small_16m", 32 * 1024, 32 * 1024, 16_000_000),
+        ("large_30m", MEMORY_LEN, MEMORY_LEN, 30_000_000),
+    ] {
+        let code = vec![
+            0x60,
+            0x00,
+            0x62,
+            ((memory_len - 1) >> 16) as u8,
+            ((memory_len - 1) >> 8) as u8,
+            (memory_len - 1) as u8,
+            0x53,
+            0x5b,
+            0x60,
+            0x00,
+            0x60,
+            0x00,
+            0x62,
+            (input_len >> 16) as u8,
+            (input_len >> 8) as u8,
+            input_len as u8,
+            0x60,
+            0x00,
+            0x61,
+            0xde,
+            0xad,
+            0x5a,
+            0xfa,
+            0x50,
+            0x60,
+            0x07,
+            0x56,
+        ];
+        assert_eq!(code.len(), 27);
+        let spec = TempoHardfork::T13;
+        let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
+        version.chain_id = 1;
+        version.tx_gas_limit_cap = spec.tx_gas_limit_cap().expect("T13 cap");
+        version.features.remove(EvmFeatures::BALANCE_CHECK);
+        version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+        let mut evm = reth_evm::ConfigureEvm::evm_with_env(
+            &crate::TempoEvmConfig::moderato(),
+            InMemoryDB::default(),
+            crate::TempoEvmEnv {
+                spec,
+                version,
+                block: TempoBlockEnv {
+                    gas_limit: U256::from(60_000_000),
+                    ..Default::default()
+                },
+            },
+        );
+        fund_account(&mut evm, CALLER);
+        evm.overlay_db_mut().insert_account_info(
+            &CONTRACT,
+            AccountInfo::default().with_code(Bytecode::new_raw(code.into())),
+        );
+        let tx = TempoTxEnv::from(Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(1),
+                    gas_limit,
+                    to: TxKind::Call(CONTRACT),
+                    ..TxLegacy::default()
+                }
+                .into_signed(alloy_primitives::Signature::test_signature()),
+            ),
+            CALLER,
+        ));
+        let started = Instant::now();
+        let result = evm.transact_commit(tx).expect("valid Tempo transaction");
+        eprintln!(
+            "tempo_call_input_copy_poc {name}: elapsed={:?} gas={} status={}",
+            started.elapsed(),
+            result.tx_gas_used(),
+            result.status
+        );
+        assert_eq!(result.tx_gas_used(), gas_limit);
+        assert!(!result.status);
+    }
 }
