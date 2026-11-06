@@ -18,6 +18,7 @@ use alloy::{
 use reth_chainspec::EthChainSpec as _;
 use reth_trie_common::{EMPTY_ROOT_HASH, HashBuilder, Nibbles, TrieAccount, proof::ProofRetainer};
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
+use tempo_contracts::{MULTICALL3_ADDRESS, PERMIT2_ADDRESS};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     storage::StorageKey as _,
@@ -261,6 +262,64 @@ async fn spf_replays_migrated_policy_transaction_with_parent_forks() -> eyre::Re
     Ok(())
 }
 
+/// T15 clears Permit2 and Multicall3 code in place. The production witness must let the SPF
+/// replay both the clearing block and later blocks that only read the cleared accounts.
+#[tokio::test(flavor = "multi_thread")]
+async fn spf_replays_t15_predeploy_code_removal() -> eyre::Result<()> {
+    for has_code in [true, false] {
+        let mut genesis = funded_zone_genesis();
+        for address in [PERMIT2_ADDRESS, MULTICALL3_ADDRESS] {
+            genesis.alloc.insert(
+                address,
+                GenesisAccount {
+                    nonce: Some(1),
+                    balance: U256::from(7),
+                    code: has_code.then(|| Bytes::from_static(&[0x00])),
+                    storage: Some(BTreeMap::from([(B256::ZERO, B256::with_last_byte(1))])),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let (tempo_state_root, tempo_state_nodes) =
+            tempo_state_with_transfer_policy(PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
+        let built = build_single_transaction_block(&genesis, Some(tempo_state_root)).await?;
+        for (code, nonce, slot) in &built.t15_predeploys_after {
+            assert!(
+                code.is_empty(),
+                "code must be cleared (has_code={has_code})"
+            );
+            assert_eq!(*nonce, 1);
+            assert_eq!(*slot, U256::from(1));
+        }
+        for address in [PERMIT2_ADDRESS, MULTICALL3_ADDRESS] {
+            assert!(
+                built
+                    .generated_witness
+                    .execution_witness
+                    .keys
+                    .iter()
+                    .any(|key| key.as_ref() == address.as_slice()),
+                "{address} must be in the witness (has_code={has_code})"
+            );
+        }
+
+        let zone_state_witness = ZoneStateWitness {
+            node_pool: built.generated_witness.execution_witness.state.clone(),
+            bytecodes: built.generated_witness.execution_witness.codes.clone(),
+        };
+        assert_eq!(config_state_root(&genesis), built.genesis_state_root);
+        let config = spf_config(&genesis);
+        let witness = built.batch_witness(&config, zone_state_witness, tempo_state_nodes);
+        let output = prove_zone_batch(&config, witness)?;
+        assert_eq!(
+            output.block_transition.nextBlockHash, built.zone_hash,
+            "SPF diverged from the production builder (has_code={has_code})"
+        );
+    }
+    Ok(())
+}
+
 struct BuiltTransactionBlock {
     genesis_state_root: B256,
     zone_number: u64,
@@ -271,6 +330,7 @@ struct BuiltTransactionBlock {
     tempo_header: TempoHeader,
     raw_user_transaction: Bytes,
     generated_witness: ZoneExecutionWitness,
+    t15_predeploys_after: Vec<(Bytes, u64, U256)>,
 }
 
 impl BuiltTransactionBlock {
@@ -370,6 +430,17 @@ async fn build_single_transaction_block(
             (BlockNumberOrTag::Number(1),),
         )
         .await?;
+    let mut t15_predeploys_after = Vec::new();
+    for address in [PERMIT2_ADDRESS, MULTICALL3_ADDRESS] {
+        t15_predeploys_after.push((
+            provider.get_code_at(address).number(1).await?,
+            provider.get_transaction_count(address).number(1).await?,
+            provider
+                .get_storage_at(address, U256::ZERO)
+                .number(1)
+                .await?,
+        ));
+    }
 
     Ok(BuiltTransactionBlock {
         genesis_state_root: genesis_block.header.state_root(),
@@ -381,6 +452,7 @@ async fn build_single_transaction_block(
         tempo_header: l1_block.header,
         raw_user_transaction,
         generated_witness,
+        t15_predeploys_after,
     })
 }
 
