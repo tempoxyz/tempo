@@ -249,7 +249,7 @@ class Supervisor:
                 # A later availability problem must not hide an observed safety failure.
                 if error is not None and not isinstance(error, (Rejected, Incomplete)):
                     raise error from recovery_error
-                raise
+                raise recovery_error from error
         if error:
             raise error
         if self.shutting_down:
@@ -299,7 +299,10 @@ class Supervisor:
                                      'interrupted' if self.shutting_down else
                                      'incomplete' if isinstance(exc, Incomplete) else
                                      'rejected' if isinstance(exc, Rejected) or not self.armed else 'failed')
-                            result = event(state, op, error=str(exc))
+                            details = dict(error=str(exc))
+                            if exc.__cause__ is not None:
+                                details['cause'] = str(exc.__cause__)
+                            result = event(state, op, **details)
                         result = report(result)
                         try:
                             conn.sendall(json.dumps(result).encode() + b'\n')
