@@ -181,23 +181,38 @@ impl L1StateProvider {
 
         warn!(%address, %slot, block_number, "L1 storage cache miss, fetching from RPC");
 
+        let value = self.fetch_blocking(
+            format_args!("storage address={address} slot={slot} block={block_number}"),
+            || self.fetch_slot(address, slot, block_number),
+        )?;
+        self.cache.lock().set(address, slot, block_number, value);
+        Ok(value)
+    }
+
+    /// Runs `fetch` on the runtime from a blocking thread, retrying until it succeeds or
+    /// [`L1StateProviderConfig::max_sync_attempts`] is reached. `read` names the value in logs
+    /// and errors.
+    fn fetch_blocking<Fut>(
+        &self,
+        read: std::fmt::Arguments<'_>,
+        fetch: impl Fn() -> Fut,
+    ) -> Result<B256>
+    where
+        Fut: std::future::Future<Output = Result<B256>>,
+    {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
             let start = std::time::Instant::now();
-            let result = tokio::task::block_in_place(|| {
-                self.runtime_handle
-                    .block_on(self.fetch_slot(address, slot, block_number))
-            });
+            let result = tokio::task::block_in_place(|| self.runtime_handle.block_on(fetch()));
             let elapsed = start.elapsed();
 
             match result {
                 Ok(value) => {
-                    self.cache.lock().set(address, slot, block_number, value);
                     if attempt > 1 {
-                        info!(%address, %slot, block_number, %value, ?elapsed, attempt, "L1 storage RPC fetch succeeded after retries");
+                        info!(%read, %value, ?elapsed, attempt, "L1 RPC fetch succeeded after retries");
                     } else {
-                        info!(%address, %slot, block_number, %value, ?elapsed, "L1 storage RPC fetch succeeded");
+                        info!(%read, %value, ?elapsed, "L1 RPC fetch succeeded");
                     }
                     return Ok(value);
                 }
@@ -207,10 +222,10 @@ impl L1StateProvider {
                         .is_some_and(|max_attempts| attempt >= max_attempts.get())
                     {
                         return Err(eyre::eyre!(
-                            "L1 storage RPC fetch failed after {attempt} attempts for address={address} slot={slot} block={block_number}: {rpc_err}"
+                            "L1 RPC fetch failed after {attempt} attempts for {read}: {rpc_err}"
                         ));
                     }
-                    warn!(%address, %slot, block_number, %rpc_err, ?elapsed, attempt, "L1 storage RPC fetch failed, retrying");
+                    warn!(%read, %rpc_err, ?elapsed, attempt, "L1 RPC fetch failed, retrying");
                 }
             }
         }
