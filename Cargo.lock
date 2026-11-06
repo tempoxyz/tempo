@@ -17623,6 +17623,7 @@ dependencies = [
  "reth-evm-ethereum",
  "reth-execution-types",
  "reth-primitives-traits",
+ "reth-trie-common",
  "serde_json",
  "tempo-alloy",
  "tempo-chainspec",
