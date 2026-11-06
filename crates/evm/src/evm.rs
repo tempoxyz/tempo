@@ -1092,7 +1092,7 @@ mod runtime_tests {
                         labels.slot(action.address(), slot),
                     )
                 }
-                StorageAction::Marker(marker) => format!("{marker:?}"),
+                StorageAction::Marker(marker) => format!("Marker::{marker:?}"),
                 StorageAction::FeeAmmLiquidityCheck(
                     slot,
                     slot_value,

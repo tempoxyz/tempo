@@ -536,9 +536,9 @@ fn action_output(action: StorageAction) -> StorageActionOutput {
             token,
             amount,
         },
-        StorageAction::Marker(Marker::PostTxFee { refunded, log }) => {
+        StorageAction::Marker(Marker::PostTxFee { refund, log }) => {
             StorageActionOutput::PostTxFee {
-                refunded,
+                refund,
                 log: log as u64,
             }
         }

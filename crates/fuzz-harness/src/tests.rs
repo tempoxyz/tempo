@@ -337,7 +337,7 @@ fn receipts_report_what_the_fee_hooks_did() {
     assert_eq!((payer, charged_up_front), (SENDER, max_amount));
     assert_eq!(actions[pre_end], StorageActionOutput::FeeHookEnd);
     let StorageActionOutput::PostTxFee {
-        refunded: returned,
+        refund: returned,
         log: transfer_log,
     } = actions[post_start]
     else {

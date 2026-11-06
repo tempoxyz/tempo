@@ -844,7 +844,7 @@ mod tests {
                 }),
                 StorageAction::Marker(Marker::FeeHookEnd),
                 StorageAction::Marker(Marker::PostTxFee {
-                    refunded: U256::ZERO,
+                    refund: U256::ZERO,
                     log: 1,
                 }),
                 StorageAction::Marker(Marker::FeeHookEnd),
