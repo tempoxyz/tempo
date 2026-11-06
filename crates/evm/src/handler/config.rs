@@ -213,8 +213,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             TempoEvmTx::Eip7702(transaction) => (
                 transaction.nonce,
                 transaction
-                    .authorization_list
-                    .iter()
+                    .authorizations()
                     .filter(|authorization| authorization.nonce() == 0)
                     .count() as u64,
             ),

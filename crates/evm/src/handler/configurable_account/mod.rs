@@ -119,7 +119,7 @@ impl TempoTxEnv {
         let eligibility = if match aa {
             None => self
                 .as_eip7702()
-                .is_some_and(|tx| !tx.authorization_list.is_empty()),
+                .is_some_and(|tx| tx.authorizations().len() != 0),
             Some(aa) => !aa.tx().tempo_authorization_list.is_empty(),
         } {
             UpgradeEligibility::HasAuthorizationList
