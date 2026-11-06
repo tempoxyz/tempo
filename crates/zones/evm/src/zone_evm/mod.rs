@@ -1,5 +1,6 @@
 //! Zone runtime EVM and its private execution policies.
 
+mod commitment_reads;
 pub(crate) mod contract_creation;
 mod validation;
 
@@ -42,7 +43,6 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
             ZoneTxHandler {
                 inner: handler,
                 l1: l1.clone(),
-                spec,
             },
         );
     }
@@ -54,7 +54,6 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
 struct ZoneTxHandler<L1> {
     inner: AnyTxHandler<TempoEvmTypes, TxResult<TempoEvmTypes>>,
     l1: L1State<L1>,
-    spec: TempoHardfork,
 }
 
 impl<L1: L1StorageReader> ZoneTxHandler<L1> {
@@ -63,7 +62,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<ZoneTxContext<L1>> {
         self.l1.reset_transaction_state();
-        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST, self.spec)?;
+        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
 
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
@@ -179,14 +178,27 @@ pub(crate) mod tests {
     use zone_precompiles::{ADVANCE_TEMPO_SELECTOR, test_utils::MockL1Reader};
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
 
-    pub(crate) fn config() -> ZoneEvmConfig<MockL1Reader> {
+    /// A dev Zone EVM config that reads Tempo through `l1`.
+    pub(crate) fn config(l1: MockL1Reader) -> ZoneEvmConfig<MockL1Reader> {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 1).unwrap();
         ZoneEvmConfig::new(
             std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap()),
-            MockL1Reader::default(),
+            l1,
             Address::ZERO,
         )
+    }
+
+    /// An environment at `spec` that charges no fees, with a 30M block gas limit.
+    pub(crate) fn fee_free_env(spec: TempoHardfork) -> TempoEvmEnv {
+        let mut env = TempoEvmEnv {
+            spec,
+            ..Default::default()
+        };
+        env.version = tempo_chainspec::gas_params::version(evm2::SpecId::from(spec), spec, false);
+        env.version.features.remove(evm2::EvmFeatures::FEE_CHARGE);
+        env.block.gas_limit = U256::from(30_000_000);
+        env
     }
 
     pub(super) fn test_evm(db: InMemoryDB) -> ZoneEvm<'static> {
@@ -197,7 +209,7 @@ pub(crate) mod tests {
         };
         env.version = tempo_chainspec::gas_params::version(evm2::SpecId::OSAKA, spec, false);
         env.block.gas_limit = U256::from(30_000_000);
-        BlockExecutorFactory::evm_with_env(&config(), db, env)
+        BlockExecutorFactory::evm_with_env(&config(MockL1Reader::default()), db, env)
     }
 
     pub(super) fn transaction(
@@ -259,7 +271,7 @@ pub(crate) mod tests {
     #[test]
     fn handler_storage_contexts_follow_zone_rules() {
         let mut evm = BlockExecutorFactory::evm_with_env(
-            &config(),
+            &config(MockL1Reader::default()),
             InMemoryDB::default(),
             TempoEvmEnv::default(),
         );
@@ -326,7 +338,7 @@ pub(crate) mod tests {
                 registry,
                 NoPrecompiles::default(),
             );
-            let config = config();
+            let config = config(MockL1Reader::default());
             let block = Default::default();
             let ctx = config.context_for_block(&block).unwrap();
             let mut executor = ZoneBlockExecutor::new(evm, ctx, config.chain_spec());
@@ -397,7 +409,6 @@ pub(crate) mod tests {
             ZoneTxHandler {
                 inner: inner.get_by_type(0).unwrap(),
                 l1: l1.clone(),
-                spec,
             },
         );
         evm.set_execution_config(
