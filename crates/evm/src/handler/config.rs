@@ -285,8 +285,11 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            let log = host.logs().len();
-            fee_hook(host, Marker::PostTxFee { refund, log }, |host| {
+            let marker = Marker::PostTxFee {
+                refund,
+                log: host.logs().len(),
+            };
+            fee_hook(host, marker, |host| {
                 fee_manager.collect_fee_post_tx(
                     ProtocolFeeContext { host },
                     fee_payer,
