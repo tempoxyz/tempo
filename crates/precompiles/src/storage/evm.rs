@@ -1407,6 +1407,17 @@ mod tests {
     }
 
     #[test]
+    fn tip1102_reprices_precompile_keccak_at_t15() -> eyre::Result<()> {
+        for (spec, expected) in [(TempoHardfork::T14, 36), (TempoHardfork::T15, 246)] {
+            let mut evm = TestEvm::new(spec);
+            let mut provider = evm.provider_max_gas();
+            assert_eq!(provider.keccak256(b"hello")?, keccak256(b"hello"));
+            assert_eq!(provider.gas_used(), expected);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_failed_gas_charges_preserve_remaining_gas() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_with_gas_limit(100, 0);
@@ -1484,6 +1495,21 @@ mod tests {
             Err(TempoPrecompileError::OutOfGas)
         ));
 
+        Ok(())
+    }
+
+    #[test]
+    fn tip1102_reprices_native_recovery_at_t15() -> eyre::Result<()> {
+        for (spec, expected) in [(TempoHardfork::T14, 3_000), (TempoHardfork::T15, 25_000)] {
+            let mut evm = TestEvm::new(spec);
+            let mut provider = evm.provider_max_gas();
+            assert!(
+                provider
+                    .recover_signer(B256::ZERO, 0, B256::ZERO, B256::ZERO)?
+                    .is_none()
+            );
+            assert_eq!(provider.gas_used(), expected);
+        }
         Ok(())
     }
 

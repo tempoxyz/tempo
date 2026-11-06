@@ -443,17 +443,29 @@ impl ConfigurableAccountSignature {
     ///
     /// Initial address derivation is not included. Returns `None` if the cost overflows `u64`.
     pub fn verification_gas(&self) -> Option<u64> {
+        self.verification_gas_with(|signature| Some(signature.verification_gas()), keccak_gas)
+    }
+
+    /// Computes the owner-quorum gas with caller-selected signature and hashing prices.
+    /// Returns `None` if a price or their sum overflows `u64`.
+    pub fn verification_gas_with(
+        &self,
+        signature_gas: impl Fn(&PrimitiveSignature) -> Option<u64>,
+        keccak_gas: impl Fn(usize) -> Option<u64>,
+    ) -> Option<u64> {
         let mut witness = alloy_rlp::encode(self.account);
         self.config.encode(&mut witness);
-        self.signatures
-            .iter()
-            .map(PrimitiveSignature::verification_gas)
-            .chain([
-                tokens_in_calldata(&witness) * STANDARD_TOKEN_COST,
-                keccak_gas(self.config.commitment_preimage_len())?,
-                keccak_gas(CONFIGURABLE_ACCOUNT_SIGNATURE_PREIMAGE_LEN)?,
-            ])
-            .try_fold(0u64, u64::checked_add)
+        let signatures_gas = self.signatures.iter().try_fold(0u64, |total, signature| {
+            total.checked_add(signature_gas(signature)?)
+        })?;
+        [
+            signatures_gas,
+            tokens_in_calldata(&witness) * STANDARD_TOKEN_COST,
+            keccak_gas(self.config.commitment_preimage_len())?,
+            keccak_gas(CONFIGURABLE_ACCOUNT_SIGNATURE_PREIMAGE_LEN)?,
+        ]
+        .into_iter()
+        .try_fold(0u64, u64::checked_add)
     }
 
     /// Verification gas this signature adds on top of the base 21k, which already covers one

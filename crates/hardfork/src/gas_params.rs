@@ -67,6 +67,11 @@ pub fn configure_version(
         }
     }
 
+    if spec.is_t15() {
+        // TIP-1102 applies with either the TIP-1000 or TIP-1016 gas schedule.
+        version.gas_params[GasId::Keccak256PerWord] = 41;
+    }
+
     if spec.is_t7() {
         version.gas_params[GasId::MaxRefundQuotient] = 1;
     }
@@ -150,6 +155,14 @@ fn apply_amsterdam(version: &mut Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tip1102_reprices_keccak256_at_t15() {
+        let before = version(SpecId::OSAKA, TempoHardfork::T14, false);
+        let after = version(SpecId::OSAKA, TempoHardfork::T15, false);
+        assert_eq!(before.gas_params[GasId::Keccak256PerWord], 6);
+        assert_eq!(after.gas_params[GasId::Keccak256PerWord], 41);
+    }
 
     #[test]
     fn test_tempo_override_gas_params_match_across_forks() {

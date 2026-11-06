@@ -30,6 +30,32 @@ use tempo_primitives::{
 
 const SIGNER: Address = Address::new([0x11; 20]);
 
+#[test]
+fn tip1102_opcode_prices_activate_at_t15() {
+    use evm2::interpreter::op;
+
+    let before = tempo_execution_config(TempoHardfork::T14, 1);
+    let after = tempo_execution_config(TempoHardfork::T15, 1);
+    for (opcode, old, new) in [
+        (op::MOD, 5, 40),
+        (op::SMOD, 5, 37),
+        (op::DIV, 5, 24),
+        (op::SDIV, 5, 34),
+        (op::ADDMOD, 8, 36),
+        (op::MULMOD, 8, 65),
+        (op::SHL, 3, 9),
+        (op::SHR, 3, 9),
+        (op::SAR, 3, 10),
+        (op::NOT, 3, 3),
+        (op::ISZERO, 3, 5),
+        (op::KECCAK256, 30, 205),
+        (op::SELFBALANCE, 5, 13),
+    ] {
+        assert_eq!(before.opcode_config().static_gas(opcode), old);
+        assert_eq!(after.opcode_config().static_gas(opcode), new);
+    }
+}
+
 fn test_evm(spec: TempoHardfork) -> crate::TempoEvm<'static> {
     test_evm_with_amsterdam(spec, false)
 }

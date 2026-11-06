@@ -110,6 +110,7 @@ use tempo_precompiles::{
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip20::{ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token, is_tip20_prefix},
     tip403_registry::TIP403Registry,
+    tip1102::configure_base_precompiles,
 };
 use tempo_primitives::TempoBlockExt;
 
@@ -146,8 +147,10 @@ where
         } else {
             SpecId::PRAGUE
         };
+        let mut base = BasePrecompiles::base(base_spec);
+        configure_base_precompiles(&mut base, spec);
         Self {
-            base: BasePrecompiles::base(base_spec),
+            base,
             env: ZonePrecompileEnv::new(spec, actions, non_creditable_slots),
             l1,
         }
