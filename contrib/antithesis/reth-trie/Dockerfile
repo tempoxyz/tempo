@@ -6,25 +6,25 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 ARG CARGO_BUILD_JOBS=2
 WORKDIR /work
-COPY antithesis/reth-trie/ ./
+COPY contrib/antithesis/reth-trie/ ./
 # Instrument target code only, not host build scripts/proc macros. Disable LTO: it can
 # optimize away compile-time coverage. Keep assertions and DWARF for Antithesis.
-ENV CARGO_PROFILE_RELEASE_DEBUG=2 \
-    CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true \
-    CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true \
-    CARGO_PROFILE_RELEASE_STRIP=false \
-    CARGO_PROFILE_RELEASE_LTO=false
+ENV CARGO_PROFILE_ANTITHESIS_DEBUG=2 \
+    CARGO_PROFILE_ANTITHESIS_DEBUG_ASSERTIONS=true \
+    CARGO_PROFILE_ANTITHESIS_OVERFLOW_CHECKS=true \
+    CARGO_PROFILE_ANTITHESIS_STRIP=false \
+    CARGO_PROFILE_ANTITHESIS_LTO=off
 # COPY preserves timestamps. Force the local crate fresh when this layer reruns:
 # its source may have changed while an earlier cached-target build was running.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/work/target,sharing=locked \
     touch src/main.rs \
-    && cargo build --locked --release --features fuzz --bin reth-trie-antithesis \
+    && cargo build --locked --profile antithesis --features fuzz --bin reth-trie-antithesis \
       --target x86_64-unknown-linux-gnu \
       --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Ccodegen-units=1","-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
     && mkdir /out \
-    && cp target/x86_64-unknown-linux-gnu/release/reth-trie-antithesis /out/ \
+    && cp target/x86_64-unknown-linux-gnu/antithesis/reth-trie-antithesis /out/ \
     && nm /out/reth-trie-antithesis | grep ' T antithesis_load_libvoidstar$' \
     && readelf -SW /out/reth-trie-antithesis | grep __sancov_guards \
     && readelf -SW /out/reth-trie-antithesis | grep __sancov_pcs \

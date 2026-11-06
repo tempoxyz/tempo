@@ -1,9 +1,6 @@
 //! Explicit trie-task operation stream. Only `Commit` ends a block.
 
-use crate::{
-    model::{apply, generate, Model, Update},
-    prefix_dataset::{random_address, random_slot},
-};
+use crate::model::{apply, generate, random_address, random_slot, Model, Update};
 use alloy_primitives::{Address, KECCAK256_EMPTY, U256};
 use antithesis_sdk::random::AntithesisRng;
 use eyre::{ensure, Result};
@@ -20,9 +17,7 @@ pub(crate) struct Input {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StorageHint {
-    #[serde(with = "crate::prefix_dataset::address")]
     pub address: Address,
-    #[serde(with = "crate::prefix_dataset::slot")]
     pub slot: U256,
 }
 
@@ -33,7 +28,6 @@ pub(crate) enum Operation {
         updates: Vec<Update>,
     },
     PrewarmBatch {
-        #[serde(with = "crate::prefix_dataset::addresses")]
         accounts: Vec<Address>,
         storages: Vec<StorageHint>,
     },
@@ -49,9 +43,12 @@ impl Input {
         let mut state = Model::default();
         let mut operations = Vec::new();
         for number in 1..=blocks {
+            // Draw from Antithesis directly so each explored branch can choose different work.
             let mut rng = AntithesisRng;
             let generated = generate(&mut rng, &state, updates);
             apply(&mut state, number, &generated);
+            // Hint only a subset of writes, then add unrelated reads. This exercises both
+            // warmed and cold trie paths rather than making every hint predict a write.
             let mut targets = generated
                 .iter()
                 .map(|update| match update {
@@ -71,6 +68,7 @@ impl Input {
             targets.shuffle(&mut rng);
             let mut targets = targets.into_iter().peekable();
             let mut updates = generated.into_iter().peekable();
+            // Keep write order intact while interleaving independently sized hint batches.
             while targets.peek().is_some() || updates.peek().is_some() {
                 if targets.peek().is_some() && (updates.peek().is_none() || rng.random_bool(0.5)) {
                     let size = rng.random_range(1..=targets.len().min(16));
@@ -92,6 +90,8 @@ impl Input {
             }
             operations.push(Operation::Commit);
         }
+        // Delays separate batches, never split the commit boundary. Trie and persistence
+        // workers remain runnable while the driver sleeps.
         let mut timing = AntithesisRng;
         let mut timed = Vec::new();
         for operation in operations {
@@ -110,6 +110,8 @@ impl Input {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        // Account existence survives commits; update and sleep budgets reset per block.
+        // Validate before any operation reaches production trie workers.
         let mut accounts = BTreeSet::new();
         let mut blocks = 0;
         let mut block_updates = 0;

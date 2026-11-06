@@ -1,0 +1,8 @@
+**
+!contrib/
+!contrib/antithesis/
+!contrib/antithesis/reth-trie/
+!contrib/antithesis/reth-trie/**
+contrib/antithesis/reth-trie/target/
+contrib/antithesis/reth-trie/**/target/
+contrib/antithesis/reth-trie/.env

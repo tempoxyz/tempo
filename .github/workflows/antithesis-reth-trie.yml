@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "antithesis/reth-trie/**"
+      - "contrib/antithesis/reth-trie/**"
       - ".github/workflows/antithesis-reth-trie.yml"
   workflow_dispatch:
 
@@ -64,7 +64,7 @@ jobs:
         with:
           project: 0c6tg19qsp
           context: .
-          file: antithesis/reth-trie/Dockerfile
+          file: contrib/antithesis/reth-trie/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.image_tags }}
@@ -78,7 +78,7 @@ jobs:
           [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           dir="$RUNNER_TEMP/antithesis-reth-trie-config"
           mkdir -p "$dir"
-          cp antithesis/reth-trie/docker-compose.yaml antithesis/reth-trie/Dockerfile.config "$dir/"
+          cp contrib/antithesis/reth-trie/docker-compose.yaml contrib/antithesis/reth-trie/Dockerfile.config "$dir/"
           printf 'RETH_TRIE_IMAGE=%s/tempo-reth-trie-antithesis:%s@%s\n' "$REGISTRY" "$TAG" "$DIGEST" > "$dir/.env"
 
       - name: Build and push config image

@@ -1,9 +1,10 @@
 //! Antithesis workload for the sparse-trie, proof, overlay and persistence pipeline.
 
 mod input;
+mod journal;
+mod lifecycle;
 mod model;
-mod prefix_dataset;
-mod trace;
+mod persistence;
 
 use alloy_consensus::Header;
 use alloy_primitives::{keccak256, B256, U256};
@@ -14,8 +15,11 @@ use antithesis_sdk::{
 };
 use eyre::{ensure, Context, Result};
 use input::{Input, Operation};
+use journal::RoundJournal;
+use lifecycle::{persist_json, Campaign};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use model::{apply, root, Model};
+use persistence::{Persistence, Phase};
 use reth_chain_state::ExecutedBlock;
 use reth_chainspec::ChainSpec;
 use reth_db::{init_db, DatabaseEnv};
@@ -49,10 +53,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-    sync::{mpsc, Arc, Once},
+    fs,
+    path::PathBuf,
+    sync::{Arc, Once},
     time::Duration,
 };
 
@@ -66,12 +69,6 @@ macro_rules! invariant {
 
 type Node = MockNodeTypesWithDB<Arc<DatabaseEnv>>;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct JournalBlock {
-    number: u64,
-    operations: Vec<Operation>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Config {
@@ -83,7 +80,6 @@ struct Config {
     datadir: Option<PathBuf>,
     blocks: u64,
     updates: usize,
-    prefix_bits: u8,
     proof_workers: usize,
     timeout_secs: u64,
     persistence_threshold: u64,
@@ -101,7 +97,6 @@ impl Default for Config {
             datadir: Some(PathBuf::from("/data/reth-trie")),
             blocks: 64,
             updates: 64,
-            prefix_bits: 24,
             proof_workers: 2,
             timeout_secs: 60,
             persistence_threshold: tree.persistence_threshold(),
@@ -314,27 +309,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     let input_blocks =
         input.operations.split_inclusive(|op| matches!(op, Operation::Commit)).collect::<Vec<_>>();
     let total_blocks = input_blocks.len() as u64;
-    let journal_path = datadir.join("blocks.jsonl");
-    let mut journal = BTreeMap::<u64, JournalBlock>::new();
-    if journal_path.exists() {
-        for line in
-            fs::read(&journal_path)?.split(|byte| *byte == b'\n').filter(|line| !line.is_empty())
-        {
-            let block: JournalBlock = match serde_json::from_slice(line) {
-                Ok(block) => block,
-                // SIGKILL may interrupt the final append. Each new append starts on a new line.
-                Err(error) if error.is_eof() => continue,
-                Err(error) => return Err(error.into()),
-            };
-            ensure!((1..=total_blocks).contains(&block.number), "journal block out of range");
-            if let Some(previous) = journal.get(&block.number) {
-                ensure!(previous == &block, "conflicting journal block {}", block.number);
-            } else {
-                journal.insert(block.number, block);
-            }
-        }
-    }
-    let mut journal_file = OpenOptions::new().create(true).append(true).open(&journal_path)?;
+    let mut journal = RoundJournal::open(&datadir, total_blocks)?;
 
     let manager = factory.overlay_manager();
     let base =
@@ -346,17 +321,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     let base_hash = parent.hash();
     let strategy = DefaultStateRootStrategy::default();
     let mut state = Model::default();
-    for number in 1..=base {
-        let block =
-            journal.get(&number).ok_or_else(|| eyre::eyre!("missing journal block {number}"))?;
-        for operation in &block.operations {
-            if let Operation::UpdateBatch { updates } = operation {
-                for update in updates {
-                    update.apply_to_model(&mut state);
-                }
-            }
-        }
-    }
+    journal.replay(1..=base, &mut state)?;
     if base > 0 {
         verify(&factory, &state, base, base)?;
     }
@@ -368,22 +333,8 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     // Replay journal updates instead of retaining a full model for every block.
     let mut persisted_state = state.clone();
     let timeout = Duration::from_secs(config.timeout_secs);
-    let (request_tx, request_rx) = mpsc::sync_channel::<SaveBlocksInput>(1);
-    let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-    let writer_factory = factory.clone();
-    let writer = std::thread::spawn(move || {
-        while let Ok(input) = request_rx.recv() {
-            let result = (|| -> Result<()> {
-                let provider = writer_factory.provider_rw()?;
-                provider.save_blocks(&input)?;
-                provider.commit()?;
-                Ok(())
-            })();
-            if ack_tx.send(result).is_err() {
-                break;
-            }
-        }
-    });
+    let mut persistence = Persistence::new(factory.clone());
+    // db_tip includes saved blocks; state_tip is the potentially older unmasked trie frontier.
     let mut db_tip = base;
     let mut state_tip = base;
     let mut commits = 0;
@@ -392,121 +343,89 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     let mut hint_batches = 0;
     let mut sleep_operations = 0;
     let mut sleep_ms = 0u64;
-    let mut pending_save = None;
     let mut prune_requested = false;
-    let mut shutdown = false;
+    let mut phase = Phase::Running;
     loop {
         let head = base + blocks.len() as u64;
-        if let Some((next_db, next_state)) = pending_save {
-            let result = if shutdown ||
-                head.saturating_sub(state_tip).saturating_sub(buffer) >= backpressure
-            {
-                Some(ack_rx.recv_timeout(timeout)?)
+        // Only an acknowledgement advances the durable frontiers; submission is asynchronous.
+        let must_wait = phase == Phase::Flushing ||
+            head.saturating_sub(state_tip).saturating_sub(buffer) >= backpressure;
+        if let Some((next_db, next_state)) = persistence.acknowledge(must_wait, timeout)? {
+            journal.replay((db_tip + 1)..=next_db, &mut persisted_state)?;
+            db_tip = next_db;
+            state_tip = next_state;
+            commits += 1;
+            partial_commits += u64::from(db_tip != state_tip);
+            manager
+                .evict_cached_changesets(db_tip.saturating_sub(CHANGESET_CACHE_RETENTION_BLOCKS));
+            verify(&factory, &persisted_state, db_tip, state_tip)?;
+            manager.remove_blocks(
+                blocks
+                    .iter()
+                    .filter(|block| block.recovered_block().number() <= state_tip)
+                    .map(|block| block.recovered_block().hash()),
+            );
+            let anchor = if state_tip == base {
+                base_hash
             } else {
-                match ack_rx.try_recv() {
-                    Ok(result) => Some(result),
-                    Err(mpsc::TryRecvError::Empty) => None,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        eyre::bail!("persistence worker disconnected")
-                    }
-                }
+                blocks[(state_tip - base) as usize - 1].recovered_block().hash()
             };
-            if let Some(result) = result {
-                result?;
-                pending_save = None;
-                for number in (db_tip + 1)..=next_db {
-                    let block = journal
-                        .get(&number)
-                        .ok_or_else(|| eyre::eyre!("missing journal block {number}"))?;
-                    for operation in &block.operations {
-                        if let Operation::UpdateBatch { updates } = operation {
-                            for update in updates {
-                                update.apply_to_model(&mut persisted_state);
-                            }
-                        }
-                    }
-                }
-                db_tip = next_db;
-                state_tip = next_state;
-                commits += 1;
-                partial_commits += u64::from(db_tip != state_tip);
-                manager.evict_cached_changesets(
-                    db_tip.saturating_sub(CHANGESET_CACHE_RETENTION_BLOCKS),
-                );
-                verify(&factory, &persisted_state, db_tip, state_tip)?;
-                manager.remove_blocks(
-                    blocks
-                        .iter()
-                        .filter(|block| block.recovered_block().number() <= state_tip)
-                        .map(|block| block.recovered_block().hash()),
-                );
-                let anchor = if state_tip == base {
-                    base_hash
-                } else {
-                    blocks[(state_tip - base) as usize - 1].recovered_block().hash()
-                };
-                manager.precompute_execution_overlay(parent.hash(), anchor);
-                prune_requested = true;
-                println!(
-                    "{}",
-                    json!({"persistence": "complete", "head": head,
+            manager.precompute_execution_overlay(parent.hash(), anchor);
+            prune_requested = true;
+            println!(
+                "{}",
+                json!({"persistence": "complete", "head": head,
                     "db_tip": db_tip, "state_tip": state_tip})
-                );
-                continue;
-            }
+            );
+            continue;
         }
-        if pending_save.is_none() {
+        if persistence.is_idle() {
             // Match EngineApiTreeHandler::get_save_blocks_input's Threshold and Head targets.
-            let next_db = if shutdown { head } else { head.saturating_sub(buffer) };
-            if shutdown ||
+            let next_db = if phase == Phase::Flushing { head } else { head.saturating_sub(buffer) };
+            if phase == Phase::Flushing ||
                 (head.saturating_sub(state_tip) > config.persistence_threshold &&
                     next_db > db_tip)
             {
-                let next_state =
-                    if shutdown { head } else { next_db.saturating_sub(masking).max(state_tip) };
+                let next_state = if phase == Phase::Flushing {
+                    head
+                } else {
+                    next_db.saturating_sub(masking).max(state_tip)
+                };
                 if next_db != db_tip || next_state != state_tip {
                     println!(
                         "{}",
                         json!({"persistence": "start", "head": head,
                         "db_tip": db_tip, "state_tip": state_tip,
                         "next_db_tip": next_db, "next_state_tip": next_state,
-                        "shutdown": shutdown})
+                        "shutdown": phase == Phase::Flushing})
                     );
-                    request_tx.send(SaveBlocksInput::new(
-                        blocks[(state_tip - base) as usize..(next_db - base) as usize].to_vec(),
-                        db_tip,
-                        state_tip,
+                    persistence.save(
+                        SaveBlocksInput::new(
+                            blocks[(state_tip - base) as usize..(next_db - base) as usize].to_vec(),
+                            db_tip,
+                            state_tip,
+                            next_db,
+                            next_state,
+                        ),
                         next_db,
                         next_state,
-                    ))?;
-                    pending_save = Some((next_db, next_state));
+                    )?;
                     continue;
                 }
             }
         }
         if head == total_blocks {
-            if shutdown {
+            if phase == Phase::Flushing {
                 break;
             }
             // Let the last block trigger normal threshold persistence before shutdown.
-            shutdown = true;
+            // Flush both frontiers to head, even when the final threshold save was masked.
+            phase = Phase::Flushing;
             continue;
         }
         let number = head + 1;
-        let operations = if let Some(block) = journal.get(&number) {
-            block.operations.clone()
-        } else {
-            let operations = input_blocks[number as usize - 1].to_vec();
-            let journal_block = JournalBlock { number, operations: operations.clone() };
-            let record = serde_json::to_vec(&journal_block)?;
-            journal_file.write_all(b"\n")?;
-            journal_file.write_all(&record)?;
-            journal_file.write_all(b"\n")?;
-            journal_file.sync_all()?;
-            fs::File::open(&datadir)?.sync_all()?;
-            journal.insert(number, journal_block);
-            operations
-        };
+        // Sync the replay record before mutating the model or starting production tasks.
+        let operations = journal.operations(number, input_blocks[number as usize - 1])?;
         let updates_input = operations
             .iter()
             .flat_map(|op| match op {
@@ -575,6 +494,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
             .collect::<BTreeSet<_>>();
         let mut hinted = BTreeSet::new();
         let mut updates = updates.into_iter();
+        // Preserve input ordering: hints and sleeps interleave with the corresponding updates.
         for operation in &operations {
             match operation {
                 Operation::PrewarmBatch { accounts, storages } => {
@@ -623,6 +543,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
         stream.finish();
         let outcome = handle.take_state_root_rx().recv_timeout(timeout)??;
         drop(handle);
+        // Rebuild from the plain model, independently of production hashed state and trie updates.
         let expected_root = root(&state);
         invariant!(
             outcome.state_root == expected_root,
@@ -671,8 +592,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
         publish_sparse_trie(&pending, manager, parent.hash(), outcome.state_root);
         blocks.push(executed);
     }
-    drop(request_tx);
-    writer.join().map_err(|_| eyre::eyre!("persistence worker panicked"))?;
+    persistence.finish()?;
     // Synchronize final trie completion before taking the metrics snapshot.
     if let Some(trie) = manager.take_sparse_trie() {
         invariant!(trie.into_trie_for(parent.hash())?.is_some(), "missing final reusable trie");
@@ -702,60 +622,24 @@ fn workload() -> Result<()> {
     let mut config: Config =
         serde_json::from_str(&text).wrap_err("invalid workload configuration")?;
     ensure!(config.rounds != Some(0), "rounds must be positive");
-    let dataset = std::env::var_os("RETH_TRIE_PREFIX_DATASET").map(PathBuf::from);
-    prefix_dataset::init(dataset.as_deref())?;
-    prefix_dataset::load()?;
-    prefix_dataset::check_bits(config.prefix_bits)?;
-    let _trace = trace::install(&config.datadir.clone().unwrap_or_else(|| PathBuf::from(".")))?;
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     recorder.install()?;
     let input = config.input.clone();
-    let root_directory = config.datadir.clone().unwrap_or_else(|| PathBuf::from("/data/reth-trie"));
-    fs::create_dir_all(&root_directory)?;
-    let directory = root_directory.join("active");
-    let initial_config = serde_json::to_value(&config)?;
-    let retired = root_directory.join("retired");
+    let campaign = Campaign::new(&config)?;
     loop {
-        if retired.exists() {
-            fs::remove_dir_all(&retired)?;
-        }
-        fs::create_dir_all(&directory)?;
-        let config_path = directory.join("config.json");
-        if config_path.exists() {
-            let saved: serde_json::Value = serde_json::from_slice(&fs::read(&config_path)?)?;
-            ensure!(
-                saved == initial_config,
-                "restart must use the original workload configuration"
-            );
-        } else {
-            persist_json(&config_path, &initial_config)?;
-            fs::File::open(&root_directory)?.sync_all()?;
-        }
-        config.datadir = Some(directory.clone());
+        config.datadir = Some(campaign.start()?);
         config.input = input.clone();
         run(&mut config, &snapshotter)
             .wrap_err_with(|| format!("reth-trie-antithesis round={}", config.round))?;
         assert_sometimes!(true, "Trie workload completes a round");
         // Only a verified, fully flushed round can retire its database and journal.
-        fs::rename(&directory, &retired)?;
-        fs::File::open(&root_directory)?.sync_all()?;
-        fs::remove_dir_all(&retired)?;
+        campaign.retire()?;
         config.round += 1;
         if config.rounds.is_some_and(|rounds| config.round >= rounds) {
             return Ok(());
         }
     }
-}
-
-fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let temporary = path.with_extension("tmp");
-    let mut file = fs::File::create(&temporary)?;
-    serde_json::to_writer(&mut file, value)?;
-    file.sync_all()?;
-    fs::rename(temporary, path)?;
-    fs::File::open(path.parent().expect("campaign file has a parent"))?.sync_all()?;
-    Ok(())
 }
 
 fn main() -> Result<()> {

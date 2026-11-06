@@ -1,7 +1,0 @@
-**
-!antithesis/
-!antithesis/reth-trie/
-!antithesis/reth-trie/**
-antithesis/reth-trie/target/
-antithesis/reth-trie/**/target/
-antithesis/reth-trie/.env

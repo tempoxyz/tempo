@@ -1,6 +1,5 @@
 //! Reference state and generated execution outcomes, independent of trie-task output.
 
-use crate::prefix_dataset::{random_address, random_slot};
 use alloy_primitives::{
     keccak256,
     map::{HashMap, U256Map},
@@ -19,6 +18,7 @@ pub(crate) struct ModelAccount {
     pub account: Account,
     pub storage: BTreeMap<U256, U256>,
     hashed_storage: BTreeMap<B256, Vec<u8>>,
+    /// Includes deleted slots so persistence checks can detect stale database values.
     pub touched_slots: BTreeSet<U256>,
 }
 
@@ -26,18 +26,8 @@ pub(crate) type Model = BTreeMap<Address, ModelAccount>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Update {
-    Account {
-        #[serde(with = "crate::prefix_dataset::address")]
-        address: Address,
-        account: Account,
-    },
-    Storage {
-        #[serde(with = "crate::prefix_dataset::address")]
-        address: Address,
-        #[serde(with = "crate::prefix_dataset::slot")]
-        slot: U256,
-        value: U256,
-    },
+    Account { address: Address, account: Account },
+    Storage { address: Address, slot: U256, value: U256 },
 }
 
 impl Update {
@@ -83,13 +73,21 @@ impl Update {
     }
 }
 
+pub(crate) fn random_address(rng: &mut impl Rng) -> Address {
+    Address::from(rng.random::<[u8; 20]>())
+}
+
+pub(crate) fn random_slot(rng: &mut impl Rng) -> U256 {
+    U256::from_be_bytes(rng.random::<[u8; 32]>())
+}
+
 #[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
 pub(crate) fn generate(rng: &mut impl Rng, state: &Model, updates: usize) -> Vec<Update> {
     let mut state = state.clone();
     let mut addresses = state.keys().copied().collect::<Vec<_>>();
     (0..updates)
         .map(|_| {
-            // Bound the active account set while sampling new keys across all 32 bits.
+            // Bound the active account set while sampling full-width random keys.
             let address =
                 if !addresses.is_empty() && (addresses.len() >= 16 || rng.random_ratio(3, 4)) {
                     addresses[rng.random_range(0..addresses.len())]
@@ -103,6 +101,8 @@ pub(crate) fn generate(rng: &mut impl Rng, state: &Model, updates: usize) -> Vec
                 account.balance = U256::from(rng.random_range(1..=1_000_000u64));
                 Update::Account { address, account }
             } else {
+                // Revisit old slots as well as drawing new full-width keys, so overwrites
+                // and deletions remain common even in a small bounded account set.
                 let known_slots = &state[&address].touched_slots;
                 let slot = if !known_slots.is_empty() && rng.random_bool(0.5) {
                     *known_slots
@@ -134,6 +134,8 @@ pub(crate) fn apply(
     number: u64,
     operations: &[Update],
 ) -> (BundleState, Vec<HashedPostState>) {
+    // Capture each original value once, even if several batches update it in this block.
+    // The bundle needs both the final state and the prior values for unwind/recovery.
     let mut before = BTreeMap::<Address, (Option<Account>, BTreeMap<U256, U256>)>::new();
     let mut touched = BTreeMap::<Address, BTreeSet<U256>>::new();
     let mut stream = Vec::new();
@@ -161,6 +163,8 @@ pub(crate) fn apply(
         stream.push(delta);
     }
 
+    // Translate the same operations into Reth execution output. The root oracle below
+    // is rebuilt from the reference maps, not from the production trie task result.
     let mut bundle = BundleState::builder(number..=number);
     for (address, slots) in touched {
         let (old_account, old_slots) = &before[&address];
@@ -211,6 +215,8 @@ pub(crate) fn storage_root(account: &ModelAccount) -> B256 {
 
 #[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
 pub(crate) fn root(state: &Model) -> B256 {
+    // HashBuilder requires sorted hashed keys. BTreeMap imposes that order independently
+    // of the order in which updates and prewarm hints reached the production workers.
     let leaves = state
         .iter()
         .map(|(address, entry)| {
