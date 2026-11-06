@@ -32,9 +32,9 @@ use reth_evm::{
 use reth_execution_types::BlockExecutionOutput;
 use reth_primitives_traits::{RecoveredBlock, SealedHeader, SealedOrRecoveredBlock};
 use reth_provider::{
-    BlockHashReader as _, BlockNumReader, ChainStateBlockReader, ChangeSetReader,
-    DatabaseProviderFactory, HeaderProvider, HistoryReader, PruneCheckpointReader,
-    StageCheckpointReader, StorageChangeSetReader, StorageSettingsCache,
+    BlockNumReader, ChainStateBlockReader, ChangeSetReader, DatabaseProviderFactory,
+    HeaderProvider, HistoryReader, PruneCheckpointReader, StageCheckpointReader,
+    StorageChangeSetReader, StorageSettingsCache,
 };
 use reth_storage_api::{DatabaseProviderROFactory as _, StateProvider as _};
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
