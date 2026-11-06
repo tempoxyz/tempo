@@ -1073,9 +1073,9 @@ fn build_engine<P, Pool>(
     context: &RoleControllerContext<P, Pool>,
     sequencer: &LeaderSequencerDeps,
     last_header: SealedHeader<TempoHeader>,
-) -> ZoneEngine
+) -> ZoneEngine<P>
 where
-    P: Clone,
+    P: StateProviderFactory + Clone,
 {
     ZoneEngine::new(
         context.chain_spec.clone(),
@@ -1088,12 +1088,12 @@ where
         context.encryption_keys.clone(),
         context.portal_address,
         sequencer.proof_collector.clone(),
+        context.provider.clone(),
     )
     .with_production_permit(ProductionPermit::new(
         context.schedule.clone(),
         context.local_ed25519_public_key.clone(),
     ))
-    .with_deposit_allowlist(sequencer.config.deposit_allowlist.clone())
 }
 
 #[cfg(test)]

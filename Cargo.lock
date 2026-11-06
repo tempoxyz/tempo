@@ -17714,7 +17714,6 @@ dependencies = [
  "minicbor",
  "minicbor-serde",
  "p256 0.13.2",
- "parking_lot",
  "reqwest 0.13.5",
  "reth-chain-state",
  "reth-chainspec",

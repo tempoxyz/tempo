@@ -8,17 +8,17 @@ pub use validation::validate_transaction;
 
 use crate::executor::ZoneTransactionKind;
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256, TxKind, U256};
 use evm2::{
-    AnyError, TxResult,
+    AnyError, Evm, TxResult,
     registry::{AnyTxHandler, HandlerError, HandlerResult, TxHandler, TxRegistry, TxRequest},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
+use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTx, TempoTxEnv, tempo_tx_registry};
 use tempo_precompiles::tip20::{self, is_tip20_prefix};
 use zone_precompiles::{
-    L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
-    tx_context,
+    L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, ZONE_ALLOWLIST_ADDRESS, allowlist,
+    tempo_state::TEMPO_BLOCK_NUMBER_SLOT, tx_context,
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
 
@@ -107,6 +107,59 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             _transaction: tx_context::set_current_transaction(tx_hash, fee_payer),
         })
     }
+
+    /// Returns whether the transaction is a free allowlist update: from T15, one whose sender is
+    /// the zone allowlist admin and whose every call targets the allowlist precompile.
+    fn is_free_allowlist_update(
+        &self,
+        request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
+    ) -> HandlerResult<bool> {
+        // A key authorization is not a call, so it would otherwise ride along for free.
+        let has_key_authorization = request
+            .tx
+            .as_aa()
+            .is_some_and(|aa| aa.tx().key_authorization.is_some());
+        if !self.spec.is_t15()
+            || has_key_authorization
+            || !request
+                .envelope
+                .calls()
+                .all(|(kind, _)| kind == TxKind::Call(ZONE_ALLOWLIST_ADDRESS))
+        {
+            return Ok(false);
+        }
+        // An untracked read keeps the exemption check from warming the admin slot.
+        let admin = request
+            .host
+            .state_mut()
+            .storage_slot_untracked(&ZONE_ALLOWLIST_ADDRESS, &allowlist::slots::ADMIN)?;
+        let admin = Address::from_word(B256::from(admin));
+        // An unset admin is the zero address, which only system transactions use as sender.
+        Ok(!admin.is_zero() && admin == request.tx.signer())
+    }
+}
+
+/// Runs `f` against a zero block base fee when `free` is set, restoring the base fee afterwards.
+///
+/// A zero base fee lets the transaction pass the base-fee check with a zero gas price and makes
+/// its effective gas price its priority fee alone, so it pays only the tip it set. The `BASEFEE`
+/// opcode reads zero inside such a transaction.
+fn with_base_fee_waived<R>(
+    host: &mut Evm<'_, TempoEvmTypes>,
+    free: bool,
+    f: impl FnOnce(&mut Evm<'_, TempoEvmTypes>) -> HandlerResult<R>,
+) -> HandlerResult<R> {
+    if !free {
+        return f(host);
+    }
+    let mut block = *host.block();
+    let basefee = std::mem::replace(&mut block.basefee, U256::ZERO);
+    host.set_block(block);
+    let result = f(host);
+    let mut block = *host.block();
+    block.basefee = basefee;
+    host.set_block(block);
+    result
 }
 
 impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvmTypes>>
@@ -117,8 +170,11 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         mut request: TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<()> {
         let _context = self.enter(&mut request)?;
+        let free = self.is_free_allowlist_update(&mut request)?;
         let transaction = Recovered::new_unchecked(request.envelope, request.tx.signer());
-        self.inner.validate(transaction, request.host)
+        with_base_fee_waived(request.host, free, |host| {
+            self.inner.validate(transaction, host)
+        })
     }
 
     fn execute(
@@ -126,8 +182,11 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         mut request: TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
         let _context = self.enter(&mut request)?;
+        let free = self.is_free_allowlist_update(&mut request)?;
         let transaction = Recovered::new_unchecked(request.envelope, request.tx.signer());
-        let result = self.inner.execute(transaction, request.host)?;
+        let result = with_base_fee_waived(request.host, free, |host| {
+            self.inner.execute(transaction, host)
+        })?;
         validate_journal(request.host.state())
             .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
         Ok(result)
@@ -150,7 +209,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{ZoneBlockExecutor, ZoneDbError, ZoneEvm, ZoneEvmConfig};
     use alloy_consensus::{SignableTransaction, TxEip7702, TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Signature, U256};
+    use alloy_primitives::{Address, Signature, U256, address};
     use evm2::{
         PendingState, TxResult,
         evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
@@ -176,7 +235,10 @@ pub(crate) mod tests {
         },
     };
     use zone_chainspec::ZoneChainSpec;
-    use zone_precompiles::{ADVANCE_TEMPO_SELECTOR, test_utils::MockL1Reader};
+    use zone_precompiles::{
+        ADVANCE_TEMPO_SELECTOR, ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader,
+        zone_fee_manager,
+    };
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
 
     pub(crate) fn config() -> ZoneEvmConfig<MockL1Reader> {
@@ -267,6 +329,89 @@ pub(crate) mod tests {
             StorageCtx::enter_evm(&mut evm, || StorageCtx::default().kind()),
             TempoEvmKind::Zone
         );
+    }
+
+    fn allowlist_evm(spec: TempoHardfork, admin: Address) -> ZoneEvm<'static> {
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(
+            &ZONE_ALLOWLIST_ADDRESS,
+            &allowlist::slots::ADMIN,
+            &admin.into_word().into(),
+        );
+        db.insert_account_info(&ZONE_FEE_MANAGER_ADDRESS, AccountInfo::default());
+        db.insert_account_storage(
+            &ZONE_FEE_MANAGER_ADDRESS,
+            &zone_fee_manager::slots::DEFAULT_FEE_TOKEN,
+            &FEE_TOKEN.into_word().into(),
+        );
+        let mut env = TempoEvmEnv {
+            spec,
+            ..Default::default()
+        };
+        env.version = tempo_chainspec::gas_params::version(evm2::SpecId::OSAKA, spec, false);
+        env.block.gas_limit = U256::from(30_000_000);
+        env.block.basefee = BASE_FEE;
+        BlockExecutorFactory::evm_with_env(&config(), db, env)
+    }
+
+    fn zero_priced_call(caller: Address, to: Address) -> Recovered<TempoTxEnv> {
+        transaction(
+            caller,
+            TxLegacy {
+                to: to.into(),
+                gas_limit: 1_000_000,
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        )
+    }
+
+    const ADMIN: Address = Address::repeat_byte(0xad);
+    const FEE_TOKEN: Address = address!("0x20c00000000000000000000000000000000000d1");
+    const BASE_FEE: U256 = U256::from_limbs([1_000_000_000, 0, 0, 0]);
+
+    #[test]
+    fn admin_allowlist_update_skips_base_fee_from_t15() {
+        let mut evm = allowlist_evm(TempoHardfork::T15, ADMIN);
+        let tx = zero_priced_call(ADMIN, ZONE_ALLOWLIST_ADDRESS);
+
+        evm.validate_tx(&tx).unwrap();
+        assert_eq!(evm.block().basefee, BASE_FEE);
+
+        let validator_fee = evm.transact(&tx).unwrap().result().ext.validator_fee;
+        assert_eq!(validator_fee, U256::ZERO);
+        assert_eq!(evm.block().basefee, BASE_FEE);
+    }
+
+    #[test]
+    fn other_transactions_pay_the_base_fee() {
+        let other = Address::repeat_byte(0xbb);
+        for (spec, admin, caller, to) in [
+            // Not the admin.
+            (TempoHardfork::T15, ADMIN, other, ZONE_ALLOWLIST_ADDRESS),
+            // A call outside the allowlist precompile.
+            (TempoHardfork::T15, ADMIN, ADMIN, other),
+            // An unset admin.
+            (
+                TempoHardfork::T15,
+                Address::ZERO,
+                Address::ZERO,
+                ZONE_ALLOWLIST_ADDRESS,
+            ),
+            // Before T15.
+            (TempoHardfork::T14, ADMIN, ADMIN, ZONE_ALLOWLIST_ADDRESS),
+        ] {
+            let mut evm = allowlist_evm(spec, admin);
+            let error = evm.validate_tx(&zero_priced_call(caller, to)).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    HandlerError::FeeCapLessThanBaseFee { max_fee_per_gas, base_fee }
+                        if max_fee_per_gas.is_zero() && base_fee == BASE_FEE
+                ),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

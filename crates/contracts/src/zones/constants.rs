@@ -29,6 +29,15 @@ pub const ZONE_INBOX_ADDRESS: Address = address!("0x1c00000000000000000000000000
 /// ZoneOutbox predeploy address on Zone L2.
 pub const ZONE_OUTBOX_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000002");
 
+/// ZoneAllowlist precompile address on Zone L2, active from T15.
+pub const ZONE_ALLOWLIST_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000003");
+
+/// Maximum number of accounts the ZoneAllowlist precompile may hold.
+pub const MAX_ZONE_ALLOWLIST_LEN: usize = 1_000_000;
+
+/// Maximum number of accounts one `IZoneAllowlist.setAllowed` call may change.
+pub const MAX_ZONE_ALLOWLIST_BATCH: usize = 5_000;
+
 /// Zone-native fee manager precompile address.
 ///
 /// This is adjacent to, but distinct from, Tempo L1's fee manager at `0xfeec...0000`.

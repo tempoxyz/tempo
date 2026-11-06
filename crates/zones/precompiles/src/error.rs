@@ -2,7 +2,9 @@
 
 use alloy_sol_types::SolInterface;
 use evm2::precompiles::{PrecompileError, PrecompileResult};
-use tempo_contracts::zones::{TempoStateError, ZoneInboxError, ZoneOutboxError, ZonePortalError};
+use tempo_contracts::zones::{
+    TempoStateError, ZoneAllowlistError, ZoneInboxError, ZoneOutboxError, ZonePortalError,
+};
 use tempo_precompiles::IntoPrecompileResult;
 
 use crate::storage::L1StateError;
@@ -38,6 +40,9 @@ pub enum ZonePrecompileError {
     /// Error from the ZoneInbox.
     #[error("ZoneInbox error: {0:?}")]
     Inbox(ZoneInboxError),
+    /// Error from the ZoneAllowlist.
+    #[error("ZoneAllowlist error: {0:?}")]
+    Allowlist(ZoneAllowlistError),
     /// Malformed nested ABI data, matching Solidity's empty revert.
     #[error("malformed ABI calldata")]
     MalformedCalldata,
@@ -52,6 +57,7 @@ impl IntoPrecompileResult for ZonePrecompileError {
             Self::Outbox(error) => error.abi_encode(),
             Self::TempoState(error) => error.abi_encode(),
             Self::Inbox(error) => error.abi_encode(),
+            Self::Allowlist(error) => error.abi_encode(),
             Self::MalformedCalldata => Default::default(),
         };
         Err(PrecompileError::Revert(data.into()))
