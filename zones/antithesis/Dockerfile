@@ -74,7 +74,7 @@ RUN sh zones/antithesis/scripts/build-l1-genesis.sh /genesis
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates jq \
+    ca-certificates jq python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/ /usr/local/bin/

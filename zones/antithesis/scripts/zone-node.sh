@@ -39,8 +39,9 @@ esac
 ENGINE_ARGS="$ENGINE_ARGS --rpc.eth-proof-window 10000"
 echo "zone-node: node=$NODE flags=$ENGINE_ARGS" >&2
 
+# Only the nonvoting follower exposes node-local offline maintenance.
 # shellcheck disable=SC2086
-exec /usr/local/bin/tempo-zone node \
+set -- /usr/local/bin/tempo-zone node \
     --chain "$S/genesis.json" \
     --l1.rpc-url "$L1_WS" \
     --datadir /data/node \
@@ -55,3 +56,8 @@ exec /usr/local/bin/tempo-zone node \
     --ipcdisable \
     --color never \
     $ROLE_ARGS $ENGINE_ARGS
+
+if [ "$NODE" = rpc ]; then
+    exec python3 /opt/zones/node-control.py serve -- "$@"
+fi
+exec "$@"

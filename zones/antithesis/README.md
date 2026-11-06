@@ -130,8 +130,9 @@ availability assertion; invalid proofs and state disagreements fail immediately.
 properties, which must hold at least once in a run, require successful cross-profile comparisons
 beyond genesis separately for L1 and Zone state; one chain cannot satisfy the other's coverage.
 
-The node-side solvency assertions and existing payment drivers are unchanged. No workload
-driver stops nodes or runs maintenance commands such as `db repair-trie` and stage unwind.
+The node-side solvency assertions and existing payment drivers are unchanged. Payment drivers
+do not stop nodes; the nonvoting Zone RPC follower accepts the node-local maintenance operations
+described below.
 With four L1 validators, one unavailable validator is within the Simplex fault budget; overlapping
 faults can still prevent a quorum. Safety checks run during faults, while recovery/liveness
 checks run after faults stop.
@@ -150,3 +151,34 @@ A generic node crash is not a stage-boundary crash or an operator-maintenance ac
 Commands such as `db repair-trie` need a custom fault running in the affected node, with
 exclusive access to its stopped database. Antithesis supports custom faults; coordinate their
 registration and data-directory durability behavior with the Antithesis team.
+
+
+### Offline repair and unwind
+
+Only `zone-rpc`, the nonvoting Zone RPC follower, runs the maintenance supervisor, a process
+that owns the node child and serializes these offline operations. Register these
+commands as custom faults **inside that container**, not as payment-workload commands:
+
+```sh
+python3 /opt/zones/node-control.py repair-trie
+python3 /opt/zones/node-control.py unwind --blocks 1
+```
+
+`repair-trie` always uses `--dry-run`: it checks for the completed zero-inconsistency report,
+not just exit status, and never repairs evidence away. `unwind` removes 1–32 recent blocks,
+never genesis, and requires the CLI to report an actual unwind. Both stop and reap the node
+before opening its database, use the same binary, genesis and datadir, and then restart it.
+Offline Zone execution uses `L1_OFFLINE=true`, which skips L1 deposit/token validation; this
+is an operator-recovery drill, not an independent execution oracle.
+
+The supervisor reports armed, fired, recovered and failed separately. Recovery must restore
+the pre-operation finalized height and hash within 120 seconds. Each completed operation
+reports Always (every result must pass) and Sometimes (at least one must complete) SDK
+assertions through the node-local `report-maintenance` xtask command; existing eventual
+`CheckProofs` and settlement checks still verify cross-node recovery after faults stop.
+A concurrent partition can prevent this node-local recovery check from completing; register
+these drills in a fault-free recovery window rather than scheduling overlapping faults.
+The supervisor does not automatically restart an unexpectedly exited node: Antithesis still
+controls ordinary node failures and their duration. Its control socket is local-only and
+accepts no arbitrary commands. Register custom faults with the Antithesis team before
+claiming campaign coverage; building this image alone does not schedule them.
