@@ -11,12 +11,12 @@ use futures::future::join_all;
 use rand::SeedableRng as _;
 use reth_ethereum::{
     chainspec::EthChainSpec as _,
-    storage::{BlockHashReader as _, BlockIdReader as _},
+    storage::{BlockHashReader as _, BlockIdReader as _, BlockNumReader as _},
 };
 use tempo_chainspec::spec::TempoChainSpec;
 
 use crate::{
-    Setup, connect_execution_peers,
+    Setup, connect_execution_peers, connect_execution_to_peers,
     metrics::{wait_for_height, wait_for_metrics},
     setup_validators,
 };
@@ -46,14 +46,21 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
             wait_for_height(&context, validator, halt_after).await;
         }
 
+        // The lagger goes down first and misses the halt's last finalized block.
+        let lagger = validators.len() - 1;
+        validators[lagger].stop().await;
+        let lagger_tip = validators[lagger]
+            .execution_provider_offline()
+            .best_block_number()
+            .unwrap();
+        wait_for_height(&context, &validators[0], lagger_tip + 3).await;
+
         // Losing a quorum halts the chain; then every node goes down with its share.
         for validator in &mut validators[..2] {
             validator.stop().await;
         }
         context.sleep(Duration::from_secs(5)).await;
-        for validator in &mut validators[2..] {
-            validator.stop().await;
-        }
+        validators[2].stop().await;
 
         // The network's last finalized block is the highest any node finalized.
         let finalized_height = validators
@@ -68,14 +75,20 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
             .max()
             .unwrap();
 
+        assert!(
+            lagger_tip < finalized_height,
+            "the lagger must miss the last finalized block {finalized_height}, but has {lagger_tip}",
+        );
+
         // Nodes that lagged at the halt sync up to it first: with the shares gone nobody signs,
-        // so the chain stays halted while they catch up.
+        // so the chain stays halted while they catch up. The lagger stays down.
         for validator in &mut validators {
             validator.share = None;
         }
-        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
-        connect_execution_peers(&validators).await;
-        while !validators.iter().all(|validator| {
+        let online = &mut validators[..lagger];
+        join_all(online.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(online).await;
+        while !online.iter().all(|validator| {
             validator
                 .execution_provider()
                 .finalized_block_number()
@@ -84,7 +97,7 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
         }) {
             context.sleep(Duration::from_secs(1)).await;
         }
-        for validator in &mut validators {
+        for validator in online {
             validator.stop().await;
         }
 
@@ -119,8 +132,14 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
 
         validators[0].share = Some(share);
 
-        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
-        connect_execution_peers(&validators).await;
+        join_all(validators[..lagger].iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators[..lagger]).await;
+
+        // Without the last finalized block the lagger cannot fill; it syncs the boundary from
+        // its execution peers instead.
+        validators[lagger].start_execution().await;
+        connect_execution_to_peers(&validators[lagger], &validators).await;
+        validators[lagger].start_consensus(&context).await;
 
         // The next epoch runs on the member alone; its ceremony reshares to the full committee.
         let full_committee_epoch = halted_epoch + 2;

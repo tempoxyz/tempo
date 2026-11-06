@@ -144,7 +144,7 @@ where
         let mut network_identity = self.network_identity;
         if let Some(recovery) = &recovery {
             recovery
-                .fill_to_boundary(&execution_node)
+                .fill_to_boundary(&context, &execution_node)
                 .await
                 .wrap_err("failed filling the halted epoch up to the recovery boundary")?;
             // A configured identity from a later full DKG ceremony still takes precedence.
