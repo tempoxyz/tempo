@@ -23,9 +23,7 @@ case "$NODE" in
         P2P_KEY=$S/p2p-rpc.key
         ;;
     *)
-        # Finalized samples can trail the tip; permit bounded historical proof generation.
-    ENGINE_ARGS="$ENGINE_ARGS --rpc.eth-proof-window 10000"
-    echo "zone-node: unknown node $NODE" >&2
+        echo "zone-node: unknown node $NODE" >&2
         exit 1
         ;;
 esac

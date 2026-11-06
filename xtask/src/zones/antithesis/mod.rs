@@ -213,7 +213,7 @@ impl Context {
             "endpoints": endpoints,
             "subjects": [{ "address": PATH_USD_ADDRESS, "slots": slots }],
             "rpc_timeout_ms": 5000,
-            "eventual_timeout_ms": 120000,
+            "eventual_timeout_ms": checks::SETTLE_TIMEOUT.as_millis(),
             "retry_interval_ms": 500,
         });
         let output = state_dir.join("exec-diff.json");
