@@ -14891,6 +14891,7 @@ dependencies = [
  "alloy-rlp",
  "antithesis_sdk",
  "crossbeam-channel",
+ "evm2",
  "metrics",
  "proptest",
  "reth-basic-payload-builder",
