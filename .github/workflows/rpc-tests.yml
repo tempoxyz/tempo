@@ -29,8 +29,9 @@ env:
   # rustc links with its bundled lld unless told otherwise; use the mold from setup-mold.
   # Steps that set RUSTFLAGS ignore this and keep linking with lld.
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
-  TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL || 'https://rpc.moderato.tempo.xyz' }}
-  TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL || 'https://rpc.devnet.tempoxyz.dev' }}
+  # Pull requests use the public endpoints.
+  TEMPO_TESTNET_RPC_URL: ${{ github.event_name != 'pull_request' && secrets.TEMPO_TESTNET_RPC_URL || 'https://rpc.moderato.tempo.xyz' }}
+  TEMPO_DEVNET_RPC_URL: ${{ github.event_name != 'pull_request' && secrets.TEMPO_DEVNET_RPC_URL || 'https://rpc.devnet.tempoxyz.dev' }}
 
 jobs:
   rpc-tests:
