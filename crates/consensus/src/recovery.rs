@@ -39,7 +39,7 @@ use reth_provider::{
 use reth_storage_api::{DatabaseProviderROFactory as _, StateProvider as _};
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
 use reth_trie_common::SortedTrieData;
-use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
+use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess};
 use tempo_node::{TempoExecutionData, TempoFullNode};
@@ -384,6 +384,11 @@ where
         + StorageChangeSetReader
         + BlockNumReader,
 {
+    // Before T4 every block ends with system transactions, which fill blocks do not build.
+    ensure!(
+        chain_spec.is_t4_active_at_timestamp(parent.timestamp()),
+        "chain recovery needs T4 active at the recovery's finalized block",
+    );
     let mut overlay = OverlayManager::<TempoPrimitives>::default().overlay_builder(parent.hash());
     let outcome = Bytes::from(outcome.encode().to_vec());
     let mut blocks = Vec::new();
