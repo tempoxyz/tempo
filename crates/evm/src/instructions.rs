@@ -158,7 +158,6 @@ pub fn configurable_account(cx: _) -> Result {
         return Err(InstrStop::OpcodeNotFound);
     }
     let account = cx.state.message().destination;
-    // Borrow the input so a near-zero-gas call can't force a full copy before input gas is charged.
     let input: &[u8] = &cx.state.message().input;
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
