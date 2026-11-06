@@ -1,7 +1,11 @@
 # Zone test environment
 
 A multi-sequencer zone in Docker Compose, for fault-injection testing of the L1 and zone nodes built with
-`--features fuzz` (SDK assertions enabled). `docker-compose.yaml` describes the topology.
+`--features fuzz` (SDK assertions enabled). The L1 is the parent Tempo chain; a Zone is its
+layer-2 payment chain. Three sequencers produce Zone blocks and a fourth node follows them.
+The portal is the L1 bridge contract that holds deposited tokens, and funders are prefunded
+L1 accounts used to deposit. A settled Zone block is one whose hash has been recorded on L1.
+`docker-compose.yaml` describes this topology.
 
 The Dockerfile builds every binary with Antithesis [coverage instrumentation](https://antithesis.com/docs/reference/sdk/rust/instrumentation/)
 (`--features antithesis-coverage` and its sancov `RUSTFLAGS`, in the `antithesis` profile: no LTO, one codegen unit)
@@ -39,16 +43,28 @@ key in the `ANTITHESIS_REGISTRY_KEY` repository secret.
 
 `test/v1/zone_payments` ships at `/opt/antithesis/test/v1` in the workload image only (the Dockerfile's
 `workload` target), so only the `workload` container offers it. The test platform finds templates in the
-images it is given, so they must be in the image rather than copied in when a container starts. Each command is a `tempo-zone-xtask antithesis` subcommand:
+images it is given, so they must be in the image rather than copied in when a container starts.
+Payment and ledger commands use `tempo-zone-xtask antithesis`; execution checks also invoke
+`exec-diff-antithesis` to verify account/storage proofs against finalized block state roots.
+Each Zone node has a different execution profile (state-root computation and cache settings):
+optimized, sequential fallback, cache-disabled comparison, or fast fallback. The checks compare
+the proven state across these four nodes while the same payment drivers continue running.
+
+A separate node-side solvency checker verifies that token supply and balances match bridge
+accounting and that the L1 portal holds enough tokens to cover liabilities. It remains in
+observe mode, recording findings without enforcement actions; SDK assertions are still enabled
+in the fuzz build.
 
 | Command | What it does |
 |---|---|
-| `first_seed` | Approves the portal for the L1 funders and funds the first zone accounts |
+| `first_seed` | Approves the portal for the L1 funders, funds the first zone accounts, and writes the token address and storage slots to check in `/state/exec-diff.json` |
 | `parallel_driver_deposit` | Deposits from a funder or a new L1 account to a new or existing zone account |
 | `parallel_driver_transfer` | TIP-20 transfer inside the zone to a new or existing account |
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
-| `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, and settled workload transactions stay final |
+| `anytime_consistency` | Nodes that imported the Zone block recorded on L1 agree on its hash and on balances there, and settled workload transactions stay final |
+| `anytime_exec_diff` | Independently verifies account/storage proofs and compares finalized state across execution profiles; skips unavailable samples during faults |
+| `eventually_exec_diff` | After faults stop, requires every profile to serve matching, valid proofs within the same 300-second recovery budget as `eventually_settled` |
 | `eventually_settled` | After faults stop, every confirmed deposit is credited and every confirmed withdrawal is paid, and all nodes converge |
 | `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
 
@@ -64,3 +80,15 @@ Run a command against the local stack the way the platform does:
 docker compose -f zones/antithesis/docker-compose.yaml exec workload \
     /opt/antithesis/test/v1/zone_payments/first_seed
 ```
+
+## Execution differential
+
+The same payment workload checks execution agreement as well as payment accounting. Its four
+Zone nodes use optimized, sequential-fallback, cache-disabled comparison, and fast-fallback
+execution configurations, printed by `scripts/zone-node.sh`. The ordinary workload and config
+images include these checks; there is no second Compose topology or launch configuration.
+
+The [proof checker](../../contrib/antithesis/exec-diff/README.md) samples the payment token's
+supply and workload-account balances. The L1 still runs dev consensus, and Zone nodes persist
+every block immediately. This does not test Simplex, delayed L1 persistence/state masking,
+or operator commands such as `db repair-trie` and stage unwind. No driver stops nodes.

@@ -27,7 +27,7 @@ ARG RUST_PROFILE=antithesis
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
 ARG VERGEN_GIT_SHA_SHORT=00000000
-# Lower on small machines: parallel LTO links of the four binaries need a lot of memory.
+# Lower on small machines: parallel links of the five binaries need a lot of memory.
 ARG CARGO_BUILD_JOBS=default
 
 WORKDIR /app
@@ -102,10 +102,6 @@ WORKDIR /app
 # --target workload.
 FROM runtime AS workload
 COPY --chmod=755 zones/antithesis/test/ /opt/antithesis/test/
-
-# Opt-in workload: the payment drivers plus independent execution/proof checks.
-FROM workload AS execdiff-workload
-COPY --chmod=755 zones/antithesis/execdiff-test/ /opt/antithesis/test/
 
 # The default target stays the image the nodes run.
 FROM runtime
