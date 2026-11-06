@@ -158,10 +158,11 @@ pub fn configurable_account(cx: _) -> Result {
         return Err(InstrStop::OpcodeNotFound);
     }
     let account = cx.state.message().destination;
-    let input = cx.state.message().input.clone();
+    // Borrow the input so a near-zero-gas call can't force a full copy before input gas is charged.
+    let input: &[u8] = &cx.state.message().input;
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
-    let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, &input)) {
+    let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, input)) {
         Ok(output) => (InstrStop::Return, output.into_bytes()),
         Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
         Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
