@@ -5,7 +5,7 @@ use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx as _, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
-use alloy_primitives::{Address, B256, IntoLogData as _};
+use alloy_primitives::{Address, B256, IntoLogData as _, KECCAK256_EMPTY};
 use evm2::{
     Evm,
     evm::AccountInfo,
@@ -13,18 +13,21 @@ use evm2::{
     registry::{HandlerError, HandlerResult},
     version::{GasId, GasParams},
 };
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
 use tempo_precompiles::{
     configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, registration_event, valid_account,
-        valid_account_code,
+        ConfigurableAccount, UpgradeEligibility, is_valid_account, is_valid_account_code,
+        l1_commitment_read_gas, record_l1_commitment_read, registration_event,
     },
     error::TempoPrecompileError,
     storage::{StorageCtx, account_config_commitment},
 };
-use tempo_primitives::transaction::{
-    ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
-    SignedKeyAuthorization, TempoSignature,
+use tempo_primitives::{
+    TempoEvmKind,
+    transaction::{
+        ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature,
+        SignatureType, SignedKeyAuthorization, TempoSignature,
+    },
 };
 
 /// An independently signed role. Repeated accounts still require both role digests.
@@ -159,12 +162,12 @@ impl TempoTxEnv {
 ///
 /// Configurable roles are checked first. At T14, bare primitive authority is then rejected with
 /// [`TempoInvalidTransaction::RootKeyRetired`] for any account with a nonzero configuration
-/// commitment, in the order sender, key authorization signer, fee payer, access key. RPC
-/// simulation skips only the sender check.
-/// Loads and warms accounts, but does not register commitments.
-/// Caller must charge both components.
-/// Transaction warmth, but not the beneficiary's, must be initialized before loading non-caller
-/// accounts.
+/// commitment, in the order sender, key authorization signer, fee payer, access key.
+/// RPC simulation skips only the sender check. On a zone, the L1 commitment reads of all accounts
+/// the transaction loads before execution are charged too (see [`l1_commitment_reads_gas`]).
+///
+/// Loads and warms accounts, but does not register commitments. Caller must charge both components.
+/// Tx warmth, but not the beneficiary's, must be initialized before loading non-caller accounts.
 pub(crate) fn validate_state(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
@@ -187,7 +190,10 @@ pub(crate) fn validate_state(
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
         if let Some(aa) = envelope.as_aa() {
             extra_gas += granted_configurable_account_access_gas(host, aa, spec, &accounts)?;
+            // A granted configurable account's commitment is read like an access key's.
+            accounts.extend(aa.granted_configurable_account());
         }
+        extra_gas += l1_commitment_reads_gas(host, envelope, spec, &accounts)?;
     }
     Ok((extra_gas, state_gas))
 }
@@ -224,7 +230,7 @@ pub(crate) fn register_commitments(
     aa: &TempoAaTx,
 ) -> HandlerResult<()> {
     let roles = aa.configurable_roles();
-    if matches!(roles, [None, None]) {
+    if matches!(roles, [None, None]) || !host.ext().kind.is_l1() {
         return Ok(());
     }
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
@@ -254,6 +260,46 @@ pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
         }
 }
 
+/// Intrinsic gas for the Tempo L1 commitment reads (TIP-1154) of the accounts a zone transaction
+/// reads before execution, [`L1_COMMITMENT_READ_GAS`] for each distinct one: the sender, which also pays
+/// the cold access it skips, then every `authorities` account and call target that holds an L1
+/// commitment. Loads those accounts and resets the transaction's Tempo-warm accounts to them.
+/// Zero on Tempo L1.
+fn l1_commitment_reads_gas(
+    host: &mut Evm<'_, TempoEvmTypes>,
+    envelope: &TempoTxEnv,
+    spec: TempoHardfork,
+    authorities: &[Address],
+) -> HandlerResult<u64> {
+    let TempoEvmKind::Zone {
+        l1_commitments: reads,
+    } = &mut host.ext_mut().kind
+    else {
+        return Ok(0);
+    };
+    reads.clear();
+    reads.insert(envelope.caller());
+    let mut gas = account_access_gas(&host.version().gas_params, true) + L1_COMMITMENT_READ_GAS;
+    let targets = envelope
+        .evm_tx()
+        .calls()
+        .filter_map(|(kind, _)| kind.to().copied());
+    for address in authorities.iter().copied().chain(targets) {
+        if l1_commitment_read_gas(host, address, spec).is_none_or(|read_gas| read_gas == 0) {
+            continue;
+        }
+        let code_hash = host
+            .state_mut()
+            .account(&address)?
+            .get()
+            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
+        if record_l1_commitment_read(host, address, code_hash) {
+            gas += L1_COMMITMENT_READ_GAS;
+        }
+    }
+    Ok(gas)
+}
+
 /// Loads and warms `address` once, reading its code, emptiness, nonce and commitment.
 fn load_account(
     host: &mut Evm<'_, TempoEvmTypes>,
@@ -266,7 +312,7 @@ fn load_account(
     let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
     Ok(LoadedAccount {
         was_cold,
-        invalid_code: !valid_account_code(account.code_hash(), commitment),
+        invalid_code: !is_valid_account_code(account.code_hash(), commitment),
         is_empty: info.is_none_or(AccountInfo::is_empty),
         nonce: account.nonce(),
         commitment,
@@ -302,13 +348,11 @@ fn validate_configurable_roles(
         }
         .into());
     }
-    let mut accounts = Vec::new();
-    let mut extra_gas = 0;
-    let mut state_gas = 0;
+    let (mut accounts, mut extra_gas, mut state_gas) = (Vec::new(), 0, 0);
     for role in roles.into_iter().flatten() {
         let signature = role.signature;
         let address = signature.account();
-        if !valid_account(address, spec) {
+        if !is_valid_account(address, spec) {
             return Err(ConfigurableAccountError::InvalidAccount { account: address }.into());
         }
         let account = load_account(host, address, spec)?;
@@ -339,7 +383,9 @@ fn validate_configurable_roles(
                 .config()
                 .derivation_gas()
                 .ok_or(TempoPrecompileError::OutOfGas)?;
-            if first {
+
+            // Zones never register, so they charge no write.
+            if first && host.ext().kind.is_l1() {
                 let gas = &host.version().gas_params;
                 // TIP-1108 prices the commitment write like account creation.
                 extra_gas += gas.get(GasId::NewAccountCost);

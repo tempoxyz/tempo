@@ -279,7 +279,7 @@ where
             env.spec,
         );
         let l1 = db.l1_state().clone();
-        let ext = TempoEvmExt::new(TempoEvmKind::Zone, ZoneProtocolFeeManager::new());
+        let ext = TempoEvmExt::new(TempoEvmKind::zone(), ZoneProtocolFeeManager::new());
         let precompiles = ZonePrecompiles::<TempoEvmTypes, L1>::new(
             env.spec,
             ext.actions.clone(),

@@ -42,7 +42,7 @@ use tempo_contracts::precompiles::{
     TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 use tempo_precompiles_macros::contract;
-use tempo_primitives::{TempoAddressExt, TempoEvmKind};
+use tempo_primitives::TempoAddressExt;
 use tracing::trace;
 
 /// u128::MAX as U256
@@ -1235,9 +1235,10 @@ impl TIP20Token {
         }
 
         // Zone credit L1-escrowed tokens without issuing supply, so (+T13) they are like transfers.
-        let recipient_role = match (self.storage.kind(), self.storage.spec()) {
-            (TempoEvmKind::Zone, spec) if spec.is_t13() => AuthRole::recipient(),
-            _ => AuthRole::mint_recipient(),
+        let recipient_role = if !self.storage.is_l1() && self.storage.spec().is_t13() {
+            AuthRole::recipient()
+        } else {
+            AuthRole::mint_recipient()
         };
         if !TIP403Registry::new().is_authorized_as(
             self.transfer_policy_id()?,
@@ -1396,7 +1397,7 @@ impl TIP20Token {
         };
         // A zone recovery authority could never claim diverted funds. Ungated: before T15 zone
         // transfers were disabled and the Inbox rejects blocked deposits itself.
-        if matches!(self.storage.kind(), TempoEvmKind::Zone) {
+        if !self.storage.is_l1() {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -1776,6 +1777,7 @@ pub(crate) mod tests {
         AccountKeychainError, AccountKeychainEvent, IAccountKeychain, IReceivePolicyGuard,
         ReceivePolicyGuardEvent, UnknownFunctionSelector, createTokenCall,
     };
+    use tempo_primitives::TempoEvmKind;
 
     #[test]
     fn test_mint_authorizes_zone_credits_as_recipients_from_t13() -> eyre::Result<()> {
@@ -1788,7 +1790,11 @@ pub(crate) mod tests {
                 TempoHardfork::T13,
                 AuthRole::MintRecipient,
             ),
-            (TempoEvmKind::Zone, TempoHardfork::T13, AuthRole::Recipient),
+            (
+                TempoEvmKind::zone(),
+                TempoHardfork::T13,
+                AuthRole::Recipient,
+            ),
         ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec).with_kind(kind);
             let admin = Address::random();
@@ -2222,7 +2228,7 @@ pub(crate) mod tests {
         #[test]
         fn test_zone_blocked_inbound_reverts_instead_of_guarding() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6)
-                .with_kind(TempoEvmKind::Zone);
+                .with_kind(TempoEvmKind::zone());
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
             let sender = Address::random();

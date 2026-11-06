@@ -144,8 +144,12 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
         self.non_creditable_slots.clone()
     }
 
-    fn kind(&self) -> TempoEvmKind {
-        self.kind
+    fn kind(&self) -> &TempoEvmKind {
+        &self.kind
+    }
+
+    fn kind_mut(&mut self) -> &mut TempoEvmKind {
+        &mut self.kind
     }
 }
 
@@ -220,7 +224,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             TempoEvmTx::AA(_) => return Ok(()),
         };
         // T14 root-key checks: a configurable account's primitive key no longer signs. A
-        // sender-only check charges no gas.
+        // sender-only check charges no gas on Tempo L1.
         let spec = host.config_spec_id();
         // Non-AA transactions have no configurable roles, so validation charges no state gas.
         let (validation_gas, _) = configurable_account::validate_state(host, envelope, spec)?;
