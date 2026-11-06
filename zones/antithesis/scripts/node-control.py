@@ -148,18 +148,26 @@ class Supervisor:
                 deadline = time.monotonic() + OFFLINE_TIMEOUT
                 while self.offline.poll() is None:
                     if self.shutting_down or time.monotonic() >= deadline:
-                        raise RuntimeError('offline operation interrupted or timed out')
+                        break
                     time.sleep(0.1)
-                if self.shutting_down:
-                    raise Incomplete('offline CLI interrupted by shutdown')
-                if self.offline.returncode:
-                    output.seek(0)
-                    raise SafetyFailure('offline CLI exited ' + str(self.offline.returncode) + ': ' + output.read().decode(errors='replace')[-4096:])
-                output.seek(0)
-                return output.read().decode(errors='replace')
+                returncode = self.offline.poll()
             finally:
-                self.stop(self.offline)
-                self.offline = None
+                try:
+                    self.stop(self.offline)
+                except TimeoutError:
+                    pass  # stop already killed and reaped the CLI; inspect its evidence below.
+                finally:
+                    self.offline = None
+            output.seek(0)
+            text = output.read().decode(errors='replace')
+            # Individual inconsistencies are definite evidence even without a final summary.
+            if 'repair-trie' in command and 'Inconsistency found:' in text:
+                raise SafetyFailure('trie dry-run reported inconsistencies: ' + text[-4096:])
+            if self.shutting_down or returncode is None:
+                raise Incomplete('offline CLI interrupted or timed out')
+            if returncode:
+                raise SafetyFailure('offline CLI exited ' + str(returncode) + ': ' + text[-4096:])
+            return text
 
     def recover(self, before):
         deadline = time.monotonic() + RECOVERY_TIMEOUT

@@ -65,10 +65,10 @@ in the fuzz build.
 | `parallel_driver_transfer` | TIP-20 transfer inside the zone to a new or existing account |
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
-| `anytime_consistency` | Nodes that imported the Zone block recorded on L1 agree on its hash and on balances there, and settled workload transactions stay final |
+| `anytime_consistency` | Available Zone blocks agree with L1 settlement and contain their recorded transactions; missing history or receipts are skipped during faults |
 | `anytime_proofs` | Independently verifies account/storage proofs and compares finalized state across execution profiles; skips unavailable samples during faults |
 | `eventually_proofs` | After faults stop, requires every profile to serve matching, valid proofs within the same 300-second recovery budget as `eventually_settled` |
-| `eventually_settled` | After faults stop, every confirmed deposit is credited and every confirmed withdrawal is paid, and all nodes converge |
+| `eventually_settled` | Within 300 seconds after faults stop, deposits are credited or refunded, withdrawals are paid, nodes converge, and every node serves every recorded transaction and its successful receipt |
 | `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
 
 Half of all recipients are accounts nobody has used before, so the L1 and zone state tries keep
@@ -173,6 +173,7 @@ is an operator-recovery drill, not an independent execution oracle.
 
 The supervisor reports armed, fired, recovered and failed separately. Requests rejected before
 arming, forced-stop rejections and normal shutdown interruptions do not fail safety assertions.
+An inconsistency already logged by the trie scan still fails safety if shutdown interrupts it.
 Recovery gets 120 seconds to restore the pre-operation finalized height and hash. Unavailability
 or a timeout reports incomplete completion coverage, not a safety failure; a different hash at
 the finalized height fails safety immediately. Arming declares the operation's Always (no
