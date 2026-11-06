@@ -247,6 +247,7 @@ where
     async fn start_inner(&mut self, context: &Context) {
         self.start_execution().await;
         self.start_consensus(context).await;
+        self.n_starts += 1;
     }
 
     /// Start the execution node and update consensus config to reference it.
@@ -254,7 +255,7 @@ where
     /// # Panics
     /// Panics if execution node is already running.
     #[instrument(skip_all, fields(last_db_block = self.last_db_block_on_stop))]
-    pub async fn start_execution(&mut self) {
+    async fn start_execution(&mut self) {
         assert!(
             self.execution_node.is_none(),
             "execution node is already running for {}",
@@ -307,7 +308,7 @@ where
     ///
     /// # Panics
     /// Panics if consensus is already running.
-    pub async fn start_consensus(&mut self, context: &Context) {
+    async fn start_consensus(&mut self, context: &Context) {
         assert!(
             self.consensus_handle.is_none(),
             "consensus is already running for {}",
@@ -409,7 +410,6 @@ where
         let consensus_handle = engine.start(votes, certificates, resolver, broadcast, marshal, dkg);
 
         self.consensus_handle = Some(consensus_handle);
-        self.n_starts += 1;
         debug!(%self.uid, "started consensus for testing node");
     }
 

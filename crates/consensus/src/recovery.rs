@@ -6,7 +6,7 @@
 //! execution layer. The next epoch starts from that outcome. Marshal finalizes the filled blocks
 //! later, as ancestors of the next epoch's first finalized block.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, Bytes};
@@ -20,7 +20,6 @@ use commonware_cryptography::{
     },
     ed25519::PublicKey,
 };
-use commonware_runtime::Clock;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::CryptoRng;
@@ -117,16 +116,11 @@ impl Recovery {
     /// Builds and imports the empty blocks after the last finalized block up to the boundary,
     /// then finalizes the boundary in the execution layer.
     ///
-    /// Does nothing if the execution layer already finalized the boundary. A node that lacks the
-    /// recovery's finalized block syncs the pinned boundary from its peers instead. Fails if the
-    /// boundary this node builds does not match the pinned hash, or if the execution layer
-    /// finalized past the recovery's finalized block without reaching the boundary.
+    /// Does nothing if the execution layer already finalized the boundary. Fails if the boundary
+    /// this node builds does not match the pinned hash, or if the execution layer lacks the
+    /// recovery's finalized block or finalized past it without reaching the boundary.
     #[instrument(skip_all, fields(last_finalized = %self.last_finalized.0, boundary = %self.boundary.0), err)]
-    pub(crate) async fn fill_to_boundary(
-        &self,
-        context: &impl Clock,
-        node: &TempoFullNode,
-    ) -> eyre::Result<()> {
+    pub(crate) async fn fill_to_boundary(&self, node: &TempoFullNode) -> eyre::Result<()> {
         let ((finalized_height, Digest(finalized_hash)), (boundary, Digest(boundary_hash))) =
             (self.last_finalized, self.boundary);
         let finalized = node
@@ -158,14 +152,17 @@ impl Recovery {
             finalized.hash,
             finalized.number,
         );
-        let Some(parent) = node
+        let parent = node
             .provider
             .sealed_header(finalized_height.get())
             .wrap_err("failed reading the recovery's finalized header")?
             .filter(|header| header.hash() == finalized_hash)
-        else {
-            return self.sync_to_boundary(context, node).await;
-        };
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "execution layer does not have the recovery's finalized block \
+                    `{finalized_hash}` at height `{finalized_height}`; sync it first"
+                )
+            })?;
 
         info!("filling the halted epoch with empty blocks");
         // Nothing can proceed until the boundary exists, so block on the build.
@@ -220,44 +217,6 @@ impl Recovery {
         );
         info!(boundary_hash = %boundary_hash, "finalized the recovery boundary");
         Ok(())
-    }
-
-    /// Downloads the pinned boundary and its ancestors from peers that filled them, and finalizes
-    /// it in the execution layer.
-    ///
-    /// The execution layer fetches blocks it lacks for a forkchoice head from its peers, so this
-    /// repeats the forkchoice update until the boundary is imported.
-    async fn sync_to_boundary(
-        &self,
-        context: &impl Clock,
-        node: &TempoFullNode,
-    ) -> eyre::Result<()> {
-        let Digest(boundary_hash) = self.boundary.1;
-        info!(
-            "execution layer lacks the recovery's finalized block; syncing the boundary from peers"
-        );
-        let engine = node.add_ons_handle.beacon_engine_handle.clone();
-        let state = ForkchoiceState {
-            head_block_hash: boundary_hash,
-            safe_block_hash: boundary_hash,
-            finalized_block_hash: boundary_hash,
-        };
-        loop {
-            let response = engine
-                .fork_choice_updated(state, None)
-                .await
-                .wrap_err("failed requesting the recovery boundary")?;
-            ensure!(
-                !response.is_invalid(),
-                "execution layer rejected the recovery boundary: {:?}",
-                response.payload_status,
-            );
-            if response.is_valid() {
-                info!(boundary_hash = %boundary_hash, "synced and finalized the recovery boundary");
-                return Ok(());
-            }
-            context.sleep(Duration::from_secs(1)).await;
-        }
     }
 }
 
