@@ -25,6 +25,10 @@ use tracy_client as _;
 #[cfg(feature = "otlp")]
 use opentelemetry_otlp as _;
 
+// Links Antithesis's coverage runtime shim into binaries built with its sancov flags.
+#[cfg(all(target_os = "linux", feature = "antithesis-coverage"))]
+use antithesis_instrumentation as _;
+
 pub mod cli;
 #[cfg(feature = "corpus")]
 pub mod corpus;
