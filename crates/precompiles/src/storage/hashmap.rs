@@ -302,8 +302,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.tip1060_storage_credits_enabled = self.spec.is_t7() && enabled;
     }
 
-    fn kind(&self) -> TempoEvmKind {
-        self.kind
+    fn kind(&self) -> &TempoEvmKind {
+        &self.kind
     }
 
     fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
