@@ -41,7 +41,7 @@ use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
 use reth_trie_common::SortedTrieData;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_primitives::{Block, TempoConsensusContext, TempoHeader, TempoPrimitives};
 use tracing::{info, instrument};
@@ -357,7 +357,7 @@ fn deal_to(
 ///
 /// `factory` must have the state after `parent`. Every node and `xtask recover` call this to get
 /// the same blocks: each block advances the timestamp by one millisecond, continues the parent's
-/// views, keeps its gas limit and pays no proposer.
+/// views and keeps its gas limit. Each pays the fee recipient of the proposer it inherits.
 pub fn build_fill_blocks<TFactory>(
     factory: TFactory,
     evm_config: &TempoEvmConfig,
@@ -390,14 +390,15 @@ where
         } else {
             Bytes::new()
         };
-        let attributes = fill_attributes(chain_spec, &parent, extra_data);
+        let mut attributes = fill_attributes(chain_spec, &parent, extra_data);
+        let mut db = StateProviderDatabase::new((&state).into_evm_state_provider());
+        attributes.inner.suggested_fee_recipient =
+            proposer_fee_recipient(evm_config, &mut db, &parent, &attributes).wrap_err_with(
+                || format!("failed resolving the beneficiary of block `{number}`"),
+            )?;
 
         let mut builder = evm_config
-            .builder_for_next_block(
-                StateProviderDatabase::new((&state).into_evm_state_provider()),
-                &parent,
-                attributes,
-            )
+            .builder_for_next_block(db, &parent, attributes)
             .wrap_err_with(|| format!("failed configuring fill block `{number}`"))?;
         builder.apply_pre_execution_changes().wrap_err_with(|| {
             format!("failed applying pre-execution changes of block `{number}`")
@@ -431,8 +432,28 @@ where
     Ok(blocks)
 }
 
+/// The beneficiary a fill block must pay: the fee recipient the inherited proposer registered in
+/// `ValidatorConfigV2`, which executors check from T14 on, or nobody before it is registered.
+fn proposer_fee_recipient(
+    evm_config: &TempoEvmConfig,
+    db: &mut impl TempoStateAccess,
+    parent: &SealedHeader<TempoHeader>,
+    attributes: &TempoNextBlockEnvAttributes,
+) -> eyre::Result<Address> {
+    let Some(context) = attributes.consensus_context else {
+        return Ok(Address::ZERO);
+    };
+    let env = evm_config
+        .next_evm_env(parent, attributes)
+        .wrap_err("failed configuring the block environment")?;
+    let fee_recipient = db
+        .proposer_fee_recipient(env.spec, env.block.number, B256::from(context.proposer))
+        .wrap_err("failed reading the proposer's fee recipient")?;
+    Ok(fee_recipient.unwrap_or(Address::ZERO))
+}
+
 /// The attributes of the empty block after `parent`: one millisecond later, the parent's gas
-/// limit and next view, and no proposer.
+/// limit and next view. The beneficiary is left for [`proposer_fee_recipient`] to resolve.
 fn fill_attributes(
     chain_spec: &TempoChainSpec,
     parent: &SealedHeader<TempoHeader>,

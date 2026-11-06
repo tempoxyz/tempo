@@ -2,6 +2,8 @@
 
 use std::{sync::Arc, time::Duration};
 
+use alloy::consensus::BlockHeader as _;
+use alloy_primitives::Address;
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Clock as _, Runner as _,
@@ -11,7 +13,7 @@ use futures::future::join_all;
 use rand::SeedableRng as _;
 use reth_ethereum::{
     chainspec::EthChainSpec as _,
-    storage::{BlockHashReader as _, BlockIdReader as _},
+    storage::{BlockHashReader as _, BlockIdReader as _, HeaderProvider as _},
 };
 use tempo_chainspec::spec::TempoChainSpec;
 
@@ -26,6 +28,20 @@ use crate::{
 /// hands the next epoch to one member, whose ceremony reshares to everyone for the epoch after.
 #[test_traced]
 fn chain_restarts_after_epoch_lost_its_signing_key() {
+    restart_after_epoch_lost_its_signing_key(None);
+}
+
+/// From T14 executors check that a block pays its proposer's fee recipient, fill blocks included.
+#[test_traced]
+fn chain_restarts_after_epoch_lost_its_signing_key_post_t14() {
+    restart_after_epoch_lost_its_signing_key(Some(FEE_RECIPIENT));
+}
+
+const FEE_RECIPIENT: Address = Address::repeat_byte(0xFE);
+
+/// Runs the recovery with T14 active from genesis and validators paying `t14_fee_recipient`, or
+/// before T14 without one.
+fn restart_after_epoch_lost_its_signing_key(t14_fee_recipient: Option<Address>) {
     let _ = tempo_eyre::install();
 
     let seed = 0;
@@ -33,9 +49,12 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
 
     let executor = Runner::from(Config::default().with_seed(seed));
     executor.start(|mut context| async move {
-        let setup = Setup::new(crate::VERIFICATION_MODE)
+        let mut setup = Setup::new(crate::VERIFICATION_MODE)
             .seed(seed)
             .epoch_length(epoch_length);
+        if let Some(fee_recipient) = t14_fee_recipient {
+            setup = setup.t14_time(0).fee_recipient(fee_recipient);
+        }
         let (mut validators, execution_runtime) =
             setup_validators(&mut context, setup.clone()).await;
 
@@ -123,6 +142,12 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
         }
         validators[0].share = Some(share);
 
+        // A node that fills to the boundary and restarts before the recovery epoch certifies a
+        // block must still start.
+        validators[1].start(&context).await;
+        context.sleep(Duration::from_secs(5)).await;
+        validators[1].stop().await;
+
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
         connect_execution_peers(&validators).await;
 
@@ -145,6 +170,19 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
                 Some(recovery.boundary_hash),
                 "{} must have the recovery boundary",
                 validator.uid(),
+            );
+        }
+
+        let provider = validators[0].execution_provider();
+        for height in finalized_height + 1..=boundary {
+            let header = provider
+                .sealed_header(height)
+                .unwrap()
+                .unwrap_or_else(|| panic!("fill block {height} not found"));
+            assert_eq!(
+                header.beneficiary(),
+                t14_fee_recipient.unwrap_or_default(),
+                "fill block {height} must pay the proposer's fee recipient",
             );
         }
     });

@@ -58,16 +58,23 @@ impl Recover {
         let (recovery, share) =
             tempo_consensus::recovery::prepare(factory, &chain, member, rand::rng())?;
 
-        std::fs::create_dir_all(&output)
+        // The share is the halted epoch's successor's whole signing key: keep it to its owner.
+        let mut dir = std::fs::DirBuilder::new();
+        dir.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+        dir.create(&output)
             .wrap_err_with(|| format!("failed creating `{}`", output.display()))?;
         std::fs::write(
             output.join("recovery.json"),
             serde_json::to_string_pretty(&recovery)?,
         )
         .wrap_err("failed writing recovery.json")?;
-        SigningShare::from(share)
-            .write_to_file(output.join("signing.share"))
-            .wrap_err("failed writing signing.share")?;
+        write_secret(
+            &output.join("signing.share"),
+            &SigningShare::from(share).to_string(),
+        )
+        .wrap_err("failed writing signing.share")?;
 
         println!(
             "wrote recovery (finalized height {}, boundary {}) to `{}`",
@@ -77,4 +84,15 @@ impl Recover {
         );
         Ok(())
     }
+}
+
+/// Creates `path` readable only by its owner, refusing to overwrite an existing file.
+fn write_secret(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(contents.as_bytes())
 }
