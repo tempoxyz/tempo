@@ -36,8 +36,8 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     in_ptr: *const u8,
     in_len: usize,
 ) -> c_int {
-    execute::clear_rejection();
     if in_ptr.is_null() {
+        execute::reject(ErrorClass::InvalidInput, "input: null");
         return FUZZ_REJECT;
     }
     let input = unsafe { core::slice::from_raw_parts(in_ptr, in_len) };
@@ -103,12 +103,13 @@ pub unsafe extern "C" fn tempo_fuzz_last_rejection_v1(
     out_len: usize,
     out_written: *mut usize,
 ) -> c_int {
-    let why = execute::last_rejection();
-    if why.is_empty() && !out_written.is_null() {
-        unsafe { *out_written = 0 };
-        return FUZZ_ACCEPT;
-    }
-    unsafe { write_output(out_ptr, out_len, out_written, why.as_bytes()) }
+    execute::with_rejection(|why| {
+        if why.is_empty() && !out_written.is_null() {
+            unsafe { *out_written = 0 };
+            return FUZZ_ACCEPT;
+        }
+        unsafe { write_output(out_ptr, out_len, out_written, why.as_bytes()) }
+    })
 }
 
 /// `bincode::serialize`'s encoding, rejecting trailing bytes.

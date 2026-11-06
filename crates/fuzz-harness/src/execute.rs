@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    fmt::Display,
+    fmt::{Display, Write as _},
     sync::{Arc, Mutex},
 };
 
@@ -40,26 +40,24 @@ thread_local! {
     static REJECTION: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-/// Records why the current input stopped short of executing, for [`last_rejection`].
+/// Records why the current input stopped short of executing, for [`with_rejection`].
 pub(crate) fn reject(class: ErrorClass, why: impl Display) -> ErrorClass {
-    REJECTION.with(|r| *r.borrow_mut() = why.to_string());
+    REJECTION.with_borrow_mut(|r| {
+        r.clear();
+        let _ = write!(r, "{why}");
+    });
     class
 }
 
-/// Why the last input this thread ran was not fully executed, such as the validation error of the
-/// transaction that failed its block. Empty when every block applied.
-pub(crate) fn last_rejection() -> String {
-    REJECTION.with(|r| r.borrow().clone())
-}
-
-/// Forgets the last input's rejection, before running another.
-pub(crate) fn clear_rejection() {
-    REJECTION.with(|r| r.borrow_mut().clear());
+/// Calls `f` with why the last input this thread ran was not fully executed, such as the
+/// validation error of the transaction that failed its block. Empty when every block applied.
+pub(crate) fn with_rejection<T>(f: impl FnOnce(&str) -> T) -> T {
+    REJECTION.with_borrow(|r| f(r))
 }
 
 /// Executes `input`.
 pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
-    clear_rejection();
+    REJECTION.with_borrow_mut(String::clear);
     let outcome = match input {
         TempoHarnessInput::Transaction(input) => {
             TempoHarnessOutcome::Transaction(transaction(&input))
@@ -90,7 +88,7 @@ pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
             outcome.error
         }
     };
-    if error != ErrorClass::None && last_rejection().is_empty() {
+    if error != ErrorClass::None && with_rejection(str::is_empty) {
         reject(error, format_args!("{error:?}"));
     }
     outcome
