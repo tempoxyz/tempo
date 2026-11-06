@@ -67,7 +67,7 @@ use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
 use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
 use alloy_transport::{
     TransportError,
-    layers::{RateLimitRetryPolicy, RetryBackoffLayer},
+    layers::{RetryBackoffLayer, RetryPolicy},
 };
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
@@ -1618,8 +1618,8 @@ const WITNESS_L1_RETRY_BACKOFF_MS: u64 = 50;
 ///
 /// The L1 subscriber and this provider can reach different nodes behind one L1 RPC endpoint, so a
 /// Tempo block the subscriber has seen may not be imported yet on this provider's node, which then
-/// answers `-32001` (resource not found). Such errors and rate limits are retried for up to
-/// 400 ms before collection fails.
+/// answers `-32001` (resource not found). Such errors are retried for up to 400 ms before
+/// collection fails.
 pub(crate) async fn connect_witness_l1_provider(
     l1_rpc_url: &str,
     retry_connection_interval: Duration,
@@ -1628,11 +1628,7 @@ pub(crate) async fn connect_witness_l1_provider(
         WITNESS_L1_MAX_RETRIES,
         WITNESS_L1_RETRY_BACKOFF_MS,
         u64::MAX,
-        RateLimitRetryPolicy::default().or(|error: &TransportError| {
-            error.as_error_resp().is_some_and(|error| {
-                error.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
-            })
-        }),
+        WitnessL1RetryPolicy,
     );
     let client = RpcClient::builder()
         .layer(retry)
@@ -1642,6 +1638,25 @@ pub(crate) async fn connect_witness_l1_provider(
     Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
         .connect_client(client)
         .erased())
+}
+
+/// Retries only `-32001` (resource not found), always after [`WITNESS_L1_RETRY_BACKOFF_MS`].
+///
+/// Server backoff hints are ignored so a response cannot stretch the retry budget past the
+/// optional witness timeout.
+#[derive(Debug, Clone, Copy)]
+struct WitnessL1RetryPolicy;
+
+impl RetryPolicy for WitnessL1RetryPolicy {
+    fn should_retry(&self, error: &TransportError) -> bool {
+        error
+            .as_error_resp()
+            .is_some_and(|error| error.code == i64::from(EthRpcErrorCode::ResourceNotFound.code()))
+    }
+
+    fn backoff_hint(&self, _error: &TransportError) -> Option<Duration> {
+        None
+    }
 }
 
 pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> ConnectionConfig {
@@ -1797,7 +1812,8 @@ mod tests {
                 0 => Err(ErrorObjectOwned::owned(
                     EthRpcErrorCode::ResourceNotFound.code(),
                     "block not found: 0xa",
-                    None::<()>,
+                    // A server backoff hint must not stretch the retry delay.
+                    Some(serde_json::json!({"rate": {"backoff_seconds": 60}})),
                 )),
                 1 => Ok(Vec::<serde_json::Value>::new()),
                 _ => Err(ErrorObjectOwned::owned(
@@ -1824,7 +1840,11 @@ mod tests {
                 )
         };
 
-        assert!(request().await?.is_empty());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), request())
+                .await??
+                .is_empty()
+        );
         assert_eq!(attempts.load(Ordering::Relaxed), 2);
         // Other errors fail at once.
         let error = request().await.unwrap_err();
