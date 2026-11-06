@@ -48,8 +48,13 @@ def report(result):
             'report-maintenance', '--operation', result['operation'],
             '--outcome', result['state'], '--details', json.dumps(result)],
             check=True, timeout=10)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return event('failed', result['operation'], error='SDK report failed: ' + str(exc), details=result)
+    except subprocess.CalledProcessError as exc:
+        return event('failed', result['operation'],
+                     error='SDK reporter exited ' + str(exc.returncode), details=result)
+    except subprocess.TimeoutExpired:
+        return event('failed', result['operation'], error='SDK reporter timed out', details=result)
+    except OSError as exc:
+        return event('failed', result['operation'], error='SDK reporter unavailable: ' + str(exc), details=result)
     return result
 
 
@@ -229,7 +234,7 @@ class Supervisor:
                 output = self.run_offline(['db', *self.base, 'repair-trie', '--dry-run'])
                 if ('Found 0 inconsistencies (dry run - no changes made)' not in output
                         or 'Inconsistency found:' in output):
-                    raise SafetyFailure('trie dry-run did not attest zero inconsistencies')
+                    raise SafetyFailure('trie dry-run did not attest zero inconsistencies: ' + output[-4096:])
                 evidence = dict(dry_run=True, inconsistencies=0)
             else:
                 output = self.run_offline(['stage', 'unwind', *self.base, 'num-blocks', str(blocks)])
@@ -240,7 +245,7 @@ class Supervisor:
                 requested = re.search(r'target=(\d+)', opened[0]) if opened else None
                 if not (start and end and requested and int(end[1]) == int(requested[1])
                         and int(start[1]) - int(end[1]) == blocks):
-                    raise SafetyFailure('unwind output did not attest an effective bounded unwind')
+                    raise SafetyFailure('unwind output did not attest an effective bounded unwind: ' + output[-4096:])
                 evidence = dict(from_block=int(start[1]), to_block=int(end[1]))
             event('fired', operation, **evidence)
         except Exception as exc:

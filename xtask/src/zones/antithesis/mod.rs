@@ -212,10 +212,7 @@ impl Antithesis {
                     message.into(),
                 );
             }
-            eyre::ensure!(
-                *outcome != MaintenanceOutcome::Failed,
-                "node-local maintenance failed: {details}"
-            );
+            // Exit status acknowledges reporting, not the maintenance outcome.
             return Ok(());
         }
         let ctx = Context::init(&self).await?;
