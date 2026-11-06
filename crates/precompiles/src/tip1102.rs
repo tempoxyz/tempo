@@ -10,6 +10,7 @@ use evm2::{
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::transaction::tt_signature::PrimitiveSignature;
 
 pub(crate) const ECRECOVER_GAS: u64 = 25_000;
 pub(crate) const P256_VERIFY_GAS: u64 = 27_000;
@@ -72,6 +73,16 @@ pub(crate) fn keccak_gas(len: usize) -> Option<u64> {
 
 pub(crate) fn sha256_gas(len: usize) -> u64 {
     linear(len, 104, 13)
+}
+
+pub(crate) fn primitive_verification_gas(signature: &PrimitiveSignature) -> Option<u64> {
+    match signature {
+        PrimitiveSignature::Secp256k1(_) => Some(ECRECOVER_GAS),
+        PrimitiveSignature::P256(_) => Some(P256_VERIFY_GAS),
+        PrimitiveSignature::WebAuthn(inner) => {
+            P256_VERIFY_GAS.checked_add(sha256_gas(inner.webauthn_data.len()))
+        }
+    }
 }
 
 /// Reprices built-in precompiles while retaining EVM2's input validation and cryptography.
@@ -220,6 +231,35 @@ const G2_MSM_DISCOUNT: [u16; 128] = [
 mod tests {
     use super::*;
     use evm2::precompiles::{PrecompileError, PrecompileHalt};
+    use tempo_primitives::transaction::tt_signature::{
+        P256SignatureWithPreHash, WebAuthnSignature,
+    };
+
+    #[test]
+    fn native_signature_prices() {
+        let p256 = P256SignatureWithPreHash {
+            r: Default::default(),
+            s: Default::default(),
+            pub_key_x: Default::default(),
+            pub_key_y: Default::default(),
+            pre_hash: false,
+        };
+        assert_eq!(
+            primitive_verification_gas(&PrimitiveSignature::P256(p256)),
+            Some(27_000)
+        );
+        let webauthn = WebAuthnSignature {
+            r: Default::default(),
+            s: Default::default(),
+            pub_key_x: Default::default(),
+            pub_key_y: Default::default(),
+            webauthn_data: vec![0; 33].into(),
+        };
+        assert_eq!(
+            primitive_verification_gas(&PrimitiveSignature::WebAuthn(webauthn)),
+            Some(27_000 + 104 + 13 * 2)
+        );
+    }
 
     fn assert_price(address: Address, input: &[u8], expected: u64, output_len: usize) {
         let mut gas = GasTracker::new(expected - 1);

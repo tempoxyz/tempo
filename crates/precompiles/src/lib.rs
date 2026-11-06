@@ -321,7 +321,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{
-        primitives::{Bytes, U256, bytes},
+        primitives::{B256, Bytes, U256, bytes},
         sol_types::SolCall,
     };
     use alloy_signer::SignerSync;
@@ -335,8 +335,16 @@ mod tests {
         },
         registry::TxRegistry,
     };
-    use tempo_contracts::precompiles::{ISignatureVerifier, ITIP20, UnknownFunctionSelector};
-    use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+    use tempo_contracts::precompiles::{
+        IConfigurableAccount, ISignatureVerifier, ITIP20, UnknownFunctionSelector,
+    };
+    use tempo_primitives::{
+        TempoBlockEnv, TempoBlockExt,
+        transaction::{
+            ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+            PrimitiveSignature, TempoSignature, configurable_account_digest,
+        },
+    };
 
     struct TestTypes;
 
@@ -1111,7 +1119,7 @@ mod tests {
 
     #[test]
     fn tip1102_reprices_native_signature_verifier() {
-        let hash = alloy::primitives::B256::repeat_byte(0x42);
+        let hash = B256::repeat_byte(0x42);
         let signer = PrivateKeySigner::random();
         let signature = signer.sign_hash_sync(&hash).unwrap();
         let calldata = ISignatureVerifier::recoverCall {
@@ -1136,6 +1144,108 @@ mod tests {
                 input_cost(spec, calldata.len()).unwrap() + verification_gas
             );
         }
+    }
+
+    #[test]
+    fn tip1102_reprices_configurable_account_approvals() {
+        let mut signers = (0..8)
+            .map(|_| PrivateKeySigner::random())
+            .collect::<Vec<_>>();
+        signers.sort_by_key(PrivateKeySigner::address);
+        let config = ConfigurableAccountConfig {
+            salt: B256::repeat_byte(0x42),
+            version: 0,
+            threshold: 8,
+            owners: signers
+                .iter()
+                .map(|signer| ConfigurableAccountOwner {
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let account = config.derive_account().unwrap();
+        let hash = B256::repeat_byte(0x43);
+        let digest = configurable_account_digest(hash, account, config.version);
+        let approvals = signers
+            .iter()
+            .map(|signer| PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest).unwrap()))
+            .collect();
+        let signature =
+            ConfigurableAccountSignature::try_new(account, config.clone(), approvals).unwrap();
+        let calldata = ISignatureVerifier::verifyConfigurableAccountCall {
+            account,
+            hash,
+            signature: TempoSignature::ConfigurableAccount(signature.clone()).to_bytes(),
+        }
+        .abi_encode();
+
+        let old_price = signature.verification_gas().unwrap() + config.derivation_gas().unwrap();
+        let new_price = signature
+            .verification_gas_with(tip1102::primitive_verification_gas, tip1102::keccak_gas)
+            .unwrap()
+            + tip1102::keccak_gas(config.account_preimage_len()).unwrap();
+        let mut spent = Vec::new();
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
+            let (result, gas) = call_tempo(
+                spec,
+                calldata.clone().into(),
+                MessageKind::Call,
+                SIGNATURE_VERIFIER_ADDRESS,
+                SIGNATURE_VERIFIER_ADDRESS,
+                false,
+            );
+            let output = result.unwrap();
+            assert!(
+                ISignatureVerifier::verifyConfigurableAccountCall::abi_decode_returns(
+                    output.bytes()
+                )
+                .unwrap()
+            );
+            spent.push(gas.spent());
+        }
+        assert_eq!(spent[1] - spent[0], new_price - old_price);
+    }
+
+    #[test]
+    fn tip1102_reprices_configurable_account_derivation() {
+        let owner = Address::repeat_byte(0x42);
+        let salt = B256::repeat_byte(0x43);
+        let config = ConfigurableAccountConfig {
+            salt,
+            version: 0,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner { owner, weight: 1 }],
+        };
+        let calldata = IConfigurableAccount::deriveAccountCall {
+            salt,
+            threshold: 1,
+            owners: vec![IConfigurableAccount::ConfigurableAccountOwner { owner, weight: 1 }],
+        }
+        .abi_encode();
+        let mut spent = Vec::new();
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
+            let (result, gas) = call_tempo(
+                spec,
+                calldata.clone().into(),
+                MessageKind::Call,
+                CONFIGURABLE_ACCOUNT_ADDRESS,
+                CONFIGURABLE_ACCOUNT_ADDRESS,
+                false,
+            );
+            let output = result.unwrap();
+            assert_eq!(
+                IConfigurableAccount::deriveAccountCall::abi_decode_returns(output.bytes())
+                    .unwrap(),
+                config.derive_account().unwrap()
+            );
+            spent.push(gas.spent());
+        }
+        assert_eq!(
+            spent[1] - spent[0],
+            tip1102::keccak_gas(config.account_preimage_len()).unwrap()
+                - config.derivation_gas().unwrap()
+        );
     }
 
     #[test]

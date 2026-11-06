@@ -31,13 +31,8 @@ impl SignatureVerifier {
 
         // Charge verification gas before performing verification.
         let verify_gas = if self.storage.spec().is_t15() {
-            match &sig {
-                PrimitiveSignature::Secp256k1(_) => crate::tip1102::ECRECOVER_GAS,
-                PrimitiveSignature::P256(_) => crate::tip1102::P256_VERIFY_GAS,
-                PrimitiveSignature::WebAuthn(inner) => crate::tip1102::P256_VERIFY_GAS
-                    .checked_add(crate::tip1102::sha256_gas(inner.webauthn_data.len()))
-                    .ok_or(TempoPrecompileError::OutOfGas)?,
-            }
+            crate::tip1102::primitive_verification_gas(&sig)
+                .ok_or(TempoPrecompileError::OutOfGas)?
         } else {
             sig.base_verification_gas()
         };
@@ -160,17 +155,25 @@ impl SignatureVerifier {
         })?;
 
         let initial_proof_gas = if commitment.is_zero() {
-            signature
-                .config()
-                .derivation_gas()
-                .ok_or(TempoPrecompileError::OutOfGas)?
+            if spec.is_t15() {
+                crate::tip1102::keccak_gas(signature.config().account_preimage_len())
+            } else {
+                signature.config().derivation_gas()
+            }
+            .ok_or(TempoPrecompileError::OutOfGas)?
         } else {
             0
         };
-        let verification_gas = signature
-            .verification_gas()
-            .and_then(|gas| gas.checked_add(initial_proof_gas))
-            .ok_or(TempoPrecompileError::OutOfGas)?;
+        let verification_gas = if spec.is_t15() {
+            signature.verification_gas_with(
+                crate::tip1102::primitive_verification_gas,
+                crate::tip1102::keccak_gas,
+            )
+        } else {
+            signature.verification_gas()
+        }
+        .and_then(|gas| gas.checked_add(initial_proof_gas))
+        .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage.deduct_gas(verification_gas)?;
         if signature.account() != account
             || !valid_account(account, spec)

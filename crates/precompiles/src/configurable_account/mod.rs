@@ -59,11 +59,13 @@ impl ConfigurableAccount {
         let config = config(salt, 0, threshold, owners);
         // Reject an invalid configuration before charging the derivation gas.
         config.validate()?;
-        self.storage.deduct_gas(
-            config
-                .derivation_gas()
-                .ok_or(TempoPrecompileError::OutOfGas)?,
-        )?;
+        let derivation_gas = if self.storage.spec().is_t15() {
+            crate::tip1102::keccak_gas(config.account_preimage_len())
+        } else {
+            config.derivation_gas()
+        }
+        .ok_or(TempoPrecompileError::OutOfGas)?;
+        self.storage.deduct_gas(derivation_gas)?;
         let account = config.derive_account()?;
         if !valid_account(account, self.storage.spec()) {
             return Err(ConfigurableAccountError::invalid_account().into());
