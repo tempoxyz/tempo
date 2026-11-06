@@ -740,7 +740,7 @@ pub struct ZoneArgs {
 
     /// Bounce deposits whose L1 sender is not on the allowlist persisted at
     /// `<datadir>/deposit-allowlist.json`. Until the admin first writes the list, the sequencer
-    /// credits every deposit. Requires `--deposits.allowlist.admin`.
+    /// bounces every deposit. Requires `--deposits.allowlist.admin`.
     #[arg(long = "deposits.allowlist", env = "DEPOSITS_ALLOWLIST")]
     pub deposit_allowlist: bool,
 

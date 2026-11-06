@@ -5,9 +5,9 @@
 //! which the inbox treats as a failed decryption and refunds through the ordinary deposit
 //! bounce-back path. The check runs only where blocks are built, so it needs no hardfork.
 //!
-//! A sequencer with no persisted list is uninitialized and credits every deposit until its first
-//! write, so enabling the allowlist does not bounce deposits before the admin fills the list.
-//! Each sequencer keeps its own file, which consensus does not replicate; the operator runbook in
+//! A sequencer with no persisted list is uninitialized and bounces every deposit until its first
+//! write, so a sequencer whose datadir lost or never received the list fails closed instead of
+//! crediting senders the admin never allowed. Each sequencer keeps its own file, which consensus does not replicate; the operator runbook in
 //! `zones/docs/ZONES.md` covers enabling the allowlist and adding or restoring sequencers.
 
 use std::{
@@ -198,7 +198,7 @@ impl From<DepositAllowlistError> for ErrorObjectOwned {
 }
 
 /// Persisted allowlist and the last signed write applied to it. A sequencer without one is
-/// uninitialized and credits every deposit.
+/// uninitialized and bounces every deposit.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct State {
@@ -243,7 +243,7 @@ fn log_status(status: DepositAllowlistStatus, message: &'static str) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DepositAllowlistStatus {
-    /// Whether the list has been written; an uninitialized sequencer credits every deposit.
+    /// Whether the list has been written; an uninitialized sequencer bounces every deposit.
     pub(crate) initialized: bool,
     /// Nonce of the last applied signed write; 0 before the first one.
     pub(crate) nonce: u64,
@@ -298,7 +298,7 @@ impl DepositAllowlist {
     /// Load the persisted list from `path`, starting uninitialized when it does not exist yet.
     pub fn load(path: PathBuf, admin: DepositAllowlistAdmin) -> eyre::Result<Self> {
         // Only a missing path means uninitialized. Any other I/O error, or a dangling symlink,
-        // fails startup rather than crediting every deposit.
+        // fails startup rather than silently dropping a list that may exist.
         let state = match std::fs::symlink_metadata(&path) {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
@@ -313,7 +313,7 @@ impl DepositAllowlist {
             warn!(
                 target: "zone::allowlist",
                 path = %path.display(),
-                "Deposit allowlist is uninitialized: this sequencer credits every deposit until the admin writes the list"
+                "Deposit allowlist is uninitialized: this sequencer bounces every deposit while it leads until the admin writes the list"
             );
         } else if state
             .as_ref()
@@ -416,7 +416,7 @@ impl DepositAllowlist {
     }
 
     /// Replace the decryption data of every deposit whose sender is not allowed. An
-    /// uninitialized list allows every sender.
+    /// uninitialized list allows no sender.
     ///
     /// `senders` holds the L1 sender of each user deposit in queue order; `prepare_many` emits
     /// exactly one entry in `decryptions` per user deposit in the same order. Returns the number
@@ -433,12 +433,12 @@ impl DepositAllowlist {
             decryptions.len()
         );
         let state = self.inner.state.read();
-        let Some(state) = state.as_ref() else {
-            return Ok(0);
-        };
         let mut rejected = 0;
         for (sender, decryption) in senders.iter().zip(decryptions) {
-            if !state.addresses.contains(sender) {
+            if !state
+                .as_ref()
+                .is_some_and(|state| state.addresses.contains(sender))
+            {
                 *decryption = FAILED_DECRYPTION;
                 rejected += 1;
             }
@@ -703,13 +703,15 @@ mod tests {
         let allowlist = load(path.clone());
         assert!(!allowlist.status().initialized);
         assert!(!path.exists(), "loading must not create the file");
-        // An uninitialized list credits every sender.
-        let mut decryptions = vec![valid_decryption()];
+        // An uninitialized list bounces every sender.
+        let mut decryptions = vec![valid_decryption(), valid_decryption()];
         assert_eq!(
-            allowlist.reject_unlisted(&[BOB], &mut decryptions).unwrap(),
-            0
+            allowlist
+                .reject_unlisted(&[ALICE, BOB], &mut decryptions)
+                .unwrap(),
+            2
         );
-        assert_eq!(decryptions, vec![valid_decryption()]);
+        assert_eq!(decryptions, vec![FAILED_DECRYPTION, FAILED_DECRYPTION]);
 
         // Only a full replacement initializes the list: a first add or remove would stop
         // crediting every sender outside it.
@@ -759,7 +761,7 @@ mod tests {
         let path = dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME);
         std::os::unix::fs::symlink(dir.path().join("moved.json"), &path).unwrap();
 
-        // Starting uninitialized here would credit every deposit.
+        // Starting uninitialized here would silently drop the list the symlink pointed to.
         let err = DepositAllowlist::load(path, admin()).unwrap_err();
         assert!(format!("{err:#}").contains("failed to open"), "{err:#}");
     }
