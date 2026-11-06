@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Clock as _, Runner as _,
-    deterministic::{Config, Runner},
+    deterministic::{Config, Context, Runner},
 };
 use futures::future::join_all;
 use rand::SeedableRng as _;
@@ -16,7 +16,8 @@ use reth_ethereum::{
 use tempo_chainspec::spec::TempoChainSpec;
 
 use crate::{
-    Setup, connect_execution_peers,
+    Setup, TestingNode, connect_execution_peers,
+    consensus_snapshot::write_consensus_snapshot,
     metrics::{wait_for_height, wait_for_metrics},
     setup_validators,
 };
@@ -46,47 +47,47 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
             wait_for_height(&context, validator, halt_after).await;
         }
 
+        // Stop early in an epoch, so the halt lands inside it even if a few more blocks finalize.
+        loop {
+            let height = validators[0]
+                .execution_provider()
+                .finalized_block_number()
+                .unwrap()
+                .unwrap_or_default();
+            if (2..=6).contains(&(height % epoch_length)) {
+                break;
+            }
+            context.sleep(Duration::from_millis(50)).await;
+        }
+
         // Losing a quorum halts the chain; then every node goes down with its share.
-        for validator in &mut validators[..2] {
-            validator.stop().await;
-        }
+        // Aborting consensus is immediate; shutting down execution nodes is not, and the chain
+        // would keep finalizing meanwhile.
+        join_all(validators[..2].iter_mut().map(|v| v.stop_consensus())).await;
+        join_all(validators[..2].iter_mut().map(|v| v.stop_execution())).await;
         context.sleep(Duration::from_secs(5)).await;
-        for validator in &mut validators[2..] {
-            validator.stop().await;
-        }
+        join_all(validators[2..].iter_mut().map(|v| v.stop())).await;
 
-        // The network's last finalized block is the highest any node finalized.
-        let finalized_height = validators
-            .iter()
-            .map(|validator| {
-                validator
-                    .execution_provider_offline()
-                    .finalized_block_number()
-                    .unwrap()
-                    .expect("every node finalized a block before the halt")
-            })
-            .max()
-            .unwrap();
-
-        // Nodes that lagged at the halt sync up to it first: with the shares gone nobody signs,
-        // so the chain stays halted while they catch up.
-        for validator in &mut validators {
+        // The first two lose their consensus state, and with it their shares, and come back from
+        // a consensus snapshot. Without a quorum of
+        // shares nobody can sign, so the chain stays halted while every node applies the
+        // finalizations it holds and catches up to the others.
+        for validator in &mut validators[..2] {
+            let restored = format!("{}_restored", validator.partition_prefix);
+            write_consensus_snapshot(
+                &context,
+                validator,
+                validator.execution_provider_offline(),
+                &restored,
+            )
+            .await;
+            validator.partition_prefix = restored;
             validator.share = None;
         }
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
         connect_execution_peers(&validators).await;
-        while !validators.iter().all(|validator| {
-            validator
-                .execution_provider()
-                .finalized_block_number()
-                .unwrap()
-                .is_some_and(|finalized| finalized >= finalized_height)
-        }) {
-            context.sleep(Duration::from_secs(1)).await;
-        }
-        for validator in &mut validators {
-            validator.stop().await;
-        }
+        let finalized_height = wait_for_settled_finalized_height(&context, &validators).await;
+        join_all(validators.iter_mut().map(|v| v.stop())).await;
 
         let halted_epoch = finalized_height / epoch_length;
         let boundary = (halted_epoch + 1) * epoch_length - 1;
@@ -117,6 +118,9 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
         assert_eq!(recovered_spec.genesis_hash(), chain_spec.genesis_hash());
         execution_runtime.set_chain_spec(recovered_spec);
 
+        for validator in &mut validators {
+            validator.share = None;
+        }
         validators[0].share = Some(share);
 
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
@@ -144,4 +148,39 @@ fn chain_restarts_after_epoch_lost_its_signing_key() {
             );
         }
     });
+}
+
+/// Waits until every node reports the same finalized height for several seconds, and returns it.
+async fn wait_for_settled_finalized_height(
+    context: &Context,
+    validators: &[TestingNode<Context>],
+) -> u64 {
+    let mut settled = None;
+    let mut stable_for = 0;
+    loop {
+        context.sleep(Duration::from_secs(1)).await;
+        let heights: Vec<_> = validators
+            .iter()
+            .map(|validator| {
+                validator
+                    .execution_provider()
+                    .finalized_block_number()
+                    .unwrap()
+            })
+            .collect();
+        let agreed = heights
+            .iter()
+            .all(|height| *height == heights[0])
+            .then_some(heights[0])
+            .flatten();
+        if agreed.is_some() && agreed == settled {
+            stable_for += 1;
+        } else {
+            settled = agreed;
+            stable_for = 0;
+        }
+        if stable_for >= 5 {
+            return settled.unwrap();
+        }
+    }
 }

@@ -12,11 +12,11 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
-use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
+use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
     bls12381::{
-        dkg::feldman_desmedt,
-        primitives::{group::Share, sharing::Mode},
+        dkg::feldman_desmedt::{self, Output},
+        primitives::{group::Share, sharing::Mode, variant::MinSig},
     },
     ed25519::PublicKey,
 };
@@ -93,11 +93,12 @@ impl Recovery {
             epoch_info.epoch().next(),
         );
 
-        Ok(Some(Self {
+        let validated = Self {
             last_finalized: (finalized_height, Digest(recovery.finalized_hash)),
             boundary: (boundary, Digest(recovery.boundary_hash)),
             outcome,
-        }))
+        };
+        Ok(Some(validated))
     }
 
     /// The identity that verifies finalizations from the epoch after the halted one.
@@ -249,58 +250,25 @@ where
             .ok_or_eyre("epochLength not found in chainspec")?,
     );
 
-    let finalized_height = Height::new(
-        factory
-            .database_provider_ro()
-            .wrap_err("failed opening the database")?
-            .last_finalized_block_number()
-            .wrap_err("failed reading the finalized block number")?
-            .ok_or_eyre("datadir has no finalized block")?,
-    );
-    let finalized = factory
-        .sealed_header(finalized_height.get())
-        .wrap_err("failed reading the finalized header")?
-        .ok_or_eyre("datadir does not have the finalized header")?;
+    let finalized = last_finalized_header(&factory)?;
+    let finalized_height = Height::new(finalized.number());
     let epoch_info = epocher
         .containing(finalized_height)
         .expect("fixed epocher is valid for all heights");
     ensure!(
         epoch_info.last() != finalized_height,
-        "the finalized block `{finalized_height}` is the boundary of epoch `{}`; the next         epoch can start from it without recovery",
+        "the finalized block `{finalized_height}` is the boundary of epoch `{}`; the next \
+        epoch can start from it without recovery",
         epoch_info.epoch(),
     );
 
-    // The halted epoch's outcome names the players its ceremony would have dealt to.
-    let halted_boundary = epoch_info.epoch().previous().map_or(0, |previous| {
-        epocher
-            .last(previous)
-            .expect("fixed epocher is valid for all epochs")
-            .get()
-    });
-    let halted_header = factory
-        .header_by_number(halted_boundary)
-        .wrap_err_with(|| format!("failed reading boundary block `{halted_boundary}`"))?
-        .ok_or_eyre("datadir does not have the halted epoch's boundary block")?;
-    let halted = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
-        halted_header.extra_data().as_ref(),
-    ))
-    .wrap_err("halted epoch's boundary block has no DKG outcome")?;
+    let halted = halted_outcome(&factory, &epocher, epoch_info.epoch())?;
     ensure!(
         halted.next_players().position(&member).is_some(),
         "member `{member}` is not among the halted epoch's next players",
     );
 
-    let (output, shares) = feldman_desmedt::deal::<_, _, N3f1>(
-        rng,
-        Mode::NonZeroCounter,
-        ordered::Set::try_from_iter([member]).expect("a single player is unique"),
-    )
-    .wrap_err("failed dealing the recovery share")?;
-    let (_, share) = shares
-        .into_iter()
-        .next()
-        .expect("dealing to one player yields one share");
-
+    let (output, share) = deal_to(member, rng)?;
     let outcome = OnchainDkgOutcome {
         epoch: epoch_info.epoch().next().get(),
         output,
@@ -317,20 +285,72 @@ where
         &outcome,
     )
     .wrap_err("failed building the fill blocks")?;
-    let boundary_hash = blocks
-        .last()
-        .expect("a recovery fills at least one block")
-        .hash();
+    let boundary = blocks.last().expect("a recovery fills at least one block");
 
-    Ok((
-        tempo_chainspec::Recovery {
-            finalized_height: finalized_height.get(),
-            finalized_hash: finalized.hash(),
-            boundary_hash,
-            outcome: Bytes::from(outcome.encode().to_vec()),
-        },
-        share,
-    ))
+    let recovery = tempo_chainspec::Recovery {
+        finalized_height: finalized_height.get(),
+        finalized_hash: finalized.hash(),
+        boundary_hash: boundary.hash(),
+        outcome: Bytes::from(outcome.encode().to_vec()),
+    };
+    Ok((recovery, share))
+}
+
+/// Reads the last block the execution layer finalized.
+fn last_finalized_header<TFactory>(factory: &TFactory) -> eyre::Result<SealedHeader<TempoHeader>>
+where
+    TFactory: DatabaseProviderFactory + HeaderProvider<Header = TempoHeader>,
+    TFactory::Provider: ChainStateBlockReader,
+{
+    let height = factory
+        .database_provider_ro()
+        .wrap_err("failed opening the database")?
+        .last_finalized_block_number()
+        .wrap_err("failed reading the finalized block number")?
+        .ok_or_eyre("datadir has no finalized block")?;
+    factory
+        .sealed_header(height)
+        .wrap_err("failed reading the finalized header")?
+        .ok_or_eyre("datadir does not have the finalized header")
+}
+
+/// Reads the DKG outcome that started `halted_epoch`, which names the players its ceremony would
+/// have dealt to.
+fn halted_outcome<TFactory>(
+    factory: &TFactory,
+    epocher: &FixedEpocher,
+    halted_epoch: Epoch,
+) -> eyre::Result<OnchainDkgOutcome>
+where
+    TFactory: HeaderProvider<Header = TempoHeader>,
+{
+    let boundary = halted_epoch.previous().map_or(0, |previous| {
+        epocher
+            .last(previous)
+            .expect("fixed epocher is valid for all epochs")
+            .get()
+    });
+    let header = factory
+        .header_by_number(boundary)
+        .wrap_err_with(|| format!("failed reading boundary block `{boundary}`"))?
+        .ok_or_eyre("datadir does not have the halted epoch's boundary block")?;
+    OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
+        .wrap_err("halted epoch's boundary block has no DKG outcome")
+}
+
+/// Deals a fresh 1-of-1 threshold key to `member`.
+fn deal_to(
+    member: PublicKey,
+    rng: impl CryptoRng,
+) -> eyre::Result<(Output<MinSig, PublicKey>, Share)> {
+    let players = ordered::Set::try_from_iter([member]).expect("a single player is unique");
+    let (output, shares) = feldman_desmedt::deal::<_, _, N3f1>(rng, Mode::NonZeroCounter, players)
+        .wrap_err("failed dealing the recovery share")?;
+    let (_, share) = shares
+        .into_iter()
+        .next()
+        .expect("dealing to one player yields one share");
+    Ok((output, share))
 }
 
 /// Builds the empty blocks after `parent` up to `boundary`, writing `outcome` into the boundary.
@@ -365,35 +385,12 @@ where
             .database_provider_ro()
             .wrap_err_with(|| format!("failed opening the state before fill block `{number}`"))?;
 
-        let timestamp_millis = parent.timestamp_millis() + 1;
-        let timestamp = timestamp_millis / 1000;
-        let gas_limit = parent.gas_limit();
-        let attributes = TempoNextBlockEnvAttributes {
-            inner: NextBlockEnvAttributes {
-                timestamp,
-                suggested_fee_recipient: Address::ZERO,
-                prev_randao: B256::ZERO,
-                gas_limit,
-                parent_beacon_block_root: Some(B256::ZERO),
-                withdrawals: Some(Default::default()),
-                extra_data: if number == boundary.get() {
-                    outcome.clone()
-                } else {
-                    Bytes::new()
-                },
-                slot_number: None,
-            },
-            general_gas_limit: chain_spec.general_gas_limit_at(timestamp, gas_limit, 0),
-            shared_gas_limit: 0,
-            timestamp_millis_part: timestamp_millis % 1000,
-            consensus_context: parent
-                .consensus_context
-                .map(|context| TempoConsensusContext {
-                    view: context.view + 1,
-                    parent_view: context.view,
-                    ..context
-                }),
+        let extra_data = if number == boundary.get() {
+            outcome.clone()
+        } else {
+            Bytes::new()
         };
+        let attributes = fill_attributes(chain_spec, &parent, extra_data);
 
         let mut builder = evm_config
             .builder_for_next_block(
@@ -417,7 +414,7 @@ where
             .wrap_err_with(|| format!("failed building fill block `{number}`"))?;
 
         parent = block.sealed_header().clone();
-        overlay = overlay.with_appended_block(ExecutedBlock::new(
+        let executed = ExecutedBlock::new(
             Arc::new(block.clone()),
             Arc::new(BlockExecutionOutput {
                 result: execution_result,
@@ -427,10 +424,47 @@ where
                 Arc::new(hashed_state.into_sorted()),
                 Arc::new(trie_updates.into_sorted()),
             ),
-        ));
+        );
+        overlay = overlay.with_appended_block(executed);
         blocks.push(block);
     }
     Ok(blocks)
+}
+
+/// The attributes of the empty block after `parent`: one millisecond later, the parent's gas
+/// limit and next view, and no proposer.
+fn fill_attributes(
+    chain_spec: &TempoChainSpec,
+    parent: &SealedHeader<TempoHeader>,
+    extra_data: Bytes,
+) -> TempoNextBlockEnvAttributes {
+    let timestamp_millis = parent.timestamp_millis() + 1;
+    let timestamp = timestamp_millis / 1000;
+    let gas_limit = parent.gas_limit();
+    let consensus_context = parent
+        .consensus_context
+        .map(|context| TempoConsensusContext {
+            view: context.view + 1,
+            parent_view: context.view,
+            ..context
+        });
+
+    TempoNextBlockEnvAttributes {
+        inner: NextBlockEnvAttributes {
+            timestamp,
+            suggested_fee_recipient: Address::ZERO,
+            prev_randao: B256::ZERO,
+            gas_limit,
+            parent_beacon_block_root: Some(B256::ZERO),
+            withdrawals: Some(Default::default()),
+            extra_data,
+            slot_number: None,
+        },
+        general_gas_limit: chain_spec.general_gas_limit_at(timestamp, gas_limit, 0),
+        shared_gas_limit: 0,
+        timestamp_millis_part: timestamp_millis % 1000,
+        consensus_context,
+    }
 }
 
 #[cfg(test)]

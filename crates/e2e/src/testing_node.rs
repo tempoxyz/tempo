@@ -455,7 +455,7 @@ where
     /// # Panics
     /// Panics if execution node is not running.
     #[instrument(skip_all)]
-    async fn stop_execution(&mut self) {
+    pub async fn stop_execution(&mut self) {
         debug!(%self.uid, "stopping execution node for testing node");
         let execution_node = self.execution_node.take().unwrap_or_else(|| {
             panic!(
@@ -572,7 +572,7 @@ where
 
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             database,
-            Arc::new(execution_runtime::chainspec()),
+            Arc::new(self.execution_runtime.chain_spec()),
             static_file_provider,
             rocksdb,
             reth_ethereum::tasks::Runtime::test(),
@@ -615,7 +615,7 @@ where
 
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             db,
-            Arc::new(execution_runtime::chainspec()),
+            Arc::new(self.execution_runtime.chain_spec()),
             static_file_provider,
             rocksdb,
             reth_ethereum::tasks::Runtime::test(),

@@ -624,6 +624,7 @@ impl ExecutionRuntime {
         ExecutionRuntimeHandle {
             to_runtime: self.to_runtime.clone(),
             nodes_dir: self._tempdir.path().to_path_buf(),
+            chain_spec: self.chain_spec.clone(),
         }
     }
 
@@ -793,12 +794,18 @@ impl ExecutionRuntime {
 pub struct ExecutionRuntimeHandle {
     to_runtime: tokio::sync::mpsc::UnboundedSender<Message>,
     nodes_dir: PathBuf,
+    chain_spec: Arc<std::sync::Mutex<TempoChainSpec>>,
 }
 
 impl ExecutionRuntimeHandle {
     /// Returns the base directory where execution node data is stored.
     pub fn nodes_dir(&self) -> &Path {
         &self.nodes_dir
+    }
+
+    /// Returns the chainspec that newly spawned execution nodes launch with.
+    pub fn chain_spec(&self) -> TempoChainSpec {
+        self.chain_spec.lock().unwrap().clone()
     }
 
     /// Requests a new execution node and blocks until its returned.
