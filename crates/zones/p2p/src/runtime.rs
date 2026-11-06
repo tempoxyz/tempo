@@ -3,12 +3,15 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use alloy_primitives::{Address as EthereumAddress, B256};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_p2p::{AddressableManager as _, Recipients, Sender as _, authenticated::lookup};
+use commonware_p2p::{
+    AddressableManager as _, CheckedSender as _, LimitedSender, Recipients, Sender as _,
+    authenticated::lookup,
+};
 use commonware_runtime::{IoBuf, Runner as _, Spawner as _};
 use eyre::WrapErr as _;
 use tokio::sync::{mpsc, oneshot};
@@ -37,6 +40,12 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const BROADCAST_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const BROADCAST_RETRY_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMAND_BACKLOG: usize = 128;
+/// Forwarded transactions waiting for the transaction channel's per-peer quota. Commands beyond
+/// it are dropped and forwarded again by the sender's txpool reconciliation.
+const TRANSACTION_BACKLOG: usize = 1024;
+/// Longest one forwarded transaction waits for a rate-limited peer before this attempt is
+/// dropped. The quota refills a send every millisecond, so only a stalled clock or peer gets here.
+const TRANSACTION_PACING_TIMEOUT: Duration = Duration::from_secs(1);
 const EVENT_BACKLOG: usize = 128;
 
 type CommonwareSender = lookup::Sender<PublicKey, commonware_runtime::tokio::Context>;
@@ -54,7 +63,14 @@ struct P2pSenders {
     blocks: CommonwareSender,
     settlement_proposals: CommonwareSender,
     settlement_signatures: CommonwareSender,
-    transactions: CommonwareSender,
+    transactions: mpsc::Sender<ForwardedTransaction>,
+}
+
+/// A transaction the command loop routed, waiting in [`pace_transactions`] for its recipients.
+struct ForwardedTransaction {
+    transaction_hash: B256,
+    transaction: IoBuf,
+    recipients: Vec<PublicKey>,
 }
 
 struct P2pReceivers<R = CommonwareReceiver> {
@@ -444,6 +460,7 @@ fn run(
             network::transaction_quota(),
         );
         let allowlist_channel = commonware.register(ALLOWLIST_CHANNEL, network::allowlist_quota());
+        let (forwarded_transactions, forwarded_transaction_rx) = mpsc::channel(TRANSACTION_BACKLOG);
         let mut network_task = commonware.start();
 
         if config.bypass_ip_check {
@@ -481,11 +498,14 @@ fn run(
                 blocks: block_sender,
                 settlement_proposals: settlement_proposal_sender,
                 settlement_signatures: settlement_signature_sender,
-                transactions: transaction_sender,
+                transactions: forwarded_transactions,
             },
             command_rx,
         );
         tokio::pin!(command_loop);
+
+        let transaction_loop = pace_transactions(transaction_sender, forwarded_transaction_rx);
+        tokio::pin!(transaction_loop);
 
         let allowlist_loop = AllowlistCoordinator::new(
             local_ed25519_public_key.clone(),
@@ -539,6 +559,7 @@ fn run(
                 Err(err) => Err(eyre::eyre!("Commonware network failed: {err}")),
             },
             result = &mut command_loop => result,
+            result = &mut transaction_loop => result,
             result = &mut receive_loop => result,
             result = &mut backfill_loop => result,
             result = &mut allowlist_loop => result,
@@ -700,24 +721,91 @@ async fn run_commands(
                     );
                     continue;
                 }
-                let configured = recipients.len();
-                let transaction_size = transaction.len();
-                let admitted =
-                    senders
-                        .transactions
-                        .send(Recipients::Some(recipients), transaction, false);
-                if admitted.is_empty() {
-                    metrics::counter!("zone_p2p_transaction_sends_without_peers_total")
-                        .increment(1);
-                    warn!(target: "zone::p2p", ?transaction_hash, configured, transaction_size_bytes = transaction_size, "Transaction forwarding was not admitted for any quorum peer; dropping this send attempt");
-                } else {
-                    debug!(target: "zone::p2p", ?transaction_hash, admitted = admitted.len(), configured, transaction_size_bytes = transaction_size, "Submitted transaction forwarding to quorum peers");
+                // The transaction channel admits a burst of only a few sends per peer, so
+                // sends wait for the quota in their own task rather than being dropped here or
+                // holding up blocks and settlement traffic behind them.
+                let forwarded = ForwardedTransaction {
+                    transaction_hash,
+                    transaction: IoBuf::from(transaction),
+                    recipients,
+                };
+                match senders.transactions.try_send(forwarded) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        metrics::counter!("zone_p2p_transaction_sends_without_peers_total")
+                            .increment(1);
+                        debug!(target: "zone::p2p", ?transaction_hash, "Transaction forwarding backlog is full; dropping this send attempt");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        return Err(eyre::eyre!("transaction forwarding loop stopped"));
+                    }
                 }
             }
         }
     }
 
     Err(eyre::eyre!("P2P command channel closed unexpectedly"))
+}
+
+/// Sends forwarded transactions to their recipients at the transaction channel's quota.
+///
+/// The quota refills quickly but allows only a small burst per peer, so a send to a rate-limited
+/// peer waits until the quota admits it instead of being dropped. A transaction still waiting
+/// after [`TRANSACTION_PACING_TIMEOUT`], or rejected under router backpressure, is dropped for
+/// the peers it has not reached; the sender's txpool reconciliation forwards it again.
+async fn pace_transactions<S>(
+    mut sender: S,
+    mut transactions: mpsc::Receiver<ForwardedTransaction>,
+) -> eyre::Result<()>
+where
+    S: LimitedSender<PublicKey = PublicKey>,
+{
+    while let Some(ForwardedTransaction {
+        transaction_hash,
+        transaction,
+        mut recipients,
+    }) = transactions.recv().await
+    {
+        let configured = recipients.len();
+        let deadline = tokio::time::Instant::now() + TRANSACTION_PACING_TIMEOUT;
+        while !recipients.is_empty() {
+            match sender.check(Recipients::Some(recipients.clone())) {
+                Ok(checked) => {
+                    let admitted = checked.recipients();
+                    if admitted.is_empty() {
+                        break;
+                    }
+                    if !checked.send(transaction.clone(), false).accepted() {
+                        metrics::counter!("zone_p2p_transaction_sends_without_peers_total")
+                            .increment(1);
+                        warn!(target: "zone::p2p", ?transaction_hash, configured, transaction_size_bytes = transaction.len(), "Transaction forwarding was rejected under P2P backpressure; dropping this send attempt");
+                        break;
+                    }
+                    recipients.retain(|peer| !admitted.contains(peer));
+                }
+                Err(not_until) => {
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        metrics::counter!("zone_p2p_transaction_sends_without_peers_total")
+                            .increment(1);
+                        warn!(target: "zone::p2p", ?transaction_hash, configured, waiting = recipients.len(), "Transaction forwarding stayed rate-limited; dropping this send attempt");
+                        break;
+                    }
+                    let wait = not_until
+                        .duration_since(SystemTime::now())
+                        .unwrap_or_default()
+                        .max(Duration::from_millis(1));
+                    tokio::time::sleep_until((now + wait).min(deadline)).await;
+                }
+            }
+        }
+        if recipients.is_empty() {
+            debug!(target: "zone::p2p", ?transaction_hash, configured, transaction_size_bytes = transaction.len(), "Submitted transaction forwarding to quorum peers");
+        }
+    }
+    Err(eyre::eyre!(
+        "transaction forwarding channel closed unexpectedly"
+    ))
 }
 
 async fn run_receivers<R, B>(
@@ -2373,6 +2461,38 @@ mod tests {
         .await
         .expect("reachable follower did not receive transaction while leader was offline");
         forwarder.abort();
+
+        // A burst of new transactions, larger than the channel's per-peer quota burst, all
+        // reach the peer: sends wait for the quota instead of being dropped.
+        const BURST: u8 = 64;
+        let commands = handles[0].parts.as_ref().unwrap().commands.clone();
+        for index in 0..BURST {
+            commands
+                .send(P2pCommand::ForwardTransaction {
+                    transaction_hash: B256::with_last_byte(index),
+                    transaction: vec![0x77, index],
+                })
+                .await
+                .unwrap();
+        }
+        let mut received = std::collections::BTreeSet::new();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while received.len() < usize::from(BURST) {
+                if let Some(P2pEvent::TransactionReceived { transaction, .. }) =
+                    handles[1].events_mut().recv().await
+                    && transaction.first() == Some(&0x77)
+                {
+                    received.insert(transaction[1]);
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "follower received {} of {BURST} transactions forwarded in one burst",
+                received.len()
+            )
+        });
 
         for handle in handles {
             handle.shutdown().await.unwrap();
