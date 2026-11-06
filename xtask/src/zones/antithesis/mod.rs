@@ -114,6 +114,18 @@ enum Command {
         #[arg(long)]
         eventually: bool,
     },
+    /// Records a node-local maintenance result without connecting to the workload's RPCs.
+    ReportMaintenance {
+        /// Offline operation performed by the node-local supervisor.
+        #[arg(long, value_enum)]
+        operation: MaintenanceOperation,
+        /// Recovery succeeded only after the pre-operation finalized hash was restored.
+        #[arg(long, value_enum)]
+        outcome: MaintenanceOutcome,
+        /// Supervisor result, including the observed operation and recovery effect.
+        #[arg(long)]
+        details: String,
+    },
     /// Deposits from a funder or a new L1 account to a new or existing zone account.
     Deposit,
     /// Transfers pathUSD inside the zone to a new or existing account.
@@ -131,11 +143,81 @@ enum Command {
     CheckLedger,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum MaintenanceOperation {
+    RepairTrie,
+    Unwind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum MaintenanceOutcome {
+    Armed,
+    Incomplete,
+    Recovered,
+    Failed,
+}
+
 impl Antithesis {
     pub(crate) async fn run(self) -> eyre::Result<()> {
         antithesis_sdk::antithesis_init();
+        if let Command::ReportMaintenance {
+            operation,
+            outcome,
+            details,
+        } = &self.command
+        {
+            let recovered = *outcome == MaintenanceOutcome::Recovered;
+            let details = json!({ "details": details });
+            let messages = match operation {
+                MaintenanceOperation::RepairTrie => (
+                    "Offline trie check reports no correctness failure",
+                    "Offline trie check completes and recovers",
+                ),
+                MaintenanceOperation::Unwind => (
+                    "Offline unwind preserves finalized history",
+                    "Offline unwind executes and recovers",
+                ),
+            };
+            // These optional fault properties exist only after a custom drill is armed.
+            // Macros would register them in every payments campaign's static catalog.
+            for (message, condition, assert_type, display_type, must_hit) in [
+                (
+                    messages.0,
+                    *outcome != MaintenanceOutcome::Failed,
+                    antithesis_sdk::assert::AssertType::Always,
+                    "Always",
+                    false,
+                ),
+                (
+                    messages.1,
+                    recovered,
+                    antithesis_sdk::assert::AssertType::Sometimes,
+                    "Sometimes",
+                    true,
+                ),
+            ] {
+                antithesis_sdk::assert::assert_raw(
+                    condition,
+                    message.into(),
+                    &details,
+                    module_path!().into(),
+                    "report-maintenance".into(),
+                    file!().into(),
+                    line!(),
+                    column!(),
+                    true,
+                    must_hit,
+                    assert_type,
+                    display_type.into(),
+                    message.into(),
+                );
+            }
+            // Exit status acknowledges reporting, not the maintenance outcome.
+            return Ok(());
+        }
         let ctx = Context::init(&self).await?;
         let driver = match self.command {
+            Command::ReportMaintenance { .. } => unreachable!("handled before RPC initialization"),
             Command::Seed => return ctx.seed().await,
             Command::CheckProofs { eventually } => return ctx.check_proofs(eventually).await,
             Command::CheckConsistency => return ctx.check_consistency().await,

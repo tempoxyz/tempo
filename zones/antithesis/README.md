@@ -65,10 +65,10 @@ in the fuzz build.
 | `parallel_driver_transfer` | TIP-20 transfer inside the zone to a new or existing account |
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
-| `anytime_consistency` | Nodes that imported the Zone block recorded on L1 agree on its hash and on balances there, and settled workload transactions stay final |
+| `anytime_consistency` | Available Zone blocks agree with L1 settlement and contain their recorded transactions; missing history or receipts are skipped during faults |
 | `anytime_proofs` | Independently verifies account/storage proofs and compares finalized state across execution profiles; skips unavailable samples during faults |
 | `eventually_proofs` | After faults stop, requires every profile to serve matching, valid proofs within the same 300-second recovery budget as `eventually_settled` |
-| `eventually_settled` | After faults stop, every confirmed deposit is credited and every confirmed withdrawal is paid, and all nodes converge |
+| `eventually_settled` | Within 300 seconds after faults stop, deposits are credited or refunded, withdrawals are paid, nodes converge, and every node serves every recorded transaction and its successful receipt |
 | `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
 
 Half of all recipients are accounts nobody has used before, so the L1 and zone state tries keep
@@ -130,8 +130,9 @@ availability assertion; invalid proofs and state disagreements fail immediately.
 properties, which must hold at least once in a run, require successful cross-profile comparisons
 beyond genesis separately for L1 and Zone state; one chain cannot satisfy the other's coverage.
 
-The node-side solvency assertions and existing payment drivers are unchanged. No workload
-driver stops nodes or runs maintenance commands such as `db repair-trie` and stage unwind.
+The node-side solvency assertions and existing payment drivers are unchanged. Payment drivers
+do not stop nodes; the nonvoting Zone RPC follower accepts the node-local maintenance operations
+described below.
 With four L1 validators, one unavailable validator is within the Simplex fault budget; overlapping
 faults can still prevent a quorum. Safety checks run during faults, while recovery/liveness
 checks run after faults stop.
@@ -150,3 +151,39 @@ A generic node crash is not a stage-boundary crash or an operator-maintenance ac
 Commands such as `db repair-trie` need a custom fault running in the affected node, with
 exclusive access to its stopped database. Antithesis supports custom faults; coordinate their
 registration and data-directory durability behavior with the Antithesis team.
+
+
+### Offline repair and unwind
+
+Only `zone-rpc`, the nonvoting Zone RPC follower, runs the maintenance supervisor, a process
+that owns the node child and serializes these offline operations. Register these
+commands as custom faults **inside that container**, not as payment-workload commands:
+
+```sh
+python3 /opt/zones/node-control.py repair-trie
+python3 /opt/zones/node-control.py unwind --blocks 1
+```
+
+`repair-trie` always uses `--dry-run`: it checks for the completed zero-inconsistency report,
+not just exit status, and never repairs evidence away. `unwind` removes 1–32 recent blocks,
+never genesis, and requires the CLI to report an actual unwind. Both stop and reap the node
+before opening its database, use the same binary, genesis and datadir, and then restart it.
+Offline Zone execution uses `L1_OFFLINE=true`, which skips L1 deposit/token validation; this
+is an operator-recovery drill, not an independent execution oracle.
+
+The supervisor reports armed, fired, recovered and failed separately. Requests rejected before
+arming, forced-stop rejections and normal shutdown interruptions do not fail safety assertions.
+An inconsistency already logged by the trie scan still fails safety if shutdown interrupts it.
+Recovery gets 120 seconds to restore the pre-operation finalized height and hash. Unavailability
+or a timeout reports incomplete completion coverage, not a safety failure; a different hash at
+the finalized height fails safety immediately. Arming declares the operation's Always (no
+correctness failure) and Sometimes (at least one must complete and recover) SDK assertions
+through the node-local `report-maintenance` xtask command. Unregistered, unused drills do not
+add missing-coverage properties to ordinary payments campaigns; existing eventual
+`CheckProofs` and settlement checks still verify cross-node recovery after faults stop.
+A concurrent partition can prevent this node-local recovery check from completing; register
+these drills in a fault-free recovery window rather than scheduling overlapping faults.
+The supervisor does not automatically restart an unexpectedly exited node: Antithesis still
+controls ordinary node failures and their duration. Its control socket is local-only and
+accepts no arbitrary commands. Register custom faults with the Antithesis team before
+claiming campaign coverage; building this image alone does not schedule them.

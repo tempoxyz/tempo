@@ -10,7 +10,10 @@ use antithesis_sdk::{assert_always, assert_sometimes};
 use eyre::WrapErr as _;
 use futures::{StreamExt as _, TryStreamExt as _, stream};
 use serde_json::json;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZonePortal},
@@ -23,6 +26,8 @@ use super::{Context, Record, is_rpc_error, poll_until, shuffled};
 pub(super) const SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Accounts and transactions `check-consistency` samples per run.
 const SAMPLE: usize = 16;
+/// Concurrent node/block reads in the post-fault history check.
+const HISTORY_READS: usize = 32;
 /// Blocks per `eth_getLogs` request.
 const LOG_CHUNK: u64 = 10_000;
 /// Concurrent balance reads in `check-ledger`.
@@ -108,22 +113,39 @@ impl Context {
                 }
             }
             for &(tx, zone_block) in &settled_txs {
-                let Ok(receipt) = zone.get_transaction_receipt(tx).await else {
+                let Ok(Some(block)) = zone
+                    .get_block_by_number(BlockNumberOrTag::Number(zone_block))
+                    .await
+                else {
                     continue;
                 };
+                // One block response proves inclusion. A separate receipt read can race an
+                // intentional unwind, so a missing receipt is not evidence of lost finality.
                 assert_always!(
-                    receipt.as_ref().is_some_and(
-                        |receipt| receipt.status() && receipt.block_number == Some(zone_block)
-                    ),
+                    block.header.number == zone_block
+                        && block.transactions.hashes().any(|hash| hash == tx),
                     "Settled workload transactions stay final",
                     &json!({
                         "node": url.as_str(),
                         "tx": tx,
                         "recorded_block": zone_block,
-                        "receipt_block": receipt.as_ref().and_then(|receipt| receipt.block_number),
-                        "status": receipt.as_ref().map(|receipt| receipt.status()),
+                        "returned_block": block.header.number,
+                        "block_hash": block.header.hash,
                     })
                 );
+                if let Ok(Some(receipt)) = zone.get_transaction_receipt(tx).await {
+                    assert_always!(
+                        receipt.status() && receipt.block_number == Some(zone_block),
+                        "Settled workload transaction receipts match their records",
+                        &json!({
+                            "node": url.as_str(),
+                            "tx": tx,
+                            "recorded_block": zone_block,
+                            "receipt_block": receipt.block_number,
+                            "status": receipt.status(),
+                        })
+                    );
+                }
             }
         }
         for (account, by_node) in &balances {
@@ -146,13 +168,24 @@ impl Context {
 
     pub(super) async fn check_settled(&self) -> eyre::Result<()> {
         let mut state = None;
-        poll_until(SETTLE_TIMEOUT, async || {
-            let current = self.settlement().await?;
-            let done = current.is_settled();
-            state = Some(current);
-            Ok(done)
-        })
-        .await?;
+        // A growing ledger can make one snapshot take longer than the polling interval.
+        // Bound the whole check, not just the pauses between completed snapshots.
+        let completed = tokio::time::timeout(
+            SETTLE_TIMEOUT,
+            poll_until(SETTLE_TIMEOUT, async || {
+                let current = self.settlement().await?;
+                let done = current.is_settled();
+                state = Some(current);
+                Ok(done)
+            }),
+        )
+        .await
+        .unwrap_or(Ok(false))?;
+        assert_always!(
+            completed,
+            "Zone settlement completes within the recovery budget",
+            &json!({ "timeout_seconds": SETTLE_TIMEOUT.as_secs() })
+        );
         let state =
             state.ok_or_else(|| eyre::eyre!("no zone node answered within {SETTLE_TIMEOUT:?}"))?;
         assert_always!(
@@ -169,6 +202,11 @@ impl Context {
             state.converged,
             "Zone nodes converge once faults stop",
             &json!({ "tips": state.tips })
+        );
+        assert_always!(
+            state.missing_transactions.is_empty(),
+            "Every confirmed zone transaction is available once faults stop",
+            &json!({ "missing": state.missing_transactions })
         );
         println!(
             "check-settled: {} deposits and {} withdrawals unsettled, converged={}",
@@ -313,18 +351,69 @@ impl Context {
         }
 
         let records = self.ledger.records()?;
+        let mut transactions: BTreeMap<u64, BTreeSet<B256>> = BTreeMap::new();
+        for record in &records {
+            if let Record::Transfer {
+                zone_tx,
+                zone_block,
+                ..
+            }
+            | Record::Withdrawal {
+                zone_tx,
+                zone_block,
+                ..
+            } = record
+            {
+                transactions
+                    .entry(*zone_block)
+                    .or_default()
+                    .insert(*zone_tx);
+            }
+        }
         // Nodes may agree on a common rollback; a confirmed transaction's block is a floor.
-        let last_zone_block = records
-            .iter()
-            .filter_map(|record| match record {
-                Record::Transfer { zone_block, .. } | Record::Withdrawal { zone_block, .. } => {
-                    Some(*zone_block)
-                }
-                _ => None,
-            })
-            .max()
-            .unwrap_or_default();
+        let last_zone_block = transactions
+            .last_key_value()
+            .map_or(0, |(&height, _)| height);
         let converged = converged && highest >= last_zone_block;
+        // Fetch each block and its receipts once per node, not once per ledger entry.
+        // Bounded parallelism keeps a growing history from turning RPC latency into a timeout.
+        let mut history = stream::iter(self.zone_urls.iter().zip(&self.zones).flat_map(
+            |(url, zone)| {
+                transactions
+                    .iter()
+                    .map(move |(&height, txs)| (url, zone, height, txs))
+            },
+        ))
+        .map(|(url, zone, height, txs)| async move {
+            let block = zone
+                .get_block_by_number(BlockNumberOrTag::Number(height))
+                .await?;
+            let receipts = zone.get_block_receipts(BlockId::number(height)).await?;
+            let mut included = BTreeSet::new();
+            let mut successful = BTreeSet::new();
+            if let Some(block) = block.filter(|block| block.header.number == height) {
+                included.extend(block.transactions.hashes());
+                for receipt in receipts.into_iter().flatten() {
+                    if receipt.status()
+                        && receipt.block_number == Some(height)
+                        && receipt.block_hash == Some(block.header.hash)
+                    {
+                        successful.insert(receipt.transaction_hash);
+                    }
+                }
+            }
+            eyre::Ok(
+                txs.iter()
+                    .filter(|&tx| !included.contains(tx) || !successful.contains(tx))
+                    .map(|tx| json!({ "node": url.as_str(), "tx": tx, "recorded_block": height }))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .buffer_unordered(HISTORY_READS);
+        let mut missing_transactions = Vec::new();
+        while let Some(missing) = history.try_next().await? {
+            missing_transactions.extend(missing);
+        }
         let mut unsettled_deposits = Vec::new();
         let mut unpaid_withdrawals = Vec::new();
         for record in records {
@@ -356,6 +445,7 @@ impl Context {
         Ok(Settlement {
             unsettled_deposits,
             unpaid_withdrawals,
+            missing_transactions,
             converged,
             tips,
         })
@@ -367,13 +457,17 @@ impl Context {
 struct Settlement {
     unsettled_deposits: Vec<Record>,
     unpaid_withdrawals: Vec<Record>,
+    missing_transactions: Vec<serde_json::Value>,
     converged: bool,
     tips: BTreeMap<String, (u64, B256)>,
 }
 
 impl Settlement {
     fn is_settled(&self) -> bool {
-        self.unsettled_deposits.is_empty() && self.unpaid_withdrawals.is_empty() && self.converged
+        self.unsettled_deposits.is_empty()
+            && self.unpaid_withdrawals.is_empty()
+            && self.missing_transactions.is_empty()
+            && self.converged
     }
 }
 
