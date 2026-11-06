@@ -1788,6 +1788,7 @@ where
             .node_types::<N>()
             .pool(ZonePoolBuilder::new(
                 executor_builder.enabled_tokens.clone(),
+                self.l1_state_cache.clone(),
             ))
             .executor(executor_builder)
             .payload(BasicPayloadServiceBuilder::new(payload_factory))
@@ -1949,12 +1950,17 @@ where
 #[non_exhaustive]
 pub struct ZonePoolBuilder {
     enabled_tokens: EnabledTokenRegistry,
+    l1_state_cache: L1StateCache,
 }
 
 impl ZonePoolBuilder {
-    /// Create a pool builder using the shared enabled-token registry.
-    pub fn new(enabled_tokens: EnabledTokenRegistry) -> Self {
-        Self { enabled_tokens }
+    /// Create a pool builder using the shared enabled-token registry, and the shared L1 state
+    /// cache, whose recorded Tempo changes revalidate pooled transactions.
+    pub fn new(enabled_tokens: EnabledTokenRegistry, l1_state_cache: L1StateCache) -> Self {
+        Self {
+            enabled_tokens,
+            l1_state_cache,
+        }
     }
 }
 
@@ -2068,6 +2074,13 @@ where
         ctx.task_executor().spawn_critical_task(
             "txpool maintenance - tempo pool",
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
+        );
+        ctx.task_executor().spawn_critical_task(
+            "txpool maintenance - mirrored commitments",
+            crate::pool_maintenance::maintain_mirrored_commitments(
+                transaction_pool.clone(),
+                self.l1_state_cache,
+            ),
         );
 
         info!(target: "reth::cli", "Transaction pool initialized");
