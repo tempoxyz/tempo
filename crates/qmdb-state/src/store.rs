@@ -588,18 +588,38 @@ impl Readers {
         name: &'static str,
         keys: &[Key],
     ) -> Result<Vec<Option<D::Value>>, Error> {
-        let _runtime = self.runtime.enter();
-        futures::executor::block_on(async {
-            let start = Instant::now();
-            let db = db.read().await;
-            metrics::histogram!("qmdb_state_read_lock_wait_seconds", "db" => name)
-                .record(start.elapsed());
-            match db.as_ref() {
-                Some(db) => db.read_many(keys).await,
-                None => Err(Error::Stopped),
-            }
-        })
+        // A rayon worker that waits on the database's pool runs other jobs of its own pool
+        // meanwhile, such as a prewarming job that re-enters state the waiting one borrows:
+        // such callers read on the runtime's blocking pool instead.
+        if rayon::current_thread_index().is_some() {
+            let (runtime, db, keys) = (self.runtime.clone(), db.clone(), keys.to_vec());
+            let read = self
+                .runtime
+                .spawn_blocking(move || read_shared_db(&runtime, &db, name, &keys));
+            return futures::executor::block_on(read).map_err(|_| Error::Stopped)?;
+        }
+        read_shared_db(&self.runtime, db, name, keys)
     }
+}
+
+/// Reads `keys` from `db` on the calling thread, which must not be a rayon worker.
+fn read_shared_db<D: Readable>(
+    runtime: &tokio::runtime::Handle,
+    db: &Shared<D>,
+    name: &'static str,
+    keys: &[Key],
+) -> Result<Vec<Option<D::Value>>, Error> {
+    let _runtime = runtime.enter();
+    futures::executor::block_on(async {
+        let start = Instant::now();
+        let db = db.read().await;
+        metrics::histogram!("qmdb_state_read_lock_wait_seconds", "db" => name)
+            .record(start.elapsed());
+        match db.as_ref() {
+            Some(db) => db.read_many(keys).await,
+            None => Err(Error::Stopped),
+        }
+    })
 }
 
 impl std::fmt::Debug for Readers {
@@ -1699,6 +1719,33 @@ mod tests {
                 .unwrap()
                 .root()
         );
+    }
+
+    #[test]
+    fn reads_from_rayon_workers_do_not_run_their_pools_jobs() {
+        thread_local! {
+            static BORROWED: std::cell::RefCell<()> = const { std::cell::RefCell::new(()) };
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = imported(dir.path(), 64);
+        let keys: Vec<_> = (0..=u8::MAX).map(|byte| Key::new([byte; 32])).collect();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        // Like prewarming, every job holds a thread-local borrow while it reads.
+        pool.install(|| {
+            rayon::scope(|scope| {
+                for _ in 0..64 {
+                    scope.spawn(|_| {
+                        BORROWED.with_borrow_mut(|_| {
+                            store.get_accounts(keys.clone()).unwrap();
+                            store.get_slots(keys.clone()).unwrap();
+                        })
+                    });
+                }
+            })
+        });
     }
 
     #[test]

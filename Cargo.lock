@@ -15022,6 +15022,7 @@ dependencies = [
  "evm2",
  "futures",
  "metrics",
+ "rayon",
  "reth-codecs",
  "reth-db-api",
  "reth-etl",

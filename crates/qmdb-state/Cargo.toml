@@ -26,6 +26,7 @@ commonware-utils.workspace = true
 bytes.workspace = true
 futures.workspace = true
 metrics.workspace = true
+rayon.workspace = true
 reth-codecs.workspace = true
 reth-db-api.workspace = true
 reth-etl.workspace = true
