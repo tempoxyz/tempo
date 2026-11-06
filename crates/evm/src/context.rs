@@ -24,7 +24,7 @@ pub struct TempoBlockExecutionCtx<'a> {
 #[cfg(feature = "reth")]
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct TempoNextBlockEnvAttributes {
-    /// Inner [`NextBlockEnvAttributes`].
+    /// Inner [`reth_evm::NextBlockEnvAttributes`].
     #[deref]
     pub inner: reth_evm::NextBlockEnvAttributes,
     /// Non-payment gas limit for the block.
