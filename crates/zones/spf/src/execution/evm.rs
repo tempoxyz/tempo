@@ -11,6 +11,7 @@ use alloy_primitives::{B256, Bytes, U256};
 use alloy_sol_types::{ContractError, SolCall as _, SolInterface as _};
 use evm2::{
     DatabaseError,
+    block::ethereum::EthBlockExecutionCtx,
     evm::{CacheDB, Db},
     registry::HandlerError,
 };
@@ -19,7 +20,6 @@ use reth_evm::{
     BlockExecutionOutput, BlockExecutor as _, BlockExecutorFactory, BlockTransactionResult as _,
     ConfigureEvm as _, NextBlockEnvAttributes,
 };
-use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_contracts::zones::{
     IZoneInbox, IZoneOutbox, TempoState, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
@@ -214,14 +214,14 @@ pub(crate) fn next_block_execution_context(
             parent_beacon_block_root: chain_spec
                 .is_cancun_active_at_timestamp(block.timestamp)
                 .then_some(B256::ZERO),
-            ommers: &[],
+            ommers: Default::default(),
             withdrawals: chain_spec
                 .is_shanghai_active_at_timestamp(block.timestamp)
                 .then_some(Cow::Borrowed(&[])),
-            extra_data: Bytes::new(),
             tx_count_hint: None,
-            slot_number: None,
         },
+        extra_data: Bytes::new(),
+        slot_number: None,
         general_gas_limit: 0,
         shared_gas_limit: 0,
         consensus_context: None,

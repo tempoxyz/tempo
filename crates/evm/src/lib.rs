@@ -11,6 +11,7 @@ pub mod consensus;
 mod context;
 #[cfg(feature = "engine")]
 mod engine;
+mod env;
 pub mod error;
 pub mod evm;
 mod fee_manager;
@@ -30,9 +31,12 @@ pub use action_replay::{
     StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
-pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+pub use block::{
+    ExecutorState, TempoBlockExecutor, TempoBlockRules, TempoReceiptBuilder, TempoTxResult,
+};
 pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+pub use env::TempoEvmEnv;
 pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
 pub use fee_manager::{
@@ -53,10 +57,11 @@ use std::{borrow::Cow, sync::Arc};
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
-use evm2::{ExecutionConfig, env::BlockEnv, evm::DynDatabase};
+use evm2::{
+    ExecutionConfig, block::ethereum::EthBlockExecutionCtx, env::BlockEnv, evm::DynDatabase,
+};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, EvmEnvFor, SenderRecoveryCache};
-use reth_evm_ethereum::{EthBlockExecutionCtx, EthEvmEnv};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_chainspec::{
     TempoChainSpec,
@@ -67,9 +72,6 @@ use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoT
 
 #[cfg(feature = "engine")]
 use rayon as _;
-
-/// Fully resolved Tempo execution environment.
-pub type TempoEvmEnv = EthEvmEnv<TempoEvmTypes>;
 
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
@@ -169,7 +171,12 @@ impl BlockExecutorFactory for TempoEvmConfig {
     where
         Self: 'a,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        let rules = TempoBlockRules::new(
+            self.chain_spec(),
+            evm.block().timestamp.saturating_to(),
+            evm.block().number.saturating_to(),
+        );
+        TempoBlockExecutor::new(evm, ctx, rules)
     }
 
     fn evm_factory(&self) -> &Self::EvmFactory {
@@ -316,16 +323,16 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_hash: block.header().parent_hash(),
                 parent_beacon_block_root: block.header().parent_beacon_block_root(),
                 // no ommers in tempo
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: block
                     .body()
                     .withdrawals
                     .as_ref()
                     .map(|w| Cow::Borrowed(w.as_slice())),
-                extra_data: block.extra_data().clone(),
                 tx_count_hint: Some(block.body().transactions.len()),
-                slot_number: block.slot_number(),
             },
+            extra_data: block.extra_data().clone(),
+            slot_number: block.slot_number(),
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
             consensus_context: block.header().consensus_context,
@@ -341,15 +348,15 @@ impl ConfigureEvm for TempoEvmConfig {
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
-                slot_number: attributes.slot_number,
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: attributes
                     .inner
                     .withdrawals
                     .map(|w| Cow::Owned(w.into_inner())),
-                extra_data: attributes.inner.extra_data,
                 tx_count_hint: None,
             },
+            slot_number: attributes.inner.slot_number,
+            extra_data: attributes.inner.extra_data,
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
             consensus_context: attributes.consensus_context,

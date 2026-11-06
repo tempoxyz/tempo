@@ -14,23 +14,14 @@ use evm2::{
         BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
         BlockValidationError, BundleState, CommitChanges, ExecutableTx, GasOutput, ReceiptBuilder,
         ReceiptBuilderCtx, StateUpdate,
-        ethereum::{
-            EthBlockExecutionCtx, EthBlockExecutor, EthBlockRules, EthTransactionResultWithState,
-        },
+        ethereum::{EthBlockExecutor, EthBlockRules, EthTransactionResultWithState},
         map_database_error, map_handler_error,
     },
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
-use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
-use std::{
-    borrow::{Borrow, Cow},
-    sync::Arc,
-};
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
+use std::{borrow::Borrow, sync::Arc};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
     ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
@@ -255,6 +246,19 @@ impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
     }
 }
 
+/// Chain rules of a Tempo block that come from the chain spec rather than the EVM.
+#[derive(Clone, Copy, Debug)]
+pub struct TempoBlockRules {
+    /// Ethereum chain rules of the block.
+    pub eth: EthBlockRules,
+    /// Ethereum fork active at the block, used for block system calls and deposit requests.
+    pub eth_spec_id: evm2::SpecId,
+    /// Whether Prague is active at the block's timestamp.
+    pub prague_active: bool,
+    /// Tempo hardfork active at the chain's genesis timestamp.
+    pub genesis_hardfork: TempoHardfork,
+}
+
 /// Block executor for Tempo.
 ///
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
@@ -264,8 +268,7 @@ impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
 pub struct TempoBlockExecutor<'a> {
     pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
-    chain_spec: &'a TempoChainSpec,
-    prague_active: bool,
+    rules: TempoBlockRules,
     section: BlockSection,
     extra_data: Bytes,
 
@@ -279,44 +282,19 @@ pub struct TempoBlockExecutor<'a> {
 }
 
 impl<'a> TempoBlockExecutor<'a> {
-    pub(crate) fn new(
-        evm: TempoEvm<'a>,
-        ctx: TempoBlockExecutionCtx<'a>,
-        chain_spec: &'a TempoChainSpec,
-    ) -> Self {
+    /// Creates an executor for the block in `evm`'s block environment, with the chain rules of
+    /// that block.
+    pub fn new(evm: TempoEvm<'a>, ctx: TempoBlockExecutionCtx<'a>, rules: TempoBlockRules) -> Self {
         let block_gas_limit = evm.block().gas_limit.saturating_to::<u64>();
-        let prague_active =
-            chain_spec.is_prague_active_at_timestamp(evm.block().timestamp.saturating_to::<u64>());
-        let spec_id = reth_evm_ethereum::spec_id_by_timestamp_and_block_number(
-            chain_spec,
-            evm.block().timestamp.saturating_to::<u64>(),
-            evm.block().number.saturating_to::<u64>(),
-        );
-        let rules = EthBlockRules::new(
-            chain_spec,
-            evm.block().number.saturating_to::<u64>(),
-            chain_spec
-                .deposit_contract()
-                .map(|contract| contract.address),
-        );
-        let extra_data = ctx.inner.extra_data.clone();
-        let inner_ctx = EthBlockExecutionCtx {
-            tx_count_hint: ctx.inner.tx_count_hint,
-            parent_hash: ctx.inner.parent_hash,
-            parent_beacon_block_root: ctx.inner.parent_beacon_block_root,
-            ommers: Cow::Borrowed(ctx.inner.ommers),
-            withdrawals: ctx.inner.withdrawals,
-        };
-        let mut inner = EthBlockExecutor::new(evm, inner_ctx, rules, TempoReceiptBuilder);
-        inner.set_spec_id(spec_id);
+        let mut inner = EthBlockExecutor::new(evm, ctx.inner, rules.eth, TempoReceiptBuilder);
+        inner.set_spec_id(rules.eth_spec_id);
         Self {
-            chain_spec,
-            prague_active,
+            rules,
             incentive_gas_used: 0,
             block_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
-            extra_data,
+            extra_data: ctx.extra_data,
             inner,
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
@@ -771,7 +749,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         }
 
         if self.evm().config_spec_id().is_t13() {
-            if self.prague_active && !self.evm().block().number.is_zero() {
+            if self.rules.prague_active && !self.evm().block().number.is_zero() {
                 let parent_hash = self.inner.context().parent_hash;
                 let result = self
                     .evm_mut()
@@ -818,9 +796,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // activate the fork later follow the normal runtime upgrade path. Only the newest live
         // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
         let runtime_fork = zone_runtime_fork(self.evm().config_spec_id());
-        let genesis_spec = self
-            .chain_spec
-            .tempo_hardfork_at(self.chain_spec.genesis().timestamp);
+        let genesis_spec = self.rules.genesis_hardfork;
         if let Some(fork) = runtime_fork
             && runtime_fork != zone_runtime_fork(genesis_spec)
         {

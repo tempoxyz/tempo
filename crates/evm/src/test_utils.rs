@@ -5,10 +5,9 @@ use crate::{
     TempoEvmEnv, block::BlockSection,
 };
 use alloy_primitives::{B256, Bytes, U256};
-use evm2::{EvmFeatures, SpecId, evm::DynDatabase};
+use evm2::{EvmFeatures, SpecId, block::ethereum::EthBlockExecutionCtx, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
 use reth_evm::BlockExecutorFactory;
-use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::MODERATO};
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
@@ -134,20 +133,25 @@ impl TestExecutorBuilder {
             inner: EthBlockExecutionCtx {
                 parent_hash: self.parent_hash,
                 parent_beacon_block_root: self.parent_beacon_block_root,
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: self
                     .withdrawals
                     .map(|withdrawals| std::borrow::Cow::Owned(withdrawals.to_vec())),
-                extra_data: self.extra_data,
                 tx_count_hint: None,
-                slot_number: None,
             },
+            extra_data: self.extra_data,
+            slot_number: None,
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
             consensus_context: None,
         };
 
-        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+        let rules = crate::TempoBlockRules::new(
+            chainspec,
+            evm.block().timestamp.saturating_to(),
+            evm.block().number.saturating_to(),
+        );
+        let mut executor = TempoBlockExecutor::new(evm, ctx, rules);
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {

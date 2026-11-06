@@ -19,7 +19,7 @@ use reth_evm::{
     BlockValidationError, ExecutorTx, GasOutput, RecoveredTx,
     execute::{map_database_error, map_handler_error},
 };
-use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
+use reth_evm_ethereum::{EthBlockExecutionCtx, EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_contracts::{
@@ -188,13 +188,18 @@ impl<'a> ZoneBlockExecutor<'a> {
     ) -> Self {
         let prague_active =
             chain_spec.is_prague_active_at_timestamp(evm.block().timestamp.saturating_to::<u64>());
+        let ctx = EthBlockExecutionCtx {
+            tx_count_hint: ctx.inner.tx_count_hint,
+            parent_hash: ctx.inner.parent_hash,
+            parent_beacon_block_root: ctx.inner.parent_beacon_block_root,
+            // zone blocks have no ommers
+            ommers: &[],
+            withdrawals: ctx.inner.withdrawals,
+            extra_data: ctx.extra_data,
+            slot_number: ctx.slot_number,
+        };
         Self {
-            inner: EthBlockExecutor::new(
-                evm,
-                ctx.inner,
-                chain_spec,
-                TempoReceiptBuilder::default(),
-            ),
+            inner: EthBlockExecutor::new(evm, ctx, chain_spec, TempoReceiptBuilder::default()),
             phase: ZoneBlockPhase::AwaitingAdvanceTempo,
             prague_active,
         }
@@ -424,6 +429,7 @@ mod tests {
     use alloy_sol_types::{SolCall, SolEvent};
     use evm2::{
         EvmFeatures,
+        block::ethereum::EthBlockExecutionCtx,
         bytecode::Bytecode,
         evm::{
             AccountInfo, BUILDER_DEPOSIT_REQUEST_ADDRESS, BUILDER_EXIT_REQUEST_ADDRESS,
@@ -433,7 +439,6 @@ mod tests {
     };
     use reth_chainspec::EthChainSpec as _;
     use reth_evm::{BlockExecutor, BlockExecutorFactory, InternalBlockExecutionError};
-    use reth_evm_ethereum::EthBlockExecutionCtx;
     use reth_primitives_traits::Recovered;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::{
@@ -654,12 +659,12 @@ mod tests {
             inner: EthBlockExecutionCtx {
                 parent_hash: B256::ZERO,
                 parent_beacon_block_root: None,
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: None,
-                extra_data: Bytes::new(),
                 tx_count_hint: Some(1),
-                slot_number: None,
             },
+            extra_data: Bytes::new(),
+            slot_number: None,
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: None,
@@ -707,12 +712,12 @@ mod tests {
             inner: EthBlockExecutionCtx {
                 parent_hash: B256::ZERO,
                 parent_beacon_block_root: None,
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: None,
-                extra_data: Bytes::new(),
                 tx_count_hint: Some(1),
-                slot_number: None,
             },
+            extra_data: Bytes::new(),
+            slot_number: None,
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: None,
@@ -805,12 +810,12 @@ mod tests {
                 inner: EthBlockExecutionCtx {
                     parent_hash: B256::ZERO,
                     parent_beacon_block_root: None,
-                    ommers: &[],
+                    ommers: Default::default(),
                     withdrawals: None,
-                    extra_data: Bytes::new(),
                     tx_count_hint: Some(1),
-                    slot_number: None,
                 },
+                extra_data: Bytes::new(),
+                slot_number: None,
                 general_gas_limit: 0,
                 shared_gas_limit: 0,
                 consensus_context: None,
@@ -1048,12 +1053,12 @@ mod tests {
             inner: EthBlockExecutionCtx {
                 parent_hash: B256::ZERO,
                 parent_beacon_block_root: None,
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: None,
-                extra_data: Bytes::new(),
                 tx_count_hint: Some(1),
-                slot_number: None,
             },
+            extra_data: Bytes::new(),
+            slot_number: None,
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: None,
@@ -1119,12 +1124,12 @@ mod tests {
             inner: EthBlockExecutionCtx {
                 parent_hash: B256::ZERO,
                 parent_beacon_block_root: None,
-                ommers: &[],
+                ommers: Default::default(),
                 withdrawals: None,
-                extra_data: Bytes::new(),
                 tx_count_hint: Some(1),
-                slot_number: None,
             },
+            extra_data: Bytes::new(),
+            slot_number: None,
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: None,
@@ -1378,12 +1383,12 @@ mod tests {
                     inner: EthBlockExecutionCtx {
                         parent_hash: B256::repeat_byte(0x42),
                         parent_beacon_block_root: has_code.then_some(B256::ZERO),
-                        ommers: &[],
+                        ommers: Default::default(),
                         withdrawals: None,
-                        extra_data: Bytes::new(),
                         tx_count_hint: None,
-                        slot_number: None,
                     },
+                    extra_data: Bytes::new(),
+                    slot_number: None,
                     general_gas_limit: 0,
                     shared_gas_limit: 0,
                     consensus_context: None,
@@ -1470,12 +1475,12 @@ mod tests {
                 inner: EthBlockExecutionCtx {
                     parent_hash: B256::ZERO,
                     parent_beacon_block_root: None,
-                    ommers: &[],
+                    ommers: Default::default(),
                     withdrawals: None,
-                    extra_data: Bytes::new(),
                     tx_count_hint: None,
-                    slot_number: None,
                 },
+                extra_data: Bytes::new(),
+                slot_number: None,
                 general_gas_limit: 0,
                 shared_gas_limit: 0,
                 consensus_context: None,

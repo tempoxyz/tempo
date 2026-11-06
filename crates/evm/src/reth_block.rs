@@ -1,17 +1,23 @@
 //! reth's block executor traits for [`TempoBlockExecutor`] and [`TempoReceiptBuilder`], delegating
 //! to their evm2 implementations.
 
-use crate::{TempoBlockExecutor, TempoEvm, TempoEvmTypes, TempoReceiptBuilder, TempoTxResult};
+use crate::{
+    TempoBlockExecutor, TempoBlockRules, TempoEvm, TempoEvmTypes, TempoReceiptBuilder,
+    TempoTxResult,
+};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use evm2::{
     EvmTypes, TxResult, TxStateChanges,
     block::{
         BlockExecutionError, BundleState, CommitChanges, GasOutput, ReceiptBuilderCtx, StateUpdate,
+        ethereum::EthBlockRules,
     },
     evm::Bal,
 };
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_evm::{BlockExecutionOutput, BlockExecutor, ExecutorTx, ReceiptBuilder, RecoveredTx};
 use std::sync::Arc;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 
 impl ReceiptBuilder for TempoReceiptBuilder {
@@ -130,5 +136,25 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     ) -> Result<(BlockExecutionOutput<Self::Receipt>, Option<Bal>), BlockExecutionError> {
         let (output, bal) = evm2::block::BlockExecutor::finish_with_block_access_list(self)?;
         Ok((output.into(), bal))
+    }
+}
+
+impl TempoBlockRules {
+    /// Reads the rules of the block at `timestamp` and `number` from `chain_spec`.
+    pub fn new(chain_spec: &TempoChainSpec, timestamp: u64, number: u64) -> Self {
+        Self {
+            eth: EthBlockRules::new(
+                chain_spec,
+                number,
+                chain_spec
+                    .deposit_contract()
+                    .map(|contract| contract.address),
+            ),
+            eth_spec_id: reth_evm_ethereum::spec_id_by_timestamp_and_block_number(
+                chain_spec, timestamp, number,
+            ),
+            prague_active: chain_spec.is_prague_active_at_timestamp(timestamp),
+            genesis_hardfork: chain_spec.tempo_hardfork_at(chain_spec.genesis().timestamp),
+        }
     }
 }
