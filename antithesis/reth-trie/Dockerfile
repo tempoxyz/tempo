@@ -14,10 +14,13 @@ ENV CARGO_PROFILE_RELEASE_DEBUG=2 \
     CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true \
     CARGO_PROFILE_RELEASE_STRIP=false \
     CARGO_PROFILE_RELEASE_LTO=false
+# COPY preserves timestamps. Force the local crate fresh when this layer reruns:
+# its source may have changed while an earlier cached-target build was running.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/work/target,sharing=locked \
-    cargo build --locked --release --features fuzz --bin reth-trie-antithesis \
+    touch src/main.rs \
+    && cargo build --locked --release --features fuzz --bin reth-trie-antithesis \
       --target x86_64-unknown-linux-gnu \
       --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Ccodegen-units=1","-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
     && mkdir /out \
