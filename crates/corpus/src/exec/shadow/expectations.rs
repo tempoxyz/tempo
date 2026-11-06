@@ -522,6 +522,20 @@ mod tests {
     }
 
     #[test]
+    fn uncaptured_shadow_reads_are_inconclusive() {
+        let real = evidence(&[21_000, 21_000]);
+        let mut shadow = evidence(&[21_000, 21_000]);
+        shadow.txs[0] = Err("uncaptured account 0x00".into());
+        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        assert_eq!(report.unexplained, 0);
+        assert_eq!(report.outcome(&shadow), ReplayOutcome::Inconclusive);
+
+        let shadow = Evidence::default().fail(Boundary::PreBlock, "uncaptured account 0x00".into());
+        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        assert_eq!(report.outcome(&shadow), ReplayOutcome::Inconclusive);
+    }
+
+    #[test]
     fn rejected_shadow_tx_does_not_hide_later_transaction_findings() {
         let real = evidence(&[21_000, 21_000]);
         let mut shadow = evidence(&[21_000, 21_000]);

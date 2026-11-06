@@ -30,6 +30,15 @@ impl fmt::Display for Missing {
 
 impl std::error::Error for Missing {}
 
+impl Missing {
+    /// Whether a stringified execution error reports state the corpus did not capture.
+    pub fn in_error(error: &str) -> bool {
+        ["uncaptured ", "unresolved code "]
+            .iter()
+            .any(|missing| error.contains(missing))
+    }
+}
+
 /// Most analyzed contracts kept at once. A miss only re-analyzes the verified shared code.
 const MAX_ANALYZED: u32 = 16 * 1024;
 
