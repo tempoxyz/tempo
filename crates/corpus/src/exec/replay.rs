@@ -25,8 +25,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::TempoEvmConfig;
 use tempo_primitives::Block;
+use tempo_reth_consensus::TempoConsensus;
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinSet,

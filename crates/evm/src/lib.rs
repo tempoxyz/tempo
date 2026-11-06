@@ -10,8 +10,6 @@ mod block;
 mod common;
 #[cfg(feature = "reth")]
 mod config;
-#[cfg(feature = "reth")]
-pub mod consensus;
 mod context;
 #[cfg(feature = "engine")]
 mod engine;

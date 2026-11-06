@@ -77,7 +77,6 @@ use tempo_chainspec::{
 };
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_contracts::precompiles::{ZONE_FACTORY_ADDRESS, initial_zone_factory_config};
-use tempo_evm::consensus::TempoConsensus;
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
 pub use tempo_node::{
     AccountInfoReader, AddressFilter, InvalidPoolTransactionError, PoolTransaction,
@@ -93,6 +92,7 @@ use tempo_node::{
         install_prometheus_metrics,
     },
 };
+use tempo_reth_consensus::TempoConsensus;
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 

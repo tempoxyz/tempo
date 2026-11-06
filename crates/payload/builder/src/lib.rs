@@ -1005,7 +1005,7 @@ where
 
         #[cfg(feature = "fuzz")]
         {
-            let consensus = tempo_evm::consensus::TempoConsensus::new(chain_spec);
+            let consensus = tempo_reth_consensus::TempoConsensus::new(chain_spec);
             let sealed_block = block.sealed_block();
             antithesis_sdk::assert_always_less_than_or_equal_to!(
                 block.gas_used(),

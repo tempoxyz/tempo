@@ -13,8 +13,9 @@ use tempo_corpus::{
     fuzz, gc,
     store::Store,
 };
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::TempoEvmConfig;
 use tempo_node::node::TempoNode;
+use tempo_reth_consensus::TempoConsensus;
 
 /// Historical execution corpus commands.
 #[derive(Debug, Subcommand)]

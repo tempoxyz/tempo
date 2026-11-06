@@ -17,8 +17,8 @@ use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::CertifiedBlock;
+use tempo_reth_consensus::validate_body_against_header;
 
 use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
 

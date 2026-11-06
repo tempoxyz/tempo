@@ -21,10 +21,7 @@ use reth_evm::{
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
 use tempo_chainspec::TempoChainSpec;
-use tempo_evm::{
-    TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, TempoInvalidTransaction,
-    consensus::TempoConsensus,
-};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, TempoInvalidTransaction};
 use tempo_fuzz_types::{
     BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, InvariantFailure, InvariantScope,
     PreState, ResultGas, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
@@ -32,6 +29,7 @@ use tempo_fuzz_types::{
 };
 use tempo_invariants::Tx;
 use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
+use tempo_reth_consensus::TempoConsensus;
 
 use crate::{
     chain, invariants,

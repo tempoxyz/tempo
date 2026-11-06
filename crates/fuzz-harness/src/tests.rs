@@ -22,7 +22,7 @@ use tempo_chainspec::{
 };
 use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ITIP20, PATH_USD_ADDRESS};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::TempoEvmConfig;
 use tempo_fuzz_types::{
     AccountDiff, AccountInput, BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass,
     FUZZ_ACCEPT, FUZZ_REJECT, InvariantScope, NonEmpty, PreState, StateChanges, StateInput,
@@ -32,6 +32,7 @@ use tempo_fuzz_types::{
 };
 use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
+use tempo_reth_consensus::TempoConsensus;
 
 use crate::{
     bincode_options, chain, execute,

@@ -32,7 +32,8 @@ tempo-consensus-config.workspace = true
 tempo-precompiles.workspace = true
 tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
-tempo-evm = { workspace = true, features = ["reth"] }
+tempo-evm = { workspace = true, features = ["reth"], optional = true }
+tempo-reth-consensus.workspace = true
 antithesis_sdk = { workspace = true, optional = true }
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
@@ -162,7 +163,7 @@ fuzz-execution = [
 localnet = ["dep:nix"]
 
 # Historical execution corpus commands (`tempo corpus fill/replay`).
-corpus = ["dep:tempo-corpus"]
+corpus = ["dep:tempo-corpus", "dep:tempo-evm"]
 
 asm-keccak = [
 	"alloy/asm-keccak",
@@ -253,4 +254,4 @@ trie-debug = ["tempo-node/trie-debug"]
 # Devnet-only: accept zone verifier PCRs via `--zone-verifier.custom-pcrs`.
 custom-pcrs = ["tempo-precompiles/custom-pcrs"]
 # Native EVM2 JIT compilation; building requires LLVM.
-jit = ["tempo-evm/jit", "tempo-node/jit"]
+jit = ["dep:tempo-evm", "tempo-evm/jit", "tempo-node/jit"]

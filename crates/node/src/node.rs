@@ -45,12 +45,13 @@ use reth_transaction_pool::{
 };
 use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
     ConfigError, Estimator, EstimatorConfig, TempoPayloadAttributes, estimator::BuildTimeMultiplier,
 };
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
+use tempo_reth_consensus::TempoConsensus;
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
     amm::AmmLiquidityCache,

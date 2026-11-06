@@ -33,8 +33,8 @@ use reth_network_p2p::FullBlockClient;
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_provider::providers::BlockchainProvider;
 use tempo_chainspec::NetworkIdentity;
-use tempo_evm::consensus::TempoConsensus;
 use tempo_node::{TempoFullNode, TempoPayloadTypes, node::TempoNode};
+use tempo_reth_consensus::TempoConsensus;
 use tracing::{info, info_span};
 
 use super::{driver, executor, resolver, stubs};

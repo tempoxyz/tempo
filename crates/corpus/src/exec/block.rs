@@ -273,7 +273,7 @@ pub fn decode_block(
         "corpus block gap/order mismatch"
     );
     // The hash check below covers only the header; tie the body to it too.
-    tempo_evm::consensus::validate_body_against_header(&block.body, &block.header)
+    tempo_reth_consensus::validate_body_against_header(&block.body, &block.header)
         .map_err(|error| eyre::eyre!("block {number}: body does not match header: {error}"))?;
     eyre::ensure!(
         block.body.transactions.len() == input.senders.len(),

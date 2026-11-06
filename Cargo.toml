@@ -17,6 +17,7 @@ members = [
   "crates/alloy",
   "crates/chainspec",
   "crates/consensus",
+  "crates/reth-consensus",
   "crates/corpus",
   "crates/consensus-config",
   "crates/validator-config",
@@ -219,6 +220,7 @@ tempo-node-launcher = { path = "crates/node-launcher" }
 tempo-nitro-attestation = { path = "crates/nitro-attestation", default-features = false }
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
+tempo-reth-consensus = { path = "crates/reth-consensus" }
 tempo-corpus = { path = "crates/corpus" }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }

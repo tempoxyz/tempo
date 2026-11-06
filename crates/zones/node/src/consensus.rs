@@ -6,8 +6,8 @@ use reth_consensus::{
 use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
-use tempo_evm::consensus::TempoConsensus;
 use tempo_primitives::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt};
+use tempo_reth_consensus::TempoConsensus;
 use zone_chainspec::ZoneChainSpec;
 
 /// Consensus validation for Zone blocks.
