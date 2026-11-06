@@ -133,15 +133,13 @@ inherits = "profiling"
 debug-assertions = true
 overflow-checks = true
 
-# Coverage instrumentation needs one codegen unit, no LTO, and full symbols.
+# The fuzz profile for Antithesis images built with coverage instrumentation (see
+# zones/antithesis/Dockerfile). Antithesis cannot symbolize instrumented code that link-time
+# optimization inlined or merged, so it instruments one codegen unit per crate without LTO.
 [profile.antithesis]
-inherits = "profiling"
-debug = "full"
-incremental = false
+inherits = "fuzz"
 lto = "off"
 codegen-units = 1
-debug-assertions = true
-overflow-checks = true
 
 [profile.bench]
 inherits = "maxperf"
@@ -354,7 +352,7 @@ commonware-storage = "2026.10.0"
 commonware-utils = "2026.10.0"
 
 antithesis_sdk = { version = "0.3.0", default-features = false }
-antithesis-instrumentation = "=0.1.1"
+antithesis-instrumentation = "0.1.1"
 arbitrary = { version = "1.4", features = ["derive"] }
 async-trait = "0.1"
 auto_impl = "1"
