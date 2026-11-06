@@ -425,7 +425,7 @@ mod tests {
             destination,
             call_target: code_address,
             code_address,
-            input: calldata,
+            input: calldata.into(),
             caller,
             ..Default::default()
         };
@@ -449,7 +449,7 @@ mod tests {
             call_target: PATH_USD_ADDRESS,
             code_address: delegate,
             code: Bytecode::new_eip7702(delegate),
-            input: Bytes::new(),
+            input: Bytes::new().into(),
             ..Default::default()
         };
         assert!(precompiles.contains(&message.call_target));

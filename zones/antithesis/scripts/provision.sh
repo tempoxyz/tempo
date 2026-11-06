@@ -1,8 +1,8 @@
 #!/bin/sh
 # Creates the zone on L1 the operator way, with three sequencers and a 2-of-3 settlement
-# threshold (the first is the initial leader), registers the deposit encryption key, and
-# writes everything the zone nodes need to /shared. Does nothing once /shared/provisioned
-# exists.
+# threshold (the first is the initial leader), registers the deposit encryption key, enables
+# zone-internal transfers, and writes everything the zone nodes need to /shared. Does nothing
+# once /shared/provisioned exists.
 #
 # Keys are fixed and public, never real funds. The sequencers are dev accounts 5, 6 and 7
 # of the "test ... junk" mnemonic, funded in the L1 genesis so they pay their own settlement
@@ -39,6 +39,11 @@ echo "provision: portal $portal"
 
 PRIVATE_KEY=$(nth 0 "$SEQ_KEYS") tempo-zone-xtask set-encryption-key \
     --l1-rpc-url "$L1_HTTP" --portal "$portal"
+
+# Zone-internal TIP-20 transfers need the portal admin's opt-in (from T15, which the dev L1
+# genesis activates at block 0); without it every zone transfer reverts.
+ADMIN_KEY=$DEV0 tempo-zone-xtask set-transfers-enabled \
+    --l1-rpc-url "$L1_HTTP" --portal "$portal" --enabled
 
 cp "$S/xtask/genesis.json" "$S/genesis.json"
 cp "$S/xtask/zone.json" "$S/zone.json"

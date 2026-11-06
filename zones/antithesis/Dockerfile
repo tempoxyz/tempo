@@ -5,6 +5,9 @@
 # Build from the repository root (requires the crates/zones/contracts/lib submodules):
 #   docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
 #     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
+#   docker build -f zones/antithesis/Dockerfile --target workload \
+#     -t tempo-zones-antithesis-workload:latest \
+#     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
 
 FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS builder
 
@@ -18,8 +21,9 @@ RUN apt-get update \
     mold \
     && rm -rf /var/lib/apt/lists/*
 
-# Release optimizations with debug assertions and symbols.
-ARG RUST_PROFILE=fuzz
+# Release optimizations with debug assertions and symbols, without LTO and with one codegen
+# unit per crate so Antithesis can symbolize the coverage instrumentation.
+ARG RUST_PROFILE=antithesis
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
 ARG VERGEN_GIT_SHA_SHORT=00000000
@@ -29,17 +33,26 @@ ARG CARGO_BUILD_JOBS=default
 WORKDIR /app
 COPY . .
 
+# Antithesis coverage instrumentation (https://antithesis.com/docs/reference/sdk/rust/instrumentation/):
+# sancov trace-pc-guard edges that the antithesis-coverage feature's shim forwards to the
+# platform's libvoidstar (a no-op outside Antithesis), which also lets Antithesis pause threads.
+# --target keeps build scripts and proc macros uninstrumented.
+ARG COVERAGE_RUSTFLAGS="-Ccodegen-units=1 -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=3 -Cllvm-args=-sanitizer-coverage-trace-pc-guard -Cllvm-args=-sanitizer-coverage-pc-table -Clink-args=-Wl,--build-id"
+# The build platform's architecture (BuildKit sets it), so local arm64 builds stay native.
+ARG TARGETARCH
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
-    cargo build --locked --profile ${RUST_PROFILE} \
+    case "${TARGETARCH}" in arm64) target=aarch64-unknown-linux-gnu ;; *) target=x86_64-unknown-linux-gnu ;; esac \
+    && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${COVERAGE_RUSTFLAGS}" \
+    cargo build --locked --profile ${RUST_PROFILE} --target "$target" \
         -p tempo -p tempo-zone -p tempo-xtask \
         --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask \
-        --features tempo/fuzz-execution,tempo-zone/fuzz \
+        --features tempo/fuzz-execution,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
     && mkdir -p /out \
-    && cp target/${RUST_PROFILE}/tempo target/${RUST_PROFILE}/tempo-zone \
-        target/${RUST_PROFILE}/tempo-xtask target/${RUST_PROFILE}/tempo-zone-xtask /out/
+    && cd "target/$target/${RUST_PROFILE}" \
+    && cp tempo tempo-zone tempo-xtask tempo-zone-xtask /out/
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -63,7 +76,7 @@ RUN /out/tempo-xtask generate-genesis --output /genesis --accounts 20 --no-dkg-i
         --specs-out /app/crates/zones/contracts/out \
         --output /genesis/l1-genesis.json
 
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates jq \
@@ -74,9 +87,21 @@ COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
 COPY zones/antithesis/scripts/ /opt/zones/
-# workload.sh installs the test template in /opt/antithesis/test, so only the workload
-# container has one; see zones/antithesis/README.md.
-COPY --chmod=755 zones/antithesis/test/ /opt/zones/antithesis-test/
+
+# Antithesis reads the symbols of instrumented binaries from /symbols; the binaries keep theirs.
+RUN mkdir /symbols && for bin in tempo tempo-zone tempo-xtask tempo-zone-xtask; do \
+        ln -s /usr/local/bin/$bin /symbols/$bin; \
+    done
 
 ENV RUST_BACKTRACE=full
 WORKDIR /app
+
+# The workload container's image: the runtime image with the test template in
+# /opt/antithesis/test, where the test platform looks for it in the image it is given. Only
+# this image has it, so no other container offers test commands. Build it with
+# --target workload.
+FROM runtime AS workload
+COPY --chmod=755 zones/antithesis/test/ /opt/antithesis/test/
+
+# The default target stays the image the nodes run.
+FROM runtime
