@@ -189,11 +189,11 @@ mod tests {
     use alloy_primitives::{Bytes, Signature, TxKind};
     use evm2::{
         ExecutionError,
+        block::{BlockState, TransactionChanges},
         bytecode::Bytecode,
         evm::{AccountInfo, InMemoryDB, StateChangeSource, precompile::NoPrecompiles},
         interpreter::MessageExt,
     };
-    use reth_execution_types::{BlockState, TransactionChanges};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
     use tempo_primitives::TempoTxEnvelope;

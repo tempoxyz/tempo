@@ -7,11 +7,11 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use evm2::{
     ExecutionConfig, TxResult, Version,
+    block::{BlockState, BundleState, TransactionChanges},
     bytecode::Bytecode,
     evm::{AccountChangeRef, AccountInfo, InMemoryDB, StateChangeSink, StorageChange},
 };
-use reth_evm::{BlockExecutorFactory, BundleState};
-use reth_execution_types::{BlockState, TransactionChanges};
+use reth_evm::BlockExecutorFactory;
 use reth_primitives_traits::SignedTransaction;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
