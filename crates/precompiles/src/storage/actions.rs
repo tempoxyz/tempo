@@ -54,23 +54,23 @@ pub enum StorageAction {
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
     FeeAmmLiquidityCheck(U256, U256, U256, bool),
     /// Marks where a step of the transaction's fee lifecycle starts or ends. It changes no state.
-    Marker(Marker),
+    Marker(FeeHook),
 }
 
 /// Brackets a protocol fee hook. The actions between a hook's start marker and the next
-/// [`Self::FeeHookEnd`] are the hook's own. A hook that fails records no end marker.
+/// [`Self::End`] are the hook's own. A hook that fails records no end marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Marker {
+pub enum FeeHook {
     /// Pre-tx fee hook starts, charging `amount` of `token` to `payer`. Emits no logs.
-    PreTxFee {
+    PreTx {
         payer: Address,
         token: Address,
         amount: U256,
     },
     /// Post-tx fee hook starts, refunding `refund` of `amount`. Its fee transfer is log `log`.
-    PostTxFee { refund: U256, log: usize },
+    PostTx { refund: U256, log: usize },
     /// The fee hook the last marker started returned.
-    FeeHookEnd,
+    End,
 }
 
 impl StorageAction {

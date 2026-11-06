@@ -5,13 +5,13 @@
 
 use alloy_primitives::{Address, U256};
 use tempo_precompiles::{
-    storage::{Marker, StorageAction},
+    storage::{FeeHook, StorageAction},
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
 
 /// One fee hook that returned: the marker that started it and the actions it recorded in order.
-struct FeeHook<'a> {
-    start: Marker,
+struct Hook<'a> {
+    start: FeeHook,
     actions: &'a [StorageAction],
 }
 
@@ -30,9 +30,9 @@ pub(super) struct PostTxFee<'a> {
 
 /// The fee hooks in `actions` that returned, in order. A hook that failed has no end marker and
 /// is skipped.
-fn fee_hooks(actions: &[StorageAction]) -> impl Iterator<Item = FeeHook<'_>> {
+fn fee_hooks(actions: &[StorageAction]) -> impl Iterator<Item = Hook<'_>> {
     actions.iter().enumerate().filter_map(|(at, action)| {
-        let StorageAction::Marker(start @ (Marker::PreTxFee { .. } | Marker::PostTxFee { .. })) =
+        let StorageAction::Marker(start @ (FeeHook::PreTx { .. } | FeeHook::PostTx { .. })) =
             *action
         else {
             return None;
@@ -41,7 +41,7 @@ fn fee_hooks(actions: &[StorageAction]) -> impl Iterator<Item = FeeHook<'_>> {
         let end = rest
             .iter()
             .position(|action| matches!(action, StorageAction::Marker(_)))?;
-        matches!(rest[end], StorageAction::Marker(Marker::FeeHookEnd)).then(|| FeeHook {
+        matches!(rest[end], StorageAction::Marker(FeeHook::End)).then(|| Hook {
             start,
             actions: &rest[..end],
         })
@@ -51,7 +51,7 @@ fn fee_hooks(actions: &[StorageAction]) -> impl Iterator<Item = FeeHook<'_>> {
 /// The post-transaction fee hook, if both fee hooks returned.
 pub(super) fn post_tx_fee(actions: &[StorageAction]) -> Option<PostTxFee<'_>> {
     let mut hooks = fee_hooks(actions);
-    let Marker::PreTxFee {
+    let FeeHook::PreTx {
         payer,
         token,
         amount,
@@ -60,7 +60,7 @@ pub(super) fn post_tx_fee(actions: &[StorageAction]) -> Option<PostTxFee<'_>> {
         return None;
     };
     let post = hooks.next()?;
-    let Marker::PostTxFee { refund, log } = post.start else {
+    let FeeHook::PostTx { refund, log } = post.start else {
         return None;
     };
     Some(PostTxFee {
@@ -184,20 +184,20 @@ mod tests {
         let write =
             |slot: u64| StorageAction::Sstore(address, U256::from(slot), U256::ZERO, U256::ONE);
         let actions = [
-            StorageAction::Marker(Marker::PreTxFee {
+            StorageAction::Marker(FeeHook::PreTx {
                 payer: address,
                 token: address,
                 amount: U256::from(10),
             }),
             write(1),
-            StorageAction::Marker(Marker::FeeHookEnd),
+            StorageAction::Marker(FeeHook::End),
             write(2),
-            StorageAction::Marker(Marker::PostTxFee {
+            StorageAction::Marker(FeeHook::PostTx {
                 refund: U256::from(3),
                 log: 3,
             }),
             write(3),
-            StorageAction::Marker(Marker::FeeHookEnd),
+            StorageAction::Marker(FeeHook::End),
         ];
         let post = post_tx_fee(&actions).unwrap();
         assert_eq!(

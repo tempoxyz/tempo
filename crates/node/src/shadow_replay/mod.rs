@@ -783,7 +783,7 @@ mod tests {
         },
         zones::{T13_ZONE_PORTAL_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
-    use tempo_precompiles::storage::Marker;
+    use tempo_precompiles::storage::FeeHook;
 
     #[test]
     fn fee_log_normalization_preserves_order_and_non_amount_fields() {
@@ -805,17 +805,17 @@ mod tests {
         };
         let writes = |amount| {
             vec![
-                StorageAction::Marker(Marker::PreTxFee {
+                StorageAction::Marker(FeeHook::PreTx {
                     payer,
                     token,
                     amount,
                 }),
-                StorageAction::Marker(Marker::FeeHookEnd),
-                StorageAction::Marker(Marker::PostTxFee {
+                StorageAction::Marker(FeeHook::End),
+                StorageAction::Marker(FeeHook::PostTx {
                     refund: U256::ZERO,
                     log: 1,
                 }),
-                StorageAction::Marker(Marker::FeeHookEnd),
+                StorageAction::Marker(FeeHook::End),
             ]
         };
         let (canonical, candidate) = (logs(U256::from(85)), logs(U256::from(79)));
