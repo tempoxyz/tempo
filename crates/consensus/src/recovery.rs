@@ -119,7 +119,7 @@ impl Recovery {
     ///
     /// Does nothing if the execution layer already finalized the boundary. Fails if the boundary
     /// this node builds does not match the pinned hash, or if the execution layer lacks the
-    /// recovery's finalized block or finalized past it without reaching the boundary.
+    /// recovery's finalized block or finalized a block past it other than a fill block.
     #[instrument(skip_all, fields(last_finalized = %self.last_finalized.0, boundary = %self.boundary.0), err)]
     pub(crate) async fn fill_to_boundary(&self, node: &TempoFullNode) -> eyre::Result<()> {
         let ((finalized_height, Digest(finalized_hash)), (boundary, Digest(boundary_hash))) =
@@ -145,14 +145,6 @@ impl Recovery {
             return Ok(());
         }
 
-        // Nodes can lag the network's last finalized block, but must have it.
-        ensure!(
-            finalized.number <= finalized_height.get(),
-            "recovery starts at height `{finalized_height}`, but the execution layer finalized \
-            `{}` at height `{}` past it",
-            finalized.hash,
-            finalized.number,
-        );
         let parent = node
             .provider
             .sealed_header(finalized_height.get())
@@ -184,6 +176,22 @@ impl Recovery {
             "this node built boundary `{built}`, but the recovery pins `{}`",
             boundary_hash,
         );
+
+        // Nodes can lag the network's last finalized block, but must have it. A node that exited
+        // after an earlier fill may have persisted a finalized fill block, which it builds again.
+        if finalized.number > finalized_height.get() {
+            let refilled = blocks
+                .iter()
+                .find(|block| block.number() == finalized.number)
+                .map(|block| block.hash());
+            ensure!(
+                refilled == Some(finalized.hash),
+                "recovery starts at height `{finalized_height}`, but the execution layer finalized \
+                `{}` at height `{}` past it",
+                finalized.hash,
+                finalized.number,
+            );
+        }
 
         let engine = node.add_ons_handle.beacon_engine_handle.clone();
         for block in blocks {

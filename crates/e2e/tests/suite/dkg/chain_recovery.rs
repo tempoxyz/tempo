@@ -148,6 +148,8 @@ fn restart_after_epoch_lost_its_signing_key(t14_fee_recipient: Option<Address>) 
         validators[1].start(&context).await;
         context.sleep(Duration::from_secs(5)).await;
         validators[1].stop().await;
+        // Losing the last fill blocks, as after an unclean exit, must not stop it either.
+        validators[1].unwind(3);
 
         // The last node follows the recovery instead of validating it.
         let donor = validators.pop().unwrap();
