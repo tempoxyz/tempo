@@ -151,6 +151,13 @@ fn restart_after_epoch_lost_its_signing_key(t14_fee_recipient: Option<Address>) 
         // Losing the last fill blocks, as after an unclean exit, must not stop it either.
         validators[1].unwind(3);
 
+        // The member may first start without its share, and must sign once restarted with it.
+        let member_share = validators[0].share.take();
+        validators[0].start(&context).await;
+        context.sleep(Duration::from_secs(5)).await;
+        validators[0].stop().await;
+        validators[0].share = member_share;
+
         // The last node follows the recovery instead of validating it.
         let donor = validators.pop().unwrap();
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
