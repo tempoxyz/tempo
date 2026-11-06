@@ -10,6 +10,7 @@ use std::{
         mpsc,
     },
     thread::JoinHandle,
+    time::Instant,
 };
 
 use alloy_primitives::B256;
@@ -170,6 +171,9 @@ pub enum Error {
     /// A database failed.
     #[error("qmdb failed")]
     Qmdb(#[from] qmdb::Error<Family>),
+    /// Persisting an applied batch failed.
+    #[error("syncing a database failed")]
+    Sync(#[from] commonware_runtime::Error),
     /// The commit journal failed.
     #[error("the commit journal failed")]
     Journal(#[from] journal::Error),
@@ -476,7 +480,7 @@ impl Store {
     /// Returns the values of account `keys` in the applied state, in the same order, ignoring
     /// unapplied batches.
     pub fn get_accounts(&self, keys: Vec<Key>) -> Result<Vec<Option<AccountValue>>, Error> {
-        self.readers.read(&self.readers.accounts, &keys)
+        self.readers.read(&self.readers.accounts, "accounts", &keys)
     }
 
     /// Returns the value of slot `key` in the applied state, ignoring unapplied batches.
@@ -487,7 +491,7 @@ impl Store {
     /// Returns the values of slot `keys` in the applied state, in the same order, ignoring
     /// unapplied batches.
     pub fn get_slots(&self, keys: Vec<Key>) -> Result<Vec<Option<SlotValue>>, Error> {
-        self.readers.read(&self.readers.slots, &keys)
+        self.readers.read(&self.readers.slots, "slots", &keys)
     }
 
     /// Reads from disk what building a batch that writes account keys `accounts` and slot keys
@@ -581,11 +585,16 @@ impl Readers {
     fn read<D: Readable>(
         &self,
         db: &Shared<D>,
+        name: &'static str,
         keys: &[Key],
     ) -> Result<Vec<Option<D::Value>>, Error> {
         let _runtime = self.runtime.enter();
         futures::executor::block_on(async {
-            match db.read().await.as_ref() {
+            let start = Instant::now();
+            let db = db.read().await;
+            metrics::histogram!("qmdb_state_read_lock_wait_seconds", "db" => name)
+                .record(start.elapsed());
+            match db.as_ref() {
                 Some(db) => db.read_many(keys).await,
                 None => Err(Error::Stopped),
             }
@@ -1135,17 +1144,24 @@ impl Actor {
             self.accounts.clone().write_owned().await,
             self.slots.clone().write_owned().await,
         );
+        let locked = Instant::now();
         let accounts = accounts_lock.take().expect("restored after every command");
         let slots = slots_lock.take().expect("restored after every command");
         // Applying consumes the databases: on failure they are gone and the store must be
         // reopened, so every later command fails until then.
-        let (accounts, slots) = try_join!(
-            apply_db(accounts, accounts_batch),
-            apply_db(slots, slots_batch),
+        let ((accounts, accounts_sync), (slots, slots_sync)) = try_join!(
+            apply_db_start_sync(accounts, accounts_batch),
+            apply_db_start_sync(slots, slots_batch),
         )?;
         *accounts_lock = Some(accounts);
         *slots_lock = Some(slots);
         drop((accounts_lock, slots_lock));
+        metrics::histogram!("qmdb_state_finalize_lock_held_seconds").record(locked.elapsed());
+        // Readers see the applied state while it persists: only the commit journal, which
+        // reopening trusts, must wait until it is durable.
+        let syncing = Instant::now();
+        try_join!(accounts_sync, slots_sync)?;
+        metrics::histogram!("qmdb_state_finalize_sync_seconds").record(syncing.elapsed());
         self.applied = Some(number);
         self.base = Some(hash);
         self.record(applied.into_iter().rev()).await?;
@@ -1378,6 +1394,16 @@ async fn apply_db<const N: usize, const P: usize>(
 ) -> Result<Db<N, P>, Error> {
     let (db, _) = db.apply_batch(batch).await?;
     Ok(db.commit().await?)
+}
+
+/// Applies `batch` to `db` and starts persisting it: awaiting the handle makes it as durable
+/// as [`apply_db`]'s commit, without holding the database meanwhile.
+async fn apply_db_start_sync<const N: usize, const P: usize>(
+    db: Db<N, P>,
+    batch: Batch<N>,
+) -> Result<(Db<N, P>, commonware_runtime::Handle<()>), Error> {
+    let (db, _) = db.apply_batch(batch).await?;
+    Ok(db.start_sync().await?)
 }
 
 /// Locks `shared` for reading from the actor, which never waits: only the actor writes, and
