@@ -57,7 +57,7 @@ pub(super) fn make_certified_block(height: Height) -> (CertifiedBlock, Bytes) {
             digest,
         ),
         certificate: VrfCertificate {
-            signature: Lazy::deferred(&mut &signature_bytes[..], ()),
+            signature: Lazy::deferred(&mut commonware_codec::Copying(&signature_bytes[..]), ()),
         },
     };
     let value = (finalization.clone(), block.clone()).encode();

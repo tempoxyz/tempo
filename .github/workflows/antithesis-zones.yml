@@ -1,0 +1,132 @@
+name: Antithesis Zones Images
+
+# Builds the zones Antithesis node image, workload image (the node image plus the test
+# template) and config image (zones/antithesis) and pushes them to the Antithesis registry,
+# ready for a run on the tempo tenant.
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "zones/antithesis/**"
+      - "bin/**"
+      - "crates/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/antithesis-zones.yml"
+  workflow_dispatch:
+
+# Pushes to main replace each other; a manual build of another ref runs on its own.
+concurrency:
+  group: antithesis-zones-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  REGISTRY: us-central1-docker.pkg.dev/molten-verve-216720/tempo-repository
+
+jobs:
+  build-and-push:
+    name: Build and push Antithesis zones images
+    runs-on: depot-ubuntu-latest-16
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Resolve tags
+        id: tags
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          branch=$(printf '%s' "$REF_NAME" | tr -c 'a-zA-Z0-9._-' '-' | cut -c1-60)
+          tag="${branch}-${SHA:0:9}"
+          {
+            echo "tag=$tag"
+            echo "short_sha=${SHA:0:8}"
+            # The moving branch tag (such as main) always names the newest build of it.
+            echo "image_tags=$REGISTRY/tempo-zones-antithesis:$tag,$REGISTRY/tempo-zones-antithesis:$branch"
+            echo "workload_tags=$REGISTRY/tempo-zones-antithesis-workload:$tag,$REGISTRY/tempo-zones-antithesis-workload:$branch"
+          } >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Log in to the Antithesis registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ANTITHESIS_REGISTRY_KEY }}
+
+      - name: Build and push the test image
+        id: image
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: .
+          file: zones/antithesis/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.image_tags }}
+          build-args: |
+            VERGEN_GIT_SHA=${{ github.sha }}
+            VERGEN_GIT_SHA_SHORT=${{ steps.tags.outputs.short_sha }}
+
+      # Same build with the test template added; Depot reuses the layers of the build above.
+      - name: Build and push the workload image
+        id: workload
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: .
+          file: zones/antithesis/Dockerfile
+          target: workload
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.workload_tags }}
+          build-args: |
+            VERGEN_GIT_SHA=${{ github.sha }}
+            VERGEN_GIT_SHA_SHORT=${{ steps.tags.outputs.short_sha }}
+
+      # The config image's compose file runs the exact images just pushed, by digest, so a
+      # run never picks up a later build under the same tag.
+      - name: Build and push the config image
+        env:
+          TAG: ${{ steps.tags.outputs.tag }}
+          BRANCH: ${{ steps.tags.outputs.branch }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          WORKLOAD_DIGEST: ${{ steps.workload.outputs.digest }}
+        run: |
+          dir="$RUNNER_TEMP/antithesis-config"
+          mkdir -p "$dir"
+          cp zones/antithesis/docker-compose.yaml "$dir/"
+          {
+            echo "ZONES_IMAGE=$REGISTRY/tempo-zones-antithesis:$TAG@$DIGEST"
+            echo "WORKLOAD_IMAGE=$REGISTRY/tempo-zones-antithesis-workload:$TAG@$WORKLOAD_DIGEST"
+          } > "$dir/.env"
+          printf 'FROM scratch\nCOPY docker-compose.yaml .env /\n' > "$dir/Dockerfile"
+          docker build --platform linux/amd64 \
+            -t "$REGISTRY/tempo-zones-antithesis-config:$TAG" \
+            -t "$REGISTRY/tempo-zones-antithesis-config:$BRANCH" "$dir"
+          docker push --all-tags "$REGISTRY/tempo-zones-antithesis-config"
+          {
+            echo "### Antithesis zones images"
+            echo ""
+            echo "| Image | Reference |"
+            echo "|---|---|"
+            echo "| Node image | \`$REGISTRY/tempo-zones-antithesis:$TAG@$DIGEST\` |"
+            echo "| Workload image | \`$REGISTRY/tempo-zones-antithesis-workload:$TAG@$WORKLOAD_DIGEST\` |"
+            echo "| Config image | \`$REGISTRY/tempo-zones-antithesis-config:$TAG\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

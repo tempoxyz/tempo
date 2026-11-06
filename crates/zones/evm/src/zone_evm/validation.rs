@@ -16,7 +16,7 @@ pub fn validate_transaction(
 ) -> Result<(), TempoInvalidTransaction> {
     let has_eip7702_authorizations = tx
         .as_eip7702()
-        .is_some_and(|tx| !tx.authorization_list.is_empty());
+        .is_some_and(|tx| tx.authorizations().len() != 0);
     let has_tempo_authorizations = tx
         .as_aa()
         .is_some_and(|tx| !tx.inner().tx().tempo_authorization_list.is_empty());

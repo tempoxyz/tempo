@@ -837,7 +837,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
         .expect_err("unknown selectors revert");
     let payload = error.as_error_resp().expect("revert response");
     assert_eq!(payload.message, "execution reverted");
-    assert_eq!(payload.as_revert_data(), None);
+    assert_eq!(payload.as_revert_data(), Some(Bytes::new()));
     let registered_estimate = provider
         .estimate_gas(account.simulation_request())
         .latest()
