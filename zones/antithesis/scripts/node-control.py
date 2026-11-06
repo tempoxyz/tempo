@@ -225,11 +225,17 @@ class Supervisor:
         except Exception as exc:
             error = exc
         finally:
-            # A timed-out graceful stop still reaps the child before raising.
-            if self.node is None or self.node.poll() is not None:
-                self.start()  # Explicit maintenance is the only restart path.
-        if not self.shutting_down:
-            self.recover(before)
+            try:
+                # A timed-out graceful stop still reaps the child before raising.
+                if self.node is None or self.node.poll() is not None:
+                    self.start()  # Explicit maintenance is the only restart path.
+                if not self.shutting_down:
+                    self.recover(before)
+            except Exception as recovery_error:
+                # A later availability problem must not hide an observed safety failure.
+                if error is not None and not isinstance(error, (Rejected, Incomplete)):
+                    raise error from recovery_error
+                raise
         if error:
             raise error
         if self.shutting_down:
