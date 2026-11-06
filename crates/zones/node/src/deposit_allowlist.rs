@@ -25,7 +25,7 @@ use eyre::{WrapErr as _, ensure};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use zone_l1::{FAILED_DECRYPTION, abi::DecryptionData};
 
 mod relay;
@@ -229,6 +229,8 @@ fn status_of(state: Option<&State>) -> DepositAllowlistStatus {
 
 fn log_status(status: DepositAllowlistStatus, message: &'static str) {
     metrics::gauge!("zone_deposit_allowlist_addresses").set(status.count as f64);
+    metrics::gauge!("zone_deposit_allowlist_initialized")
+        .set(f64::from(u8::from(status.initialized)));
     info!(
         target: "zone::allowlist",
         initialized = status.initialized,
@@ -310,7 +312,7 @@ impl DepositAllowlist {
         };
         log_status(status_of(state.as_ref()), "Loaded deposit allowlist");
         if state.is_none() {
-            warn!(
+            error!(
                 target: "zone::allowlist",
                 path = %path.display(),
                 "Deposit allowlist is uninitialized: this sequencer bounces every deposit while it leads until the admin writes the list"
