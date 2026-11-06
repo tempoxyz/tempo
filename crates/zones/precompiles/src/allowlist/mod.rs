@@ -16,11 +16,11 @@
 //! Mutations use fixed charges instead of storage pricing, which charges 250,000 gas per new slot
 //! (TIP-1000) and would admit only about 110 new members per 30M gas block:
 //!
-//! - `setAllowed`: [`SET_ALLOWED_BASE_GAS`] plus [`SET_ALLOWED_ACCOUNT_GAS`] per account in the
+//! - `setAllowed`: `SET_ALLOWED_BASE_GAS` plus `SET_ALLOWED_ACCOUNT_GAS` per account in the
 //!   batch, so a full 5,000-account batch costs 12,510,000 gas. Calldata that does not decode, or a
 //!   batch over [`MAX_ZONE_ALLOWLIST_BATCH`], is charged the base and reverts.
-//! - `setAdmin`: [`SET_ADMIN_GAS`], which covers the finalized Tempo role read.
-//! - `setEnabled`: [`SET_ENABLED_GAS`].
+//! - `setAdmin`: `SET_ADMIN_GAS`, which covers the finalized Tempo role read.
+//! - `setEnabled`: `SET_ENABLED_GAS`.
 //!
 //! Views keep normal metering, which bounds the work of `accounts` by the caller's gas.
 
