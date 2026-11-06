@@ -656,6 +656,49 @@ impl<Client, EvmConfig> std::fmt::Debug for TempoTransactionPool<Client, EvmConf
     }
 }
 
+impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
+where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+    TempoPooledTransaction: reth_transaction_pool::EthPoolTransaction,
+{
+    /// Validates again, against the latest state, every pooled transaction with an authority in
+    /// `accounts` (its sender unless an access key signs, key authorization signer, separate fee
+    /// payer or access key), or every pooled transaction when `accounts` is `None`. Transactions
+    /// that stay valid are re-added; the others leave the pool.
+    ///
+    /// For chains whose configuration commitments mirror another chain's, where a block's own
+    /// state changes do not show which commitments changed.
+    pub async fn revalidate_authorities(&self, accounts: Option<&AddressSet>) {
+        if accounts.is_some_and(AddressSet::is_empty) {
+            return;
+        }
+        let hashes: Vec<TxHash> = self
+            .all_transactions()
+            .iter()
+            .filter(|tx| accounts.is_none_or(|accounts| tx.transaction.has_authority_in(accounts)))
+            .map(|tx| *tx.hash())
+            .collect();
+        if hashes.is_empty() {
+            return;
+        }
+        let transactions = self
+            .remove_transactions(hashes)
+            .into_iter()
+            .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+            .collect();
+        let results = self.add_transactions_with_origins(transactions).await;
+        tracing::debug!(
+            target: "txpool",
+            total = results.len(),
+            success = results.iter().filter(|result| result.is_ok()).count(),
+            "Revalidated transactions of changed authorities"
+        );
+    }
+}
+
 // Implement the TransactionPool trait
 impl<Client, EvmConfig> TransactionPool for TempoTransactionPool<Client, EvmConfig>
 where
@@ -1900,6 +1943,36 @@ mod tests {
             )),
             fee_payer,
         )
+    }
+
+    #[tokio::test]
+    async fn revalidate_authorities_revalidates_only_listed_authorities() {
+        let (sender, other) = (Address::random(), Address::random());
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        let other_pooled = crate::test_utils::TxBuilder::aa(other).build();
+        let provider = create_provider_with_tip();
+        let pool = create_test_pool(provider.clone());
+        add_validated(&pool, pooled.clone());
+        add_validated(&pool, other_pooled.clone());
+        // Both senders' nonces move past their transactions, so revalidation rejects them.
+        provider.add_account(
+            sender,
+            ExtendedAccount::new(pooled.nonce() + 1, *pooled.cost()),
+        );
+        provider.add_account(
+            other,
+            ExtendedAccount::new(other_pooled.nonce() + 1, *other_pooled.cost()),
+        );
+
+        pool.revalidate_authorities(Some(&AddressSet::from_iter([Address::random()])))
+            .await;
+        assert!(pool.get(pooled.hash()).is_some());
+        pool.revalidate_authorities(Some(&AddressSet::from_iter([sender])))
+            .await;
+        assert!(pool.get(pooled.hash()).is_none());
+        assert!(pool.get(other_pooled.hash()).is_some());
+        pool.revalidate_authorities(None).await;
+        assert!(pool.get(other_pooled.hash()).is_none());
     }
 
     #[tokio::test]
