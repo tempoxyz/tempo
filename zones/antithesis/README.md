@@ -1,6 +1,6 @@
 # Zone test environment
 
-A multi-sequencer zone in Docker Compose, for fault-injection testing of the zone node built with
+A multi-sequencer zone in Docker Compose, for fault-injection testing of the L1 and zone nodes built with
 `--features fuzz` (SDK assertions enabled). `docker-compose.yaml` describes the topology.
 
 Build the images from the repository root, with the contract submodules checked out:

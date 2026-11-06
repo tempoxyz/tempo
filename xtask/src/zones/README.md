@@ -9,8 +9,9 @@ Subcommands currently supported:
 - `create-zone`: creates a new Zone through Tempo's native TIP-1091 ZoneFactory, either
   signed by `ZONE_FACTORY_OWNER_KEY` or, for a Safe-owned factory, as a Safe Transaction
   Builder proposal (`--safe-address`) finished with `--creation-tx` after execution.
-- `enable-token`, `set-access-mode`, `set-gateway-mode`, `set-allowed-account`,
-  `set-gateway`: ZonePortal admin calls, signed by `ADMIN_KEY` or written as Safe proposals.
+- `enable-token`, `set-access-mode`, `set-gateway-mode`, `set-transfers-enabled`,
+  `set-allowed-account`, `set-gateway`: ZonePortal admin calls, signed by `ADMIN_KEY` or
+  written as Safe proposals.
 - `generate-zone-genesis`: generates a Zone L2 genesis file.
 - `pause-portal`: pauses new deposits, Zone block production, and L1 withdrawal processing for 30 days.
 

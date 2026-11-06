@@ -42,7 +42,7 @@ use tempo_contracts::precompiles::{
     TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 use tempo_precompiles_macros::contract;
-use tempo_primitives::TempoAddressExt;
+use tempo_primitives::{TempoAddressExt, TempoEvmKind};
 use tracing::trace;
 
 /// u128::MAX as U256
@@ -510,13 +510,8 @@ impl TIP20Token {
 
     // Token operations
 
-    /// Like [`Self::mint_with_role`], using [`AuthRole::mint_recipient`] authorization.
-    pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        self.mint_with_role(msg_sender, call, AuthRole::mint_recipient())
-    }
-
     /// Mints `amount` tokens to the resolved target `to` address:
-    /// - Enforces `recipient_role` compliance via [`TIP403Registry`] and validates against supply cap
+    /// - Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap
     /// - Resolves `to` via the [`AddressRegistry`]. If `to` is a virtual address, credits the
     ///   resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
     ///
@@ -524,16 +519,11 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
     /// - `ContractPaused` — (+T3) token is paused
     /// - `InvalidRecipient` — (+T3) recipient is zero or a TIP-20 prefix address
-    /// - `PolicyForbids` — TIP-403 policy rejects the recipient for `recipient_role`
+    /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
-    pub fn mint_with_role(
-        &mut self,
-        msg_sender: Address,
-        call: ITIP20::mintCall,
-        recipient_role: AuthRole,
-    ) -> Result<()> {
+    pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let Some((total_supply, to)) =
-            self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO, recipient_role)?
+            self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)?
         else {
             return Ok(());
         };
@@ -553,13 +543,8 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let Some((total_supply, to)) = self.validate_mint(
-            msg_sender,
-            call.to,
-            call.amount,
-            call.memo,
-            AuthRole::mint_recipient(),
-        )?
+        let Some((total_supply, to)) =
+            self.validate_mint(msg_sender, call.to, call.amount, call.memo)?
         else {
             return Ok(());
         };
@@ -729,6 +714,16 @@ impl TIP20Token {
         self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            total_supply >= amount,
+            "TIP-20 total supply covers a burn once the burner's balance is debited",
+            &serde_json::json!({
+                "token": self.address.to_string(),
+                "total_supply": total_supply.to_string(),
+                "amount": amount.to_string(),
+            })
+        );
         let new_supply =
             total_supply
                 .checked_sub(amount)
@@ -1217,9 +1212,9 @@ impl TIP20Token {
         Ok(Some(to))
     }
 
-    /// Resolves `to`, checks the issuer role, and ensures TIP-403 authorization for `recipient_role`.
-    /// Additionally (+T3) checks pause state and validates the effective recipient; also
-    /// (+T6) applies TIP-1028 address-level receive policies.
+    /// Resolves `to`, checks the issuer role, and ensures TIP-403 mint-recipient authorization, or
+    /// (+T13) recipient authorization on zones. Additionally (+T3) checks pause state and validates
+    /// the effective recipient; also (+T6) applies TIP-1028 address-level receive policies.
     ///
     /// Returns `Some(to)` when the caller should proceed with the regular mint.
     /// Returns `None` when funds were minted and blocked, and the caller should return immediately.
@@ -1229,7 +1224,6 @@ impl TIP20Token {
         to: Address,
         amount: U256,
         memo: B256,
-        recipient_role: AuthRole,
     ) -> Result<Option<(U256, Recipient)>> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, ISSUER_ROLE)?;
@@ -1240,7 +1234,11 @@ impl TIP20Token {
             to.validate()?;
         }
 
-        // Authorize the resolved target using the role selected by the mint operation.
+        // Zone credit L1-escrowed tokens without issuing supply, so (+T13) they are like transfers.
+        let recipient_role = match (self.storage.kind(), self.storage.spec()) {
+            (TempoEvmKind::Zone, spec) if spec.is_t13() => AuthRole::recipient(),
+            _ => AuthRole::mint_recipient(),
+        };
         if !TIP403Registry::new().is_authorized_as(
             self.transfer_policy_id()?,
             to.target,
@@ -1372,6 +1370,9 @@ impl TIP20Token {
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
     /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
     /// authorized and the caller should proceed with the normal transfer or mint.
+    ///
+    /// # Errors
+    /// - `PolicyForbids` — the inbound is blocked on a zone
     pub(crate) fn validate_inbound_or_block(
         &mut self,
         originator: Address,
@@ -1393,6 +1394,11 @@ impl TIP20Token {
         else {
             return Ok(false);
         };
+        // A zone recovery authority could never claim diverted funds. Ungated: before T15 zone
+        // transfers were disabled and the Inbox rejects blocked deposits itself.
+        if matches!(self.storage.kind(), TempoEvmKind::Zone) {
+            return Err(TIP20Error::policy_forbids().into());
+        }
 
         let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
         let kind = if let Some(total_supply) = mint_total_supply {
@@ -1527,7 +1533,18 @@ impl TIP20Token {
             )?;
         }
 
-        self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund)?;
+        let refund_debit = self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund);
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            !matches!(refund_debit, Err(TempoPrecompileError::TIP20(_))),
+            "Fee manager custody covers the unused fee refund",
+            &serde_json::json!({
+                "token": self.address.to_string(),
+                "refund": refund.to_string(),
+                "actual_spending": actual_spending.to_string(),
+            })
+        );
+        refund_debit?;
         self.increment_balance(to, refund)?;
 
         Ok(())
@@ -1761,12 +1778,20 @@ pub(crate) mod tests {
     };
 
     #[test]
-    fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
+    fn test_mint_authorizes_zone_credits_as_recipients_from_t13() -> eyre::Result<()> {
         let addr = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
 
-        for role in [AuthRole::MintRecipient, AuthRole::Recipient] {
-            let (mut storage, admin) = setup_storage();
+        for (kind, spec, role) in [
+            (
+                TempoEvmKind::L1,
+                TempoHardfork::T13,
+                AuthRole::MintRecipient,
+            ),
+            (TempoEvmKind::Zone, TempoHardfork::T13, AuthRole::Recipient),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec).with_kind(kind);
+            let admin = Address::random();
             StorageCtx::enter(&mut storage, || -> Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
@@ -1787,8 +1812,7 @@ pub(crate) mod tests {
                 )?;
                 token.clear_emitted_events();
 
-                let result =
-                    token.mint_with_role(admin, ITIP20::mintCall { to: addr, amount }, role);
+                let result = token.mint(admin, ITIP20::mintCall { to: addr, amount });
                 let (balance, events) = if role == AuthRole::Recipient {
                     result?;
                     (
@@ -2190,6 +2214,55 @@ pub(crate) mod tests {
                     ReceivePolicyGuard::new().balance_of(receipt.abi_encode().into())?,
                     U256::ZERO
                 );
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_zone_blocked_inbound_reverts_instead_of_guarding() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6)
+                .with_kind(TempoEvmKind::Zone);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let sender = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(40u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .clear_events()
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+
+                let transfer = token.transfer(
+                    sender,
+                    ITIP20::transferCall {
+                        to: receiver,
+                        amount,
+                    },
+                );
+                assert_eq!(transfer, Err(TIP20Error::policy_forbids().into()));
+                let mint = token.mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: receiver,
+                        amount,
+                    },
+                );
+                assert_eq!(mint, Err(TIP20Error::policy_forbids().into()));
+
+                assert_eq!(token.get_balance(sender)?, amount);
+                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.total_supply()?, amount);
 
                 Ok(())
             })

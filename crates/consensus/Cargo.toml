@@ -51,6 +51,7 @@ commonware-p2p.workspace = true
 commonware-parallel.workspace = true
 commonware-resolver.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
+commonware-stream.workspace = true
 commonware-storage.workspace = true
 commonware-utils.workspace = true
 
@@ -87,6 +88,9 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 url.workspace = true
 
+antithesis_sdk = { workspace = true, optional = true }
+serde_json = { workspace = true, default-features = true, optional = true }
+
 [dev-dependencies]
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
@@ -103,3 +107,4 @@ tracing-subscriber.workspace = true
 
 [features]
 default = []
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:serde_json"]

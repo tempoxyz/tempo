@@ -12,17 +12,16 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{cli::TempoHardforkArgs, spec::TEMPO_T0_BASE_FEE};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::{CreateX, Multicall3, SafeDeployer},
+    CREATEX_ADDRESS, SAFE_DEPLOYER_ADDRESS,
+    contracts::{CreateX, SafeDeployer},
     zones::{
         TEMPO_STATE_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
         ZonePortal,
     },
 };
 use tempo_evm::genesis::{
-    GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
-    ethereum_chain_config, genesis_account, genesis_evm_env, predeployed_contract,
-    with_genesis_storage,
+    GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, ethereum_chain_config,
+    genesis_account, genesis_evm_env, predeployed_contract, with_genesis_storage,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
@@ -103,8 +102,6 @@ pub(crate) struct GenerateZoneGenesis {
     pub(crate) with_safe_deployer: bool,
 
     /// Include Arachnid CREATE2 factory in genesis.
-    /// The factory is always used internally to deploy Permit2; this flag
-    /// controls whether it remains in the final genesis state.
     #[arg(long)]
     pub(crate) with_create2_factory: bool,
 
@@ -173,8 +170,10 @@ impl GenerateZoneGenesis {
         // Initialize all precompiles and deploy standard contracts to match the
         // L1 genesis setup. The zone EVM uses the same TempoEvmFactory, so all
         // precompiles must be initialized for user transactions to work correctly.
-        deploy_arachnid_create2_factory(&mut evm);
-        deploy_permit2(&mut evm)?;
+        // Zones omit Permit2 and Multicall3, which T15 removes from existing zones.
+        if self.with_create2_factory {
+            deploy_arachnid_create2_factory(&mut evm);
+        }
 
         with_genesis_storage(&mut evm, || {
             // Required for fee token transfer checks.
@@ -243,9 +242,6 @@ impl GenerateZoneGenesis {
             .accounts
             .iter()
             .filter(|(addr, _)| **addr != DEPLOYER && **addr != TIP20_FACTORY_ADDRESS)
-            .filter(|(addr, _)| {
-                self.with_create2_factory || **addr != ARACHNID_CREATE2_FACTORY_ADDRESS
-            })
             .filter_map(|(address, account)| account.as_ref().map(|account| (address, account)))
             .map(|(address, account)| {
                 let storage = db
@@ -274,7 +270,6 @@ impl GenerateZoneGenesis {
 
         // Deploy standard utility contracts matching L1 genesis.
         for (address, code, enabled) in [
-            (MULTICALL3_ADDRESS, &Multicall3::DEPLOYED_BYTECODE, true),
             (
                 CREATEX_ADDRESS,
                 &CreateX::DEPLOYED_BYTECODE,
