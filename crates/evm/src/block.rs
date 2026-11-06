@@ -315,8 +315,8 @@ impl<'a> TempoBlockExecutor<'a> {
             non_payment_gas_left: self.non_payment_gas_left,
             incentive_gas_used: self.incentive_gas_used,
             block_gas_used: self.block_gas_used,
-            cumulative_gas_used: self.inner.cumulative_gas_used,
-            blob_gas_used: self.inner.blob_gas_used,
+            cumulative_gas_used: self.inner.inner.cumulative_gas_used,
+            blob_gas_used: self.inner.inner.blob_gas_used,
         }
     }
 
@@ -331,8 +331,8 @@ impl<'a> TempoBlockExecutor<'a> {
         self.non_payment_gas_left = state.non_payment_gas_left;
         self.incentive_gas_used = state.incentive_gas_used;
         self.block_gas_used = state.block_gas_used;
-        self.inner.cumulative_gas_used = state.cumulative_gas_used;
-        self.inner.blob_gas_used = state.blob_gas_used;
+        self.inner.inner.cumulative_gas_used = state.cumulative_gas_used;
+        self.inner.inner.blob_gas_used = state.blob_gas_used;
         self.replay_state = StorageActionReplayState::default();
     }
 
@@ -953,7 +953,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
-            let mut inner = self.inner;
+            let mut inner = self.inner.inner;
             let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
             let result = reth_execution_types::BlockExecutionResult {
                 receipts: inner.receipts,
