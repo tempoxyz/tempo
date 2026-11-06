@@ -229,7 +229,7 @@ mod tests {
         let message = Message::<TempoEvmTypes> {
             gas_limit: gas,
             caller,
-            input: Bytes::copy_from_slice(data),
+            input: Bytes::copy_from_slice(data).into(),
             destination: target,
             call_target: target,
             code_address: target,
