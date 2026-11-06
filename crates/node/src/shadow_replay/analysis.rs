@@ -3,7 +3,6 @@
 use super::{
     Boundary, Evidence, ReplayOutcome,
     expectations::{Context, Expectation},
-    fees::fee_wrote,
 };
 use alloy::consensus::BlockHeader as _;
 use alloy_primitives::{Address, U256};
@@ -122,10 +121,10 @@ impl Report {
         {
             field.fee_associated = ctx.real.txs[index]
                 .as_ref()
-                .is_ok_and(|tx| fee_wrote(&tx.actions, address, slot))
+                .is_ok_and(|tx| tx.fee_slots.contains(&(address, slot)))
                 || ctx.shadow.txs[index]
                     .as_ref()
-                    .is_ok_and(|tx| fee_wrote(&tx.actions, address, slot));
+                    .is_ok_and(|tx| tx.fee_slots.contains(&(address, slot)));
         }
         let accepted = rules
             .iter()
