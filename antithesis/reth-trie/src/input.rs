@@ -1,0 +1,168 @@
+//! Explicit trie-task operation stream. Only `Commit` ends a block.
+
+use crate::{
+    model::{apply, generate, Model, Update},
+    prefix_dataset::{random_address, random_slot},
+};
+use alloy_primitives::{Address, KECCAK256_EMPTY, U256};
+use antithesis_sdk::random::AntithesisRng;
+use eyre::{ensure, Result};
+use rand::{seq::SliceRandom, Rng};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Input {
+    pub operations: Vec<Operation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StorageHint {
+    #[serde(with = "crate::prefix_dataset::address")]
+    pub address: Address,
+    #[serde(with = "crate::prefix_dataset::slot")]
+    pub slot: U256,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Operation {
+    UpdateBatch {
+        updates: Vec<Update>,
+    },
+    PrewarmBatch {
+        #[serde(with = "crate::prefix_dataset::addresses")]
+        accounts: Vec<Address>,
+        storages: Vec<StorageHint>,
+    },
+    /// Delay the driver while trie workers continue running under the Antithesis scheduler.
+    Sleep {
+        millis: u64,
+    },
+    Commit,
+}
+
+impl Input {
+    pub(crate) fn generate(blocks: u64, updates: usize) -> Self {
+        let mut state = Model::default();
+        let mut operations = Vec::new();
+        for number in 1..=blocks {
+            let mut rng = AntithesisRng;
+            let generated = generate(&mut rng, &state, updates);
+            apply(&mut state, number, &generated);
+            let mut targets = generated
+                .iter()
+                .map(|update| match update {
+                    Update::Account { address, .. } => (*address, None),
+                    Update::Storage { address, slot, .. } => (*address, Some(*slot)),
+                })
+                .collect::<Vec<_>>();
+            targets.shuffle(&mut rng);
+            let count =
+                if targets.len() > 1 { rng.random_range(1..targets.len()) } else { targets.len() };
+            targets.truncate(count);
+            for _ in 0..rng.random_range(1..=8) {
+                let address = random_address(&mut rng);
+                let slot = rng.random_bool(0.5).then(|| random_slot(&mut rng));
+                targets.push((address, slot));
+            }
+            targets.shuffle(&mut rng);
+            let mut targets = targets.into_iter().peekable();
+            let mut updates = generated.into_iter().peekable();
+            while targets.peek().is_some() || updates.peek().is_some() {
+                if targets.peek().is_some() && (updates.peek().is_none() || rng.random_bool(0.5)) {
+                    let size = rng.random_range(1..=targets.len().min(16));
+                    let mut accounts = Vec::new();
+                    let mut storages = Vec::new();
+                    for (address, slot) in targets.by_ref().take(size) {
+                        match slot {
+                            Some(slot) => storages.push(StorageHint { address, slot }),
+                            None => accounts.push(address),
+                        }
+                    }
+                    operations.push(Operation::PrewarmBatch { accounts, storages });
+                } else {
+                    let size = rng.random_range(1..=updates.len().min(16));
+                    operations.push(Operation::UpdateBatch {
+                        updates: updates.by_ref().take(size).collect(),
+                    });
+                }
+            }
+            operations.push(Operation::Commit);
+        }
+        let mut timing = AntithesisRng;
+        let mut timed = Vec::new();
+        for operation in operations {
+            if !matches!(operation, Operation::Commit) &&
+                matches!(
+                    timed.last(),
+                    Some(Operation::UpdateBatch { .. } | Operation::PrewarmBatch { .. })
+                ) &&
+                timing.random_bool(0.25)
+            {
+                timed.push(Operation::Sleep { millis: timing.random_range(1..=10) });
+            }
+            timed.push(operation);
+        }
+        Self { operations: timed }
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        let mut accounts = BTreeSet::new();
+        let mut blocks = 0;
+        let mut block_updates = 0;
+        let mut block_sleep_ms = 0u64;
+        for operation in &self.operations {
+            match operation {
+                Operation::UpdateBatch { updates } => {
+                    ensure!(!updates.is_empty(), "empty update batch");
+                    block_updates += updates.len();
+                    ensure!(block_updates <= 4096, "block needs at most 4096 updates");
+                    for update in updates {
+                        match update {
+                            Update::Account { address, account } => {
+                                ensure!(!account.is_empty(), "empty account: {address}");
+                                ensure!(
+                                    account.bytecode_hash != Some(KECCAK256_EMPTY),
+                                    "noncanonical empty code hash: {address}"
+                                );
+                                accounts.insert(*address);
+                            }
+                            Update::Storage { address, .. } => {
+                                ensure!(
+                                    accounts.contains(address),
+                                    "storage before account creation: {address}"
+                                );
+                            }
+                        }
+                    }
+                }
+                Operation::PrewarmBatch { accounts, storages } => {
+                    ensure!(!accounts.is_empty() || !storages.is_empty(), "empty prewarm batch");
+                }
+                Operation::Sleep { millis } => {
+                    ensure!(*millis <= 1000, "sleep needs at most 1000 milliseconds");
+                    block_sleep_ms += millis;
+                    ensure!(
+                        block_sleep_ms <= 10_000,
+                        "block needs at most 10000 sleep milliseconds"
+                    );
+                }
+                Operation::Commit => {
+                    block_sleep_ms = 0;
+                    ensure!(block_updates > 0, "commit without updates");
+                    blocks += 1;
+                    ensure!(blocks <= 1024, "input needs at most 1024 commits");
+                    block_updates = 0;
+                }
+            }
+        }
+        ensure!(
+            matches!(self.operations.last(), Some(Operation::Commit)),
+            "input must end with a commit"
+        );
+        Ok(())
+    }
+}

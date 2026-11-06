@@ -1,0 +1,252 @@
+[package]
+name = "reth-trie-antithesis"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+fuzz = ["reth-db/fuzz", "reth-trie/fuzz"]
+
+[dependencies]
+reth-chain-state.workspace = true
+reth-chainspec.workspace = true
+reth-db-api.workspace = true
+reth-db-common.workspace = true
+reth-db.workspace = true
+reth-engine-primitives.workspace = true
+reth-engine-tree.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-evm-ethereum.workspace = true
+reth-execution-types.workspace = true
+reth-node-builder.workspace = true
+reth-node-core.workspace = true
+reth-primitives-traits.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }
+reth-stages-types.workspace = true
+reth-storage-overlay = { workspace = true, features = ["rayon"] }
+reth-tasks = { workspace = true, features = ["rayon", "test-utils"] }
+reth-tracing-otlp.workspace = true
+reth-trie.workspace = true
+alloy-consensus.workspace = true
+alloy-primitives = { workspace = true, features = ["asm-keccak"] }
+alloy-rlp.workspace = true
+alloy-trie.workspace = true
+evm2 = { workspace = true, features = ["std"] }
+eyre.workspace = true
+metrics-util = { workspace = true, features = ["debugging"] }
+rand.workspace = true
+antithesis-instrumentation = "=0.1.1"
+antithesis_sdk = { version = "=0.3.0", default-features = false, features = ["full", "rand_core_v0_9"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+url.workspace = true
+tracing-subscriber.workspace = true
+
+# Standalone workspace: preserve the upstream workload's Reth API and dependency pins.
+[workspace]
+members = ["."]
+resolver = "2"
+
+[workspace.package]
+version = "2.9.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+homepage = "https://paradigmxyz.github.io/reth"
+repository = "https://github.com/paradigmxyz/reth"
+exclude = [".github/"]
+
+[workspace.lints]
+rust.missing_debug_implementations = "warn"
+rust.missing_docs = "warn"
+rust.rust_2018_idioms = { level = "deny", priority = -1 }
+rust.unreachable_pub = "warn"
+rust.unused_must_use = "deny"
+rust.rust_2024_incompatible_pat = "warn"
+rust.unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+rustdoc.all = "warn"
+# rust.unnameable-types = "warn"
+
+[workspace.lints.clippy]
+# These are some of clippy's nursery (i.e., experimental) lints that we like.
+# By default, nursery lints are allowed. Some of the lints below have made good
+# suggestions which we fixed. The others didn't have any findings, so we can
+# assume they don't have that many false positives. Let's enable them to
+# prevent future problems.
+borrow_as_ptr = "warn"
+branches_sharing_code = "warn"
+clear_with_drain = "warn"
+cloned_instead_of_copied = "warn"
+collection_is_never_read = "warn"
+dbg_macro = "warn"
+derive_partial_eq_without_eq = "warn"
+doc_markdown = "warn"
+empty_line_after_doc_comments = "warn"
+empty_line_after_outer_attr = "warn"
+enum_glob_use = "warn"
+equatable_if_let = "warn"
+explicit_into_iter_loop = "warn"
+explicit_iter_loop = "warn"
+flat_map_option = "warn"
+if_not_else = "warn"
+if_then_some_else_none = "warn"
+implicit_clone = "warn"
+imprecise_flops = "warn"
+iter_on_empty_collections = "warn"
+iter_on_single_items = "warn"
+iter_with_drain = "warn"
+iter_without_into_iter = "warn"
+large_stack_frames = "warn"
+manual_assert = "warn"
+manual_clamp = "warn"
+manual_is_variant_and = "warn"
+manual_string_new = "warn"
+match_same_arms = "warn"
+missing_const_for_fn = "warn"
+mutex_integer = "warn"
+naive_bytecount = "warn"
+needless_bitwise_bool = "warn"
+needless_continue = "warn"
+needless_for_each = "warn"
+needless_pass_by_ref_mut = "warn"
+nonstandard_macro_braces = "warn"
+option_as_ref_cloned = "warn"
+or_fun_call = "warn"
+path_buf_push_overwrite = "warn"
+read_zero_byte_vec = "warn"
+result_large_err = "allow"
+redundant_clone = "warn"
+redundant_else = "warn"
+# TODO: Remove once https://github.com/rust-lang/rust-clippy/issues/17525 is resolved.
+redundant_field_names = "allow"
+single_char_pattern = "warn"
+string_lit_as_bytes = "warn"
+string_lit_chars_any = "warn"
+suboptimal_flops = "warn"
+suspicious_operation_groupings = "warn"
+trailing_empty_array = "warn"
+trait_duplication_in_bounds = "warn"
+transmute_undefined_repr = "warn"
+trivial_regex = "warn"
+tuple_array_conversions = "warn"
+type_repetition_in_bounds = "warn"
+uninhabited_references = "warn"
+unnecessary_self_imports = "warn"
+unnecessary_struct_initialization = "warn"
+unnested_or_patterns = "warn"
+unused_peekable = "warn"
+unused_rounding = "warn"
+use_self = "warn"
+useless_let_if_seq = "warn"
+while_float = "warn"
+zero_sized_map_values = "warn"
+
+# These are nursery lints which have findings. Allow them for now. Some are not
+# quite mature enough for use in our codebase and some we don't really want.
+# Explicitly listing should make it easier to fix in the future.
+as_ptr_cast_mut = "allow"
+cognitive_complexity = "allow"
+debug_assert_with_mut_call = "allow"
+fallible_impl_from = "allow"
+future_not_send = "allow"
+needless_collect = "allow"
+non_send_fields_in_send_ty = "allow"
+redundant_pub_crate = "allow"
+significant_drop_in_scrutinee = "allow"
+significant_drop_tightening = "allow"
+too_long_first_doc_paragraph = "allow"
+
+[profile.dev]
+# https://davidlattimore.github.io/posts/2024/02/04/speeding-up-the-rust-edit-build-run-cycle.html
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+# Speed up tests.
+
+[profile.dev.package]
+proptest.opt-level = 3
+rand_chacha.opt-level = 3
+rand_xorshift.opt-level = 3
+unarray.opt-level = 3
+blst.opt-level = 3
+c-kzg.opt-level = 3
+secp256k1-sys.opt-level = 3
+# `cc` builds C++ with full `-g` when `debug` is on, making `librocksdb.a` 854 MiB instead of 180 MiB.
+librocksdb-sys.debug = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+debug = "none"
+strip = "symbols"
+panic = "unwind"
+codegen-units = 16
+
+# Use the `--profile profiling` flag to show symbols in release mode.
+# e.g. `cargo build --profile profiling`
+[profile.profiling]
+inherits = "release"
+debug = "full"
+strip = "none"
+
+[profile.dst]
+inherits = "profiling"
+debug-assertions = true
+overflow-checks = true
+
+[workspace.dependencies]
+reth-chain-state = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48", default-features = false }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-db-common = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48", default-features = false }
+reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48", default-features = false }
+reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48", default-features = false }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48", default-features = false }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48", default-features = false }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-primitives-traits = { version = "0.8.2", default-features = false }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-stages-types = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48", default-features = false }
+reth-storage-overlay = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+reth-tracing-otlp = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48", features = ["otlp"] }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "b26d8264effaa9f6478fb91074b169e1f0f04c48" }
+alloy-consensus = { version = "2.5.0", default-features = false }
+alloy-primitives = { version = "1.6.1", default-features = false, features = ["map-foldhash"] }
+alloy-rlp = { version = "0.3.16", default-features = false, features = ["core-net"] }
+alloy-trie = { version = "0.9.8", default-features = false }
+evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "592bf18c4e22fff54ac9b4db606c4ee276e345cb", default-features = false }
+eyre = "0.6"
+metrics-util = { default-features = false, version = "0.20.3" }
+rand = "0.9"
+serde = { version = "1.0", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+tempfile = "3.20"
+tracing = { version = "0.1.44", features = ["max_level_debug", "release_max_level_debug"] }
+url = "2.5"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
+
+# evm2 is patched through its pre-transfer URL, which redirects to alloy-rs/evm2, because Cargo
+# rejects a patch from the same source. Mirrors reth's pin.
+[patch."https://github.com/alloy-rs/evm2"]
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "592bf18c4e22fff54ac9b4db606c4ee276e345cb" }
+
+[patch.crates-io]
+# LLVM 23 support is not released yet.
+inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff" }
+
+# reth-core
+reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-rpc-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
