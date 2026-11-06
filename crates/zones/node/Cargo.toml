@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 # tempo
 tempo-chainspec.workspace = true
-tempo-evm = { workspace = true, features = ["engine", "rpc"] }
 tempo-reth-consensus.workspace = true
 tempo-node.workspace = true
 tempo-precompiles.workspace = true
@@ -109,6 +108,7 @@ sha2 = { workspace = true, optional = true }
 smolgen.workspace = true
 
 [dev-dependencies]
+tempo-evm = { workspace = true, features = ["engine", "rpc"] }
 zone-chainspec = { workspace = true, features = ["test-utils"] }
 zone-node = { path = ".", features = ["test-utils"] }
 
