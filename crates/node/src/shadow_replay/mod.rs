@@ -53,7 +53,7 @@ use tempo_chainspec::{
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult, evm::TempoEvm};
-use tempo_precompiles::storage::StorageAction;
+use tempo_precompiles::storage::{FeeHook, StorageAction};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -747,9 +747,19 @@ fn record_actions(config: &TempoEvmConfig, evm: &mut TempoEvm<'_>) {
     BlockExecutorFactory::evm_factory(config).configure_evm(evm);
 }
 
-/// The storage actions the executor recorded since they were last taken.
+/// The fee hooks' markers and actions the executor recorded since they were last taken. The
+/// analysis reads nothing else, so the rest is dropped rather than kept for the whole block.
 fn take_actions(executor: &TempoBlockExecutor<'_>) -> Vec<StorageAction> {
-    executor.evm().ext().actions.take().unwrap_or_default()
+    let mut actions = executor.evm().ext().actions.take().unwrap_or_default();
+    let mut in_hook = false;
+    actions.retain(|action| match action {
+        StorageAction::Marker(marker) => {
+            in_hook = !matches!(marker, FeeHook::End);
+            true
+        }
+        _ => in_hook,
+    });
+    actions
 }
 
 fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {
