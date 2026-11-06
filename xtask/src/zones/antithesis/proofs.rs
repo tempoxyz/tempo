@@ -174,38 +174,37 @@ impl Context {
                     );
                 }
             }
-            for pair in nodes.windows(2) {
-                let (a, b) = (pair[0], pair[1]);
-                let differing: Vec<Address> = a
-                    .proofs
-                    .iter()
-                    .zip(&b.proofs)
-                    .filter(|(x, y)| x != y)
-                    .map(|(x, _)| x.address)
-                    .collect();
-                assert_on!(
-                    zone,
-                    assert_always,
-                    differing.is_empty(),
-                    "Zone nodes serve the same proof for the same block",
-                    "L1 nodes serve the same proof for the same block",
-                    &json!({
-                        "nodes": [a.node, b.node],
-                        "height": height,
-                        "block": block_hash,
-                        "addresses": differing,
-                    })
-                );
+            // The test runs one L1 node, so only zone nodes have answers to compare.
+            if zone {
+                for pair in nodes.windows(2) {
+                    let (a, b) = (pair[0], pair[1]);
+                    let differing: Vec<Address> = a
+                        .proofs
+                        .iter()
+                        .zip(&b.proofs)
+                        .filter(|(x, y)| x != y)
+                        .map(|(x, _)| x.address)
+                        .collect();
+                    assert_always!(
+                        differing.is_empty(),
+                        "Zone nodes serve the same proof for the same block",
+                        &json!({
+                            "nodes": [a.node, b.node],
+                            "height": height,
+                            "block": block_hash,
+                            "addresses": differing,
+                        })
+                    );
+                }
             }
         }
-        assert_on!(
-            zone,
-            assert_sometimes,
-            by_block.values().any(|nodes| nodes.len() > 1),
-            "Zone proofs from several nodes compared",
-            "L1 proofs from several nodes compared",
-            &json!({ "height": height })
-        );
+        if zone {
+            assert_sometimes!(
+                by_block.values().any(|nodes| nodes.len() > 1),
+                "Zone proofs from several nodes compared",
+                &json!({ "height": height })
+            );
+        }
         Ok(())
     }
 
