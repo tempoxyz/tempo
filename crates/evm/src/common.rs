@@ -505,7 +505,7 @@ where
 mod tests {
     use super::*;
     use crate::{FeeTokenResolver, TempoBlockEnv, TempoEvmExt, TempoFeeManager, build_tempo_evm};
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_primitives::{Signature, address, uint};
     use evm2::{
         evm::{Bal, BalContext, InMemoryDB, bal::BalError, precompile::NoPrecompiles},
@@ -526,16 +526,16 @@ mod tests {
 
     fn legacy_env(caller: Address, to: TxKind, input: Bytes) -> TempoTxEnv {
         Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     chain_id: Some(1),
                     gas_limit: 21_000,
                     to,
                     input,
                     ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
             caller,
         )
         .into()

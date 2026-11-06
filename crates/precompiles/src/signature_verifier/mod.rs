@@ -7,7 +7,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::account_config_commitment,
 };
-use alloy::primitives::{Address, B256, Bytes};
+use alloy::primitives::{Address, B256};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
@@ -24,14 +24,16 @@ impl SignatureVerifier {
         self.__initialize()
     }
 
-    pub fn recover(&self, hash: B256, signature: Bytes) -> Result<Address> {
+    pub fn recover(&self, hash: B256, signature: &[u8]) -> Result<Address> {
         // Parse and validate signature (handles size checks + type disambiguation).
-        let sig = PrimitiveSignature::from_bytes(&signature)
+        let sig = PrimitiveSignature::from_bytes(signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
+        self.recover_primitive(hash, &sig)
+    }
 
+    fn recover_primitive(&self, hash: B256, sig: &PrimitiveSignature) -> Result<Address> {
         // Charge verification gas before performing verification.
-        let verify_gas = sig.base_verification_gas();
-        self.storage.deduct_gas(verify_gas)?;
+        self.storage.deduct_gas(sig.base_verification_gas())?;
 
         // Verify and recover signer.
         sig.recover_signer(&hash)
@@ -43,7 +45,7 @@ impl SignatureVerifier {
     /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
     /// (TIP-1112), even under a stored grant, or when the inner signature type differs from the
     /// stored key type.
-    pub fn verify_keychain(&self, account: Address, hash: B256, signature: Bytes) -> Result<bool> {
+    pub fn verify_keychain(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
         let recovered = self.recover_keychain_key(hash, signature)?;
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
@@ -64,7 +66,7 @@ impl SignatureVerifier {
         &self,
         account: Address,
         hash: B256,
-        signature: Bytes,
+        signature: &[u8],
     ) -> Result<bool> {
         let recovered = self.recover_keychain_key(hash, signature)?;
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
@@ -108,8 +110,8 @@ impl SignatureVerifier {
         }
     }
 
-    fn recover_keychain_key(&self, hash: B256, signature: Bytes) -> Result<RecoveredKeychainKey> {
-        let sig = TempoSignature::from_bytes(&signature)
+    fn recover_keychain_key(&self, hash: B256, signature: &[u8]) -> Result<RecoveredKeychainKey> {
+        let sig = TempoSignature::from_bytes(signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
         let keychain_sig = sig
             .as_keychain()
@@ -123,7 +125,7 @@ impl SignatureVerifier {
         };
 
         let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let key_id = self.recover(signing_hash, signature.to_bytes())?;
+        let key_id = self.recover_primitive(signing_hash, signature)?;
         Ok(RecoveredKeychainKey {
             account: keychain_sig.user_address,
             key_id,
@@ -194,13 +196,14 @@ mod tests {
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::transaction::tt_signature::{
-        SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN,
+        SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, derive_p256_address, normalize_p256_s,
     };
 
     fn sign_recover(hash: B256, signature: Vec<u8>) -> Result<Address> {
-        SignatureVerifier::new().recover(hash, Bytes::from(signature))
+        SignatureVerifier::new().recover(hash, &signature)
     }
 
     #[test]
@@ -221,9 +224,6 @@ mod tests {
 
     #[test]
     fn test_verify_p256_valid() -> eyre::Result<()> {
-        use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-        use tempo_primitives::transaction::tt_signature::{derive_p256_address, normalize_p256_s};
-
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let signing_key = SigningKey::random(&mut OsRng);

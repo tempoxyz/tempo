@@ -502,7 +502,8 @@ impl InvalidatedLanes {
 /// Returns true if the transaction is a candidate for parallel prewarming.
 fn is_parallel_candidate(tx: &BestTransaction) -> bool {
     // Payment lane transactions
-    tx.transaction.is_payment()
+    // TODO: switch to `is_payment_v3` after T15 is active.
+    tx.transaction.is_payment_v2()
         // 2D or expiring nonces, no protocol nonces
         && tx
             .transaction
@@ -513,7 +514,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, Header, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
@@ -533,7 +534,11 @@ mod tests {
     };
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-    use tempo_precompiles::storage::actions::StorageAction;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS,
+        storage::{StorageCtx, StorageKey, actions::StorageAction},
+        tip20::{ITIP20, TIP20Token, tip20_slots},
+    };
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoTransaction, TempoTxEnvelope, transaction::Call,
     };
@@ -615,8 +620,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        let envelope =
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()));
         let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
         Arc::new(ValidPoolTransaction {
             transaction_id: TransactionId::new(0u64.into(), nonce),
@@ -1066,12 +1070,6 @@ mod tests {
 
     #[test]
     fn parallel_prewarm_records_native_transfer_balance_changes() {
-        use tempo_precompiles::{
-            PATH_USD_ADDRESS,
-            storage::{StorageCtx, StorageKey},
-            tip20::{ITIP20, TIP20Token, tip20_slots},
-        };
-
         let mut context = prewarming_context(TaskExecutor::test(), true);
         context.evm_env.block.basefee = U256::ZERO;
         let mut evm = context.evm_for_ctx().expect("prewarm EVM");
@@ -1091,7 +1089,7 @@ mod tests {
         // transfer(address,uint256), matching a payment transaction eligible for replay.
         let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
         input.extend_from_slice(&recipient.into_word().0);
-        input.extend_from_slice(&U256::from(100).to_be_bytes::<32>());
+        input.extend_from_slice(B256::with_last_byte(100).as_slice());
         let tx = TempoTransaction {
             chain_id: 42431,
             fee_token: Some(PATH_USD_ADDRESS),

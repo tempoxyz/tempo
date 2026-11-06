@@ -1095,8 +1095,11 @@ fn validate_block_timestamp(timestamp_millis: u64, now: SystemTime) -> eyre::Res
 mod tests {
     use std::time::Duration;
 
+    use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_eips::NumHash;
-    use alloy_primitives::{Address, B256};
+    use alloy_primitives::{Address, B256, Bytes, Signature, U256};
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+    use tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE;
     use tokio_util::sync;
     use zone_l1::{DepositQueue, EnabledToken, L1BlockDeposits, L1BlockTracker, L1PortalEvents};
     use zone_p2p::{BackfillCommand, LeadershipSchedule, LeadershipState};
@@ -1105,10 +1108,6 @@ mod tests {
 
     #[test]
     fn decodes_advance_tempo_header_from_first_system_tx() {
-        use alloy_consensus::BlockHeader as _;
-        use reth_primitives_traits::{SealedBlock, SealedHeader};
-        use tempo_primitives::{Block, TempoHeader};
-
         let l1_header = TempoHeader {
             inner: alloy_consensus::Header {
                 number: 7,
@@ -1142,14 +1141,6 @@ mod tests {
 
     #[test]
     fn rejects_advance_tempo_sent_to_wrong_contract() {
-        use alloy_consensus::{Signed, TxLegacy};
-        use alloy_primitives::{Address, U256};
-        use alloy_sol_types::SolCall as _;
-        use reth_primitives_traits::SealedBlock;
-        use tempo_primitives::{
-            Block, TempoHeader, TempoTxEnvelope, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        };
-
         let calldata = zone_payload::abi::IZoneInbox::advanceTempoCall {
             header: alloy_rlp::encode(TempoHeader::default()).into(),
             deposits: vec![],
@@ -1169,10 +1160,9 @@ mod tests {
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),
             body: alloy_consensus::BlockBody {
-                transactions: vec![TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    tx,
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                ))],
+                transactions: vec![TempoTxEnvelope::Legacy(
+                    tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+                )],
                 ommers: vec![],
                 withdrawals: None,
             },
@@ -1184,9 +1174,6 @@ mod tests {
 
     #[test]
     fn rejects_block_without_advance_tempo() {
-        use reth_primitives_traits::SealedBlock;
-        use tempo_primitives::{Block, TempoHeader};
-
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),
             body: alloy_consensus::BlockBody {
@@ -1202,11 +1189,6 @@ mod tests {
 
     #[test]
     fn rejects_non_system_advance_tempo_transaction() {
-        use alloy_consensus::{Signed, TxLegacy};
-        use alloy_primitives::Signature;
-        use reth_primitives_traits::{SealedBlock, SealedHeader};
-        use tempo_primitives::{Block, TempoHeader, TempoTxEnvelope};
-
         let prepared = zone_l1::PreparedL1Block {
             header: SealedHeader::seal_slow(TempoHeader::default()),
             queued_deposits: vec![],
@@ -1222,10 +1204,12 @@ mod tests {
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),
             body: alloy_consensus::BlockBody {
-                transactions: vec![TempoTxEnvelope::Legacy(Signed::<TxLegacy>::new_unhashed(
-                    system_tx.tx().clone(),
-                    Signature::test_signature(),
-                ))],
+                transactions: vec![TempoTxEnvelope::Legacy(
+                    system_tx
+                        .tx()
+                        .clone()
+                        .into_signed(Signature::test_signature()),
+                )],
                 ommers: vec![],
                 withdrawals: None,
             },
@@ -1237,13 +1221,6 @@ mod tests {
 
     #[test]
     fn rejects_malformed_advance_tempo_calldata() {
-        use alloy_consensus::{Signed, TxLegacy};
-        use alloy_primitives::{Bytes, U256};
-        use reth_primitives_traits::SealedBlock;
-        use tempo_primitives::{
-            Block, TempoHeader, TempoTxEnvelope, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        };
-
         let tx = TxLegacy {
             to: zone_payload::abi::ZONE_INBOX_ADDRESS.into(),
             value: U256::ZERO,
@@ -1253,10 +1230,9 @@ mod tests {
         let block = SealedBlock::seal_slow(Block {
             header: TempoHeader::default(),
             body: alloy_consensus::BlockBody {
-                transactions: vec![TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    tx,
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                ))],
+                transactions: vec![TempoTxEnvelope::Legacy(
+                    tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+                )],
                 ommers: vec![],
                 withdrawals: None,
             },
@@ -1272,14 +1248,6 @@ mod tests {
 
     #[test]
     fn rejects_malformed_or_trailing_advance_tempo_header_rlp() {
-        use alloy_consensus::{Signed, TxLegacy};
-        use alloy_primitives::{Bytes, U256};
-        use alloy_sol_types::SolCall as _;
-        use reth_primitives_traits::SealedBlock;
-        use tempo_primitives::{
-            Block, TempoHeader, TempoTxEnvelope, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        };
-
         let make_block = |header: Vec<u8>| {
             let calldata = zone_payload::abi::IZoneInbox::advanceTempoCall {
                 header: Bytes::from(header),
@@ -1297,10 +1265,9 @@ mod tests {
             SealedBlock::seal_slow(Block {
                 header: TempoHeader::default(),
                 body: alloy_consensus::BlockBody {
-                    transactions: vec![TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                        tx,
-                        TEMPO_SYSTEM_TX_SIGNATURE,
-                    ))],
+                    transactions: vec![TempoTxEnvelope::Legacy(
+                        tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+                    )],
                     ommers: vec![],
                     withdrawals: None,
                 },
@@ -1320,9 +1287,6 @@ mod tests {
 
     #[test]
     fn validates_embedded_l1_checkpoint_continuity() {
-        use reth_primitives_traits::SealedHeader;
-        use tempo_primitives::TempoHeader;
-
         let local_hash = B256::repeat_byte(0x42);
         let header = SealedHeader::seal_slow(TempoHeader {
             inner: alloy_consensus::Header {
@@ -1344,8 +1308,6 @@ mod tests {
 
     #[tokio::test]
     async fn revalidates_live_sender_after_anchor_observation() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         const ANCHOR_NUMBER: u64 = 10;
         const ZONE_BLOCK_NUMBER: u64 = 7;
 
@@ -1406,8 +1368,6 @@ mod tests {
 
     #[tokio::test]
     async fn peer_anchor_wait_stops_promptly_on_generation_cancellation() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let leader = PrivateKey::from_seed(1).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, leader, 0));
         let tracker = L1BlockTracker::default();
@@ -1435,8 +1395,6 @@ mod tests {
 
     #[tokio::test]
     async fn peer_anchor_wait_has_one_finite_deadline() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let leader = PrivateKey::from_seed(1).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, leader, 0));
         let tracker = L1BlockTracker::default();
@@ -1462,8 +1420,6 @@ mod tests {
 
     #[test]
     fn forced_recovery_reassigns_live_sender_for_missing_anchors() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let outgoing = PrivateKey::from_seed(1).public_key();
         let incoming = PrivateKey::from_seed(2).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(7, outgoing.clone(), 0));
@@ -1534,9 +1490,6 @@ mod tests {
 
     #[test]
     fn peer_tip_registry_records_latest_tip() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        use zone_p2p::PeerTip;
-
         let registry = PeerTipRegistry::default();
 
         let peer = PrivateKey::from_seed(1).public_key();
@@ -1693,10 +1646,6 @@ mod tests {
     }
     #[test]
     fn checkpoint_live_producer_uses_first_header_leader() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        use reth_primitives_traits::SealedHeader;
-        use tempo_primitives::TempoHeader;
-
         let outgoing = PrivateKey::from_seed(1).public_key();
         let incoming = PrivateKey::from_seed(2).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, outgoing.clone(), 0));
@@ -1756,8 +1705,6 @@ mod tests {
 
     #[test]
     fn checkpoint_live_producer_respects_forced_recovery() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let historical = PrivateKey::from_seed(1).public_key();
         let recovery = PrivateKey::from_seed(2).public_key();
         let successor = PrivateKey::from_seed(3).public_key();

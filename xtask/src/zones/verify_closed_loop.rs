@@ -148,8 +148,15 @@ impl VerifyClosedLoop {
         ensure_has_code(&provider, zone.portal, "ZonePortal", snapshot_block_id).await?;
         ensure_has_code(&provider, earn_vault, "EarnVault", snapshot_block_id).await?;
 
-        let deployment_block =
-            find_zone_deployment_block(&provider, zone_id, zone.portal, 0, snapshot_block).await?;
+        let deployment_block = find_zone_deployment_block(
+            &provider,
+            ZONE_FACTORY_ADDRESS,
+            zone_id,
+            zone.portal,
+            0,
+            snapshot_block,
+        )
+        .await?;
         let portal = ZonePortal::new(zone.portal, &provider);
         let portal_admin = portal
             .admin()
@@ -357,8 +364,7 @@ async fn read_role_updates<P: Provider<TempoNetwork>>(
 ) -> eyre::Result<BTreeMap<Address, PortalRole>> {
     let updates = ZonePortal::new(portal, provider)
         .RoleUpdated_filter()
-        .from_block(deployment_block)
-        .to_block(snapshot_block)
+        .select(deployment_block..=snapshot_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()
@@ -384,8 +390,7 @@ async fn read_token_enablements<P: Provider<TempoNetwork>>(
 ) -> eyre::Result<BTreeSet<Address>> {
     let events = ZonePortal::new(portal, provider)
         .TokenEnabled_filter()
-        .from_block(deployment_block)
-        .to_block(snapshot_block)
+        .select(deployment_block..=snapshot_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()

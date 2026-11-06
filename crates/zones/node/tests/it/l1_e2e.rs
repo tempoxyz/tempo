@@ -12,23 +12,29 @@ use crate::utils::{
     start_real_p2p_cluster_with_active_nodes, start_real_p2p_cluster_with_deposit_allowlist,
 };
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::Provider,
-    sol_types::SolCall,
+    signers::SignerSync as _,
+    sol_types::{SolCall, SolStruct as _},
 };
 use alloy_consensus::Transaction;
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
+use k256::{AffinePoint, ProjectivePoint, Scalar};
 use std::{collections::HashMap, time::Duration};
-use tempo_contracts::zones::{
-    IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS,
-    ZonePortal, ZonePortal::Role as PortalRole,
+use tempo_contracts::{
+    precompiles::{ITIP20, ITIP403Registry, ITIP403Registry::PolicyType},
+    zones::{
+        DepositPayload, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_OUTBOX_ADDRESS,
+        ZONE_TOKEN_ADDRESS, ZonePortal, ZonePortal::Role as PortalRole,
+    },
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, zone_factory::portal};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS, zone_factory::portal};
 use zone_node::{
     DepositAllowlist, DepositAllowlistAdmin,
     dev::{ProvisionConfig, provision_zone},
 };
+use zone_precompiles::ecies;
 
 /// Longer timeout for real L1 tests — the L1 dev node produces blocks every
 /// 250ms and the L1Subscriber needs to connect, backfill, and subscribe.
@@ -956,7 +962,6 @@ async fn test_closed_mode_rejects_unlisted_deposit_and_withdrawal_recipient() ->
     l1.fund_user(allowed_account.address(), 1_000_000).await?;
 
     {
-        use tempo_contracts::precompiles::ITIP20;
         let provider = l1.provider_with_signer(l1.user_signer());
         ITIP20::new(PATH_USD_ADDRESS, &provider)
             .approve(portal_address, U256::MAX)
@@ -2392,8 +2397,6 @@ async fn test_l1_policy_operations_and_zone_advancement() -> eyre::Result<()> {
 async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    use tempo_contracts::precompiles::{ITIP20, ITIP403Registry::PolicyType};
-
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
     let policy_id = l1.create_blacklist_policy().await?;
@@ -2624,8 +2627,6 @@ fn sign_set(
     allowed: bool,
     nonce: u64,
 ) -> eyre::Result<SignedSet> {
-    use alloy::{signers::SignerSync as _, sol_types::SolStruct as _};
-
     let deadline = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs()
@@ -2647,9 +2648,7 @@ fn sign_set(
         allowed,
         nonce,
         deadline,
-        signature: alloy::primitives::Bytes::copy_from_slice(
-            &signer.sign_hash_sync(&hash)?.as_bytes(),
-        ),
+        signature: Bytes::from(signer.sign_hash_sync(&hash)?.as_bytes()),
     })
 }
 
@@ -2884,10 +2883,6 @@ async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::R
 async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    use k256::{AffinePoint, ProjectivePoint, Scalar};
-    use tempo_contracts::{precompiles::ITIP20, zones::DepositPayload};
-    use zone_precompiles::ecies;
-
     let l1 = L1TestNode::start().await?;
     let current_key = k256::SecretKey::from(l1.dev_signer().credential());
     let old_key = k256::SecretKey::from_slice(&[0x42; 32])?;
@@ -3071,8 +3066,6 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
     // bounced back to the sender. Instead, call the portal directly and wait
     // for the sender's L1 balance to be restored.
     {
-        use tempo_contracts::precompiles::ITIP20;
-
         let portal =
             tempo_contracts::zones::ZonePortal::new(portal_address, depositor.l1_provider());
 
@@ -3145,7 +3138,6 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
 /// NOTE: The T2 hardfork must be active on L1 for compound policies and
 /// directional authorization roles to work.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -3165,8 +3157,6 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
 
     // Verify on L1: Alice is NOT authorized as sender
     {
-        use tempo_contracts::precompiles::ITIP403Registry;
-        use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
         let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, l1.provider());
         let authorized = registry
             .isAuthorizedSender(compound_policy_id, alice)
@@ -3182,24 +3172,30 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
-    // --- Step 4: Deposit to Alice via the dev account ---
+    // Opt the zone into transfers so the rejection below comes from the sender blacklist.
+    let opt_in_block = l1
+        .set_transfers_enabled_on_portal(portal_address, true)
+        .await?;
+    zone.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
+        .await?;
+
+    // --- Step 4: Deposit to Alice via the admin account ---
     // Alice is blacklisted as a sender, so she can't transfer pathUSD on L1
-    // herself. The dev account deposits on her behalf (recipient = allow-all).
+    // herself. The admin, an allowed portal account, deposits on her behalf
+    // (recipient = allow-all).
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD
     {
-        use tempo_contracts::{precompiles::ITIP20, zones::ZonePortal};
-
-        let dev_provider = l1.dev_provider();
-        ITIP20::new(PATH_USD_ADDRESS, &dev_provider)
+        let admin_provider = l1.admin_provider();
+        ITIP20::new(PATH_USD_ADDRESS, &admin_provider)
             .approve(portal_address, U256::MAX)
             .send()
             .await?
             .get_receipt()
             .await?;
 
-        let portal = ZonePortal::new(portal_address, &dev_provider);
+        let portal = ZonePortal::new(portal_address, &admin_provider);
         let (key_index, encrypted) = l1
-            .encrypt_deposit_for_portal(portal_address, l1.dev_address(), alice, B256::ZERO)
+            .encrypt_deposit_for_portal(portal_address, l1.admin_address(), alice, B256::ZERO)
             .await?;
         let receipt = portal
             .deposit(
@@ -3239,10 +3235,14 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
         .transfer(bob, U256::from(200_000u128))
         .from(alice)
         .call()
-        .await;
-    assert!(
-        transfer.is_err(),
-        "transfer simulation from blacklisted sender should revert"
+        .await
+        .expect_err("transfer simulation from blacklisted sender should revert");
+    assert_eq!(
+        transfer.as_revert_data().unwrap(),
+        alloy_sol_types::SolError::abi_encode(
+            &tempo_contracts::precompiles::ITIP20::PolicyForbids {}
+        ),
+        "transfer must be rejected by the sender policy"
     );
 
     // Bob should have zero balance
@@ -3290,7 +3290,6 @@ async fn test_deposit_to_blacklisted_recipient_is_accepted_on_l1() -> eyre::Resu
     let depositor_provider = l1.provider_with_signer(depositor_signer);
 
     // Approve the portal to spend pathUSD
-    use tempo_contracts::precompiles::ITIP20;
     ITIP20::new(PATH_USD_ADDRESS, &depositor_provider)
         .approve(portal_address, U256::MAX)
         .send()
@@ -3299,7 +3298,6 @@ async fn test_deposit_to_blacklisted_recipient_is_accepted_on_l1() -> eyre::Resu
         .await?;
 
     // The portal cannot inspect the encrypted recipient, so this is accepted on L1.
-    use tempo_contracts::zones::ZonePortal;
     let portal = ZonePortal::new(portal_address, &depositor_provider);
     let (key_index, encrypted) = l1
         .encrypt_deposit_for_portal(portal_address, depositor, blacklisted_recipient, B256::ZERO)

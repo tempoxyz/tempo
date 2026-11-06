@@ -33,9 +33,11 @@ tempo-precompiles.workspace = true
 tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-evm.workspace = true
+antithesis_sdk = { workspace = true, optional = true }
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
+tempo-corpus = { workspace = true, optional = true }
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",
@@ -137,9 +139,23 @@ required-features = ["localnet"]
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
-fuzz = ["tempo-precompiles/fuzz", "reth-db/dst", "reth-trie/dst"]
+# Report Antithesis SDK assertions. Without it the assertions and their details are compiled out.
+fuzz = ["fuzz-execution", "tempo-consensus/fuzz"]
+# Antithesis SDK assertions without the consensus ones, for nodes where consensus never runs
+# (`--dev`), whose consensus assertions would otherwise be reported as never reached.
+fuzz-execution = [
+	"dep:antithesis_sdk",
+	"antithesis_sdk/full",
+	"tempo-node/fuzz",
+	"tempo-precompiles/fuzz",
+	"reth-db/fuzz",
+	"reth-trie/fuzz",
+]
 
 localnet = ["dep:nix"]
+
+# Historical execution corpus commands (`tempo corpus fill/replay`).
+corpus = ["dep:tempo-corpus"]
 
 asm-keccak = [
 	"alloy/asm-keccak",

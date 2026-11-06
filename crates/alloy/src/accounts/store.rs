@@ -2500,7 +2500,7 @@ fn writable_bigint(value: U256) -> String {
 }
 
 fn writable_b256(value: B256) -> String {
-    writable_bigint(U256::from_be_bytes(value.0))
+    writable_bigint(value.into())
 }
 
 fn writable_signature(
@@ -3142,19 +3142,16 @@ fn persisted_scopes_to_call_scopes(
             return Err(PersistedKeyError::RecipientsWithoutSelector);
         }
 
-        let index = match grouped
+        let index = grouped
             .iter()
             .position(|candidate| candidate.target == scope.address)
-        {
-            Some(index) => index,
-            None => {
+            .unwrap_or_else(|| {
                 grouped.push(CallScope {
                     target: scope.address,
                     selector_rules: Vec::new(),
                 });
                 grouped.len() - 1
-            }
-        };
+            });
         let entry = &mut grouped[index];
         let Some(selector) = scope.selector else {
             continue;

@@ -1,5 +1,6 @@
-# Zone test image: the Tempo L1 node, the zone node built with SDK assertions enabled,
-# the provisioning tools and the scripts docker-compose.yaml runs.
+# Zone test image: the Tempo L1 node and the zone node built with SDK assertions enabled (the L1
+# without the consensus ones, since it runs --dev and never starts consensus), the provisioning
+# tools, the scripts docker-compose.yaml runs and the test template.
 #
 # Build from the repository root (requires the crates/zones/contracts/lib submodules):
 #   docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
@@ -35,7 +36,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --locked --profile ${RUST_PROFILE} \
         -p tempo -p tempo-zone -p tempo-xtask \
         --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask \
-        --features tempo-zone/fuzz \
+        --features tempo/fuzz-execution,tempo-zone/fuzz \
     && mkdir -p /out \
     && cp target/${RUST_PROFILE}/tempo target/${RUST_PROFILE}/tempo-zone \
         target/${RUST_PROFILE}/tempo-xtask target/${RUST_PROFILE}/tempo-zone-xtask /out/
@@ -73,6 +74,9 @@ COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
 COPY zones/antithesis/scripts/ /opt/zones/
+# workload.sh installs the test template in /opt/antithesis/test, so only the workload
+# container has one; see zones/antithesis/README.md.
+COPY --chmod=755 zones/antithesis/test/ /opt/zones/antithesis-test/
 
 ENV RUST_BACKTRACE=full
 WORKDIR /app

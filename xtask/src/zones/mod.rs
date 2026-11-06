@@ -1,6 +1,7 @@
 //! xtask is a Swiss army knife of tools that help with running and testing tempo.
 use crate::{
     admin::Admin,
+    antithesis::Antithesis,
     benchmark_results::BenchmarkResults,
     check_abi::CheckAbi,
     configure_benchmark_fees::ConfigureBenchmarkFees,
@@ -13,7 +14,10 @@ use crate::{
     generate_p2p_key::GenerateP2pKey,
     generate_zone_genesis::GenerateZoneGenesis,
     install_reference_zone_factory::InstallReferenceZoneFactory,
-    portal_access::{EnableToken, SetAccessMode, SetAllowedAccount, SetGateway, SetGatewayMode},
+    portal_access::{
+        EnableToken, SetAccessMode, SetAllowedAccount, SetGateway, SetGatewayMode,
+        SetTransfersEnabled,
+    },
     portal_pause::PausePortal,
     set_encryption_key::SetEncryptionKey,
     spam_deposits::SpamDeposits,
@@ -26,6 +30,7 @@ use eyre::Context;
 use tempo_state_bloat::GenerateStateBloat;
 
 mod admin;
+mod antithesis;
 mod benchmark_results;
 mod check_abi;
 mod configure_benchmark_fees;
@@ -58,6 +63,7 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
         Action::Admin(args) => args.run().await.wrap_err("admin command failed"),
+        Action::Antithesis(args) => args.run().await.wrap_err("Antithesis test command failed"),
         Action::BenchmarkResults(args) => args.run().wrap_err("failed to render benchmark results"),
         Action::CheckAbi(args) => args.run().wrap_err("failed ABI alignment check"),
         Action::ConfigureBenchmarkFees(args) => args
@@ -91,6 +97,10 @@ async fn main() -> eyre::Result<()> {
         }
         Action::SetGateway(args) => args.run().await.wrap_err("failed to update gateway role"),
         Action::SetGatewayMode(args) => args.run().await.wrap_err("failed to set gateway mode"),
+        Action::SetTransfersEnabled(args) => args
+            .run()
+            .await
+            .wrap_err("failed to set zone transfer opt-in"),
         Action::SetEncryptionKey(args) => args.run().await.wrap_err("failed to set encryption key"),
         Action::SpamDeposits(args) => args.run().await.wrap_err("failed to spam deposits"),
         Action::VerifyClosedLoop(args) => {
@@ -121,6 +131,7 @@ struct Args {
 #[derive(Debug, clap::Subcommand)]
 enum Action {
     Admin(Admin),
+    Antithesis(Antithesis),
     BenchmarkResults(BenchmarkResults),
     CheckAbi(CheckAbi),
     ConfigureBenchmarkFees(ConfigureBenchmarkFees),
@@ -139,6 +150,7 @@ enum Action {
     SetAllowedAccount(SetAllowedAccount),
     SetGateway(SetGateway),
     SetGatewayMode(SetGatewayMode),
+    SetTransfersEnabled(SetTransfersEnabled),
     SetEncryptionKey(SetEncryptionKey),
     SpamDeposits(SpamDeposits),
     VerifyClosedLoop(VerifyClosedLoop),

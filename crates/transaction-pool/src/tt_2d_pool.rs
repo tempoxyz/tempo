@@ -304,6 +304,10 @@ impl AA2dPool {
                 }
 
                 let replaced = entry.insert(Arc::clone(&tx));
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "AA 2D pool replaces a transaction at the same nonce"
+                );
                 self.remove_from_subpool(replaced.is_pending(), replaced.inner.size());
                 self.queued_count += 1;
                 Some(replaced)
@@ -1205,6 +1209,10 @@ impl AA2dPool {
                 } else {
                     // Gap detected - mark this and all remaining transactions as non-pending
                     if existing_tx.set_pending(false) {
+                        #[cfg(feature = "fuzz")]
+                        antithesis_sdk::assert_reachable!(
+                            "AA 2D pool demotes a pending transaction when its on-chain nonce moves back"
+                        );
                         newly_queued += 1;
                         newly_queued_size += existing_tx.inner.size();
                         let key = EvictionKey::with_base_fee(
@@ -1282,6 +1290,10 @@ impl AA2dPool {
         }
 
         if !removed.is_empty() {
+            #[cfg(feature = "fuzz")]
+            antithesis_sdk::assert_reachable!(
+                "AA 2D pool evicts transactions over its subpool limits"
+            );
             self.metrics.inc_removed(removed.len());
         }
 
@@ -1557,6 +1569,35 @@ impl AA2dPool {
             self.metrics.inc_removed(mined.len());
         }
         self.update_metrics();
+
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            self.by_hash.len() == self.by_id.len() + self.expiring_nonce_txs.len()
+                && self.expiring_nonce_txs.len() == self.expiring_nonce_eviction_order.len(),
+            "AA 2D pool indexes agree on its transactions after a state update",
+            &serde_json::json!({
+                "by_hash": self.by_hash.len(),
+                "by_id": self.by_id.len(),
+                "expiring_nonce": self.expiring_nonce_txs.len(),
+                "expiring_nonce_eviction_order": self.expiring_nonce_eviction_order.len(),
+            })
+        );
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            self.pending_count == self.pending_eviction_order.len() + self.expiring_nonce_txs.len()
+                && self.queued_count == self.queued_eviction_order.len()
+                && self.by_id.len()
+                    == self.pending_eviction_order.len() + self.queued_eviction_order.len(),
+            "AA 2D pool pending and queued counts match its eviction orders after a state update",
+            &serde_json::json!({
+                "pending_count": self.pending_count,
+                "queued_count": self.queued_count,
+                "pending_eviction_order": self.pending_eviction_order.len(),
+                "queued_eviction_order": self.queued_eviction_order.len(),
+                "expiring_nonce": self.expiring_nonce_txs.len(),
+                "by_id": self.by_id.len(),
+            })
+        );
 
         (promoted, mined, discarded)
     }
@@ -2597,6 +2638,7 @@ mod tests {
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
+    use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
     use std::collections::HashSet;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_primitives::{
@@ -4618,8 +4660,6 @@ mod tests {
 
     #[test]
     fn test_best_transactions_mark_invalid() {
-        use reth_primitives_traits::transaction::error::InvalidTransactionError;
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
@@ -6017,8 +6057,6 @@ mod tests {
 
     #[test]
     fn test_best_transactions_mark_invalid_skips_sequence() {
-        use reth_primitives_traits::transaction::error::InvalidTransactionError;
-
         let mut pool = AA2dPool::default();
         let sender1 = Address::random();
         let sender2 = Address::random();
@@ -6446,8 +6484,6 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_with_nonce_precompile_slot() {
-        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let nonce_key = U256::ONE;
@@ -6510,8 +6546,6 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_creates_gap_demotion() {
-        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let nonce_key = U256::ONE;
@@ -6572,8 +6606,6 @@ mod tests {
 
     #[test]
     fn on_state_updates_returns_promotions_before_discard() {
-        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
-
         let mut pool = AA2dPool::new(AA2dPoolConfig {
             pending_limit: SubPoolLimit {
                 max_txs: 1,
@@ -7236,8 +7268,6 @@ mod tests {
 
     #[test]
     fn on_state_updates_removes_included_expiring_nonce_from_eviction_index() {
-        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 

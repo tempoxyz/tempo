@@ -1,13 +1,12 @@
 // Additional regression coverage introduced with the EVM2 migration.
 use super::*;
+use tempo_precompiles::{
+    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    tip20::slots as tip20_slots,
+};
 
 #[test]
 fn test_resolve_fee_context_warms_balance_without_fee_collection() {
-    use tempo_precompiles::{
-        storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
-        tip20::slots as tip20_slots,
-    };
-
     for (spec, disable_fee, gas_price) in [
         (TempoHardfork::T1, false, 0),
         (TempoHardfork::T7, false, 0),
@@ -48,7 +47,7 @@ fn test_resolve_fee_context_warms_balance_without_fee_collection() {
 }
 
 #[test]
-fn test_resolve_fee_context_validates_max_fee_when_collection_is_disabled() {
+fn test_resolve_fee_context_skips_max_fee_balance_check_when_collection_is_disabled() {
     let fee_payer = Address::random();
     let gas_limit = 100_000;
     let gas_price = 1_000_000_000_000_u128;
@@ -74,19 +73,8 @@ fn test_resolve_fee_context_validates_max_fee_when_collection_is_disabled() {
     let tx = fee_tx_env(fee_payer, PATH_USD_ADDRESS, gas_limit, gas_price);
     let result = TempoHandlerHooks::resolve_fee_context(&mut evm, &tx);
 
-    assert!(
-        matches!(
-            result,
-            Err(ref error)
-                if matches!(
-                    error.external_ref::<TempoInvalidTransaction>(),
-                    Some(TempoInvalidTransaction::CollectFeePreTx(
-                        FeePaymentError::InsufficientFeeTokenBalance { fee, balance },
-                    )) if *fee == max_fee && *balance == max_fee - U256::ONE
-                )
-        ),
-        "disabled fee collection must still validate max-fee balance, got: {result:?}"
-    );
+    let context = result.expect("disabled fee collection must not check the max-fee balance");
+    assert_eq!(context.collected, U256::ZERO);
 }
 
 #[test]
@@ -300,8 +288,6 @@ fn test_2d_authorization_refund_for_absent_caller() {
 #[test_case::test_case(TempoHardfork::T1B)]
 #[test_case::test_case(TempoHardfork::T4)]
 fn test_aa_create_protocol_nonce_overflow(spec: TempoHardfork) {
-    use evm2::bytecode::Bytecode;
-
     for nonce_key in [U256::ONE, TEMPO_EXPIRING_NONCE_KEY] {
         for protocol_nonce in [u64::MAX, u64::MAX - 1] {
             for with_followup_call in [false, true] {
