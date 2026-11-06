@@ -104,11 +104,21 @@ pub async fn run_consensus_stack(
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
     let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
+    let max_message_size = network::max_message_size(
+        config
+            .max_peers_per_set
+            .try_into()
+            .wrap_err("consensus.max-peers-per-set must fit in u32")?,
+    );
 
-    let (mut network, oracle) =
-        instantiate_network(&context, &config, signing_key.clone().into_inner())
-            .await
-            .wrap_err("failed to start network")?;
+    let (mut network, oracle) = instantiate_network(
+        &context,
+        &config,
+        signing_key.clone().into_inner(),
+        max_message_size,
+    )
+    .await
+    .wrap_err("failed to start network")?;
 
     let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT);
     let certificates = network.register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT);
@@ -134,7 +144,7 @@ pub async fn run_consensus_stack(
 
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
-        max_message_size: config.max_message_size_bytes,
+        max_message_size,
         verification_mode: config.verification_mode,
 
         time_to_propose: config.wait_for_proposal.into_duration(),
@@ -262,6 +272,7 @@ async fn instantiate_network(
     context: &commonware_runtime::tokio::Context,
     config: &Args,
     signing_key: PrivateKey,
+    max_message_size: u32,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, SakeCups<PrivateKey, ChaCha20Poly1305>>,
     lookup::Oracle<PublicKey>,
@@ -277,7 +288,7 @@ async fn instantiate_network(
             config.handshake_stale_after.into_duration(),
         ),
         listen: config.listen_address,
-        max_message_size: config.max_message_size_bytes,
+        max_message_size,
         mailbox_size: config.mailbox_size,
         send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,

@@ -24,7 +24,7 @@ use tokio::sync::oneshot;
 mod actor;
 mod ingress;
 
-pub(crate) use actor::Actor;
+pub(crate) use actor::{Actor, max_message_size};
 pub(crate) use ingress::Mailbox;
 
 use crate::{

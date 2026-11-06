@@ -14,15 +14,41 @@
 //! To avoid this waste, commonware either needs to change the assert! into a
 //! graceful rejection (so that the token can be reclaimed), or allow performing
 //! the size check before.
-use std::time::SystemTime;
+use std::{num::NonZeroU32, time::SystemTime};
 
 use commonware_actor::{Feedback, Unreliable};
+use commonware_consensus::{
+    marshal::{self, standard::Standard},
+    simplex::{self, scheme::bls12381_threshold::vrf::Scheme},
+};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_p2p::{Channel, CheckedSender, LimitedSender, Recipients};
 use commonware_runtime::{
     IoBufs, Metrics,
     telemetry::metrics::{Counter, MetricsExt as _},
 };
 use tracing::warn;
+
+use crate::{
+    consensus::{Digest, block::Block},
+    dkg,
+};
+
+/// Returns the p2p payload limit admitting every message consensus sends for committees of at
+/// most `max_participants`.
+///
+/// Finalized and notarized backfill responses carry a certificate with a full block, so the limit
+/// exceeds the largest block.
+pub(crate) fn max_message_size(max_participants: NonZeroU32) -> u32 {
+    commonware_p2p::max_message_size(&[
+        simplex::max_payload_size::<Scheme<PublicKey, MinSig>, Digest>(max_participants.get()),
+        marshal::max_payload_size::<Standard<Block>, Scheme<PublicKey, MinSig>>(
+            max_participants.get(),
+            &(),
+        ),
+        dkg::manager::max_message_size(max_participants),
+    ])
+}
 
 /// A p2p sender that rejects messages larger than the configured network limit.
 #[derive(Clone)]

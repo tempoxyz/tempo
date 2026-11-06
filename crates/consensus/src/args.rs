@@ -15,8 +15,6 @@ use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_payload_types::estimator::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
 
-const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
-    reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Capacity of the shared queue carrying gossiped frames into consensus.
@@ -133,9 +131,6 @@ pub struct Args {
     /// metrics.
     #[arg(long = "consensus.metrics-address", default_value = "127.0.0.1:8001")]
     pub metrics_address: SocketAddr,
-
-    #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
-    pub max_message_size_bytes: u32,
 
     /// The number of worker threads assigned to consensus.
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]

@@ -3,7 +3,9 @@ use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
 use bytes::BufMut;
-use commonware_codec::{Decode as _, Encode as _, EncodeSize, Read, ReadExt as _, Write};
+use commonware_codec::{
+    Decode as _, Encode as _, EncodeSize, FixedSize as _, Read, ReadExt as _, Write,
+};
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _,
     marshal::{Update, core::DigestFallback},
@@ -72,6 +74,12 @@ pub(crate) enum Message {
     Dealer(DealerPubMsg<MinSig>, DealerPrivMsg),
     /// A player acknowledgment sent back to a dealer.
     Ack(PlayerAck<PublicKey>),
+}
+
+/// Returns an upper bound on the encoded size of a [`Message`] for at most `max_participants`.
+pub(crate) fn max_message_size(max_participants: NonZeroU32) -> usize {
+    // The tag byte, then the dealer message; an ack is a lone signature and always smaller.
+    1 + DealerPubMsg::<MinSig>::max_encode_size(max_participants) + DealerPrivMsg::SIZE
 }
 
 impl Write for Message {

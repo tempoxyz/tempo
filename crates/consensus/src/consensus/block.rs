@@ -16,6 +16,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_consensus::ConsensusError;
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
@@ -179,6 +180,12 @@ impl Read for Block {
             return Err(commonware_codec::Error::EndOfBuffer);
         }
         let execution_block_encoded_size = header.length_with_payload();
+        if execution_block_encoded_size > MAX_RLP_BLOCK_SIZE {
+            return Err(commonware_codec::Error::Invalid(
+                "Block",
+                "execution block exceeds MAX_RLP_BLOCK_SIZE",
+            ));
+        }
         let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
         let inner = <tempo_primitives::Block as reth_primitives_traits::Block>::decode_sealed(
@@ -192,6 +199,12 @@ impl Read for Block {
         Self::try_from_execution_block_with_encoded_cache(inner, execution_block_encoded).map_err(
             |error| commonware_codec::Error::Wrapped("validating execution block", error.into()),
         )
+    }
+}
+
+impl commonware_consensus::BoundedBlock for Block {
+    fn max_encode_size(_cfg: &Self::Cfg) -> usize {
+        MAX_RLP_BLOCK_SIZE
     }
 }
 
@@ -365,6 +378,31 @@ mod tests {
         let encoded = decoded.encode();
 
         assert_eq!(encoded.as_ref(), block_bytes.as_slice());
+    }
+
+    #[test]
+    fn read_rejects_block_larger_than_max_rlp_block_size() {
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: MAX_RLP_BLOCK_SIZE,
+        }
+        .encode(&mut encoded);
+        encoded.resize(encoded.len() + MAX_RLP_BLOCK_SIZE, 0);
+
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                commonware_codec::Error::Invalid(
+                    "Block",
+                    "execution block exceeds MAX_RLP_BLOCK_SIZE"
+                )
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
