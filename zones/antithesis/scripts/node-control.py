@@ -21,6 +21,14 @@ OFFLINE_TIMEOUT = 120
 RECOVERY_TIMEOUT = 120
 
 
+class Rejected(RuntimeError):
+    """No offline command ran; this attempt supplies no safety result."""
+
+
+class Incomplete(RuntimeError):
+    """Recovery was not observed; only completion coverage is unmet."""
+
+
 def event(state, operation, **fields):
     record = dict(state=state, operation=operation, **fields)
     print(json.dumps(record), flush=True)
@@ -101,7 +109,7 @@ class Supervisor:
         except subprocess.TimeoutExpired:
             self.kill_group(child, signal.SIGKILL)
             child.wait()
-            raise RuntimeError('graceful stop timed out; killed, maintenance rejected')
+            raise TimeoutError('graceful stop timed out; killed, maintenance rejected')
         finally:
             # A node must not leave its own subprocesses behind, even after exiting.
             self.kill_group(child, signal.SIGKILL)
@@ -150,15 +158,21 @@ class Supervisor:
     def recover(self, before):
         deadline = time.monotonic() + RECOVERY_TIMEOUT
         while time.monotonic() < deadline:
-            self.alive()
+            if self.shutting_down:
+                raise Incomplete('recovery interrupted by shutdown')
+            if self.node is None or self.node.poll() is not None:
+                raise Incomplete('node unavailable during recovery')
             try:
                 finalized = self.block('finalized')
-                if finalized[0] >= before[0] and self.block(hex(before[0])) == before:
+                if finalized[0] >= before[0]:
+                    restored = self.block(hex(before[0]))
+                    if restored != before:
+                        raise RuntimeError('pre-maintenance finalized hash changed')
                     return
             except (OSError, ValueError, KeyError, TypeError):
                 pass
             time.sleep(0.25)
-        raise RuntimeError('pre-maintenance finalized height/hash not restored within 120s')
+        raise Incomplete('recovery not observed within 120s')
 
     def maintenance(self, request):
         operation = request.get('operation')
@@ -178,12 +192,15 @@ class Supervisor:
         self.armed = True
         armed = report(event('armed', operation, finalized=before[0], latest=latest, target=target))
         if armed['state'] != 'armed':
-            raise RuntimeError('could not report armed maintenance')
+            raise Rejected('could not report armed maintenance')
         # Never enter offline mode unless this exact child stopped gracefully.
         error = None
         try:
             self.alive()
-            self.stop(self.node)
+            try:
+                self.stop(self.node)
+            except TimeoutError as exc:
+                raise Rejected(str(exc)) from exc
             self.node = None
             if self.shutting_down:
                 raise RuntimeError('supervisor shutting down')
@@ -258,7 +275,9 @@ class Supervisor:
                             result = self.maintenance(request)
                         except Exception as exc:
                             op = request.get('operation', 'invalid') if isinstance(request, dict) else 'invalid'
-                            state = 'interrupted' if self.shutting_down else ('failed' if self.armed else 'rejected')
+                            state = ('interrupted' if self.shutting_down else
+                                     'incomplete' if isinstance(exc, Incomplete) else
+                                     'rejected' if isinstance(exc, Rejected) or not self.armed else 'failed')
                             result = event(state, op, error=str(exc))
                         result = report(result)
                         try:
@@ -270,7 +289,7 @@ class Supervisor:
                 for child in (self.offline, self.node):
                     try:
                         self.stop(child)
-                    except RuntimeError:
+                    except (RuntimeError, TimeoutError):
                         pass
                 while True:
                     try:

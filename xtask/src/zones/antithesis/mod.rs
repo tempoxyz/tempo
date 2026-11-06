@@ -152,6 +152,7 @@ enum MaintenanceOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum MaintenanceOutcome {
     Armed,
+    Incomplete,
     Recovered,
     Failed,
 }
@@ -169,11 +170,11 @@ impl Antithesis {
             let details = json!({ "details": details });
             let messages = match operation {
                 MaintenanceOperation::RepairTrie => (
-                    "Offline trie check is clean and recovers",
+                    "Offline trie check reports no correctness failure",
                     "Offline trie check completes and recovers",
                 ),
                 MaintenanceOperation::Unwind => (
-                    "Offline unwind restores finalized history",
+                    "Offline unwind preserves finalized history",
                     "Offline unwind executes and recovers",
                 ),
             };
