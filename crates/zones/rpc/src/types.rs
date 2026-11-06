@@ -489,7 +489,39 @@ pub fn to_raw<T: serde::Serialize>(value: &T) -> Result<Box<RawValue>, JsonRpcEr
     serde_json::value::to_raw_value(value).map_err(|e| JsonRpcError::internal(e.to_string()))
 }
 
+/// Like [`to_raw`], but fails with [`JsonRpcError::response_too_large`] once the
+/// serialized value exceeds `max_len` bytes, so oversized results are never fully buffered.
+pub fn to_raw_bounded<T: serde::Serialize>(
+    value: &T,
+    max_len: usize,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let mut writer = crate::server::BoundedWriter::new(max_len);
+    serde_json::to_writer(&mut writer, value)
+        .map_err(|_| JsonRpcError::response_too_large(max_len))?;
+    let json =
+        String::from_utf8(writer.into_bytes()).expect("serde_json only emits valid UTF-8 bytes");
+    RawValue::from_string(json).map_err(|e| JsonRpcError::internal(e.to_string()))
+}
+
 /// Shorthand for wrapping any `Display` error into a [`JsonRpcError::internal`].
 pub fn internal(e: impl std::fmt::Display) -> JsonRpcError {
     JsonRpcError::internal(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_raw_bounded_rejects_oversized_values() {
+        let value = vec![U256::MAX; 4];
+        let raw = to_raw(&value).unwrap();
+
+        assert_eq!(
+            to_raw_bounded(&value, raw.get().len()).unwrap().get(),
+            raw.get()
+        );
+        let err = to_raw_bounded(&value, raw.get().len() - 1).unwrap_err();
+        assert_eq!(err.code, -32008);
+    }
 }
