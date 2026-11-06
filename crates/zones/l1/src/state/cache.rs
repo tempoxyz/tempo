@@ -19,7 +19,7 @@
 //! - The [`L1StateProvider`](super::provider::L1StateProvider) writes RPC-fetched values on
 //!   cache miss, tagged with the block number that was requested.
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, map::AddressSet};
 use derive_more::Deref;
 use parking_lot::Mutex;
 use schnellru::{Limiter, LruMap};
@@ -194,6 +194,23 @@ impl L1StateCacheInner {
         self.invalidations.clear();
         self.invalidation_count = 0;
         self.coverage = floor..=floor;
+    }
+
+    /// Returns every address with a mutation barrier at a height in `blocks`, such as an account
+    /// whose Tempo commitment changed there, or `None` when receipt processing has not recorded
+    /// the barriers of every block in `blocks`.
+    pub fn mutated_addresses(&self, blocks: RangeInclusive<u64>) -> Option<AddressSet> {
+        // The cache resets at its coverage floor without recording that block's barriers.
+        if blocks.start() <= self.coverage.start() || blocks.end() > self.coverage.end() {
+            return None;
+        }
+        Some(
+            self.invalidations
+                .iter()
+                .filter(|(_, heights)| heights.range(blocks.clone()).next().is_some())
+                .map(|(address, _)| *address)
+                .collect(),
+        )
     }
 
     /// Records mutation barriers and publishes receipt coverage for one finalized block.
@@ -431,6 +448,28 @@ mod tests {
         cache.invalidate_and_set_anchor(13, [account]);
         assert_eq!(cache.get_commitment(account, 12), Some(B256::ZERO));
         assert_eq!(cache.get_commitment(account, 13), None);
+    }
+
+    #[test]
+    fn mutated_addresses_require_recorded_barriers() {
+        let mut cache = L1StateCacheInner::new();
+        let (account, other) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+        cache.invalidate_and_set_anchor(1, [other]);
+        cache.invalidate_and_set_anchor(2, [account]);
+        cache.invalidate_and_set_anchor(3, []);
+
+        assert_eq!(
+            cache.mutated_addresses(2..=3),
+            Some(AddressSet::from_iter([account]))
+        );
+        assert_eq!(cache.mutated_addresses(3..=3), Some(AddressSet::default()));
+        assert_eq!(cache.mutated_addresses(3..=4), None);
+
+        // A reset at block 5 records none of its barriers.
+        cache.invalidate_and_set_anchor(5, [account]);
+        cache.invalidate_and_set_anchor(6, []);
+        assert_eq!(cache.mutated_addresses(5..=6), None);
+        assert_eq!(cache.mutated_addresses(6..=6), Some(AddressSet::default()));
     }
 
     #[test]
