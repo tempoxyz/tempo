@@ -97,8 +97,8 @@ mod auth_tokens;
 mod network;
 
 pub(crate) use auth_tokens::{
-    build_signed_token_blob, now_secs, sign_keychain_signature, sign_p256_signature,
-    sign_webauthn_signature,
+    build_signed_token_blob, now_secs, p256_public_key, sign_keychain_signature,
+    sign_p256_signature, sign_webauthn_signature,
 };
 pub(crate) use network::{P2pChaosNetwork, TcpChaosProxy};
 
@@ -4765,8 +4765,19 @@ impl RedactedRpcL1TestCtx {
 }
 
 impl RedactedRpcTestCtx {
+    /// Seeds the zero Tempo commitment of a P256 or WebAuthn token signer, which zone RPC
+    /// authorization reads to reject retired roots.
+    fn seed_p256_signer(&self, signing_key: &P256SigningKey) {
+        let (x, y) = p256_public_key(signing_key);
+        self.fixture.seed_no_commitment(
+            tempo_primitives::transaction::tt_signature::derive_p256_address(&x, &y),
+        );
+    }
+
     /// Build an auth token for the sequencer.
     pub(crate) fn sequencer_token(&self) -> String {
+        self.fixture
+            .seed_no_commitment(self.sequencer_signer.address());
         build_auth_token(
             &self.sequencer_signer,
             self.config.zone_id,
@@ -4776,16 +4787,19 @@ impl RedactedRpcTestCtx {
 
     /// Build an auth token for a regular (non-sequencer) user.
     pub(crate) fn user_token(&self, signer: &alloy_signer_local::PrivateKeySigner) -> String {
+        self.fixture.seed_no_commitment(signer.address());
         build_auth_token(signer, self.config.zone_id, self.config.chain_id)
     }
 
     /// Build a P256 auth token for a non-sequencer caller.
     pub(crate) fn p256_token(&self, signing_key: &P256SigningKey) -> String {
+        self.seed_p256_signer(signing_key);
         build_p256_auth_token(signing_key, self.config.zone_id, self.config.chain_id)
     }
 
     /// Build a WebAuthn auth token for a non-sequencer caller.
     pub(crate) fn webauthn_token(&self, signing_key: &P256SigningKey) -> String {
+        self.seed_p256_signer(signing_key);
         build_webauthn_auth_token(signing_key, self.config.zone_id, self.config.chain_id, None)
     }
 
@@ -4795,11 +4809,37 @@ impl RedactedRpcTestCtx {
         signing_key: &P256SigningKey,
         challenge_digest: B256,
     ) -> String {
+        self.seed_p256_signer(signing_key);
         build_webauthn_auth_token(
             signing_key,
             self.config.zone_id,
             self.config.chain_id,
             Some(challenge_digest),
+        )
+    }
+
+    /// Build an auth token signed by the owner quorum of the configurable account whose
+    /// version-zero configuration has `signing_key` as its sole owner, returning the token and
+    /// the account.
+    pub(crate) fn configurable_account_token(
+        &self,
+        signing_key: &P256SigningKey,
+    ) -> (String, Address) {
+        let now = now_secs();
+        let (fields, digest) = zone_node::rpc::auth::build_token_fields(
+            self.config.zone_id,
+            self.config.chain_id,
+            now,
+            now + 600,
+        );
+        let (signature, account, _) =
+            auth_tokens::sign_configurable_account_signature(digest, signing_key)
+                .expect("configurable account signing failed");
+        // Authorization reads the account's commitment from Tempo.
+        self.fixture.seed_no_commitment(account);
+        (
+            auth_tokens::build_token_with_signature(signature, &fields),
+            account,
         )
     }
 
@@ -4810,13 +4850,17 @@ impl RedactedRpcTestCtx {
         signing_key: &P256SigningKey,
         version: u8,
     ) -> (String, Address) {
-        build_keychain_auth_token(
+        let (token, key_id) = build_keychain_auth_token(
             signing_key,
             root_account,
             version,
             self.config.zone_id,
             self.config.chain_id,
-        )
+        );
+        // AccountKeychain lookups load the root account; authorization reads the key ID.
+        self.fixture.seed_no_commitment(root_account);
+        self.fixture.seed_no_commitment(key_id);
+        (token, key_id)
     }
 
     /// Send an authenticated JSON-RPC call to the redacted RPC server.
@@ -5073,21 +5117,25 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
 
 /// Start a zone with a redacted RPC server backed by a real L1 + ZonePortal.
 pub(crate) async fn start_zone_with_redacted_rpc_l1() -> eyre::Result<RedactedRpcL1TestCtx> {
-    start_zone_with_redacted_rpc_l1_inner().await
+    start_zone_with_redacted_rpc_l1_with_encryption(Vec::new()).await
 }
 
 /// Start a zone with a redacted RPC server backed by a real L1 and a portal
-/// with a registered encryption key.
-pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption()
--> eyre::Result<RedactedRpcL1TestCtx> {
-    start_zone_with_redacted_rpc_l1_inner().await
-}
-
-async fn start_zone_with_redacted_rpc_l1_inner() -> eyre::Result<RedactedRpcL1TestCtx> {
+/// with a registered encryption key, whose node also holds `additional_decryption_keys` for keys
+/// the portal rotates to.
+pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption(
+    additional_decryption_keys: Vec<SecretKey>,
+) -> eyre::Result<RedactedRpcL1TestCtx> {
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
 
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1_with_decryption_keys(
+        l1.http_url(),
+        l1.ws_url(),
+        portal_address,
+        additional_decryption_keys,
+    )
+    .await?;
 
     zone.wait_for_l2_tempo_finalized(0, DEFAULT_TIMEOUT).await?;
 

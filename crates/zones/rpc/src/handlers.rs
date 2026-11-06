@@ -29,6 +29,10 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// authorization for a recovered access key.
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo>;
 
+    /// `ConfigurableAccount.getConfigCommitment(account)` — returns the TIP-1108 commitment
+    /// that zone execution reads for `account` at the current anchor, zero when it has none.
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, B256>;
+
     /// `eth_blockNumber` — returns the latest block number.
     fn block_number(&self) -> BoxFut<'_>;
 
@@ -759,6 +763,10 @@ mod tests {
             Box::pin(async { Err(eyre::eyre!("not implemented")) })
         }
 
+        fn get_config_commitment(&self, _account: Address) -> BoxEyreFut<'_, B256> {
+            Box::pin(async { Err(eyre::eyre!("not implemented")) })
+        }
+
         stub!(block_number);
         stub!(chain_id);
         stub!(net_version);
@@ -837,7 +845,7 @@ mod tests {
         AuthContext {
             caller: Address::repeat_byte(0xaa),
             expires_at: 1_700_000_000,
-            keychain_key_id: None,
+            signer: crate::auth::AuthSigner::Root,
         }
     }
 

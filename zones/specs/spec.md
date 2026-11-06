@@ -1018,6 +1018,8 @@ The RPC server rejects authorization tokens where:
 - `issuedAt > now + 60`.
 - The signature is malformed or does not verify.
 - For Keychain signatures: the signing key is not authorized, revoked, or expired in the zone's `AccountKeychain`.
+- For primitive and Keychain signatures: the signing key's address has a nonzero Tempo configuration commitment at the zone's anchor, so it is a retired root (TIP-1113).
+- For configurable-account signatures: the owners' configuration does not match the account's Tempo configuration commitment at the zone's anchor or, while the account has none, does not derive the account (TIP-1154).
 
 Requests without an authorization token receive HTTP `401`. Requests with an invalid or expired token receive HTTP `403`.
 
@@ -1032,6 +1034,7 @@ Authorization token signatures follow the same format as Tempo transaction signa
 | WebAuthn | Prefix `0x02`, variable length | P256 key via WebAuthn assertion |
 | Keychain V1 | Prefix `0x03` | Wraps inner sig + `user_address`, authenticates as root account |
 | Keychain V2 | Prefix `0x04` | Same as V1 but binds `user_address` into signing hash |
+| Configurable account | Prefix `0x05` | Owner quorum of a configurable account, authenticates as the account |
 
 Keychain keys allow session keys and scoped access keys to authenticate to the RPC with the same permissions as the root account. The zone has its own independent `AccountKeychain` instance, not mirrored from Tempo. Users must register keychain keys on the zone directly.
 
@@ -1103,7 +1106,7 @@ WebSocket connections follow the same authorization model. The authorization tok
 - `eth_subscribe("logs")`: scoped to the authenticated account using the same event filtering rules.
 - `eth_subscribe("newPendingTransactions")`: disabled.
 
-The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key.
+The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key. Likewise, it must terminate a connection within 1 second of the zone's anchor retiring its signing key, or changing the configuration commitment of its configurable-account caller.
 
 ### Zone-Specific Methods
 
