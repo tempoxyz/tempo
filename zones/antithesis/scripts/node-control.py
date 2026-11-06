@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import re
+import select
 import signal
 import socket
 import stat
@@ -215,6 +216,12 @@ class Supervisor:
                 self.stop(self.node)
             except TimeoutError as exc:
                 raise Rejected(str(exc)) from exc
+            returncode = self.node.returncode
+            event('stopped', operation, returncode=returncode)
+            if returncode > 0:
+                raise SafetyFailure('node failed during maintenance shutdown: exit ' + str(returncode))
+            if returncode not in (0, -signal.SIGTERM):
+                raise Rejected('node killed during maintenance shutdown: exit ' + str(returncode))
             self.node = None
             if self.shutting_down:
                 raise RuntimeError('supervisor shutting down')
@@ -292,6 +299,9 @@ class Supervisor:
                             request = receive(conn)
                             if not isinstance(request, dict):
                                 raise ValueError('request must be an object')
+                            # A queued client may have timed out before we accepted it.
+                            if select.select([conn], [], [], 0)[0] and not conn.recv(1, socket.MSG_PEEK):
+                                raise Rejected('maintenance client disconnected before arming')
                             result = self.maintenance(request)
                         except Exception as exc:
                             op = request.get('operation', 'invalid') if isinstance(request, dict) else 'invalid'
@@ -341,8 +351,16 @@ def main():
     request = dict(operation=args.command)
     if args.command == 'unwind':
         request['blocks'] = args.blocks
-    with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(STOP_TIMEOUT + OFFLINE_TIMEOUT + RECOVERY_TIMEOUT + 15)
+    # Never queue one custom fault behind another: the caller owns this lock
+    # through the reply, and a killed caller releases it automatically.
+    with open(args.socket + '.client.lock', 'a') as lock, socket.socket(socket.AF_UNIX) as client:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            event('rejected', args.command, error='another maintenance drill is active')
+            return 1
+        # Include both graceful-stop budgets, SDK reporting and RPC overhead.
+        client.settimeout(2 * STOP_TIMEOUT + OFFLINE_TIMEOUT + RECOVERY_TIMEOUT + 60)
         client.connect(args.socket)
         client.sendall(json.dumps(request).encode() + b'\n')
         result = receive(client, limit=64 * 1024)
