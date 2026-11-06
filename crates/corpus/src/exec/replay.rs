@@ -49,8 +49,9 @@ struct Ready {
     _reservation: OwnedSemaphorePermit,
 }
 
-/// Replays a published corpus range with `workers` execution threads. With `standalone`,
-/// only transactions with ordinals in that range are replayed, each independently.
+/// Replays a published corpus range with `workers` execution threads and passes each verified
+/// block, its input and its execution to `on_block`. With `standalone`, only transactions with
+/// ordinals in that range are replayed, each independently, and `on_block` is not called.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: Store,
@@ -61,6 +62,7 @@ pub fn run(
     workers: usize,
     standalone: Option<(u64, u64)>,
     cancellation: CancellationToken,
+    on_block: impl Fn(&Arc<Input>, &RecoveredBlock<Block>, &Executed) -> eyre::Result<()> + Sync,
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -159,8 +161,14 @@ pub fn run(
                     (0, 0, 0)
                 })
         });
-        let (config, consensus, cancellation, runtime, reader) =
-            (&config, &consensus, &cancellation, &runtime, &*reader);
+        let (config, consensus, cancellation, runtime, reader, on_block) = (
+            &config,
+            &consensus,
+            &cancellation,
+            &runtime,
+            &*reader,
+            &on_block,
+        );
         let (done_blocks, done_transactions, done_gas) =
             (&done_blocks, &done_transactions, &done_gas);
         let mut threads = Vec::new();
@@ -206,7 +214,9 @@ pub fn run(
                             )?;
                             (transactions, gas)
                         } else {
-                            verify(config, consensus, &input, &ready.cases, &ready.record)?;
+                            let (block, executed) =
+                                verify(config, consensus, &input, &ready.cases, &ready.record)?;
+                            on_block(&input, &block, &executed)?;
                             (ready.record.transactions, ready.record.gas)
                         };
                         records += 1;
@@ -628,11 +638,6 @@ fn decode_record<'a>(
         .as_ref()
         .ok_or_eyre("missing phase expectations")?;
     Ok((cases, block, phases))
-}
-
-/// A [`run_blocks`] callback that does nothing with each verified block.
-pub fn noop(_: &Arc<Input>, _: &RecoveredBlock<Block>, _: &Executed) -> eyre::Result<()> {
-    Ok(())
 }
 
 /// Verifies one published block: executes it from its record alone and checks every
