@@ -66,9 +66,10 @@ const BRIDGE_WAIT: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(500);
 /// How many leased-account candidates a driver tries before giving up for this run.
 const SENDER_CANDIDATES: usize = 16;
-/// Transfers one fanout keeps pending at once: reth's default per-sender pool limit
-/// (`--txpool.max-account-slots`).
-const FANOUT_CHUNK: u128 = 16;
+/// Transfers one fanout keeps pending at once. A follower forwards a sender's transactions to the
+/// leader in bursts of at most four per peer, so a larger chunk sent to a follower never reaches
+/// the leader.
+const FANOUT_CHUNK: u128 = 4;
 
 /// Antithesis test commands; see `zones/antithesis/README.md`.
 #[derive(Debug, clap::Parser)]
@@ -477,7 +478,7 @@ impl Context {
             .pending()
             .await?;
         let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
-        // The pool admits only FANOUT_CHUNK pending transactions per sender, so the batch goes out
+        // Only FANOUT_CHUNK transfers are pending at once, so the batch goes out
         // in chunks, each confirmed before the next.
         let mut remaining = count;
         while remaining > 0 {

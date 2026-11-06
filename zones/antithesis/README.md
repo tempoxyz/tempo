@@ -47,7 +47,7 @@ images it is given, so they must be in the image rather than copied in when a co
 | `parallel_driver_deposit` | Deposits from a funder or a new L1 account to a new or existing zone account |
 | `parallel_driver_transfer` | TIP-20 transfer inside the zone to a new or existing account |
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
-| `parallel_driver_fanout` | Funds 50 to 200 new receive-only zone accounts from one sender, 16 at a time, capped by its balance |
+| `parallel_driver_fanout` | Funds 50 to 200 new receive-only zone accounts from one sender, 4 at a time, capped by its balance |
 | `parallel_driver_sweep` | Sends a sender's whole balance to another account, deleting its balance slot |
 | `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, and settled workload transactions stay final |
 | `anytime_proofs` | `eth_getProof` answers for present and absent accounts and slots verify against the block's state root on every zone node and on L1, and zone nodes on the same block serve the same proof |

@@ -44,6 +44,7 @@ exec /usr/local/bin/tempo-zone node \
     --l1.rpc-url "$L1_WS" \
     --datadir /data/node \
     --http --http.addr 0.0.0.0 --http.port 8545 --http.api all \
+    --rpc.eth-proof-window 100000 \
     --ws --ws.addr 0.0.0.0 --ws.port 8546 --ws.api all \
     --redacted-rpc.port 8544 \
     --sequencer.manifest "$S/manifest.toml" \
