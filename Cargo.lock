@@ -17615,6 +17615,8 @@ dependencies = [
  "alloy-primitives",
  "alloy-provider",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "alloy-sol-types",
  "evm2",
  "eyre",
