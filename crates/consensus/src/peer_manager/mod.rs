@@ -76,7 +76,7 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     /// This node's public key, which the P2P network counts toward every peer set.
     pub(crate) public_key: PublicKey,
     /// The P2P network's maximum peer set size. The network panics on larger
-    /// peer sets, so the node shuts down instead.
+    /// peer sets; a warning is logged past 2/3 of it.
     pub(crate) max_peers: NonZeroUsize,
 }
 
