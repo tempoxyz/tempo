@@ -43,7 +43,7 @@ use commonware_stream::{
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
-use tracing::info;
+use tracing::{info, warn};
 
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
@@ -102,6 +102,14 @@ pub async fn run_consensus_stack(
         .signing_key()
         .await?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
+
+    if let Some(ignored) = config.max_message_size_bytes {
+        warn!(
+            ignored,
+            "--consensus.max-message-size-bytes is deprecated and ignored; the p2p message size \
+             limit is derived from the largest consensus payload"
+        );
+    }
 
     let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
     let max_message_size = network::max_message_size(

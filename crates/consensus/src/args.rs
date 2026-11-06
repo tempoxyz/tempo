@@ -132,6 +132,15 @@ pub struct Args {
     #[arg(long = "consensus.metrics-address", default_value = "127.0.0.1:8001")]
     pub metrics_address: SocketAddr,
 
+    /// Deprecated compatibility flag. The p2p message size limit is derived from the largest
+    /// payload consensus sends, so this value is ignored.
+    #[arg(
+        long = "consensus.max-message-size-bytes",
+        value_name = "BYTES",
+        help = "Deprecated: ignored; the p2p message size limit is derived from the largest consensus payload."
+    )]
+    pub max_message_size_bytes: Option<u32>,
+
     /// The number of worker threads assigned to consensus.
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
     pub worker_threads: usize,
@@ -821,6 +830,17 @@ mod tests {
             .consensus
             .inactive_views_until_leader_skip,
             Some(32),
+        );
+    }
+
+    #[test]
+    fn deprecated_max_message_size_bytes_is_only_set_when_supplied() {
+        assert_eq!(parse(&["--dev"]).consensus.max_message_size_bytes, None);
+        assert_eq!(
+            parse(&["--dev", "--consensus.max-message-size-bytes", "8388608"])
+                .consensus
+                .max_message_size_bytes,
+            Some(8_388_608),
         );
     }
 
