@@ -106,7 +106,7 @@ impl FinalizationVerifier {
         let expected_epoch = self
             .epoch_strategy
             .containing(Height::new(height))
-            .expect("fixed epoch strategy supports every block height")
+            .ok_or(Error::HeightOutOfRange { height })?
             .epoch();
         if epoch != expected_epoch {
             return Err(Error::EpochMismatch {
@@ -200,6 +200,9 @@ pub enum Error {
         expected: u64,
         actual: u64,
     },
+    /// The block's height lies outside every epoch the epoch strategy can represent.
+    #[error("block height `{height}` is outside every representable epoch")]
+    HeightOutOfRange { height: u64 },
     /// The certificate could not be verified against an available identity.
     #[error(transparent)]
     CertificateVerification(#[from] CertificateVerificationError),

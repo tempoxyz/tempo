@@ -50,7 +50,9 @@ use tempo_evm::{
 };
 use tempo_payload_types::TempoExecutionData;
 use tempo_precompiles::{error::Result as TempoResult, storage::actions::StorageActions};
-use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{
+    Block, TempoEvmKind, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+};
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::state::{L1StateCache, L1StateProvider, L1StateProviderConfig};
 
@@ -277,7 +279,7 @@ where
             env.spec,
         );
         let l1 = db.l1_state().clone();
-        let ext = TempoEvmExt::default().with_fee_manager(ZoneProtocolFeeManager::new());
+        let ext = TempoEvmExt::new(TempoEvmKind::Zone, ZoneProtocolFeeManager::new());
         let precompiles = ZonePrecompiles::<TempoEvmTypes, L1>::new(
             env.spec,
             ext.actions.clone(),

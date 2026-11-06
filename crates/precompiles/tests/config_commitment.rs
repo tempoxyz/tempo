@@ -26,7 +26,7 @@ impl EvmTypesHost for TestTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
     type Tx = ();
-    type EvmExt = ();
+    type EvmExt = tempo_evm::TempoEvmExt;
     type MessageExt = ();
     type MessageResultExt = ();
     type TxEnvExt = ();
