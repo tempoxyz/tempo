@@ -316,7 +316,7 @@ fn receipts_report_what_the_fee_hooks_did() {
             actions[at],
             StorageActionOutput::PreTxFee { .. }
                 | StorageActionOutput::PostTxFee { .. }
-                | StorageActionOutput::FeeHookEnd { .. }
+                | StorageActionOutput::FeeHookEnd
         )
     };
     let markers: Vec<usize> = (0..actions.len()).filter(|&at| marker(at)).collect();
@@ -326,8 +326,7 @@ fn receipts_report_what_the_fee_hooks_did() {
     let StorageActionOutput::PreTxFee {
         payer,
         token,
-        max_amount: charged_up_front,
-        logs: 0,
+        amount: charged_up_front,
     } = actions[pre_start]
     else {
         panic!(
@@ -336,16 +335,10 @@ fn receipts_report_what_the_fee_hooks_did() {
         );
     };
     assert_eq!((payer, charged_up_front), (SENDER, max_amount));
-    assert!(matches!(
-        actions[pre_end],
-        StorageActionOutput::FeeHookEnd { logs: 0 }
-    ));
+    assert_eq!(actions[pre_end], StorageActionOutput::FeeHookEnd);
     let StorageActionOutput::PostTxFee {
-        payer: post_payer,
-        token: post_token,
-        charged: kept,
         refunded: returned,
-        logs: transfer_log,
+        log: transfer_log,
     } = actions[post_start]
     else {
         panic!(
@@ -353,12 +346,8 @@ fn receipts_report_what_the_fee_hooks_did() {
             actions[post_start]
         );
     };
-    assert_eq!((post_payer, post_token), (payer, token));
-    assert_eq!((kept, returned), (charged, refunded));
-    assert!(matches!(
-        actions[post_end],
-        StorageActionOutput::FeeHookEnd { logs } if logs > transfer_log
-    ));
+    assert_eq!(returned, refunded);
+    assert_eq!(actions[post_end], StorageActionOutput::FeeHookEnd);
 
     // The post-transaction hook's first log is its fee transfer.
     let transfer =

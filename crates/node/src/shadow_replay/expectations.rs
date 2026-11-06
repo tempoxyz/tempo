@@ -6,7 +6,7 @@
 use super::analysis::{AccountDelta, Field};
 use crate::shadow_replay::{
     Boundary, Evidence, ObservedTx,
-    fees::{fee_hook_slot_change, fee_log_ranges, post_tx_fee, pre_tx_max},
+    fees::{fee_hook_slot_change, post_tx_fee},
 };
 use alloy::{
     consensus::Transaction as _,
@@ -55,16 +55,12 @@ impl Context<'_> {
     /// Normalization already checked each logged amount against its recorded hook charge.
     pub(super) fn verified_fee_log_hashes(&self) -> Option<(B256, B256)> {
         let (real, shadow) = self.observed_txs()?;
-        let (real_hash, real_amount) = (real.fee_normalized?, post_tx_fee(&real.actions)?.charged);
-        let (shadow_hash, shadow_amount) = (
-            shadow.fee_normalized?,
-            post_tx_fee(&shadow.actions)?.charged,
-        );
+        let (real_fee, shadow_fee) = (post_tx_fee(&real.actions)?, post_tx_fee(&shadow.actions)?);
         let price = self.tx?.effective_gas_price(self.base_fee);
-        (fee_log_ranges(&real.actions) == fee_log_ranges(&shadow.actions)
-            && real_amount == calc_gas_balance_spending(real.gas.tx_gas_used(), price)
-            && shadow_amount == calc_gas_balance_spending(shadow.gas.tx_gas_used(), price))
-        .then_some((real_hash, shadow_hash))
+        (real_fee.log == shadow_fee.log
+            && real_fee.charged == calc_gas_balance_spending(real.gas.tx_gas_used(), price)
+            && shadow_fee.charged == calc_gas_balance_spending(shadow.gas.tx_gas_used(), price))
+        .then_some((real.fee_normalized?, shadow.fee_normalized?))
     }
 }
 
@@ -79,15 +75,13 @@ const FEE_STATE: Expectation = Expectation {
         let (real, shadow) = ctx.observed_txs()?;
         ctx.verified_fee_log_hashes()?;
         let (real_fee, shadow_fee) = (post_tx_fee(&real.actions)?, post_tx_fee(&shadow.actions)?);
-        if (real_fee.logs.start, real_fee.token, real_fee.payer)
-            != (shadow_fee.logs.start, shadow_fee.token, shadow_fee.payer)
-        {
-            return None;
-        }
-        let max = pre_tx_max(&real.actions)?;
-        if pre_tx_max(&shadow.actions) != Some(max)
-            || max.checked_sub(real_fee.charged) != Some(real_fee.refunded)
-            || max.checked_sub(shadow_fee.charged) != Some(shadow_fee.refunded)
+        if (real_fee.log, real_fee.token, real_fee.payer, real_fee.max)
+            != (
+                shadow_fee.log,
+                shadow_fee.token,
+                shadow_fee.payer,
+                shadow_fee.max,
+            )
         {
             return None;
         }
@@ -394,15 +388,18 @@ mod tests {
             },
         );
         tx.actions = vec![
-            StorageAction::Marker(Marker::PostTxFee {
+            StorageAction::Marker(Marker::PreTxFee {
                 payer: Address::ZERO,
                 token: Address::ZERO,
-                charged: U256::ZERO,
+                amount: U256::ZERO,
+            }),
+            StorageAction::Marker(Marker::FeeHookEnd),
+            StorageAction::Marker(Marker::PostTxFee {
                 refunded: U256::ZERO,
-                logs: 0,
+                log: 0,
             }),
             StorageAction::Sstore(address, slot, U256::from(1_000), U256::from(value)),
-            StorageAction::Marker(Marker::FeeHookEnd { logs: 0 }),
+            StorageAction::Marker(Marker::FeeHookEnd),
         ];
     }
 
@@ -440,14 +437,17 @@ mod tests {
     /// A post-transaction fee hook charging `charged` that emits one log at `log`.
     fn post_fee(charged: U256, log: usize) -> Vec<StorageAction> {
         vec![
-            StorageAction::Marker(Marker::PostTxFee {
+            StorageAction::Marker(Marker::PreTxFee {
                 payer: Address::ZERO,
                 token: Address::ZERO,
-                charged,
-                refunded: U256::ZERO,
-                logs: log,
+                amount: charged,
             }),
-            StorageAction::Marker(Marker::FeeHookEnd { logs: log + 1 }),
+            StorageAction::Marker(Marker::FeeHookEnd),
+            StorageAction::Marker(Marker::PostTxFee {
+                refunded: U256::ZERO,
+                log,
+            }),
+            StorageAction::Marker(Marker::FeeHookEnd),
         ]
     }
 
