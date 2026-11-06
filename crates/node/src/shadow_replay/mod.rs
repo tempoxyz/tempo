@@ -1,7 +1,6 @@
 //! Counterfactual replay of canonical blocks under shadow (candidate) Tempo hardfork rules.
 //!
-//! The node follows and persists the canonical chain. For each newly canonical block, it executes
-//! every transaction under both the canonical (control) and candidate rules from the same canonical
+//! For each canonical block, such as one from a captured corpus, it executes every transaction under both the canonical (control) and candidate rules from the same canonical
 //! prefix, with candidate pre-block setup retained in the shadow arm. The candidate transaction
 //! result is observed, then discarded; the control result advances both executors before the next
 //! transaction. This isolates differences to the transaction that caused
@@ -12,7 +11,7 @@
 //! forkchoice, or used as prestate for another transaction or block.
 //!
 //! Control re-execution must reproduce canonical receipts. Failure or divergence indicates a
-//! non-canonical STF and terminates live replay. Shadow findings never stop replay.
+//! non-canonical STF and is returned as an error. Shadow findings never stop replay.
 //!
 //! Analysis compares completed pre-block, transaction, and post-block boundaries in order. It
 //! compares net effects at each boundary—not complete state equality or write history. Gas-only
@@ -28,21 +27,15 @@ use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 pub use analysis::ReplayReport;
 use evm2::evm::{Cache, Database, PendingState, TxResultExt};
-use metrics::{Counter, Gauge, Histogram};
 use parking_lot::Mutex;
 use reth_chainspec::ForkCondition;
-use reth_ethereum::{evm::EvmFactory as _, tasks::TaskExecutor};
-use reth_evm::{
-    BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _, database::StateProviderDatabase,
-};
+use reth_ethereum::evm::EvmFactory as _;
+use reth_evm::{BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _};
 use reth_execution_types::{BlockState, StateUpdate};
 use reth_primitives_traits::RecoveredBlock;
-use reth_provider::{
-    CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
-};
-use reth_tracing::tracing::{debug, error, info, info_span, warn};
+use reth_tracing::tracing::{debug, warn};
 use reth_trie_common::bundle_state::{AccountStatus, TransitionAccount, TransitionState};
-use std::{collections::hash_map::Entry, sync::Arc, time::Instant};
+use std::{collections::hash_map::Entry, sync::Arc};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
@@ -50,8 +43,7 @@ use tempo_chainspec::{
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult, evm::TempoEvm};
 use tempo_precompiles::storage::StorageAction;
-use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
-use tokio::sync::broadcast::error::RecvError;
+use tempo_primitives::{Block, TempoReceipt};
 
 /// Result of replaying one canonical block under candidate hardfork rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,217 +58,28 @@ pub enum ReplayOutcome {
     Findings,
 }
 
-/// Keeps replay metrics and their existing names/labels in one place.
-#[derive(Debug)]
-struct ShadowReplayMetrics {
-    notifications_lagged: Counter,
-    blocks: Counter,
-    execution_duration: Histogram,
-    latest_completed_block: Gauge,
-    boundaries_compared: Counter,
-    boundaries_inconclusive: Counter,
-    unexplained_differences: Counter,
-    findings_unexplained: Counter,
-    findings_inconclusive: Counter,
-}
-
-impl Default for ShadowReplayMetrics {
-    fn default() -> Self {
-        Self {
-            notifications_lagged: metrics::counter!(
-                "tempo_shadow_replay_notifications_lagged_total"
-            ),
-            blocks: metrics::counter!("tempo_shadow_replay_blocks_total"),
-            execution_duration: metrics::histogram!(
-                "tempo_shadow_replay_execution_duration_seconds"
-            ),
-            latest_completed_block: metrics::gauge!("tempo_shadow_replay_latest_completed_block"),
-            boundaries_compared: metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared"),
-            boundaries_inconclusive: metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "inconclusive"),
-            unexplained_differences: metrics::counter!(
-                "tempo_shadow_replay_unexplained_differences_total"
-            ),
-            findings_unexplained: metrics::counter!("tempo_shadow_replay_findings_total", "kind" => "unexplained"),
-            findings_inconclusive: metrics::counter!("tempo_shadow_replay_findings_total", "kind" => "inconclusive"),
-        }
-    }
-}
-
-impl ShadowReplayMetrics {
-    fn record_report(&self, report: &ReplayReport, outcome: ReplayOutcome) {
-        self.boundaries_compared
-            .increment(report.boundaries_evaluated as u64);
-        self.boundaries_inconclusive
-            .increment(report.boundaries_not_evaluated as u64);
-        for (&rule, &count) in &report.expected {
-            metrics::counter!("tempo_shadow_replay_expected_differences_total", "rule" => rule)
-                .increment(count as u64);
-        }
-        self.unexplained_differences
-            .increment(report.unexplained as u64);
-        match outcome {
-            ReplayOutcome::Findings => self.findings_unexplained.increment(1),
-            ReplayOutcome::Inconclusive => self.findings_inconclusive.increment(1),
-            _ => {}
-        }
-    }
-}
-
 /// Replays canonical blocks under candidate rules without changing canonical state.
 #[derive(Debug)]
-pub struct ShadowReplayer<P> {
-    provider: P,
+pub struct ShadowReplayer {
     real_config: TempoEvmConfig,
     shadow_config: TempoEvmConfig,
     shadow_hardfork: TempoHardfork,
-    metrics: ShadowReplayMetrics,
 }
 
-impl<P: ChainSpecProvider<ChainSpec = TempoChainSpec>> ShadowReplayer<P> {
-    pub fn new(provider: P, shadow_hardfork: TempoHardfork) -> Self {
-        let canonical_spec = provider.chain_spec();
-        Self::with_provider(provider, canonical_spec, shadow_hardfork)
-    }
-}
-
-impl ShadowReplayer<()> {
-    /// A replayer without a database, for blocks whose parent state the caller opens with
-    /// [`ShadowReplayer::replay_on`], such as captured corpus blocks.
-    pub fn offline(canonical_spec: Arc<TempoChainSpec>, shadow_hardfork: TempoHardfork) -> Self {
-        Self::with_provider((), canonical_spec, shadow_hardfork)
-    }
-}
-
-impl<P> ShadowReplayer<P> {
-    fn with_provider(
-        provider: P,
-        canonical_spec: Arc<TempoChainSpec>,
-        shadow_hardfork: TempoHardfork,
-    ) -> Self {
+impl ShadowReplayer {
+    pub fn new(canonical_spec: Arc<TempoChainSpec>, shadow_hardfork: TempoHardfork) -> Self {
         let shadow_spec = Arc::new(shadow_spec(&canonical_spec, shadow_hardfork));
         Self {
             real_config: TempoEvmConfig::new(canonical_spec),
             shadow_config: TempoEvmConfig::new(shadow_spec),
-            provider,
             shadow_hardfork,
-            metrics: ShadowReplayMetrics::default(),
         }
     }
-}
 
-impl<P> ShadowReplayer<P>
-where
-    P: StateProviderFactory
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
-        + CanonStateSubscriptions<Primitives = TempoPrimitives>
-        + 'static,
-{
-    /// Spawns the replay task. Lagged notifications are reported rather than backfilled.
-    ///
-    /// Runs as a critical task: a control-arm failure panics the task, which shuts the node down.
-    pub fn spawn(self, executor: TaskExecutor) {
-        let mut notifs = self.provider.subscribe_to_canonical_state();
-        let hardfork = self.shadow_hardfork;
-        let replayer = self;
-        executor.spawn_critical_blocking_task("shadow replay", async move {
-            info!(target: "shadow_replay", %hardfork, "Started counterfactual shadow replay");
-            loop {
-                let notif = match notifs.recv().await {
-                    Ok(notif) => notif,
-                    Err(RecvError::Lagged(skipped)) => {
-                        replayer.metrics.notifications_lagged.increment(skipped);
-                        error!(target: "shadow_replay", skipped, "Shadow replay missed canonical blocks");
-                        continue;
-                    }
-                    Err(RecvError::Closed) => return,
-                };
-
-                if let Some(reverted) = notif.reverted() {
-                    warn!(
-                        target: "shadow_replay",
-                        from = reverted.first().number(),
-                        to = reverted.tip().number(),
-                        "Shadow replay findings for reverted blocks are stale"
-                    );
-                }
-
-                let committed = notif.committed();
-                for block in committed.blocks().values() {
-                    let span = info_span!(
-                        target: "shadow_replay",
-                        "shadow_replay",
-                        block_number = block.number(),
-                        block_hash = ?block.hash(),
-                        %hardfork,
-                    );
-                    if replayer
-                        .real_config
-                        .chain_spec()
-                        .tempo_hardfork_at(block.timestamp())
-                        >= hardfork
-                    {
-                        span.in_scope(|| {
-                            debug!(target: "shadow_replay", "Candidate already active on canonical chain")
-                        });
-                        continue;
-                    }
-
-                    let number = block.number();
-                    let started_at = Instant::now();
-                    let result = replayer.replay(
-                        block,
-                        committed.execution_outcome().receipts_by_block(number),
-                    );
-                    replayer.metrics.execution_duration.record(started_at.elapsed().as_secs_f64());
-
-                    // Dropped before the next notification await.
-                    let _guard = span.enter();
-                    let err = match result {
-                        Ok(_) => {
-                            replayer.metrics.latest_completed_block.set(number as f64);
-                            replayer.metrics.blocks.increment(1);
-                            continue;
-                        }
-                        Err(err) => err,
-                    };
-                    #[cfg(feature = "fuzz")]
-                    antithesis_sdk::assert_unreachable!(
-                        "Shadow replay control re-execution diverges from the canonical chain",
-                        &serde_json::json!({ "block_number": number, "error": err })
-                    );
-                    error!(target: "shadow_replay", %err, "Control re-execution diverged from canonical chain");
-                    panic!("shadow replay control failure at block {number}: {err}");
-                }
-            }
-        });
-    }
-}
-
-impl<P: StateProviderFactory> ShadowReplayer<P> {
-    /// Replays a canonical block under both rule sets, on its parent state from the provider, as
-    /// [`Self::replay_on`] does.
-    pub fn replay(
-        &self,
-        block: &RecoveredBlock<Block>,
-        receipts: &[TempoReceipt],
-    ) -> Result<(ReplayOutcome, ReplayReport), String> {
-        self.replay_on(block, receipts, || {
-            let provider = self
-                .provider
-                .state_by_block_hash(block.parent_hash())
-                .map_err(|e| format!("failed to open parent state {}: {e}", block.parent_hash()))?;
-            Ok(StateProviderDatabase::new(
-                provider.into_evm_state_provider(),
-            ))
-        })
-    }
-}
-
-impl<P: Sync> ShadowReplayer<P> {
     /// Replays a canonical block under both rule sets. Each arm executes on its own copy of the
     /// parent state, which `parent_state` opens. Returns the outcome and the differences behind it.
     /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
-    pub fn replay_on<DB: Database>(
+    pub fn replay<DB: Database>(
         &self,
         block: &RecoveredBlock<Block>,
         receipts: &[TempoReceipt],
@@ -300,7 +103,6 @@ impl<P: Sync> ShadowReplayer<P> {
         let rules = expectations::between(canonical, self.shadow_hardfork);
         let report = ReplayReport::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
-        self.metrics.record_report(&report, outcome);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
             debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");
             return Ok((outcome, report));

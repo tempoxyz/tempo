@@ -21,7 +21,7 @@ use tempo_node::{ReplayOutcome, ShadowReplayer};
 /// alone, and checks that shadow replay over the record finds what shadow replay over the node's
 /// database finds.
 #[tokio::test(flavor = "multi_thread")]
-async fn corpus_shadow_replay_matches_live_replay() -> eyre::Result<()> {
+async fn corpus_shadow_replay_matches_database_replay() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     // A candidate whose pre-block setup reads only state the canonical block reads too, which the
     // corpus captures.
@@ -45,8 +45,7 @@ async fn corpus_shadow_replay_matches_live_replay() -> eyre::Result<()> {
     let provider = node.inner.provider.clone();
     let config = TempoEvmConfig::new(chain_spec.clone());
     let consensus = TempoConsensus::new(chain_spec.clone());
-    let live = ShadowReplayer::new(provider.clone(), candidate);
-    let offline = ShadowReplayer::offline(chain_spec, candidate);
+    let replayer = ShadowReplayer::new(chain_spec, candidate);
     let mut first_tx = 0;
     let mut outcomes = Vec::new();
     for number in 1..=provider.best_block_number()? {
@@ -56,7 +55,14 @@ async fn corpus_shadow_replay_matches_live_replay() -> eyre::Result<()> {
         let receipts = provider
             .receipts_by_block(number.into())?
             .expect("the node stored its receipts");
-        let expected = live.replay(&block, &receipts).map_err(eyre::Report::msg)?;
+        let expected = replayer
+            .replay(&block, &receipts, || {
+                let state = provider
+                    .history_by_block_number(number - 1)
+                    .map_err(|e| e.to_string())?;
+                Ok(StateProviderDatabase::new(state.into_evm_state_provider()))
+            })
+            .map_err(eyre::Report::msg)?;
 
         let captured = capture(
             &config,
@@ -78,8 +84,8 @@ async fn corpus_shadow_replay_matches_live_replay() -> eyre::Result<()> {
         let (replayed, replayed_receipts) =
             verify(&config, &consensus, &input, &cases, &encoded.record)?;
         assert_eq!(replayed_receipts, receipts, "block {number}");
-        let actual = offline
-            .replay_on(&replayed, &replayed_receipts, || {
+        let actual = replayer
+            .replay(&replayed, &replayed_receipts, || {
                 Ok(View::new(input.clone()))
             })
             .map_err(eyre::Report::msg)?;

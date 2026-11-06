@@ -151,7 +151,7 @@ pub struct ReplayCommand {
     #[arg(long, conflicts_with_all = ["from", "to", "tx_from"])]
     blocks: Option<PathBuf>,
     /// Also replay each verified block under this candidate hardfork's rules and compare it with
-    /// the canonical execution, as `tempo shadow-replay` does on a database.
+    /// the canonical execution.
     #[arg(long, value_name = "HARDFORK", conflicts_with = "tx_from")]
     shadow: Option<TempoHardfork>,
     /// Exit unsuccessfully on unexplained shadow findings or inconclusive comparisons.
@@ -261,7 +261,7 @@ fn shadow_replay(
     workers: usize,
     fail_on_findings: bool,
 ) -> eyre::Result<()> {
-    let replayer = ShadowReplayer::offline(chain.clone(), hardfork);
+    let replayer = ShadowReplayer::new(chain.clone(), hardfork);
     let (matched, expected, inconclusive, findings, skipped) = Default::default();
     let (config, consensus) = components(chain.clone());
     replay::run_blocks(
@@ -276,7 +276,7 @@ fn shadow_replay(
                 &skipped
             } else {
                 match replayer
-                    .replay_on(block, receipts, || Ok(View::new(input.clone())))
+                    .replay(block, receipts, || Ok(View::new(input.clone())))
                     .map_err(|err| {
                         eyre::eyre!("shadow replay failed at block {}: {err}", block.number())
                     })?
