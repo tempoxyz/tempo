@@ -44,25 +44,51 @@ thread_local! {
     static REJECTION: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-/// Records why the current input stopped short of executing, for [`with_rejection`], as a `kind`
-/// that names the check, such as `input/TimestampOrder`.
-pub(crate) fn reject(class: ErrorClass, kind: impl Display) -> ErrorClass {
-    REJECTION.with_borrow_mut(|r| {
-        r.clear();
-        let _ = write!(r, "{kind}");
-    });
-    class
+/// A harness check that rejects an input with no error value of its own.
+#[derive(Debug)]
+pub(crate) enum Check {
+    Null,
+    HarnessInput,
+    OutcomeEncoding,
+    HardforkSchedule,
+    TimestampOrder,
+    PreState,
+    PreStateInvariants,
+    Header,
+    SenderCount,
+    IncompletePreState,
+    /// An error class no check recorded a reason for.
+    Unclassified,
 }
 
-/// Records `err` as why the current input stopped short of executing, as `kind: message`. The kind
-/// is `stage` then the enum variants that `err`'s derived Debug form starts with, so it comes from
-/// the error's type rather than its text. `CollectFeePreTx(InsufficientFeeTokenBalance { .. })` in
-/// execution is `execution/CollectFeePreTx/InsufficientFeeTokenBalance`.
-fn reject_err(class: ErrorClass, stage: &str, err: &(impl Debug + Display)) -> ErrorClass {
-    let debug = format!("{err:?}");
+impl Display for Check {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Null => "null input",
+            Self::HarnessInput => "harness input does not decode",
+            Self::OutcomeEncoding => "outcome does not encode",
+            Self::HardforkSchedule => "hardfork schedule out of order",
+            Self::TimestampOrder => "blocks out of timestamp order",
+            Self::PreState => "pre-state does not load",
+            Self::PreStateInvariants => "pre-state breaks invariants",
+            Self::Header => "header does not resolve",
+            Self::SenderCount => "sender count differs from the transaction count",
+            Self::IncompletePreState => "pre-state could not answer a read",
+            Self::Unclassified => "no reason recorded",
+        })
+    }
+}
+
+/// Records why the current input stopped short of executing, for [`with_rejection`], and returns
+/// `class`. It reads `kind: message`. The kind is `class` then the enum variants that `why`'s
+/// derived Debug form starts with, so it comes from the error's type rather than its text, such as
+/// `Rejected/CollectFeePreTx/InsufficientFeeTokenBalance` for
+/// `CollectFeePreTx(InsufficientFeeTokenBalance { .. })`.
+pub(crate) fn reject(class: ErrorClass, why: impl Debug + Display) -> ErrorClass {
+    let debug = format!("{why:?}");
     REJECTION.with_borrow_mut(|r| {
         r.clear();
-        r.push_str(stage);
+        let _ = write!(r, "{class:?}");
         let mut rest = debug.as_str();
         while rest.starts_with(|c: char| c.is_ascii_uppercase()) {
             let end = rest
@@ -75,9 +101,20 @@ fn reject_err(class: ErrorClass, stage: &str, err: &(impl Debug + Display)) -> E
             };
             rest = inner;
         }
-        let _ = write!(r, ": {err}");
+        let _ = write!(r, ": {why}");
     });
     class
+}
+
+/// Rejects with `class` and the error, for `?`.
+trait OrReject<T> {
+    fn or_reject(self, class: ErrorClass) -> Result<T, ErrorClass>;
+}
+
+impl<T, E: Debug + Display> OrReject<T> for Result<T, E> {
+    fn or_reject(self, class: ErrorClass) -> Result<T, ErrorClass> {
+        self.map_err(|err| reject(class, err))
+    }
 }
 
 /// Calls `f` with why the last input this thread ran was not fully executed, such as the
@@ -120,7 +157,7 @@ pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
         }
     };
     if error != ErrorClass::None && with_rejection(str::is_empty) {
-        reject(error, format_args!("unclassified/{error:?}"));
+        reject(error, Check::Unclassified);
     }
     outcome
 }
@@ -140,7 +177,7 @@ fn transaction(input: &TempoTransactionInput) -> TransactionOutcome {
     TransactionOutcome {
         error: match &sender {
             Ok(_) => ErrorClass::None,
-            Err(err) => reject_err(ErrorClass::Rejected, "signature", err),
+            Err(err) => reject(ErrorClass::Rejected, err),
         },
         sender: sender.ok(),
         tx_type: Some(tx.tx_type() as u8),
@@ -148,8 +185,7 @@ fn transaction(input: &TempoTransactionInput) -> TransactionOutcome {
 }
 
 fn decode_tx(bytes: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
-    TempoTxEnvelope::decode_2718_exact(bytes)
-        .map_err(|err| reject_err(ErrorClass::RlpDecode, "decode", &err))
+    TempoTxEnvelope::decode_2718_exact(bytes).or_reject(ErrorClass::RlpDecode)
 }
 
 /// Executes `blocks` in order on `pre_state`, stopping at the first block that fails. An input that
@@ -160,16 +196,16 @@ fn execute(
     blocks: &[TempoBlock],
 ) -> TempoExecutionOutcome {
     let prepared = chain::chain_spec(chain)
-        .map_err(|class| reject(class, "input/HardforkSchedule"))
+        .map_err(|class| reject(class, Check::HardforkSchedule))
         .and_then(|spec| {
             let blocks = blocks
                 .iter()
                 .map(|block| recover_block(&spec, block))
                 .collect::<Result<Vec<_>, _>>()?;
             if !blocks.is_sorted_by_key(|block| block.header().timestamp()) {
-                return Err(reject(ErrorClass::InvalidInput, "input/TimestampOrder"));
+                return Err(reject(ErrorClass::InvalidInput, Check::TimestampOrder));
             }
-            let db = state::seed(pre_state).map_err(|class| reject(class, "input/PreState"))?;
+            let db = state::seed(pre_state).map_err(|class| reject(class, Check::PreState))?;
             Ok((Arc::new(spec), blocks, db))
         });
     let (spec, blocks, db) = match prepared {
@@ -191,7 +227,7 @@ fn execute(
         let invariant_failures = broken_start(&evm_config, pre_state, &blocks[0], &db, &outcome);
         if !invariant_failures.is_empty() {
             return TempoExecutionOutcome {
-                error: reject(ErrorClass::InvalidInput, "input/PreStateInvariants"),
+                error: reject(ErrorClass::InvalidInput, Check::PreStateInvariants),
                 invariant_failures,
                 ..Default::default()
             };
@@ -256,7 +292,7 @@ pub(crate) fn recover_block(
     block: &TempoBlock,
 ) -> Result<ExecutionBlock, ErrorClass> {
     let mut header =
-        chain::header(spec, &block.header).map_err(|class| reject(class, "decode/Header"))?;
+        chain::header(spec, &block.header).map_err(|class| reject(class, Check::Header))?;
     let txs = block
         .txs
         .iter()
@@ -264,15 +300,12 @@ pub(crate) fn recover_block(
         .collect::<Result<Vec<_>, _>>()?;
     let senders = if block.senders.is_empty() {
         txs.iter()
-            .map(|tx| {
-                tx.try_recover()
-                    .map_err(|err| reject_err(ErrorClass::Rejected, "signature", &err))
-            })
+            .map(|tx| tx.try_recover().or_reject(ErrorClass::Rejected))
             .collect::<Result<Vec<_>, _>>()?
     } else if block.senders.len() == txs.len() {
         block.senders.clone()
     } else {
-        return Err(reject(ErrorClass::InvalidInput, "input/SenderCount"));
+        return Err(reject(ErrorClass::InvalidInput, Check::SenderCount));
     };
     if matches!(block.header, BlockHeaderInput::Context(_)) {
         header.inner.transactions_root = calculate_transaction_root(&txs);
@@ -306,7 +339,7 @@ pub(crate) fn execute_blocks(
         let executed = match executed {
             _ if db.pre.missed() => Err(reject(
                 ErrorClass::IncompletePreState,
-                "input/IncompletePreState",
+                Check::IncompletePreState,
             )),
             executed => executed,
         };
@@ -359,16 +392,16 @@ fn execute_block(
 ) -> Result<(Vec<StateUpdate>, BlockOutputs), ErrorClass> {
     consensus
         .validate_header(block.sealed_block().sealed_header())
-        .map_err(|err| reject_err(ErrorClass::Rejected, "header", &err))?;
+        .or_reject(ErrorClass::Rejected)?;
     consensus
         .validate_block_pre_execution(block.sealed_block())
-        .map_err(|err| reject_err(ErrorClass::Rejected, "block", &err))?;
+        .or_reject(ErrorClass::Rejected)?;
     let evm = evm_config
         .evm_for_block(db.reader(), block.header())
-        .map_err(|err| reject_err(ErrorClass::Rejected, "block-env", &err))?;
+        .or_reject(ErrorClass::Rejected)?;
     let ctx = evm_config
         .context_for_block(block.sealed_block())
-        .map_err(|err| reject_err(ErrorClass::Rejected, "block-env", &err))?;
+        .or_reject(ErrorClass::Rejected)?;
     let mut executor = evm_config.create_executor(evm, ctx);
     let hooked = Updates::default();
     let installed = executor.set_state_hook({
@@ -554,13 +587,11 @@ fn class(err: &BlockExecutionError) -> ErrorClass {
         // A transaction's error is classed by its Tempo variant when it has one.
         BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) => {
             match TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()) {
-                Some(tempo) => reject_err(ErrorClass::Rejected, "execution", tempo),
-                None => reject_err(ErrorClass::Rejected, "execution", error),
+                Some(tempo) => reject(ErrorClass::Rejected, tempo),
+                None => reject(ErrorClass::Rejected, error),
             }
         }
-        BlockExecutionError::Validation(error) => {
-            reject_err(ErrorClass::Rejected, "execution", error)
-        }
-        BlockExecutionError::Internal(error) => reject_err(ErrorClass::Internal, "internal", error),
+        BlockExecutionError::Validation(error) => reject(ErrorClass::Rejected, error),
+        BlockExecutionError::Internal(error) => reject(ErrorClass::Internal, error),
     }
 }
