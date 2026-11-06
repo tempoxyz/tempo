@@ -837,6 +837,27 @@ fn eoa_migration_error_order() {
         },
         &direct_call,
     );
+    // 1 before 2: an access key with an authorization list.
+    expect_revert(
+        Fixture::with_parent(false),
+        "access key, AA authorization list",
+        |f| {
+            let key = signer(6);
+            grant_key(f, 3, &key, 0);
+            keychain_signed(
+                TempoTransaction {
+                    tempo_authorization_list: vec![
+                        Entry::new(SigKind::Secp256k1, 5, Address::ZERO, 0).sign().1,
+                    ],
+                    ..aa_tx(4, vec![upgrade.clone()])
+                },
+                &key,
+                f.account,
+            )
+            .into()
+        },
+        &direct_call,
+    );
     // 2: only a primitive root signature may migrate.
     expect_revert(
         Fixture::with_parent(false),
@@ -845,6 +866,27 @@ fn eoa_migration_error_order() {
             let key = signer(6);
             grant_key(f, 3, &key, 0);
             keychain_tx(f, &key, 4, vec![upgrade.clone()]).into()
+        },
+        &root_required,
+    );
+    expect_revert(
+        Fixture::with_parent(false),
+        "access key with its key authorization",
+        |f| {
+            let key = signer(6);
+            let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address());
+            let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+            keychain_signed(
+                TempoTransaction {
+                    key_authorization: Some(
+                        grant.into_signed(PrimitiveSignature::Secp256k1(approval)),
+                    ),
+                    ..aa_tx(3, vec![upgrade.clone()])
+                },
+                &key,
+                f.account,
+            )
+            .into()
         },
         &root_required,
     );
@@ -1003,6 +1045,44 @@ fn eoa_migration_anywhere_in_batch() {
         let result = f.run(&f.primitive(3, calls));
         assert_upgraded(&mut f, &result, &config);
     }
+
+    // Earlier calls run under the root's authority; later ones see it retired.
+    let hash = B256::repeat_byte(0x42);
+    let (root, signature) = root_keychain_signature(SigKind::Secp256k1, 1, hash);
+    let spender = signer(8).address();
+    for query in [
+        Verifier::KeychainAdmin.call(root, hash, signature),
+        is_admin_key_call(root, root),
+    ] {
+        let mut f = Fixture::with_parent(false);
+        let key = signer(6);
+        grant_key(&mut f, 3, &key, 0);
+        let config = f.upgraded(1, owner_set(vec![signer(2).address()]));
+        let owner = f.owner.clone();
+        let permit = permit_signed(&mut f, root, &owner, spender, 1_000);
+        let revoke = Call {
+            to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
+            value: U256::ZERO,
+            input: IAccountKeychain::revokeKeyCall {
+                keyId: key.address(),
+            }
+            .abi_encode()
+            .into(),
+        };
+        let result = f.run(&f.primitive(4, vec![revoke, permit, Fixture::upgrade(&config), query]));
+        assert!(result.status, "{result:?}");
+        assert!(!bool::abi_decode(&result.output).unwrap());
+        assert_eq!(f.commitment(), config.commitment().unwrap());
+        assert_eq!(
+            permit_state(&mut f, root, spender),
+            (U256::ONE, U256::from(100))
+        );
+        assert!(
+            f.evm
+                .transact(&tx_env(&keychain_tx(&f, &key, 5, vec![f.getter()]), root))
+                .is_err()
+        );
+    }
 }
 
 #[test]
@@ -1043,31 +1123,48 @@ fn eoa_migration_with_key_authorization() {
 fn eoa_migration_failure_keeps_fee_and_nonce() {
     let member = signer(2).address();
     let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![member]));
+    let upgrade = Fixture::upgrade(&base);
     let zero_threshold = ConfigurableAccountConfig {
         threshold: 0,
         ..base.clone()
     };
-    for batch in [false, true] {
-        let (label, error) = if batch {
-            (
-                "batch",
-                IConfigurableAccount::AccountAlreadyConfigurable {}.abi_encode(),
-            )
-        } else {
-            (
-                "invalid configuration",
-                IConfigurableAccount::InvalidConfig {}.abi_encode(),
-            )
-        };
+    let root = signer(1);
+    // A later call reverts and takes the migration with it. The root's signature is no
+    // owner-quorum approval, and permits see the root retired.
+    for (label, calls, error) in [
+        (
+            "invalid configuration",
+            vec![Fixture::upgrade(&zero_threshold)],
+            IConfigurableAccount::InvalidConfig {}.abi_encode(),
+        ),
+        (
+            "second upgrade",
+            vec![upgrade.clone(), upgrade.clone()],
+            IConfigurableAccount::AccountAlreadyConfigurable {}.abi_encode(),
+        ),
+        (
+            "later rotation",
+            vec![upgrade.clone(), Fixture::rotation(&base, &base)],
+            IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode(),
+        ),
+        (
+            "later permit",
+            vec![
+                upgrade,
+                permit_signed(
+                    &mut Fixture::with_parent(false),
+                    root.address(),
+                    &root,
+                    member,
+                    1_000,
+                ),
+            ],
+            permit_retired(root.address()).abi_encode(),
+        ),
+    ] {
         let mut f = Fixture::with_parent(false);
         let account = f.account;
         fund(&mut f, account, 50_000_000);
-        let config = if batch { &base } else { &zero_threshold };
-        let mut calls = vec![Fixture::upgrade(config)];
-        if batch {
-            // A second upgrade reverts and takes the first with it.
-            calls.push(Fixture::upgrade(config));
-        }
         let tx = f.sign_primitive(TempoTransaction {
             max_fee_per_gas: 1,
             max_priority_fee_per_gas: 1,
