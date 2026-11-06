@@ -12,17 +12,18 @@ use evm2::{
     EvmTypes, TxResult, TxResultWithState,
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
+    registry::HandlerError,
 };
 use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
-    BlockValidationError, CommitChanges, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx,
-    RecoveredTx,
+    BlockValidationError, CommitChanges, ExecutorTx, GasOutput, InvalidTxError, ReceiptBuilder,
+    ReceiptBuilderCtx, RecoveredTx,
     execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -45,6 +46,32 @@ pub(crate) fn execution_gas_used(result: &TxResult<TempoEvmTypes>) -> u64 {
         .saturating_sub(result.state_gas_spent)
         .saturating_sub(result.refunded)
         .max(result.floor_gas)
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct TempoHandlerInvalidTxError(HandlerError);
+
+impl InvalidTxError for TempoHandlerInvalidTxError {
+    fn is_nonce_too_low(&self) -> bool {
+        matches!(self.0, HandlerError::InvalidNonce { expected, got } if got < expected)
+    }
+
+    fn is_gas_limit_too_high(&self) -> bool {
+        matches!(
+            self.0,
+            HandlerError::GasLimitMoreThanBlock { .. }
+                | HandlerError::TxGasLimitGreaterThanCap { .. }
+        )
+    }
+
+    fn is_gas_limit_too_low(&self) -> bool {
+        matches!(self.0, HandlerError::IntrinsicGasTooLow { .. })
+    }
+
+    fn as_any(&self) -> &(dyn Any + 'static) {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -847,7 +874,16 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                 .inner
                 .evm
                 .transact(&tx_env)
-                .map_err(map_handler_error)?
+                .map_err(|error| match error {
+                    HandlerError::Database(_)
+                    | HandlerError::Fatal(_)
+                    | HandlerError::WrongTransactionType { .. } => map_handler_error(error),
+                    error => BlockValidationError::InvalidTx {
+                        hash: tx_hash,
+                        error: Box::new(TempoHandlerInvalidTxError(error)),
+                    }
+                    .into(),
+                })?
                 .detach();
             EthTransactionResultWithState::new(
                 result,
@@ -1104,6 +1140,44 @@ impl TempoBlockExecutor<'_> {
 mod tests {
     use super::*;
     use alloy_consensus::Signed;
+
+    #[test]
+    fn tip1016_stale_nonce_is_an_invalid_transaction() {
+        let chainspec = test_chainspec();
+        let caller = Address::repeat_byte(0x77);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&caller, evm2::evm::AccountInfo::default().with_nonce(1));
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T15)
+            .build(db, &chainspec);
+        let mut block = *executor.evm().block();
+        block.basefee = U256::ZERO;
+        executor.evm_mut().set_block(block);
+        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(chainspec.chain().id()),
+                nonce: 0,
+                gas_limit: 500_000,
+                to: TxKind::Call(Address::repeat_byte(0x78)),
+                ..Default::default()
+            },
+            Signature::test_signature(),
+        ));
+        let hash = *tx.tx_hash();
+
+        let err = executor
+            .execute_transaction_without_commit(Recovered::new_unchecked(tx, caller))
+            .unwrap_err();
+        let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+            hash: error_hash,
+            error,
+        }) = err
+        else {
+            panic!("expected invalid transaction, got {err:?}");
+        };
+        assert_eq!(error_hash, hash);
+        assert!(error.is_nonce_too_low(), "{error:?}");
+    }
 
     #[test]
     fn tip1016_blocks_and_receipts_meter_different_gas_dimensions() {

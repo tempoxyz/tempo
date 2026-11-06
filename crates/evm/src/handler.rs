@@ -25,7 +25,7 @@ use evm2::{
         validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
         validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
         validate_nonce_not_overflow, validate_priority_fee, validate_tx_gas_limit_cap,
-        warm_access_list, warm_base_accounts,
+        warm_access_list,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
     interpreter::{
