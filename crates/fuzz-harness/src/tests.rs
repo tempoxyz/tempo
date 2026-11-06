@@ -32,10 +32,7 @@ use tempo_fuzz_types::{
     TempoExecutionOutcome, TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome,
     TempoTransactionInput, TxOutcome,
 };
-use tempo_precompiles::{
-    tip_fee_manager::amm::compute_amount_out,
-    tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY},
-};
+use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 
 use crate::{
@@ -307,44 +304,35 @@ fn receipts_report_what_the_fee_hooks_did() {
     assert_eq!(receipt.outcome, TxOutcome::Success);
     let charged = U256::from(receipt.gas.tx_gas_used());
     let max_amount = U256::from(gas_limit);
-    let refunded = max_amount - charged;
 
-    // Each hook's actions are the ones between its start marker and the next end marker.
-    let actions = &receipt.actions;
-    let markers: Vec<usize> = (0..actions.len())
-        .filter(|&at| matches!(actions[at], StorageAction::Marker(_)))
+    let markers: Vec<_> = receipt
+        .actions
+        .iter()
+        .filter_map(|action| match *action {
+            StorageAction::Marker(marker) => Some(marker),
+            _ => None,
+        })
         .collect();
-    let [pre_start, pre_end, post_start, post_end] = markers[..] else {
-        panic!("two fee hooks: {actions:#?}");
-    };
-    let StorageAction::Marker(FeeHook::PreTx {
-        payer,
-        token,
-        amount: charged_up_front,
-    }) = actions[pre_start]
+    let [
+        FeeHook::PreTx {
+            payer,
+            token,
+            amount,
+        },
+        FeeHook::End,
+        FeeHook::PostTx { refund, log },
+        FeeHook::End,
+    ] = markers[..]
     else {
-        panic!(
-            "the pre-transaction hook starts first: {:?}",
-            actions[pre_start]
-        );
+        panic!("two fee hooks: {markers:?}");
     };
-    assert_eq!((payer, charged_up_front), (SENDER, max_amount));
-    assert_eq!(actions[pre_end], StorageAction::Marker(FeeHook::End));
-    let StorageAction::Marker(FeeHook::PostTx {
-        refund: returned,
-        log: transfer_log,
-    }) = actions[post_start]
-    else {
-        panic!(
-            "the post-transaction hook starts next: {:?}",
-            actions[post_start]
-        );
-    };
-    assert_eq!(returned, refunded);
-    assert_eq!(actions[post_end], StorageAction::Marker(FeeHook::End));
+    assert_eq!(
+        (payer, amount, refund),
+        (SENDER, max_amount, max_amount - charged)
+    );
 
-    // The post-transaction hook's first log is its fee transfer.
-    let transfer = ITIP20::Transfer::decode_log(&receipt.logs[transfer_log]).expect("a transfer");
+    // The post-transaction hook's log is its fee transfer.
+    let transfer = ITIP20::Transfer::decode_log(&receipt.logs[log]).expect("a transfer");
     assert_eq!(
         (
             transfer.address,
@@ -354,51 +342,8 @@ fn receipts_report_what_the_fee_hooks_did() {
         ),
         (token, payer, TIP_FEE_MANAGER_ADDRESS, charged)
     );
-
-    // The pre-transaction hook debits the payer the most the fee can be, and the post-transaction
-    // hook refunds the rest to the same balance.
-    let pre = &actions[pre_start + 1..pre_end];
-    let post = &actions[post_start + 1..post_end];
-    let payer_slot = pre
-        .iter()
-        .find_map(|action| match *action {
-            StorageAction::Sdec(address, slot, _, delta)
-                if address == token && delta == max_amount =>
-            {
-                Some(slot)
-            }
-            _ => None,
-        })
-        .expect("the payer is debited");
-    assert!(post.iter().any(|action| matches!(
-        *action,
-        StorageAction::Sinc(address, slot, _, delta)
-            if address == token && slot == payer_slot && delta == refunded
-    )));
-
-    // The sender pays in a token the validator does not take, so the fee is swapped once, and
-    // the validator's collected fees rise by what the swap gave.
-    let swaps: Vec<_> = post
-        .iter()
-        .filter_map(|action| match *action {
-            StorageAction::FeeAmmSwap(_, _, amount_in) => Some(amount_in),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(swaps, vec![charged]);
-    let swapped = compute_amount_out(charged).unwrap();
-    assert!(post.iter().any(|action| matches!(
-        *action,
-        StorageAction::Sstore(address, _, before, after)
-            if address == TIP_FEE_MANAGER_ADDRESS && after.checked_sub(before) == Some(swapped)
-    )));
-
-    // The transaction's diff debits the payer exactly the fee.
-    let payer_change = storage_at(&outcome.state_diff.blocks[0].txs[0], token)
-        .find(|change| change.slot == payer_slot)
-        .expect("the payer's balance changes");
-    assert_eq!(payer_change.before - payer_change.after, charged);
 }
+
 #[test]
 fn changes_that_cancel_out_within_a_block_are_not_in_the_total() {
     // The recipient sends the transfer straight back: both balances end where

@@ -19,11 +19,7 @@ use tempo_chainspec::{
     spec::{TempoChainSpec, TempoChainSpecParser, TempoHardforks as _},
 };
 use tempo_corpus::{
-    exec::{
-        db::View,
-        fill, replay,
-        shadow::{ReplayOutcome, ShadowReplayer},
-    },
+    exec::{db::View, fill, replay, shadow::ShadowReplayer},
     fuzz, gc,
     store::{Catalog, Store},
 };
@@ -266,7 +262,8 @@ fn shadow_replay(
     fail_on_findings: bool,
 ) -> eyre::Result<()> {
     let replayer = ShadowReplayer::new(chain.clone(), hardfork);
-    let (matched, expected, inconclusive, findings, skipped) = Default::default();
+    // Blocks per ReplayOutcome, then blocks skipped as already canonical.
+    let counts: [AtomicU64; 5] = Default::default();
     let (config, consensus) = components(chain.clone());
     replay::run_blocks(
         store,
@@ -275,29 +272,24 @@ fn shadow_replay(
         config,
         consensus,
         workers,
-        |input, block, receipts| {
-            let counter: &AtomicU64 = if chain.tempo_hardfork_at(block.timestamp()) >= hardfork {
-                &skipped
+        |input, block, executed| {
+            let slot = if chain.tempo_hardfork_at(block.timestamp()) >= hardfork {
+                4
             } else {
-                match replayer
-                    .replay(block, receipts, || Ok(View::new(input.clone())))
+                replayer
+                    .replay(block, &executed.receipts()?, || {
+                        Ok(View::new(input.clone()))
+                    })
                     .map_err(|err| {
                         eyre::eyre!("shadow replay failed at block {}: {err}", block.number())
                     })?
-                    .0
-                {
-                    ReplayOutcome::Match => &matched,
-                    ReplayOutcome::Expected => &expected,
-                    ReplayOutcome::Inconclusive => &inconclusive,
-                    ReplayOutcome::Findings => &findings,
-                }
+                    .0 as usize
             };
-            counter.fetch_add(1, Ordering::Relaxed);
+            counts[slot].fetch_add(1, Ordering::Relaxed);
             Ok(())
         },
     )?;
-    let [matched, expected, inconclusive, findings, skipped] =
-        [matched, expected, inconclusive, findings, skipped].map(AtomicU64::into_inner);
+    let [matched, expected, inconclusive, findings, skipped] = counts.map(AtomicU64::into_inner);
     info!(
         blocks = blocks.len(),
         %hardfork,

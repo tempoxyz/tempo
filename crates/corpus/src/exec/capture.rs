@@ -6,13 +6,11 @@ use crate::{
         block::{Executed, execute_block, run_standalone, verify_changesets},
         db::{Keys, Recording, View},
     },
-    store::{self, CaseRecord, MAX_RECORD_BYTES, Record},
     types::{Block as BlockInput, Case, ChangeSet, Info, Input},
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{KECCAK256_EMPTY, U256};
 use evm2::evm::Database;
-use eyre::OptionExt;
 use reth_consensus::FullConsensus;
 use reth_primitives_traits::{Account, RecoveredBlock};
 use reth_storage_api::{ChangeSetReader, StorageChangeSetReader};
@@ -36,59 +34,6 @@ impl Captured {
             .map(|t| t.stored())
             .collect()
     }
-
-    /// The stored form of this block, whose first transaction has ordinal `first_tx`.
-    pub fn encode(&self, first_tx: u64) -> eyre::Result<Encoded> {
-        let input = &self.input;
-        let cases = self
-            .cases()?
-            .iter()
-            .map(|case| wincode::config::serialize(case, store::WINCODE))
-            .collect::<Result<Vec<_>, _>>()?;
-        let block = wincode::config::serialize(input.as_ref(), store::WINCODE)?;
-        let total_bytes = cases.iter().try_fold(block.len(), |sum, b| {
-            sum.checked_add(b.len())
-                .ok_or_eyre("serialized size overflow")
-        })?;
-        eyre::ensure!(
-            total_bytes <= MAX_RECORD_BYTES,
-            "block and independent transactions exceed 64 MiB record limit"
-        );
-        let record = Record {
-            number: input.number,
-            parent: input.parent,
-            hash: input.block.hash,
-            bytes: total_bytes,
-            block_bytes: block.len(),
-            transactions: self.executed.transactions.len() as u64,
-            gas: self.executed.gas,
-            first_tx,
-            cases: cases
-                .iter()
-                .enumerate()
-                .map(|(index, b)| CaseRecord {
-                    index: index as u64,
-                    bytes: b.len(),
-                })
-                .collect(),
-        };
-        Ok(Encoded {
-            record,
-            block,
-            cases,
-        })
-    }
-}
-
-/// A captured block in its stored form.
-#[derive(Debug)]
-pub struct Encoded {
-    /// Its metadata record.
-    pub record: Record,
-    /// Its encoded [`Input`].
-    pub block: Vec<u8>,
-    /// Its encoded transaction records, in order.
-    pub cases: Vec<Vec<u8>>,
 }
 
 /// Captures `block` from the archive.

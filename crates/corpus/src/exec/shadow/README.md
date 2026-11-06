@@ -21,9 +21,9 @@ executors:
 - the **control** uses the hardfork active for the canonical block.
 - the **shadow** uses the selected candidate hardfork and its hardfork schedule.
 
-Transactions execute in canonical order under both rule sets. Within a block, a control thread and shadow worker pipeline results through a
-one-entry queue. Replay records both results but commits
-the control result into both executors. Every shadow transaction receives the canonical prefix
+Transactions execute in canonical order under both rule sets. Within a block, a control thread
+and a shadow worker pipeline results through a one-entry queue. Replay records both results but
+commits the control result into both executors. Every shadow transaction receives the canonical prefix
 plus candidate pre-block setup, without inheriting earlier candidate transaction results; an early
 candidate transaction difference cannot cause derivative mismatches later. Pre-block changes are
 preserved across control commits, but canonical transaction writes to the same fields take precedence.
@@ -39,8 +39,8 @@ not generate candidate-only transactions.
 The control also acts as a re-execution test for the binary: it checks that the binary can
 execute canonical blocks successfully and reproduce their receipts under the active rules,
 catching STF-breaking changes before shadow differences are interpreted. A control failure is an
-error because an unverified baseline cannot be attributed to the candidate rules. This validates receipt reproduction rather than full canonical state equality. A rejected
-shadow transaction is recorded as a finding; replay still commits the control result and executes
+error because an unverified baseline cannot be attributed to the candidate rules. This validates
+receipt reproduction rather than full canonical state equality. A rejected shadow transaction is recorded as a finding; replay still commits the control result and executes
 later transactions. A failed pre- or post-block boundary is retained as a finding, and boundaries
 that could not execute are reported as incomplete coverage.
 

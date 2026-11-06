@@ -1,7 +1,8 @@
 //! Counterfactual replay of canonical blocks under shadow (candidate) Tempo hardfork rules.
 //!
-//! For each canonical block, such as one from a captured corpus, it executes every transaction under both the canonical (control) and candidate rules from the same canonical
-//! prefix, with candidate pre-block setup retained in the shadow arm. The candidate transaction
+//! For each canonical block, such as one from a captured corpus, it executes every transaction
+//! under both the canonical (control) and candidate rules from the same canonical prefix, with
+//! candidate pre-block setup retained in the shadow arm. The candidate transaction
 //! result is observed, then discarded; the control result advances both executors before the next
 //! transaction. This isolates differences to the transaction that caused
 //! them instead of cascading candidate state through the rest of the block.
@@ -22,13 +23,13 @@ mod analysis;
 mod expectations;
 mod fees;
 
+use super::block::{Updates, drain, hooked};
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
 pub use analysis::Report;
 use evm2::evm::{Cache, Database, PendingState, TxResultExt};
-use parking_lot::Mutex;
 use reth_chainspec::ForkCondition;
 use reth_evm::{BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _};
 use reth_evm_ethereum::EvmFactory as _;
@@ -41,7 +42,7 @@ use tempo_chainspec::{
     spec::{TempoChainSpec, TempoHardforks as _},
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
-use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult, evm::TempoEvm};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult};
 use tempo_precompiles::storage::StorageAction;
 use tempo_primitives::{Block, TempoReceipt};
 use tracing::{debug, warn};
@@ -135,30 +136,10 @@ impl ShadowReplayer {
         block: &RecoveredBlock<Block>,
         parent_state: &(impl Fn() -> Result<DB, String> + Sync),
     ) -> Result<(Evidence, Evidence), String> {
-        let mut evm = self
-            .real_config
-            .evm_for_block(parent_state()?, block.header())
-            .map_err(|e| format!("failed to configure control EVM: {e}"))?;
-        record_actions(&self.real_config, &mut evm);
-        let context = self
-            .real_config
-            .context_for_block(block.sealed_block())
-            .map_err(|e| format!("failed to configure control executor: {e}"))?;
-        let mut executor = self.real_config.create_executor(evm, context);
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        executor.set_state_hook({
-            let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
-        });
-        let mut real = Evidence::default();
-        if let Err(e) = executor.apply_pre_execution_changes() {
-            return Ok((
-                real.fail(Boundary::PreBlock, e.to_string()),
-                Evidence::default(),
-            ));
+        let (mut executor, updates, mut real) = start(&self.real_config, parent_state()?, block)?;
+        if real.failure.is_some() {
+            return Ok((real, Evidence::default()));
         }
-        real.pre_block = Some(take_updates(&updates));
-        executor.evm().ext().actions.clear();
 
         // A one-entry queue pipelines the two arms without retaining an unbounded number of cloned
         // control results when one arm runs ahead.
@@ -187,13 +168,15 @@ impl ShadowReplayer {
                 executor
                     .commit_transaction(result)
                     .map_err(|e| format!("failed to commit control transaction: {e}"))?;
-                real.txs
-                    .push(Ok(observed.with_state(take_updates(&updates))));
+                real.txs.push(Ok(ObservedTx {
+                    state: transition_of(drain(&updates)),
+                    ..observed
+                }));
             }
             drop(results);
             if real.failure.is_none() {
                 match executor.finish() {
-                    Ok(_) => real.post_block = Some(take_updates(&updates)),
+                    Ok(_) => real.post_block = Some(transition_of(drain(&updates))),
                     Err(e) => real = real.fail(Boundary::PostBlock, e.to_string()),
                 }
             }
@@ -211,39 +194,21 @@ impl ShadowReplayer {
         canonical_bal: evm2::evm::BalContext,
         canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
     ) -> Result<Evidence, String> {
-        let parent_state = parent_state().map_err(|e| format!("shadow arm: {e}"))?;
-        let mut evm = self
-            .shadow_config
-            .evm_for_block(parent_state, block.header())
-            .map_err(|e| format!("failed to configure shadow EVM: {e}"))?;
-        record_actions(&self.shadow_config, &mut evm);
-        let context = self
-            .shadow_config
-            .context_for_block(block.sealed_block())
-            .map_err(|e| format!("failed to configure shadow executor: {e}"))?;
-        let mut executor = self.shadow_config.create_executor(evm, context);
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        executor.set_state_hook({
-            let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
-        });
-        let mut shadow = Evidence::default();
-        if let Err(e) = executor.apply_pre_execution_changes() {
-            return Ok(shadow.fail(Boundary::PreBlock, e.to_string()));
-        }
-        shadow.pre_block = Some(take_updates(&updates));
-        executor.evm().ext().actions.clear();
+        let (mut executor, updates, mut shadow) = parent_state()
+            .and_then(|db| start(&self.shadow_config, db, block))
+            .map_err(|e| format!("shadow arm: {e}"))?;
+        let Some(pre_block) = &shadow.pre_block else {
+            return Ok(shadow);
+        };
         // Keep candidate pre-block changes in the cache; only transaction results are discarded.
         executor.evm_mut().overlay_db_mut().bal_context = canonical_bal;
 
         for tx in block.transactions_recovered() {
             match executor.execute_transaction_without_commit(tx) {
-                Ok(result) => {
-                    let observed = ObservedTx::from_result(&result, take_actions(&executor));
-                    shadow.txs.push(Ok(
-                        observed.with_state(transition_pending(result.pending_state()))
-                    ));
-                }
+                Ok(result) => shadow.txs.push(Ok(ObservedTx {
+                    state: transition_of([pending_update(result.pending_state())]),
+                    ..ObservedTx::from_result(&result, take_actions(&executor))
+                })),
                 Err(e) => {
                     executor.evm().ext().actions.clear();
                     shadow.txs.push(Err(e.to_string()));
@@ -254,27 +219,52 @@ impl ShadowReplayer {
             };
             // The commit merges changed storage slots, but replaces the entire AccountInfo.
             // Preserve candidate setup for fields the control transaction did not change.
-            let canonical_state = pending_update(canonical.pending_state());
             let saved = save_pre_block_info(
                 &executor.evm().overlay_db().cache,
-                shadow.pre_block.as_ref().unwrap(),
-                &canonical_state,
+                pre_block,
+                &pending_update(canonical.pending_state()),
             );
             executor
                 .commit_transaction(canonical)
                 .map_err(|e| format!("failed to commit canonical shadow prefix: {e}"))?;
-            let db = executor.evm_mut().overlay_db_mut();
-            restore_pre_block_info(&mut db.cache, saved);
+            restore_pre_block_info(&mut executor.evm_mut().overlay_db_mut().cache, saved);
             // The control commit advances the prefix, not shadow transaction evidence.
-            let _ = take_updates(&updates);
+            drain(&updates);
         }
 
         match executor.finish() {
-            Ok(_) => shadow.post_block = Some(take_updates(&updates)),
+            Ok(_) => shadow.post_block = Some(transition_of(drain(&updates))),
             Err(e) => shadow = shadow.fail(Boundary::PostBlock, e.to_string()),
         }
         Ok(shadow)
     }
+}
+
+/// Opens an executor for `block` that records storage actions and state updates, and applies
+/// its pre-block changes into the returned evidence.
+fn start<'a, DB: Database + 'a>(
+    config: &'a TempoEvmConfig,
+    db: DB,
+    block: &'a RecoveredBlock<Block>,
+) -> Result<(TempoBlockExecutor<'a>, Updates, Evidence), String> {
+    let mut evm = config
+        .evm_for_block(db, block.header())
+        .map_err(|e| format!("failed to configure EVM: {e}"))?;
+    evm.ext_mut().actions.enable();
+    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
+    BlockExecutorFactory::evm_factory(config).configure_evm(&mut evm);
+    let context = config
+        .context_for_block(block.sealed_block())
+        .map_err(|e| format!("failed to configure executor: {e}"))?;
+    let mut executor = config.create_executor(evm, context);
+    let updates = hooked(&mut executor).map_err(|e| e.to_string())?;
+    let mut evidence = Evidence::default();
+    match executor.apply_pre_execution_changes() {
+        Ok(_) => evidence.pre_block = Some(transition_of(drain(&updates))),
+        Err(e) => evidence = evidence.fail(Boundary::PreBlock, e.to_string()),
+    }
+    executor.evm().ext().actions.clear();
+    Ok((executor, updates, evidence))
 }
 
 struct SavedPreBlockInfo {
@@ -336,10 +326,6 @@ fn restore_pre_block_info(cache: &mut Cache, saved: Vec<SavedPreBlockInfo>) {
         }
         cache.accounts.insert(address, Some(candidate));
     }
-}
-
-fn take_updates(updates: &Mutex<Vec<StateUpdate>>) -> TransitionState {
-    transition_of(std::mem::take(&mut *updates.lock()))
 }
 
 fn transition_of(updates: impl IntoIterator<Item = StateUpdate>) -> TransitionState {
@@ -423,10 +409,6 @@ fn pending_update(state: &PendingState) -> StateUpdate {
     update
 }
 
-fn transition_pending(state: &PendingState) -> TransitionState {
-    transition_of([pending_update(state)])
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum TxOutcome {
     #[default]
@@ -480,11 +462,6 @@ impl ObservedTx {
             actions,
             state: TransitionState::default(),
         }
-    }
-
-    fn with_state(mut self, state: TransitionState) -> Self {
-        self.state = state;
-        self
     }
 }
 
@@ -566,13 +543,6 @@ fn normalized_fee_transfer(
     let mut normalized = logs.to_vec();
     normalized[index] = ITIP20::Transfer::encode_log(&transfer);
     Some(hash_logs(&normalized))
-}
-
-/// Records the EVM's storage actions from now on, including the handler's fee hook markers.
-fn record_actions(config: &TempoEvmConfig, evm: &mut TempoEvm<'_>) {
-    evm.ext_mut().actions.enable();
-    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
-    BlockExecutorFactory::evm_factory(config).configure_evm(evm);
 }
 
 /// The storage actions the executor recorded since they were last taken.
@@ -690,13 +660,9 @@ mod tests {
             .unwrap();
         let context = config.context_for_block(block.sealed_block()).unwrap();
         let mut executor = config.create_executor(evm, context);
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        executor.set_state_hook({
-            let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
-        });
+        let updates = hooked(&mut executor).unwrap();
         executor.apply_pre_execution_changes().unwrap();
-        let pre_block = take_updates(&updates);
+        let pre_block = transition_of(drain(&updates));
         // Commit a control result that touches the Zone account but carries canonical (old)
         // code. Only its changed storage slot should replace the candidate pre-block setup.
         let control_original = AccountInfo {
@@ -786,7 +752,7 @@ mod tests {
         );
         pending.insert_account(destroyed_address, Some(original.clone()), None);
 
-        let transitions = transition_pending(&pending).transitions;
+        let transitions = transition_of([pending_update(&pending)]).transitions;
         let changed = &transitions[&address];
         assert_eq!(changed.status, AccountStatus::Changed);
         assert_eq!(changed.previous_info.as_ref(), Some(&original));
