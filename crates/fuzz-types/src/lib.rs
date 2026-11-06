@@ -400,8 +400,7 @@ pub struct TxReceiptOutput {
 
 /// A storage action a Tempo precompile recorded during a transaction, so a runner can follow its
 /// fee without decoding slot diffs. A fee hook's own actions are the ones between its start marker
-/// ([`Self::PreTxFee`] or [`Self::PostTxFee`]) and the next [`Self::FeeHookEnd`]. A hook that
-/// fails records no end marker.
+/// and the next [`FeeHookOutput::End`]. A hook that fails records no end marker.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum StorageActionOutput {
     /// A slot read.
@@ -453,16 +452,23 @@ pub enum StorageActionOutput {
         amount_out: U256,
         sufficient: bool,
     },
+    /// Marks where a fee hook starts or ends. It changes no state.
+    Marker(FeeHookOutput),
+}
+
+/// A step of a transaction's protocol fee hooks.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum FeeHookOutput {
     /// Pre-tx fee hook starts, charging `amount` of `token` to `payer`. Emits no logs.
-    PreTxFee {
+    PreTx {
         payer: Address,
         token: Address,
         amount: U256,
     },
     /// Post-tx fee hook starts, refunding `refund` of `amount`. Its fee transfer is log `log`.
-    PostTxFee { refund: U256, log: u64 },
+    PostTx { refund: U256, log: u64 },
     /// The fee hook the last marker started returned.
-    FeeHookEnd,
+    End,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

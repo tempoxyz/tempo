@@ -212,7 +212,7 @@ mod tests {
     use alloy::primitives::{Address, KECCAK256_EMPTY, Signature};
     use evm2::evm::{AccountInfo, TxResultExt};
     use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
-    use tempo_precompiles::storage::Marker;
+    use tempo_precompiles::storage::FeeHook;
     use tempo_primitives::{TempoTransaction, transaction::Call};
 
     #[test]
@@ -388,18 +388,18 @@ mod tests {
             },
         );
         tx.actions = vec![
-            StorageAction::Marker(Marker::PreTxFee {
+            StorageAction::Marker(FeeHook::PreTx {
                 payer: Address::ZERO,
                 token: Address::ZERO,
                 amount: U256::ZERO,
             }),
-            StorageAction::Marker(Marker::FeeHookEnd),
-            StorageAction::Marker(Marker::PostTxFee {
+            StorageAction::Marker(FeeHook::End),
+            StorageAction::Marker(FeeHook::PostTx {
                 refund: U256::ZERO,
                 log: 0,
             }),
             StorageAction::Sstore(address, slot, U256::from(1_000), U256::from(value)),
-            StorageAction::Marker(Marker::FeeHookEnd),
+            StorageAction::Marker(FeeHook::End),
         ];
     }
 
@@ -437,17 +437,17 @@ mod tests {
     /// A post-transaction fee hook charging `charged` that emits one log at `log`.
     fn post_fee(charged: U256, log: usize) -> Vec<StorageAction> {
         vec![
-            StorageAction::Marker(Marker::PreTxFee {
+            StorageAction::Marker(FeeHook::PreTx {
                 payer: Address::ZERO,
                 token: Address::ZERO,
                 amount: charged,
             }),
-            StorageAction::Marker(Marker::FeeHookEnd),
-            StorageAction::Marker(Marker::PostTxFee {
+            StorageAction::Marker(FeeHook::End),
+            StorageAction::Marker(FeeHook::PostTx {
                 refund: U256::ZERO,
                 log,
             }),
-            StorageAction::Marker(Marker::FeeHookEnd),
+            StorageAction::Marker(FeeHook::End),
         ]
     }
 

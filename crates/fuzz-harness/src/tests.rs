@@ -27,8 +27,8 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_fuzz_types::{
     AccountDiff, AccountInput, BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass,
-    FUZZ_ACCEPT, FUZZ_REJECT, InvariantScope, NonEmpty, PreState, StateChanges, StateInput,
-    StorageActionOutput, StorageChangeOutput, TempoBlock, TempoBlockchainInput,
+    FUZZ_ACCEPT, FUZZ_REJECT, FeeHookOutput, InvariantScope, NonEmpty, PreState, StateChanges,
+    StateInput, StorageActionOutput, StorageChangeOutput, TempoBlock, TempoBlockchainInput,
     TempoExecutionOutcome, TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome,
     TempoTransactionInput, TxOutcome,
 };
@@ -311,23 +311,17 @@ fn receipts_report_what_the_fee_hooks_did() {
 
     // Each hook's actions are the ones between its start marker and the next end marker.
     let actions = &receipt.actions;
-    let marker = |at: usize| {
-        matches!(
-            actions[at],
-            StorageActionOutput::PreTxFee { .. }
-                | StorageActionOutput::PostTxFee { .. }
-                | StorageActionOutput::FeeHookEnd
-        )
-    };
-    let markers: Vec<usize> = (0..actions.len()).filter(|&at| marker(at)).collect();
+    let markers: Vec<usize> = (0..actions.len())
+        .filter(|&at| matches!(actions[at], StorageActionOutput::Marker(_)))
+        .collect();
     let [pre_start, pre_end, post_start, post_end] = markers[..] else {
         panic!("two fee hooks: {actions:#?}");
     };
-    let StorageActionOutput::PreTxFee {
+    let StorageActionOutput::Marker(FeeHookOutput::PreTx {
         payer,
         token,
         amount: charged_up_front,
-    } = actions[pre_start]
+    }) = actions[pre_start]
     else {
         panic!(
             "the pre-transaction hook starts first: {:?}",
@@ -335,11 +329,14 @@ fn receipts_report_what_the_fee_hooks_did() {
         );
     };
     assert_eq!((payer, charged_up_front), (SENDER, max_amount));
-    assert_eq!(actions[pre_end], StorageActionOutput::FeeHookEnd);
-    let StorageActionOutput::PostTxFee {
+    assert_eq!(
+        actions[pre_end],
+        StorageActionOutput::Marker(FeeHookOutput::End)
+    );
+    let StorageActionOutput::Marker(FeeHookOutput::PostTx {
         refund: returned,
         log: transfer_log,
-    } = actions[post_start]
+    }) = actions[post_start]
     else {
         panic!(
             "the post-transaction hook starts next: {:?}",
@@ -347,7 +344,10 @@ fn receipts_report_what_the_fee_hooks_did() {
         );
     };
     assert_eq!(returned, refunded);
-    assert_eq!(actions[post_end], StorageActionOutput::FeeHookEnd);
+    assert_eq!(
+        actions[post_end],
+        StorageActionOutput::Marker(FeeHookOutput::End)
+    );
 
     // The post-transaction hook's first log is its fee transfer.
     let transfer =

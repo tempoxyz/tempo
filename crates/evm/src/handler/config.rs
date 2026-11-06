@@ -24,7 +24,7 @@ use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::TempoPrecompileError,
-    storage::{FromWord, Marker, StorageAction, StorageActions, StorageCtx},
+    storage::{FeeHook, FromWord, StorageAction, StorageActions, StorageCtx},
     storage_credits::{NonCreditableSlots, TransientState},
     tip20::TIP20Error,
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -285,7 +285,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            let marker = Marker::PostTxFee {
+            let marker = FeeHook::PostTx {
                 refund,
                 log: host.logs().len(),
             };
@@ -387,7 +387,7 @@ impl TempoHandlerHooks {
         let beneficiary = host.block().beneficiary;
         let skip_liquidity_check = host.ext().skip_liquidity_check;
         let fee_manager = host.ext().fee_manager.clone();
-        let marker = Marker::PreTxFee {
+        let marker = FeeHook::PreTx {
             payer: context.fee_payer,
             token: context.fee_token,
             amount: context.collected,
@@ -448,10 +448,10 @@ impl TempoHandlerHooks {
     }
 }
 
-/// Runs a fee hook between `start` and [`Marker::FeeHookEnd`], when storage actions are recorded.
+/// Runs a fee hook between `start` and [`FeeHook::End`], when storage actions are recorded.
 fn fee_hook<'a, T, E>(
     host: &mut Evm<'a, TempoEvmTypes>,
-    start: Marker,
+    start: FeeHook,
     hook: impl FnOnce(&mut Evm<'a, TempoEvmTypes>) -> Result<T, E>,
 ) -> Result<T, E> {
     host.ext()
@@ -460,7 +460,7 @@ fn fee_hook<'a, T, E>(
     let out = hook(host)?;
     host.ext()
         .actions
-        .record_always(StorageAction::Marker(Marker::FeeHookEnd));
+        .record_always(StorageAction::Marker(FeeHook::End));
     Ok(out)
 }
 

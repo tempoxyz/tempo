@@ -17,13 +17,13 @@ use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransact
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, consensus::TempoConsensus};
 use tempo_fuzz_types::{
-    BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, InvariantFailure, InvariantScope,
-    PreState, ResultGas, StateChanges, StorageActionOutput, TempoBlock, TempoExecutionOutcome,
-    TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome,
-    TxReceiptOutput,
+    BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, FeeHookOutput, InvariantFailure,
+    InvariantScope, PreState, ResultGas, StateChanges, StorageActionOutput, TempoBlock,
+    TempoExecutionOutcome, TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput,
+    TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
 use tempo_invariants::Tx;
-use tempo_precompiles::storage::{Marker, StorageAction};
+use tempo_precompiles::storage::{FeeHook, StorageAction};
 use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
 
 use crate::{
@@ -527,22 +527,22 @@ fn action_output(action: StorageAction) -> StorageActionOutput {
                 sufficient,
             }
         }
-        StorageAction::Marker(Marker::PreTxFee {
-            payer,
-            token,
-            amount,
-        }) => StorageActionOutput::PreTxFee {
-            payer,
-            token,
-            amount,
-        },
-        StorageAction::Marker(Marker::PostTxFee { refund, log }) => {
-            StorageActionOutput::PostTxFee {
+        StorageAction::Marker(hook) => StorageActionOutput::Marker(match hook {
+            FeeHook::PreTx {
+                payer,
+                token,
+                amount,
+            } => FeeHookOutput::PreTx {
+                payer,
+                token,
+                amount,
+            },
+            FeeHook::PostTx { refund, log } => FeeHookOutput::PostTx {
                 refund,
                 log: log as u64,
-            }
-        }
-        StorageAction::Marker(Marker::FeeHookEnd) => StorageActionOutput::FeeHookEnd,
+            },
+            FeeHook::End => FeeHookOutput::End,
+        }),
     }
 }
 
