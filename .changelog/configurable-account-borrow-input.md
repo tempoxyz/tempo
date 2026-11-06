@@ -1,5 +1,6 @@
 ---
 tempo-evm: patch
+tempo-precompiles: patch
 ---
 
-The configurable account instruction now borrows its call input instead of copying it before input gas is charged.
+The configurable account instruction and the signature verifier borrow their inputs instead of copying them. Keychain verification recovers the inner signature without re-encoding and reparsing it.
