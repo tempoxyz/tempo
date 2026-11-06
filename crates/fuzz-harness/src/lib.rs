@@ -37,16 +37,16 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     in_len: usize,
 ) -> c_int {
     if in_ptr.is_null() {
-        execute::reject(ErrorClass::InvalidInput, "input: null");
+        execute::reject(ErrorClass::InvalidInput, "input/Null");
         return FUZZ_REJECT;
     }
     let input = unsafe { core::slice::from_raw_parts(in_ptr, in_len) };
     let Ok(input) = bincode_options().deserialize::<TempoHarnessInput>(input) else {
-        execute::reject(ErrorClass::InvalidInput, "decode: harness input");
+        execute::reject(ErrorClass::InvalidInput, "decode/HarnessInput");
         return FUZZ_REJECT;
     };
     let Ok(outcome) = bincode_options().serialize(&execute::run(input)) else {
-        execute::reject(ErrorClass::Internal, "internal: outcome encoding");
+        execute::reject(ErrorClass::Internal, "internal/OutcomeEncoding");
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &outcome) }
