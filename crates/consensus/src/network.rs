@@ -171,7 +171,7 @@ mod tests {
     };
     use commonware_utils::test_rng;
 
-    use super::SizeLimited;
+    use super::{SizeLimited, max_message_size};
 
     /// A counter that is not exposed by any metrics registry.
     fn inert_counter() -> Counter {
@@ -236,5 +236,12 @@ mod tests {
 
         assert_eq!(sent, vec![peer]);
         assert_eq!(dropped.get(), 0);
+    }
+
+    /// Pins the derived limit so any change to it, from Tempo or a commonware upgrade, is
+    /// reviewed: all peers must agree on it.
+    #[test]
+    fn max_message_size_for_20_validators_is_pinned() {
+        assert_eq!(max_message_size(commonware_utils::NZU32!(20)), 8_388_780);
     }
 }
