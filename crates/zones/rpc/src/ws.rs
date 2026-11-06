@@ -34,10 +34,12 @@ use tokio::{
 use tracing::warn;
 
 use crate::{
-    auth::{self, AuthContext, AuthError},
+    auth::{self, AuthContext, AuthError, AuthSigner},
+    error::AuthenticateError,
+    handlers::ZoneRpcApi,
     server::{
         MAX_BATCH_SIZE, RpcState, append_batch_response, authenticate_token, dispatch_request,
-        serialize_response_with_limit, validate_keychain_key_info,
+        ensure_not_retired_root, serialize_response_with_limit, validate_keychain_key_info,
     },
     subscription::WsSubscriptionStream,
     types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, to_raw},
@@ -478,17 +480,32 @@ fn duration_until_unix_timestamp(timestamp: u64) -> Duration {
         .unwrap_or_default()
 }
 
-/// Re-check keychain auth for long-lived WebSocket sessions.
-async fn keychain_auth_still_valid(auth: &AuthContext, state: &RpcState) -> bool {
-    let Some(key_id) = auth.keychain_key_id else {
-        return true;
-    };
-
-    match state.api.get_keychain_key(auth.caller, key_id).await {
-        Ok(key_info) => validate_keychain_key_info(&key_info).is_ok(),
-        Err(err) => {
-            warn!(target: "zone::rpc", err = %err, "ws keychain revalidation failed");
-            false
+/// Re-check the signer of a long-lived WebSocket session as the anchor advances: the keychain
+/// authorization of an access key, that a root or access key has not become a retired root, and
+/// that a configurable account's owners still match its Tempo commitment.
+async fn revalidate_auth(
+    auth: &AuthContext,
+    api: &dyn ZoneRpcApi,
+) -> Result<(), AuthenticateError> {
+    match auth.signer {
+        AuthSigner::Root => ensure_not_retired_root(api, auth.caller).await,
+        AuthSigner::Keychain { key_id } => {
+            tokio::try_join!(
+                async {
+                    validate_keychain_key_info(&api.get_keychain_key(auth.caller, key_id).await?)
+                },
+                ensure_not_retired_root(api, key_id),
+            )?;
+            Ok(())
+        }
+        AuthSigner::ConfigurableAccount { config_commitment } => {
+            // Commitments never return to zero, so an unset one still has the derived owners.
+            let commitment = api.get_config_commitment(auth.caller).await?;
+            if commitment.is_zero() || commitment == config_commitment {
+                Ok(())
+            } else {
+                Err(AuthError::InvalidSignature.into())
+            }
         }
     }
 }
@@ -546,7 +563,7 @@ async fn handle_ws_session(
     let terminate_connection = async {
         let token_expiry = tokio::time::sleep(duration_until_unix_timestamp(auth.expires_at));
         tokio::pin!(token_expiry);
-        let mut keychain_recheck = tokio::time::interval(Duration::from_secs(1));
+        let mut auth_recheck = tokio::time::interval(Duration::from_secs(1));
         let mut close_session_rx = close_session_rx;
 
         loop {
@@ -554,14 +571,16 @@ async fn handle_ws_session(
                 biased;
                 _ = &mut token_expiry => break,
                 _ = close_session_rx.changed() => break,
-                _ = keychain_recheck.tick(), if auth.keychain_key_id.is_some() => {
+                _ = auth_recheck.tick() => {
                     // Revalidation may be slow; allow token expiry / forced close to
                     // interrupt it so those deadlines are not delayed by a hung RPC.
                     let still_valid = tokio::select! {
                         biased;
                         _ = &mut token_expiry => false,
                         _ = close_session_rx.changed() => false,
-                        valid = keychain_auth_still_valid(&auth, &state) => valid,
+                        result = revalidate_auth(&auth, state.api.as_ref()) => {
+                            result.inspect_err(|err| err.log("ws")).is_ok()
+                        }
                     };
                     if !still_valid {
                         break;

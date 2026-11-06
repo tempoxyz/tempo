@@ -54,7 +54,7 @@ use tempo_chainspec::{
     spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
 };
 use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount,
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
 };
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
@@ -932,6 +932,31 @@ where
                 .wrap_err("AccountKeychain.getKey eth_call failed")?;
 
             IAccountKeychain::getKeyCall::abi_decode_returns(output.as_ref()).map_err(Into::into)
+        })
+    }
+
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, B256> {
+        Box::pin(async move {
+            let request = TempoTransactionRequest {
+                inner: TransactionRequest {
+                    to: Some(CONFIGURABLE_ACCOUNT_ADDRESS.into()),
+                    input: IConfigurableAccount::getConfigCommitmentCall { account }
+                        .abi_encode()
+                        .into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            let output = EthCall::call(&self.eth.api, request, None, EvmOverrides::default())
+                .await
+                .wrap_err("ConfigurableAccount.getConfigCommitment eth_call failed")?;
+            // Before T14 the precompile has no code, so no account has a commitment.
+            if output.is_empty() {
+                return Ok(B256::ZERO);
+            }
+            IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(output.as_ref())
+                .map_err(Into::into)
         })
     }
 
