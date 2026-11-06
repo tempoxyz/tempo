@@ -142,7 +142,8 @@ services:
         ipv4_address: 10.20.0.20
 
   workload:
-    image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+    # The node image plus the test template; see the workload target in the Dockerfile.
+    image: ${WORKLOAD_IMAGE:-tempo-zones-antithesis-workload:latest}
     container_name: workload
     hostname: workload
     init: true
