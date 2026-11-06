@@ -470,6 +470,7 @@ fn fill_attributes(
     let timestamp_millis = parent.timestamp_millis() + 1;
     let timestamp = timestamp_millis / 1000;
     let gas_limit = parent.gas_limit();
+    let shared_gas_limit = chain_spec.shared_gas_limit_at(timestamp, gas_limit);
     let consensus_context = parent
         .consensus_context
         .map(|context| TempoConsensusContext {
@@ -489,8 +490,8 @@ fn fill_attributes(
             extra_data,
             slot_number: None,
         },
-        general_gas_limit: chain_spec.general_gas_limit_at(timestamp, gas_limit, 0),
-        shared_gas_limit: 0,
+        general_gas_limit: chain_spec.general_gas_limit_at(timestamp, gas_limit, shared_gas_limit),
+        shared_gas_limit,
         timestamp_millis_part: timestamp_millis % 1000,
         consensus_context,
     }
