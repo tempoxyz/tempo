@@ -3,7 +3,7 @@ use crate::{
     TempoEvmTypes, transaction::ExecutionContext,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
-use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
+use alloy_eip7928::BlockAccessIndex;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
@@ -11,17 +11,22 @@ use commonware_codec::ReadExt;
 use evm2::{
     EvmTypes, TxResult, TxResultWithState, TxStateChanges,
     block::{
-        BlockExecutionError, BlockTransactionResult, BlockValidationError, BundleState,
-        CommitChanges, GasOutput, ReceiptBuilderCtx, StateUpdate, map_database_error,
-        map_handler_error,
+        BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
+        BlockValidationError, BundleState, CommitChanges, ExecutableTx, GasOutput, ReceiptBuilder,
+        ReceiptBuilderCtx, StateUpdate,
+        ethereum::{
+            EthBlockExecutionCtx, EthBlockExecutor, EthBlockRules, EthTransactionResultWithState,
+        },
+        map_database_error, map_handler_error,
     },
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
 use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
-use reth_evm::{BlockExecutionOutput, BlockExecutor, ExecutorTx, ReceiptBuilder, RecoveredTx};
-use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
-use std::sync::Arc;
+use std::{
+    borrow::{Borrow, Cow},
+    sync::Arc,
+};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -287,8 +292,22 @@ impl<'a> TempoBlockExecutor<'a> {
             evm.block().timestamp.saturating_to::<u64>(),
             evm.block().number.saturating_to::<u64>(),
         );
+        let rules = EthBlockRules::new(
+            chain_spec,
+            evm.block().number.saturating_to::<u64>(),
+            chain_spec
+                .deposit_contract()
+                .map(|contract| contract.address),
+        );
         let extra_data = ctx.inner.extra_data.clone();
-        let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
+        let inner_ctx = EthBlockExecutionCtx {
+            tx_count_hint: ctx.inner.tx_count_hint,
+            parent_hash: ctx.inner.parent_hash,
+            parent_beacon_block_root: ctx.inner.parent_beacon_block_root,
+            ommers: Cow::Borrowed(ctx.inner.ommers),
+            withdrawals: ctx.inner.withdrawals,
+        };
+        let mut inner = EthBlockExecutor::new(evm, inner_ctx, rules, TempoReceiptBuilder);
         inner.set_spec_id(spec_id);
         Self {
             chain_spec,
@@ -318,8 +337,8 @@ impl<'a> TempoBlockExecutor<'a> {
             non_payment_gas_left: self.non_payment_gas_left,
             incentive_gas_used: self.incentive_gas_used,
             block_gas_used: self.block_gas_used,
-            cumulative_gas_used: self.inner.inner.cumulative_gas_used,
-            blob_gas_used: self.inner.inner.blob_gas_used,
+            cumulative_gas_used: self.inner.cumulative_gas_used,
+            blob_gas_used: self.inner.blob_gas_used,
         }
     }
 
@@ -334,8 +353,8 @@ impl<'a> TempoBlockExecutor<'a> {
         self.non_payment_gas_left = state.non_payment_gas_left;
         self.incentive_gas_used = state.incentive_gas_used;
         self.block_gas_used = state.block_gas_used;
-        self.inner.inner.cumulative_gas_used = state.cumulative_gas_used;
-        self.inner.inner.blob_gas_used = state.blob_gas_used;
+        self.inner.cumulative_gas_used = state.cumulative_gas_used;
+        self.inner.blob_gas_used = state.blob_gas_used;
         self.replay_state = StorageActionReplayState::default();
     }
 
@@ -707,9 +726,9 @@ impl<'a> TempoBlockExecutor<'a> {
 impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
+    type EvmTypes = TempoEvmTypes;
     type Evm = TempoEvm<'a>;
     type TransactionResultWithState = TempoTxResult;
-    type BlockAccessList = Bal;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         if self
@@ -817,20 +836,20 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
     fn execute_transaction_without_commit(
         &mut self,
-        tx: impl ExecutorTx<Self>,
+        tx: impl ExecutableTx<Self>,
     ) -> Result<Self::TransactionResultWithState, BlockExecutionError> {
-        let (mut tx_env, recovered) = tx.into_parts();
+        let (mut tx_env, tx) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
         let execution_context = tx_env.inner().execution_context();
-        let original = recovered.tx();
+        let original = tx.borrow();
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
         let inner = self
             .inner
-            .execute_transaction_without_commit((tx_env, recovered))?;
+            .execute_transaction_without_commit((tx_env, original))?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -880,14 +899,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
     fn execute_transaction_with_commit_condition(
         &mut self,
-        tx: impl ExecutorTx<Self>,
+        tx: impl ExecutableTx<Self>,
         f: impl FnOnce(&TxResult<TempoEvmTypes>, TxStateChanges<'_>) -> CommitChanges,
     ) -> Result<Option<GasOutput>, BlockExecutionError> {
-        let (mut tx_env, recovered) = tx.into_parts();
+        let (mut tx_env, tx) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
         let execution_context = tx_env.inner().execution_context();
-        let original = recovered.tx();
+        let original = tx.borrow();
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let is_payment = self.is_payment(original);
@@ -902,7 +921,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // instead of detaching its state and reattaching it in `commit_transaction`.
         let mut validated = None;
         let gas_output = self.inner.execute_transaction_with_commit_condition(
-            (tx_env, recovered),
+            (tx_env, original),
             |result, state_changes| {
                 let block_gas_used = if use_regular_gas {
                     result.execution_gas_spent()
@@ -942,8 +961,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
     fn finish_with_block_access_list(
         mut self,
-    ) -> Result<(BlockExecutionOutput<TempoReceipt>, Option<BlockAccessList>), BlockExecutionError>
-    {
+    ) -> Result<(BlockExecutionOutput<TempoReceipt>, Option<Bal>), BlockExecutionError> {
         // T4 sets the shared gas limit to zero, so any gas spilled into the
         // incentive section exceeds the available block capacity.
         if self.evm().config_spec_id().is_t4() && self.incentive_gas_used > 0 {
@@ -956,8 +974,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
-            let mut inner = self.inner.inner;
-            let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
+            let mut inner = self.inner;
+            let block_access_list = inner.evm.state_mut().take_bal_builder();
             let result = evm2::block::BlockExecutionResult {
                 receipts: inner.receipts,
                 requests: Default::default(),
@@ -1010,13 +1028,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.inner.validate_transaction_gas_limit(gas_limit)
     }
 
-    fn convert_block_access_list(
-        block_access_list: &BlockAccessList,
-    ) -> Result<Self::BlockAccessList, BlockExecutionError> {
-        Bal::try_from(block_access_list.as_slice()).map_err(BlockExecutionError::other)
-    }
-
-    fn set_block_access_list(&mut self, block_access_list: Arc<Self::BlockAccessList>) {
+    fn set_block_access_list(&mut self, block_access_list: Arc<Bal>) {
         self.inner.set_block_access_list(block_access_list);
     }
 
@@ -1028,7 +1040,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.inner.enable_block_access_list_builder();
     }
 
-    fn take_block_access_list(&mut self) -> Option<BlockAccessList> {
+    fn take_block_access_list(&mut self) -> Option<Bal> {
         self.inner.take_block_access_list()
     }
 }
@@ -1088,6 +1100,7 @@ mod tests {
         interpreter::Host as _,
     };
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
+    use reth_evm::BlockExecutor;
     use std::{
         collections::HashMap,
         sync::{Arc, Mutex},
@@ -1330,7 +1343,7 @@ mod tests {
                 TempoTxType::Legacy,
                 123,
             );
-            executor.inner.commit_transaction(detached).unwrap();
+            evm2::block::BlockExecutor::commit_transaction(&mut executor.inner, detached).unwrap();
             executor.block_gas_used = 20_000;
             let output = executor.finish().unwrap();
             db.commit_source(&evm2::block::BundleSource(&output.state));
@@ -1579,9 +1592,9 @@ mod tests {
                     Bytes::new(),
                 )],
             };
-            executor
-                .inner
-                .commit_transaction(EthTransactionResultWithState::new(
+            evm2::block::BlockExecutor::commit_transaction(
+                &mut executor.inner,
+                EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
                             status: true,
@@ -1592,8 +1605,9 @@ mod tests {
                     },
                     TempoTxType::Legacy,
                     0,
-                ))
-                .unwrap();
+                ),
+            )
+            .unwrap();
             if !fork.is_t13() {
                 assert!(matches!(
                     executor.finish(),

@@ -611,8 +611,9 @@ where
 
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
+                let (tx_env, recovered) = tx.transaction.executable();
                 executor.execute_transaction_with_actions(
-                    tx.transaction.executable(),
+                    (tx_env, recovered.inner()),
                     *replay,
                     result_closure,
                 )
