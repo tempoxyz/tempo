@@ -7,6 +7,10 @@ set -eu
 S=/shared
 NODE=$1
 L1_WS=ws://10.20.0.10:8546
+# Followers and the RPC follower forward bursts of transactions above the p2p transaction
+# channel's per-peer quota and log a warning for every send it rate-limits, which buries the
+# rest of the log. Keep zone::p2p to errors in this stack.
+LOG_FILTER="zone::p2p=error"
 
 case "$NODE" in
     0)
@@ -43,4 +47,5 @@ exec /usr/local/bin/tempo-zone node \
     --disable-discovery \
     --ipcdisable \
     --color never \
+    --log.stdout.filter "$LOG_FILTER" \
     $ROLE_ARGS
