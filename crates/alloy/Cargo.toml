@@ -20,7 +20,7 @@ workspace = true
 tempo-contracts = { workspace = true, features = ["rpc"] }
 tempo-primitives = { workspace = true, features = ["serde"] }
 tempo-chainspec = { workspace = true, default-features = false }
-tempo-evm = { workspace = true, optional = true }
+tempo-evm = { workspace = true, features = ["reth"], optional = true }
 
 alloy-consensus.workspace = true
 alloy-contract.workspace = true

@@ -1,6 +1,5 @@
 use alloy_primitives::Bytes;
 use evm2::block::ethereum::EthBlockExecutionCtx;
-use reth_evm::NextBlockEnvAttributes;
 use tempo_primitives::TempoConsensusContext;
 
 /// Execution context for Tempo block.
@@ -22,11 +21,12 @@ pub struct TempoBlockExecutionCtx<'a> {
 }
 
 /// Context required for next block environment.
+#[cfg(feature = "reth")]
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct TempoNextBlockEnvAttributes {
-    /// Inner [`NextBlockEnvAttributes`].
+    /// Inner [`reth_evm::NextBlockEnvAttributes`].
     #[deref]
-    pub inner: NextBlockEnvAttributes,
+    pub inner: reth_evm::NextBlockEnvAttributes,
     /// Non-payment gas limit for the block.
     pub general_gas_limit: u64,
     /// Shared gas limit for the block.
@@ -42,11 +42,11 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
     for TempoNextBlockEnvAttributes
 {
     fn build_pending_env(
-        parent: &crate::SealedHeader<tempo_primitives::TempoHeader>,
+        parent: &reth_primitives_traits::SealedHeader<tempo_primitives::TempoHeader>,
         block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
     ) -> Self {
         Self {
-            inner: NextBlockEnvAttributes::build_pending_env(parent, block_overrides),
+            inner: reth_evm::NextBlockEnvAttributes::build_pending_env(parent, block_overrides),
             general_gas_limit: parent.general_gas_limit,
             shared_gas_limit: parent.shared_gas_limit,
             timestamp_millis_part: parent.timestamp_millis_part,
@@ -55,7 +55,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rpc"))]
 mod tests {
     use super::*;
     use reth_primitives_traits::SealedHeader;

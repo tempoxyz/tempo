@@ -19,7 +19,7 @@ zone-primitives = { workspace = true, features = ["std"] }
 
 # Tempo
 tempo-chainspec.workspace = true
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["reth"] }
 tempo-primitives.workspace = true
 tempo-precompiles.workspace = true
 

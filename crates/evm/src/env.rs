@@ -1,8 +1,7 @@
 //! Resolved Tempo EVM environment.
 
 use crate::TempoEvmTypes;
-use evm2::{EvmFeatures, Version, env::BlockEnv};
-use reth_evm::{EvmEnv, EvmTransactionValidationGasRules, EvmTransactionValidationLimits};
+use evm2::{Version, env::BlockEnv};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 /// Fully resolved Tempo execution environment: the active hardfork, its runtime configuration and
@@ -60,7 +59,8 @@ impl AsRef<BlockEnv<TempoEvmTypes>> for TempoEvmEnv {
     }
 }
 
-impl EvmEnv for TempoEvmEnv {
+#[cfg(feature = "reth")]
+impl reth_evm::EvmEnv for TempoEvmEnv {
     type EvmTypes = TempoEvmTypes;
 
     fn spec_id(&self) -> TempoHardfork {
@@ -95,8 +95,8 @@ impl EvmEnv for TempoEvmEnv {
         self.block.blob_basefee.saturating_to()
     }
 
-    fn transaction_validation_limits(&self) -> EvmTransactionValidationLimits {
-        let tx_gas_limit_cap = if self.version.feature(EvmFeatures::EIP8037)
+    fn transaction_validation_limits(&self) -> reth_evm::EvmTransactionValidationLimits {
+        let tx_gas_limit_cap = if self.version.feature(evm2::EvmFeatures::EIP8037)
             || self.version.tx_gas_limit_cap == u64::MAX
         {
             0
@@ -104,20 +104,20 @@ impl EvmEnv for TempoEvmEnv {
             self.version.tx_gas_limit_cap
         };
 
-        EvmTransactionValidationLimits {
+        reth_evm::EvmTransactionValidationLimits {
             max_initcode_size: self.version.max_initcode_size,
             tx_gas_limit_cap,
         }
     }
 
-    fn transaction_validation_gas_rules(&self) -> EvmTransactionValidationGasRules {
-        EvmTransactionValidationGasRules {
+    fn transaction_validation_gas_rules(&self) -> reth_evm::EvmTransactionValidationGasRules {
+        reth_evm::EvmTransactionValidationGasRules {
             version: self.version,
         }
     }
 
     fn uses_separate_block_gas(&self) -> bool {
-        self.version.feature(EvmFeatures::EIP8037)
+        self.version.feature(evm2::EvmFeatures::EIP8037)
     }
 
     fn regular_gas_limit_cap(&self) -> u64 {
@@ -125,12 +125,14 @@ impl EvmEnv for TempoEvmEnv {
     }
 
     fn with_nonce_check_disabled(mut self) -> Self {
-        self.version.features.remove(EvmFeatures::NONCE_CHECK);
+        self.version.features.remove(evm2::EvmFeatures::NONCE_CHECK);
         self
     }
 
     fn with_balance_check_disabled(mut self) -> Self {
-        self.version.features.remove(EvmFeatures::BALANCE_CHECK);
+        self.version
+            .features
+            .remove(evm2::EvmFeatures::BALANCE_CHECK);
         self
     }
 }

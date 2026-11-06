@@ -1,5 +1,10 @@
-use crate::{ProtocolFeeManager, TempoEvmEnv, TempoEvmExt, TempoEvmTypes, TempoFeeManager};
-use evm2::evm::precompile::PrecompileProvider;
+use crate::{
+    ProtocolFeeManager, TempoEvmEnv, TempoEvmExt, TempoEvmTypes, TempoFeeManager, tempo_tx_registry,
+};
+use evm2::{
+    ExecutionConfig,
+    evm::{DynDatabase, precompile::PrecompileProvider},
+};
 use std::sync::Arc;
 
 /// Tempo's EVM is EVM2 with the Tempo type family.
@@ -65,6 +70,26 @@ impl TempoEvmFactory {
     pub(crate) fn evm_ext(&self, mut ext: TempoEvmExt) -> TempoEvmExt {
         ext.fee_manager = self.fee_manager.clone();
         ext
+    }
+
+    /// Creates an EVM over `db` configured for `env`, with this factory's precompiles, fee
+    /// manager and, when enabled, JIT backend.
+    pub fn evm_with_env<'a>(&self, db: impl DynDatabase + 'a, env: TempoEvmEnv) -> TempoEvm<'a> {
+        let ext = self.evm_ext(TempoEvmExt::default());
+        let precompiles = self.precompiles(&env, &ext);
+        #[cfg_attr(not(feature = "jit"), allow(unused_mut))]
+        let mut evm = evm2::Evm::new_with_execution_config_and_ext(
+            ExecutionConfig::for_spec_and_version(env.spec, env.version),
+            env.spec,
+            env.block,
+            tempo_tx_registry(env.spec.into()),
+            db,
+            precompiles,
+            ext,
+        );
+        #[cfg(feature = "jit")]
+        self.configure_jit(&mut evm);
+        evm
     }
 }
 
@@ -145,6 +170,7 @@ impl reth_evm::JitBackend for TempoEvmFactory {
     }
 }
 
+#[cfg(feature = "reth")]
 impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
     type Types = TempoEvmTypes;
     type SpecId = tempo_chainspec::hardfork::TempoHardfork;

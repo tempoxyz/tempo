@@ -4,12 +4,9 @@ use alloy_consensus::{
     SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
     transaction::{Either, Recovered, TxHashRef},
 };
-use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
 pub use evm2::ethereum::RecoveredTxEnvelope;
 use evm2::ethereum::{LazyTxEip7702, TxEnvelope as EthTxEnvelope};
-use reth_evm::{FromRecoveredTx, FromTxWithEncoded, TransactionEnvMut};
-use reth_primitives_traits::WithEncoded;
 use std::{borrow::Borrow, ops::Deref, sync::Arc};
 use tempo_primitives::{AASigned, TempoTxEnvelope};
 
@@ -541,16 +538,20 @@ impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
     }
 }
 
-impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
+#[cfg(feature = "reth")]
+impl reth_evm::FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: Recovered<TempoTxEnvelope>) -> Self {
         tx.into()
     }
 }
 
-impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
-    fn from_tx_with_encoded(tx: WithEncoded<Recovered<TempoTxEnvelope>>) -> Self {
+#[cfg(feature = "reth")]
+impl reth_evm::FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
+    fn from_tx_with_encoded(
+        tx: reth_primitives_traits::WithEncoded<Recovered<TempoTxEnvelope>>,
+    ) -> Self {
         let is_simulation = tx.encoded_bytes().is_empty();
-        let mut tx_env = Self::from_recovered_tx(tx.1);
+        let mut tx_env: Self = tx.1.into();
         if is_simulation {
             tx_env.execution_context = ExecutionContext::Simulation;
         }
@@ -558,7 +559,8 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     }
 }
 
-impl TransactionEnvMut for TempoTxEnv {
+#[cfg(feature = "reth")]
+impl reth_evm::TransactionEnvMut for TempoTxEnv {
     fn set_gas_limit(&mut self, gas_limit: u64) {
         match &mut self.evm_tx {
             TempoEvmTx::Legacy { transaction, .. } => transaction.inner_mut().gas_limit = gas_limit,
@@ -574,7 +576,7 @@ impl TransactionEnvMut for TempoTxEnv {
         }
     }
 
-    fn set_access_list(&mut self, access_list: AccessList) {
+    fn set_access_list(&mut self, access_list: alloy_eips::eip2930::AccessList) {
         match &mut self.evm_tx {
             TempoEvmTx::Legacy { transaction, .. } => {
                 let signer = transaction.signer();
@@ -618,12 +620,14 @@ impl TransactionEnvMut for TempoTxEnv {
 mod tests {
     use super::*;
     use alloy_consensus::{TxEip7702, transaction::TxHashRef};
-    use alloy_eips::eip2930::AccessListItem;
+    use alloy_eips::eip2930::{AccessList, AccessListItem};
     use alloy_primitives::{B256, Signature, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use core::num::NonZeroU64;
     use proptest::prelude::*;
+    use reth_evm::{FromTxWithEncoded, TransactionEnvMut};
+    use reth_primitives_traits::WithEncoded;
     use tempo_primitives::{
         TempoSignature, TempoTransaction,
         transaction::{

@@ -38,7 +38,7 @@ alloy-transport.workspace = true
 tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts = { workspace = true, features = ["rpc", "std"] }
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["reth"] }
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec"] }
 

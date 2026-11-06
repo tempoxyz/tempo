@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 # tempo
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["reth"] }
 tempo-node.workspace = true
 tempo-payload-types.workspace = true
 tempo-primitives.workspace = true

@@ -304,6 +304,7 @@ impl TempoStateAccess<((), ())> for &mut dyn DynDatabase {
     }
 }
 
+#[cfg(feature = "reth")]
 impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
     fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
         self.basic_account(&address)
