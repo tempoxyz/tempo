@@ -17,7 +17,8 @@ use tempo_precompiles::{
     Precompile,
     account_keychain::AccountKeychain,
     configurable_account::{
-        CONFIGURABLE_ACCOUNT_CODE, ConfigurableAccount, UpgradeEligibility, config, valid_account,
+        CONFIGURABLE_ACCOUNT_CODE, ConfigurableAccount, UpgradeEligibility, config,
+        is_valid_account,
     },
     input_cost,
     storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
@@ -150,7 +151,7 @@ fn account_namespace_excludes_reserved_addresses() {
             (Address::repeat_byte(0x71), true),
         ] {
             assert_eq!(
-                valid_account(account, spec),
+                is_valid_account(account, spec),
                 expected,
                 "{account} at {spec:?}"
             );

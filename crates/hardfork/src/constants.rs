@@ -101,6 +101,11 @@ pub mod gas {
     /// T2 adds 2 warm SLOADs for the extended nonce key lookup.
     pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
+    /// TIP-1154 gas for a zone's first read of an account's Tempo configuration commitment in a
+    /// transaction, on top of the account access when an EVM load reads it, so a batch's Tempo
+    /// witness stays within the prover's budget.
+    pub const L1_COMMITMENT_READ_GAS: u64 = 10_000;
+
     #[cfg(test)]
     mod tests {
         use super::*;
