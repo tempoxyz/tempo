@@ -148,8 +148,17 @@ where
                 .await
                 .wrap_err("failed filling the halted epoch up to the recovery boundary")?;
             // A configured identity from a later full DKG ceremony still takes precedence.
-            if recovery.network_identity().from_epoch > network_identity.from_epoch {
-                network_identity = recovery.network_identity();
+            let recovered = recovery.network_identity();
+            if recovered.from_epoch > network_identity.from_epoch {
+                network_identity = recovered;
+            } else {
+                ensure!(
+                    recovered.from_epoch < network_identity.from_epoch
+                        || recovered.identity == network_identity.identity,
+                    "the configured network identity for epoch `{}` differs from the chain \
+                    recovery's",
+                    recovered.from_epoch,
+                );
             }
         }
         let recovery_boundary = recovery.as_ref().map(Recovery::boundary);

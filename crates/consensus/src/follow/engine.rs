@@ -24,7 +24,7 @@ use commonware_runtime::{
     spawn_cell,
 };
 use commonware_utils::NZUsize;
-use eyre::{WrapErr as _, eyre};
+use eyre::{WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_core::{CryptoRng, Rng};
 use reth_engine_primitives::ConsensusEngineHandle;
@@ -109,8 +109,17 @@ impl<TUpstream> Config<TUpstream> {
                 .await
                 .wrap_err("failed filling the halted epoch up to the recovery boundary")?;
             // A configured identity from a later full DKG ceremony still takes precedence.
-            if recovery.network_identity().from_epoch > network_identity.from_epoch {
-                network_identity = recovery.network_identity();
+            let recovered = recovery.network_identity();
+            if recovered.from_epoch > network_identity.from_epoch {
+                network_identity = recovered;
+            } else {
+                ensure!(
+                    recovered.from_epoch < network_identity.from_epoch
+                        || recovered.identity == network_identity.identity,
+                    "the configured network identity for epoch `{}` differs from the chain \
+                    recovery's",
+                    recovered.from_epoch,
+                );
             }
         }
 
