@@ -40,6 +40,7 @@ const fn zone_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<TempoEvmT
     let mut config = tempo_opcode_config::<BASE_SPEC_ID>();
     config.set_instruction::<ZoneCreate<false>>(op::CREATE, 0);
     config.set_instruction::<ZoneCreate<true>>(op::CREATE2, 0);
+    super::commitment_reads::charge_commitment_reads(&mut config);
     config
 }
 
