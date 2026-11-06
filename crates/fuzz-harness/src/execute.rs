@@ -530,30 +530,19 @@ fn action_output(action: StorageAction) -> StorageActionOutput {
         StorageAction::Marker(Marker::PreTxFee {
             payer,
             token,
-            max_amount,
-            logs,
+            amount,
         }) => StorageActionOutput::PreTxFee {
             payer,
             token,
-            max_amount,
-            logs: logs as u64,
+            amount,
         },
-        StorageAction::Marker(Marker::PostTxFee {
-            payer,
-            token,
-            charged,
-            refunded,
-            logs,
-        }) => StorageActionOutput::PostTxFee {
-            payer,
-            token,
-            charged,
-            refunded,
-            logs: logs as u64,
-        },
-        StorageAction::Marker(Marker::FeeHookEnd { logs }) => {
-            StorageActionOutput::FeeHookEnd { logs: logs as u64 }
+        StorageAction::Marker(Marker::PostTxFee { refunded, log }) => {
+            StorageActionOutput::PostTxFee {
+                refunded,
+                log: log as u64,
+            }
         }
+        StorageAction::Marker(Marker::FeeHookEnd) => StorageActionOutput::FeeHookEnd,
     }
 }
 

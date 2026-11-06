@@ -746,9 +746,9 @@ fn normalized_fee_transfer(
     actions: &[StorageAction],
 ) -> Option<B256> {
     let fee = fees::post_tx_fee(actions)?;
-    let index = fee.logs.start;
+    let index = fee.log;
     let log = logs.get(index)?;
-    if log.address != fee.token || !fee.logs.contains(&index) {
+    if log.address != fee.token {
         return None;
     }
     let mut transfer = ITIP20::Transfer::decode_log_validate(log).ok()?;
@@ -837,14 +837,17 @@ mod tests {
         };
         let writes = |amount| {
             vec![
-                StorageAction::Marker(Marker::PostTxFee {
+                StorageAction::Marker(Marker::PreTxFee {
                     payer,
                     token,
-                    charged: amount,
-                    refunded: U256::ZERO,
-                    logs: 1,
+                    amount,
                 }),
-                StorageAction::Marker(Marker::FeeHookEnd { logs: 2 }),
+                StorageAction::Marker(Marker::FeeHookEnd),
+                StorageAction::Marker(Marker::PostTxFee {
+                    refunded: U256::ZERO,
+                    log: 1,
+                }),
+                StorageAction::Marker(Marker::FeeHookEnd),
             ]
         };
         let (canonical, candidate) = (logs(U256::from(85)), logs(U256::from(79)));

@@ -285,13 +285,13 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            record_marker(host, |logs| Marker::PostTxFee {
-                payer: fee_payer,
-                token: fee_token,
-                charged: actual_spending,
-                refunded: refund,
-                logs,
-            });
+            record_marker(
+                host,
+                Marker::PostTxFee {
+                    refunded: refund,
+                    log: host.logs().len(),
+                },
+            );
             let validator_fee = fee_manager.collect_fee_post_tx(
                 ProtocolFeeContext { host: &mut *host },
                 fee_payer,
@@ -300,7 +300,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
                 fee_token,
                 beneficiary,
             )?;
-            record_marker(host, |logs| Marker::FeeHookEnd { logs });
+            record_marker(host, Marker::FeeHookEnd);
             validator_fee
         };
         result.ext.validator_fee = validator_fee;
@@ -392,12 +392,14 @@ impl TempoHandlerHooks {
         let fee_manager = host.ext().fee_manager.clone();
         let charges = !context.collected.is_zero();
         if charges {
-            record_marker(host, |logs| Marker::PreTxFee {
-                payer: context.fee_payer,
-                token: context.fee_token,
-                max_amount: context.collected,
-                logs,
-            });
+            record_marker(
+                host,
+                Marker::PreTxFee {
+                    payer: context.fee_payer,
+                    token: context.fee_token,
+                    amount: context.collected,
+                },
+            );
         }
         if charges
             && let Err(error) = fee_manager.collect_fee_pre_tx(
@@ -441,7 +443,7 @@ impl TempoHandlerHooks {
             });
         }
         if charges {
-            record_marker(host, |logs| Marker::FeeHookEnd { logs });
+            record_marker(host, Marker::FeeHookEnd);
         }
 
         if host.config_spec_id().is_t7() && !context.collected.is_zero() {
@@ -456,12 +458,11 @@ impl TempoHandlerHooks {
     }
 }
 
-/// Records the fee lifecycle marker that `marker` builds from the number of logs the transaction
-/// has emitted, when storage actions are recorded.
-fn record_marker(host: &Evm<'_, TempoEvmTypes>, marker: impl FnOnce(usize) -> Marker) {
+/// Records a fee hook marker, when storage actions are recorded.
+fn record_marker(host: &Evm<'_, TempoEvmTypes>, marker: Marker) {
     let actions = &host.ext().actions;
     if actions.is_enabled() {
-        actions.record_always(StorageAction::Marker(marker(host.logs().len())));
+        actions.record_always(StorageAction::Marker(marker));
     }
 }
 

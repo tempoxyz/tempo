@@ -57,31 +57,20 @@ pub enum StorageAction {
     Marker(Marker),
 }
 
-/// A step of a transaction's protocol fee lifecycle, recorded by the handler around each fee hook
-/// so that the actions between a hook's start marker and its [`Self::FeeHookEnd`] are the hook's
-/// own. A hook that fails records no [`Self::FeeHookEnd`].
-///
-/// Each marker holds `logs`, the number of logs the transaction had emitted when it was recorded.
+/// Brackets a protocol fee hook. The actions between a hook's start marker and the next
+/// [`Self::FeeHookEnd`] are the hook's own. A hook that fails records no end marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Marker {
-    /// The pre-transaction fee hook starts charging `max_amount` of `token` to `payer`.
+    /// Pre-tx fee hook starts, charging `amount` of `token` to `payer`. Emits no logs.
     PreTxFee {
         payer: Address,
         token: Address,
-        max_amount: U256,
-        logs: usize,
+        amount: U256,
     },
-    /// The post-transaction fee hook starts keeping `charged` of `token` and refunding
-    /// `refunded` to `payer`. Its fee transfer, if it emits one, is the log at index `logs`.
-    PostTxFee {
-        payer: Address,
-        token: Address,
-        charged: U256,
-        refunded: U256,
-        logs: usize,
-    },
-    /// The fee hook the last marker started returned successfully.
-    FeeHookEnd { logs: usize },
+    /// Post-tx fee hook starts, refunding `refunded` of `amount`. Its fee transfer is log `log`.
+    PostTxFee { refunded: U256, log: usize },
+    /// The fee hook the last marker started returned.
+    FeeHookEnd,
 }
 
 impl StorageAction {
