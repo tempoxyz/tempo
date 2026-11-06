@@ -1,4 +1,4 @@
-# Zone test image: the Tempo L1 node, the zone node built with SDK assertions enabled,
+# Zone test image: the Tempo L1 node and the zone node built with SDK assertions enabled,
 # the provisioning tools and the scripts docker-compose.yaml runs.
 #
 # Build from the repository root (requires the crates/zones/contracts/lib submodules):
@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --locked --profile ${RUST_PROFILE} \
         -p tempo -p tempo-zone -p tempo-xtask \
         --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask \
-        --features tempo-zone/fuzz \
+        --features tempo/fuzz,tempo-zone/fuzz \
     && mkdir -p /out \
     && cp target/${RUST_PROFILE}/tempo target/${RUST_PROFILE}/tempo-zone \
         target/${RUST_PROFILE}/tempo-xtask target/${RUST_PROFILE}/tempo-zone-xtask /out/
