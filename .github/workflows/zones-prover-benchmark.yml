@@ -245,7 +245,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 37e7a3b19e7b475077b78cabe69d79d85a5ea827 # tempo-multi-region-benchmark#490 (per-phase L1)
+          ref: main # same as bench-e2e-multi-region.yml, so harness fixes need no tempo PR
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
