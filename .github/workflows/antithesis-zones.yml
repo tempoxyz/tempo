@@ -94,10 +94,10 @@ jobs:
           dir="$RUNNER_TEMP/antithesis-workload"
           mkdir -p "$dir"
           cp -a zones/antithesis/test "$dir/test"
-          printf 'ARG NODE_IMAGE\nFROM ${NODE_IMAGE}\nCOPY --chmod=755 test/ /opt/antithesis/test/\n' > "$dir/Dockerfile"
+          printf 'FROM %s\nCOPY --chmod=755 test/ /opt/antithesis/test/\n' \
+            "$REGISTRY/tempo-zones-antithesis@$NODE_DIGEST" > "$dir/Dockerfile"
           image="$REGISTRY/tempo-zones-antithesis-workload"
           docker build --platform linux/amd64 \
-            --build-arg "NODE_IMAGE=$REGISTRY/tempo-zones-antithesis@$NODE_DIGEST" \
             -t "$image:$TAG" -t "$image:$BRANCH" "$dir"
           docker push "$image:$TAG"
           docker push "$image:$BRANCH"
