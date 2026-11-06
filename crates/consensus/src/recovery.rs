@@ -386,8 +386,8 @@ where
 {
     // Before T4 every block ends with system transactions, which fill blocks do not build.
     ensure!(
-        chain_spec.is_t4_active_at_timestamp(parent.timestamp()),
-        "chain recovery needs T4 active at the recovery's finalized block",
+        chain_spec.is_t4_active_at_timestamp((parent.timestamp_millis() + 1) / 1000),
+        "chain recovery needs T4 active from its first fill block",
     );
     let mut overlay = OverlayManager::<TempoPrimitives>::default().overlay_builder(parent.hash());
     let outcome = Bytes::from(outcome.encode().to_vec());
