@@ -32,7 +32,12 @@ use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
-use crate::{ZoneEvm, database::validate_pending_state};
+use crate::{
+    ZoneEvm,
+    database::{
+        strip_bundle_commitment_overlays, strip_update_commitment_overlays, validate_pending_state,
+    },
+};
 
 /// Predeploys whose code T15 removes from zones, since zone transfers would make them reachable.
 ///
@@ -352,7 +357,9 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             self.inner.set_spec_id(SpecId::SHANGHAI);
         }
 
-        self.inner.finish_with_block_access_list()
+        let (mut output, block_access_list) = self.inner.finish_with_block_access_list()?;
+        strip_bundle_commitment_overlays(&mut output.state);
+        Ok((output, block_access_list))
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
@@ -367,12 +374,17 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         self.inner.receipts()
     }
 
-    fn set_state_hook(&mut self, hook: impl FnMut(StateUpdate) + Send + 'static) -> bool {
-        self.inner.set_state_hook(hook)
+    fn set_state_hook(&mut self, mut hook: impl FnMut(StateUpdate) + Send + 'static) -> bool {
+        self.inner.set_state_hook(move |mut update| {
+            strip_update_commitment_overlays(&mut update);
+            hook(update);
+        })
     }
 
     fn into_state(self) -> reth_evm::BundleState {
-        self.inner.into_state()
+        let mut state = self.inner.into_state();
+        strip_bundle_commitment_overlays(&mut state);
+        state
     }
 
     fn validate_transaction_gas_limit(

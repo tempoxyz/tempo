@@ -179,12 +179,13 @@ pub(crate) mod tests {
     use zone_precompiles::{ADVANCE_TEMPO_SELECTOR, test_utils::MockL1Reader};
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
 
-    pub(crate) fn config() -> ZoneEvmConfig<MockL1Reader> {
+    /// A dev Zone EVM config that reads Tempo through `l1`.
+    pub(crate) fn config(l1: MockL1Reader) -> ZoneEvmConfig<MockL1Reader> {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 1).unwrap();
         ZoneEvmConfig::new(
             std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap()),
-            MockL1Reader::default(),
+            l1,
             Address::ZERO,
         )
     }
@@ -197,7 +198,7 @@ pub(crate) mod tests {
         };
         env.version = tempo_chainspec::gas_params::version(evm2::SpecId::OSAKA, spec, false);
         env.block.gas_limit = U256::from(30_000_000);
-        BlockExecutorFactory::evm_with_env(&config(), db, env)
+        BlockExecutorFactory::evm_with_env(&config(MockL1Reader::default()), db, env)
     }
 
     pub(super) fn transaction(
@@ -259,7 +260,7 @@ pub(crate) mod tests {
     #[test]
     fn handler_storage_contexts_follow_zone_rules() {
         let mut evm = BlockExecutorFactory::evm_with_env(
-            &config(),
+            &config(MockL1Reader::default()),
             InMemoryDB::default(),
             TempoEvmEnv::default(),
         );
@@ -326,7 +327,7 @@ pub(crate) mod tests {
                 registry,
                 NoPrecompiles::default(),
             );
-            let config = config();
+            let config = config(MockL1Reader::default());
             let block = Default::default();
             let ctx = config.context_for_block(&block).unwrap();
             let mut executor = ZoneBlockExecutor::new(evm, ctx, config.chain_spec());

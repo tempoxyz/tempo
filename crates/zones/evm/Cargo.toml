@@ -32,6 +32,7 @@ reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-execution-types.workspace = true
 reth-primitives-traits.workspace = true
+reth-trie-common.workspace = true
 
 # alloy
 alloy-consensus.workspace = true
