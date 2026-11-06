@@ -65,16 +65,18 @@ impl Recover {
         std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
         dir.create(&output)
             .wrap_err_with(|| format!("failed creating `{}`", output.display()))?;
-        std::fs::write(
-            output.join("recovery.json"),
-            serde_json::to_string_pretty(&recovery)?,
-        )
-        .wrap_err("failed writing recovery.json")?;
+        // The share goes first: it refuses to overwrite an earlier run's, which would otherwise
+        // leave that share next to this run's outcome.
         write_secret(
             &output.join("signing.share"),
             &SigningShare::from(share).to_string(),
         )
         .wrap_err("failed writing signing.share")?;
+        std::fs::write(
+            output.join("recovery.json"),
+            serde_json::to_string_pretty(&recovery)?,
+        )
+        .wrap_err("failed writing recovery.json")?;
 
         println!(
             "wrote recovery (finalized height {}, boundary {}) to `{}`",
