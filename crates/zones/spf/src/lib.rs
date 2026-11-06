@@ -504,11 +504,15 @@ pub enum Error {
     /// A read against the provided state witness failed.
     #[error(transparent)]
     WitnessDatabase(#[from] WitnessDatabaseError),
-    /// The Tempo witness omitted an L1 storage proof required by execution.
-    #[error("Tempo witness is missing account {account:?} slot {slot:?} at block {block_number}")]
+    /// The Tempo witness omitted an L1 account or storage proof required by execution. `slot` is
+    /// `None` when the read needed only the account proof.
+    #[error(
+        "Tempo witness is missing account {account:?}{} at block {block_number}",
+        .slot.map(|slot| format!(" slot {slot:?}")).unwrap_or_default()
+    )]
     MissingTempoStorage {
         account: alloy_primitives::Address,
-        slot: B256,
+        slot: Option<B256>,
         block_number: u64,
     },
     /// A batch must execute at least one Zone block.
@@ -1203,8 +1207,61 @@ mod tests {
         );
         let missing = database.missing_read().unwrap();
         assert_eq!(missing.account, account);
-        assert_eq!(missing.slot, slot);
+        assert_eq!(missing.slot, Some(slot));
         assert_eq!(missing.block_number, block_number);
+    }
+
+    #[test]
+    fn reports_the_exact_missing_tempo_account_proof() {
+        let account = Address::repeat_byte(0x33);
+        let block_number = 9;
+        let header = TempoHeader {
+            inner: Header {
+                number: block_number,
+                state_root: B256::repeat_byte(0x44),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let database = TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
+            initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
+            node_pool: Vec::new(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            database.read_l1_commitment(account, block_number),
+            Err(zone_precompiles::L1StateError::AccountUnavailable {
+                account,
+                block_number,
+                reason: "witness does not include the checkpoint state root".into(),
+            })
+        );
+        let missing = database.missing_read().unwrap();
+        assert_eq!(missing.account, account);
+        assert_eq!(missing.slot, None);
+        assert_eq!(missing.block_number, block_number);
+    }
+
+    #[test]
+    fn missing_tempo_storage_names_the_slot_only_for_storage_reads() {
+        let account = Address::repeat_byte(0x33);
+        let missing = |slot| Error::MissingTempoStorage {
+            account,
+            slot,
+            block_number: 9,
+        };
+        assert_eq!(
+            missing(None).to_string(),
+            format!("Tempo witness is missing account {account:?} at block 9")
+        );
+        assert_eq!(
+            missing(Some(B256::ZERO)).to_string(),
+            format!(
+                "Tempo witness is missing account {account:?} slot {:?} at block 9",
+                B256::ZERO
+            )
+        );
     }
 
     #[test]

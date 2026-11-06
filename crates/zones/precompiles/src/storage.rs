@@ -42,6 +42,16 @@ pub trait L1StorageReader: Clone + Send + Sync + 'static {
         slot: B256,
         block_number: u64,
     ) -> core::result::Result<B256, L1StateError>;
+
+    /// Reads the TIP-1108 configuration commitment of `account` at `block_number` on Tempo L1,
+    /// or zero when the account has none, without gas accounting.
+    ///
+    /// Like [`Self::read_l1_storage`], this is a raw provider hook: callers choose the anchor.
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> core::result::Result<B256, L1StateError>;
 }
 
 /// Execution-local access to Tempo L1 storage at a single finalized block number.
@@ -72,9 +82,7 @@ pub struct L1State<P> {
     initial_anchor: Arc<Mutex<Option<U256>>>,
     /// Tempo block number selected for the current transaction attempt.
     anchor: Arc<Mutex<Option<u64>>>,
-    /// Anchor at which every mirrored entry (TIP-403 registry slots and TIP-20 pause flags) in the
-    /// EVM's accepted cache was loaded, or `None` if they may come from several anchors. Unlike the
-    /// fields above, it persists across transactions.
+    /// Anchor of all mirrored entries in the EVM's cache (kept across txs), or `None` if mixed.
     mirror_cache_anchor: Arc<Mutex<Option<U256>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
@@ -121,8 +129,8 @@ impl<P> L1State<P> {
         self.mirror_cache_anchor.lock().replace(anchor) != Some(anchor)
     }
 
-    /// Records that a mirrored slot was loaded from L1 at `anchor`. A cache holding entries from
-    /// another anchor can no longer be trusted until the next
+    /// Records that a mirrored slot or account commitment was loaded from L1 at `anchor`. A cache
+    /// holding entries from another anchor can no longer be trusted until the next
     /// [`Self::select_mirror_cache_anchor`].
     pub fn note_mirrored_read(&self, anchor: u64) {
         let mut cached = self.mirror_cache_anchor.lock();
@@ -191,6 +199,19 @@ impl<P: L1StorageReader> L1State<P> {
     ) -> Result<B256, L1StateError> {
         self.set_anchor(block_number)?;
         self.provider.read_l1_storage(account, slot, block_number)
+    }
+
+    /// Reads the TIP-1108 commitment of `account` without gas metering, after selecting or
+    /// validating `block_number` as this transaction's anchor.
+    ///
+    /// The EVM database overlay uses this path because the EVM already charges the account load.
+    pub fn read_l1_commitment_unmetered(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        self.set_anchor(block_number)?;
+        self.provider.read_l1_commitment(account, block_number)
     }
 
     /// Reads L1 storage, with gas metering, after selecting or validating `block_number` as this
@@ -286,6 +307,18 @@ pub enum L1StateError {
         /// Provider failure diagnostic.
         reason: String,
     },
+    /// The underlying L1 provider could not resolve an account's commitment at the requested
+    /// block. Its message shares the prefix of [`Self::StorageUnavailable`], which identifies L1
+    /// unavailability once precompile storage stringifies the error.
+    #[error("Tempo L1 storage unavailable account={account} block={block_number}: {reason}")]
+    AccountUnavailable {
+        /// Tempo account whose commitment was requested.
+        account: Address,
+        /// Tempo block number at which the account was requested.
+        block_number: u64,
+        /// Provider failure diagnostic.
+        reason: String,
+    },
     /// An L1 read disagreed with the anchor already selected for this transaction.
     #[error("Tempo L1 read at anchor {new} conflicts with currently selected anchor {current}")]
     AnchorConflict {
@@ -305,9 +338,12 @@ pub enum L1StateError {
 }
 
 impl L1StateError {
-    /// Returns whether this is an underlying storage-provider failure.
-    pub const fn is_storage_unavailable(&self) -> bool {
-        matches!(self, Self::StorageUnavailable { .. })
+    /// Returns whether this is an underlying provider failure for storage or an account.
+    pub const fn is_unavailable(&self) -> bool {
+        matches!(
+            self,
+            Self::StorageUnavailable { .. } | Self::AccountUnavailable { .. }
+        )
     }
 }
 
@@ -354,6 +390,28 @@ mod tests {
 
     fn read(l1: &L1State<MockL1Reader>, anchor: u64) -> Result<B256, L1StateError> {
         l1.read_l1_storage_unmetered(Address::ZERO, B256::ZERO, anchor)
+    }
+
+    #[test]
+    fn commitment_reads_select_the_anchor() {
+        let reader = MockL1Reader::default();
+        let l1 = L1State::new(reader.clone(), Address::ZERO);
+        let account = Address::repeat_byte(1);
+        reader.insert_commitment(account, 10, B256::repeat_byte(0xaa));
+
+        assert_eq!(
+            l1.read_l1_commitment_unmetered(account, 10),
+            Ok(B256::repeat_byte(0xaa))
+        );
+        assert_eq!(l1.get_anchor(), Some(10));
+        assert_eq!(
+            l1.read_l1_commitment_unmetered(account, 11),
+            Err(L1StateError::AnchorConflict {
+                current: 10,
+                new: 11
+            })
+        );
+        assert_eq!(reader.commitment_requests(), [(account, 10)]);
     }
 
     #[test]

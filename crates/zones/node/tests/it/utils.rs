@@ -5327,6 +5327,8 @@ impl L1Fixture {
         seed_raw_tip403_token_policy(&mut cache, 0, Address::ZERO, ALLOW_ALL_POLICY_ID);
         seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
         seed_raw_tip20_unpaused(&mut cache, 0, PATH_USD_ADDRESS);
+        // Zones read every sender's TIP-1108 commitment from Tempo; the dev account has none.
+        cache.set_commitment(l1_dev_signer().address(), 0, B256::ZERO);
         drop(cache);
         self.caches.lock().unwrap().push(cache_handle.clone());
         self.enabled_token_registries
@@ -5345,7 +5347,7 @@ impl L1Fixture {
         policy_id: u64,
     ) -> eyre::Result<Check403Registry> {
         for &account in no_receive_policy_accounts {
-            self.seed_no_receive_policy_at(block_number, account)?;
+            self.seed_transfer_recipient_at(block_number, account)?;
         }
         seed_raw_tip403_token_policy(
             &mut zone.l1_state_cache().lock(),
@@ -5359,13 +5361,19 @@ impl L1Fixture {
         })
     }
 
-    /// Seed the absence of an address-level TIP-403 receive policy at the current Zone anchor.
-    pub(crate) fn seed_no_receive_policy(&self, recipient: Address) -> eyre::Result<()> {
+    /// Seed the Tempo state a transfer recipient needs at the current Zone anchor: no address-level
+    /// TIP-403 receive policy and no TIP-1108 commitment.
+    pub(crate) fn seed_transfer_recipient(&self, recipient: Address) -> eyre::Result<()> {
         let current_anchor = self.next_block_number.saturating_sub(1);
-        self.seed_no_receive_policy_at(current_anchor, recipient)
+        self.seed_transfer_recipient_at(current_anchor, recipient)
     }
 
-    fn seed_no_receive_policy_at(&self, block_number: u64, recipient: Address) -> eyre::Result<()> {
+    fn seed_transfer_recipient_at(
+        &self,
+        block_number: u64,
+        recipient: Address,
+    ) -> eyre::Result<()> {
+        self.seed_no_commitment_at(block_number, recipient);
         // TODO(rusowsky): make `ReceivePolicy` public upstream to use the handlers
         let receive_policy_slot = recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
         for cache in self.caches.lock().unwrap().iter() {
@@ -5381,8 +5389,22 @@ impl L1Fixture {
 
     fn seed_fixture_deposit_policy_state(&self, block_number: u64, deposits: &[DepositFixture]) {
         for deposit in deposits {
-            self.seed_no_receive_policy_at(block_number, deposit.to)
-                .expect("deposit receive-policy fixture seed must be admitted");
+            self.seed_transfer_recipient_at(block_number, deposit.to)
+                .expect("deposit recipient fixture seed must be admitted");
+        }
+    }
+
+    /// Seed the absence of `account`'s TIP-1108 commitment on Tempo, which zones read whenever
+    /// execution first loads an account without zone code.
+    pub(crate) fn seed_no_commitment(&self, account: Address) {
+        self.seed_no_commitment_at(0, account);
+    }
+
+    fn seed_no_commitment_at(&self, block_number: u64, account: Address) {
+        for cache in self.caches.lock().unwrap().iter() {
+            cache
+                .lock()
+                .set_commitment(account, block_number, B256::ZERO);
         }
     }
 
@@ -5490,8 +5512,8 @@ impl L1Fixture {
         for deposit in &events.deposits {
             match deposit {
                 L1Deposit::WithdrawalBounceBack(deposit) => {
-                    self.seed_no_receive_policy_at(block_number, deposit.to)
-                        .expect("event receive-policy fixture seed must be admitted");
+                    self.seed_transfer_recipient_at(block_number, deposit.to)
+                        .expect("event recipient fixture seed must be admitted");
                 }
                 L1Deposit::Deposit(deposit) => {
                     if let Some(decrypted) = zone_precompiles::ecies::decrypt_deposit(
@@ -5505,8 +5527,8 @@ impl L1Fixture {
                         deposit.key_index,
                         deposit.sender,
                     ) {
-                        self.seed_no_receive_policy_at(block_number, decrypted.to)
-                            .expect("encrypted receive-policy fixture seed must be admitted");
+                        self.seed_transfer_recipient_at(block_number, decrypted.to)
+                            .expect("encrypted recipient fixture seed must be admitted");
                     }
                 }
             }

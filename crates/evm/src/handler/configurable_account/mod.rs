@@ -5,7 +5,7 @@ use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx as _, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
-use alloy_primitives::{Address, B256, IntoLogData as _};
+use alloy_primitives::{Address, B256, IntoLogData as _, KECCAK256_EMPTY};
 use evm2::{
     Evm,
     evm::AccountInfo,
@@ -13,11 +13,11 @@ use evm2::{
     registry::{HandlerError, HandlerResult},
     version::{GasId, GasParams},
 };
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
 use tempo_precompiles::{
     configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, registration_event, valid_account,
-        valid_account_code,
+        ConfigurableAccount, UpgradeEligibility, is_account_code_hash, is_valid_account,
+        is_valid_account_code, registration_event,
     },
     error::TempoPrecompileError,
     storage::{StorageCtx, account_config_commitment},
@@ -159,12 +159,12 @@ impl TempoTxEnv {
 ///
 /// Configurable roles are checked first. At T14, bare primitive authority is then rejected with
 /// [`TempoInvalidTransaction::RootKeyRetired`] for any account with a nonzero configuration
-/// commitment, in the order sender, key authorization signer, fee payer, access key. RPC
-/// simulation skips only the sender check.
-/// Loads and warms accounts, but does not register commitments.
-/// Caller must charge both components.
-/// Transaction warmth, but not the beneficiary's, must be initialized before loading non-caller
-/// accounts.
+/// commitment, in the order sender, key authorization signer, fee payer, access key.
+/// RPC simulation skips only the sender check. On a zone, the Tempo commitment reads of the
+/// accounts the transaction warms for free are charged too (see [`l1_commitment_reads_gas`]).
+///
+/// Loads and warms accounts, but does not register commitments. Caller must charge both components.
+/// Tx warmth, but not the beneficiary's, must be initialized before loading non-caller accounts.
 pub(crate) fn validate_state(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
@@ -188,6 +188,7 @@ pub(crate) fn validate_state(
         if let Some(aa) = envelope.as_aa() {
             extra_gas += granted_configurable_account_access_gas(host, aa, spec, &accounts)?;
         }
+        extra_gas += l1_commitment_reads_gas(host, envelope, spec)?;
     }
     Ok((extra_gas, state_gas))
 }
@@ -224,7 +225,7 @@ pub(crate) fn register_commitments(
     aa: &TempoAaTx,
 ) -> HandlerResult<()> {
     let roles = aa.configurable_roles();
-    if matches!(roles, [None, None]) {
+    if matches!(roles, [None, None]) || !host.ext().kind.is_l1() {
         return Ok(());
     }
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
@@ -254,6 +255,41 @@ pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
         }
 }
 
+/// Intrinsic gas for the Tempo commitment reads (TIP-1154) of the accounts a zone transaction warms
+/// without paying a cold access: a full cold access for the sender, and [`L1_COMMITMENT_READ_GAS`] for
+/// the first call target when it can hold a commitment. A zone's gas schedule charges every other
+/// read through the cold access (see [`tempo_chainspec::gas_params::apply_zone`]). Zero on Tempo L1.
+fn l1_commitment_reads_gas(
+    host: &mut Evm<'_, TempoEvmTypes>,
+    envelope: &TempoTxEnv,
+    spec: TempoHardfork,
+) -> HandlerResult<u64> {
+    if host.ext().kind.is_l1() {
+        return Ok(0);
+    }
+    let caller = envelope.caller();
+    let mut gas = account_access_gas(&host.version().gas_params, true);
+    let Some(to) = envelope
+        .evm_tx()
+        .calls()
+        .next()
+        .and_then(|(kind, _)| kind.to().copied())
+    else {
+        return Ok(gas);
+    };
+    if to != caller && is_valid_account(to, spec) && !host.precompiles().contains(&to) {
+        let code_hash = host
+            .state_mut()
+            .account(&to)?
+            .get()
+            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
+        if is_account_code_hash(code_hash) {
+            gas += L1_COMMITMENT_READ_GAS;
+        }
+    }
+    Ok(gas)
+}
+
 /// Loads and warms `address` once, reading its code, emptiness, nonce and commitment.
 fn load_account(
     host: &mut Evm<'_, TempoEvmTypes>,
@@ -266,7 +302,7 @@ fn load_account(
     let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
     Ok(LoadedAccount {
         was_cold,
-        invalid_code: !valid_account_code(account.code_hash(), commitment),
+        invalid_code: !is_valid_account_code(account.code_hash(), commitment),
         is_empty: info.is_none_or(AccountInfo::is_empty),
         nonce: account.nonce(),
         commitment,
@@ -302,13 +338,11 @@ fn validate_configurable_roles(
         }
         .into());
     }
-    let mut accounts = Vec::new();
-    let mut extra_gas = 0;
-    let mut state_gas = 0;
+    let (mut accounts, mut extra_gas, mut state_gas) = (Vec::new(), 0, 0);
     for role in roles.into_iter().flatten() {
         let signature = role.signature;
         let address = signature.account();
-        if !valid_account(address, spec) {
+        if !is_valid_account(address, spec) {
             return Err(ConfigurableAccountError::InvalidAccount { account: address }.into());
         }
         let account = load_account(host, address, spec)?;
@@ -339,7 +373,9 @@ fn validate_configurable_roles(
                 .config()
                 .derivation_gas()
                 .ok_or(TempoPrecompileError::OutOfGas)?;
-            if first {
+
+            // Zones never register, so they charge no write.
+            if first && host.ext().kind.is_l1() {
                 let gas = &host.version().gas_params;
                 // TIP-1108 prices the commitment write like account creation.
                 extra_gas += gas.get(GasId::NewAccountCost);

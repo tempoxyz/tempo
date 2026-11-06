@@ -8,7 +8,7 @@ use crate::{
     storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment},
 };
 use alloy::primitives::{Address, B256, KECCAK256_EMPTY};
-pub use tempo_chainspec::is_valid_native_account as valid_account;
+pub use tempo_chainspec::is_valid_native_account as is_valid_account;
 use tempo_contracts::precompiles::{
     CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountError, ConfigurableAccountEvent,
     IConfigurableAccount,
@@ -65,7 +65,7 @@ impl ConfigurableAccount {
                 .ok_or(TempoPrecompileError::OutOfGas)?,
         )?;
         let account = config.derive_account()?;
-        if !valid_account(account, self.storage.spec()) {
+        if !is_valid_account(account, self.storage.spec()) {
             return Err(ConfigurableAccountError::invalid_account().into());
         }
         Ok(account)
@@ -153,7 +153,7 @@ impl ConfigurableAccount {
         let (invalid_code, commitment) = self.storage.with_account_info(sender, |info| {
             let commitment = account_config_commitment(info, spec)?;
             Ok((
-                !info.is_empty_code_hash() && !valid_account_code(info.code_hash, commitment),
+                !info.is_empty_code_hash() && !is_valid_account_code(info.code_hash, commitment),
                 commitment,
             ))
         })?;
@@ -268,12 +268,17 @@ pub fn registration_event(
     )
 }
 
+/// Whether `code_hash` is an account's rather than a contract's: no code, or the account marker.
+pub fn is_account_code_hash(code_hash: B256) -> bool {
+    code_hash == KECCAK256_EMPTY || code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH
+}
+
 /// Whether code matches the account's registration state.
-pub fn valid_account_code(code_hash: B256, commitment: B256) -> bool {
-    code_hash
-        == if commitment.is_zero() {
-            KECCAK256_EMPTY
-        } else {
-            CONFIGURABLE_ACCOUNT_CODE_HASH
-        }
+pub fn is_valid_account_code(code_hash: B256, commitment: B256) -> bool {
+    let effective_hash = if commitment.is_zero() {
+        KECCAK256_EMPTY
+    } else {
+        CONFIGURABLE_ACCOUNT_CODE_HASH
+    };
+    effective_hash == code_hash
 }

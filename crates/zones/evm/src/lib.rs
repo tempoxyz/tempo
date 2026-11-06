@@ -286,8 +286,10 @@ where
             ext.non_creditable_slots.clone(),
             l1.clone(),
         );
+        let mut version = env.version;
+        tempo_chainspec::gas_params::apply_zone(&mut version, env.spec);
         evm2::Evm::new_with_execution_config_and_ext(
-            zone_execution_config(env.spec, env.version),
+            zone_execution_config(env.spec, version),
             env.spec,
             env.block,
             zone_tx_registry(env.spec, l1),
@@ -430,18 +432,37 @@ impl<L1: L1StorageReader> L1StorageReader for RecordingL1StorageReader<L1> {
         self.reads
             .lock()
             .expect("L1 read recorder lock poisoned")
-            .insert(TempoStorageRead { account, slot });
+            .insert(TempoStorageRead {
+                account,
+                slot: Some(slot),
+            });
         Ok(value)
+    }
+
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, zone_precompiles::L1StateError> {
+        let commitment = self.inner.read_l1_commitment(account, block_number)?;
+        self.reads
+            .lock()
+            .expect("L1 read recorder lock poisoned")
+            .insert(TempoStorageRead {
+                account,
+                slot: None,
+            });
+        Ok(commitment)
     }
 }
 
-/// A Tempo L1 storage slot accessed while replaying a Zone block.
+/// A Tempo L1 account, or one of its storage slots, accessed while replaying a Zone block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TempoStorageRead {
     /// Tempo account whose storage was accessed.
     pub account: Address,
-    /// Storage slot that was accessed.
-    pub slot: B256,
+    /// Accessed storage slot, or `None` for an account-only read of the TIP-1108 commitment.
+    pub slot: Option<B256>,
 }
 
 #[cfg(test)]
@@ -489,7 +510,10 @@ mod tests {
         assert_eq!(reader.read_l1_storage(account, slot, 10).unwrap(), value);
         assert_eq!(
             reader.take_reads(),
-            HashSet::from_iter([TempoStorageRead { account, slot }])
+            HashSet::from_iter([TempoStorageRead {
+                account,
+                slot: Some(slot)
+            }])
         );
 
         let failing = RecordingL1StorageReader::new(MockL1Reader::failing_storage());
