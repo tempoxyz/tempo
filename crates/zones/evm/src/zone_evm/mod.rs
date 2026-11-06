@@ -171,7 +171,7 @@ pub(crate) mod tests {
     };
     use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, storage::StorageCtx};
     use tempo_primitives::{
-        TempoTxEnvelope,
+        TempoEvmKind, TempoTxEnvelope,
         transaction::{
             Authorization, TempoSignature, TempoSignedAuthorization, TempoTransaction,
             envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
@@ -265,9 +265,10 @@ pub(crate) mod tests {
             InMemoryDB::default(),
             TempoEvmEnv::default(),
         );
-        assert!(!StorageCtx::enter_evm(&mut evm, || {
-            StorageCtx::default().is_l1()
-        }));
+        assert_eq!(
+            StorageCtx::enter_evm(&mut evm, || StorageCtx::default().kind()),
+            TempoEvmKind::Zone
+        );
     }
 
     #[test]

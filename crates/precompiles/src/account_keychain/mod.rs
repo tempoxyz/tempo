@@ -27,7 +27,7 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
-    configurable_account::{is_valid_account, is_valid_account_code},
+    configurable_account::{valid_account, valid_account_code},
     error::Result,
     has_duplicates_metered,
     storage::{Handler, Mapping, Set, StorageCtx, account_config_commitment},
@@ -272,7 +272,7 @@ impl AccountKeychain {
             let spec = self.storage.spec();
             let invalid_parent = StorageCtx::with_warm_caller_info(msg_sender, |info| {
                 let commitment = account_config_commitment(info, spec)?;
-                Ok(!commitment.is_zero() && !is_valid_account_code(info.code_hash, commitment))
+                Ok(!commitment.is_zero() && !valid_account_code(info.code_hash, commitment))
             })?;
             if invalid_parent {
                 return Err(AccountKeychainError::invalid_key_id().into());
@@ -293,9 +293,9 @@ impl AccountKeychain {
         if is_delegate_grant {
             let spec = self.storage.spec();
             // Naming a delegate does not register it or require a configuration witness.
-            if !is_valid_account(key_id, self.storage.spec())
+            if !valid_account(key_id, self.storage.spec())
                 || self.storage.with_account_info(key_id, |info| {
-                    Ok(!is_valid_account_code(
+                    Ok(!valid_account_code(
                         info.code_hash,
                         account_config_commitment(info, spec)?,
                     ))

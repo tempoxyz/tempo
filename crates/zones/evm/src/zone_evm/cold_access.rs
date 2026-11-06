@@ -101,16 +101,15 @@ fn cold_loads_pay_a_tempo_read_from_t14() {
 }
 
 #[test]
-fn beneficiary_is_cold_and_sender_warm_from_t14() {
-    assert_eq!(
-        load_gas(TempoHardfork::T14, op::BALANCE, &[BENEFICIARY]),
-        load_gas(TempoHardfork::T14, op::BALANCE, &[ELIGIBLE])
-    );
-    // The sender's read is intrinsic, so its loads only pay warm access.
-    assert_eq!(
-        load_gas(TempoHardfork::T14, op::BALANCE, &[SENDER]),
-        load_gas(TempoHardfork::T13, op::BALANCE, &[SENDER])
-    );
+fn beneficiary_and_sender_stay_warm_from_t14() {
+    // The sender's read is intrinsic, and the beneficiary's is one per block, so their loads only
+    // pay warm access.
+    for account in [SENDER, BENEFICIARY] {
+        assert_eq!(
+            load_gas(TempoHardfork::T14, op::BALANCE, &[account]),
+            load_gas(TempoHardfork::T13, op::BALANCE, &[account])
+        );
+    }
 }
 
 #[test]

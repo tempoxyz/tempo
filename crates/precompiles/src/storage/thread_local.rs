@@ -12,7 +12,7 @@ use evm2::{
 use scoped_tls::scoped_thread_local;
 use std::cell::RefCell;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
@@ -272,10 +272,10 @@ impl StorageCtx {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
 
-    /// Whether this context executes over Tempo L1 rather than a zone. See
+    /// Returns the kind of EVM this context executes over. See
     /// [`PrecompileStorageProvider::kind`].
-    pub fn is_l1(&self) -> bool {
-        Self::with_storage(|s| s.kind().is_l1())
+    pub fn kind(&self) -> TempoEvmKind {
+        Self::with_storage(|s| s.kind())
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.
