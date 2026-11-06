@@ -167,15 +167,30 @@ done <<< "$CRATES_IO_PATCHES"
 # ── 5. Patch evm2 ────────────────────────────────────────────────────────────
 # Tempo's reth crates and Foundry must share one evm2, and Foundry may depend on
 # a fork or another revision of it. Redirect every evm2 source in the graph to
-# Tempo's pinned revision. The redirect goes through evm2's pre-transfer URL,
+# Tempo's effective revision, including its workspace patch when present. The
+# redirect goes through evm2's pre-transfer URL,
 # which Cargo treats as another source, because it rejects a patch from the same
 # source.
 EVM2_PATCH_URL="https://github.com/alloy-rs/evm2"
+EVM2_TARGET_URL="https://github.com/DaniPopes/evm2"
 EVM2_REV="$(sed -nE 's/^evm2 = \{.*rev = "([0-9a-f]+)".*/\1/p' "$TEMPO_CARGO" | head -n1)"
+EVM2_OVERRIDE="$(awk '
+  /^\[patch\."https:\/\/github\.com\/alloy-rs\/evm2"\]/ { in_section = 1; next }
+  in_section && /^\[/ { exit }
+  in_section && /^evm2 = \{/ { print; exit }
+' "$TEMPO_CARGO")"
+if [[ -n "$EVM2_OVERRIDE" ]]; then
+  EVM2_TARGET_URL="$(sed -nE 's/.*git = "([^"]+)".*/\1/p' <<< "$EVM2_OVERRIDE")"
+  EVM2_REV="$(sed -nE 's/.*rev = "([0-9a-f]+)".*/\1/p' <<< "$EVM2_OVERRIDE")"
+  if [[ -z "$EVM2_TARGET_URL" || -z "$EVM2_REV" ]]; then
+    echo "ERROR: Incomplete evm2 workspace patch in $TEMPO_CARGO" >&2
+    exit 1
+  fi
+fi
 EVM2_PATCHES=""
 if [[ -n "$EVM2_REV" ]]; then
   for crate in evm2 evm2-inspectors evm2-jit evm2-macros; do
-    EVM2_PATCHES+="$crate = { git = \"https://github.com/DaniPopes/evm2\", rev = \"$EVM2_REV\" }"$'\n'
+    EVM2_PATCHES+="$crate = { git = \"$EVM2_TARGET_URL\", rev = \"$EVM2_REV\" }"$'\n'
   done
 fi
 
