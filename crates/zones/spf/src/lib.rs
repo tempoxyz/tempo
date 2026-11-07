@@ -68,21 +68,19 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
         ZONE_INBOX_ADDRESS,
         inbox::slots::PROCESSED_DEPOSIT_QUEUE_HASH,
     )?);
-    let previous_processed_number = read_zone_storage(
+    let previous_processed_number = read_zone_u64(
         &mut zone_state,
         ZONE_INBOX_ADDRESS,
         inbox::slots::PROCESSED_DEPOSIT_NUMBER,
-    )?
-    .to::<u64>();
+    )?;
     // Keep the public transition anchored to the physical pre-state. On the first T13 batch this
     // is zero; ZoneInbox authenticates the legacy hash prefix internally before writing the
     // migrated count, so rewriting this value would diverge from settlement attestations.
-    let previous_processed_token_count = read_zone_storage(
+    let previous_processed_token_count = read_zone_u64(
         &mut zone_state,
         ZONE_INBOX_ADDRESS,
         inbox::slots::PROCESSED_ENABLED_TOKEN_COUNT,
-    )?
-    .to::<u64>();
+    )?;
 
     // The initial Tempo header supplies the root for Tempo-side reads. The
     // Zone's own TempoState must already contain the same number and hash;
@@ -95,12 +93,11 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
         TEMPO_STATE_ADDRESS,
         tempo_state::slots::TEMPO_BLOCK_HASH,
     )?);
-    let zone_tempo_number = read_zone_storage(
+    let zone_tempo_number = read_zone_u64(
         &mut zone_state,
         TEMPO_STATE_ADDRESS,
         tempo_state::slots::TEMPO_BLOCK_NUMBER,
-    )?
-    .to::<u64>();
+    )?;
     if (zone_tempo_number, zone_tempo_hash) != (witnessed_tempo_number, witnessed_tempo_hash) {
         return Err(Error::InitialTempoCheckpointMismatch {
             expected_number: zone_tempo_number,
@@ -225,18 +222,16 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
         ZONE_INBOX_ADDRESS,
         inbox::slots::PROCESSED_DEPOSIT_QUEUE_HASH,
     )?);
-    let next_processed_number = read_zone_storage(
+    let next_processed_number = read_zone_u64(
         &mut zone_state,
         ZONE_INBOX_ADDRESS,
         inbox::slots::PROCESSED_DEPOSIT_NUMBER,
-    )?
-    .to::<u64>();
-    let next_processed_token_count = read_zone_storage(
+    )?;
+    let next_processed_token_count = read_zone_u64(
         &mut zone_state,
         ZONE_INBOX_ADDRESS,
         inbox::slots::PROCESSED_ENABLED_TOKEN_COUNT,
-    )?
-    .to::<u64>();
+    )?;
     let has_withdrawal_finalization = witness
         .zone_blocks
         .iter()
@@ -265,12 +260,11 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
         TEMPO_STATE_ADDRESS,
         tempo_state::slots::TEMPO_BLOCK_HASH,
     )?);
-    let final_tempo_number = read_zone_storage(
+    let final_tempo_number = read_zone_u64(
         &mut zone_state,
         TEMPO_STATE_ADDRESS,
         tempo_state::slots::TEMPO_BLOCK_NUMBER,
-    )?
-    .to::<u64>();
+    )?;
 
     // The final Tempo checkpoint must be the publicly declared target. When
     // the anchor is newer, the supplied headers extend that checkpoint to the
@@ -364,6 +358,16 @@ fn read_zone_storage(
             Err(Error::UnexpectedBalancedAccess { address, slot })
         }
     }
+}
+
+fn read_zone_u64(
+    zone_state: &mut CacheDB<Db<WitnessDatabase>>,
+    address: alloy_primitives::Address,
+    slot: U256,
+) -> Result<u64, Error> {
+    read_zone_storage(zone_state, address, slot)?
+        .try_into()
+        .map_err(|_| Error::ZoneStorageValueOverflow { address, slot })
 }
 
 fn validate_tempo_anchor(
@@ -644,6 +648,12 @@ pub enum Error {
         address: alloy_primitives::Address,
         slot: U256,
     },
+    /// A Zone storage slot read as a `u64` holds a value above `u64::MAX`.
+    #[error("zone storage {address:?} slot {slot:?} does not fit in u64")]
+    ZoneStorageValueOverflow {
+        address: alloy_primitives::Address,
+        slot: U256,
+    },
     /// The final Tempo checkpoint number differs from the public value.
     #[error("final Tempo block number mismatch: expected {expected}, got {actual}")]
     FinalTempoBlockNumberMismatch { expected: u64, actual: u64 },
@@ -869,6 +879,50 @@ mod tests {
             prove_zone_batch(&test_config(), witness),
             Err(Error::EmptyZoneBatch)
         );
+    }
+
+    #[test]
+    fn rejects_processed_deposit_number_above_u64() {
+        let mut witness = minimal_batch_witness();
+        let (state_root, zone_state_witness) = witnessed_account_state(
+            ZONE_INBOX_ADDRESS,
+            1,
+            U256::ZERO,
+            alloy_consensus::constants::KECCAK_EMPTY,
+            Vec::new(),
+            Some((
+                inbox::slots::PROCESSED_DEPOSIT_NUMBER,
+                U256::from(u64::MAX) + U256::ONE,
+            )),
+        );
+        witness.parent_header.inner.state_root = state_root;
+        witness.zone_state_witness = zone_state_witness;
+        witness.zone_blocks.push(empty_zone_block(0, 0));
+
+        assert_eq!(
+            prove_zone_batch(&test_config(), witness),
+            Err(Error::ZoneStorageValueOverflow {
+                address: ZONE_INBOX_ADDRESS,
+                slot: inbox::slots::PROCESSED_DEPOSIT_NUMBER,
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_malformed_eip7702_bytecode_as_legacy_code() {
+        let code = Bytes::from([0xef, 0x01]);
+        let mut database = WitnessDatabase::from_zone_state_witness(
+            ZoneStateWitness {
+                node_pool: Vec::new(),
+                bytecodes: vec![code.clone()],
+            },
+            EMPTY_ROOT_HASH,
+        )
+        .unwrap();
+
+        let bytecode = database.get_code_by_hash(&keccak256(&code)).unwrap();
+        assert!(!bytecode.is_eip7702());
+        assert_eq!(bytecode.original_byte_slice(), code.as_ref());
     }
 
     #[test]
