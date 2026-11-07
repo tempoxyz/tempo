@@ -598,6 +598,7 @@ impl Context {
                 expected = batch;
                 last_block = Some(block);
             }
+            nonce += 1;
         }
         while remaining > 0 {
             let chunk = remaining.min(FANOUT_CHUNK);
@@ -642,6 +643,19 @@ impl Context {
         let Some(block) = last_block else {
             return Ok(());
         };
+        // Sends an earlier command gave up on can still land after this command's last one, in
+        // the same block, and overwrite its allowances: then the block's end state is theirs.
+        let nonce_after = zone
+            .get_transaction_count(sender.address())
+            .block_id(BlockId::number(block))
+            .await?;
+        if nonce_after > nonce {
+            println!(
+                "approve: later sends from {} landed in block {block}, skipping readback",
+                sender.address()
+            );
+            return Ok(());
+        }
         let cleared = expected
             .iter()
             .filter(|(_, amount)| amount.is_zero())

@@ -12,7 +12,8 @@
 # multiproof and persists often with little state masking, zone-1 persists every block without
 # masking, zone-2 keeps up to 64 blocks in memory and masks most of each persisted batch. Nodes
 # running the sparse-trie task also compare its trie updates with a serial computation, which
-# trie-oracle.sh reports.
+# trie-oracle.sh reports. reth only runs the sparse-trie task with at least 5 CPUs and Antithesis
+# containers report fewer, so those nodes claim 8 with --cpu-cores; zone-1 stays synchronous.
 set -eu
 
 S=/shared
@@ -22,7 +23,7 @@ L1_WS=ws://10.20.0.10:8546
 case "$NODE" in
     0)
         ROLE_ARGS="--secp256k1.key $S/seq-0.key --sequencer-key-file $S/seq-0.key"
-        ROLE_ARGS="$ROLE_ARGS --engine.disable-sparse-trie-cache-pruning --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2"
+        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.disable-sparse-trie-cache-pruning --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2"
         P2P_KEY=$S/p2p-0.key
         ;;
     1 | 2)
@@ -31,12 +32,12 @@ case "$NODE" in
         if [ "$NODE" = 1 ]; then
             ROLE_ARGS="$ROLE_ARGS --engine.state-root-fallback --engine.persistence-threshold 0"
         else
-            ROLE_ARGS="$ROLE_ARGS --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
+            ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
         fi
         ;;
     rpc)
         # Without --sequencer.prover-address the shadow prover runs the native prover in-process.
-        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --engine.state-root-task-compare-updates"
+        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --cpu-cores 8 --engine.state-root-task-compare-updates"
         P2P_KEY=$S/p2p-rpc.key
         ;;
     *)
