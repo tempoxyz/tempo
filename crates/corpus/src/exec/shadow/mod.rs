@@ -1,8 +1,8 @@
 //! Counterfactual replay of canonical blocks under shadow (candidate) Tempo hardfork rules.
 //!
-//! The node follows and persists the canonical chain. For each newly canonical block, it executes
-//! every transaction under both the canonical (control) and candidate rules from the same canonical
-//! prefix, with candidate pre-block setup retained in the shadow arm. The candidate transaction
+//! For each canonical block, such as one from a captured corpus, it executes every transaction
+//! under both the canonical (control) and candidate rules from the same canonical prefix, with
+//! candidate pre-block setup retained in the shadow arm. The candidate transaction
 //! result is observed, then discarded; the control result advances both executors before the next
 //! transaction. This isolates differences to the transaction that caused
 //! them instead of cascading candidate state through the rest of the block.
@@ -12,7 +12,7 @@
 //! forkchoice, or used as prestate for another transaction or block.
 //!
 //! Control re-execution must reproduce canonical receipts. Failure or divergence indicates a
-//! non-canonical STF and terminates live replay. Shadow findings never stop replay.
+//! non-canonical STF and is returned as an error. Shadow findings never stop replay.
 //!
 //! Analysis compares completed pre-block, transaction, and post-block boundaries in order. It
 //! compares net effects at each boundary—not complete state equality or write history. Gas-only
@@ -23,39 +23,32 @@ mod analysis;
 mod expectations;
 mod fees;
 
-use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
+use super::block::{Updates, drain, hooked};
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
+use alloy_sol_types::SolEvent as _;
 use analysis::Report;
-use evm2::evm::{Cache, PendingState, TxResultExt};
-use metrics::{Counter, Gauge, Histogram};
-use parking_lot::Mutex;
+use evm2::evm::{Cache, Database, PendingState, TxResultExt};
 use reth_chainspec::ForkCondition;
-use reth_ethereum::{evm::EvmFactory as _, tasks::TaskExecutor};
-use reth_evm::{
-    BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _, database::StateProviderDatabase,
-};
+use reth_evm::{BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _};
+use reth_evm_ethereum::EvmFactory as _;
 use reth_execution_types::{BlockState, StateUpdate};
 use reth_primitives_traits::RecoveredBlock;
-use reth_provider::{
-    CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
-};
-use reth_tracing::tracing::{debug, error, info, info_span, warn};
 use reth_trie_common::bundle_state::{AccountStatus, TransitionAccount, TransitionState};
 use std::{
     collections::{HashSet, hash_map::Entry},
     sync::Arc,
-    time::Instant,
 };
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
-use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult, evm::TempoEvm};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult};
 use tempo_precompiles::storage::{FeeHook, StorageAction};
-use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
-use tokio::sync::broadcast::error::RecvError;
+use tempo_primitives::{Block, TempoReceipt};
+use tracing::{debug, warn};
 
 /// Result of replaying one canonical block under candidate hardfork rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,183 +63,34 @@ pub enum ReplayOutcome {
     Findings,
 }
 
-/// Keeps replay metrics and their existing names/labels in one place.
-#[derive(Debug)]
-struct ShadowReplayMetrics {
-    notifications_lagged: Counter,
-    blocks: Counter,
-    execution_duration: Histogram,
-    latest_completed_block: Gauge,
-    boundaries_compared: Counter,
-    boundaries_inconclusive: Counter,
-    unexplained_differences: Counter,
-    findings_unexplained: Counter,
-    findings_inconclusive: Counter,
-}
-
-impl Default for ShadowReplayMetrics {
-    fn default() -> Self {
-        Self {
-            notifications_lagged: metrics::counter!(
-                "tempo_shadow_replay_notifications_lagged_total"
-            ),
-            blocks: metrics::counter!("tempo_shadow_replay_blocks_total"),
-            execution_duration: metrics::histogram!(
-                "tempo_shadow_replay_execution_duration_seconds"
-            ),
-            latest_completed_block: metrics::gauge!("tempo_shadow_replay_latest_completed_block"),
-            boundaries_compared: metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "compared"),
-            boundaries_inconclusive: metrics::counter!("tempo_shadow_replay_boundaries_total", "result" => "inconclusive"),
-            unexplained_differences: metrics::counter!(
-                "tempo_shadow_replay_unexplained_differences_total"
-            ),
-            findings_unexplained: metrics::counter!("tempo_shadow_replay_findings_total", "kind" => "unexplained"),
-            findings_inconclusive: metrics::counter!("tempo_shadow_replay_findings_total", "kind" => "inconclusive"),
-        }
-    }
-}
-
-impl ShadowReplayMetrics {
-    fn record_report(&self, report: &Report, outcome: ReplayOutcome) {
-        self.boundaries_compared
-            .increment(report.boundaries_evaluated as u64);
-        self.boundaries_inconclusive
-            .increment(report.boundaries_not_evaluated as u64);
-        for (&rule, &count) in &report.expected {
-            metrics::counter!("tempo_shadow_replay_expected_differences_total", "rule" => rule)
-                .increment(count as u64);
-        }
-        self.unexplained_differences
-            .increment(report.unexplained as u64);
-        match outcome {
-            ReplayOutcome::Findings => self.findings_unexplained.increment(1),
-            ReplayOutcome::Inconclusive => self.findings_inconclusive.increment(1),
-            _ => {}
-        }
-    }
-}
-
 /// Replays canonical blocks under candidate rules without changing canonical state.
 #[derive(Debug)]
-pub struct ShadowReplayer<P> {
-    provider: P,
+pub struct ShadowReplayer {
     real_config: TempoEvmConfig,
     shadow_config: TempoEvmConfig,
     shadow_hardfork: TempoHardfork,
-    metrics: ShadowReplayMetrics,
 }
 
-impl<P: ChainSpecProvider<ChainSpec = TempoChainSpec>> ShadowReplayer<P> {
-    pub fn new(provider: P, shadow_hardfork: TempoHardfork) -> Self {
-        let canonical_spec = provider.chain_spec();
+impl ShadowReplayer {
+    pub fn new(canonical_spec: Arc<TempoChainSpec>, shadow_hardfork: TempoHardfork) -> Self {
         let shadow_spec = Arc::new(shadow_spec(&canonical_spec, shadow_hardfork));
         Self {
             real_config: TempoEvmConfig::new(canonical_spec),
             shadow_config: TempoEvmConfig::new(shadow_spec),
-            provider,
             shadow_hardfork,
-            metrics: ShadowReplayMetrics::default(),
         }
     }
-}
 
-impl<P> ShadowReplayer<P>
-where
-    P: StateProviderFactory
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
-        + CanonStateSubscriptions<Primitives = TempoPrimitives>
-        + 'static,
-{
-    /// Spawns the replay task. Lagged notifications are reported rather than backfilled.
-    ///
-    /// Runs as a critical task: a control-arm failure panics the task, which shuts the node down.
-    pub fn spawn(self, executor: TaskExecutor) {
-        let mut notifs = self.provider.subscribe_to_canonical_state();
-        let hardfork = self.shadow_hardfork;
-        let replayer = self;
-        executor.spawn_critical_blocking_task("shadow replay", async move {
-            info!(target: "shadow_replay", %hardfork, "Started counterfactual shadow replay");
-            loop {
-                let notif = match notifs.recv().await {
-                    Ok(notif) => notif,
-                    Err(RecvError::Lagged(skipped)) => {
-                        replayer.metrics.notifications_lagged.increment(skipped);
-                        error!(target: "shadow_replay", skipped, "Shadow replay missed canonical blocks");
-                        continue;
-                    }
-                    Err(RecvError::Closed) => return,
-                };
-
-                if let Some(reverted) = notif.reverted() {
-                    warn!(
-                        target: "shadow_replay",
-                        from = reverted.first().number(),
-                        to = reverted.tip().number(),
-                        "Shadow replay findings for reverted blocks are stale"
-                    );
-                }
-
-                let committed = notif.committed();
-                for block in committed.blocks().values() {
-                    let span = info_span!(
-                        target: "shadow_replay",
-                        "shadow_replay",
-                        block_number = block.number(),
-                        block_hash = ?block.hash(),
-                        %hardfork,
-                    );
-                    if replayer
-                        .real_config
-                        .chain_spec()
-                        .tempo_hardfork_at(block.timestamp())
-                        >= hardfork
-                    {
-                        span.in_scope(|| {
-                            debug!(target: "shadow_replay", "Candidate already active on canonical chain")
-                        });
-                        continue;
-                    }
-
-                    let number = block.number();
-                    let started_at = Instant::now();
-                    let result = replayer.replay(
-                        block,
-                        committed.execution_outcome().receipts_by_block(number),
-                    );
-                    replayer.metrics.execution_duration.record(started_at.elapsed().as_secs_f64());
-
-                    // Dropped before the next notification await.
-                    let _guard = span.enter();
-                    let err = match result {
-                        Ok(_) => {
-                            replayer.metrics.latest_completed_block.set(number as f64);
-                            replayer.metrics.blocks.increment(1);
-                            continue;
-                        }
-                        Err(err) => err,
-                    };
-                    #[cfg(feature = "fuzz")]
-                    antithesis_sdk::assert_unreachable!(
-                        "Shadow replay control re-execution diverges from the canonical chain",
-                        &serde_json::json!({ "block_number": number, "error": err })
-                    );
-                    error!(target: "shadow_replay", %err, "Control re-execution diverged from canonical chain");
-                    panic!("shadow replay control failure at block {number}: {err}");
-                }
-            }
-        });
-    }
-}
-
-impl<P: StateProviderFactory> ShadowReplayer<P> {
-    /// Replays a canonical block under both rule sets.
+    /// Replays a canonical block under both rule sets. Each arm executes on its own copy of the
+    /// parent state, which `parent_state` opens.
     /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
-    pub fn replay(
+    pub fn replay<DB: Database>(
         &self,
         block: &RecoveredBlock<Block>,
         receipts: &[TempoReceipt],
+        parent_state: impl Fn() -> Result<DB, String> + Sync,
     ) -> Result<ReplayOutcome, String> {
-        let (real, shadow) = self.execute(block)?;
+        let (real, shadow) = self.execute(block, &parent_state)?;
         if let Some(f) = &real.failure {
             return Err(format!(
                 "re-execution failed at {:?}: {}",
@@ -264,7 +108,6 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
         let rules = expectations::between(canonical, self.shadow_hardfork);
         let report = Report::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
-        self.metrics.record_report(&report, outcome);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
             debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");
             return Ok(outcome);
@@ -291,44 +134,24 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
     /// The candidate result is observed but never committed. Committing the control result into
     /// both executors advances the canonical prefix without cascading candidate transaction
     /// effects; candidate pre-block changes are preserved across control commits.
-    fn execute(&self, block: &RecoveredBlock<Block>) -> Result<(Evidence, Evidence), String> {
-        let provider = self
-            .provider
-            .state_by_block_hash(block.parent_hash())
-            .map_err(|e| format!("failed to open parent state {}: {e}", block.parent_hash()))?;
-        let mut db = StateProviderDatabase::new(provider.into_evm_state_provider());
-        let mut evm = self
-            .real_config
-            .evm_for_block(&mut db, block.header())
-            .map_err(|e| format!("failed to configure control EVM: {e}"))?;
-        record_actions(&self.real_config, &mut evm);
-        let context = self
-            .real_config
-            .context_for_block(block.sealed_block())
-            .map_err(|e| format!("failed to configure control executor: {e}"))?;
-        let mut executor = self.real_config.create_executor(evm, context);
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        executor.set_state_hook({
-            let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
-        });
-        let mut real = Evidence::default();
-        if let Err(e) = executor.apply_pre_execution_changes() {
-            return Ok((
-                real.fail(Boundary::PreBlock, e.to_string()),
-                Evidence::default(),
-            ));
+    fn execute<DB: Database>(
+        &self,
+        block: &RecoveredBlock<Block>,
+        parent_state: &(impl Fn() -> Result<DB, String> + Sync),
+    ) -> Result<(Evidence, Evidence), String> {
+        let (mut executor, updates, mut real) = start(&self.real_config, parent_state()?, block)?;
+        if real.failure.is_some() {
+            return Ok((real, Evidence::default()));
         }
-        real.pre_block = Some(take_updates(&updates));
-        executor.evm().ext().actions.clear();
 
         // A one-entry queue pipelines the two arms without retaining an unbounded number of cloned
         // control results when one arm runs ahead.
         let (results, canonical_results) = std::sync::mpsc::sync_channel(1);
         let canonical_bal = executor.evm().overlay_db().bal_context.clone();
         std::thread::scope(|scope| {
-            let worker =
-                scope.spawn(|| self.execute_shadow(block, canonical_bal, canonical_results));
+            let worker = scope.spawn(|| {
+                self.execute_shadow(block, parent_state, canonical_bal, canonical_results)
+            });
             let mut results = Some(results);
             for (index, tx) in block.transactions_recovered().enumerate() {
                 let result = match executor.execute_transaction_without_commit(tx) {
@@ -348,13 +171,15 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
                 executor
                     .commit_transaction(result)
                     .map_err(|e| format!("failed to commit control transaction: {e}"))?;
-                real.txs
-                    .push(Ok(observed.with_state(take_updates(&updates))));
+                real.txs.push(Ok(ObservedTx {
+                    state: transition_of(drain(&updates)),
+                    ..observed
+                }));
             }
             drop(results);
             if real.failure.is_none() {
                 match executor.finish() {
-                    Ok(_) => real.post_block = Some(take_updates(&updates)),
+                    Ok(_) => real.post_block = Some(transition_of(drain(&updates))),
                     Err(e) => real = real.fail(Boundary::PostBlock, e.to_string()),
                 }
             }
@@ -365,54 +190,28 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
         })
     }
 
-    fn execute_shadow(
+    fn execute_shadow<DB: Database>(
         &self,
         block: &RecoveredBlock<Block>,
+        parent_state: &(impl Fn() -> Result<DB, String> + Sync),
         canonical_bal: evm2::evm::BalContext,
         canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
     ) -> Result<Evidence, String> {
-        let provider = self
-            .provider
-            .state_by_block_hash(block.parent_hash())
-            .map_err(|e| {
-                format!(
-                    "failed to open shadow parent state {}: {e}",
-                    block.parent_hash()
-                )
-            })?;
-        let mut db = StateProviderDatabase::new(provider.into_evm_state_provider());
-        let mut evm = self
-            .shadow_config
-            .evm_for_block(&mut db, block.header())
-            .map_err(|e| format!("failed to configure shadow EVM: {e}"))?;
-        record_actions(&self.shadow_config, &mut evm);
-        let context = self
-            .shadow_config
-            .context_for_block(block.sealed_block())
-            .map_err(|e| format!("failed to configure shadow executor: {e}"))?;
-        let mut executor = self.shadow_config.create_executor(evm, context);
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        executor.set_state_hook({
-            let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
-        });
-        let mut shadow = Evidence::default();
-        if let Err(e) = executor.apply_pre_execution_changes() {
-            return Ok(shadow.fail(Boundary::PreBlock, e.to_string()));
-        }
-        shadow.pre_block = Some(take_updates(&updates));
-        executor.evm().ext().actions.clear();
+        let (mut executor, updates, mut shadow) = parent_state()
+            .and_then(|db| start(&self.shadow_config, db, block))
+            .map_err(|e| format!("shadow arm: {e}"))?;
+        let Some(pre_block) = &shadow.pre_block else {
+            return Ok(shadow);
+        };
         // Keep candidate pre-block changes in the cache; only transaction results are discarded.
         executor.evm_mut().overlay_db_mut().bal_context = canonical_bal;
 
         for tx in block.transactions_recovered() {
             match executor.execute_transaction_without_commit(tx) {
-                Ok(result) => {
-                    let observed = ObservedTx::from_result(&result, take_actions(&executor));
-                    shadow.txs.push(Ok(
-                        observed.with_state(transition_pending(result.pending_state()))
-                    ));
-                }
+                Ok(result) => shadow.txs.push(Ok(ObservedTx {
+                    state: transition_of([pending_update(result.pending_state())]),
+                    ..ObservedTx::from_result(&result, take_actions(&executor))
+                })),
                 Err(e) => {
                     executor.evm().ext().actions.clear();
                     shadow.txs.push(Err(e.to_string()));
@@ -423,27 +222,52 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
             };
             // The commit merges changed storage slots, but replaces the entire AccountInfo.
             // Preserve candidate setup for fields the control transaction did not change.
-            let canonical_state = pending_update(canonical.pending_state());
             let saved = save_pre_block_info(
                 &executor.evm().overlay_db().cache,
-                shadow.pre_block.as_ref().unwrap(),
-                &canonical_state,
+                pre_block,
+                &pending_update(canonical.pending_state()),
             );
             executor
                 .commit_transaction(canonical)
                 .map_err(|e| format!("failed to commit canonical shadow prefix: {e}"))?;
-            let db = executor.evm_mut().overlay_db_mut();
-            restore_pre_block_info(&mut db.cache, saved);
+            restore_pre_block_info(&mut executor.evm_mut().overlay_db_mut().cache, saved);
             // The control commit advances the prefix, not shadow transaction evidence.
-            let _ = take_updates(&updates);
+            drain(&updates);
         }
 
         match executor.finish() {
-            Ok(_) => shadow.post_block = Some(take_updates(&updates)),
+            Ok(_) => shadow.post_block = Some(transition_of(drain(&updates))),
             Err(e) => shadow = shadow.fail(Boundary::PostBlock, e.to_string()),
         }
         Ok(shadow)
     }
+}
+
+/// Opens an executor for `block` that records storage actions and state updates, and applies
+/// its pre-block changes into the returned evidence.
+fn start<'a, DB: Database + 'a>(
+    config: &'a TempoEvmConfig,
+    db: DB,
+    block: &'a RecoveredBlock<Block>,
+) -> Result<(TempoBlockExecutor<'a>, Updates, Evidence), String> {
+    let mut evm = config
+        .evm_for_block(db, block.header())
+        .map_err(|e| format!("failed to configure EVM: {e}"))?;
+    evm.ext_mut().actions.enable();
+    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
+    BlockExecutorFactory::evm_factory(config).configure_evm(&mut evm);
+    let context = config
+        .context_for_block(block.sealed_block())
+        .map_err(|e| format!("failed to configure executor: {e}"))?;
+    let mut executor = config.create_executor(evm, context);
+    let updates = hooked(&mut executor).map_err(|e| e.to_string())?;
+    let mut evidence = Evidence::default();
+    match executor.apply_pre_execution_changes() {
+        Ok(_) => evidence.pre_block = Some(transition_of(drain(&updates))),
+        Err(e) => evidence = evidence.fail(Boundary::PreBlock, e.to_string()),
+    }
+    executor.evm().ext().actions.clear();
+    Ok((executor, updates, evidence))
 }
 
 struct SavedPreBlockInfo {
@@ -505,10 +329,6 @@ fn restore_pre_block_info(cache: &mut Cache, saved: Vec<SavedPreBlockInfo>) {
         }
         cache.accounts.insert(address, Some(candidate));
     }
-}
-
-fn take_updates(updates: &Mutex<Vec<StateUpdate>>) -> TransitionState {
-    transition_of(std::mem::take(&mut *updates.lock()))
 }
 
 fn transition_of(updates: impl IntoIterator<Item = StateUpdate>) -> TransitionState {
@@ -592,10 +412,6 @@ fn pending_update(state: &PendingState) -> StateUpdate {
     update
 }
 
-fn transition_pending(state: &PendingState) -> TransitionState {
-    transition_of([pending_update(state)])
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum TxOutcome {
     #[default]
@@ -652,11 +468,6 @@ impl ObservedTx {
             actions,
             state: TransitionState::default(),
         }
-    }
-
-    fn with_state(mut self, state: TransitionState) -> Self {
-        self.state = state;
-        self
     }
 }
 
@@ -738,13 +549,6 @@ fn normalized_fee_transfer(
     let mut normalized = logs.to_vec();
     normalized[index] = ITIP20::Transfer::encode_log(&transfer);
     Some(hash_logs(&normalized))
-}
-
-/// Records the EVM's storage actions from now on, including the handler's fee hook markers.
-fn record_actions(config: &TempoEvmConfig, evm: &mut TempoEvm<'_>) {
-    evm.ext_mut().actions.enable();
-    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
-    BlockExecutorFactory::evm_factory(config).configure_evm(evm);
 }
 
 /// The fee hooks' markers and actions the executor recorded since they were last taken. The
@@ -872,13 +676,9 @@ mod tests {
             .unwrap();
         let context = config.context_for_block(block.sealed_block()).unwrap();
         let mut executor = config.create_executor(evm, context);
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        executor.set_state_hook({
-            let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
-        });
+        let updates = hooked(&mut executor).unwrap();
         executor.apply_pre_execution_changes().unwrap();
-        let pre_block = take_updates(&updates);
+        let pre_block = transition_of(drain(&updates));
         // Commit a control result that touches the Zone account but carries canonical (old)
         // code. Only its changed storage slot should replace the candidate pre-block setup.
         let control_original = AccountInfo {
@@ -968,7 +768,7 @@ mod tests {
         );
         pending.insert_account(destroyed_address, Some(original.clone()), None);
 
-        let transitions = transition_pending(&pending).transitions;
+        let transitions = transition_of([pending_update(&pending)]).transitions;
         let changed = &transitions[&address];
         assert_eq!(changed.status, AccountStatus::Changed);
         assert_eq!(changed.previous_info.as_ref(), Some(&original));

@@ -44,7 +44,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::{path::PathBuf, sync::Arc};
-use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
+use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
@@ -134,15 +134,6 @@ pub struct TempoNodeArgs {
     /// between 1.0 and 1.7.
     #[arg(long = "builder.build-time-multiplier", default_value_t)]
     pub builder_build_time_multiplier: BuildTimeMultiplier,
-
-    /// Replay canonical blocks under the latest compiled hardfork, or an explicit HARDFORK.
-    #[arg(
-        long = "shadow-replay",
-        visible_alias = "shadow-replay.hardfork",
-        value_name = "HARDFORK",
-        num_args = 0..=1
-    )]
-    pub shadow_replay: Option<Option<TempoHardfork>>,
 }
 
 impl Default for TempoNodeArgs {
@@ -158,7 +149,6 @@ impl Default for TempoNodeArgs {
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: BuildTimeMultiplier::default(),
-            shadow_replay: None,
         }
     }
 }
@@ -574,7 +564,10 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 
 /// Builds a [`RuntimeConfig`] for `spec` from CLI [`JitArgs`].
 #[cfg(feature = "jit")]
-fn jit_runtime_config(jit: &JitArgs, spec: TempoHardfork) -> RuntimeConfig {
+fn jit_runtime_config(
+    jit: &JitArgs,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+) -> RuntimeConfig {
     let default_tuning = RuntimeTuning::default();
     let tuning = RuntimeTuning {
         channel_capacity: jit.channel_capacity,

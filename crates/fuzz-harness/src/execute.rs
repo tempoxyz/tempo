@@ -15,9 +15,10 @@ use evm2::bytecode::Bytecode;
 use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
-    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, BlockValidationError,
+    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory, BlockValidationError,
     ConfigureEvm as _,
 };
+use reth_evm_ethereum::EvmFactory as _;
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
 use tempo_chainspec::TempoChainSpec;
@@ -388,9 +389,12 @@ fn execute_block(
     consensus
         .validate_block_pre_execution(block.sealed_block())
         .map_err(|err| reject(ErrorClass::Rejected, err))?;
-    let evm = evm_config
+    let mut evm = evm_config
         .evm_for_block(db.reader(), block.header())
         .map_err(|err| reject(ErrorClass::Rejected, err))?;
+    evm.ext_mut().actions.enable();
+    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
+    BlockExecutorFactory::evm_factory(evm_config).configure_evm(&mut evm);
     let ctx = evm_config
         .context_for_block(block.sealed_block())
         .map_err(|err| reject(ErrorClass::Rejected, err))?;
@@ -460,7 +464,9 @@ fn execute_txs(
         let tx_index = tx_index as u64;
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
+        executor.evm().ext().actions.clear();
         let result = executor.execute_transaction_without_commit(tx)?;
+        let actions = executor.evm().ext().actions.take().unwrap_or_default();
         let execution = result.result();
         let outcome = if execution.status {
             TxOutcome::Success
@@ -491,6 +497,7 @@ fn execute_txs(
             effective_gas_price,
             output,
             logs: receipt.logs.clone(),
+            actions,
         });
         let scope = InvariantScope::Transaction {
             block_index,

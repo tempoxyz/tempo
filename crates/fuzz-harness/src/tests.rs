@@ -6,7 +6,7 @@ use std::{
 use alloy_consensus::{SignableTransaction, TxLegacy, proofs::calculate_transaction_root};
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
-use alloy_sol_types::SolCall;
+use alloy_sol_types::{SolCall, SolEvent};
 use bincode::Options as _;
 use commonware_codec::Encode as _;
 use evm2::evm::{AccountInfo, Cache, Database as _};
@@ -20,15 +20,17 @@ use tempo_chainspec::{
     constants::moderato::MODERATO_CHAIN_ID,
     hardfork::{TempoHardfork, TempoHardforks},
 };
-use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ITIP20, PATH_USD_ADDRESS};
+use tempo_contracts::precompiles::{
+    CURRENT_COMMITTEE_ADDRESS, ITIP20, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_fuzz_types::{
     AccountDiff, AccountInput, BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass,
-    FUZZ_ACCEPT, FUZZ_REJECT, InvariantScope, NonEmpty, PreState, StateChanges, StateInput,
-    StorageChangeOutput, TempoBlock, TempoBlockchainInput, TempoExecutionOutcome,
-    TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput,
-    TxOutcome,
+    FUZZ_ACCEPT, FUZZ_REJECT, FeeHook, InvariantScope, NonEmpty, PreState, StateChanges,
+    StateInput, StorageAction, StorageChangeOutput, TempoBlock, TempoBlockchainInput,
+    TempoExecutionOutcome, TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome,
+    TempoTransactionInput, TxOutcome,
 };
 use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
@@ -273,6 +275,73 @@ fn a_transfer_reports_its_receipt_changes_and_state_root() {
 
     assert_eq!(outcome.state_root, Some(trie_root(&outcome.final_state)));
     assert_ne!(outcome.final_state, genesis_state());
+}
+
+#[test]
+fn receipts_report_what_the_fee_hooks_did() {
+    // At a gas price of 10^12 the fee is one pathUSD base unit per gas.
+    let gas_limit = 1_000_000;
+    let tx = TempoTxEnvelope::Legacy(
+        TxLegacy {
+            chain_id: Some(CHAIN_ID),
+            nonce: 0,
+            gas_price: 1_000_000_000_000,
+            gas_limit,
+            to: TxKind::Call(PATH_USD_ADDRESS),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: RECIPIENT,
+                amount: U256::from(7),
+            }
+            .abi_encode()
+            .into(),
+        }
+        .into_signed(Signature::test_signature()),
+    );
+    let outcome = run(genesis(), vec![t4_block(vec![tx.encoded_2718().into()])]);
+    assert_eq!(outcome.error, ErrorClass::None);
+    let receipt = &outcome.receipts[0];
+    assert_eq!(receipt.outcome, TxOutcome::Success);
+    let charged = U256::from(receipt.gas.tx_gas_used());
+    let max_amount = U256::from(gas_limit);
+
+    let markers: Vec<_> = receipt
+        .actions
+        .iter()
+        .filter_map(|action| match *action {
+            StorageAction::Marker(marker) => Some(marker),
+            _ => None,
+        })
+        .collect();
+    let [
+        FeeHook::PreTx {
+            payer,
+            token,
+            amount,
+        },
+        FeeHook::End,
+        FeeHook::PostTx { refund, log },
+        FeeHook::End,
+    ] = markers[..]
+    else {
+        panic!("two fee hooks: {markers:?}");
+    };
+    assert_eq!(
+        (payer, amount, refund),
+        (SENDER, max_amount, max_amount - charged)
+    );
+
+    // The post-transaction hook's log is its fee transfer.
+    let transfer = ITIP20::Transfer::decode_log(&receipt.logs[log]).expect("a transfer");
+    assert_eq!(
+        (
+            transfer.address,
+            transfer.from,
+            transfer.to,
+            transfer.amount
+        ),
+        (token, payer, TIP_FEE_MANAGER_ADDRESS, charged)
+    );
 }
 
 #[test]
@@ -786,7 +855,7 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     assert_eq!(status, FUZZ_ACCEPT);
     let capabilities: TempoHarnessCapabilities =
         bincode_options().deserialize(&out[..written]).unwrap();
-    assert_eq!(capabilities.schema_version, 4);
+    assert_eq!(capabilities.schema_version, 5);
     assert_eq!(
         capabilities.supported_hardforks.as_slice(),
         TempoHardfork::VARIANTS

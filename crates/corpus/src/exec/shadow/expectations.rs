@@ -3,15 +3,13 @@
 //! Checks receive one difference, not a transaction. `None` means unexplained and `Some(())`
 //! accepts it.
 
-use super::analysis::{AccountDelta, Field};
-use crate::shadow_replay::{
+use super::{
     Boundary, Evidence, ObservedTx,
+    analysis::{AccountDelta, Field},
     fees::{fee_hook_slot_change, post_tx_fee},
 };
-use alloy::{
-    consensus::Transaction as _,
-    primitives::{Address, B256, Bytes, U256, keccak256},
-};
+use alloy_consensus::Transaction as _;
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::*,
@@ -205,14 +203,14 @@ pub(crate) fn between(
 #[cfg(test)]
 mod tests {
     use super::{
-        super::{Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome},
+        super::{
+            Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome,
+            analysis::{MAX_SAMPLES, Report},
+            fees::fee_slots,
+        },
         *,
     };
-    use crate::shadow_replay::{
-        analysis::{MAX_SAMPLES, Report},
-        fees::fee_slots,
-    };
-    use alloy::primitives::{Address, KECCAK256_EMPTY, Signature};
+    use alloy_primitives::{Address, KECCAK256_EMPTY, Signature};
     use evm2::evm::{AccountInfo, TxResultExt};
     use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
     use tempo_precompiles::storage::FeeHook;
@@ -521,6 +519,20 @@ mod tests {
             assert_eq!(report.unexplained, 0);
             assert_eq!(report.expected, [(rules[0].id, 1)].into());
         }
+    }
+
+    #[test]
+    fn uncaptured_shadow_reads_are_inconclusive() {
+        let real = evidence(&[21_000, 21_000]);
+        let mut shadow = evidence(&[21_000, 21_000]);
+        shadow.txs[0] = Err("uncaptured account 0x00".into());
+        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        assert_eq!(report.unexplained, 0);
+        assert_eq!(report.outcome(&shadow), ReplayOutcome::Inconclusive);
+
+        let shadow = Evidence::default().fail(Boundary::PreBlock, "uncaptured account 0x00".into());
+        let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
+        assert_eq!(report.outcome(&shadow), ReplayOutcome::Inconclusive);
     }
 
     #[test]

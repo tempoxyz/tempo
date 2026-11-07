@@ -4,7 +4,8 @@ use super::{
     Boundary, Evidence, ReplayOutcome,
     expectations::{Context, Expectation},
 };
-use alloy::consensus::BlockHeader as _;
+use crate::exec::db::Missing;
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, U256};
 use reth_primitives_traits::RecoveredBlock;
 use reth_trie_common::bundle_state::{TransitionAccount, TransitionState};
@@ -27,7 +28,13 @@ pub(super) struct Report {
 
 impl Report {
     pub(super) fn outcome(&self, shadow: &Evidence) -> ReplayOutcome {
-        if self.unexplained > 0 || shadow.failure.is_some() {
+        // A shadow arm that read uncaptured state was not compared, which is not a finding.
+        if self.unexplained > 0
+            || shadow
+                .failure
+                .as_ref()
+                .is_some_and(|failure| !Missing::in_error(&failure.error))
+        {
             ReplayOutcome::Findings
         } else if self.boundaries_not_evaluated > 0 {
             ReplayOutcome::Inconclusive
@@ -78,6 +85,7 @@ impl Report {
                     diff.record_values("receipt_logs", real_logs, shadow_logs);
                     report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
                 }
+                Err(error) if Missing::in_error(error) => continue,
                 Err(error) => report.record(
                     &ctx,
                     Field {

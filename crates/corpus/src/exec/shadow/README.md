@@ -1,17 +1,17 @@
 # Shadow replay
 
-Shadow replay runs on a follower node and evaluates a candidate hardfork against blocks already
-accepted by the canonical chain. It is a pre-activation safety tool: operators can observe how
-historical or newly canonical traffic behaves under future rules before those rules become
-consensus-critical. It reports expected fork changes, unexplained differences, and incomplete
-execution coverage. It does not decide consensus validity or modify the canonical chain.
+Shadow replay evaluates a candidate hardfork against blocks already accepted by the canonical
+chain. It is a pre-activation safety tool: it shows how historical traffic behaves under future
+rules before those rules become consensus-critical. It reports expected fork changes, unexplained
+differences, and incomplete execution coverage. It does not decide consensus validity or modify
+the canonical chain.
 
-Enable live replay with `--shadow-replay` (latest compiled hardfork) or
-`--shadow-replay HARDFORK` (explicit candidate). The existing `--shadow-replay.hardfork HARDFORK`
-form is also accepted. The live replayer subscribes to canonical-state notifications and processes
-newly committed blocks. It reports notification gaps rather than backfilling them; the
-`shadow-replay` command can instead scan an explicit historical block range. Blocks where the
-candidate hardfork is already canonical are skipped.
+Run it with `tempo corpus replay --shadow HARDFORK` (built with the `corpus` feature) over a
+captured corpus range. Each block is first verified against its corpus record, then both arms
+execute on the pre-state the corpus recorded. Blocks where the candidate hardfork is already
+canonical are skipped. The corpus holds only what the canonical execution read, so a candidate
+that reads anything else, such as a precompile account its pre-block setup deploys, fails at that
+boundary with an `uncaptured` error and is reported as a finding.
 
 ## Execution model
 
@@ -21,10 +21,9 @@ executors:
 - the **control** uses the hardfork active for the canonical block.
 - the **shadow** uses the selected candidate hardfork and its hardfork schedule.
 
-Transactions execute in canonical order under both rule sets. A blocking replay task runs each
-block inline; within a block, a control thread and shadow worker pipeline results through a
-one-entry queue. Replay records both results but commits
-the control result into both executors. Every shadow transaction receives the canonical prefix
+Transactions execute in canonical order under both rule sets. Within a block, a control thread
+and a shadow worker pipeline results through a one-entry queue. Replay records both results but
+commits the control result into both executors. Every shadow transaction receives the canonical prefix
 plus candidate pre-block setup, without inheriting earlier candidate transaction results; an early
 candidate transaction difference cannot cause derivative mismatches later. Pre-block changes are
 preserved across control commits, but canonical transaction writes to the same fields take precedence.
@@ -37,12 +36,11 @@ production, submitted to fork choice, or carried into the next block. Every bloc
 independently from its own canonical parent. Replay executes only canonical transactions; it does
 not generate candidate-only transactions.
 
-The control also acts as a live re-execution test for the shipped binary: it continuously checks
-that the binary can execute canonical blocks successfully and reproduce their receipts under the
-active rules, catching STF-breaking changes before shadow differences are interpreted. A control
-failure terminates live replay because an unverified baseline cannot be attributed to the candidate
-rules. This validates receipt reproduction rather than full canonical state equality. A rejected
-shadow transaction is recorded as a finding; replay still commits the control result and executes
+The control also acts as a re-execution test for the binary: it checks that the binary can
+execute canonical blocks successfully and reproduce their receipts under the active rules,
+catching STF-breaking changes before shadow differences are interpreted. A control failure is an
+error because an unverified baseline cannot be attributed to the candidate rules. This validates
+receipt reproduction rather than full canonical state equality. A rejected shadow transaction is recorded as a finding; replay still commits the control result and executes
 later transactions. A failed pre- or post-block boundary is retained as a finding, and boundaries
 that could not execute are reported as incomplete coverage.
 
@@ -82,19 +80,11 @@ registration order. Fee-slot provenance alone never accepts a difference.
 3. Return `None` when evidence is insufficient.
 4. Test accepted effects, nearby incorrect effects, and unrelated differences at the same boundary.
 
-## Reporting and observability
+## Reporting
 
 Replay distinguishes `Match`, fully compared `Expected`, `Inconclusive`, and unexplained
 `Findings`; `--fail-on-findings` fails for the latter two.
 
-- `tempo_shadow_replay_expected_differences_total{rule}` counts accepted differences.
-- `tempo_shadow_replay_unexplained_differences_total` counts unexplained differences.
-- `tempo_shadow_replay_boundaries_total{result="compared"|"inconclusive"}` exposes coverage.
-- `tempo_shadow_replay_findings_total{kind="unexplained"|"inconclusive"}` counts review blocks.
-- `tempo_shadow_replay_execution_duration_seconds` records live replay duration per block.
-- `tempo_shadow_replay_latest_completed_block` tracks the latest completed live replay.
-
-Metric labels are bounded: rule IDs are static, while addresses, slots, and block hashes are not
-labels. Reports keep exact counts but retain at most eight deterministic samples, prioritizing
+Reports keep exact counts but retain at most eight deterministic samples, prioritizing
 unexplained differences. Classification reuses existing execution evidence, and only retained
 values are formatted for diagnostics.
