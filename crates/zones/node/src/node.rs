@@ -15,8 +15,8 @@ use crate::{
     },
     rpc::{
         NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
-        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_zone_rpc_module, rpc_connection_config,
-        start_redacted_rpc,
+        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, connect_witness_l1_provider,
+        operator_zone_rpc_module, rpc_connection_config, start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
     shadow_prover::RpcFollowerShadowProver,
@@ -819,7 +819,12 @@ where
             provider.clone(),
         );
         let portal_address = self.portal_address;
-        let debug_l1_provider = l1_provider.clone();
+        let witness_l1_provider = connect_witness_l1_provider(
+            &self.l1_config.l1_rpc_url,
+            self.l1_config.retry_connection_interval,
+        )
+        .await?;
+        let debug_l1_provider = witness_l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
         // A sequencer serves its own allowlist; an RPC-only node configured with the admin relays
@@ -880,7 +885,7 @@ where
         if let Some(prover_config) = self.prover_config.as_ref() {
             let debug_api = Arc::new(NodeZoneDebugApi::new(
                 handle.eth_handlers().api.clone(),
-                l1_provider.clone(),
+                witness_l1_provider,
             ));
             let proof_collector_config = ProofCollectorConfig {
                 directory: datadir.join("proofs"),
