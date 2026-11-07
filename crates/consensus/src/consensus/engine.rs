@@ -32,7 +32,9 @@ use crate::{
     dkg,
     epoch::{self, SchemeProvider},
     network::limit_channel,
-    peer_manager, storage,
+    peer_manager,
+    recovery::Recovery,
+    storage,
 };
 
 use super::block::Block;
@@ -136,6 +138,30 @@ where
             .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
 
         let epoch_strategy = FixedEpocher::new(epoch_length);
+
+        let recovery = Recovery::from_chainspec(&execution_node.chain_spec(), &epoch_strategy)
+            .wrap_err("invalid chain recovery in chainspec")?;
+        let mut network_identity = self.network_identity;
+        if let Some(recovery) = &recovery {
+            recovery
+                .fill_to_boundary(&execution_node)
+                .await
+                .wrap_err("failed filling the halted epoch up to the recovery boundary")?;
+            // A configured identity from a later full DKG ceremony still takes precedence.
+            let recovered = recovery.network_identity();
+            if recovered.from_epoch > network_identity.from_epoch {
+                network_identity = recovered;
+            } else {
+                ensure!(
+                    recovered.from_epoch < network_identity.from_epoch
+                        || recovered.identity == network_identity.identity,
+                    "the configured network identity for epoch `{}` differs from the chain \
+                    recovery's",
+                    recovered.from_epoch,
+                );
+            }
+        }
+        let recovery_boundary = recovery.as_ref().map(Recovery::boundary);
 
         info!(
             identity = %self.signer.public_key(),
@@ -284,9 +310,10 @@ where
                 initial_share: self.share.clone(),
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),
-                network_identity: self.network_identity,
+                network_identity,
                 scheme_provider: scheme_provider.clone(),
                 last_finalized_height: finalized_floor,
+                recovery_boundary: recovery_boundary.map(|(height, _)| height),
                 marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
@@ -334,6 +361,7 @@ where
             partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
             views_to_track: ViewDelta::new(self.views_to_track),
             inactive_time_before_leader_skip: self.inactive_time_before_leader_skip,
+            recovery_boundary,
         };
 
         Ok(Engine {

@@ -57,6 +57,31 @@ use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 use crate::consensus::{Digest, block::Block};
 
 mod state;
+
+/// The first of `candidates` that is a share of `output`'s polynomial.
+fn matching_share(
+    output: &Output<MinSig, PublicKey>,
+    candidates: impl IntoIterator<Item = Option<Share>>,
+) -> Option<Share> {
+    candidates.into_iter().flatten().find(|candidate| {
+        let Ok(partial) = output.public().partial_public(candidate.index) else {
+            warn!(
+                "the index of the provided share exceeds the polynomial of the \
+                on-chain DKG outcome; ignoring the share"
+            );
+            return false;
+        };
+        if candidate.public::<MinSig>() != partial {
+            warn!(
+                "the provided share does not match the polynomial of the \
+                on-chain DKG outcome; ignoring the share"
+            );
+            return false;
+        }
+        true
+    })
+}
+
 #[cfg(test)]
 mod tests;
 use state::{Dealer, Player, Round, ShareState, State};
@@ -574,7 +599,7 @@ where
             let epoch_info = self
                 .config
                 .epoch_strategy
-                .containing(self.config.last_finalized_height.next())
+                .containing(self.config.initial_state_height().next())
                 .expect("epoch strategy is covering all heights");
             if state.epoch < epoch_info.epoch() {
                 warn!(
@@ -585,7 +610,16 @@ where
                 );
                 share_candidate = state.share.clone();
             } else {
-                let state = state.clone();
+                let mut state = state.clone();
+                // A share configured after the epoch was persisted without one, such as a chain
+                // recovery's 1-of-1 share on a member first started without it.
+                if let state::ShareState::Plaintext(None) = &state.share
+                    && let Some(share) =
+                        matching_share(&state.output, [self.config.initial_share.clone()])
+                {
+                    info!(epoch = %state.epoch, "using the configured share for the persisted epoch");
+                    state.share = state::ShareState::Plaintext(Some(share));
+                }
                 return Ok(storage.init_verified(state).await);
             }
         };
@@ -606,7 +640,7 @@ where
         TStorageContext: commonware_runtime::Metrics + Clock + Storage,
     {
         let state = storage.current();
-        let target_height = self.config.last_finalized_height;
+        let target_height = self.config.initial_state_height();
         let epoch_info = self
             .config
             .epoch_strategy
@@ -1403,13 +1437,12 @@ where
         &mut self,
         share_candidate: ShareState,
     ) -> eyre::Result<State> {
-        let (latest_boundary, outcome_epoch) = latest_boundary_at_or_before(
-            &self.config.epoch_strategy,
-            self.config.last_finalized_height,
-        );
+        let initial_state_height = self.config.initial_state_height();
+        let (latest_boundary, outcome_epoch) =
+            latest_boundary_at_or_before(&self.config.epoch_strategy, initial_state_height);
         info!(
             %latest_boundary,
-            last_finalized = %self.config.last_finalized_height,
+            last_finalized = %initial_state_height,
             "marshal reported finalized floor at startup, reading on-chain DKG \
             outcome from last boundary height"
         );
@@ -1428,31 +1461,13 @@ where
         // The configured initial share takes precedence over the candidate
         // salvaged from a stale state. Either is only usable if it matches
         // the polynomial of the on-chain DKG outcome.
-        let mut share = None;
-        for candidate in [
-            self.config.initial_share.clone(),
-            share_candidate.into_inner(),
-        ] {
-            let Some(candidate) = candidate else {
-                continue;
-            };
-            let Ok(partial) = onchain_outcome.sharing().partial_public(candidate.index) else {
-                warn!(
-                    "the index of the provided share exceeds the polynomial of the \
-                    on-chain DKG outcome; ignoring the share"
-                );
-                continue;
-            };
-            if candidate.public::<MinSig>() != partial {
-                warn!(
-                    "the provided share does not match the polynomial of the \
-                    on-chain DKG outcome; ignoring the share"
-                );
-                continue;
-            }
-            share = Some(candidate);
-            break;
-        }
+        let share = matching_share(
+            &onchain_outcome.output,
+            [
+                self.config.initial_share.clone(),
+                share_candidate.into_inner(),
+            ],
+        );
 
         let mut state = State {
             epoch: onchain_outcome.epoch(),

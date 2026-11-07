@@ -354,6 +354,9 @@ pub struct ExecutionRuntime {
 
     // Channel to request the runtime to launch new execution nodes.
     to_runtime: tokio::sync::mpsc::UnboundedSender<Message>,
+
+    // The chainspec that newly spawned execution nodes launch with.
+    chain_spec: Arc<std::sync::Mutex<TempoChainSpec>>,
 }
 
 impl ExecutionRuntime {
@@ -373,6 +376,8 @@ impl ExecutionRuntime {
         let (to_runtime, mut from_handle) = tokio::sync::mpsc::unbounded_channel();
 
         let datadir = tempdir.path().to_path_buf();
+        let chain_spec = Arc::new(std::sync::Mutex::new(chain_spec));
+        let shared_chain_spec = chain_spec.clone();
         let rt = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new()
                 .expect("must be able to initialize a runtime to run execution/reth nodes");
@@ -383,6 +388,7 @@ impl ExecutionRuntime {
                 while let Some(msg) = from_handle.recv().await {
                     // create a new task manager for the new node instance
                     let runtime = Runtime::test();
+                    let chain_spec = shared_chain_spec.lock().unwrap().clone();
                     match msg {
                         Message::AddValidatorV2(add_validator_v2) => {
                             let AddValidatorV2 {
@@ -569,7 +575,7 @@ impl ExecutionRuntime {
                         } => {
                             let node = launch_execution_node(
                                 runtime,
-                                chain_spec.clone(),
+                                chain_spec,
                                 datadir.join(name),
                                 *config,
                                 database,
@@ -596,7 +602,19 @@ impl ExecutionRuntime {
             rt,
             _tempdir: tempdir,
             to_runtime,
+            chain_spec,
         }
+    }
+
+    /// Returns the chainspec that newly spawned execution nodes launch with.
+    pub fn chain_spec(&self) -> TempoChainSpec {
+        self.chain_spec.lock().unwrap().clone()
+    }
+
+    /// Replaces the chainspec for execution nodes spawned from now on, such as nodes restarted
+    /// after a chainspec upgrade. Running nodes keep theirs.
+    pub fn set_chain_spec(&self, chain_spec: TempoChainSpec) {
+        *self.chain_spec.lock().unwrap() = chain_spec;
     }
 
     /// Returns a handle to this runtime.
@@ -606,6 +624,7 @@ impl ExecutionRuntime {
         ExecutionRuntimeHandle {
             to_runtime: self.to_runtime.clone(),
             nodes_dir: self._tempdir.path().to_path_buf(),
+            chain_spec: self.chain_spec.clone(),
         }
     }
 
@@ -775,12 +794,18 @@ impl ExecutionRuntime {
 pub struct ExecutionRuntimeHandle {
     to_runtime: tokio::sync::mpsc::UnboundedSender<Message>,
     nodes_dir: PathBuf,
+    chain_spec: Arc<std::sync::Mutex<TempoChainSpec>>,
 }
 
 impl ExecutionRuntimeHandle {
     /// Returns the base directory where execution node data is stored.
     pub fn nodes_dir(&self) -> &Path {
         &self.nodes_dir
+    }
+
+    /// Returns the chainspec that newly spawned execution nodes launch with.
+    pub fn chain_spec(&self) -> TempoChainSpec {
+        self.chain_spec.lock().unwrap().clone()
     }
 
     /// Requests a new execution node and blocks until its returned.

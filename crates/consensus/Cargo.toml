@@ -67,6 +67,7 @@ prometheus-client.workspace = true
 rand.workspace = true
 rand_08.workspace = true
 
+reth-chain-state.workspace = true
 reth-consensus.workspace = true
 reth-consensus-common.workspace = true
 reth-engine-primitives.workspace = true
@@ -80,6 +81,10 @@ reth-network-p2p.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 reth-stages-types.workspace = true
+reth-trie-common.workspace = true
+reth-storage-overlay.workspace = true
+reth-storage-api.workspace = true
+reth-execution-types.workspace = true
 
 thiserror.workspace = true
 
@@ -99,7 +104,10 @@ tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 reth-ethereum-engine-primitives.workspace = true
 
 age.workspace = true
+alloy-genesis.workspace = true
+reth-db-common.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
+serde_json.workspace = true
 tempfile.workspace = true
 
 # `commonware_macros::test_traced` requires `tracing_subscriber` to be in scope.

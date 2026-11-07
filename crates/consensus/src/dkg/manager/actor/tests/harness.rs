@@ -286,6 +286,7 @@ impl Harness {
                 blocker: self.blocker.clone(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
+                recovery_boundary: None,
                 finalized_tip: self.finalized_tip.clone(),
                 network_identity: self.network_identity.clone(),
                 scheme_provider: self.scheme_provider.clone(),
