@@ -25,7 +25,7 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
-    receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
+    receive_policy_guard::{InboundKind, RECOVERY_ORIGINATOR, ReceivePolicyGuard, RecoveryMode},
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
@@ -1371,8 +1371,13 @@ impl TIP20Token {
     /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
     /// authorized and the caller should proceed with the normal transfer or mint.
     ///
+    /// (+T14) Rejects instead of guarding when the receipt would be unclaimable: a precompile
+    /// originator (DEX withdrawals, fee AMM burns, fee distribution) can never call `claim`, so
+    /// originator recovery would strand the funds in the guard.
+    ///
     /// # Errors
     /// - `PolicyForbids` — the inbound is blocked on a zone
+    /// - `PolicyForbids` — (+T14) blocked precompile-originated inbound with originator recovery
     pub(crate) fn validate_inbound_or_block(
         &mut self,
         originator: Address,
@@ -1397,6 +1402,14 @@ impl TIP20Token {
         // A zone recovery authority could never claim diverted funds. Ungated: before T15 zone
         // transfers were disabled and the Inbox rejects blocked deposits itself.
         if matches!(self.storage.kind(), TempoEvmKind::Zone) {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+
+        // Precompiles cannot claim, so a guarded precompile-originated inbound under originator
+        // recovery would be stuck. Revert instead, leaving the caller's accounting intact so the
+        // receiver can amend the policy and retry.
+        let spec = self.storage.spec();
+        if spec.is_t14() && recovery == RECOVERY_ORIGINATOR && originator.is_precompile(spec) {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -2432,6 +2445,121 @@ pub(crate) mod tests {
 
                 Ok(())
             })
+        }
+
+        /// A precompile originator can never call `claim`, so guarding a blocked inbound under
+        /// originator recovery would strand the funds. From T14 the transfer reverts; before T14
+        /// the funds still land in the guard with the precompile as originator.
+        #[test]
+        fn test_precompile_originator_with_originator_recovery_rejects_from_t14() -> eyre::Result<()>
+        {
+            let admin = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(100u64);
+
+            for (spec, precompile) in [
+                (TempoHardfork::T13, STABLECOIN_DEX_ADDRESS),
+                (TempoHardfork::T14, STABLECOIN_DEX_ADDRESS),
+                (TempoHardfork::T14, TIP_FEE_MANAGER_ADDRESS),
+            ] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                StorageCtx::enter(&mut storage, || {
+                    let mut token = TIP20Setup::create("Test", "TST", admin)
+                        .with_issuer(admin)
+                        .with_mint(precompile, amount)
+                        .apply()?;
+                    set_receive_policy(
+                        receiver,
+                        REJECT_ALL_POLICY_ID,
+                        ALLOW_ALL_POLICY_ID,
+                        Address::ZERO,
+                    )?;
+
+                    let result = token.transfer(
+                        precompile,
+                        ITIP20::transferCall {
+                            to: receiver,
+                            amount,
+                        },
+                    );
+
+                    if spec.is_t14() {
+                        assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
+                        assert_eq!(token.get_balance(precompile)?, amount);
+                        assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                    } else {
+                        result?;
+                        assert_eq!(token.get_balance(precompile)?, U256::ZERO);
+                        assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                    }
+                    assert_eq!(token.get_balance(receiver)?, U256::ZERO);
+
+                    Ok::<(), TempoPrecompileError>(())
+                })?;
+            }
+
+            Ok(())
+        }
+
+        /// Receiver and third-party recovery stay guarded for precompile originators at T14: the
+        /// configured authority can still claim, so nothing is stranded.
+        #[test]
+        fn test_precompile_originator_with_claimable_recovery_still_guards_at_t14()
+        -> eyre::Result<()> {
+            let admin = Address::random();
+            let receiver = Address::random();
+            let third_party = Address::random();
+            let amount = U256::from(100u64);
+
+            for recovery_authority in [receiver, third_party] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+                storage.set_timestamp(U256::from(BLOCKED_AT));
+                StorageCtx::enter(&mut storage, || {
+                    let mut token = TIP20Setup::create("Test", "TST", admin)
+                        .with_issuer(admin)
+                        .with_mint(STABLECOIN_DEX_ADDRESS, amount)
+                        .apply()?;
+                    set_receive_policy(
+                        receiver,
+                        REJECT_ALL_POLICY_ID,
+                        ALLOW_ALL_POLICY_ID,
+                        recovery_authority,
+                    )?;
+
+                    token.transfer(
+                        STABLECOIN_DEX_ADDRESS,
+                        ITIP20::transferCall {
+                            to: receiver,
+                            amount,
+                        },
+                    )?;
+                    assert_eq!(token.get_balance(STABLECOIN_DEX_ADDRESS)?, U256::ZERO);
+                    assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+
+                    let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
+                        token.address,
+                        recovery_authority,
+                        STABLECOIN_DEX_ADDRESS,
+                        receiver,
+                        BLOCKED_AT,
+                        1,
+                        ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                        InboundKind::TRANSFER,
+                        B256::ZERO,
+                    );
+                    ReceivePolicyGuard::new().claim(
+                        recovery_authority,
+                        receiver,
+                        receipt.abi_encode().into(),
+                    )?;
+                    assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                    assert_eq!(token.get_balance(receiver)?, amount);
+
+                    Ok::<(), TempoPrecompileError>(())
+                })?;
+            }
+
+            Ok(())
         }
     }
 
