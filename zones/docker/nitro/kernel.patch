@@ -1,0 +1,28 @@
+diff --git a/kernel/kernel.nix b/kernel/kernel.nix
+index b655be2..7125d52 100644
+--- a/kernel/kernel.nix
++++ b/kernel/kernel.nix
+@@ -82,2 +82,7 @@ pkgs.stdenv.mkDerivation rec {
+     ( cat $files; echo CONFIG_NSM=m ) > .config
++    ${if arch == "x86_64" then
++      "sh ./scripts/kconfig/merge_config.sh -m .config ${./zones-hardening-x86_64.config}"
++    else
++      "true"
++    }
+   '';
+@@ -92,2 +97,15 @@ pkgs.stdenv.mkDerivation rec {
+       CC="$CC" LD="$LD" OBJCOPY="$OBJCOPY" OBJDUMP="$OBJDUMP" READELF="$READELF" STRIP="$STRIP"
++
++    ${if arch == "x86_64" then ''
++    # Check the Zones delta, plus the AWS memory-corruption checks that PANIC_ON_OOPS makes fatal.
++    for option in RANDOMIZE_BASE RANDOMIZE_MEMORY HARDENED_USERCOPY SLAB_FREELIST_RANDOM \
++      PANIC_ON_OOPS RANDOM_KMALLOC_CACHES DEBUG_SG INIT_ON_ALLOC_DEFAULT_ON \
++      LIST_HARDENED BUG_ON_DATA_CORRUPTION SLAB_FREELIST_HARDENED; do
++      grep -Fqx "CONFIG_$option=y" .config || {
++        echo "expected CONFIG_$option=y after olddefconfig" >&2
++        exit 1
++      }
++    done
++    grep -Fqx 'CONFIG_NSM=m' .config
++    '' else ""}
+   '';
