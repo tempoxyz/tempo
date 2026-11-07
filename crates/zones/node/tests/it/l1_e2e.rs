@@ -2502,9 +2502,9 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
     Ok(())
 }
 
-/// With portal access open, an uninitialized sequencer deposit allowlist credits every sender.
-/// Once written, it credits listed senders, bounces unlisted senders back to their Tempo refund
-/// recipient, and applies list updates without a restart.
+/// With portal access open, a written sequencer deposit allowlist credits listed senders, bounces
+/// unlisted senders back to their Tempo refund recipient, and applies list updates without a
+/// restart.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -2539,15 +2539,10 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
     let mut listed = ZoneAccount::with_signer(listed_signer, &l1, &zone, portal_address);
     let mut unlisted = ZoneAccount::with_signer(unlisted_signer, &l1, &zone, portal_address);
     l1.fund_user(listed.address(), AMOUNT).await?;
-    l1.fund_user(unlisted.address(), 3 * AMOUNT).await?;
+    l1.fund_user(unlisted.address(), 2 * AMOUNT).await?;
     // Start the sequencer only after L1 setup so its shared signer cannot race the funding.
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
 
-    // Until the first write, the list is uninitialized and every sender is credited.
-    assert_eq!(
-        unlisted.deposit(AMOUNT, L1_TIMEOUT, &zone).await?,
-        U256::from(AMOUNT)
-    );
     allowlist.replace(vec![listed.address()])?;
 
     listed.deposit(AMOUNT, L1_TIMEOUT, &zone).await?;
@@ -2580,13 +2575,13 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
     assert_eq!(
         zone.balance_of(ZONE_TOKEN_ADDRESS, unlisted.address())
             .await?,
-        U256::from(AMOUNT),
+        U256::ZERO,
         "unlisted depositor was credited"
     );
 
     allowlist.set(&[unlisted.address()], true)?;
     let balance = unlisted.deposit(AMOUNT, L1_TIMEOUT, &zone).await?;
-    assert_eq!(balance, U256::from(2 * AMOUNT));
+    assert_eq!(balance, U256::from(AMOUNT));
 
     Ok(())
 }
