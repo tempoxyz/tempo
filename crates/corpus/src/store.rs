@@ -637,11 +637,8 @@ pub struct PayloadScan {
 }
 
 impl PayloadScan {
-    /// Opens both scans over `records`, which must be non-empty.
-    pub async fn open(reader: &DbReader, records: &[Record]) -> eyre::Result<Self> {
-        let (Some(first), Some(last)) = (records.first(), records.last()) else {
-            eyre::bail!("empty payload range")
-        };
+    /// Opens both scans over the records from `first` through `last`.
+    pub async fn open(reader: &DbReader, first: &Record, last: &Record) -> eyre::Result<Self> {
         let tx_end = last
             .first_tx
             .checked_add(last.transactions)
@@ -718,7 +715,10 @@ pub async fn for_each_published(
     let mut pages = MetadataPages::open(reader, from, to.next).await?;
     while pages.cursor.next < to.next {
         let records = pages.next_page().await?;
-        let mut payloads = PayloadScan::open(reader, &records).await?;
+        let (Some(first), Some(last)) = (records.first(), records.last()) else {
+            eyre::bail!("empty metadata page")
+        };
+        let mut payloads = PayloadScan::open(reader, first, last).await?;
         for record in &records {
             let (block, cases) = payloads.next(record).await?;
             if resolve {
@@ -826,6 +826,21 @@ pub async fn tip_timestamp(reader: &DbReader, cursor: &Cursor) -> eyre::Result<u
         .ok_or_else(|| eyre::eyre!("missing block record at {number}"))?;
     let block: Block = alloy_rlp::decode_exact(&decode(&bytes, &record)?.block.rlp)?;
     Ok(block.header.timestamp())
+}
+
+/// The cursor before `block`, which must be in `context`'s range or its end.
+pub async fn cursor_at(reader: &DbReader, context: &Context, block: u64) -> eyre::Result<Cursor> {
+    if block == context.start {
+        return Cursor::initial(context);
+    }
+    let previous = metadata(reader, block - 1).await?;
+    let mut cursor = Cursor {
+        next: previous.number,
+        tx: previous.first_tx,
+        parent: previous.parent,
+    };
+    cursor.advance(&previous)?;
+    Ok(cursor)
 }
 
 pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {
