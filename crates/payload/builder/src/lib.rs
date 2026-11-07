@@ -774,10 +774,13 @@ where
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
-        let execution_output = executor.finish()?;
+        let execution_output = debug_span!(target: "payload_builder", "executor_finish")
+            .in_scope(|| executor.finish())?;
         let execution_result = &execution_output.result;
         let execution_state = &execution_output.state;
 
+        let hashed_state_span =
+            debug_span!(target: "payload_builder", "hashed_post_state").entered();
         let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
             .as_mut()
             .and_then(|handle| handle.try_take_hashed_state_rx())
@@ -787,6 +790,7 @@ where
         } else {
             Arc::new(finish_provider.hashed_post_state(execution_state)?)
         };
+        drop(hashed_state_span);
 
         // Once QMDB is active its handle only prefetches, so the builder never waits on it.
         let qmdb_active = self
@@ -841,8 +845,10 @@ where
             .filter(|qmdb| qmdb.is_active_at(attributes.timestamp))
         {
             Some(qmdb) => {
-                let writes =
-                    diff::block_writes(execution_state).map_err(PayloadBuilderError::other)?;
+                let writes = debug_span!(target: "payload_builder", "qmdb_block_writes")
+                    .in_scope(|| diff::block_writes(execution_state))
+                    .map_err(PayloadBuilderError::other)?;
+                let _span = debug_span!(target: "payload_builder", "qmdb_build").entered();
                 Some(
                     qmdb.store
                         .build_unregistered(
@@ -877,10 +883,11 @@ where
             transactions,
             senders,
             encoded_block_transactions,
-        } = roots_rx
-            .blocking_recv()
+        } = debug_span!(target: "payload_builder", "await_roots")
+            .in_scope(|| roots_rx.blocking_recv())
             .map_err(PayloadBuilderError::other)?;
 
+        let _assemble_span = debug_span!(target: "payload_builder", "assemble_block").entered();
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
                 assembly_evm_env,
@@ -899,6 +906,7 @@ where
         )?;
 
         let block = RecoveredBlock::new_unhashed(block, senders);
+        drop(_assemble_span);
 
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics

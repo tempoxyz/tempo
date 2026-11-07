@@ -44,7 +44,7 @@ use commonware_storage::{
 use commonware_utils::sequence::FixedBytes;
 use futures::{StreamExt as _, channel::mpsc as async_mpsc, try_join};
 use tokio::sync::{RwLock, RwLockReadGuard};
-use tracing::{debug, error, warn};
+use tracing::{Instrument, Span, debug, debug_span, error, warn};
 
 use crate::layout::{self, ACCOUNT_LEN, AccountValue, Key, SLOT_LEN, SlotValue, Write, Writes};
 
@@ -414,6 +414,8 @@ impl Store {
             parent_hash,
             writes,
             stage,
+            span: Span::current(),
+            sent: Instant::now(),
             reply,
         })
     }
@@ -650,6 +652,10 @@ enum Command {
         parent_hash: B256,
         writes: Writes,
         stage: Option<StageId>,
+        /// The caller's span, which the build's span joins so it shows in the caller's trace.
+        span: Span,
+        /// When the command was sent, to report how long it queued behind others.
+        sent: Instant,
         reply: Reply<QmdbBatch>,
     },
     Register {
@@ -849,10 +855,24 @@ impl Actor {
                     parent_hash,
                     writes,
                     stage,
+                    span,
+                    sent,
                     reply,
                 } => {
+                    let span = debug_span!(
+                        parent: &span,
+                        "qmdb_build_unregistered",
+                        number,
+                        queue_us = sent.elapsed().as_micros() as u64,
+                        staged = tracing::field::Empty,
+                    );
                     let reads = self.take_stage(stage, parent_hash);
-                    reply(self.merkleize(number, parent_hash, writes, reads).await)
+                    span.record("staged", reads.is_some());
+                    reply(
+                        self.merkleize(number, parent_hash, writes, reads)
+                            .instrument(span)
+                            .await,
+                    )
                 }
                 Command::Register { hash, batch, reply } => reply(self.register(hash, batch)),
                 Command::Root { hash, reply } => reply(Ok(self.root(hash))),
