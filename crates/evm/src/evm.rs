@@ -957,6 +957,7 @@ mod runtime_tests {
                         .reconstructed
                         .insert(key, pool.encode_to_slot().unwrap());
                 }
+                StorageAction::Marker(_) => {}
                 StorageAction::FeeAmmLiquidityCheck(
                     slot,
                     sload_value,
@@ -1091,6 +1092,7 @@ mod runtime_tests {
                         labels.slot(action.address(), slot),
                     )
                 }
+                StorageAction::Marker(marker) => format!("FeeHook::{marker:?}"),
                 StorageAction::FeeAmmLiquidityCheck(
                     slot,
                     slot_value,
