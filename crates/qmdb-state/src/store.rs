@@ -1429,10 +1429,14 @@ async fn stage_db<const N: usize, const P: usize>(
     if new.is_empty() {
         return Ok(StagedDb { staged, index });
     }
-    let (reads, _, staged) = staged.expand(&new, db).await?;
+    let (reads, _, mut staged) = staged.expand(&new, db).await?;
     for (key, read) in new.into_iter().zip(reads) {
         index.insert(key.clone(), read);
     }
+    // The floor raise moves about one operation per key the block writes, and every write was
+    // staged first, so reading candidates for every staged key covers it without waiting on the
+    // block's final writes.
+    staged.prefetch_floor(index.len(), db).await?;
     Ok(StagedDb { staged, index })
 }
 
