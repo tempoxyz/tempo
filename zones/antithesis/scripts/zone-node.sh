@@ -10,7 +10,9 @@
 # roots and proofs are computed over different splits of in-memory and database trie state:
 # zone-0 keeps its whole sparse trie between blocks and batches more proof targets per
 # multiproof and persists often with little state masking, zone-1 persists every block without
-# masking, zone-2 keeps up to 64 blocks in memory and masks most of each persisted batch.
+# masking, zone-2 keeps up to 64 blocks in memory and masks most of each persisted batch. Nodes
+# running the sparse-trie task also compare its trie updates with a serial computation, which
+# trie-oracle.sh reports.
 set -eu
 
 S=/shared
@@ -20,7 +22,7 @@ L1_WS=ws://10.20.0.10:8546
 case "$NODE" in
     0)
         ROLE_ARGS="--secp256k1.key $S/seq-0.key --sequencer-key-file $S/seq-0.key"
-        ROLE_ARGS="$ROLE_ARGS --engine.disable-sparse-trie-cache-pruning --engine.multiproof-chunk-size 64 --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2"
+        ROLE_ARGS="$ROLE_ARGS --engine.disable-sparse-trie-cache-pruning --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2"
         P2P_KEY=$S/p2p-0.key
         ;;
     1 | 2)
@@ -29,12 +31,12 @@ case "$NODE" in
         if [ "$NODE" = 1 ]; then
             ROLE_ARGS="$ROLE_ARGS --engine.state-root-fallback --engine.persistence-threshold 0"
         else
-            ROLE_ARGS="$ROLE_ARGS --engine.disable-parallel-sparse-trie --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
+            ROLE_ARGS="$ROLE_ARGS --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
         fi
         ;;
     rpc)
         # Without --sequencer.prover-address the shadow prover runs the native prover in-process.
-        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe"
+        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --engine.state-root-task-compare-updates"
         P2P_KEY=$S/p2p-rpc.key
         ;;
     *)
@@ -42,6 +44,14 @@ case "$NODE" in
         exit 1
         ;;
 esac
+
+# The node logs through trie-oracle.sh, which reports reth's trie self-checks as assertions. A FIFO
+# keeps tempo-zone as the process that receives signals.
+LOG_FIFO=/tmp/zone-node.log.fifo
+rm -f "$LOG_FIFO"
+mkfifo "$LOG_FIFO"
+/opt/zones/trie-oracle.sh "$NODE" < "$LOG_FIFO" &
+exec > "$LOG_FIFO" 2>&1
 
 # shellcheck disable=SC2086
 exec /usr/local/bin/tempo-zone node \
@@ -59,4 +69,5 @@ exec /usr/local/bin/tempo-zone node \
     --disable-discovery \
     --ipcdisable \
     --color never \
+    --log.stdout.filter info,engine::tree::state_root_strategy=debug \
     $ROLE_ARGS
