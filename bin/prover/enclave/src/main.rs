@@ -19,10 +19,10 @@ use zone_chainspec::ZoneChainSpec;
 use zone_primitives::constants::zone_chain_id;
 use zone_prover::{
     DEFAULT_MAX_REQUEST_BYTES, ErrorCode, NITRO_VERIFIER_CONFIG_V1, PROTOCOL_VERSION, ProofBundle,
-    ProverConnection, TrustedChainSpecs, VerifyRequest, VerifyResponse,
+    ProverConnection, ProverTimings, TrustedChainSpecs, VerifyRequest, VerifyResponse,
     attested_transport::AttestedServer, nitro_batch_attestation_hash, request_error_response,
 };
-use zone_spf::{BatchOutput, PublicInputs, SpfConfig, prove_zone_batch};
+use zone_spf::{BatchExecution, BatchOutput, PublicInputs, SpfConfig, prove_zone_batch};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -317,6 +317,7 @@ where
 }
 
 fn process_request(request: VerifyRequest, specs: &TrustedChainSpecs) -> VerifyResponse {
+    let started = Instant::now();
     if request.version != PROTOCOL_VERSION {
         return VerifyResponse::Error {
             version: PROTOCOL_VERSION,
@@ -363,25 +364,36 @@ fn process_request(request: VerifyRequest, specs: &TrustedChainSpecs) -> VerifyR
         }
     };
     let config = SpfConfig::new(Arc::new(zone_spec));
+    let setup = started.elapsed();
 
     let public_inputs = request.witness.public_inputs.clone();
     match prove_zone_batch(&config, request.witness) {
-        Ok(output) => match build_proof_bundle(&public_inputs, &output, |digest| {
-            nitro_attestation(digest.as_slice(), None)
-        }) {
-            Ok(proof_bundle) => VerifyResponse::Ok {
-                version: PROTOCOL_VERSION,
-                request_id: request.request_id,
-                output: Box::new(output),
-                proof_bundle,
-            },
-            Err(message) => VerifyResponse::Error {
-                version: PROTOCOL_VERSION,
-                request_id: Some(request.request_id),
-                code: ErrorCode::AttestationUnavailable,
-                message,
-            },
-        },
+        Ok(BatchExecution { output, timings }) => {
+            let started = Instant::now();
+            let proof_bundle = build_proof_bundle(&public_inputs, &output, |digest| {
+                nitro_attestation(digest.as_slice(), None)
+            });
+            let attestation = started.elapsed();
+            match proof_bundle {
+                Ok(proof_bundle) => VerifyResponse::Ok {
+                    version: PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    output: Box::new(output),
+                    proof_bundle,
+                    timings: Some(ProverTimings {
+                        setup,
+                        spf: timings,
+                        attestation,
+                    }),
+                },
+                Err(message) => VerifyResponse::Error {
+                    version: PROTOCOL_VERSION,
+                    request_id: Some(request.request_id),
+                    code: ErrorCode::AttestationUnavailable,
+                    message,
+                },
+            }
+        }
         Err(error) => VerifyResponse::Error {
             version: PROTOCOL_VERSION,
             request_id: Some(request.request_id),

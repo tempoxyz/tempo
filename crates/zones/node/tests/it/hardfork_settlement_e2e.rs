@@ -269,7 +269,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
 
     let witness = recovery_witness(&l1, &zone, portal_address, 9, end).await?;
     let config = SpfConfig::new(spec);
-    let output = prove_zone_batch(&config, witness.clone())?;
+    let output = prove_zone_batch(&config, witness.clone())?.output;
     let head = provider.get_block_by_number(end.into()).await?.unwrap();
     assert_eq!(output.block_transition.prevBlockHash, parent.header.hash);
     assert_eq!(

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use alloy_primitives::{B256, Bytes};
 use alloy_sol_types::SolStruct as _;
 use keccak_const::Keccak256;
@@ -7,7 +9,7 @@ pub use tempo_contracts::{
     precompiles::{NITRO_VERIFIER_CONFIG_V1, NO_PROOF_FALLBACK_VERIFIER},
     zones::NitroBatchAttestation,
 };
-use zone_spf::{BatchOutput, BatchWitness, PublicInputs};
+use zone_spf::{BatchOutput, BatchWitness, PublicInputs, SpfTimings};
 
 /// Current version of the prover request and response wire format.
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -146,6 +148,10 @@ pub enum VerifyResponse {
         output: Box<BatchOutput>,
         /// Nitro proof material returned by the attesting prover.
         proof_bundle: ProofBundle,
+        /// Time the prover spent handling the request. [`None`] when the prover predates timings.
+        // TODO: make required once every deployed enclave returns timings.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timings: Option<ProverTimings>,
     },
     /// The request could not be decoded, accepted, or verified.
     #[serde(rename = "error")]
@@ -160,6 +166,18 @@ pub enum VerifyResponse {
         /// Human-readable diagnostic detail.
         message: String,
     },
+}
+
+/// Wall-clock time a prover spent handling a successful [`VerifyRequest`].
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProverTimings {
+    /// Resolving the trusted chain specification and building the SPF configuration.
+    pub setup: Duration,
+    /// Phases of the stateless proof function.
+    pub spf: SpfTimings,
+    /// Requesting the batch attestation document from the Nitro Secure Module.
+    pub attestation: Duration,
 }
 
 /// Stable error categories returned by the prover protocol.
@@ -237,6 +255,69 @@ mod tests {
         assert_eq!(error["version"], PROTOCOL_VERSION);
         assert_eq!(error["requestId"], "wire-test");
         assert_eq!(error["code"], "unsupported_chain");
+    }
+
+    #[test]
+    fn ok_variant_timings_are_optional() {
+        let mut response = VerifyResponse::Ok {
+            version: PROTOCOL_VERSION,
+            request_id: "timings-test".into(),
+            output: Box::new(BatchOutput {
+                next_zone_height: 1,
+                block_transition: BlockTransition {
+                    prevBlockHash: B256::ZERO,
+                    nextBlockHash: B256::ZERO,
+                },
+                deposit_queue_transition: DepositQueueTransition {
+                    prevProcessedHash: B256::ZERO,
+                    nextProcessedHash: B256::ZERO,
+                    prevDepositNumber: 0,
+                    nextDepositNumber: 0,
+                },
+                token_enablement_transition: TokenEnablementTransition {
+                    prevProcessedTokenCount: 0,
+                    nextProcessedTokenCount: 0,
+                },
+                withdrawal_queue_hash: B256::ZERO,
+                last_batch_commitment: LastBatchCommitment {
+                    withdrawal_batch_index: 0,
+                },
+            }),
+            proof_bundle: ProofBundle {
+                verifier_config: NITRO_VERIFIER_CONFIG_V1.into(),
+                proof: Bytes::from_static(&[1]),
+            },
+            timings: None,
+        };
+
+        // Provers that predate timings omit the field entirely.
+        let encoded = serde_json::to_value(&response).unwrap();
+        assert!(encoded["ok"].get("timings").is_none());
+        let VerifyResponse::Ok { timings, .. } = serde_json::from_value(encoded).unwrap() else {
+            panic!("expected an ok response");
+        };
+        assert_eq!(timings, None);
+
+        let expected = ProverTimings {
+            setup: Duration::from_micros(1),
+            spf: SpfTimings {
+                witness_database: Duration::from_micros(2),
+                block_execution: Duration::from_micros(3),
+                state_root: Duration::from_micros(4),
+                block_assembly: Duration::from_micros(5),
+                total: Duration::from_micros(15),
+            },
+            attestation: Duration::from_micros(6),
+        };
+        let VerifyResponse::Ok { timings, .. } = &mut response else {
+            unreachable!()
+        };
+        *timings = Some(expected);
+        let encoded = serde_json::to_vec(&response).unwrap();
+        let VerifyResponse::Ok { timings, .. } = serde_json::from_slice(&encoded).unwrap() else {
+            panic!("expected an ok response");
+        };
+        assert_eq!(timings, Some(expected));
     }
 
     #[test]
