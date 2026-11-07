@@ -169,6 +169,17 @@ target "tempo-zone-prover" {
   platforms = ["linux/amd64"]
 }
 
+# vsock-proxy for the prover host image. It does not depend on the EIF, so the
+# first bake warms these layers while the binaries compile; the later
+# tempo-zone-prover bake reuses them.
+target "tempo-zone-prover-proxy" {
+  dockerfile = "zones/docker/Dockerfile.prover-host"
+  context = "."
+  target = "proxy-builder"
+  platforms = ["linux/amd64"]
+  output = ["type=cacheonly"]
+}
+
 target "tempo-zone-xtask" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo-zone-xtask"
