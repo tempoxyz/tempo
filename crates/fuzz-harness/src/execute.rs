@@ -43,12 +43,16 @@ type ExecutionBlock = RecoveredBlock<Block>;
 
 thread_local! {
     static EXECUTION_TIME: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    #[cfg(feature = "executor-counters")]
+    static EXECUTOR_COUNTS: RefCell<ExecutorCounts> = RefCell::new(ExecutorCounts::default());
     static REJECTION: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// Clears timing before decoding each ABI request, including requests that are rejected.
 pub(crate) fn reset_execution_time() {
     EXECUTION_TIME.set(Duration::ZERO);
+    #[cfg(feature = "executor-counters")]
+    reset_executor_counts();
 }
 
 /// Executor-only time for the last request on this thread, excluding harness invariants and I/O.
@@ -57,10 +61,90 @@ pub(crate) fn execution_nanos() -> u64 {
 }
 
 fn timed<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(feature = "executor-counters")]
+    EXECUTOR_COUNTS.with_borrow_mut(|counts| {
+        // Bulk copies avoid an instrumented per-counter snapshot loop.
+        if !counts.before.is_empty() {
+            // The LLVM section is validated at ABI reset and remains loaded for this call.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    counts.start,
+                    counts.before.as_mut_ptr(),
+                    counts.before.len(),
+                );
+            }
+        }
+    });
     let start = Instant::now();
     let result = f();
     EXECUTION_TIME.set(EXECUTION_TIME.get() + start.elapsed());
+    #[cfg(feature = "executor-counters")]
+    EXECUTOR_COUNTS.with_borrow_mut(|counts| {
+        if !counts.after.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    counts.start,
+                    counts.after.as_mut_ptr(),
+                    counts.after.len(),
+                );
+            }
+        }
+        for ((total, before), after) in counts
+            .total
+            .iter_mut()
+            .zip(&counts.before)
+            .zip(&counts.after)
+        {
+            *total = total.saturating_add(after.wrapping_sub(*before));
+        }
+    });
     result
+}
+
+#[cfg(feature = "executor-counters")]
+unsafe extern "C" {
+    fn __llvm_profile_begin_counters() -> *const u64;
+    fn __llvm_profile_end_counters() -> *const u64;
+}
+
+#[cfg(feature = "executor-counters")]
+#[derive(Default)]
+struct ExecutorCounts {
+    start: *const u64,
+    before: Vec<u64>,
+    after: Vec<u64>,
+    total: Vec<u64>,
+}
+
+/// Clears the saved executor vector, including for rejected ABI requests.
+#[cfg(feature = "executor-counters")]
+pub(crate) fn reset_executor_counts() {
+    let start = unsafe { __llvm_profile_begin_counters() };
+    let end = unsafe { __llvm_profile_end_counters() };
+    let bytes = (end as usize)
+        .checked_sub(start as usize)
+        .expect("LLVM counter section is ordered");
+    assert!(
+        !start.is_null()
+            && (start as usize).is_multiple_of(align_of::<u64>())
+            && bytes.is_multiple_of(size_of::<u64>())
+            && bytes <= isize::MAX as usize,
+        "LLVM counter section is aligned and addressable"
+    );
+    let len = bytes / size_of::<u64>();
+    EXECUTOR_COUNTS.with_borrow_mut(|counts| {
+        counts.start = start;
+        counts.before.resize(len, 0);
+        counts.after.resize(len, 0);
+        counts.total.resize(len, 0);
+        counts.total.fill(0);
+    });
+}
+
+/// Borrows the saved vector without sampling or modifying it.
+#[cfg(feature = "executor-counters")]
+pub(crate) fn with_executor_counts<T>(f: impl FnOnce(&[u64]) -> T) -> T {
+    EXECUTOR_COUNTS.with_borrow(|counts| f(&counts.total))
 }
 
 /// A harness check that rejects an input with no error value of its own.
