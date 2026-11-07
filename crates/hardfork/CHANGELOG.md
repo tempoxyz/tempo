@@ -1,5 +1,20 @@
 # Changelog
 
+## `tempo-hardfork@2.0.0`
+
+### Major Changes
+
+- Scheduled T13 activation on Moderato for 29 October 2026 at 15:00 UTC and mainnet for 3 November 2026 at 15:00 UTC. Updated public hardfork timestamp lookups to return the scheduled times. (by @decofe, [#8480](https://github.com/tempoxyz/tempo/pull/8480))
+
+### Minor Changes
+
+- Moved EVM execution from revm and alloy-evm to evm2 and removed the `tempo-revm` crate. `tempo-hardfork`, `tempo-primitives` and `tempo-chainspec` expose evm2 types behind their `evm` features in place of their revm and alloy-evm equivalents. `tempo-alloy` drops its `revm` feature and `TempoTransactionRequest::try_into_tempo_tx_env`; its `reth` feature now converts requests into evm2 transaction environments. (by Arsenii Kulikov, [#7871](https://github.com/tempoxyz/tempo/pull/7871))
+- Added the `T15` hardfork with no public-network activation; dev and test genesis activate it at genesis. (by Alexey Shekhirin, [#8706](https://github.com/tempoxyz/tempo/pull/8706))
+
+### Patch Changes
+
+- Moved function-local `use`s to module scope. No public API or behavior changes. (by @joshieDo, [#8920](https://github.com/tempoxyz/tempo/pull/8920))
+
 ## `tempo-hardfork@1.16.0`
 
 ### Minor Changes
