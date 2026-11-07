@@ -847,7 +847,7 @@ impl Actor {
                     stage,
                     reply,
                 } => {
-                    let reads = self.take_stage(stage, block.parent_hash);
+                    let reads = self.take_stage(stage, block.parent_hash).await;
                     reply(self.build(block, writes, reads).await)
                 }
                 Command::BuildUnregistered {
@@ -866,7 +866,7 @@ impl Actor {
                         queue_us = sent.elapsed().as_micros() as u64,
                         staged = tracing::field::Empty,
                     );
-                    let reads = self.take_stage(stage, parent_hash);
+                    let reads = self.take_stage(stage, parent_hash).await;
                     span.record("staged", reads.is_some());
                     reply(
                         self.merkleize(number, parent_hash, writes, reads)
@@ -992,14 +992,20 @@ impl Actor {
     }
 
     /// Closes stage `id` and returns its reads when they still hold for a block on
-    /// `parent_hash` and nothing reads into them.
-    fn take_stage(
+    /// `parent_hash`, after waiting for a read into them that is still running.
+    ///
+    /// The block's execution streams its last keys into the stage while the block finishes, so
+    /// a read is often still running when the block's batch is built. Waiting for it costs at
+    /// most that read, while building without the stage resolves every key again.
+    async fn take_stage(
         &mut self,
         id: Option<StageId>,
         parent_hash: B256,
     ) -> Option<(StagedDb<ACCOUNT_LEN>, StagedDb<SLOT_LEN>)> {
         let stage = self.stages.remove(&id?)?;
-        let mut stage = stage.try_lock().ok()?;
+        // The stage's reader locks the stage before the databases, and nothing here holds a
+        // database lock, so this cannot deadlock with it.
+        let mut stage = stage.lock().await;
         let holds = stage.parent_hash == parent_hash
             && match stage.on_applied {
                 Some(applied) => applied == self.applied && self.base == Some(parent_hash),
