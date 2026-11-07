@@ -1,11 +1,12 @@
 use crate::{
+    account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{
         ContractStorage, Handler, StorageAction, StorageCtx, StorageKey, packing::insert_into_word,
     },
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
-    tip20::{ITIP20, TIP20Token, validate_usd_currency},
-    tip403_registry::AuthRole,
+    tip20::{ITIP20, Recipient, TIP20Token, validate_usd_currency},
+    tip403_registry::{AuthRole, TIP403Registry},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -416,6 +417,7 @@ impl TipFeeManager {
     /// - `InvalidCurrency` — either token is not USD-denominated
     /// - `InsufficientLiquidity` — caller's balance < `liquidity`, or remaining reserve would
     ///   violate the pending reservation (T1C+)
+    /// - `SpendingLimitExceeded` — a diverted payout exceeds the LP owner's access-key limit (T14+)
     /// - `InsufficientReserves` — pool reserves underflow after withdrawal
     /// - `UnderOverflow` — supply or balance arithmetic overflows
     pub fn burn(
@@ -470,6 +472,25 @@ impl TipFeeManager {
             let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
             if available_after_burn < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+        }
+
+        if self.storage.spec().is_t14() {
+            // Escrow recoverable by the receiver remains in their custody.
+            let receiver = Recipient::resolve(to)?.target;
+            let mut keychain = AccountKeychain::new();
+            for (token, amount) in [
+                (user_token.address(), amount_user_token),
+                (validator_token.address(), amount_validator_token),
+            ] {
+                if !amount.is_zero()
+                    && (receiver != msg_sender
+                        || TIP403Registry::new()
+                            .check_receive_policy(token, self.address, receiver)?
+                            .is_some_and(|(_, recovery)| recovery != receiver))
+                {
+                    keychain.authorize_transfer(msg_sender, token, amount)?;
+                }
             }
         }
 
@@ -730,10 +751,13 @@ impl TipFeeManager {
 mod tests {
     use alloy::primitives::Address;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
 
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
+        account_keychain::IAccountKeychain,
+        address_registry::{AddressRegistry, MasterId, TempoAddressExt, UserTag},
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
@@ -741,6 +765,229 @@ mod tests {
         tip20::TIP20Error,
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
+
+    #[test]
+    fn burn_reroutes_obey_access_key_limits_at_t14() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            for (reroute, blocked, third_party_recovery, virtual_recipient) in [
+                (false, [false, false], false, false),
+                (true, [false, false], false, false),
+                (true, [false, false], false, true),
+                (true, [true, true], false, false),
+                (true, [true, false], false, false),
+                (true, [false, true], false, false),
+                (true, [true, true], true, false),
+                (true, [true, true], false, true),
+                (true, [true, true], true, true),
+                (false, [true, true], true, false),
+                (false, [true, false], true, false),
+                (false, [false, true], true, false),
+                (false, [true, true], false, false),
+                (false, [true, false], false, false),
+                (false, [false, true], false, false),
+                (false, [false, false], false, true),
+                (false, [true, true], true, true),
+                (false, [true, false], true, true),
+                (false, [false, true], true, true),
+                (false, [true, true], false, true),
+                (false, [true, false], false, true),
+                (false, [false, true], false, true),
+            ] {
+                for (reserve_a, reserve_b) in [(100u128, 100u128), (0, 100), (100, 0)] {
+                    for limits in [[0u128, 0], [0, 100], [100, 0], [100, 100]] {
+                        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                            let user = Address::random();
+                            let key = Address::random();
+                            let receiver = if reroute { Address::random() } else { user };
+                            let recipient = if virtual_recipient {
+                                let master_id = MasterId::random();
+                                assert_eq!(
+                                    AddressRegistry::new()
+                                        .register_virtual_master_unchecked(master_id, receiver)?,
+                                    master_id
+                                );
+                                Address::new_virtual(master_id, UserTag::random())
+                            } else {
+                                receiver
+                            };
+                            let token_a = TIP20Setup::create("A", "A", user)
+                                .with_issuer(user)
+                                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100))
+                                .apply()?
+                                .address();
+                            let token_b = TIP20Setup::create("B", "B", user)
+                                .with_issuer(user)
+                                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100))
+                                .apply()?
+                                .address();
+                            let mut amm = TipFeeManager::new();
+                            let pool = setup_pool_with_liquidity(
+                                &mut amm,
+                                token_a,
+                                token_b,
+                                U256::from(reserve_a),
+                                U256::from(reserve_b),
+                            )?;
+                            // Draining a reserve does not burn the outstanding LP shares.
+                            amm.total_supply[pool].write(U256::from(100))?;
+                            amm.set_liquidity_balances(pool, user, U256::from(100))?;
+                            if blocked.into_iter().any(|blocked| blocked) {
+                                let mut registry = TIP403Registry::new();
+                                registry.initialize()?;
+                                let token_filter = if blocked == [true, true] {
+                                    crate::tip403_registry::ALLOW_ALL_POLICY_ID
+                                } else {
+                                    registry.create_policy_with_accounts(
+                                        user,
+                                        ITIP403Registry::createPolicyWithAccountsCall {
+                                            admin: user,
+                                            policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                                            accounts: [token_a, token_b]
+                                                .into_iter()
+                                                .zip(blocked)
+                                                .filter_map(|(token, blocked)| {
+                                                    blocked.then_some(token)
+                                                })
+                                                .collect(),
+                                        },
+                                    )?
+                                };
+                                registry.set_receive_policy(
+                                    receiver,
+                                    ITIP403Registry::setReceivePolicyCall {
+                                        senderPolicyId: if blocked == [true, true] {
+                                            crate::tip403_registry::REJECT_ALL_POLICY_ID
+                                        } else {
+                                            crate::tip403_registry::ALLOW_ALL_POLICY_ID
+                                        },
+                                        tokenFilterId: token_filter,
+                                        recoveryAuthority: if third_party_recovery {
+                                            Address::random()
+                                        } else {
+                                            receiver
+                                        },
+                                    },
+                                )?;
+                            }
+                            let mut keychain = AccountKeychain::new();
+                            keychain.initialize()?;
+                            keychain.set_tx_origin(user)?;
+                            keychain.authorize_key(
+                                user,
+                                key,
+                                IAccountKeychain::SignatureType::Secp256k1,
+                                IAccountKeychain::KeyRestrictions {
+                                    expiry: u64::MAX,
+                                    enforceLimits: true,
+                                    limits: [token_a, token_b]
+                                        .into_iter()
+                                        .zip(limits)
+                                        .map(|(token, limit)| IAccountKeychain::TokenLimit {
+                                            token,
+                                            amount: U256::from(limit),
+                                            period: 0,
+                                        })
+                                        .collect(),
+                                    allowAnyCalls: true,
+                                    allowedCalls: vec![],
+                                },
+                                None,
+                            )?;
+                            keychain.set_tx_origin(user)?;
+                            keychain.set_transaction_key(key)?;
+                            keychain.clear_emitted_events();
+                            let result =
+                                amm.burn(user, token_a, token_b, U256::from(100), recipient);
+                            let charges = [(reserve_a, blocked[0]), (reserve_b, blocked[1])].map(
+                                |(reserve, blocked)| {
+                                    if spec.is_t14()
+                                        && (reroute || (blocked && third_party_recovery))
+                                    {
+                                        reserve
+                                    } else {
+                                        0
+                                    }
+                                },
+                            );
+                            if charges
+                                .into_iter()
+                                .zip(limits)
+                                .any(|(charged, limit)| charged > limit)
+                            {
+                                assert_eq!(
+                                    result,
+                                    Err(AccountKeychainError::spending_limit_exceeded().into())
+                                );
+                                assert_eq!(
+                                    amm.get_liquidity_balances(pool, user)?,
+                                    U256::from(100)
+                                );
+                                assert_eq!(amm.pools[pool].read()?.reserve_user_token, reserve_a);
+                                assert_eq!(
+                                    amm.pools[pool].read()?.reserve_validator_token,
+                                    reserve_b
+                                );
+                                assert_eq!(amm.get_total_supply(pool)?, U256::from(100));
+                            } else {
+                                assert_eq!(result?, (U256::from(reserve_a), U256::from(reserve_b)));
+                                keychain.assert_emitted_events(
+                                    [token_a, token_b]
+                                        .into_iter()
+                                        .zip(charges)
+                                        .zip(limits)
+                                        .filter(|((_, charged), _)| *charged != 0)
+                                        .map(|((token, charged), limit)| {
+                                            AccountKeychainEvent::access_key_spend(
+                                                user,
+                                                key,
+                                                token,
+                                                U256::from(charged),
+                                                U256::from(limit - charged),
+                                            )
+                                        })
+                                        .collect(),
+                                );
+                                for ((((token, limit), charged), reserve), blocked) in
+                                    [token_a, token_b]
+                                        .into_iter()
+                                        .zip(limits)
+                                        .zip(charges)
+                                        .zip([reserve_a, reserve_b])
+                                        .zip(blocked)
+                                {
+                                    assert_eq!(
+                                        TIP20Token::from_address(token)?.balance_of(
+                                            ITIP20::balanceOfCall {
+                                                account: if blocked {
+                                                    crate::RECEIVE_POLICY_GUARD_ADDRESS
+                                                } else {
+                                                    receiver
+                                                },
+                                            }
+                                        )?,
+                                        U256::from(reserve)
+                                    );
+                                    assert_eq!(
+                                        keychain.get_remaining_limit(
+                                            IAccountKeychain::getRemainingLimitCall {
+                                                account: user,
+                                                keyId: key,
+                                                token,
+                                            }
+                                        )?,
+                                        U256::from(limit - charged)
+                                    );
+                                }
+                            }
+                            Ok(())
+                        })?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     /// Integer square root using the Babylonian method
     fn sqrt(x: U256) -> U256 {
