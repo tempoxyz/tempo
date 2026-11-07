@@ -5,7 +5,7 @@ use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx as _, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
-use alloy_primitives::{Address, B256, IntoLogData as _};
+use alloy_primitives::{Address, B256, IntoLogData as _, KECCAK256_EMPTY};
 use evm2::{
     Evm,
     evm::AccountInfo,
@@ -13,18 +13,21 @@ use evm2::{
     registry::{HandlerError, HandlerResult},
     version::{GasId, GasParams},
 };
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
 use tempo_precompiles::{
     configurable_account::{
-        ConfigurableAccount, UpgradeEligibility, registration_event, valid_account,
-        valid_account_code,
+        CONFIGURABLE_ACCOUNT_CODE_HASH, ConfigurableAccount, UpgradeEligibility,
+        registration_event, valid_account, valid_account_code,
     },
     error::TempoPrecompileError,
     storage::{StorageCtx, account_config_commitment},
 };
-use tempo_primitives::transaction::{
-    ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
-    SignedKeyAuthorization, TempoSignature,
+use tempo_primitives::{
+    TempoEvmKind,
+    transaction::{
+        ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature,
+        SignatureType, SignedKeyAuthorization, TempoSignature,
+    },
 };
 
 /// An independently signed role. Repeated accounts still require both role digests.
@@ -188,6 +191,7 @@ pub(crate) fn validate_state(
         if let Some(aa) = envelope.as_aa() {
             extra_gas += granted_configurable_account_access_gas(host, aa, spec, &accounts)?;
         }
+        extra_gas += zone_commitment_reads_gas(host, envelope, spec)?;
     }
     Ok((extra_gas, state_gas))
 }
@@ -224,7 +228,8 @@ pub(crate) fn register_commitments(
     aa: &TempoAaTx,
 ) -> HandlerResult<()> {
     let roles = aa.configurable_roles();
-    if matches!(roles, [None, None]) {
+    // Zones never register: Tempo L1 owns commitments (TIP-1154).
+    if matches!(roles, [None, None]) || host.ext().kind == TempoEvmKind::Zone {
         return Ok(());
     }
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
@@ -252,6 +257,41 @@ pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
         } else {
             0
         }
+}
+
+/// Intrinsic gas for the Tempo commitment reads (TIP-1154) of the accounts a zone transaction
+/// warms without paying a cold access: a full cold access for the sender, and
+/// [`L1_COMMITMENT_READ_GAS`] for the first call target when it can hold a commitment. A zone's gas
+/// schedule charges every other read through the cold access (see
+/// [`tempo_chainspec::gas_params::apply_zone`]). Zero on Tempo L1.
+fn zone_commitment_reads_gas(
+    host: &mut Evm<'_, TempoEvmTypes>,
+    envelope: &TempoTxEnv,
+    spec: TempoHardfork,
+) -> HandlerResult<u64> {
+    if host.ext().kind == TempoEvmKind::L1 {
+        return Ok(0);
+    }
+    let mut gas = account_access_gas(&host.version().gas_params, true);
+    let Some(to) = envelope
+        .evm_tx()
+        .calls()
+        .next()
+        .and_then(|(kind, _)| kind.to().copied())
+    else {
+        return Ok(gas);
+    };
+    if to != envelope.caller() && valid_account(to, spec) && !host.precompiles().contains(&to) {
+        let code_hash = host
+            .state_mut()
+            .account(&to)?
+            .get()
+            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
+        if code_hash == KECCAK256_EMPTY || code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH {
+            gas += L1_COMMITMENT_READ_GAS;
+        }
+    }
+    Ok(gas)
 }
 
 /// Loads and warms `address` once, reading its code, emptiness, nonce and commitment.
@@ -339,7 +379,8 @@ fn validate_configurable_roles(
                 .config()
                 .derivation_gas()
                 .ok_or(TempoPrecompileError::OutOfGas)?;
-            if first {
+            // Zones never register, so they charge no write.
+            if first && host.ext().kind == TempoEvmKind::L1 {
                 let gas = &host.version().gas_params;
                 // TIP-1108 prices the commitment write like account creation.
                 extra_gas += gas.get(GasId::NewAccountCost);
