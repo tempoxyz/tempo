@@ -218,6 +218,16 @@ jobs:
             exit 1
           fi
           set_pin paradigmxyz/reth-core "$RETH_CORE_REV"
+          # Only move evm2 forward: Tempo often pins a newer evm2 than reth main,
+          # and downgrading it breaks the build (such as the patched Forge).
+          CURRENT_EVM2_REV=$(grep -m1 'github.com/alloy-rs/evm2", rev = ' Cargo.toml | sed 's/.*rev = "\([^"]*\)".*/\1/' || true)
+          if [ -n "$CURRENT_EVM2_REV" ] && [ "$CURRENT_EVM2_REV" != "$EVM2_REV" ]; then
+            EVM2_CMP=$(gh api "repos/alloy-rs/evm2/compare/${CURRENT_EVM2_REV}...${EVM2_REV}" --jq '.status')
+            if [ "$EVM2_CMP" = "behind" ]; then
+              echo "Keeping evm2 at ${CURRENT_EVM2_REV}: reth pins an older rev (${EVM2_REV})"
+              EVM2_REV="$CURRENT_EVM2_REV"
+            fi
+          fi
           set_pin alloy-rs/evm2 "$EVM2_REV"
           set_pin DaniPopes/evm2 "$EVM2_REV"
 
@@ -561,6 +571,38 @@ jobs:
           MAX_CI_FIX_ATTEMPTS=10
           CI_FIX_DEADLINE=$((SECONDS + 3600))  # 60 minutes for the whole fix cycle
           ci_fix_attempt=0
+          RERUN_SHA=""
+
+          # GitHub moves the PR head to a pushed commit asynchronously. Until it
+          # does, `gh pr checks` still reports the previous head's results, so a
+          # failure that was just fixed would be handled again (and the loop would
+          # give up when Amp finds nothing left to change). Wait for the PR head to
+          # be the local HEAD before reading checks.
+          wait_for_pr_head() {
+            local want waited=0
+            want=$(git rev-parse HEAD)
+            while [ "$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)" != "$want" ]; do
+              if [ "$waited" -ge 600 ]; then
+                echo "::error::PR head did not move to $want within 10m"
+                exit 1
+              fi
+              echo "Waiting for the PR head to move to $want..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+          }
+
+          # Push local commits (Amp may commit without pushing) and wait for the PR
+          # to pick them up.
+          push_and_wait() {
+            if [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$PR_BRANCH" 2>/dev/null || true)" ]; then
+              git push origin "HEAD:$PR_BRANCH"
+              git fetch -q origin "$PR_BRANCH"
+            fi
+            wait_for_pr_head
+          }
+
+          wait_for_pr_head
 
           while true; do
             ci_fix_attempt=$((ci_fix_attempt + 1))
@@ -653,11 +695,11 @@ jobs:
                 if [ -n "$(git status --porcelain)" ]; then
                   git add -A
                   git commit -m "fix: resolve stuck CI jobs from reth update ($(date -u +%Y-%m-%d))"
-                  git push origin "$PR_BRANCH"
                 elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
                   echo "Amp made no changes for stuck jobs — giving up"
                   exit 1
                 fi
+                push_and_wait
                 # Restart the outer loop to wait for new CI run
                 continue 2
               fi
@@ -698,15 +740,46 @@ jobs:
             amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
             echo "::endgroup::"
 
-            # Amp may have committed+pushed already; also handle uncommitted changes
+            # Amp may have committed (and pushed) already; also handle uncommitted changes
             if [ -n "$(git status --porcelain)" ]; then
               git add -A
               git commit -m "fix: resolve CI failures from reth update ($(date -u +%Y-%m-%d))"
-              git push origin "$PR_BRANCH"
             elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
-              echo "Amp made no changes but CI is still failing — giving up"
+              # Nothing to fix in the source: the failure may be a flake outside the
+              # code (such as a network timeout). Rerun the failed Actions jobs once
+              # per head before giving up.
+              # Select runs by failed jobs, not by run conclusion: the poll loop
+              # breaks on the first failed check, so the run holding it may still
+              # have other jobs in progress.
+              FAILED_RUNS=""
+              for run_id in $(gh run list --branch "$PR_BRANCH" --commit "$HEAD_SHA" --json databaseId --jq '.[].databaseId'); do
+                if [ "$(gh run view "$run_id" --json jobs --jq '[.jobs[] | select(.conclusion == "failure")] | length')" != "0" ]; then
+                  FAILED_RUNS="$FAILED_RUNS $run_id"
+                fi
+              done
+              if [ "$RERUN_SHA" != "$HEAD_SHA" ] && [ -n "$FAILED_RUNS" ]; then
+                RERUN_SHA="$HEAD_SHA"
+                for run_id in $FAILED_RUNS; do
+                  # gh run rerun --failed refuses runs that are still in progress.
+                  while [ "$(gh run view "$run_id" --json status --jq '.status')" != "completed" ]; do
+                    if [ "$SECONDS" -ge "$CI_FIX_DEADLINE" ]; then
+                      echo "::error::Run $run_id still in progress at the CI fix deadline — giving up"
+                      exit 1
+                    fi
+                    echo "Waiting for run $run_id to finish before rerunning its failed jobs..."
+                    sleep 60
+                  done
+                  echo "Amp made no changes — rerunning failed jobs of run $run_id"
+                  gh run rerun "$run_id" --failed || echo "::warning::Could not rerun run $run_id"
+                done
+                # Give the reruns time to replace the failed check results.
+                sleep 120
+                continue
+              fi
+              echo "::error::Amp made no changes but CI is still failing ($FAILED_NAMES) — giving up"
               exit 1
             fi
+            push_and_wait
           done
 
       # ── Slack notification ─────────────────────────────────────
