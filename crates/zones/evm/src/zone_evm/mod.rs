@@ -98,13 +98,15 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             ExecutionContext::Transaction { tx_hash } => tx_hash,
             ExecutionContext::Simulation => B256::repeat_byte(0xff),
         };
-        let fee_payer = request
-            .envelope
-            .fee_payer()
-            .unwrap_or_else(|_| request.tx.signer());
+        let origin = request.tx.signer();
+        let fee_payer = request.envelope.fee_payer().unwrap_or(origin);
         Ok(ZoneTxContext {
             l1: self.l1.clone(),
-            _transaction: tx_context::set_current_transaction(tx_hash, fee_payer),
+            _transaction: tx_context::set_current_transaction(tx_context::TransactionContext {
+                tx_hash,
+                origin,
+                fee_payer,
+            }),
         })
     }
 }

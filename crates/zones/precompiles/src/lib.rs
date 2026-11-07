@@ -74,7 +74,6 @@ pub mod storage;
 mod storage_credits;
 pub mod tempo_state;
 pub mod tip403_proxy;
-#[cfg(feature = "std")]
 pub mod tx_context;
 pub mod zone_fee_manager;
 pub mod zone_state;
@@ -304,10 +303,14 @@ where
                     &self.env,
                     execution::NoCallRules,
                     |data, caller| {
-                        let (tx_hash, fee_payer) = tx_context::current_transaction()
-                            .unwrap_or((Default::default(), caller));
-                        ZoneOutbox::new()
-                            .call_with_transaction(&self.l1, data, caller, tx_hash, fee_payer)
+                        let tx = tx_context::current_transaction().unwrap_or(
+                            tx_context::TransactionContext {
+                                tx_hash: Default::default(),
+                                origin: caller,
+                                fee_payer: caller,
+                            },
+                        );
+                        ZoneOutbox::new().call_with_transaction(&self.l1, data, caller, tx)
                     },
                 ));
             }
