@@ -1,9 +1,13 @@
-//! Sequencer-local allowlist of L1 depositors.
+//! Sequencer-local allowlist of L1 depositors and Zone transfer parties.
 //!
 //! When a Zone portal runs with access mode disabled, anyone can deposit on L1. The leader then
 //! bounces deposits whose L1 `sender` is not on this list by supplying zeroed decryption data,
 //! which the inbox treats as a failed decryption and refunds through the ordinary deposit
-//! bounce-back path. The check runs only where blocks are built, so it needs no hardfork.
+//! bounce-back path. Users keep the same address on L1 and the Zone, so the leader also leaves out
+//! Zone TIP-20 transfers unless both parties are listed (see [`TransferAllowlist`]). The checks
+//! run only where blocks are built, so they need no hardfork. RPC-only nodes keep an
+//! [`AllowlistMirror`] of the leader's list so they can reject such transfers on submission
+//! instead of forwarding them.
 //!
 //! A sequencer with no persisted list is uninitialized and credits every deposit until its first
 //! write, so enabling the allowlist does not bounce deposits before the admin fills the list.
@@ -24,12 +28,16 @@ use alloy_sol_types::{Eip712Domain, SolStruct as _, eip712_domain, sol};
 use eyre::{WrapErr as _, ensure};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use parking_lot::{Mutex, RwLock};
+use reth_transaction_pool::TransactionPool;
 use serde::{Deserialize, Serialize};
+use tempo_transaction_pool::transaction::TempoPooledTransaction;
+use tokio::sync::Notify;
 use tracing::{info, warn};
 use zone_l1::{FAILED_DECRYPTION, abi::DecryptionData};
+use zone_payload::{TransferAllowlist, validate_transfer_calls};
 
 mod relay;
-pub(crate) use relay::{AllowlistRelay, apply_relayed_requests};
+pub(crate) use relay::{AllowlistRelay, apply_relayed_requests, mirror_leader};
 
 /// File name of the persisted allowlist inside the node data directory.
 pub(crate) const DEPOSIT_ALLOWLIST_FILE_NAME: &str = "deposit-allowlist.json";
@@ -273,7 +281,8 @@ pub(crate) struct SequencerAllowlistStatus {
     pub(crate) status: DepositAllowlistStatus,
 }
 
-/// Addresses whose L1 deposits the leader credits, persisted as JSON.
+/// Addresses whose L1 deposits the leader credits and that may send and receive Zone transfers,
+/// persisted as JSON.
 ///
 /// Cloning shares the same list.
 #[derive(Debug, Clone)]
@@ -470,6 +479,116 @@ impl DepositAllowlist {
     }
 }
 
+impl TransferAllowlist for DepositAllowlist {
+    fn allows_all(&self, addresses: &[Address]) -> bool {
+        allows_all(
+            self.inner
+                .state
+                .read()
+                .as_ref()
+                .map(|state| &state.addresses),
+            addresses,
+        )
+    }
+}
+
+/// Copy of the leader's allowlist that an RPC-only node keeps to reject transfers on submission,
+/// refreshed by the relay's `mirror_leader` task.
+///
+/// It admits every transfer until the leader reports a written list, and again once it no longer
+/// holds one; the leader still enforces its own list. Cloning shares the same copy.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AllowlistMirror {
+    inner: Arc<MirrorInner>,
+}
+
+#[derive(Debug, Default)]
+struct MirrorInner {
+    /// The leader's written list, `None` while the leader has none or none is known.
+    list: RwLock<Option<MirroredList>>,
+    /// Wakes the refresh task early, after this node relays a write.
+    refresh: Notify,
+}
+
+#[derive(Debug)]
+struct MirroredList {
+    /// Always initialized: the refresh clears the copy instead of installing an unwritten list.
+    status: DepositAllowlistStatus,
+    addresses: BTreeSet<Address>,
+}
+
+impl AllowlistMirror {
+    /// The version of the copy, `None` while the leader has no written list or none is known.
+    pub(crate) fn status(&self) -> Option<DepositAllowlistStatus> {
+        self.inner.list.read().as_ref().map(|list| list.status)
+    }
+
+    /// Install the leader's `snapshot`, returning whether its version differs from the current
+    /// copy.
+    pub(crate) fn replace(&self, snapshot: DepositAllowlistSnapshot) -> bool {
+        let list = MirroredList {
+            status: snapshot.status,
+            addresses: snapshot.addresses.into_iter().collect(),
+        };
+        let mut current = self.inner.list.write();
+        let changed = current.as_ref().map(|current| current.status) != Some(list.status);
+        *current = Some(list);
+        changed
+    }
+
+    /// Drop the copy once the leader has no written list, so every transfer is admitted again.
+    /// Returns whether it held one.
+    pub(crate) fn clear(&self) -> bool {
+        self.inner.list.write().take().is_some()
+    }
+
+    /// Ask the refresh task to check the sequencers now instead of at its next interval.
+    pub(crate) fn request_refresh(&self) {
+        self.inner.refresh.notify_one();
+    }
+
+    /// Resolves once [`Self::request_refresh`] was called.
+    pub(crate) async fn refresh_requested(&self) {
+        self.inner.refresh.notified().await;
+    }
+}
+
+impl TransferAllowlist for AllowlistMirror {
+    fn allows_all(&self, addresses: &[Address]) -> bool {
+        allows_all(
+            self.inner.list.read().as_ref().map(|list| &list.addresses),
+            addresses,
+        )
+    }
+}
+
+/// Remove pooled transactions that `allowlist` no longer admits, so this node stops forwarding
+/// them after the list changes. Returns how many were removed.
+///
+/// This scans pending and queued transactions whether or not they propagate, since the forwarder
+/// resends local transactions either way.
+pub(crate) fn evict_unlisted_transfers<P>(pool: &P, allowlist: &dyn TransferAllowlist) -> usize
+where
+    P: TransactionPool<Transaction = TempoPooledTransaction>,
+{
+    let unlisted = pool
+        .all_transactions()
+        .iter()
+        .filter(|tx| validate_transfer_calls(allowlist, &tx.transaction).is_err())
+        .map(|tx| *tx.hash())
+        .collect::<Vec<_>>();
+    let count = unlisted.len();
+    if count > 0 {
+        pool.remove_transactions(unlisted);
+    }
+    count
+}
+
+/// Whether `list` holds every one of `addresses`. An unwritten list (`None`) allows everyone.
+fn allows_all(list: Option<&BTreeSet<Address>>, addresses: &[Address]) -> bool {
+    list.is_none_or(|list| addresses.iter().all(|address| list.contains(address)))
+}
+
 fn apply_set(list: &mut BTreeSet<Address>, addresses: &[Address], allowed: bool) {
     for address in addresses {
         if allowed {
@@ -609,9 +728,21 @@ fn persist(path: &Path, state: &State) -> eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_primitives::{TxKind, U256, address};
     use alloy_signer::SignerSync as _;
     use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::SolCall as _;
+    use reth_primitives_traits::Recovered;
+    use reth_transaction_pool::{
+        Pool, PoolConfig, TransactionOrigin, blobstore::InMemoryBlobStore,
+        noop::MockTransactionValidator,
+    };
+    use tempo_precompiles::tip20::ITIP20;
+    use tempo_primitives::{
+        TempoAddressExt as _,
+        transaction::{Call, TempoTransaction},
+    };
+    use tempo_transaction_pool::{ordering::TempoTipOrdering, transaction::TempoPooledTransaction};
     use zone_l1::abi::ChaumPedersenProof;
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
@@ -946,6 +1077,20 @@ mod tests {
     }
 
     #[test]
+    fn transfer_parties_are_restricted_once_the_list_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        assert!(allowlist.allows_all(&[BOB]));
+
+        allowlist.replace(vec![ALICE]).unwrap();
+        assert!(allowlist.allows_all(&[ALICE]));
+        assert!(!allowlist.allows_all(&[BOB]));
+
+        allowlist.replace(Vec::new()).unwrap();
+        assert!(!allowlist.allows_all(&[ALICE]));
+    }
+
+    #[test]
     fn rejects_writes_that_exceed_the_list_limit() {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = load(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
@@ -998,5 +1143,50 @@ mod tests {
 
         let err = allowlist.reject_unlisted(&[ALICE], &mut []).unwrap_err();
         assert_eq!(err.to_string(), "1 deposit senders but 0 decryptions");
+    }
+
+    #[tokio::test]
+    async fn eviction_covers_local_transactions_that_do_not_propagate() {
+        let pool = Pool::new(
+            MockTransactionValidator::no_propagate_local(),
+            TempoTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let transaction = TempoTransaction {
+            gas_limit: 100_000,
+            max_fee_per_gas: 2_000_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::new_tip20(0)),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: BOB,
+                    amount: U256::ONE,
+                }
+                .abi_encode()
+                .into(),
+            }],
+            ..Default::default()
+        };
+        pool.add_transaction(
+            TransactionOrigin::Local,
+            TempoPooledTransaction::new(Recovered::new_unchecked(
+                transaction
+                    .into_signed(Signature::test_signature().into())
+                    .into(),
+                ALICE,
+            )),
+        )
+        .await
+        .unwrap();
+        // The forwarder resends it although it is not offered for propagation.
+        assert!(pool.pooled_transactions().is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(evict_unlisted_transfers(&pool, &alice_only(dir.path())), 1);
+        assert!(
+            pool.get_transactions_by_origin(TransactionOrigin::Local)
+                .is_empty()
+        );
     }
 }
