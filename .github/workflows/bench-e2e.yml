@@ -620,16 +620,11 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         continue-on-error: true
 
-      # `--jit` needs a binary built with the `jit` feature; build both sides with it so that
-      # only the runtime flag differs.
-      - name: Enable JIT build support
-        if: contains(inputs.baseline-args, '--jit') || contains(inputs.feature-args, '--jit') || contains(inputs.baseline-features, 'jit') || contains(inputs.feature-features, 'jit')
-        env:
-          JIT_ARGS: ${{ contains(inputs.baseline-args, '--jit') || contains(inputs.feature-args, '--jit') }}
+      # EVM2 JIT is on by default: bench-e2e.nu adds the `jit` feature unless every side that runs
+      # passes `--no-jit`, using its own argument parser. Always provision LLVM so that decision
+      # can never meet a missing toolchain.
+      - name: Install LLVM for JIT builds
         run: |
-          if [ "$JIT_ARGS" = "true" ]; then
-            echo "BENCH_FEATURES=$BENCH_FEATURES,jit" >> "$GITHUB_ENV"
-          fi
           .github/scripts/install_llvm.sh
 
       - name: Install Node.js

@@ -53,6 +53,40 @@ def merge-e2e-features [...features: string] {
     | str join ","
 }
 
+# EVM2 JIT is on by default: e2e builds add the jit feature unless every side
+# that runs passes --no-jit. Only binaries built with the `jit` feature contain this
+# log message; others reject `--jit`, so they run on the interpreter instead.
+const E2E_JIT_MARKER = "Started experimental evm2 JIT backend"
+
+def tempo-has-jit [tempo_bin: string] {
+    (^grep -aqF $E2E_JIT_MARKER $tempo_bin | complete).exit_code == 0
+}
+
+# Adds the default --jit to a side's filtered node args. A binary without JIT
+# gets it under removed instead, so the summary shows the sides differ, unless
+# the side opted out with --no-jit.
+def with-e2e-jit [filter: record, tempo_bin: string, side_args: string] {
+    if (tempo-has-jit $tempo_bin) {
+        $filter | update supported ($filter.supported | append "--jit")
+    } else if ("--no-jit" in (parse-cli-args $side_args)) {
+        $filter
+    } else {
+        print $"($tempo_bin) was built without the jit feature; running it without --jit"
+        $filter | update removed ($filter.removed | append "--jit")
+    }
+}
+
+# Refs from before the `jit` feature existed build without it.
+def worktree-build-features [worktree_dir: string, features: string] {
+    let requested = ($features | split row "," | each { |f| $f | str trim } | where { |f| $f != "" })
+    if not ("jit" in $requested) { return $features }
+    let manifest = $"($worktree_dir)/bin/tempo/Cargo.toml"
+    let has_jit = ($manifest | path exists) and ((open --raw $manifest | lines | where { |l| $l =~ '^jit\s*=' } | length) > 0)
+    if $has_jit { return $features }
+    print $"($worktree_dir) has no jit feature; building it without jit"
+    $requested | where { |f| $f != "jit" } | str join ","
+}
+
 def tempo-node-help [tempo_bin: string] {
     let result = (run-external $tempo_bin "node" "--help" | complete)
     if $result.exit_code != 0 {
@@ -1033,8 +1067,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = (parse-cli-args $side_args)
-    let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
+    let parsed_args = (parse-cli-args $side_args)
+    # `--no-jit` is a harness flag: it turns the default `--jit` off for this side.
+    let no_jit = ("--no-jit" in $parsed_args)
+    let extra_args = ($parsed_args | where { |a| $a != "--no-jit" })
+    let side_local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
+    let local_reth_args = if $no_jit { $side_local_reth_args | where { |a| $a != "--jit" } } else { $side_local_reth_args }
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -1697,7 +1735,12 @@ def "main e2e" [
         git worktree add $feature_wt $feature
     }
 
-    let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+    # JIT is on by default, so build with it unless every side that runs opts out.
+    let jit_opt_outs = ([[$needs_baseline $baseline_args] [$needs_feature $feature_args]]
+        | where { |s| $s.0 }
+        | each { |s| "--no-jit" in (parse-cli-args $s.1) })
+    let jit_features = if ($jit_opt_outs | all { |o| $o }) { "" } else { "jit" }
+    let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features $jit_features)
     let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
     let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
@@ -1707,10 +1750,10 @@ def "main e2e" [
     # so cargo invocations don't collide.
     mut builds = []
     if $needs_baseline {
-        $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
+        $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: (worktree-build-features $baseline_wt $baseline_tbc.features), extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
     }
     if $needs_feature {
-        $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
+        $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: (worktree-build-features $feature_wt $feature_tbc.features), extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
     $builds | par-each { |b|
         if $effective_no_cache {
@@ -1724,8 +1767,8 @@ def "main e2e" [
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
-    let baseline_arg_filter = if $needs_baseline { supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
-    let feature_arg_filter = if $needs_feature { supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
+    let baseline_arg_filter = if $needs_baseline { with-e2e-jit (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS) $baseline_tempo $baseline_args } else { { supported: [], removed: [] } }
+    let feature_arg_filter = if $needs_feature { with-e2e-jit (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS) $feature_tempo $feature_args } else { { supported: [], removed: [] } }
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
     if $removed_arg_config != "" {
         let current_config = ($env | get -o BENCH_CONFIG | default "")

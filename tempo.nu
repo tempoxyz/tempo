@@ -583,7 +583,8 @@ def dedup-args [base_args: list<string>, extra_args: list<string>] {
     for arg in $base_args {
         if $skip_next {
             $skip_next = false
-            continue
+            # A boolean flag such as `--jit` has no value to skip.
+            if not ($arg starts-with "--") { continue }
         }
         if ($arg starts-with "--") {
             let key = ($arg | split row "=" | first)
