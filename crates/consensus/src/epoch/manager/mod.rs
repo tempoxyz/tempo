@@ -13,7 +13,10 @@ use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::page
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
-use crate::{consensus::application::TempoFactory, epoch::scheme_provider::SchemeProvider};
+use crate::{
+    consensus::{application::TempoFactory, seeds::SeedCache},
+    epoch::scheme_provider::SchemeProvider,
+};
 
 pub(crate) struct Config<TContext, TBlocker>
 where
@@ -34,6 +37,8 @@ where
     pub(crate) partition_prefix: String,
     pub(crate) views_to_track: ViewDelta,
     pub(crate) inactive_time_before_leader_skip: Duration,
+    /// Receives the seed of every round each epoch's simplex engine certifies.
+    pub(crate) seeds: SeedCache,
 }
 
 pub(crate) fn init<TContext, TBlocker>(

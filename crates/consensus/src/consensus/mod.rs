@@ -4,6 +4,7 @@ pub(crate) mod application;
 pub(crate) mod block;
 pub(crate) mod digest;
 pub(crate) mod engine;
+pub(crate) mod seeds;
 
 pub(crate) use block::Block;
 pub use digest::Digest;
