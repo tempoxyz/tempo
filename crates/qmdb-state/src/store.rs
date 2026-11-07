@@ -1437,6 +1437,9 @@ async fn stage_db<const N: usize, const P: usize>(
     // staged first, so reading candidates for every staged key covers it without waiting on the
     // block's final writes.
     staged.prefetch_floor(index.len(), db).await?;
+    // Keys that read as absent are created if the block writes them, and creating a key rewrites
+    // its predecessor, so read those predecessors now rather than while building the block.
+    staged.prefetch_predecessors(db).await?;
     Ok(StagedDb { staged, index })
 }
 

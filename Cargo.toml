@@ -421,29 +421,29 @@ bitflags = "2.11.1"
 smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
 [patch.crates-io]
-# Partitioned ordered index: skip empty partitions in navigation; bounded grafted-tree reads on open; prefetch for merkleization; phase spans; batch node lookups without Weak upgrades; inlined FixedBytes compare; floor-candidate prefetch and graft-node warm-up on the ordered staged path; in-memory graft nodes of committed chunks; parallel ordered merkleize resolve, lookups and op build; ordered staging of ancestor-resolved reads; ancestor-diff scans limited to changed keys' neighbors; current-layer phase spans; staged floor-candidate reads; batched grafted leaf updates (klkvr/monorepo, on v2026.9.0).
-commonware-actor = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-broadcast = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-codec = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-codec-macros = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-coding = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-conformance = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-conformance-macros = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-consensus = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-cryptography = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-formatting = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-invariants = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-macros = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-macros-impl = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-math = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-p2p = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-parallel = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-resolver = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-runtime = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-runtime-macros = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-storage = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-stream = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
-commonware-utils = { git = "https://github.com/klkvr/monorepo", rev = "ae5fdc0f944d258c75bde308c8f61bed89691f9a" }
+# Partitioned ordered index: skip empty partitions in navigation; bounded grafted-tree reads on open; prefetch for merkleization; phase spans; batch node lookups without Weak upgrades; inlined FixedBytes compare; floor-candidate prefetch and graft-node warm-up on the ordered staged path; in-memory graft nodes of committed chunks; parallel ordered merkleize resolve, lookups and op build; ordered staging of ancestor-resolved reads; ancestor-diff scans limited to changed keys' neighbors; current-layer phase spans; staged floor-candidate reads; batched grafted leaf updates; staged predecessor reads (klkvr/monorepo, on v2026.9.0).
+commonware-actor = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-broadcast = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-codec = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-codec-macros = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-coding = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-conformance = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-conformance-macros = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-consensus = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-cryptography = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-formatting = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-invariants = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-macros = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-macros-impl = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-math = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-p2p = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-parallel = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-resolver = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-runtime = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-runtime-macros = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-storage = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-stream = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
+commonware-utils = { git = "https://github.com/klkvr/monorepo", rev = "f09b1564de90fe07053557b2f99a13d8b63e31fa" }
 
 # LLVM 23 support is not released yet.
 inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff" }
