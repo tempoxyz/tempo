@@ -17,6 +17,7 @@
 //   await notify.replay.failure({ core, context, failedStep: '...' });
 //   await notify.zones.success({ core, context });  // reads comparison.json from BENCH_WORK_DIR
 //   await notify.zones.failure({ core, context, failedStep: '...' });
+//   await notify.nightlyFailure({ github, core, context });  // posts to SLACK_WORKFLOWS_CHANNEL
 
 const fs = require('fs');
 const path = require('path');
@@ -650,7 +651,42 @@ async function zonesSuccess({ core, context }) {
   });
 }
 
+// Nightly runs have no human actor to DM, so failure() reaches nobody for them.
+// Post scheduled-run failures to the shared workflows channel instead.
+const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'cancelled']);
+
+async function nightlyFailure({ github, core, context }) {
+  const token = process.env.SLACK_BENCH_BOT_TOKEN;
+  const channel = process.env.SLACK_WORKFLOWS_CHANNEL;
+  // Fail the job rather than drop the alert: this is the only signal a nightly failed.
+  if (!token || !channel) {
+    throw new Error('SLACK_BENCH_BOT_TOKEN and SLACK_WORKFLOWS_CHANNEL are required for nightly failure alerts');
+  }
+  const { owner, repo } = context.repo;
+  const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+  const { data } = await github.rest.actions.listJobsForWorkflowRun({
+    owner, repo, run_id: context.runId, per_page: 100,
+  });
+  const failed = data.jobs.filter(job => FAILED_CONCLUSIONS.has(job.conclusion));
+  const jobLines = failed.length
+    ? failed.map(job => `• <${job.html_url}|${job.name}> (${job.conclusion})`).join('\n')
+    : '• see the run for details';
+  const commit = `<${context.serverUrl}/${owner}/${repo}/commit/${context.sha}|${shortRef(context.sha)}>`;
+  const text = `Nightly ${context.workflow} failed on ${shortRef(context.sha)}`;
+  const blocks = [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `:red_circle: *<${runUrl}|Nightly ${context.workflow} failed>* on main ${commit}\n${jobLines}` },
+    },
+  ];
+  const posted = await postToSlack(token, channel, blocks, text, core);
+  if (!posted.ok) {
+    throw new Error(`Could not post the nightly failure alert to Slack: ${posted.error || 'unknown error'}`);
+  }
+}
+
 module.exports = {
+  nightlyFailure,
   success,
   failure,
   e2e: {
