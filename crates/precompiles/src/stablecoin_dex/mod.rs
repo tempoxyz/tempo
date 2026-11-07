@@ -3214,11 +3214,11 @@ mod tests {
     }
 
     /// A withdrawal to a receiver whose policy blocks the DEX under originator recovery would be
-    /// guarded with the DEX as originator, and the DEX can never claim. From T13 the withdrawal
-    /// reverts and the DEX ledger is untouched; before T13 the funds still land in the guard.
+    /// guarded with the DEX as originator, and the DEX can never claim. From T14 the withdrawal
+    /// reverts and the DEX ledger is untouched; before T14 the funds still land in the guard.
     #[test]
     fn test_withdraw_blocked_by_receive_policy_with_originator_recovery() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
@@ -3239,7 +3239,7 @@ mod tests {
                 let result = exchange.withdraw(alice, token.address(), amount);
                 let balance_of = |account| token.balance_of(ITIP20::balanceOfCall { account });
 
-                if spec.is_t13() {
+                if spec.is_t14() {
                     drop(frame);
                     assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
                     assert_eq!(exchange.balance_of(alice, token.address())?, amount);
@@ -3265,13 +3265,13 @@ mod tests {
         Ok(())
     }
 
-    /// With a claimable recovery authority the T13 withdrawal is still guarded, and the receiver
+    /// With a claimable recovery authority the T14 withdrawal is still guarded, and the receiver
     /// recovers the funds by claiming the receipt.
     #[test]
     fn test_withdraw_blocked_by_receive_policy_with_receiver_recovery_is_claimable()
     -> eyre::Result<()> {
         let blocked_at = 1_728_000u64;
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         storage.set_timestamp(U256::from(blocked_at));
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();

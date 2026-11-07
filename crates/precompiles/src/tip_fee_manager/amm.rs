@@ -1724,12 +1724,12 @@ mod tests {
     }
 
     /// A burn paid out to a receiver whose policy blocks the fee AMM under originator recovery
-    /// would be guarded with the AMM as originator, which can never claim. From T13 the burn
+    /// would be guarded with the AMM as originator, which can never claim. From T14 the burn
     /// reverts and the pool, LP balance and reserves are untouched.
     #[test]
-    fn test_burn_blocked_by_receive_policy_with_originator_recovery_reverts_at_t13()
+    fn test_burn_blocked_by_receive_policy_with_originator_recovery_reverts_at_t14()
     -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         let admin = Address::random();
         let recipient = Address::random();
 

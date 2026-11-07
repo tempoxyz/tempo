@@ -1371,13 +1371,13 @@ impl TIP20Token {
     /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
     /// authorized and the caller should proceed with the normal transfer or mint.
     ///
-    /// (+T13) Rejects instead of guarding when the receipt would be unclaimable: a precompile
+    /// (+T14) Rejects instead of guarding when the receipt would be unclaimable: a precompile
     /// originator (DEX withdrawals, fee AMM burns, fee distribution) can never call `claim`, so
     /// originator recovery would strand the funds in the guard.
     ///
     /// # Errors
     /// - `PolicyForbids` — the inbound is blocked on a zone
-    /// - `PolicyForbids` — (+T13) blocked precompile-originated inbound with originator recovery
+    /// - `PolicyForbids` — (+T14) blocked precompile-originated inbound with originator recovery
     pub(crate) fn validate_inbound_or_block(
         &mut self,
         originator: Address,
@@ -1409,7 +1409,7 @@ impl TIP20Token {
         // recovery would be stuck. Revert instead, leaving the caller's accounting intact so the
         // receiver can amend the policy and retry.
         let spec = self.storage.spec();
-        if spec.is_t13() && recovery == RECOVERY_ORIGINATOR && originator.is_precompile(spec) {
+        if spec.is_t14() && recovery == RECOVERY_ORIGINATOR && originator.is_precompile(spec) {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -2448,19 +2448,19 @@ pub(crate) mod tests {
         }
 
         /// A precompile originator can never call `claim`, so guarding a blocked inbound under
-        /// originator recovery would strand the funds. From T13 the transfer reverts; before T13
+        /// originator recovery would strand the funds. From T14 the transfer reverts; before T14
         /// the funds still land in the guard with the precompile as originator.
         #[test]
-        fn test_precompile_originator_with_originator_recovery_rejects_from_t13() -> eyre::Result<()>
+        fn test_precompile_originator_with_originator_recovery_rejects_from_t14() -> eyre::Result<()>
         {
             let admin = Address::random();
             let receiver = Address::random();
             let amount = U256::from(100u64);
 
             for (spec, precompile) in [
-                (TempoHardfork::T12, STABLECOIN_DEX_ADDRESS),
                 (TempoHardfork::T13, STABLECOIN_DEX_ADDRESS),
-                (TempoHardfork::T13, TIP_FEE_MANAGER_ADDRESS),
+                (TempoHardfork::T14, STABLECOIN_DEX_ADDRESS),
+                (TempoHardfork::T14, TIP_FEE_MANAGER_ADDRESS),
             ] {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                 StorageCtx::enter(&mut storage, || {
@@ -2483,7 +2483,7 @@ pub(crate) mod tests {
                         },
                     );
 
-                    if spec.is_t13() {
+                    if spec.is_t14() {
                         assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
                         assert_eq!(token.get_balance(precompile)?, amount);
                         assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
@@ -2501,10 +2501,10 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        /// Receiver and third-party recovery stay guarded for precompile originators at T13: the
+        /// Receiver and third-party recovery stay guarded for precompile originators at T14: the
         /// configured authority can still claim, so nothing is stranded.
         #[test]
-        fn test_precompile_originator_with_claimable_recovery_still_guards_at_t13()
+        fn test_precompile_originator_with_claimable_recovery_still_guards_at_t14()
         -> eyre::Result<()> {
             let admin = Address::random();
             let receiver = Address::random();
@@ -2512,7 +2512,7 @@ pub(crate) mod tests {
             let amount = U256::from(100u64);
 
             for recovery_authority in [receiver, third_party] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
                 storage.set_timestamp(U256::from(BLOCKED_AT));
                 StorageCtx::enter(&mut storage, || {
                     let mut token = TIP20Setup::create("Test", "TST", admin)

@@ -1085,12 +1085,12 @@ mod tests {
 
     /// Distributing fees to a validator whose policy blocks the fee manager under originator
     /// recovery would be guarded with the fee manager as originator, which can never claim. From
-    /// T13 the distribution reverts and the collected-fee ledger is untouched; before T13 the
+    /// T14 the distribution reverts and the collected-fee ledger is untouched; before T14 the
     /// funds still land in the guard.
     #[test]
     fn test_distribute_fees_blocked_by_receive_policy_with_originator_recovery() -> eyre::Result<()>
     {
-        for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             let admin = Address::random();
             let validator = Address::random();
@@ -1117,7 +1117,7 @@ mod tests {
                 let result = fee_manager.distribute_fees(validator, token.address());
                 let balance_of = |account| token.balance_of(ITIP20::balanceOfCall { account });
 
-                if spec.is_t13() {
+                if spec.is_t14() {
                     drop(frame);
                     assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
                     assert_eq!(
