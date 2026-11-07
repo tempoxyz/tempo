@@ -1,7 +1,7 @@
-use commonware_cryptography::Digested;
-use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc};
+use std::{cmp::Ordering, collections::BTreeMap, num::NonZeroU32, sync::Arc, time::Duration};
 
 use alloy_consensus::{BlockHeader as _, Sealable};
+use alloy_primitives::B256;
 use bytes::BufMut;
 use commonware_codec::{Decode as _, Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
@@ -10,7 +10,7 @@ use commonware_consensus::{
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
-    Digestible as _, Signer as _,
+    Digested, Digestible as _, Hasher as _, Sha256, Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{
             self as dkg, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, Output, PlayerAck,
@@ -49,12 +49,16 @@ use futures::{
 };
 use rand_core::CryptoRng;
 use tempo_chainspec::{NetworkIdentity, TempoHardforks as _};
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome};
 use tempo_primitives::TempoHeader;
 use tokio::select;
 use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    consensus::{Digest, block::Block},
+    dkg::decode_boundary_outcome,
+    validators::StoredDkgCeremony,
+};
 
 mod state;
 #[cfg(test)]
@@ -65,6 +69,12 @@ use super::{
     Command, EpochManager, ExecutionLayer, Marshal,
     ingress::{SubscribeDkgCeremony, VerifyDealerLog},
 };
+
+/// The first delay before reading the post-state of a boundary block again.
+const BOUNDARY_STATE_MIN_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+/// The longest delay before reading the post-state of a boundary block again.
+const BOUNDARY_STATE_MAX_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// Wire message type for DKG protocol communication.
 pub(crate) enum Message {
@@ -851,10 +861,12 @@ where
         info!("reached last block of epoch; reading DKG outcome from header");
 
         let onchain_outcome =
-            OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
+            decode_boundary_outcome(&self.config.execution_node.chain_spec(), &header)
                 .expect("the last block of an epoch must contain the DKG outcome");
-
-        info!("reading validator from contract");
+        let next_ceremony = self
+            .next_ceremony(Digest(header.hash_slow()), &onchain_outcome)
+            .await
+            .wrap_err("failed determining the DKG ceremony of the next epoch")?;
 
         let (local_output, mut share) =
             if let Some((outcome, share)) = storage.get_dkg_outcome(&state.epoch, &parent_digest) {
@@ -869,13 +881,13 @@ where
 
         #[cfg(feature = "fuzz")]
         antithesis_sdk::assert_always!(
-            local_output == onchain_outcome.output,
+            &local_output == onchain_outcome.output(),
             "Local DKG ceremony output matches the finalized boundary outcome",
             &serde_json::json!({ "epoch": state.epoch.get(), "height": height.get() })
         );
-        if local_output != onchain_outcome.output {
-            let am_player = onchain_outcome
-                .next_players
+        if &local_output != onchain_outcome.output() {
+            let am_player = next_ceremony
+                .players
                 .position(&self.config.me.public_key())
                 .is_some();
             warn!(
@@ -892,7 +904,7 @@ where
         // Because we use cached data, we need to check for DKG success here:
         // if the on-chain output is the same as the input into the loop (which
         // is just state.output), then we know the DKG failed.
-        if onchain_outcome.output == state.output {
+        if *onchain_outcome.output() == state.output {
             #[cfg(feature = "fuzz")]
             antithesis_sdk::assert_reachable!(
                 "DKG ceremony failed and the previous epoch's output carried forward",
@@ -911,10 +923,10 @@ where
         Ok(Some(State {
             epoch: onchain_outcome.epoch(),
             seed: Summary::random(self.context.as_present_mut()),
-            output: onchain_outcome.output.clone(),
+            output: onchain_outcome.into_output(),
             share,
-            players: onchain_outcome.next_players,
-            is_full_dkg: onchain_outcome.is_next_full_dkg,
+            players: next_ceremony.players,
+            is_full_dkg: next_ceremony.is_full_dkg,
         }))
     }
 
@@ -1369,6 +1381,13 @@ where
         epoch_manager: &mut impl EpochManager,
         state: &State,
     ) -> eyre::Result<()> {
+        info!(
+            output.digest = %Sha256::hash(&[state.output.encode().as_ref()]),
+            committee = ?state.dealers(),
+            ceremony.players = ?state.players(),
+            ceremony.is_full_dkg = state.is_full_dkg,
+            "entering epoch",
+        );
         epoch_manager
             .enter(
                 state.epoch,
@@ -1388,6 +1407,73 @@ where
         epoch_manager
             .exit(state.epoch)
             .wrap_err("could not instruct epoch manager to enter epoch")
+    }
+
+    /// Returns the players and mode of the ceremony running during the epoch
+    /// of `outcome`, which a boundary block carries.
+    ///
+    /// A legacy outcome carries the ceremony itself. For a TIP-1123 outcome,
+    /// this reads the ceremony from the `CurrentCommittee` precompile in the
+    /// post-state of `state_block`: the boundary block, or any later finalized
+    /// block of the outcome's epoch, since only the next boundary overwrites
+    /// it. The ceremony must be stored for the outcome's epoch.
+    #[instrument(skip_all, fields(%state_block, outcome.epoch = outcome.raw_epoch()), err)]
+    async fn next_ceremony(
+        &self,
+        state_block: Digest,
+        outcome: &OnchainDkgOutcome,
+    ) -> eyre::Result<DkgCeremony> {
+        if let OnchainDkgOutcome::V1(outcome) = outcome {
+            return Ok(outcome.next_ceremony.clone());
+        }
+        let stored = self
+            .wait_for_stored_ceremony(state_block.0)
+            .await?
+            .ok_or_eyre(
+                "the state after a TIP-1123 boundary block holds no DKG ceremony; \
+                the boundary block must have written it",
+            )?;
+        ensure!(
+            stored.epoch == outcome.raw_epoch(),
+            "the DKG ceremony stored in the state after the boundary block is for \
+            epoch `{}`, but the boundary block's outcome is for epoch `{}`",
+            stored.epoch,
+            outcome.raw_epoch(),
+        );
+        Ok(stored.ceremony)
+    }
+
+    /// Reads the DKG ceremony stored in the post-state of the block
+    /// `block_hash`, waiting until the execution layer has executed it.
+    ///
+    /// Marshal hands finalized blocks to the executor and to this actor at the
+    /// same time, so the execution layer may still be executing the block.
+    /// Retries back off up to [`BOUNDARY_STATE_MAX_RETRY_DELAY`] and stop
+    /// on shutdown.
+    async fn wait_for_stored_ceremony(
+        &self,
+        block_hash: B256,
+    ) -> eyre::Result<Option<StoredDkgCeremony>> {
+        let mut delay = BOUNDARY_STATE_MIN_RETRY_DELAY;
+        loop {
+            match self.config.execution_node.dkg_ceremony(block_hash) {
+                Ok(stored) => return Ok(stored),
+                Err(error) if delay < BOUNDARY_STATE_MAX_RETRY_DELAY => {
+                    debug!(%error, "post-state of the boundary block is not available yet");
+                }
+                Err(error) => {
+                    warn!(%error, "post-state of the boundary block is still not available");
+                }
+            }
+            select! {
+                biased;
+                _ = self.context.stopped() => {
+                    bail!("shutdown while waiting for the post-state of the boundary block");
+                }
+                _ = self.context.sleep(delay) => {}
+            }
+            delay = delay.saturating_mul(2).min(BOUNDARY_STATE_MAX_RETRY_DELAY);
+        }
     }
 
     /// Constructs a fresh state from the on-chain DKG outcome at the last
@@ -1417,13 +1503,38 @@ where
         // The boundary header is not checked against the finalized floor's
         // certificate, so an outcome for a later epoch could otherwise persist
         // a future identity that startup then trusts over the configured one.
-        let onchain_outcome = read_outcome_from_boundary(
+        let (boundary_header, onchain_outcome) = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
             outcome_epoch,
         )
         .await?;
+        // Read the ceremony at the finalized floor rather than at the boundary:
+        // a node that keeps little history may have pruned the boundary's
+        // state, but has the state of its latest finalized block.
+        let ceremony_state_block = if !self
+            .config
+            .execution_node
+            .chain_spec()
+            .stores_dkg_ceremony_at(boundary_header.timestamp())
+            || self.config.last_finalized_height == latest_boundary
+        {
+            Digest(boundary_header.hash_slow())
+        } else {
+            let floor = get_header(
+                &self.config.execution_node,
+                &self.config.marshal,
+                self.config.last_finalized_height,
+            )
+            .await
+            .wrap_err("failed reading the header of the finalized floor")?;
+            Digest(floor.hash_slow())
+        };
+        let next_ceremony = self
+            .next_ceremony(ceremony_state_block, &onchain_outcome)
+            .await
+            .wrap_err("failed determining the DKG ceremony of the current epoch")?;
 
         // The configured initial share takes precedence over the candidate
         // salvaged from a stale state. Either is only usable if it matches
@@ -1457,10 +1568,10 @@ where
         let mut state = State {
             epoch: onchain_outcome.epoch(),
             seed: Summary::random(&mut self.context),
-            output: onchain_outcome.output.clone(),
+            output: onchain_outcome.output().clone(),
             share: state::ShareState::Plaintext(share),
-            players: onchain_outcome.next_players,
-            is_full_dkg: onchain_outcome.is_next_full_dkg,
+            players: next_ceremony.players,
+            is_full_dkg: next_ceremony.is_full_dkg,
         };
 
         if let state::ShareState::Plaintext(None) = &state.share
@@ -1496,7 +1607,7 @@ where
                 .expect("epoch strategy is valid for all epochs")
         });
 
-        let ceremony_outcome = read_outcome_from_boundary(
+        let (_, ceremony_outcome) = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
             ceremony_boundary,
@@ -1508,17 +1619,18 @@ where
         // A failed ceremony carries its input output forward. In that case, the current share was
         // produced by an older ceremony, not by the dealer logs from the immediately previous epoch.
         // Do not attempt an unbounded search through earlier epochs here.
-        if ceremony_outcome.output == state.output {
+        if *ceremony_outcome.output() == state.output {
             return Ok(None);
         }
 
+        let ceremony = recovered_ceremony(&ceremony_outcome, state);
         let ceremony_state = State {
             epoch: ceremony_outcome.epoch(),
             seed: state.seed,
-            output: ceremony_outcome.output,
+            output: ceremony_outcome.into_output(),
             share: state::ShareState::Plaintext(None),
-            players: ceremony_outcome.next_players,
-            is_full_dkg: ceremony_outcome.is_next_full_dkg,
+            players: ceremony.players,
+            is_full_dkg: ceremony.is_full_dkg,
         };
 
         let round = Round::from_state(
@@ -1637,12 +1749,14 @@ fn latest_boundary_at_or_before_height() {
     }
 }
 
+/// Reads the DKG outcome for `expected_epoch` from the boundary block at
+/// height `boundary`. Returns the boundary block's header with it.
 async fn read_outcome_from_boundary<TExecutionLayer, TMarshal>(
     node: &TExecutionLayer,
     marshal: &TMarshal,
     boundary: Height,
     expected_epoch: Epoch,
-) -> eyre::Result<OnchainDkgOutcome>
+) -> eyre::Result<(TempoHeader, OnchainDkgOutcome)>
 where
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
@@ -1653,15 +1767,31 @@ where
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
 
-    let outcome =
-        OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
-            .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
+    let outcome = decode_boundary_outcome(&node.chain_spec(), &header)
+        .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
     ensure!(
         outcome.epoch() == expected_epoch,
         "boundary outcome at height `{boundary}` is for epoch `{}`, expected epoch `{expected_epoch}`",
-        outcome.epoch,
+        outcome.raw_epoch(),
     );
-    Ok(outcome)
+    Ok((header, outcome))
+}
+
+/// Returns the players and mode of the ceremony that ran during the epoch of
+/// `ceremony_outcome` and produced the output of `current`, assuming it
+/// succeeded.
+///
+/// A legacy outcome carries the ceremony. For a TIP-1123 outcome, the
+/// ceremony's players are the players of its output, and it was a full DKG
+/// exactly when it changed the network identity (TIP-1123).
+fn recovered_ceremony(ceremony_outcome: &OnchainDkgOutcome, current: &State) -> DkgCeremony {
+    match ceremony_outcome {
+        OnchainDkgOutcome::V1(outcome) => outcome.next_ceremony.clone(),
+        OnchainDkgOutcome::V2(outcome) => DkgCeremony {
+            players: current.output.players().clone(),
+            is_full_dkg: outcome.output.public().public() != current.output.public().public(),
+        },
+    }
 }
 
 #[instrument(skip_all, fields(%height))]

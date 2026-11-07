@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use alloy_consensus::Sealable as _;
+use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::{Address, B256, Bytes, LogData, U256, keccak256};
 use commonware_codec::{Encode as _, EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::types::Epoch;
@@ -38,11 +38,17 @@ use reth_provider::{
     StaticFileWriter as _,
 };
 use serde::Deserialize;
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{
+    hardfork::TempoHardfork,
+    spec::{TempoChainSpec, chain_value_parser},
+};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase, SigningShare};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{
+    DkgCeremony, OnchainDkgOutcome, OnchainDkgOutcomeV1, OutcomeEncoding,
+};
 use tempo_precompiles::{
+    current_committee::{CURRENT_COMMITTEE_ADDRESS, CurrentCommittee},
     error::TempoPrecompileError,
     storage::{
         ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx, account_config_commitment,
@@ -51,9 +57,12 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{TempoBlockEnv, TempoPrimitives};
 
-use crate::shadowfork::{
-    SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET,
-    resolve_source_execution_data_dir, write_shadow_chainspec as write_shadow_chainspec_file,
+use crate::{
+    genesis_args::store_dkg_ceremony,
+    shadowfork::{
+        SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET,
+        resolve_source_execution_data_dir, write_shadow_chainspec as write_shadow_chainspec_file,
+    },
 };
 
 const DKG_STATES_METADATA_PARTITION: &str = "engine_dkg_manager_states_metadata";
@@ -144,6 +153,8 @@ impl BootstrapShadowfork {
 
         let chainspec_path =
             write_shadow_chainspec(&manifest, manifest_dir, shadow_epoch_length, force)?;
+        let chain_spec = chain_value_parser(&chainspec_path.to_string_lossy())
+            .wrap_err("failed parsing the shadow chainspec")?;
         let outcome = if let Some(outcome) = &manifest.shadow_dkg_outcome {
             decode_outcome(outcome)?
         } else {
@@ -163,6 +174,7 @@ impl BootstrapShadowfork {
         patch_execution_validator_registry(
             &execution_datadir.db_path,
             manifest.source_chain_id,
+            &chain_spec,
             reanchor_block_number,
             &shadow_validator_config_v2_storage,
             &shadow_validators,
@@ -632,7 +644,9 @@ where
     }
 }
 
-fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgOutcome> {
+pub(crate) fn read_private_genesis_outcome(
+    manifest_dir: &Path,
+) -> eyre::Result<OnchainDkgOutcomeV1> {
     let genesis_path = manifest_dir.join("genesis.json");
     let json = std::fs::read_to_string(&genesis_path)
         .wrap_err_with(|| format!("failed reading `{}`", genesis_path.display()))?;
@@ -642,15 +656,43 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
         .get("extraData")
         .and_then(serde_json::Value::as_str)
         .ok_or_eyre("shadow genesis JSON does not contain string field `extraData`")?;
-    let mut outcome = decode_outcome(extra_data)?;
+    let genesis_spec = chain_value_parser(&genesis_path.to_string_lossy())
+        .wrap_err_with(|| format!("failed parsing `{}` as a chainspec", genesis_path.display()))?;
+    let encoding = genesis_spec.dkg_outcome_encoding_at(genesis_spec.inner.genesis.timestamp);
+    let mut outcome = decode_genesis_outcome(extra_data, encoding)?;
     outcome.epoch = SHADOW_EPOCH;
     Ok(outcome)
 }
 
-fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcome> {
+/// Decodes a genesis `extraData` written in `encoding`. A TIP-1123 genesis keeps its ceremony in
+/// `CurrentCommittee` storage instead, which is always the epoch-0 reshare among the genesis
+/// players (see `ConsensusConfig::genesis_dkg_ceremony`), so it is restored from the outcome.
+fn decode_genesis_outcome(
+    hex: &str,
+    encoding: OutcomeEncoding,
+) -> eyre::Result<OnchainDkgOutcomeV1> {
+    let bytes = const_hex::decode(hex.trim_start_matches("0x"))
+        .wrap_err("failed decoding shadow genesis extraData hex")?;
+    let outcome = OnchainDkgOutcome::decode_extra_data(&bytes, encoding)
+        .wrap_err("failed decoding shadow genesis extraData payload")?;
+    Ok(match outcome {
+        OnchainDkgOutcome::V1(outcome) => outcome,
+        OnchainDkgOutcome::V2(outcome) => OnchainDkgOutcomeV1 {
+            next_ceremony: DkgCeremony {
+                players: outcome.output.players().clone(),
+                is_full_dkg: false,
+            },
+            epoch: outcome.epoch,
+            output: outcome.output,
+        },
+    })
+}
+
+fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcomeV1> {
     let bytes = const_hex::decode(hex.trim_start_matches("0x"))
         .wrap_err("failed decoding shadow_dkg_outcome hex")?;
-    OnchainDkgOutcome::read(&mut commonware_codec::Copying(bytes.as_slice()))
+    // Manifests keep the legacy encoding, which carries the ceremony of the shadow epoch.
+    OnchainDkgOutcomeV1::read(&mut commonware_codec::Copying(bytes.as_slice()))
         .wrap_err("failed decoding shadow_dkg_outcome payload")
 }
 
@@ -754,13 +796,18 @@ fn read_generated_validator_config_v2_storage(
         .collect()
 }
 
+/// Patches the source execution database at the fork block: replaces ValidatorConfigV2 with the
+/// shadow validators and writes the shadow DKG outcome (in the legacy encoding, with its ceremony)
+/// into the fork block header, in the encoding its timestamp selects. For a TIP-1123 fork block,
+/// the header carries only the outcome and the ceremony goes to the `CurrentCommittee` precompile.
 fn patch_execution_validator_registry(
     db_path: &Path,
     chain_id: u64,
+    chain_spec: &TempoChainSpec,
     block_number: u64,
     validator_config_storage: &[(U256, U256)],
     validators: &[ShadowValidatorRegistration],
-    outcome: &OnchainDkgOutcome,
+    outcome: &OnchainDkgOutcomeV1,
 ) -> eyre::Result<()> {
     ensure!(
         db_path.exists(),
@@ -842,10 +889,18 @@ fn patch_execution_validator_registry(
         Ok(())
     })?;
 
-    if let Some((old_hash, new_hash)) = patch_boundary_header(db_path, &tx, block_number, outcome)?
-    {
+    let (encoding, patched_hashes) =
+        patch_boundary_header(db_path, &tx, chain_spec, block_number, outcome)?;
+    if let Some((old_hash, new_hash)) = patched_hashes {
         println!(
             "patched boundary header at block {block_number} in `{}`: {old_hash} -> {new_hash}",
+            db_path.display(),
+        );
+    }
+    if encoding == OutcomeEncoding::CeremonyInState {
+        patch_current_committee(&mut storage, outcome)?;
+        println!(
+            "replaced CurrentCommittee storage in `{}` with the shadow DKG ceremony",
             db_path.display(),
         );
     }
@@ -861,6 +916,39 @@ fn patch_execution_validator_registry(
     println!(
         "reanchored execution safe/finalized block in `{}` to {block_number}",
         db_path.display(),
+    );
+    Ok(())
+}
+
+/// Replaces the `CurrentCommittee` storage with the committee and DKG ceremony of the shadow
+/// epoch, as the activated TIP-1123 boundary block would have stored them.
+fn patch_current_committee<TX>(
+    storage: &mut DbStorageOverlay<'_, TX>,
+    outcome: &OnchainDkgOutcomeV1,
+) -> eyre::Result<()>
+where
+    TX: DbTx + DbTxMut,
+{
+    storage.clear_db_storage(CURRENT_COMMITTEE_ADDRESS)?;
+    StorageCtx::enter(storage, || store_dkg_ceremony(outcome))
+        .wrap_err("failed writing the shadow DKG ceremony")?;
+    for ((address, slot), value) in std::mem::take(&mut storage.overlay) {
+        storage.write_db_storage(address, slot, value)?;
+    }
+
+    let stored = StorageCtx::enter(storage, || CurrentCommittee::new().get_dkg_ceremony())
+        .wrap_err("patched CurrentCommittee has no DKG ceremony")?;
+    let keys = |keys: &ordered::Set<PublicKey>| {
+        keys.iter()
+            .map(|key| B256::from_slice(key.as_ref()))
+            .collect::<Vec<_>>()
+    };
+    ensure!(
+        stored.epoch == outcome.epoch
+            && stored.dealers == keys(outcome.output.players())
+            && stored.players == keys(&outcome.next_ceremony.players)
+            && stored.isRotatingNetworkIdentity == outcome.next_ceremony.is_full_dkg,
+        "patched CurrentCommittee does not hold the shadow DKG ceremony: {stored:?}",
     );
     Ok(())
 }
@@ -887,12 +975,15 @@ where
     Ok(())
 }
 
+/// Writes `outcome` into the fork block header, in the encoding the header's timestamp selects,
+/// and returns that encoding with the old and new header hashes if the header changed.
 fn patch_boundary_header<TX>(
     db_path: &Path,
     tx: &TX,
+    chain_spec: &TempoChainSpec,
     block_number: u64,
-    outcome: &OnchainDkgOutcome,
-) -> eyre::Result<Option<(B256, B256)>>
+    outcome: &OnchainDkgOutcomeV1,
+) -> eyre::Result<(OutcomeEncoding, Option<(B256, B256)>)>
 where
     TX: DbTx + DbTxMut,
 {
@@ -930,6 +1021,8 @@ where
         })?
         .unwrap_or_else(|| header.hash_slow());
 
+    let encoding = chain_spec.dkg_outcome_encoding_at(header.timestamp());
+    let outcome = &outcome.clone().into_encoding(encoding);
     let extra_data = Bytes::from(outcome.encode());
     if header.inner.extra_data == extra_data {
         tx.delete::<tables::HeaderNumbers>(old_hash, None)?;
@@ -946,7 +1039,7 @@ where
             "verified boundary header at block {block_number} in `{}` already contains the generated shadow DKG outcome",
             db_path.display(),
         );
-        return Ok(None);
+        return Ok((encoding, None));
     }
 
     header.inner.extra_data = extra_data;
@@ -974,7 +1067,7 @@ where
         outcome,
     )?;
 
-    Ok(Some((old_hash, new_hash)))
+    Ok((encoding, Some((old_hash, new_hash))))
 }
 
 fn verify_boundary_header_patch<TX>(
@@ -1022,21 +1115,19 @@ where
         "patched boundary block `{block_number}` has canonical hash `{canonical_hash}`, expected `{expected_hash}`",
     );
 
-    let decoded = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+    let decoded = OnchainDkgOutcome::decode_extra_data(
         header.inner.extra_data.as_ref(),
-    ))
+        expected_outcome.encoding(),
+    )
     .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
     ensure!(
         decoded.players() == expected_outcome.players()
-            && decoded.next_players() == expected_outcome.next_players()
             && decoded.dealers() == expected_outcome.dealers(),
-        "patched boundary header DKG peers do not match generated shadow validators: dealers={:?}, players={:?}, next_players={:?}, expected_dealers={:?}, expected_players={:?}, expected_next_players={:?}",
+        "patched boundary header DKG peers do not match generated shadow validators: dealers={:?}, players={:?}, expected_dealers={:?}, expected_players={:?}",
         decoded.dealers(),
         decoded.players(),
-        decoded.next_players(),
         expected_outcome.dealers(),
         expected_outcome.players(),
-        expected_outcome.next_players(),
     );
     ensure!(
         &decoded == expected_outcome,
@@ -1080,16 +1171,17 @@ fn execution_static_files_path(db_path: &Path) -> eyre::Result<PathBuf> {
     Ok(chain_dir.join("static_files"))
 }
 
-fn share_matches_outcome(outcome: &OnchainDkgOutcome, share: &Share) -> bool {
+fn share_matches_outcome(outcome: &OnchainDkgOutcomeV1, share: &Share) -> bool {
     outcome
-        .sharing()
+        .output
+        .public()
         .partial_public(share.index)
         .is_ok_and(|partial| share.public::<MinSig>() == partial)
 }
 
 fn seed_consensus_state(
     consensus_dir: &Path,
-    outcome: OnchainDkgOutcome,
+    outcome: OnchainDkgOutcomeV1,
     signing_share: Share,
     seed: u64,
     force: bool,
@@ -1139,14 +1231,15 @@ fn seed_consensus_state(
                     states.clear();
                 }
 
+                let ceremony = outcome.next_ceremony;
                 let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
                 let state = BootstrapDkgState {
                     epoch: Epoch::new(outcome.epoch),
                     seed: Summary::random(&mut rng),
                     output: outcome.output,
                     share: BootstrapShareState::Plaintext(Some(signing_share)),
-                    players: outcome.next_players,
-                    is_full_dkg: outcome.is_next_full_dkg,
+                    players: ceremony.players,
+                    is_full_dkg: ceremony.is_full_dkg,
                 };
 
                 states

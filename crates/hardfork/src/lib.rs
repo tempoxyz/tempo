@@ -266,6 +266,12 @@ impl TempoHardfork {
         }
     }
 
+    /// Returns whether boundary blocks snapshot the next DKG ceremony's players and mode into the
+    /// `CurrentCommittee` precompile instead of carrying them in their DKG outcome (TIP-1123).
+    pub const fn stores_dkg_ceremony(&self) -> bool {
+        self.is_t15()
+    }
+
     /// Returns the position of this hardfork in [`Self::VARIANTS`].
     ///
     /// Useful for storing the hardfork in an atomic, see [`Self::from_variant_index`].

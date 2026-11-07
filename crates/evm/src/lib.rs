@@ -30,7 +30,7 @@ pub use action_replay::{
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
-pub use common::{TempoStateAccess, TempoTx};
+pub use common::{OverlayAccesses, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};

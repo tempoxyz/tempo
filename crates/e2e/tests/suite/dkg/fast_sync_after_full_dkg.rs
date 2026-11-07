@@ -11,7 +11,7 @@ use reth_ethereum::storage::BlockNumReader as _;
 use std::time::Duration;
 use tracing::info;
 
-use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
+use super::common::{wait_for_ceremony, wait_for_outcome, wait_for_validators_to_reach_epoch};
 use crate::{Setup, connect_execution_peers, connect_execution_to_peers, setup_validators};
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
@@ -74,8 +74,10 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
             let outcome_before =
                 wait_for_outcome(&context, &validators, full_dkg_epoch - 1, epoch_length).await;
             assert!(
-                outcome_before.is_next_full_dkg,
-                "outcome.is_next_full_dkg should be `true`"
+                wait_for_ceremony(&context, &validators, full_dkg_epoch - 1, epoch_length)
+                    .await
+                    .is_full_dkg,
+                "the boundary should schedule a full DKG"
             );
 
             // The late validator has not started yet.
@@ -84,7 +86,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
 
             let outcome_after =
                 wait_for_outcome(&context, &validators, full_dkg_epoch, epoch_length).await;
-            if outcome_after.output != outcome_before.output {
+            if outcome_after.output() != outcome_before.output() {
                 assert_ne!(
                     outcome_before.sharing().public(),
                     outcome_after.sharing().public(),
@@ -123,7 +125,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
 
         if update_network_identity {
             late_validator.network_identity = tempo_chainspec::NetworkIdentity {
-                from_epoch: outcome_after.epoch,
+                from_epoch: outcome_after.raw_epoch(),
                 identity: *outcome_after.network_identity(),
             };
         }
@@ -184,7 +186,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
                 outcome_after.network_identity(),
                 "resharing must preserve the rotated network identity"
             );
-            if outcome.output != previous.output {
+            if outcome.output() != previous.output() {
                 break;
             }
             info!(epoch, "resharing failed; waiting for the next ceremony");

@@ -7,7 +7,7 @@ use alloy::{
     primitives::hex,
     providers::{Provider, ProviderBuilder},
 };
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::Encode as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use eyre::{Context as _, OptionExt as _, eyre};
@@ -116,7 +116,7 @@ impl GetIdentityTransitions {
 
         progress.announce(format!("Starting Epoch {start_epoch}"));
         let response =
-            search_transitions(&provider, &epocher, start_epoch, full, &progress).await?;
+            search_transitions(&provider, &chain, &epocher, start_epoch, full, &progress).await?;
 
         progress.finish("transitions search complete");
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -127,6 +127,7 @@ impl GetIdentityTransitions {
 
 async fn search_transitions<P: Provider + ?Sized>(
     provider: &P,
+    chain: &TempoChainSpec,
     epocher: &FixedEpocher,
     start_epoch: u64,
     full: bool,
@@ -134,7 +135,7 @@ async fn search_transitions<P: Provider + ?Sized>(
 ) -> eyre::Result<IdentityTransitionResponse> {
     let active_outcome_epoch = start_epoch.saturating_sub(1);
 
-    let mut outcomes = OutcomeCache::new(provider, epocher);
+    let mut outcomes = OutcomeCache::new(provider, chain, epocher);
     let mut current = outcomes.get(active_outcome_epoch).await?;
 
     let start_identity = current.identity;
@@ -214,14 +215,16 @@ async fn find_identity_run_start<P: Provider + ?Sized>(
 
 struct OutcomeCache<'a, P: Provider + ?Sized> {
     provider: &'a P,
+    chain: &'a TempoChainSpec,
     epocher: &'a FixedEpocher,
     entries: HashMap<u64, EpochOutcome>,
 }
 
 impl<'a, P: Provider + ?Sized> OutcomeCache<'a, P> {
-    fn new(provider: &'a P, epocher: &'a FixedEpocher) -> Self {
+    fn new(provider: &'a P, chain: &'a TempoChainSpec, epocher: &'a FixedEpocher) -> Self {
         Self {
             provider,
+            chain,
             epocher,
             entries: HashMap::new(),
         }
@@ -259,10 +262,11 @@ impl<'a, P: Provider + ?Sized> OutcomeCache<'a, P> {
             "block {height} has empty extraData (not an epoch boundary?)"
         );
 
-        let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
-            .wrap_err_with(|| {
-                format!("failed to parse DKG outcome from block {height} extraData")
-            })?;
+        let outcome = OnchainDkgOutcome::decode_extra_data(
+            extra_data.as_ref(),
+            self.chain.dkg_outcome_encoding_at(block.header.timestamp),
+        )
+        .wrap_err_with(|| format!("failed to parse DKG outcome from block {height} extraData"))?;
 
         let outcome = EpochOutcome {
             epoch,

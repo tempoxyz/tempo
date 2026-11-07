@@ -14,8 +14,11 @@ use reth_evm::{ConfigureEvm as _, database::StateProviderDatabase};
 use reth_provider::{
     EvmStateProviderBox, HeaderProvider as _, StateProvider as _, StateProviderFactory as _,
 };
+use tempo_dkg_onchain_artifacts::DkgCeremony;
 use tempo_node::{TempoFullNode, evm::TempoEvm};
 use tempo_precompiles::{
+    current_committee::{CurrentCommittee, ICurrentCommittee},
+    error::TempoPrecompileError,
     storage::StorageCtx,
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
@@ -113,6 +116,53 @@ pub(crate) fn read_active_peers(
     }
     debug!(active_validators = ?all, "read active validators from contract");
     Ok(ordered::Map::try_from_iter(all).expect("hashmaps don't contain duplicates"))
+}
+
+/// The DKG ceremony stored in the `CurrentCommittee` precompile (TIP-1123).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StoredDkgCeremony {
+    /// The epoch during which the ceremony runs.
+    pub(crate) epoch: u64,
+    /// The committee of `epoch`, which deals in the ceremony.
+    pub(crate) dealers: ordered::Set<PublicKey>,
+    /// The players and mode of the ceremony.
+    pub(crate) ceremony: DkgCeremony,
+}
+
+/// Reads the DKG ceremony from the `CurrentCommittee` precompile.
+///
+/// Returns `None` while no TIP-1123 boundary block has written it yet.
+pub(crate) fn read_dkg_ceremony(
+    committee: &CurrentCommittee,
+) -> eyre::Result<Option<StoredDkgCeremony>> {
+    let stored = match committee.get_dkg_ceremony() {
+        Ok(stored) => stored,
+        Err(TempoPrecompileError::CurrentCommitteeError(
+            ICurrentCommittee::ICurrentCommitteeErrors::Uninitialized(_),
+        )) => {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(eyre::Report::new(error)).wrap_err("failed reading the DKG ceremony");
+        }
+    };
+    let decode_keys = |keys: Vec<B256>, what: &str| {
+        let keys = keys
+            .iter()
+            .map(|key| PublicKey::decode(commonware_codec::Copying(key.as_slice())))
+            .collect::<Result<Vec<_>, _>>()
+            .wrap_err_with(|| format!("stored DKG {what} are not Ed25519 public keys"))?;
+        ordered::Set::try_from_iter(keys)
+            .wrap_err_with(|| format!("stored DKG {what} contain duplicates"))
+    };
+    Ok(Some(StoredDkgCeremony {
+        epoch: stored.epoch,
+        dealers: decode_keys(stored.dealers, "dealers")?,
+        ceremony: DkgCeremony {
+            players: decode_keys(stored.players, "players")?,
+            is_full_dkg: stored.isRotatingNetworkIdentity,
+        },
+    }))
 }
 
 /// Reads the validator state at the given block hash.

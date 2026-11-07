@@ -1,5 +1,6 @@
 //! Standalone DKG manager actor tests.
 
+mod ceremony_in_state;
 mod harness;
 mod startup;
 
@@ -25,6 +26,7 @@ use commonware_runtime::{
 use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _, probability};
 use rand::{SeedableRng as _, rngs::StdRng};
 use tempo_chainspec::NetworkIdentity;
+use tempo_dkg_onchain_artifacts::{OnchainDkgOutcomeV1, OutcomeEncoding};
 use tempo_primitives::TempoConsensusContext;
 
 use crate::test_utils::{dkg_fixture, make_certificate};
@@ -35,21 +37,24 @@ use harness::{
     outcome_header, parent_block, revealed_recovery_fixture, signed_dealer_logs,
 };
 
-/// Returns the DKG outcome of a boundary block that ends `epoch`, with the
-/// ceremony `output`. The application reads `next_players` and the full DKG
-/// schedule from the state of the boundary block's parent. Here the next
+/// Returns the legacy DKG outcome of a boundary block that ends `epoch`, with
+/// the ceremony `output`. The application reads the next players and the full
+/// DKG schedule from the state of the boundary block's parent. Here the next
 /// ceremony reshares.
 fn boundary_outcome(
     epoch: Epoch,
     output: Output<MinSig, PublicKey>,
     next_players: &ordered::Set<PublicKey>,
 ) -> OnchainDkgOutcome {
-    OnchainDkgOutcome {
+    OnchainDkgOutcomeV1 {
         epoch: epoch.next().get(),
         output,
-        next_players: next_players.clone(),
-        is_next_full_dkg: false,
+        next_ceremony: DkgCeremony {
+            players: next_players.clone(),
+            is_full_dkg: false,
+        },
     }
+    .into()
 }
 
 #[test]
@@ -662,7 +667,11 @@ fn assert_startup_recovers_revealed_share(activation: Option<u64>) {
                 .build()
                 .await;
 
-        fixture.populate_execution(&harness.execution, &harness.epoch_strategy);
+        fixture.populate_execution(
+            &harness.execution,
+            &harness.epoch_strategy,
+            OutcomeEncoding::Legacy,
+        );
 
         harness.execution.set_t12_activation(activation);
         // Recovery must use epoch 1's starting boundary (timestamp 0), even when
@@ -1505,7 +1514,7 @@ fn reshare_produces_new_shares() {
         assert_eq!(
             new_first_share.public::<MinSig>(),
             outcome
-                .output
+                .output()
                 .public()
                 .partial_public(new_first_share.index)
                 .unwrap()
@@ -1513,7 +1522,7 @@ fn reshare_produces_new_shares() {
         assert_eq!(
             new_second_share.public::<MinSig>(),
             outcome
-                .output
+                .output()
                 .public()
                 .partial_public(new_second_share.index)
                 .unwrap()
@@ -1591,7 +1600,7 @@ fn replaying_unacknowledged_blocks_after_restart_is_idempotent() {
         // harness models a binary bootstrapping from historical data.
         let fixture = dkg_fixture(&mut context, Epoch::new(3));
         let trusted = NetworkIdentity {
-            from_epoch: fixture.outcome.epoch,
+            from_epoch: fixture.outcome.raw_epoch(),
             identity: *fixture.outcome.network_identity(),
         };
         let floor = header(Height::new(15));

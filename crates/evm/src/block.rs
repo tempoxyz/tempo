@@ -7,7 +7,6 @@ use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::ReadExt;
 use evm2::{
     EvmTypes, TxResult, TxResultWithState, TxStateChanges,
     bytecode::Bytecode,
@@ -34,6 +33,8 @@ use tempo_contracts::precompiles::{
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
     t13_zone_factory_state, t15_zone_factory_state,
 };
+use tempo_dkg_onchain_artifacts::{OnchainDkgOutcome, OutcomeEncoding};
+use tempo_precompiles::{current_committee::CurrentCommittee, error::TempoPrecompileError};
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
@@ -451,8 +452,12 @@ impl<'a> TempoBlockExecutor<'a> {
         Ok(())
     }
 
+    /// Updates the `CurrentCommittee` precompile at the end of a boundary block: stores the
+    /// committee of its DKG outcome (TIP-1070) and, from TIP-1123, snapshots the players and mode
+    /// of the ceremony running during the outcome's epoch.
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
-        if !self.evm().config_spec_id().is_t8() {
+        let spec = self.evm().config_spec_id();
+        if !spec.is_t8() {
             return Ok(());
         }
 
@@ -462,15 +467,18 @@ impl<'a> TempoBlockExecutor<'a> {
             return Ok(());
         }
 
-        let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-            &mut commonware_codec::Copying(self.extra_data.as_ref()),
-        )
-        .map_err(|err| {
-            BlockValidationError::msg(format!(
-                "failed decoding boundary block extra data as DKG outcome: {err}"
-            ))
-        })?;
-        let epoch = outcome.epoch;
+        let encoding = if spec.stores_dkg_ceremony() {
+            OutcomeEncoding::CeremonyInState
+        } else {
+            OutcomeEncoding::Legacy
+        };
+        let outcome = OnchainDkgOutcome::decode_extra_data(self.extra_data.as_ref(), encoding)
+            .map_err(|err| {
+                BlockValidationError::msg(format!(
+                    "failed decoding boundary block extra data as DKG outcome: {err}"
+                ))
+            })?;
+        let epoch = outcome.raw_epoch();
         let public_keys = outcome
             .players()
             .iter()
@@ -499,6 +507,65 @@ impl<'a> TempoBlockExecutor<'a> {
         }
 
         self.inner.commit_pending_state(&result.pending_state);
+
+        if spec.stores_dkg_ceremony() {
+            self.snapshot_dkg_ceremony(epoch)?;
+        }
+        Ok(())
+    }
+
+    /// Snapshots the players and mode of the DKG ceremony running during `epoch` from the
+    /// post-transaction state into the `CurrentCommittee` precompile (TIP-1123).
+    ///
+    /// This is a direct state write, not a call: it uses no gas and no TIP-1060 storage credits.
+    fn snapshot_dkg_ceremony(&mut self, epoch: u64) -> Result<(), BlockExecutionError> {
+        let spec = self.evm().config_spec_id();
+        // Untracked reads: the writes are committed below, which must not find stale slots that
+        // the reads loaded into the EVM's state.
+        let (result, accesses) = crate::TempoStateAccess::with_overlay_storage_ctx(
+            self.evm_mut().state_mut(),
+            spec,
+            || CurrentCommittee::new().snapshot_dkg_ceremony(epoch),
+        );
+        result.map_err(|err| match err {
+            // A node-side read failure says nothing about the block.
+            TempoPrecompileError::Database(error) => map_database_error(error),
+            err => {
+                BlockValidationError::msg(format!("failed snapshotting the DKG ceremony: {err}"))
+                    .into()
+            }
+        })?;
+
+        // Reads enter the pending state unchanged, so the block access list covers them.
+        let mut state = PendingState::default();
+        let written = accesses.writes.keys().map(|(address, _)| *address);
+        for address in accesses.accounts.iter().copied().chain(written) {
+            if state.account_info(&address).is_none() {
+                let info = self
+                    .evm_mut()
+                    .state_mut()
+                    .account_info_untracked(&address)
+                    .map_err(map_database_error)?;
+                state.insert_account(address, info.clone(), info);
+            }
+        }
+        for (&(address, slot), &value) in &accesses.reads {
+            if !accesses.writes.contains_key(&(address, slot)) {
+                state.insert_storage(address, slot, value, value);
+            }
+        }
+        for ((address, slot), value) in accesses.writes {
+            let original = match accesses.reads.get(&(address, slot)) {
+                Some(&original) => original,
+                None => self
+                    .evm_mut()
+                    .state_mut()
+                    .storage_slot_untracked(&address, &slot)
+                    .map_err(map_database_error)?,
+            };
+            state.insert_storage(address, slot, original, value);
+        }
+        self.inner.commit_pending_state(&state);
         Ok(())
     }
 
@@ -1080,11 +1147,12 @@ mod tests {
     use commonware_codec::Encode as _;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use evm2::{
+        DatabaseError,
         evm::{
             AccountInfo,
             BUILDER_DEPOSIT_REQUEST_ADDRESS as BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
-            BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
-            DynDatabase as _, InMemoryDB,
+            BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS, DbResult,
+            DynDatabase, InMemoryDB,
         },
         interpreter::Host as _,
     };
@@ -1105,9 +1173,9 @@ mod tests {
             ZONE_VERIFIER_RUNTIME,
         },
     };
-    use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+    use tempo_dkg_onchain_artifacts::OnchainDkgOutcomeV1;
     use tempo_precompiles::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{StorageActions, StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
     };
     use tempo_primitives::{
@@ -1380,7 +1448,7 @@ mod tests {
                 .build(&mut db, &chainspec);
             reader.apply_pre_execution_changes().unwrap();
             let committee = read_current_committee(&mut reader);
-            assert_eq!(committee.epoch, outcome.epoch);
+            assert_eq!(committee.epoch, outcome.raw_epoch());
             assert_eq!(committee.publicKeys, expected_keys);
             let output = reader.finish().unwrap();
             db.commit_source(&reth_execution_types::BundleSource(&output.state));
@@ -2219,7 +2287,7 @@ mod tests {
         executor.apply_current_committee_system_call().unwrap();
 
         let committee = read_current_committee(&mut executor);
-        assert_eq!(committee.epoch, outcome.epoch);
+        assert_eq!(committee.epoch, outcome.raw_epoch());
         assert_eq!(committee.publicKeys, expected_public_keys);
     }
 
@@ -2281,6 +2349,293 @@ mod tests {
             storage_changes
                 .iter()
                 .all(|change| { change.block_access_index == BlockAccessIndex::new(2) })
+        );
+    }
+
+    /// Returns a database whose [`ValidatorConfigV2`] has an active validator for each of `keys`
+    /// and schedules the next network identity rotation for `rotation_epoch`.
+    fn validator_registry_db(keys: &[PrivateKey], rotation_epoch: u64) -> InMemoryDB {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let owner = Address::repeat_byte(0xAA);
+            let mut config = ValidatorConfigV2::new();
+            config.initialize(owner)?;
+            for (i, key) in keys.iter().enumerate() {
+                let validator_address = Address::with_last_byte(u8::try_from(i + 1)?);
+                let ingress = format!("192.168.1.{}:8000", i + 1);
+                let egress = format!("192.168.1.{}", i + 1);
+                let mut hasher = Keccak256::new();
+                hasher.update(1u64.to_be_bytes());
+                hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+                hasher.update(validator_address.as_slice());
+                hasher.update([u8::try_from(ingress.len())?]);
+                hasher.update(ingress.as_bytes());
+                hasher.update([u8::try_from(egress.len())?]);
+                hasher.update(egress.as_bytes());
+                hasher.update(validator_address.as_slice());
+                let signature = key.sign(VALIDATOR_NS_ADD, hasher.finalize().as_slice());
+                config.add_validator(
+                    owner,
+                    IValidatorConfigV2::addValidatorCall {
+                        validatorAddress: validator_address,
+                        publicKey: B256::from_slice(&key.public_key()),
+                        ingress,
+                        egress,
+                        feeRecipient: validator_address,
+                        signature: signature.encode().to_vec().into(),
+                    },
+                )?;
+            }
+            config.set_network_identity_rotation_epoch(
+                owner,
+                IValidatorConfigV2::setNetworkIdentityRotationEpochCall {
+                    epoch: rotation_epoch,
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut db = InMemoryDB::default();
+        for (address, slot, value) in storage.into_storage() {
+            db.insert_account_info(&address, AccountInfo::default());
+            db.insert_account_storage(&address, &slot, &value);
+        }
+        db
+    }
+
+    /// Returns the encoding of a TIP-1123 DKG outcome for `epoch`.
+    fn ceremony_in_state_outcome(epoch: u64) -> OnchainDkgOutcome {
+        OnchainDkgOutcomeV1::dealt(epoch, 3)
+            .without_ceremony()
+            .into()
+    }
+
+    fn read_dkg_ceremony(
+        executor: &mut TempoBlockExecutor<'_>,
+    ) -> Result<ICurrentCommittee::getDkgCeremonyReturn, Bytes> {
+        let result = executor
+            .evm_mut()
+            .system_call(SystemTx::new(
+                CURRENT_COMMITTEE_ADDRESS,
+                ICurrentCommittee::getDkgCeremonyCall {}.abi_encode().into(),
+            ))
+            .unwrap();
+        if !result.result().status {
+            return Err(result.result().output.clone());
+        }
+        Ok(
+            ICurrentCommittee::getDkgCeremonyCall::abi_decode_returns(&result.result().output)
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_t15_boundary_snapshots_dkg_ceremony_from_registry() {
+        let chainspec = test_chainspec();
+        let keys = [3, 1, 2].map(PrivateKey::from_seed);
+        let mut expected_players = keys
+            .iter()
+            .map(|key| B256::from_slice(&key.public_key()))
+            .collect::<Vec<_>>();
+        expected_players.sort_unstable();
+
+        for (rotation_epoch, is_full_dkg) in [(42, true), (41, false), (0, false)] {
+            let outcome = ceremony_in_state_outcome(42);
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(4)
+                .with_epoch_length(5)
+                .with_extra_data(outcome.encode().into())
+                .with_spec(TempoHardfork::T15)
+                .build(validator_registry_db(&keys, rotation_epoch), &chainspec);
+            executor
+                .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+                .unwrap();
+            assert!(read_dkg_ceremony(&mut executor).is_err());
+
+            executor.apply_current_committee_system_call().unwrap();
+
+            assert_eq!(
+                read_dkg_ceremony(&mut executor).unwrap(),
+                ICurrentCommittee::getDkgCeremonyReturn {
+                    epoch: 42,
+                    dealers: outcome
+                        .players()
+                        .iter()
+                        .map(|key| B256::from_slice(key.as_ref()))
+                        .collect(),
+                    players: expected_players.clone(),
+                    isRotatingNetworkIdentity: is_full_dkg,
+                },
+                "rotation scheduled for epoch {rotation_epoch}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_t15_boundary_rejects_legacy_outcome() {
+        let chainspec = test_chainspec();
+        let keys = [PrivateKey::from_seed(1)];
+        let executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(OnchainDkgOutcome::dealt(42, 3).encode().into())
+            .with_spec(TempoHardfork::T15)
+            .build(validator_registry_db(&keys, 0), &chainspec);
+
+        let err = executor.finish().err().unwrap();
+        assert!(
+            err.to_string()
+                .starts_with("failed decoding boundary block extra data as DKG outcome: "),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_t15_boundary_rejects_empty_registry() {
+        let chainspec = test_chainspec();
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(ceremony_in_state_outcome(42).encode().into())
+            .with_spec(TempoHardfork::T15)
+            .build(InMemoryDB::default(), &chainspec);
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+            .unwrap();
+
+        let err = executor.apply_current_committee_system_call().unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("failed snapshotting the DKG ceremony: "),
+            "{err}"
+        );
+    }
+
+    /// Delegates to [`InMemoryDB`] but fails every storage read of [`ValidatorConfigV2`].
+    struct FailingRegistryDb(InMemoryDB);
+
+    impl DynDatabase for FailingRegistryDb {
+        fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+            self.0.get_account(address)
+        }
+
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<evm2::bytecode::Bytecode> {
+            self.0.get_code_by_hash(code_hash)
+        }
+
+        fn get_storage(&mut self, address: &Address, key: &U256) -> DbResult<U256> {
+            if *address == VALIDATOR_CONFIG_V2_ADDRESS {
+                return Err(DatabaseError::new(
+                    std::io::Error::other("disk failure"),
+                    true,
+                ));
+            }
+            self.0.get_storage(address, key)
+        }
+
+        fn get_block_hash(&mut self, number: &U256) -> DbResult<B256> {
+            self.0.get_block_hash(number)
+        }
+    }
+
+    #[test]
+    fn test_t15_boundary_reports_registry_read_failure_as_database_error() {
+        let chainspec = test_chainspec();
+        let keys = [PrivateKey::from_seed(1)];
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(ceremony_in_state_outcome(42).encode().into())
+            .with_spec(TempoHardfork::T15)
+            .build(
+                FailingRegistryDb(validator_registry_db(&keys, 0)),
+                &chainspec,
+            );
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+            .unwrap();
+
+        let err = executor.apply_current_committee_system_call().unwrap_err();
+        assert!(
+            !matches!(err, BlockExecutionError::Validation(_)),
+            "a database failure must not invalidate the block: {err}"
+        );
+        assert!(err.to_string().contains("disk failure"), "{err}");
+    }
+
+    #[test]
+    fn test_t14_boundary_leaves_dkg_ceremony_uninitialized() {
+        let chainspec = test_chainspec();
+        let keys = [PrivateKey::from_seed(1)];
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(OnchainDkgOutcome::dealt(42, 3).encode().into())
+            .with_spec(TempoHardfork::T14)
+            .build(validator_registry_db(&keys, 42), &chainspec);
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+            .unwrap();
+
+        executor.apply_current_committee_system_call().unwrap();
+
+        assert_eq!(read_current_committee(&mut executor).epoch, 42);
+        let ceremony = crate::TempoStateAccess::with_read_only_storage_ctx(
+            executor.evm_mut(),
+            TempoHardfork::T15,
+            StorageActions::disabled(),
+            || CurrentCommittee::new().get_dkg_ceremony(),
+        );
+        assert_eq!(
+            ceremony.unwrap_err(),
+            ICurrentCommittee::ICurrentCommitteeErrors::Uninitialized(
+                ICurrentCommittee::Uninitialized {}
+            )
+            .into()
+        );
+    }
+
+    #[test]
+    fn test_t15_dkg_ceremony_bal_writes_use_post_execution_index() {
+        let chainspec = test_chainspec();
+        let keys = [1, 2].map(PrivateKey::from_seed);
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_extra_data(ceremony_in_state_outcome(42).encode().into())
+            .with_spec(TempoHardfork::T15)
+            .build(validator_registry_db(&keys, 0), &chainspec);
+        executor
+            .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
+            .unwrap();
+        executor.enable_block_access_list_builder();
+
+        let (_, block_access_list) = executor.finish_with_block_access_list().unwrap();
+        let block_access_list = block_access_list.unwrap();
+        // The snapshot's registry reads are covered, so the block replays from its access list.
+        let registry = block_access_list
+            .iter()
+            .find(|account| account.address == VALIDATOR_CONFIG_V2_ADDRESS)
+            .expect("registry account must be present in the block access list");
+        assert!(!registry.storage_reads.is_empty());
+        assert!(registry.storage_changes.is_empty());
+        let committee_changes = block_access_list
+            .into_iter()
+            .find(|account| account.address == CURRENT_COMMITTEE_ADDRESS)
+            .expect("committee account must be present in the block access list");
+        let changes = committee_changes
+            .storage_changes
+            .iter()
+            .flat_map(|slot| &slot.changes)
+            .collect::<Vec<_>>();
+
+        // epoch, committee length and 3 keys, players length and 2 keys; isRotatingNetworkIdentity stays zero.
+        assert_eq!(changes.len(), 8);
+        assert!(
+            changes
+                .iter()
+                .all(|change| change.block_access_index == BlockAccessIndex::new(1))
         );
     }
 

@@ -7,7 +7,7 @@ use commonware_codec::ReadExt as _;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use eyre::Context;
 use serde::{Deserialize, Deserializer, de::Error as _};
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{OnchainDkgOutcome, OutcomeEncoding};
 
 /// This holds the key that is known to be active. The genesis-derived
 /// value must be updated with a newer identity after a full DKG rotation.
@@ -44,13 +44,15 @@ impl NetworkIdentity {
             .clone()
     }
 
-    pub(crate) fn from_extra_data(extra_data: &[u8]) -> eyre::Result<Self> {
-        let mut extra_data = commonware_codec::Copying(extra_data);
-        let outcome =
-            OnchainDkgOutcome::read(&mut extra_data).wrap_err("unable to parse dkg outcome")?;
+    pub(crate) fn from_extra_data(
+        extra_data: &[u8],
+        encoding: OutcomeEncoding,
+    ) -> eyre::Result<Self> {
+        let outcome = OnchainDkgOutcome::decode_extra_data(extra_data, encoding)
+            .wrap_err("unable to parse dkg outcome")?;
 
         Ok(Self {
-            from_epoch: outcome.epoch,
+            from_epoch: outcome.raw_epoch(),
             identity: *outcome.network_identity(),
         })
     }

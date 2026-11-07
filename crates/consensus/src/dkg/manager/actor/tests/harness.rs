@@ -15,6 +15,7 @@ use crate::{
     epoch::SchemeProvider,
     gossip::Certificate,
     test_utils::{dkg_fixture, make_certificate},
+    validators::StoredDkgCeremony,
 };
 use alloy_consensus::{Header, Sealable as _};
 use alloy_primitives::B256;
@@ -52,7 +53,9 @@ use rand_core::CryptoRng;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec, TempoHardfork, spec::DEV};
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{
+    DkgCeremony, OnchainDkgOutcomeV1, OnchainDkgOutcomeV2, OutcomeEncoding,
+};
 use tempo_primitives::{BlockBody, TempoConsensusContext, TempoHeader};
 use tokio::sync::oneshot;
 
@@ -318,6 +321,14 @@ impl Harness {
     }
 
     pub(super) async fn report_finalized_header(&mut self, header: TempoHeader) {
+        assert!(
+            self.try_report_finalized_header(header).await,
+            "finalized block should be acknowledged"
+        );
+    }
+
+    /// Reports a finalized header and returns whether the actor acknowledged it.
+    pub(super) async fn try_report_finalized_header(&mut self, header: TempoHeader) -> bool {
         self.execution.add_header(header.clone());
         let (acknowledgement, waiter) = Exact::handle();
         assert!(
@@ -327,9 +338,7 @@ impl Harness {
                 .report(Update::Block(block(header).into(), acknowledgement))
                 .accepted()
         );
-        waiter
-            .await
-            .expect("finalized block should be acknowledged");
+        waiter.await.is_ok()
     }
 
     pub(super) async fn has_dealer_log(&self, epoch: Epoch) -> bool {
@@ -610,40 +619,45 @@ impl CheckedSender for RecordingCheckedSender {
     }
 }
 
+/// The post-state of executed blocks, by block hash: the DKG ceremony stored
+/// in the `CurrentCommittee` precompile, `None` while uninitialized.
+type StoredCeremonies = BTreeMap<B256, Option<StoredDkgCeremony>>;
+
 #[derive(Clone)]
 pub(super) struct StubExecutionProvider {
     pub(super) chain_spec: Arc<TempoChainSpec>,
     headers: Arc<Mutex<BTreeMap<Height, TempoHeader>>>,
     reads: Arc<Mutex<Vec<Height>>>,
+    ceremonies: Arc<Mutex<StoredCeremonies>>,
 }
 
 impl Default for StubExecutionProvider {
     fn default() -> Self {
         Self {
-            chain_spec: DEV.clone(),
+            // Boundary blocks carry legacy DKG outcomes unless a test
+            // activates TIP-1123.
+            chain_spec: dev_chain_spec_until(TempoHardfork::T14, Some(0)),
             headers: Default::default(),
             reads: Default::default(),
+            ceremonies: Default::default(),
         }
     }
 }
 
 impl StubExecutionProvider {
     pub(super) fn set_t12_activation(&mut self, activation: Option<u64>) {
-        let mut genesis = DEV.genesis().clone();
-        for &fork in TempoHardfork::VARIANTS {
-            if fork > TempoHardfork::T12 {
-                genesis
-                    .config
-                    .extra_fields
-                    .remove(&format!("{}Time", fork.name().to_lowercase()));
-            }
-        }
-        genesis
-            .config
-            .extra_fields
-            .insert_value("t12Time".into(), activation)
-            .unwrap();
-        self.chain_spec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        self.chain_spec = dev_chain_spec_until(TempoHardfork::T12, activation);
+    }
+
+    /// Activates T15, and with it TIP-1123, at `activation`.
+    pub(super) fn set_t15_activation(&mut self, activation: Option<u64>) {
+        self.chain_spec = dev_chain_spec_until(TempoHardfork::T15, activation);
+    }
+
+    /// Makes the post-state of the block `block_hash` available, with
+    /// `ceremony` stored in the `CurrentCommittee` precompile.
+    pub(super) fn set_dkg_ceremony(&self, block_hash: B256, ceremony: Option<StoredDkgCeremony>) {
+        self.ceremonies.lock().unwrap().insert(block_hash, ceremony);
     }
 
     pub(super) fn add_header(&self, header: TempoHeader) {
@@ -667,6 +681,35 @@ impl ExecutionLayer for StubExecutionProvider {
         self.reads.lock().unwrap().push(height);
         Ok(self.headers.lock().unwrap().get(&height).cloned())
     }
+
+    fn dkg_ceremony(&self, block_hash: B256) -> eyre::Result<Option<StoredDkgCeremony>> {
+        self.ceremonies
+            .lock()
+            .unwrap()
+            .get(&block_hash)
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("block `{block_hash}` is not executed yet"))
+    }
+}
+
+/// Returns the dev chain spec with `fork` active at `activation` and every
+/// later fork inactive.
+fn dev_chain_spec_until(fork: TempoHardfork, activation: Option<u64>) -> Arc<TempoChainSpec> {
+    let mut genesis = DEV.genesis().clone();
+    for &later in TempoHardfork::VARIANTS {
+        if later > fork {
+            genesis
+                .config
+                .extra_fields
+                .remove(&format!("{}Time", later.name().to_lowercase()));
+        }
+    }
+    genesis
+        .config
+        .extra_fields
+        .insert_value(format!("{}Time", fork.name().to_lowercase()), activation)
+        .unwrap();
+    Arc::new(TempoChainSpec::from_genesis(genesis))
 }
 
 type BlockSubscribers = BTreeMap<Digest, Vec<oneshot::Sender<Digested<Block>>>>;
@@ -826,17 +869,48 @@ pub(super) fn block(header: TempoHeader) -> Block {
     }))
 }
 
+/// Returns a boundary block at `height` whose legacy DKG outcome starts
+/// `state`.
 pub(super) fn outcome_header(height: Height, state: &State) -> TempoHeader {
-    let outcome = OnchainDkgOutcome {
+    let outcome = OnchainDkgOutcomeV1 {
         epoch: state.epoch.get(),
         output: state.output.clone(),
-        next_players: state.players().clone(),
-        is_next_full_dkg: state.is_full_dkg,
+        next_ceremony: DkgCeremony {
+            players: state.players().clone(),
+            is_full_dkg: state.is_full_dkg,
+        },
     };
 
     let mut header = header(height);
     header.inner.extra_data = outcome.encode().into();
     header
+}
+
+/// Returns a boundary block at `height` and `timestamp` whose TIP-1123 DKG
+/// outcome starts `state`, and the ceremony of `state` as the block stores
+/// it in the `CurrentCommittee` precompile.
+pub(super) fn ceremony_in_state_header(
+    height: Height,
+    timestamp: u64,
+    state: &State,
+) -> (TempoHeader, StoredDkgCeremony) {
+    let outcome = OnchainDkgOutcomeV2 {
+        epoch: state.epoch.get(),
+        output: state.output.clone(),
+    };
+
+    let mut header = header(height);
+    header.inner.timestamp = timestamp;
+    header.inner.extra_data = outcome.encode().into();
+    let stored = StoredDkgCeremony {
+        epoch: state.epoch.get(),
+        dealers: state.dealers().clone(),
+        ceremony: DkgCeremony {
+            players: state.players().clone(),
+            is_full_dkg: state.is_full_dkg,
+        },
+    };
+    (header, stored)
 }
 
 pub(super) fn dkg_state(
@@ -985,16 +1059,27 @@ pub(super) fn revealed_recovery_fixture(
 }
 
 impl RevealedRecoveryFixture {
+    /// Adds the boundary blocks, with outcomes in `encoding`, and the blocks
+    /// with dealer logs of the ceremony epoch to `execution`.
     pub(super) fn populate_execution(
         &self,
         execution: &StubExecutionProvider,
         epoch_strategy: &FixedEpocher,
+        encoding: OutcomeEncoding,
     ) {
+        let boundary_header = |height, state: &State| match encoding {
+            OutcomeEncoding::Legacy => outcome_header(height, state),
+            OutcomeEncoding::CeremonyInState => {
+                let (header, stored) = ceremony_in_state_header(height, 0, state);
+                execution.set_dkg_ceremony(header.hash_slow(), Some(stored));
+                header
+            }
+        };
         let ceremony_epoch = self.ceremony_state.epoch;
         let ceremony_boundary = epoch_strategy
             .last(ceremony_epoch.previous().unwrap())
             .unwrap();
-        execution.add_header(outcome_header(ceremony_boundary, &self.ceremony_state));
+        execution.add_header(boundary_header(ceremony_boundary, &self.ceremony_state));
 
         let ceremony_start = epoch_strategy.first(ceremony_epoch).unwrap();
         for (offset, signed_log) in self.signed_logs.iter().enumerate() {
@@ -1004,6 +1089,6 @@ impl RevealedRecoveryFixture {
         }
 
         let output_boundary = epoch_strategy.last(ceremony_epoch).unwrap();
-        execution.add_header(outcome_header(output_boundary, &self.recovered_state));
+        execution.add_header(boundary_header(output_boundary, &self.recovered_state));
     }
 }

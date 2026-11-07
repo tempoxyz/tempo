@@ -8,7 +8,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
+use super::common::{wait_for_ceremony, wait_for_outcome, wait_for_validators_to_reach_epoch};
 use crate::{Setup, metrics::MetricsExt, setup_validators};
 
 #[test_traced]
@@ -59,7 +59,7 @@ impl FullDkgTest {
 
             tracing::info!(full_dkg_epoch = self.full_dkg_epoch, "Scheduled full DKG");
 
-            // Step 1: Wait for and verify the is_next_full_dkg flag in epoch N-1
+            // Step 1: Wait for and verify that the boundary of epoch N-1 schedules a full DKG
             let outcome_before = wait_for_outcome(
                 &context,
                 &validators,
@@ -69,8 +69,15 @@ impl FullDkgTest {
             .await;
 
             assert!(
-                outcome_before.is_next_full_dkg,
-                "Epoch {} outcome should have is_next_full_dkg=true",
+                wait_for_ceremony(
+                    &context,
+                    &validators,
+                    self.full_dkg_epoch - 1,
+                    self.epoch_length
+                )
+                .await
+                .is_full_dkg,
+                "Epoch {} boundary should schedule a full DKG",
                 self.full_dkg_epoch - 1
             );
             let pubkey_before = *outcome_before.sharing().public();
@@ -121,8 +128,15 @@ impl FullDkgTest {
             .await;
 
             assert!(
-                !outcome_after_reshare.is_next_full_dkg,
-                "Epoch {} should NOT have is_next_full_dkg flag",
+                !wait_for_ceremony(
+                    &context,
+                    &validators,
+                    self.full_dkg_epoch + 1,
+                    self.epoch_length
+                )
+                .await
+                .is_full_dkg,
+                "Epoch {} boundary should NOT schedule a full DKG",
                 self.full_dkg_epoch + 1
             );
 

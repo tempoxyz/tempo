@@ -23,7 +23,7 @@ use crate::{
     consensus_snapshot::write_consensus_snapshot,
     metrics::{wait_for_height_with_interval, wait_for_metrics_with_interval},
     setup_validators,
-    tests::dkg::common::wait_for_outcome,
+    tests::dkg::common::{wait_for_ceremony, wait_for_outcome},
 };
 
 const SNAPSHOT_RESTART_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -104,6 +104,8 @@ fn can_restart_after_joining_from_snapshot() {
 
         let outcome_start_rotation =
             wait_for_outcome(&context, &validators, target_epoch.get(), epoch_length).await;
+        let ceremony_start_rotation =
+            wait_for_ceremony(&context, &validators, target_epoch.get(), epoch_length).await;
 
         assert!(
             outcome_start_rotation
@@ -112,8 +114,8 @@ fn can_restart_after_joining_from_snapshot() {
                 .is_some()
         );
         assert!(
-            outcome_start_rotation
-                .next_players()
+            ceremony_start_rotation
+                .players
                 .position(&donor.public_key())
                 .is_none()
         );
@@ -124,13 +126,20 @@ fn can_restart_after_joining_from_snapshot() {
                 .is_none()
         );
         assert!(
-            outcome_start_rotation
-                .next_players()
+            ceremony_start_rotation
+                .players
                 .position(&replacement.public_key())
                 .is_some()
         );
 
         let outcome_finish_rotation = wait_for_outcome(
+            &context,
+            &validators,
+            target_epoch.next().get(),
+            epoch_length,
+        )
+        .await;
+        let ceremony_finish_rotation = wait_for_ceremony(
             &context,
             &validators,
             target_epoch.next().get(),
@@ -145,8 +154,8 @@ fn can_restart_after_joining_from_snapshot() {
                 .is_none()
         );
         assert!(
-            outcome_finish_rotation
-                .next_players()
+            ceremony_finish_rotation
+                .players
                 .position(&donor.public_key())
                 .is_none()
         );
@@ -157,8 +166,8 @@ fn can_restart_after_joining_from_snapshot() {
                 .is_some()
         );
         assert!(
-            outcome_finish_rotation
-                .next_players()
+            ceremony_finish_rotation
+                .players
                 .position(&replacement.public_key())
                 .is_some()
         );

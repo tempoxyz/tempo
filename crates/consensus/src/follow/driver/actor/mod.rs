@@ -92,10 +92,14 @@ where
             )
         })?;
 
-    let verifier = FinalizationVerifier::new(network_identity, config.epoch_strategy.clone())
-        .with_scheme_provider(config.scheme_provider.clone());
+    let verifier = FinalizationVerifier::new(
+        network_identity,
+        config.epoch_strategy.clone(),
+        config.chain_spec.clone(),
+    )
+    .with_scheme_provider(config.scheme_provider.clone());
     let outcome = verifier
-        .decode_dkg_outcome_and_register_boundary(boundary_header.extra_data().as_ref())
+        .decode_dkg_outcome_and_register_boundary(&boundary_header)
         .wrap_err_with(|| {
             format!(
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
@@ -216,9 +220,7 @@ where
 
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(
-                    boundary_block.inner().header().extra_data().as_ref(),
-                )
+                .decode_dkg_outcome_and_register_boundary(boundary_block.inner().header())
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
@@ -245,7 +247,7 @@ where
             });
 
         // Scheme registration has already rejected conflicting keys within the same epoch.
-        if outcome.epoch >= identity_epoch {
+        if outcome.raw_epoch() >= identity_epoch {
             let identity = NetworkIdentity {
                 from_epoch: outcome.epoch().get(),
                 identity: *outcome.network_identity(),
@@ -422,9 +424,7 @@ where
         if epoch_info.last() == block.height() {
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(
-                    block.inner().header().extra_data().as_ref(),
-                )
+                .decode_dkg_outcome_and_register_boundary(block.inner().header())
                 .expect("boundary blocks must contain DKG outcomes");
 
             // Prevent an outcome from advancing the persisted trust anchor to an arbitrary epoch.
@@ -435,12 +435,12 @@ where
             );
 
             let configured_identity = &self.config.network_identity;
-            if onchain_outcome.epoch >= configured_identity.from_epoch
+            if onchain_outcome.raw_epoch() >= configured_identity.from_epoch
                 && configured_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
                     compiled_from_epoch = configured_identity.from_epoch,
-                    onchain_epoch = %onchain_outcome.epoch,
+                    onchain_epoch = %onchain_outcome.raw_epoch(),
                     compiled_network_identity = %configured_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"

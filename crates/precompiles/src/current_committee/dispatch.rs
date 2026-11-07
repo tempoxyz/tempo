@@ -22,7 +22,9 @@ impl Precompile for CurrentCommittee {
                     getCommitteeMembers(call) => view(call, |_| self.get_committee_members()),
                     setCommitteeMembers(call) => {
                         mutate(call, msg_sender, |sender, c| self.set_committee_members(sender, c))
-                    }
+                    },
+                    #[schedule(since = T15)]
+                    getDkgCeremony(call) => view(call, |_| self.get_dkg_ceremony()),
                 }
             }
         )
@@ -38,15 +40,20 @@ mod tests {
         storage_credits::StorageCredits,
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::{primitives::B256, sol_types::SolCall};
+    use alloy::{
+        primitives::B256,
+        sol_types::{SolCall, SolError as _},
+    };
+    use evm2::precompiles::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         CURRENT_COMMITTEE_ADDRESS, CurrentCommitteeError, ICurrentCommittee,
+        UnknownFunctionSelector,
     };
 
     #[test]
     fn test_current_committee_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         StorageCtx::enter(&mut storage, || {
             let mut committee = CurrentCommittee::new();
 
@@ -60,6 +67,31 @@ mod tests {
             assert_full_coverage([unsupported]);
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_get_dkg_ceremony_is_scheduled_for_t15() -> eyre::Result<()> {
+        let calldata = ICurrentCommittee::getDkgCeremonyCall {}.abi_encode();
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let result = CurrentCommittee::new().call(&calldata, Address::repeat_byte(0x01));
+            let Err(PrecompileError::Revert(bytes)) = result else {
+                panic!("expected a revert, got {result:?}");
+            };
+            assert_eq!(
+                UnknownFunctionSelector::abi_decode(&bytes)?.selector,
+                ICurrentCommittee::getDkgCeremonyCall::SELECTOR
+            );
+            Ok(())
+        })?;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || {
+            let result = CurrentCommittee::new().call(&calldata, Address::repeat_byte(0x01));
+            expect_precompile_revert(&result, CurrentCommitteeError::uninitialized());
+        });
+        Ok(())
     }
 
     #[test]

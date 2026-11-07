@@ -1,5 +1,6 @@
 use std::{future::Future, sync::Arc};
 
+use alloy_primitives::B256;
 use commonware_consensus::{
     marshal::core::DigestFallback,
     types::{Epoch, FixedEpocher, Height},
@@ -18,6 +19,7 @@ use rand_core::CryptoRng;
 use reth_provider::HeaderProvider as _;
 use tempo_chainspec::{NetworkIdentity, TempoChainSpec};
 use tempo_node::TempoFullNode;
+use tempo_precompiles::current_committee::CurrentCommittee;
 use tempo_primitives::TempoHeader;
 use tokio::sync::oneshot;
 
@@ -31,6 +33,7 @@ use crate::{
     consensus::{Block, Digest},
     epoch::SchemeProvider,
     gossip::Certificate,
+    validators::{StoredDkgCeremony, read_dkg_ceremony, read_validator_config_at_block_hash},
 };
 
 use ingress::{Command, Message};
@@ -109,6 +112,14 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
 
     /// Returns a finalized header at `height`, or `None` when execution has not finalized it.
     fn finalized_header(&self, height: Height) -> eyre::Result<Option<TempoHeader>>;
+
+    /// Returns the DKG ceremony stored in the `CurrentCommittee` precompile in
+    /// the post-state of the block `block_hash` (TIP-1123), or `None` while no
+    /// TIP-1123 boundary block has written it.
+    ///
+    /// Fails when the execution layer has not executed the block yet, or when
+    /// the read fails.
+    fn dkg_ceremony(&self, block_hash: B256) -> eyre::Result<Option<StoredDkgCeremony>>;
 }
 
 /// Marshal operations used by the DKG manager.
@@ -172,6 +183,15 @@ impl ExecutionLayer for TempoExecutionLayer {
             .provider
             .header_by_number(height.get())
             .map_err(Report::new)
+    }
+
+    fn dkg_ceremony(&self, block_hash: B256) -> eyre::Result<Option<StoredDkgCeremony>> {
+        read_validator_config_at_block_hash::<CurrentCommittee, _>(
+            self.node.as_ref(),
+            block_hash,
+            read_dkg_ceremony,
+        )
+        .map(|(_, _, ceremony)| ceremony)
     }
 }
 

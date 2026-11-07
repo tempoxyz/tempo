@@ -20,14 +20,14 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_signer_trezor::{HDPath as TrezorHDPath, TrezorSigner};
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
-use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{
     Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_utils::ordered;
+use commonware_utils::{TryFromIterator as _, ordered};
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use futures::FutureExt as _;
 use reth_chainspec::EthChainSpec;
@@ -38,11 +38,11 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_contracts::precompiles::{
-    IFeeManager,
+    CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, IFeeManager,
     IValidatorConfigV2::{self, Validator},
     TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_dkg_onchain_artifacts::{DkgCeremony, OnchainDkgOutcome};
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
@@ -1242,6 +1242,10 @@ pub struct ValidatorInfo {
 struct ValidatorOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     is_dkg_player: Option<bool>,
+    /// Whether the validator is active in the validator config, so that it plays the DKG
+    /// ceremony of the next epoch unless it is deactivated before the epoch's boundary block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_prospective_player: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     is_dkg_dealer: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1308,44 +1312,19 @@ impl ValidatorInfo {
 
         let mut is_dkg_dealer = None;
         let mut is_dkg_player = None;
+        let mut is_prospective_player = None;
         let mut in_committee = None;
 
         if !self.no_dkg_information {
-            let boundary_height = current_epoch
-                .previous()
-                .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
-                .unwrap_or_default();
-
-            let boundary_block = provider
-                .get_block_by_number(boundary_height.get().into())
-                .hashes()
-                .await
-                .wrap_err_with(|| {
-                    format!(
-                        "failed to get block header at height {}",
-                        boundary_height.get()
-                    )
-                })?
-                .ok_or_eyre("boundary block not found")?;
-
-            let extra_data = boundary_block.header.extra_data();
-            if extra_data.is_empty() {
-                return Err(eyre!(
-                    "boundary block at height {} has no DKG outcome in extra_data",
-                    boundary_height.get()
-                ));
-            }
-
-            let dkg_outcome =
-                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
-                    .wrap_err("failed to decode DKG outcome from extra_data")?;
+            let roles = read_dkg_roles(&provider, &chain, &epoch_strategy, current_height).await?;
 
             let key = PublicKey::decode(commonware_codec::Copying(&pubkey_bytes[..]))
                 .wrap_err("failed decoding on-chain ed25519 key")?;
 
-            let committee = dkg_outcome.players().position(&key).is_some();
+            let committee = roles.dealers.position(&key).is_some();
             is_dkg_dealer = Some(committee);
-            is_dkg_player = Some(dkg_outcome.next_players().position(&key).is_some());
+            is_dkg_player = Some(roles.ceremony.players.position(&key).is_some());
+            is_prospective_player = Some(validator.deactivatedAtHeight == 0);
             in_committee = Some(committee);
         }
 
@@ -1356,6 +1335,7 @@ impl ValidatorInfo {
                 validator,
                 is_dkg_dealer,
                 is_dkg_player,
+                is_prospective_player,
                 in_committee,
             },
         };
@@ -1378,11 +1358,13 @@ struct InfoOutput {
     epoch_length: u64,
     /// Number of blocks remaining until the next epoch
     epoch_blocks_remaining: u64,
-    /// Whether this is a full DKG (new polynomial) or reshare
+    /// Whether the DKG ceremony running during the current epoch is a full DKG (new polynomial)
+    /// or a reshare
     is_next_full_dkg: bool,
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
     next_full_dkg_epoch: u64,
-    /// List of validators participating in the DKG
+    /// List of validators participating in the current DKG ceremony or active in the validator
+    /// config (the prospective players of the next epoch's ceremony)
     validators: Vec<ValidatorOutput>,
 }
 
@@ -1463,34 +1445,7 @@ impl Info {
             .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
 
         let current_epoch = current_epoch_info.epoch();
-        let boundary_height = current_epoch
-            .previous()
-            .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
-            .unwrap_or_default();
-
-        let boundary_block = provider
-            .get_block_by_number(boundary_height.get().into())
-            .hashes()
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed to get block header at height {}",
-                    boundary_height.get()
-                )
-            })?
-            .ok_or_eyre("boundary block not found")?;
-
-        let extra_data = boundary_block.header.extra_data();
-        if extra_data.is_empty() {
-            return Err(eyre!(
-                "boundary block at height {} has no DKG outcome in extra_data",
-                boundary_height.get()
-            ));
-        }
-
-        let dkg_outcome =
-            OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
-                .wrap_err("failed to decode DKG outcome from extra_data")?;
+        let roles = read_dkg_roles(&provider, &chain, &epoch_strategy, current_height).await?;
 
         let next_dkg_result = provider
             .call(
@@ -1538,9 +1493,9 @@ impl Info {
             .map(|v| (v.publicKey, v))
             .collect::<std::collections::BTreeMap<_, _>>();
 
-        let players = dkg_outcome.players();
-        let next_players = dkg_outcome.next_players();
-        let dkg_players = ordered::Set::from_iter_dedup(players.iter().chain(next_players));
+        let dealers = &roles.dealers;
+        let players = &roles.ceremony.players;
+        let dkg_players = ordered::Set::from_iter_dedup(dealers.iter().chain(players));
 
         // Add validators that are active onchain
         let mut validators_by_public_key = active_validators_by_public_key.clone();
@@ -1571,10 +1526,11 @@ impl Info {
             };
 
             validators.push(ValidatorOutput {
+                is_dkg_dealer: Some(dealers.position(&public_key).is_some()),
+                is_dkg_player: Some(players.position(&public_key).is_some()),
+                is_prospective_player: Some(active_validators_by_public_key.contains_key(&key)),
+                in_committee: Some(dealers.position(&public_key).is_some()),
                 validator,
-                is_dkg_dealer: Some(players.position(&public_key).is_some()),
-                is_dkg_player: Some(next_players.position(&public_key).is_some()),
-                in_committee: Some(players.position(&public_key).is_some()),
             })
         }
 
@@ -1582,16 +1538,127 @@ impl Info {
             validators,
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
-            last_boundary: boundary_height.get(),
+            last_boundary: roles.boundary_height.get(),
             epoch_length: epoch_length.get(),
             epoch_blocks_remaining: epoch_length.get() - (current_height.get() % epoch_length + 1),
-            is_next_full_dkg: dkg_outcome.is_next_full_dkg,
+            is_next_full_dkg: roles.ceremony.is_full_dkg,
             next_full_dkg_epoch,
         };
 
         println!("{}", serde_json::to_string_pretty(&output)?);
         Ok(())
     }
+}
+
+/// The DKG roles of an epoch.
+struct DkgRoles {
+    /// The height of the boundary block that started the epoch.
+    boundary_height: Height,
+    /// The committee of the epoch, which deals in its DKG ceremony.
+    dealers: ordered::Set<PublicKey>,
+    /// The players and mode of the DKG ceremony running during the epoch.
+    ceremony: DkgCeremony,
+}
+
+/// Reads the DKG roles of the epoch containing `current_height`.
+///
+/// The committee comes from the DKG outcome in the boundary block that started the epoch. The
+/// ceremony comes from that outcome before TIP-1123, and from the `CurrentCommittee` precompile
+/// once that boundary block uses the TIP-1123 encoding.
+async fn read_dkg_roles<P: Provider<TempoNetwork>>(
+    provider: &P,
+    chain: &TempoChainSpec,
+    epoch_strategy: &FixedEpocher,
+    current_height: Height,
+) -> eyre::Result<DkgRoles> {
+    let current_epoch_info = epoch_strategy.containing(current_height).ok_or_else(|| {
+        eyre!(
+            "failed to determine epoch for height {}",
+            current_height.get()
+        )
+    })?;
+    let current_epoch = current_epoch_info.epoch();
+    let boundary_height = current_epoch
+        .previous()
+        .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+        .unwrap_or_default();
+
+    let boundary_block = provider
+        .get_block_by_number(boundary_height.get().into())
+        .hashes()
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "failed to get block header at height {}",
+                boundary_height.get()
+            )
+        })?
+        .ok_or_eyre("boundary block not found")?;
+
+    let extra_data = boundary_block.header.extra_data();
+    if extra_data.is_empty() {
+        return Err(eyre!(
+            "boundary block at height {} has no DKG outcome in extra_data",
+            boundary_height.get()
+        ));
+    }
+
+    let dkg_outcome = OnchainDkgOutcome::decode_extra_data(
+        extra_data,
+        chain.dkg_outcome_encoding_at(boundary_block.header.timestamp()),
+    )
+    .wrap_err("failed to decode DKG outcome from extra_data")?;
+
+    if let OnchainDkgOutcome::V1(outcome) = dkg_outcome {
+        return Ok(DkgRoles {
+            boundary_height,
+            dealers: outcome.output.players().clone(),
+            ceremony: outcome.next_ceremony,
+        });
+    }
+
+    // The last block of an epoch already stores the ceremony of the next epoch.
+    let state_height = match current_height.get().checked_sub(1) {
+        Some(parent) if current_epoch_info.last() == current_height => parent,
+        _ => current_height.get(),
+    };
+    let result = provider
+        .call(
+            TransactionRequest::default()
+                .to(CURRENT_COMMITTEE_ADDRESS)
+                .input(ICurrentCommittee::getDkgCeremonyCall {}.abi_encode().into())
+                .into(),
+        )
+        .number(state_height)
+        .await
+        .wrap_err("failed to call getDkgCeremony")?;
+    let stored = ICurrentCommittee::getDkgCeremonyCall::abi_decode_returns(&result)
+        .wrap_err("failed to decode getDkgCeremony response")?;
+    if stored.epoch != current_epoch.get() {
+        bail!(
+            "getDkgCeremony at height {state_height} returned the ceremony of epoch {}, expected epoch {}",
+            stored.epoch,
+            current_epoch.get()
+        );
+    }
+
+    let decode_keys = |keys: Vec<B256>, what: &str| {
+        let keys = keys
+            .iter()
+            .map(|key| PublicKey::decode(commonware_codec::Copying(key.as_slice())))
+            .collect::<Result<Vec<_>, _>>()
+            .wrap_err_with(|| format!("stored DKG {what} are not ed25519 public keys"))?;
+        ordered::Set::try_from_iter(keys)
+            .wrap_err_with(|| format!("stored DKG {what} contain duplicates"))
+    };
+    Ok(DkgRoles {
+        boundary_height,
+        dealers: decode_keys(stored.dealers, "dealers")?,
+        ceremony: DkgCeremony {
+            players: decode_keys(stored.players, "players")?,
+            is_full_dkg: stored.isRotatingNetworkIdentity,
+        },
+    })
 }
 
 fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
@@ -1688,6 +1755,7 @@ mod tests {
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
     use std::sync::Mutex;
     use tempo_chainspec::spec::TempoChainSpecParser;
+    use tempo_dkg_onchain_artifacts::OnchainDkgOutcomeV1;
 
     type TempoCli = Cli<
         TempoChainSpecParser,
@@ -2204,6 +2272,116 @@ mod tests {
             other => panic!("expected ClaimFees, got `{other:?}`"),
         };
         cmd.run().await.unwrap();
+    }
+
+    /// Serves the boundary block at height 9 with `outcome` in its extra data, then `stored` as
+    /// the `getDkgCeremony` result when given, and reads the DKG roles at height 12.
+    async fn read_dkg_roles_with(
+        chain: &TempoChainSpec,
+        outcome: &OnchainDkgOutcome,
+        stored: Option<ICurrentCommittee::getDkgCeremonyReturn>,
+    ) -> eyre::Result<DkgRoles> {
+        let header = tempo_primitives::TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 9,
+                extra_data: outcome.encode().into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let block: <TempoNetwork as alloy_network::Network>::BlockResponse =
+            alloy_rpc_types_eth::Block {
+                header: tempo_alloy::rpc::TempoHeaderResponse {
+                    inner: alloy_rpc_types_eth::Header {
+                        hash: B256::repeat_byte(9),
+                        inner: header,
+                        total_difficulty: None,
+                        size: None,
+                    },
+                    timestamp_millis: 0,
+                },
+                uncles: Vec::new(),
+                transactions: alloy_rpc_types_eth::BlockTransactions::Hashes(Vec::new()),
+                withdrawals: None,
+            };
+        let asserter = Asserter::new();
+        asserter.push_success(&block);
+        if let Some(stored) = &stored {
+            asserter.push_success(&Bytes::from(
+                ICurrentCommittee::getDkgCeremonyCall::abi_encode_returns(stored),
+            ));
+        }
+        let provider =
+            ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+        read_dkg_roles(
+            &provider,
+            chain,
+            &FixedEpocher::new(commonware_utils::NZU64!(10)),
+            Height::new(12),
+        )
+        .await
+    }
+
+    fn keys_to_b256(keys: &ordered::Set<PublicKey>) -> Vec<B256> {
+        keys.iter()
+            .map(|key| B256::from_slice(key.as_ref()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn dkg_roles_come_from_legacy_boundary_outcome_before_tip_1123() {
+        let outcome = OnchainDkgOutcome::dealt(1, 3);
+        let roles = read_dkg_roles_with(&tempo_chainspec::spec::MODERATO, &outcome, None)
+            .await
+            .unwrap();
+        assert_eq!(roles.boundary_height, Height::new(9));
+        assert_eq!(&roles.dealers, outcome.players());
+        assert_eq!(Some(&roles.ceremony), outcome.next_ceremony());
+    }
+
+    #[tokio::test]
+    async fn dkg_roles_come_from_current_committee_after_tip_1123() {
+        let legacy = OnchainDkgOutcome::dealt(1, 3);
+        let outcome = OnchainDkgOutcome::V2(OnchainDkgOutcomeV1::dealt(1, 3).without_ceremony());
+        let players = OnchainDkgOutcome::dealt(2, 4).players().clone();
+        let stored = |epoch| ICurrentCommittee::getDkgCeremonyReturn {
+            epoch,
+            dealers: keys_to_b256(outcome.players()),
+            players: keys_to_b256(&players),
+            isRotatingNetworkIdentity: true,
+        };
+
+        let roles = read_dkg_roles_with(&tempo_chainspec::spec::DEV, &outcome, Some(stored(1)))
+            .await
+            .unwrap();
+        assert_eq!(roles.boundary_height, Height::new(9));
+        assert_eq!(&roles.dealers, outcome.players());
+        assert_eq!(
+            roles.ceremony,
+            DkgCeremony {
+                players: players.clone(),
+                is_full_dkg: true,
+            }
+        );
+
+        let error = read_dkg_roles_with(&tempo_chainspec::spec::DEV, &outcome, Some(stored(2)))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "getDkgCeremony at height 12 returned the ceremony of epoch 2, expected epoch 1"
+        );
+
+        // A TIP-1123 boundary must not carry the legacy ceremony.
+        let error = read_dkg_roles_with(&tempo_chainspec::spec::DEV, &legacy, None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "failed to decode DKG outcome from extra_data"
+        );
     }
 
     #[tokio::test]

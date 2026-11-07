@@ -5,7 +5,6 @@ pub(crate) mod marshal {
     use std::{num::NonZeroUsize, sync::Arc};
 
     use alloy_consensus::{BlockHeader as _, Sealable as _};
-    use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
         marshal::{self, core, standard::Standard},
@@ -183,6 +182,7 @@ pub(crate) mod marshal {
                 &config.epoch_strategy,
                 &config.scheme_provider,
                 &finalized_blocks,
+                &execution_node,
                 finalization,
             )
             .await?;
@@ -384,6 +384,7 @@ pub(crate) mod marshal {
             TContext,
             BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
         >,
+        execution_node: &TempoFullNode,
         finalization: &Certificate,
     ) -> eyre::Result<()>
     where
@@ -399,13 +400,17 @@ pub(crate) mod marshal {
                 eyre!("missing boundary header at height `{boundary}` in hybrid store")
             })?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
-                .wrap_err("failed to read DKG outcome from boundary header")?;
+        let onchain_outcome = OnchainDkgOutcome::decode_extra_data(
+            header.extra_data(),
+            execution_node
+                .chain_spec()
+                .dkg_outcome_encoding_at(header.timestamp()),
+        )
+        .wrap_err("failed to read DKG outcome from boundary header")?;
         ensure!(
             onchain_outcome.epoch() == epoch,
             "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",
-            onchain_outcome.epoch,
+            onchain_outcome.raw_epoch(),
         );
 
         let scheme = Scheme::verifier(

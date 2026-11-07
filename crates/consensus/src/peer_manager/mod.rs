@@ -13,10 +13,12 @@
 //!
 //! # How peers are determined
 //!
-//! Peers are read from two pieces of finalized state:
+//! Peers are read from these pieces of finalized state:
 //!
 //! - the DKG outcome in the header of the latest epoch boundary block at or
 //!   below the highest finalized height;
+//! - from TIP-1123, the DKG ceremony that boundary block stored in the Current
+//!   Committee precompile, read at the highest finalized height;
 //! - the Validator Config V2 contract at the highest finalized height.
 //!
 //! The highest finalized height is the execution layer's finalized block,
@@ -24,9 +26,12 @@
 //!
 //! The peer set is split into two tiers:
 //!
-//! 1. **Primary**: the players of the DKG outcome.
-//! 2. **Secondary**: the next players of the DKG outcome and the contract's
-//!    active validators, minus those already primary.
+//! 1. **Primary**: the committee: the players of the DKG outcome, or from
+//!    TIP-1123 the dealers of the stored DKG ceremony.
+//! 2. **Secondary**: the players of the ongoing DKG ceremony (the next players
+//!    of a legacy DKG outcome, or from TIP-1123 the players of the stored DKG
+//!    ceremony) and the contract's active validators, minus those already
+//!    primary.
 //!
 //! Addresses for all peers are resolved against the contract. DKG peers that
 //! are no longer active are looked up by public key; every DKG peer must have
@@ -96,6 +101,10 @@ where
 pub(crate) trait ExecutionLayer: ExecutionNode + Send + Sync + 'static {
     fn finalized_block_number(&self) -> eyre::Result<Option<u64>>;
     fn header_by_number(&self, height: u64) -> eyre::Result<Option<TempoHeader>>;
+
+    /// Returns whether a boundary block with `timestamp` stores the DKG ceremony of the epoch it
+    /// starts in execution state (T15, TIP-1123) instead of its header.
+    fn stores_dkg_ceremony_at(&self, timestamp: u64) -> bool;
 }
 
 impl ExecutionLayer for TempoFullNode {
@@ -109,5 +118,9 @@ impl ExecutionLayer for TempoFullNode {
         self.provider
             .header_by_number(height)
             .map_err(eyre::Report::new)
+    }
+
+    fn stores_dkg_ceremony_at(&self, timestamp: u64) -> bool {
+        self.chain_spec().stores_dkg_ceremony_at(timestamp)
     }
 }

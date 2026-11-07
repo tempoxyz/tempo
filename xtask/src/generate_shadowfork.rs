@@ -188,7 +188,9 @@ impl GenerateShadowfork {
             .ok_or_eyre("fork block number overflowed shadow epoch length")?;
         let shadow_chainspec_path =
             write_shadow_chainspec(&output, &source_chain, source_chain_id, shadow_epoch_length)?;
-        let mut shadow_dkg_outcome = consensus_config.to_genesis_dkg_outcome();
+        // The manifest keeps the legacy encoding: it carries the ceremony that
+        // bootstrap-shadowfork seeds and, for a TIP-1123 fork block, writes to state.
+        let mut shadow_dkg_outcome = consensus_config.genesis_dkg_outcome();
         shadow_dkg_outcome.epoch = SHADOW_EPOCH;
         let shadow_dkg_outcome = const_hex::encode_prefixed(shadow_dkg_outcome.encode());
 
