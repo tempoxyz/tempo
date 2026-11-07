@@ -36,7 +36,8 @@ gh() {
           local name="${!#}"
           name="${name#*name=}"
           name="${name%%&*}"
-          jq -nc --arg name "$name" '[{artifacts:[{id:10,name:$name,expired:false,
+          jq -nc --arg name "$name" --arg created "$STATE_TEST_DATE" '[{artifacts:[{id:10,name:$name,
+            expired:false,created_at:$created,
             workflow_run:{id:100,head_branch:"main",repository_id:1,head_repository_id:1}}]}]'
         fi
       elif [[ "$2" == */runs/* ]]; then
@@ -97,8 +98,8 @@ echo 'PASS: missing state, real ZIP restore, SHA validation, and API/archive fai
 # Newer unusable artifacts must not hide the newest usable artifact, even when
 # it is on another page. The workflow SHA is deliberately not the feature SHA.
 export STATE_TEST_ARTIFACTS
-STATE_TEST_ARTIFACTS=$(jq -nc '
-  def artifact($id): {id:$id,name:"bench-state-replay-mainnet",expired:false,
+STATE_TEST_ARTIFACTS=$(jq -nc --arg created "$STATE_TEST_DATE" '
+  def artifact($id): {id:$id,name:"bench-state-replay-mainnet",expired:false,created_at:$created,
     workflow_run:{id:100,head_branch:"main",head_sha:"cccccccccccccccccccccccccccccccccccccccc",
       repository_id:1,head_repository_id:1}};
   [{artifacts:[
@@ -115,6 +116,12 @@ export GITHUB_REF_NAME=other-branch
 export GITHUB_REF_NAME=main
 export STATE_TEST_ARTIFACTS='[{"artifacts":[]}]'
 [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
+# A baseline older than the max age bootstraps instead of failing every night.
+STATE_TEST_ARTIFACTS=$(jq -nc --arg created "$(jq -nr 'now - 4 * 86400 | todate')" '
+  [{artifacts:[{id:10,name:"bench-state-replay-mainnet",expired:false,created_at:$created,
+    workflow_run:{id:100,head_branch:"main",repository_id:1,head_repository_id:1}}]}]')
+[[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
+[[ "$(BENCH_STATE_MAX_AGE_DAYS=5 bash "$scripts/bench-state.sh" owner/repo replay mainnet)" == "$previous" ]]
 unset STATE_TEST_ARTIFACTS
 export STATE_TEST_CONCLUSION=failure
 [[ "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" == "$previous" ]]
@@ -128,7 +135,7 @@ unset STATE_TEST_PATH
 export STATE_TEST_EVENT=pull_request
 [[ -z "$(bash "$scripts/bench-state.sh" owner/repo replay mainnet)" ]]
 unset STATE_TEST_EVENT
-echo 'PASS: pagination, newest state, expiry, branch/mode/fork/workflow/event isolation, and run outcomes'
+echo 'PASS: pagination, newest state, expiry, max age, branch/mode/fork/workflow/event isolation, and run outcomes'
 
 for series in replay e2e zones; do
   export STATE_TEST_WORKFLOW=".github/workflows/bench-$series-scheduled.yml" BENCH_STATE_SERIES="$series"

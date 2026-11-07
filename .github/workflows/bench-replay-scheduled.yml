@@ -258,7 +258,12 @@ jobs:
 
   save-state:
     needs: [resolve-refs, bench-replay]
-    if: success()
+    # A run skipped for an unchanged nightly re-saves the same state, so a quiet
+    # main doesn't age out a baseline that bench-state.sh would still accept.
+    if: |
+      !cancelled() &&
+      needs.resolve-refs.result == 'success' &&
+      (needs.bench-replay.result == 'success' || needs.resolve-refs.outputs.should-skip == 'true')
     name: save-state
     runs-on: ubuntu-latest
     permissions:
