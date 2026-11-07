@@ -65,6 +65,9 @@ const BRIDGE_WAIT: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(500);
 /// How many leased-account candidates a driver tries before giving up for this run.
 const SENDER_CANDIDATES: usize = 16;
+/// Transfers one fanout keeps pending at once: reth's default per-sender pool limit
+/// (`--txpool.max-account-slots`).
+const FANOUT_CHUNK: u128 = 16;
 
 /// Antithesis test commands; see `zones/antithesis/README.md`.
 #[derive(Debug, clap::Parser)]
@@ -447,54 +450,66 @@ impl Context {
         else {
             return Ok(());
         };
-        let count = random_between(5, 20);
+        let url = &self.zone_urls[node];
+        let zone = self.wallet(&sender, url);
+        let gas_price = zone.get_gas_price().await?;
+        // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
+        let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
+        // Fees stay within half the balance and transfers take a quarter, so the batch always
+        // fits what the sender holds.
+        let count = random_between(50, 200).min((balance / 2) / max_fee.max(1));
+        if count == 0 {
+            return Ok(());
+        }
         let amount = (balance / 4) / count;
         if amount == 0 {
             return Ok(());
         }
-        let url = &self.zone_urls[node];
-        let zone = self.wallet(&sender, url);
-        let gas_price = zone.get_gas_price().await?;
         let mut nonce = zone
             .get_transaction_count(sender.address())
             .pending()
             .await?;
         let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
-        let mut pending: Vec<(Address, PendingTransactionBuilder<_>)> = Vec::new();
-        for _ in 0..count {
-            let to = self.ledger.new_account()?.address();
-            let tx = token
-                .transfer(to, U256::from(amount))
-                .gas(TIP20_TX_GAS)
-                .gas_price(gas_price)
-                .nonce(nonce)
-                .send()
-                .await?;
-            nonce += 1;
-            pending.push((to, tx));
-        }
-        // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
-        let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
-        for (to, tx) in pending {
-            let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
-            let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
-            let funded_revert = !receipt.status()
-                && self
-                    .covered_before(&zone, &receipt, sender.address(), amount + max_fee)
+        // The pool admits only FANOUT_CHUNK pending transactions per sender, so the batch goes out
+        // in chunks, each confirmed before the next.
+        let mut remaining = count;
+        while remaining > 0 {
+            let chunk = remaining.min(FANOUT_CHUNK);
+            remaining -= chunk;
+            let mut pending: Vec<(Address, PendingTransactionBuilder<_>)> = Vec::new();
+            for _ in 0..chunk {
+                let to = self.ledger.new_sink_account()?.address();
+                let tx = token
+                    .transfer(to, U256::from(amount))
+                    .gas(TIP20_TX_GAS)
+                    .gas_price(gas_price)
+                    .nonce(nonce)
+                    .send()
                     .await?;
-            assert_always!(
-                !funded_revert,
-                "Funded zone transfer succeeds",
-                &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
-            );
-            if receipt.status() {
-                self.ledger.append(&Record::Transfer {
-                    zone_tx: receipt.transaction_hash,
-                    zone_block,
-                    from: sender.address(),
-                    to,
-                    amount,
-                })?;
+                nonce += 1;
+                pending.push((to, tx));
+            }
+            for (to, tx) in pending {
+                let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
+                let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
+                let funded_revert = !receipt.status()
+                    && self
+                        .covered_before(&zone, &receipt, sender.address(), amount + max_fee)
+                        .await?;
+                assert_always!(
+                    !funded_revert,
+                    "Funded zone transfer succeeds",
+                    &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
+                );
+                if receipt.status() {
+                    self.ledger.append(&Record::Transfer {
+                        zone_tx: receipt.transaction_hash,
+                        zone_block,
+                        from: sender.address(),
+                        to,
+                        amount,
+                    })?;
+                }
             }
         }
         let accounts = self.ledger.accounts()?.len();
@@ -688,7 +703,7 @@ impl Context {
         &self,
         zone: &DynProvider,
     ) -> eyre::Result<Option<(Account, u128, Lease)>> {
-        for account in shuffled(self.ledger.accounts()?)
+        for account in shuffled(self.ledger.sender_accounts()?)
             .into_iter()
             .take(SENDER_CANDIDATES)
         {
