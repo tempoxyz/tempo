@@ -1,3 +1,4 @@
+use crate::samples::percentile_rank;
 use std::{collections::BTreeMap, time::Duration};
 use tracing::debug;
 
@@ -43,17 +44,6 @@ fn remove_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
     }
 }
 
-fn percentile_rank(len: usize, numerator: usize, denominator: usize) -> Option<usize> {
-    debug_assert!(numerator > 0);
-    debug_assert!(denominator > 0);
-    debug_assert!(numerator <= denominator);
-
-    if len == 0 {
-        return None;
-    }
-    Some((len * numerator).div_ceil(denominator))
-}
-
 fn percentile_from_counts<T: Copy + Ord>(
     counts: &BTreeMap<T, usize>,
     len: usize,
@@ -68,6 +58,11 @@ fn percentile_from_counts<T: Copy + Ord>(
             return Some(*value);
         }
     }
+    #[cfg(feature = "fuzz")]
+    antithesis_sdk::assert_unreachable!(
+        "Validation latency percentile rank exceeds its sample counts",
+        &serde_json::json!({ "len": len, "target": target, "seen": seen })
+    );
     debug_assert!(false, "validation latency sample index out of sync");
     None
 }

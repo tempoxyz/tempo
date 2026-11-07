@@ -27,7 +27,9 @@ use evm2::{
     version::{GasId, GasParams},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment, gas::keccak_gas};
+use tempo_primitives::{
+    TempoBlockEnv, TempoEvmKind, account::decode_config_commitment, gas::keccak_gas,
+};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -224,6 +226,13 @@ pub trait PrecompileStorageProvider {
     /// refund-mode settlement. Implementations that do not run TIP-1060 accounting may treat this
     /// as a no-op.
     fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
+
+    /// Returns the kind of EVM this context executes over, which fixes the protocol rules that
+    /// differ between Tempo L1 and its zones. Providers that cannot write state may keep the
+    /// [`TempoEvmKind::L1`] default, since those rules only affect state changes.
+    fn kind(&self) -> TempoEvmKind {
+        TempoEvmKind::L1
+    }
 
     /// Computes keccak256 and charges the appropriate gas.
     ///

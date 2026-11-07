@@ -7,7 +7,7 @@ use crate::{
     WithdrawalRevealEncryptor,
     abi::{self, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
 };
-use alloy_consensus::{Signed, TxLegacy};
+use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
 use alloy_primitives::{Bytes, U256};
 use alloy_sol_types::SolCall;
@@ -560,7 +560,7 @@ where
             Err(BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
                 ref error,
                 ..
-            })) if is_l1_storage_unavailable(error.as_ref()) => {
+            })) if is_l1_storage_unavailable(error) => {
                 warn!(
                     target: "zone::payload",
                     %error,
@@ -713,7 +713,7 @@ pub(crate) fn build_finalize_withdrawal_batch_tx(
     };
 
     Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     )
 }
@@ -822,7 +822,7 @@ fn build_advance_tempo_tx_from_parts(
     };
 
     Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     )
 }
@@ -857,14 +857,14 @@ pub fn build_advance_tempo_headers_tx(
         input: calldata.into(),
     };
     Ok(Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{Header, Signed, TxLegacy};
+    use alloy_consensus::{Header, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, U256, address};
     use alloy_sol_types::SolCall;
     use reth_primitives_traits::{Recovered, SealedHeader};
@@ -982,7 +982,7 @@ mod tests {
             value: U256::ZERO,
             input: vec![0u8; input_len].into(),
         };
-        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
         let recovered = Recovered::new_unchecked(envelope, TEMPO_SYSTEM_TX_SENDER);
         Arc::new(ValidPoolTransaction {
             transaction: TempoPooledTransaction::new(recovered),

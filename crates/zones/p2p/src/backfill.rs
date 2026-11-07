@@ -338,10 +338,9 @@ where
             policy.preferred_backfill_leader(),
         );
         let now = Instant::now();
-        let leader_first = match &leader {
-            Some(leader) => candidates.contains(leader) && !self.job.is_unresponsive(leader, now),
-            None => false,
-        };
+        let leader_first = leader.as_ref().is_some_and(|leader| {
+            candidates.contains(leader) && !self.job.is_unresponsive(leader, now)
+        });
         let mut attempts = Vec::with_capacity(2);
         if let Some(leader) = leader.as_ref().filter(|_| leader_first) {
             attempts.push(vec![leader.clone()]);

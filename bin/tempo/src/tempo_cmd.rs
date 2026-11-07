@@ -8,6 +8,7 @@ use std::{
 };
 
 use alloy::hex::ToHexExt;
+use alloy_consensus::BlockHeader;
 use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
@@ -45,6 +46,8 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
+#[cfg(feature = "corpus")]
+use crate::corpus;
 use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
@@ -83,6 +86,11 @@ pub enum TempoSubcommand {
 
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
+
+    /// Historical execution corpus: capture an archive range once, replay it without a DB.
+    #[cfg(feature = "corpus")]
+    #[command(subcommand)]
+    Corpus(corpus::CorpusCommand),
 
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
@@ -130,6 +138,12 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(
                     cmd.execute::<tempo_node::node::TempoNode>(runtime),
                 )?;
+                Ok(())
+            }
+            #[cfg(feature = "corpus")]
+            Self::Corpus(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
             }
             Self::ShadowReplay(cmd) => {
@@ -1297,8 +1311,6 @@ impl ValidatorInfo {
         let mut in_committee = None;
 
         if !self.no_dkg_information {
-            use alloy_consensus::BlockHeader;
-
             let boundary_height = current_epoch
                 .previous()
                 .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
@@ -1324,10 +1336,11 @@ impl ValidatorInfo {
                 ));
             }
 
-            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-                .wrap_err("failed to decode DKG outcome from extra_data")?;
+            let dkg_outcome =
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                    .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+            let key = PublicKey::decode(commonware_codec::Copying(&pubkey_bytes[..]))
                 .wrap_err("failed decoding on-chain ed25519 key")?;
 
             let committee = dkg_outcome.players().position(&key).is_some();
@@ -1404,8 +1417,6 @@ impl Info {
         self,
         connect: impl AsyncFnOnce(&str) -> eyre::Result<P>,
     ) -> eyre::Result<()> {
-        use alloy_consensus::BlockHeader;
-
         let rpc_url = match (self.rpc_url.as_deref(), self.chain.as_deref()) {
             (Some(rpc_url), _) => rpc_url,
             (None, Some(chain)) => chain
@@ -1477,8 +1488,9 @@ impl Info {
             ));
         }
 
-        let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-            .wrap_err("failed to decode DKG outcome from extra_data")?;
+        let dkg_outcome =
+            OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                .wrap_err("failed to decode DKG outcome from extra_data")?;
 
         let next_dkg_result = provider
             .call(
@@ -1549,7 +1561,7 @@ impl Info {
 
         let mut validators: Vec<ValidatorOutput> = Vec::new();
         for (key, validator) in validators_by_public_key {
-            let public_key = match PublicKey::decode(key.as_ref()) {
+            let public_key = match PublicKey::decode(commonware_codec::Copying(key.as_ref())) {
                 Ok(key) => key,
                 Err(e) => {
                     let index = validator.index;

@@ -17,14 +17,17 @@ use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random as _;
 use commonware_runtime::{
-    BufferPooler, Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
+    Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
     deterministic::{self, Context, Runner},
 };
 use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
-use tempo_consensus::{feed::FeedStateHandle, follow};
+use tempo_consensus::{
+    feed::FeedStateHandle,
+    follow::{self, upstream::in_process},
+};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Event, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
@@ -227,9 +230,8 @@ impl FollowerBuilder {
         upstream: impl FeedStateProvider,
     ) -> Follower
     where
-        TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
+        TContext: Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
-        use tempo_consensus::follow::upstream::in_process;
         let Self {
             name,
             partition_prefix,
