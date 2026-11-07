@@ -103,14 +103,24 @@ impl ResolvedForks {
         Ok(())
     }
 
+    /// Writes Tempo fork activations into a Zone genesis config.
+    ///
+    /// RPC-resolved schedules write no fork fields: Zone nodes take their parent's schedule,
+    /// compiled in for mainnet and testnet and read from the L1's `tempo_forkSchedule` at
+    /// startup otherwise, so later L1 upgrades need no genesis change. Offline caps are written explicitly, with `null` for
+    /// disabled forks, for offline tools that execute from genesis alone.
     pub(crate) fn write_to(&self, config: &mut ChainConfig) {
         for &fork in TempoHardfork::VARIANTS {
             if let Some(key) = fork.genesis_key() {
-                let value = self
-                    .activations
-                    .get(&fork)
-                    .map_or(Value::Null, |&time| Value::from(time));
-                config.extra_fields.insert(key.to_owned(), value);
+                if self.parent_chain_id.is_some() {
+                    config.extra_fields.remove(key);
+                } else {
+                    let value = self
+                        .activations
+                        .get(&fork)
+                        .map_or(Value::Null, |&time| Value::from(time));
+                    config.extra_fields.insert(key.to_owned(), value);
+                }
             }
         }
     }
