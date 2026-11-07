@@ -14634,6 +14634,7 @@ dependencies = [
  "tempo-fuzz-types",
  "tempo-primitives",
  "tokio",
+ "tokio-util",
  "tracing",
  "url",
  "wincode",
