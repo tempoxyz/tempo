@@ -106,14 +106,15 @@ mod tests {
     use crate::TempoEvmEnv;
     use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
-    use evm2::env::BlockEnvExt;
+    use evm2::{
+        block::{BlockExecutionResult, BundleState},
+        env::BlockEnvExt,
+    };
     use reth_chainspec::EthChainSpec;
     use reth_evm::execute::BlockAssembler;
     use reth_evm_ethereum::EthBlockExecutionCtx;
-    use reth_execution_types::BlockExecutionResult;
     use reth_primitives_traits::SealedHeader;
     use reth_storage_api::noop::NoopProvider;
-    use reth_trie_common::bundle_state::BundleState;
     use tempo_chainspec::spec::MODERATO;
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,

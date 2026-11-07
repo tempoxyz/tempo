@@ -1,8 +1,7 @@
 //! Tempo-specific transaction validation errors.
 
 use alloy_primitives::{Address, B256, U256};
-use evm2::registry::HandlerError;
-use reth_evm::InvalidTxError;
+use evm2::{block::InvalidTxError, registry::HandlerError};
 use tempo_primitives::transaction::{
     ConfigurableAccountQuorumError, KeyAuthorizationChainIdError, KeychainVersionError,
 };

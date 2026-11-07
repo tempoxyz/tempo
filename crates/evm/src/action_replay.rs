@@ -6,12 +6,10 @@ use alloy_primitives::{
 };
 use evm2::{
     TxResult,
+    block::{BlockExecutionError, InternalBlockExecutionError, map_database_error},
     evm::{CacheDB, DynDatabase, PendingState},
 };
-use reth_evm::{
-    BlockExecutionError, BlockExecutor, ExecutorTx, InternalBlockExecutionError, RecoveredTx,
-    execute::map_database_error,
-};
+use reth_evm::{BlockExecutor, ExecutorTx, RecoveredTx};
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
     nonce::NonceManager,
