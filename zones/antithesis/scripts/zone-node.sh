@@ -14,6 +14,7 @@
 # running the sparse-trie task also compare its trie updates with a serial computation, which
 # trie-oracle.sh reports. reth only runs the sparse-trie task with at least 5 CPUs and Antithesis
 # containers report fewer, so those nodes claim 8 with --cpu-cores; zone-1 stays synchronous.
+# Sequencers zone-0 and zone-2 also build their payloads' state roots on the shared sparse trie.
 set -eu
 
 S=/shared
@@ -23,7 +24,7 @@ L1_WS=ws://10.20.0.10:8546
 case "$NODE" in
     0)
         ROLE_ARGS="--secp256k1.key $S/seq-0.key --sequencer-key-file $S/seq-0.key"
-        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.disable-sparse-trie-cache-pruning --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2"
+        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.disable-sparse-trie-cache-pruning --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2"
         P2P_KEY=$S/p2p-0.key
         ;;
     1 | 2)
@@ -32,7 +33,7 @@ case "$NODE" in
         if [ "$NODE" = 1 ]; then
             ROLE_ARGS="$ROLE_ARGS --engine.state-root-fallback --engine.persistence-threshold 0"
         else
-            ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
+            ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
         fi
         ;;
     rpc)

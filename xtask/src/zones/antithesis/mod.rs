@@ -762,7 +762,11 @@ impl Context {
             Ok(receipt.is_some())
         })
         .await?;
-        let receipt = receipt.ok_or_eyre("batch approval receipt not found")?;
+        // Under faults the batch may stay pending past the timeout, like any other send.
+        let Some(receipt) = receipt else {
+            println!("approve: batch {hash} not confirmed within the timeout");
+            return Ok(None);
+        };
         let status = receipt["status"].as_str() == Some("0x1");
         let block = receipt["blockNumber"]
             .as_str()
