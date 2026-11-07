@@ -1,6 +1,10 @@
 //! Per-block batches from execution output.
 
 use alloy_primitives::{U256, keccak256};
+use rayon::{
+    iter::{IntoParallelRefIterator as _, ParallelIterator as _},
+    slice::ParallelSliceMut as _,
+};
 use reth_trie_common::bundle_state::BundleState;
 
 use crate::layout::{self, AccountRecord, Write, Writes};
@@ -16,50 +20,68 @@ use crate::layout::{self, AccountRecord, Write, Writes};
 /// an account created in the same transaction, and EIP-7610 forbids creating an account whose
 /// storage is not empty, so a destroyed account had no slots before the block.
 pub fn block_writes(bundle: &BundleState) -> Result<Writes, layout::Error> {
-    let mut writes = Writes::default();
-    for (address, account) in &bundle.state {
-        let hashed_address = keccak256(address);
-        if account.info != account.original_info {
-            let value = account
-                .info
-                .as_ref()
-                .map(|info| {
-                    AccountRecord::new(
-                        info.nonce,
-                        info.balance,
-                        Some(info.code_hash),
-                        info.extension.as_ref(),
-                    )
-                    .map(|record| record.encode())
+    // Hashing every key dominates, so accounts are hashed in parallel and the writes sorted in
+    // parallel.
+    let per_account = bundle
+        .state
+        .par_iter()
+        .map(|(address, account)| {
+            let hashed_address = keccak256(address);
+            let account_write = (account.info != account.original_info)
+                .then(|| {
+                    let value = account
+                        .info
+                        .as_ref()
+                        .map(|info| {
+                            AccountRecord::new(
+                                info.nonce,
+                                info.balance,
+                                Some(info.code_hash),
+                                info.extension.as_ref(),
+                            )
+                            .map(|record| record.encode())
+                        })
+                        .transpose()?;
+                    Ok::<_, layout::Error>(Write {
+                        key: layout::account_key(hashed_address),
+                        value,
+                    })
                 })
                 .transpose()?;
-            writes.accounts.push(Write {
-                key: layout::account_key(hashed_address),
-                value,
-            });
-        }
 
-        let destroyed = account.was_destroyed();
-        for (slot, entry) in &account.storage {
-            let original = if destroyed {
-                U256::ZERO
-            } else {
-                entry.previous_or_original_value
-            };
-            if entry.present_value == original {
-                continue;
-            }
-            let value =
-                (!entry.present_value.is_zero()).then(|| layout::slot_value(entry.present_value));
-            let hashed_slot = keccak256(slot.to_be_bytes::<32>());
-            writes.slots.push(Write {
-                key: layout::slot_key(hashed_address, hashed_slot),
-                value,
-            });
-        }
+            let destroyed = account.was_destroyed();
+            let slot_writes = account
+                .storage
+                .iter()
+                .filter_map(|(slot, entry)| {
+                    let original = if destroyed {
+                        U256::ZERO
+                    } else {
+                        entry.previous_or_original_value
+                    };
+                    (entry.present_value != original).then(|| Write {
+                        key: layout::slot_key(hashed_address, keccak256(slot.to_be_bytes::<32>())),
+                        value: (!entry.present_value.is_zero())
+                            .then(|| layout::slot_value(entry.present_value)),
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok((account_write, slot_writes))
+        })
+        .collect::<Result<Vec<_>, layout::Error>>()?;
+
+    let mut writes = Writes::default();
+    writes
+        .slots
+        .reserve(per_account.iter().map(|(_, slots)| slots.len()).sum());
+    for (account_write, slot_writes) in per_account {
+        writes.accounts.extend(account_write);
+        writes.slots.extend(slot_writes);
     }
-    writes.accounts.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-    writes.slots.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    writes
+        .accounts
+        .par_sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    writes.slots.par_sort_unstable_by(|a, b| a.key.cmp(&b.key));
     Ok(writes)
 }
 

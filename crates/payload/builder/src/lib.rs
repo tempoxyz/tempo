@@ -779,24 +779,53 @@ where
         let execution_result = &execution_output.result;
         let execution_state = &execution_output.state;
 
-        let hashed_state_span =
-            debug_span!(target: "payload_builder", "hashed_post_state").entered();
-        let hashed_state = if let Some(Ok(hashed_state)) = state_root_handle
+        let hashed_state_rx = state_root_handle
             .as_mut()
-            .and_then(|handle| handle.try_take_hashed_state_rx())
-            .map(|rx| rx.recv())
-        {
-            hashed_state
-        } else {
-            Arc::new(finish_provider.hashed_post_state(execution_state)?)
+            .and_then(|handle| handle.try_take_hashed_state_rx());
+        let finish_span = Span::current();
+        let compute_hashed_state = || {
+            let _span =
+                debug_span!(target: "payload_builder", parent: &finish_span, "hashed_post_state")
+                    .entered();
+            match hashed_state_rx.map(|rx| rx.recv()) {
+                Some(Ok(hashed_state)) => Ok(hashed_state),
+                _ => finish_provider
+                    .hashed_post_state(execution_state)
+                    .map(Arc::new),
+            }
         };
-        drop(hashed_state_span);
 
-        // Once QMDB is active its handle only prefetches, so the builder never waits on it.
-        let qmdb_active = self
+        // Once QMDB is active, the header commits to the QMDB root of the block's net diff. Its
+        // batch builds while another thread computes the hashed state, which it doesn't need.
+        let qmdb = self
             .qmdb
             .as_ref()
-            .is_some_and(|qmdb| qmdb.is_active_at(attributes.timestamp));
+            .filter(|qmdb| qmdb.is_active_at(attributes.timestamp));
+        // Once QMDB is active its handle only prefetches, so the builder never waits on it.
+        let qmdb_active = qmdb.is_some();
+        let (hashed_state, qmdb_batch) = match qmdb {
+            Some(qmdb) => std::thread::scope(|scope| {
+                let (number, parent_hash) = (parent_header.number() + 1, parent_header.hash());
+                let build_parent = finish_span.clone();
+                let batch = scope.spawn(move || {
+                    let _parent = build_parent.enter();
+                    let writes = debug_span!(target: "payload_builder", "qmdb_block_writes")
+                        .in_scope(|| diff::block_writes(execution_state))
+                        .map_err(PayloadBuilderError::other)?;
+                    let _span = debug_span!(target: "payload_builder", "qmdb_build").entered();
+                    qmdb.store
+                        .build_unregistered(number, parent_hash, writes)
+                        .map_err(PayloadBuilderError::other)
+                });
+                let hashed_state = compute_hashed_state();
+                let batch = batch
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                Ok::<_, PayloadBuilderError>((hashed_state?, Some(batch?)))
+            })?,
+            None => (compute_hashed_state()?, None),
+        };
+
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if self.config.skip_state_root {
                 debug!(
@@ -837,30 +866,6 @@ where
                 None
             }
             .unzip();
-
-        // Once QMDB is active, the header commits to the QMDB root of the block's net diff.
-        let qmdb_batch = match self
-            .qmdb
-            .as_ref()
-            .filter(|qmdb| qmdb.is_active_at(attributes.timestamp))
-        {
-            Some(qmdb) => {
-                let writes = debug_span!(target: "payload_builder", "qmdb_block_writes")
-                    .in_scope(|| diff::block_writes(execution_state))
-                    .map_err(PayloadBuilderError::other)?;
-                let _span = debug_span!(target: "payload_builder", "qmdb_build").entered();
-                Some(
-                    qmdb.store
-                        .build_unregistered(
-                            parent_header.number() + 1,
-                            parent_header.hash(),
-                            writes,
-                        )
-                        .map_err(PayloadBuilderError::other)?,
-                )
-            }
-            None => None,
-        };
 
         let (state_root, trie_updates) = if let Some(batch) = &qmdb_batch {
             (batch.root(), Arc::new(Default::default()))
