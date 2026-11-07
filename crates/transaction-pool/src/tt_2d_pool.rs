@@ -460,8 +460,20 @@ impl AA2dPool {
             }));
         }
 
-        // Call discard for queued transactions too
-        let _ = self.discard();
+        // Call discard for queued transactions too. If the just-inserted
+        // transaction was evicted by its own insert, surface DiscardedOnInsert
+        // instead of reporting Parked for a hash that is no longer in the pool
+        // (pending path already does this via tempo_pool).
+        let discarded = self.discard();
+        if discarded
+            .iter()
+            .any(|tx| tx.hash() == transaction.hash())
+        {
+            return Err(PoolError::new(
+                *transaction.hash(),
+                PoolErrorKind::DiscardedOnInsert,
+            ));
+        }
 
         Ok(AddedTransaction::Parked {
             transaction,
@@ -5183,8 +5195,19 @@ mod tests {
 
         pool.add_transaction(Arc::new(tx0), 0, TempoHardfork::T1)
             .unwrap();
-        pool.add_transaction(Arc::new(tx1), 0, TempoHardfork::T1)
-            .unwrap();
+        let result = pool.add_transaction(Arc::new(tx1), 0, TempoHardfork::T1);
+        assert!(
+            matches!(
+                result,
+                Err(ref err) if matches!(err.kind, PoolErrorKind::DiscardedOnInsert)
+            ),
+            "self-evicted queued insert must report DiscardedOnInsert, got: {result:?}"
+        );
+        assert_eq!(
+            result.as_ref().unwrap_err().hash,
+            tx1_hash,
+            "error hash should be the rejected insert"
+        );
 
         assert!(pool.contains(&tx0_hash));
         assert!(!pool.contains(&tx1_hash));
@@ -5192,6 +5215,56 @@ mod tests {
         let (pending_size, queued_size) = pool.pending_and_queued_txn_size();
         assert_eq!(pending_size, 0);
         assert!(queued_size <= max_size);
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_queued_count_limit_self_eviction_reports_discarded_on_insert() {
+        // Repro for #8806: queued limit of 1 tx; second equal-priority insert
+        // with a nonce gap is evicted by discard and must not return Ok(Parked).
+        let tx0 = wrap_valid_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::ONE)
+                .nonce(1000)
+                .build(),
+            TransactionOrigin::Local,
+        );
+        let tx1 = wrap_valid_tx(
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::from(2))
+                .nonce(1000)
+                .build(),
+            TransactionOrigin::Local,
+        );
+        let tx0_hash = *tx0.hash();
+        let tx1_hash = *tx1.hash();
+        let config = AA2dPoolConfig {
+            pending_limit: SubPoolLimit {
+                max_txs: usize::MAX,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 1,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        };
+        let mut pool = AA2dPool::new(config);
+
+        pool.add_transaction(Arc::new(tx0), 0, TempoHardfork::T1)
+            .unwrap();
+        let result = pool.add_transaction(Arc::new(tx1), 0, TempoHardfork::T1);
+        assert!(
+            matches!(
+                result,
+                Err(ref err) if matches!(err.kind, PoolErrorKind::DiscardedOnInsert)
+                    && err.hash == tx1_hash
+            ),
+            "expected DiscardedOnInsert for {tx1_hash}, got: {result:?}"
+        );
+        assert!(pool.contains(&tx0_hash));
+        assert!(!pool.contains(&tx1_hash));
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
         pool.assert_invariants();
     }
 
@@ -5358,7 +5431,9 @@ mod tests {
         };
         let mut pool = AA2dPool::new(config);
 
-        // Add 5 transactions each with a LARGE nonce gap so they are all queued
+        // Add 5 transactions each with a LARGE nonce gap so they are all queued.
+        // The first two fit under queued_limit=2; later inserts self-evict and
+        // must report DiscardedOnInsert instead of Ok(Parked).
         for i in 0..5usize {
             let sender = Address::from_word(B256::from(U256::from(i)));
             let tx = TxBuilder::aa(sender)
@@ -5370,7 +5445,17 @@ mod tests {
                 0,
                 TempoHardfork::T1,
             );
-            assert!(result.is_ok(), "Transaction {i} should be added");
+            if i < 2 {
+                assert!(result.is_ok(), "Transaction {i} should be added");
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(ref err) if matches!(err.kind, PoolErrorKind::DiscardedOnInsert)
+                    ),
+                    "Transaction {i} should be DiscardedOnInsert, got: {result:?}"
+                );
+            }
         }
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
