@@ -30,7 +30,7 @@ use crate::{
     },
     storage::{Handler, Mapping},
     storage_credits::{StorageCreditDeltas, StorageCredits},
-    tip20::{ITIP20, TIP20Token, validate_usd_currency},
+    tip20::{ITIP20, Recipient, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
 };
@@ -1531,6 +1531,15 @@ impl StablecoinDEX {
         if current_balance < amount {
             return Err(StablecoinDEXError::insufficient_balance().into());
         }
+        if self.storage.spec().is_t14()
+            && amount != 0
+            && TIP403Registry::new()
+                .check_receive_policy(token, self.address, Recipient::resolve(user)?.target)?
+                .is_some()
+        {
+            // A blocked withdrawal leaves the user's custody via the recovery authority.
+            AccountKeychain::new().authorize_transfer(user, token, U256::from(amount))?;
+        }
         self.sub_balance(user, token, amount)?;
         self.transfer(token, user, amount)?;
 
@@ -1932,6 +1941,135 @@ mod tests {
     use super::*;
     use crate::{STABLECOIN_DEX_ADDRESS, account_keychain::IAccountKeychain};
     use proptest::prelude::*;
+
+    #[test]
+    fn withdrawal_recovery_reroutes_obey_access_key_limits_at_t14() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            for blocked in [false, true] {
+                for use_key in [false, true] {
+                    for limit in [0, 100] {
+                        for amount in [0u128, 100] {
+                            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                                let user = Address::random();
+                                let key = Address::random();
+                                let mut dex = StablecoinDEX::new();
+                                dex.initialize()?;
+                                let token = TIP20Setup::create("A", "A", user)
+                                    .with_issuer(user)
+                                    .with_mint(dex.address, U256::from(100))
+                                    .apply()?
+                                    .address();
+                                dex.set_balance(user, token, 100)?;
+                                let mut keychain = AccountKeychain::new();
+                                keychain.initialize()?;
+                                keychain.set_tx_origin(user)?;
+                                keychain.authorize_key(
+                                    user,
+                                    key,
+                                    IAccountKeychain::SignatureType::Secp256k1,
+                                    IAccountKeychain::KeyRestrictions {
+                                        expiry: u64::MAX,
+                                        enforceLimits: true,
+                                        limits: vec![IAccountKeychain::TokenLimit {
+                                            token,
+                                            amount: U256::from(limit),
+                                            period: 0,
+                                        }],
+                                        allowAnyCalls: true,
+                                        allowedCalls: vec![],
+                                    },
+                                    None,
+                                )?;
+                                if use_key {
+                                    keychain.set_transaction_key(key)?;
+                                }
+                                if blocked {
+                                    let mut registry = TIP403Registry::new();
+                                    registry.initialize()?;
+                                    registry.set_receive_policy(
+                                        user,
+                                        ITIP403Registry::setReceivePolicyCall {
+                                            senderPolicyId:
+                                                crate::tip403_registry::REJECT_ALL_POLICY_ID,
+                                            tokenFilterId:
+                                                crate::tip403_registry::ALLOW_ALL_POLICY_ID,
+                                            recoveryAuthority: Address::random(),
+                                        },
+                                    )?;
+                                }
+                                keychain.clear_emitted_events();
+                                let result = dex.withdraw(user, token, amount);
+                                let charged = if spec.is_t14() && blocked && use_key {
+                                    amount
+                                } else {
+                                    0
+                                };
+                                let tip20 = TIP20Token::from_address(token)?;
+                                if charged > limit {
+                                    assert_eq!(
+                                        result,
+                                        Err(AccountKeychainError::spending_limit_exceeded().into())
+                                    );
+                                    assert_eq!(dex.balance_of(user, token)?, 100);
+                                    assert_eq!(
+                                        tip20.balance_of(ITIP20::balanceOfCall {
+                                            account: dex.address
+                                        })?,
+                                        U256::from(100)
+                                    );
+                                } else {
+                                    result?;
+                                    assert_eq!(dex.balance_of(user, token)?, 100 - amount);
+                                    assert_eq!(
+                                        tip20.balance_of(ITIP20::balanceOfCall {
+                                            account: dex.address
+                                        })?,
+                                        U256::from(100 - amount)
+                                    );
+                                }
+                                let delivered = if charged > limit { 0 } else { amount };
+                                assert_eq!(
+                                    tip20.balance_of(ITIP20::balanceOfCall { account: user })?,
+                                    U256::from(if blocked { 0 } else { delivered })
+                                );
+                                assert_eq!(
+                                    tip20.balance_of(ITIP20::balanceOfCall {
+                                        account: crate::RECEIVE_POLICY_GUARD_ADDRESS,
+                                    })?,
+                                    U256::from(if blocked { delivered } else { 0 })
+                                );
+                                let spent = if charged > limit { 0 } else { charged };
+                                assert_eq!(
+                                    keychain.get_remaining_limit(
+                                        IAccountKeychain::getRemainingLimitCall {
+                                            account: user,
+                                            keyId: key,
+                                            token,
+                                        }
+                                    )?,
+                                    U256::from(limit - spent)
+                                );
+                                keychain.assert_emitted_events(if spent == 0 {
+                                    vec![]
+                                } else {
+                                    vec![tempo_contracts::precompiles::AccountKeychainEvent::access_key_spend(
+                                        user,
+                                        key,
+                                        token,
+                                        U256::from(spent),
+                                        U256::from(limit - spent),
+                                    )]
+                                });
+                                Ok(())
+                            })?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn internal_balance_spends_obey_access_key_limits_at_t14() -> eyre::Result<()> {
