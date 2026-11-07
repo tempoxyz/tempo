@@ -22,11 +22,11 @@ use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IAccountKeychain, IFeeManager, IRolesAuth,
     ITIP20::{self, ITIP20Instance},
-    ITIP20Factory, ITIPFeeAMM,
+    ITIP20Factory, ITIP403Registry, ITIPFeeAMM,
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_FACTORY_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, compute_amount_out},
     tip20::ISSUER_ROLE,
 };
@@ -853,11 +853,14 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
 }
 
 /// A sponsored access key must not redirect its root's custodied LP assets with zero limits.
-#[test_case(false; "zero_limits")]
-#[test_case(true; "second_token_limit_rollback")]
+#[test_case(false, false; "zero_limits")]
+#[test_case(true, false; "second_token_limit_rollback")]
+#[test_case(false, true; "self_recovery_zero_limits")]
+#[test_case(true, true; "self_recovery_second_token_limit_rollback")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sponsored_access_key_cannot_redirect_fee_amm_burn(
     first_token_allowed: bool,
+    self_recovery: bool,
 ) -> eyre::Result<()> {
     let setup = TestNodeBuilder::new()
         .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T14))
@@ -956,21 +959,36 @@ async fn test_sponsored_access_key_cannot_redirect_fee_amm_burn(
             .await?
             .status()
     );
-    let mut burn_tx = create_basic_aa_tx(
-        chain_id,
-        provider.get_transaction_count(account).await?,
-        vec![Call {
-            to: TIP_FEE_MANAGER_ADDRESS.into(),
+    let mut calls = Vec::new();
+    if self_recovery {
+        calls.push(Call {
+            to: TIP403_REGISTRY_ADDRESS.into(),
             value: U256::ZERO,
-            input: ITIPFeeAMM::burnCall {
-                userToken: user_token,
-                validatorToken: PATH_USD_ADDRESS,
-                liquidity,
-                to: attacker,
+            input: ITIP403Registry::setReceivePolicyCall {
+                senderPolicyId: tempo_precompiles::tip403_registry::REJECT_ALL_POLICY_ID,
+                tokenFilterId: tempo_precompiles::tip403_registry::ALLOW_ALL_POLICY_ID,
+                recoveryAuthority: attacker,
             }
             .abi_encode()
             .into(),
-        }],
+        });
+    }
+    calls.push(Call {
+        to: TIP_FEE_MANAGER_ADDRESS.into(),
+        value: U256::ZERO,
+        input: ITIPFeeAMM::burnCall {
+            userToken: user_token,
+            validatorToken: PATH_USD_ADDRESS,
+            liquidity,
+            to: if self_recovery { account } else { attacker },
+        }
+        .abi_encode()
+        .into(),
+    });
+    let mut burn_tx = create_basic_aa_tx(
+        chain_id,
+        provider.get_transaction_count(account).await?,
+        calls,
         5_000_000,
     );
     sign_fee_payer(&mut burn_tx, account, &sponsor)?;
