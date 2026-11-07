@@ -79,7 +79,6 @@ alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
-alloy-transport.workspace = true
 evm2.workspace = true
 
 # misc

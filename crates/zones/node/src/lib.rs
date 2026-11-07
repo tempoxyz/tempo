@@ -19,7 +19,6 @@ mod replication;
 pub mod role;
 pub mod rpc;
 mod settlement_attestation;
-mod shadow_prover;
 mod tx_forwarding;
 pub mod version;
 
@@ -29,8 +28,5 @@ pub mod state_bloat;
 pub use consensus::ZoneConsensus;
 pub use deposit_allowlist::{DepositAllowlist, DepositAllowlistAdmin, DepositAllowlistError};
 pub use engine::{EngineExit, ProductionPermit, ZoneEngine};
-pub use node::{
-    ZoneExecutorBuilder, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,
-    ZoneSequencerAddOnsConfig,
-};
+pub use node::{ZoneExecutorBuilder, ZoneNode, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig};
 pub use version::init_version_metadata;

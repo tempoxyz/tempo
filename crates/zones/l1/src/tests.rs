@@ -158,7 +158,6 @@ fn test_subscriber_with_checkpoint(checkpoint: NumHash) -> L1Subscriber<MockEthP
         l1_state_cache: crate::L1StateCache::new(),
         block_tracker: L1BlockTracker::default(),
         leadership_sink: None,
-        finalized_batch_submissions: None,
         encryption_keys: None,
         subscriber_metrics: Default::default(),
     }
@@ -484,7 +483,7 @@ fn token_pause_update_refreshes_cached_token_state() {
             },
             ..Default::default()
         });
-    let (_, invalidated, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (_, invalidated, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(invalidated, HashSet::from([token]));
 
     subscriber.update_l1_state_anchor(block.number, &invalidated);
@@ -1878,125 +1877,6 @@ fn corrupt_recognized_portal_log(portal: Address) -> Log {
 }
 
 #[test]
-fn extracts_finalized_batch_submission_for_observer() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let event = crate::abi::LegacyBatchSubmitted {
-        withdrawalBatchIndex: 7,
-        withdrawalQueueIndex: U256::from(3),
-        nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-        nextBlockHash: B256::repeat_byte(0x22),
-        withdrawalQueueHash: B256::repeat_byte(0x33),
-        lastProcessedDepositNumber: 9,
-    };
-    let log = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: event.encode_log_data(),
-        },
-        log_index: Some(4),
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(10, B256::with_last_byte(0x10), vec![log]);
-
-    let block = NumHash::new(10, B256::with_last_byte(0x10));
-    let (_, _, _, submissions) = subscriber.extract_events(block, &[receipt]).unwrap();
-
-    assert_eq!(submissions.len(), 1);
-    assert_eq!(submissions[0].block, block);
-    assert_eq!(submissions[0].transaction_index, 0);
-    assert_eq!(submissions[0].log_index, 0);
-    assert_eq!(submissions[0].event.nextBlockHash, B256::repeat_byte(0x22));
-}
-
-#[test]
-fn extracts_t13_finalized_batch_submission_for_observer() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let event = crate::abi::BatchSubmitted {
-        withdrawalBatchIndex: 7,
-        withdrawalQueueIndex: U256::from(3),
-        nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-        nextBlockHash: B256::repeat_byte(0x22),
-        withdrawalQueueHash: B256::repeat_byte(0x33),
-        lastProcessedDepositNumber: 9,
-        lastProcessedEnabledTokenCount: 4,
-    };
-    let log = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: event.encode_log_data(),
-        },
-        log_index: Some(4),
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(10, B256::with_last_byte(0x10), vec![log]);
-
-    let block = NumHash::new(10, B256::with_last_byte(0x10));
-    let (_, _, _, submissions) = subscriber.extract_events(block, &[receipt]).unwrap();
-
-    assert_eq!(submissions.len(), 1);
-    assert!(!submissions[0].is_legacy);
-    assert_eq!(submissions[0].event.lastProcessedEnabledTokenCount, 4);
-    assert_eq!(submissions[0].block, block);
-    assert_eq!(submissions[0].transaction_index, 0);
-    assert_eq!(submissions[0].log_index, 0);
-    assert_eq!(submissions[0].event.nextBlockHash, B256::repeat_byte(0x22));
-}
-
-#[test]
-fn finalized_batch_observer_ignores_rpc_log_metadata() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let malformed = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: alloy_primitives::LogData::new_unchecked(
-                vec![crate::abi::LegacyBatchSubmitted::SIGNATURE_HASH],
-                Bytes::from_static(b"garbage"),
-            ),
-        },
-        log_index: Some(4),
-        ..Default::default()
-    };
-    let missing_index = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: crate::abi::LegacyBatchSubmitted {
-                withdrawalBatchIndex: 7,
-                withdrawalQueueIndex: U256::from(3),
-                nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-                nextBlockHash: B256::repeat_byte(0x22),
-                withdrawalQueueHash: B256::repeat_byte(0x33),
-                lastProcessedDepositNumber: 9,
-            }
-            .encode_log_data(),
-        },
-        log_index: None,
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(
-        10,
-        B256::with_last_byte(0x10),
-        vec![malformed, missing_index],
-    );
-
-    let block = NumHash::new(10, B256::with_last_byte(0x10));
-    let (_, _, _, submissions) = subscriber.extract_events(block, &[receipt]).unwrap();
-
-    assert_eq!(submissions.len(), 1);
-    assert_eq!(submissions[0].block, block);
-    assert_eq!(submissions[0].transaction_index, 0);
-    assert_eq!(submissions[0].log_index, 1);
-}
-
-#[test]
 fn extract_events_fails_closed_on_corrupt_recognized_portal_log() {
     let mut subscriber = test_subscriber(9);
     subscriber.config.retain_portal_evidence = true;
@@ -2025,7 +1905,7 @@ fn extract_events_fails_closed_on_corrupt_recognized_portal_log() {
         ..Default::default()
     };
     let receipt = make_receipt_with_logs(10, B256::with_last_byte(0x10), vec![unknown]);
-    let (events, _, portal_logs, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (events, _, portal_logs) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert!(events.deposits.is_empty());
     assert!(events.leader_transitions.is_empty());
     assert_eq!(portal_logs.unwrap().len(), 1);
@@ -2064,7 +1944,7 @@ fn pause_events_invalidate_cached_portal_storage() {
     let receipt = make_receipt_with_logs(1, B256::with_last_byte(0x10), logs);
 
     let block = NumHash::new(1, B256::with_last_byte(0x10));
-    let (events, invalidated, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (events, invalidated, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(events.portal_pause, Some(true));
     assert!(invalidated.contains(&portal));
     subscriber.update_l1_state_anchor(1, &invalidated);
@@ -2107,123 +1987,6 @@ async fn sync_classifies_corrupt_recognized_portal_log_as_fatal() {
     ));
     assert_eq!(queue.last_enqueued(), None);
     assert_eq!(subscriber.block_tracker.latest(), None);
-}
-
-#[tokio::test]
-async fn sync_drops_submission_when_finalized_batch_observer_is_full() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-    let pending = FinalizedBatchSubmission {
-        block: NumHash::new(9, B256::with_last_byte(9)),
-        transaction_index: 0,
-        log_index: 0,
-        is_legacy: false,
-        event: crate::abi::BatchSubmitted {
-            withdrawalBatchIndex: 6,
-            withdrawalQueueIndex: U256::ZERO,
-            nextProcessedDepositQueueHash: B256::ZERO,
-            nextBlockHash: B256::repeat_byte(0x01),
-            withdrawalQueueHash: B256::ZERO,
-            lastProcessedDepositNumber: 0,
-            lastProcessedEnabledTokenCount: 0,
-        },
-    };
-    sender.try_send(pending.clone()).unwrap();
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let event = crate::abi::LegacyBatchSubmitted {
-        withdrawalBatchIndex: 7,
-        withdrawalQueueIndex: U256::from(3),
-        nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-        nextBlockHash: B256::repeat_byte(0x22),
-        withdrawalQueueHash: B256::repeat_byte(0x33),
-        lastProcessedDepositNumber: 9,
-    };
-    let log = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: event.encode_log_data(),
-        },
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
-    let mut header_10 = make_test_header(10);
-    header_10.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
-    header_10.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
-
-    let asserter = Asserter::new();
-    let l1_provider =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
-    asserter.push_success(&Some(header_response(header_10.clone())));
-    asserter.push_success(&Some(header_response(header_10.clone())));
-    asserter.push_success(&Some(vec![receipt]));
-    asserter.push_success(&Some(header_response(header_10)));
-
-    // A stalled shadow prover must not hold up L1 ingestion.
-    assert_eq!(
-        subscriber
-            .sync_to_finalized(&l1_provider, 10)
-            .await
-            .unwrap(),
-        11
-    );
-    assert_eq!(
-        subscriber
-            .deposit_queue
-            .last_enqueued()
-            .map(|block| block.number),
-        Some(10)
-    );
-    assert_eq!(receiver.try_recv().unwrap().block, pending.block);
-    assert!(receiver.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn sync_fails_fatally_when_finalized_batch_observer_is_closed() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    drop(receiver);
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let event = crate::abi::LegacyBatchSubmitted {
-        withdrawalBatchIndex: 7,
-        withdrawalQueueIndex: U256::from(3),
-        nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-        nextBlockHash: B256::repeat_byte(0x22),
-        withdrawalQueueHash: B256::repeat_byte(0x33),
-        lastProcessedDepositNumber: 9,
-    };
-    let log = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: event.encode_log_data(),
-        },
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
-    let mut header_10 = make_test_header(10);
-    header_10.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
-    header_10.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
-
-    let asserter = Asserter::new();
-    let l1_provider =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
-    asserter.push_success(&Some(header_response(header_10.clone())));
-    asserter.push_success(&Some(header_response(header_10)));
-    asserter.push_success(&Some(vec![receipt]));
-
-    let err = subscriber
-        .sync_to_finalized(&l1_provider, 10)
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        L1SubscriberError::Fatal {
-            block_number: 10,
-            stage: "finalized batch observer delivery",
-            ..
-        }
-    ));
 }
 
 #[test]
@@ -2357,7 +2120,7 @@ fn portal_pause_events_record_the_final_state_in_log_order() {
     let block = NumHash::new(10, B256::with_last_byte(0x10));
 
     let receipt = make_receipt_with_logs(10, block.hash, vec![]);
-    let (events, _, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (events, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(events.portal_pause, None);
 
     let receipt = make_receipt_with_logs(
@@ -2368,7 +2131,7 @@ fn portal_pause_events_record_the_final_state_in_log_order() {
             log(crate::abi::ZonePortal::PortalResumed { account }.encode_log_data()),
         ],
     );
-    let (events, _, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (events, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(events.portal_pause, Some(false));
 
     // The pause is applied during ingestion and must not be carried into operational work.
