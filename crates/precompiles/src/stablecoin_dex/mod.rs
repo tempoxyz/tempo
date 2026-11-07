@@ -1531,14 +1531,15 @@ impl StablecoinDEX {
         if current_balance < amount {
             return Err(StablecoinDEXError::insufficient_balance().into());
         }
-        if self.storage.spec().is_t14()
-            && amount != 0
-            && TIP403Registry::new()
-                .check_receive_policy(token, self.address, Recipient::resolve(user)?.target)?
-                .is_some()
-        {
-            // A blocked withdrawal leaves the user's custody via the recovery authority.
-            AccountKeychain::new().authorize_transfer(user, token, U256::from(amount))?;
+        if self.storage.spec().is_t14() && amount != 0 {
+            let receiver = Recipient::resolve(user)?.target;
+            if let Some((_, recovery)) =
+                TIP403Registry::new().check_receive_policy(token, self.address, receiver)?
+                && recovery != receiver
+            {
+                // Receiver-mode claims retain custody and meter any later redirection.
+                AccountKeychain::new().authorize_transfer(user, token, U256::from(amount))?;
+            }
         }
         self.sub_balance(user, token, amount)?;
         self.transfer(token, user, amount)?;
@@ -1945,7 +1946,7 @@ mod tests {
     #[test]
     fn withdrawal_recovery_reroutes_obey_access_key_limits_at_t14() -> eyre::Result<()> {
         for spec in [TempoHardfork::T13, TempoHardfork::T14] {
-            for blocked in [false, true] {
+            for (blocked, self_recovery) in [(false, false), (true, false), (true, true)] {
                 for use_key in [false, true] {
                     for limit in [0, 100] {
                         for amount in [0u128, 100] {
@@ -1994,17 +1995,22 @@ mod tests {
                                                 crate::tip403_registry::REJECT_ALL_POLICY_ID,
                                             tokenFilterId:
                                                 crate::tip403_registry::ALLOW_ALL_POLICY_ID,
-                                            recoveryAuthority: Address::random(),
+                                            recoveryAuthority: if self_recovery {
+                                                user
+                                            } else {
+                                                Address::random()
+                                            },
                                         },
                                     )?;
                                 }
                                 keychain.clear_emitted_events();
                                 let result = dex.withdraw(user, token, amount);
-                                let charged = if spec.is_t14() && blocked && use_key {
-                                    amount
-                                } else {
-                                    0
-                                };
+                                let charged =
+                                    if spec.is_t14() && blocked && !self_recovery && use_key {
+                                        amount
+                                    } else {
+                                        0
+                                    };
                                 let tip20 = TIP20Token::from_address(token)?;
                                 if charged > limit {
                                     assert_eq!(

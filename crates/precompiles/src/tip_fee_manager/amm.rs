@@ -491,7 +491,7 @@ impl TipFeeManager {
                     && (to != msg_sender
                         || TIP403Registry::new()
                             .check_receive_policy(token, self.address, receiver)?
-                            .is_some())
+                            .is_some_and(|(_, recovery)| recovery != receiver))
                 {
                     keychain.authorize_transfer(msg_sender, token, amount)?;
                 }
@@ -772,12 +772,15 @@ mod tests {
     #[test]
     fn burn_reroutes_obey_access_key_limits_at_t14() -> eyre::Result<()> {
         for spec in [TempoHardfork::T13, TempoHardfork::T14] {
-            for (reroute, blocked) in [
-                (false, [false, false]),
-                (true, [false, false]),
-                (false, [true, true]),
-                (false, [true, false]),
-                (false, [false, true]),
+            for (reroute, blocked, self_recovery) in [
+                (false, [false, false], false),
+                (true, [false, false], false),
+                (false, [true, true], false),
+                (false, [true, true], true),
+                (false, [true, false], false),
+                (false, [true, false], true),
+                (false, [false, true], false),
+                (false, [false, true], true),
             ] {
                 for (reserve_a, reserve_b) in [(100u128, 100u128), (0, 100), (100, 0)] {
                     for limits in [[0u128, 100], [100, 0], [100, 100]] {
@@ -837,7 +840,11 @@ mod tests {
                                             crate::tip403_registry::ALLOW_ALL_POLICY_ID
                                         },
                                         tokenFilterId: token_filter,
-                                        recoveryAuthority: Address::random(),
+                                        recoveryAuthority: if self_recovery {
+                                            user
+                                        } else {
+                                            Address::random()
+                                        },
                                     },
                                 )?;
                             }
@@ -872,7 +879,7 @@ mod tests {
                                 amm.burn(user, token_a, token_b, U256::from(100), recipient);
                             let charges = [(reserve_a, blocked[0]), (reserve_b, blocked[1])].map(
                                 |(reserve, blocked)| {
-                                    if spec.is_t14() && (reroute || blocked) {
+                                    if spec.is_t14() && (reroute || (blocked && !self_recovery)) {
                                         reserve
                                     } else {
                                         0
