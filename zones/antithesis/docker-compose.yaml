@@ -1,6 +1,6 @@
-# Multi-sequencer zone on a dev-mode Tempo L1:
+# Multi-sequencer zone on a real-consensus Tempo L1:
 #
-# - l1: Tempo dev node; zone nodes read finalized state over WebSocket
+# - l1: certified follower of four validators; existing clients retain the same endpoint
 # - provision: creates the zone on L1 with three sequencers (2-of-3 settlement) and writes
 #   genesis, keys and the manifest to the shared volume, then exits
 # - zone-0..2: the sequencer quorum; zone-0 is the initial leader
@@ -25,58 +25,73 @@ x-zone: &zone
   depends_on:
     provision:
       condition: service_completed_successfully
-  restart: unless-stopped
+
+x-l1: &l1
+  image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+  entrypoint: ["/opt/zones/l1-node.sh"]
+  init: true
+  healthcheck: *rpc-healthcheck
 
 services:
   l1:
-    image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+    <<: *l1
     container_name: l1
     hostname: l1
-    init: true
-    entrypoint: ["/usr/local/bin/tempo"]
-    command:
-      - node
-      - --chain
-      - /opt/zones/l1-genesis.json
-      - --dev
-      - --dev.block-time
-      - 500ms
-      - --dev.finality-depth
-      - "1"
-      - --datadir
-      - /data
-      - --http
-      - --http.addr
-      - 0.0.0.0
-      - --http.port
-      - "8545"
-      - --http.api
-      - all
-      - --ws
-      - --ws.addr
-      - 0.0.0.0
-      - --ws.port
-      - "8546"
-      - --ws.api
-      - all
-      # Witness collection proves older L1 checkpoints when a zone node catches up.
-      - --rpc.eth-proof-window
-      - "100000"
-      - --tempo.bootnodes-endpoint
-      - none
-      - --disable-discovery
-      - --no-persist-peers
-      - --color
-      - never
+    command: ["rpc"]
+    depends_on:
+      - l1-0
+      - l1-1
+      - l1-2
+      - l1-3
     volumes:
       - l1-data:/data
     networks:
       zones:
         ipv4_address: 10.20.0.10
-    healthcheck:
-      <<: *rpc-healthcheck
-      start_period: 30s
-    restart: unless-stopped
+
+  l1-0:
+    <<: *l1
+    container_name: l1-0
+    hostname: l1-0
+    command: ["0"]
+    volumes:
+      - l1-0-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.41
+
+  l1-1:
+    <<: *l1
+    container_name: l1-1
+    hostname: l1-1
+    command: ["1"]
+    volumes:
+      - l1-1-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.42
+
+  l1-2:
+    <<: *l1
+    container_name: l1-2
+    hostname: l1-2
+    command: ["2"]
+    volumes:
+      - l1-2-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.43
+
+  l1-3:
+    <<: *l1
+    container_name: l1-3
+    hostname: l1-3
+    command: ["3"]
+    volumes:
+      - l1-3-data:/data
+    networks:
+      zones:
+        ipv4_address: 10.20.0.44
 
   provision:
     image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
@@ -161,6 +176,10 @@ services:
 volumes:
   shared:
   l1-data:
+  l1-0-data:
+  l1-1-data:
+  l1-2-data:
+  l1-3-data:
   zone-0-data:
   zone-1-data:
   zone-2-data:

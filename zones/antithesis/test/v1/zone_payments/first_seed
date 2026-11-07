@@ -1,2 +1,3 @@
 #!/bin/sh
+set -eu
 exec tempo-zone-xtask antithesis seed

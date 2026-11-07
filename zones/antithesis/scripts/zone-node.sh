@@ -28,6 +28,17 @@ case "$NODE" in
         ;;
 esac
 
+# Profiles change execution only; every node still shares the provisioned chain and manifest.
+case "$NODE" in
+    0) ENGINE_ARGS="--engine.state-root-task-compare-updates" ;;
+    1) ENGINE_ARGS="--engine.state-root-fallback --engine.disable-prewarming --engine.disable-precompile-cache --engine.disable-state-cache --engine.num-state-masking-blocks 0" ;;
+    2) ENGINE_ARGS="--engine.state-root-task-compare-updates --engine.disable-state-cache" ;;
+    rpc) ENGINE_ARGS="--engine.state-root-task-timeout 1ms" ;;
+esac
+# Finalized samples can trail the tip; permit bounded historical proof generation.
+ENGINE_ARGS="$ENGINE_ARGS --rpc.eth-proof-window 10000"
+echo "zone-node: node=$NODE flags=$ENGINE_ARGS" >&2
+
 # shellcheck disable=SC2086
 exec /usr/local/bin/tempo-zone node \
     --chain "$S/genesis.json" \
@@ -43,4 +54,4 @@ exec /usr/local/bin/tempo-zone node \
     --disable-discovery \
     --ipcdisable \
     --color never \
-    $ROLE_ARGS
+    $ROLE_ARGS $ENGINE_ARGS

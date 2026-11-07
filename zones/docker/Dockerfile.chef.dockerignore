@@ -16,3 +16,10 @@ zones/docs/
 zones/localnet/
 zones/scripts/*
 !zones/scripts/run-prover-host.sh
+
+# Cargo resolves all workspace members even for node-only builds.
+!contrib/
+contrib/*
+!contrib/antithesis/
+contrib/antithesis/*
+!contrib/antithesis/reth-trie/
