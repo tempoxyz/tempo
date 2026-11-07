@@ -2231,7 +2231,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(requested_url.as_deref(), Some("wss://rpc.mainnet.tempo.xyz"));
+        assert_eq!(
+            requested_url.as_deref(),
+            Some("wss://rpc.mainnet.tempo.xyz")
+        );
         assert_eq!(err.to_string(), "failed to get latest block number");
         assert!(asserter.read_q().is_empty());
     }
