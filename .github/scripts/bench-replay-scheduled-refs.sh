@@ -97,7 +97,7 @@ if [ "$IS_STALE" = "true" ]; then
   echo "Stale nightly detected; workflow will fail before benchmarking"
 elif [ -z "$LAST_FEATURE_REF" ]; then
   BASELINE_REF="$FEATURE_REF"
-  echo "First run; benchmarking nightly against itself to establish replay state"
+  echo "No recent replay state; benchmarking nightly against itself to establish it"
 elif [ "$LAST_FEATURE_REF" = "$FEATURE_REF" ]; then
   BASELINE_REF="$LAST_FEATURE_REF"
   if [ "$FORCE" = "true" ] || [ "$FORCE" = "--force" ]; then
