@@ -23,6 +23,7 @@ pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, Stabl
 
 use crate::{
     STABLECOIN_DEX_ADDRESS,
+    account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{
         Fill, MAX_PRICE, MIN_PRICE, compute_book_key, walk_resting_orders,
@@ -326,6 +327,14 @@ impl StablecoinDEX {
         tip20.ensure_transfer_authorized(sender, self.address)?;
 
         let user_balance = self.balance_of(sender, token)?;
+        if self.storage.spec().is_t14() && user_balance.min(amount) != 0 {
+            // The TIP-20 transfer meters only the external-wallet shortfall.
+            AccountKeychain::new().authorize_transfer(
+                sender,
+                token,
+                U256::from(user_balance.min(amount)),
+            )?;
+        }
         if user_balance >= amount {
             // When fully covered by internal balance, TIP-20 transferFrom won't run,
             // so we must check the pause state ourselves (spec: T4+).
@@ -980,6 +989,13 @@ impl StablecoinDEX {
         non_escrow_tip20.check_not_paused()?;
         non_escrow_tip20.ensure_transfer_authorized(self.address, flipped.maker)?;
 
+        if self.storage.spec().is_t14() {
+            AccountKeychain::new().authorize_transfer(
+                flipped.maker,
+                escrow_token,
+                U256::from(escrow_amount),
+            )?;
+        }
         self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
 
         debug_assert_eq!(order.order_id(), flipped.order_id());
@@ -1903,7 +1919,7 @@ mod tests {
         sol_types::{SolEvent, SolInterface},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::TIP20Error;
+    use tempo_contracts::precompiles::{AccountKeychainError, TIP20Error};
 
     use crate::{
         error::TempoPrecompileError,
@@ -1914,8 +1930,72 @@ mod tests {
     };
 
     use super::*;
-    use crate::STABLECOIN_DEX_ADDRESS;
+    use crate::{STABLECOIN_DEX_ADDRESS, account_keychain::IAccountKeychain};
     use proptest::prelude::*;
+
+    #[test]
+    fn internal_balance_spends_obey_access_key_limits_at_t14() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            for internal in [0, 40, 100] {
+                for limit in [99, 100] {
+                    let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                        let user = Address::random();
+                        let key = Address::random();
+                        let mut dex = StablecoinDEX::new();
+                        let (token, _) = setup_test_tokens(user, user, dex.address, 1000)?;
+                        dex.set_balance(user, token, internal)?;
+                        let mut keychain = AccountKeychain::new();
+                        keychain.initialize()?;
+                        keychain.set_tx_origin(user)?;
+                        keychain.authorize_key(
+                            user,
+                            key,
+                            IAccountKeychain::SignatureType::Secp256k1,
+                            IAccountKeychain::KeyRestrictions {
+                                expiry: u64::MAX,
+                                enforceLimits: true,
+                                limits: vec![IAccountKeychain::TokenLimit {
+                                    token,
+                                    amount: U256::from(limit),
+                                    period: 0,
+                                }],
+                                allowAnyCalls: true,
+                                allowedCalls: vec![],
+                            },
+                            None,
+                        )?;
+                        keychain.set_tx_origin(user)?;
+                        keychain.set_transaction_key(key)?;
+                        let result = dex.decrement_balance_or_transfer_from(user, token, 100, true);
+                        let charged = if spec.is_t14() { 100 } else { 100 - internal };
+                        if charged > limit {
+                            assert_eq!(
+                                result,
+                                Err(AccountKeychainError::spending_limit_exceeded().into())
+                            );
+                            assert_eq!(dex.balance_of(user, token)?, internal);
+                        } else {
+                            result?;
+                            assert_eq!(dex.balance_of(user, token)?, 0);
+                            assert_eq!(
+                                keychain.get_remaining_limit(
+                                    IAccountKeychain::getRemainingLimitCall {
+                                        account: user,
+                                        keyId: key,
+                                        token,
+                                    }
+                                )?,
+                                U256::from(limit - charged)
+                            );
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
 
     fn setup_test_tokens(
         admin: Address,
@@ -5922,6 +6002,61 @@ mod tests {
             amount,
             flip_tick,
         })
+    }
+
+    #[test]
+    fn flip_internal_balance_spends_obey_access_key_limits_at_t14() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            for own_transaction in [false, true] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                    let FlipOrderTestCtx {
+                        mut exchange,
+                        alice,
+                        bob,
+                        base_token,
+                        quote_token,
+                        amount,
+                        ..
+                    } = setup_flip_order_test()?;
+                    exchange.set_balance(alice, base_token, amount)?;
+                    let order = exchange.get_order(1)?;
+                    let key = Address::random();
+                    let origin = if own_transaction { alice } else { bob };
+                    let mut keychain = AccountKeychain::new();
+                    keychain.initialize()?;
+                    keychain.set_tx_origin(origin)?;
+                    keychain.authorize_key(
+                        origin,
+                        key,
+                        IAccountKeychain::SignatureType::Secp256k1,
+                        IAccountKeychain::KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: true,
+                            limits: vec![],
+                            allowAnyCalls: true,
+                            allowedCalls: vec![],
+                        },
+                        None,
+                    )?;
+                    keychain.set_tx_origin(origin)?;
+                    keychain.set_transaction_key(key)?;
+                    let result = exchange.flip_in_place(&order, base_token, quote_token);
+                    if spec.is_t14() && own_transaction {
+                        assert_eq!(
+                            result,
+                            Err(AccountKeychainError::spending_limit_exceeded().into())
+                        );
+                        assert_eq!(exchange.balance_of(alice, base_token)?, amount);
+                    } else {
+                        result?;
+                        assert_eq!(exchange.balance_of(alice, base_token)?, 0);
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+        Ok(())
     }
 
     #[test]

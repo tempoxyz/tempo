@@ -833,13 +833,11 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
 
-        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
-        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
-        let block_gas_used = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
-            inner.result().result.execution_gas_spent()
-        } else {
-            inner.result().result.tx_gas_used()
-        };
+        let block_gas_used = block_gas_used(
+            &inner.result().result,
+            self.evm().config_spec_id(),
+            self.evm().version().feature(evm2::EvmFeatures::EIP8037),
+        );
 
         // Reject before the result is observed; `commit_transaction` derives the section again
         // from the committing executor's state.
@@ -892,6 +890,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let is_payment = self.is_payment(original);
+        let spec = self.evm().config_spec_id();
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (section, non_shared_gas_left, non_payment_gas_left) = (
             self.section,
@@ -905,11 +904,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let gas_output = self.inner.execute_transaction_with_commit_condition(
             (tx_env, recovered),
             |result, state_changes| {
-                let block_gas_used = if use_regular_gas {
-                    result.execution_gas_spent()
-                } else {
-                    result.tx_gas_used()
-                };
+                let block_gas_used = block_gas_used(result, spec, use_regular_gas);
                 let next_section = Self::next_section(
                     section,
                     non_shared_gas_left,
@@ -955,6 +950,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.apply_current_committee_system_call()?;
 
         let block_gas_used = self.block_gas_used;
+        let spec = self.evm().config_spec_id();
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
             let mut inner = self.inner.inner;
@@ -973,15 +969,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             self.inner.finish_with_block_access_list()?
         };
 
-        // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
-        // State gas is charged to users (in receipts) but exempted from block
-        // capacity. block_regular_gas_used is accumulated per-tx as
-        // max(total_spent - state_spent, floor) and is independent of refunds.
-        //
-        // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
-        // cumulative_tx_gas_used (total_spent - refunded), matching the original
-        // block header semantics.
-        if use_regular_gas {
+        // T14 excludes refunds from capacity even without TIP-1016. Earlier forks retain
+        // receipt gas unless TIP-1016 explicitly enables the execution/state gas split.
+        if use_regular_gas || spec.is_t14() {
             output.result.gas_used = block_gas_used;
         }
         Ok((output, block_access_list))
@@ -1059,6 +1049,19 @@ impl TempoBlockExecutor<'_> {
     /// Get the current section for assertions.
     pub(crate) fn section(&self) -> BlockSection {
         self.section
+    }
+}
+
+/// Returns block-capacity gas, keeping refunds confined to receipts from T14 onward.
+pub(crate) fn block_gas_used(
+    result: &TxResult<TempoEvmTypes>,
+    spec: TempoHardfork,
+    eip8037: bool,
+) -> u64 {
+    if spec.is_t14() || eip8037 {
+        result.execution_gas_spent()
+    } else {
+        result.tx_gas_used()
     }
 }
 
@@ -3153,6 +3156,74 @@ mod tests {
                 calls[2].account(&address).is_some(),
                 "T13 runtime must be installed in the runtime state hook"
             );
+        }
+    }
+
+    #[test]
+    fn test_t14_refunds_do_not_restore_block_capacity() {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            for eip8037 in [false, true] {
+                for floor_gas in [0, 290_000] {
+                    let result = TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 300_000,
+                        state_gas_spent: if eip8037 { 40_000 } else { 0 },
+                        refunded: 250_000,
+                        floor_gas,
+                        ..Default::default()
+                    };
+                    let expected = if spec.is_t14() || eip8037 {
+                        (300_000 - result.state_gas_spent).max(floor_gas)
+                    } else {
+                        50_000u64.max(floor_gas)
+                    };
+                    let capacity_gas = block_gas_used(&result, spec, eip8037);
+                    assert_eq!(capacity_gas, expected);
+                    // TIP-1060 and TIP-1016 have no combined execution gas schedule yet.
+                    if eip8037 {
+                        continue;
+                    }
+
+                    let chainspec = DEV.clone();
+                    let mut db = InMemoryDB::default();
+                    let mut executor = TestExecutorBuilder::default()
+                        .with_spec(spec)
+                        .with_epoch_length(5)
+                        .with_parent_beacon_block_root(B256::ZERO)
+                        .build(&mut db, &chainspec);
+                    executor.apply_pre_execution_changes().unwrap();
+                    let non_shared = executor.non_shared_gas_left;
+                    let non_payment = executor.non_payment_gas_left;
+                    executor
+                        .commit_transaction(TempoTxResult {
+                            tx_type: TempoTxType::Legacy,
+                            tx_hash: B256::ZERO,
+                            execution_context: ExecutionContext::Transaction {
+                                tx_hash: B256::ZERO,
+                            },
+                            inner: EthTransactionResultWithState::new(
+                                TxResultWithState {
+                                    result,
+                                    ..Default::default()
+                                },
+                                TempoTxType::Legacy,
+                                0,
+                            ),
+                            is_system_tx: false,
+                            is_payment: false,
+                            block_gas_used: capacity_gas,
+                        })
+                        .unwrap();
+                    assert_eq!(executor.non_shared_gas_left, non_shared - expected);
+                    assert_eq!(executor.non_payment_gas_left, non_payment - expected);
+                    let output = executor.finish().unwrap();
+                    assert_eq!(output.result.gas_used, expected);
+                    assert_eq!(
+                        output.result.receipts[0].cumulative_gas_used,
+                        50_000u64.max(floor_gas),
+                    );
+                }
+            }
         }
     }
 

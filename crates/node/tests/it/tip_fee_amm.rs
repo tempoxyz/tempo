@@ -1,27 +1,39 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::{
+    tempo_transaction::helpers::{
+        create_basic_aa_tx, sign_aa_tx_with_secp256k1_access_key, sign_fee_payer,
+    },
+    utils::{ForkSchedule, TestNodeBuilder, setup_test_token},
+};
 use alloy::{
+    network::ReceiptResponse,
     primitives::{B256, U256},
     providers::{Provider, ProviderBuilder},
-    sol_types::SolEvent,
+    signers::{SignerSync, local::PrivateKeySigner},
+    sol_types::{SolCall, SolEvent},
 };
-use alloy_eips::BlockId;
+use alloy_eips::{BlockId, Encodable2718};
 use alloy_primitives::{Address, uint};
 use reth_e2e_test_utils::{
     receipt::{PendingTransactionExt, await_successful_receipts},
     wallet::test_signer,
 };
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_alloy::TempoNetwork;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
-    IFeeManager, IRolesAuth,
+    IAccountKeychain, IFeeManager, IRolesAuth,
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory, ITIPFeeAMM,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, compute_amount_out},
     tip20::ISSUER_ROLE,
 };
-use tempo_primitives::transaction::calc_gas_balance_spending;
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{Call, KeyAuthorization, PrimitiveSignature, calc_gas_balance_spending},
+};
 use test_case::test_case;
 
 async fn setup_test_token_with_quote<P>(
@@ -837,5 +849,176 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
         .await?;
     assert!(!burn_receipt.status());
 
+    Ok(())
+}
+
+/// A sponsored access key must not redirect its root's custodied LP assets with zero limits.
+#[test_case(false; "zero_limits")]
+#[test_case(true; "second_token_limit_rollback")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_sponsored_access_key_cannot_redirect_fee_amm_burn(
+    first_token_allowed: bool,
+) -> eyre::Result<()> {
+    let setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T14))
+        .build_http_only()
+        .await?;
+    let root = test_signer(0);
+    let account = root.address();
+    let sponsor = test_signer(1);
+    let key = PrivateKeySigner::random();
+    let attacker = Address::random();
+    let tempo_provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(setup.http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(root.clone())
+        .connect_http(setup.http_url);
+    let amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, &provider);
+    let token = setup_test_token(provider.clone(), account).await?;
+    let user_token = *token.address();
+    let amount = U256::from(1_000_000_000_000_000_000u128);
+    token
+        .mint(account, amount)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
+    amm.mint(user_token, PATH_USD_ADDRESS, amount, account)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
+    let pool = PoolKey::new(user_token, PATH_USD_ADDRESS).get_id();
+    let liquidity = amm.liquidityBalances(pool, account).call().await?;
+    assert!(liquidity > U256::ZERO);
+    let chain_id = provider.get_chain_id().await?;
+    // Paying one transaction in the user token seeds both sides of this pool.
+    let mut seed_tx = create_basic_aa_tx(
+        chain_id,
+        provider.get_transaction_count(account).await?,
+        vec![Call {
+            to: user_token.into(),
+            value: U256::ZERO,
+            input: ITIP20::balanceOfCall { account }.abi_encode().into(),
+        }],
+        5_000_000,
+    );
+    seed_tx.fee_token = Some(user_token);
+    let signature = root.sign_hash_sync(&seed_tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = seed_tx.into_signed(signature.into()).into();
+    assert!(
+        tempo_provider
+            .send_raw_transaction(&envelope.encoded_2718())
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+    let pool_before = amm.pools(pool).call().await?;
+    assert!(
+        liquidity * U256::from(pool_before.reserveUserToken) / amm.totalSupply(pool).call().await?
+            > U256::ZERO
+    );
+    let authorization = KeyAuthorization::unrestricted(
+        chain_id,
+        tempo_primitives::SignatureType::Secp256k1,
+        key.address(),
+    );
+    let authorization = if first_token_allowed {
+        authorization.with_limits(vec![tempo_primitives::transaction::TokenLimit {
+            token: user_token,
+            limit: amount,
+            period: 0,
+        }])
+    } else {
+        authorization.with_no_spending()
+    };
+    let signature = root.sign_hash_sync(&authorization.signature_hash())?;
+    let mut auth_tx = create_basic_aa_tx(
+        chain_id,
+        provider.get_transaction_count(account).await?,
+        vec![Call {
+            to: user_token.into(),
+            value: U256::ZERO,
+            input: ITIP20::balanceOfCall { account }.abi_encode().into(),
+        }],
+        5_000_000,
+    );
+    auth_tx.key_authorization =
+        Some(authorization.into_signed(PrimitiveSignature::Secp256k1(signature)));
+    let signature = root.sign_hash_sync(&auth_tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = auth_tx.into_signed(signature.into()).into();
+    assert!(
+        tempo_provider
+            .send_raw_transaction(&envelope.encoded_2718())
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+    let mut burn_tx = create_basic_aa_tx(
+        chain_id,
+        provider.get_transaction_count(account).await?,
+        vec![Call {
+            to: TIP_FEE_MANAGER_ADDRESS.into(),
+            value: U256::ZERO,
+            input: ITIPFeeAMM::burnCall {
+                userToken: user_token,
+                validatorToken: PATH_USD_ADDRESS,
+                liquidity,
+                to: attacker,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        5_000_000,
+    );
+    sign_fee_payer(&mut burn_tx, account, &sponsor)?;
+    let signature = sign_aa_tx_with_secp256k1_access_key(&burn_tx, &key, account)?;
+    let envelope: TempoTxEnvelope = burn_tx.into_signed(signature).into();
+    let receipt = tempo_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(!receipt.status());
+    assert_eq!(
+        amm.liquidityBalances(pool, account).call().await?,
+        liquidity
+    );
+    let pool_after = amm.pools(pool).call().await?;
+    assert_eq!(pool_after.reserveUserToken, pool_before.reserveUserToken);
+    assert_eq!(
+        pool_after.reserveValidatorToken,
+        pool_before.reserveValidatorToken
+    );
+    assert_eq!(
+        IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider)
+            .getRemainingLimitWithPeriod(account, key.address(), user_token)
+            .call()
+            .await?
+            .remaining,
+        if first_token_allowed {
+            amount
+        } else {
+            U256::ZERO
+        }
+    );
+    assert_eq!(token.balanceOf(attacker).call().await?, U256::ZERO);
+    assert_eq!(
+        ITIP20::new(PATH_USD_ADDRESS, &provider)
+            .balanceOf(attacker)
+            .call()
+            .await?,
+        U256::ZERO
+    );
+    assert_eq!(
+        IAccountKeychain::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider)
+            .getRemainingLimitWithPeriod(account, key.address(), PATH_USD_ADDRESS)
+            .call()
+            .await?
+            .remaining,
+        U256::ZERO
+    );
     Ok(())
 }

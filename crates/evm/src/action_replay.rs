@@ -52,13 +52,11 @@ impl TempoBlockExecutor<'_> {
                 self.replay_state.reset_tx_changes();
             })?;
 
-        let cfg = self.evm().version();
-        let gas = &result;
-        let block_gas_used = if cfg.feature(evm2::EvmFeatures::EIP8037) {
-            gas.execution_gas_spent()
-        } else {
-            gas.tx_gas_used()
-        };
+        let block_gas_used = crate::block::block_gas_used(
+            &result,
+            self.evm().config_spec_id(),
+            self.evm().version().feature(evm2::EvmFeatures::EIP8037),
+        );
         self.validate_tx(
             *original.tx_hash(),
             is_system_tx,

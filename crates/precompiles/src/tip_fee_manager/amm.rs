@@ -1,4 +1,5 @@
 use crate::{
+    account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{
         ContractStorage, Handler, StorageAction, StorageCtx, StorageKey, packing::insert_into_word,
@@ -416,6 +417,7 @@ impl TipFeeManager {
     /// - `InvalidCurrency` — either token is not USD-denominated
     /// - `InsufficientLiquidity` — caller's balance < `liquidity`, or remaining reserve would
     ///   violate the pending reservation (T1C+)
+    /// - `SpendingLimitExceeded` — a reroute exceeds the LP owner's access-key limit (T14+)
     /// - `InsufficientReserves` — pool reserves underflow after withdrawal
     /// - `UnderOverflow` — supply or balance arithmetic overflows
     pub fn burn(
@@ -471,6 +473,17 @@ impl TipFeeManager {
             if available_after_burn < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
+        }
+
+        if self.storage.spec().is_t14() && to != msg_sender {
+            // Custody transfers debit the AMM, but the redeemed assets belong to the LP.
+            let mut keychain = AccountKeychain::new();
+            keychain.authorize_transfer(msg_sender, user_token.address(), amount_user_token)?;
+            keychain.authorize_transfer(
+                msg_sender,
+                validator_token.address(),
+                amount_validator_token,
+            )?;
         }
 
         // Burn LP tokens
@@ -730,10 +743,12 @@ impl TipFeeManager {
 mod tests {
     use alloy::primitives::Address;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::AccountKeychainError;
 
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
+        account_keychain::IAccountKeychain,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
@@ -741,6 +756,98 @@ mod tests {
         tip20::TIP20Error,
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
+
+    #[test]
+    fn burn_reroutes_obey_access_key_limits_at_t14() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            for reroute in [false, true] {
+                for limits in [[0u128, 100], [100, 0], [100, 100]] {
+                    let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                        let user = Address::random();
+                        let key = Address::random();
+                        let recipient = if reroute { Address::random() } else { user };
+                        let token_a = TIP20Setup::create("A", "A", user)
+                            .with_issuer(user)
+                            .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100))
+                            .apply()?
+                            .address();
+                        let token_b = TIP20Setup::create("B", "B", user)
+                            .with_issuer(user)
+                            .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100))
+                            .apply()?
+                            .address();
+                        let mut amm = TipFeeManager::new();
+                        let pool = setup_pool_with_liquidity(
+                            &mut amm,
+                            token_a,
+                            token_b,
+                            U256::from(100),
+                            U256::from(100),
+                        )?;
+                        amm.set_liquidity_balances(pool, user, U256::from(100))?;
+                        let mut keychain = AccountKeychain::new();
+                        keychain.initialize()?;
+                        keychain.set_tx_origin(user)?;
+                        keychain.authorize_key(
+                            user,
+                            key,
+                            IAccountKeychain::SignatureType::Secp256k1,
+                            IAccountKeychain::KeyRestrictions {
+                                expiry: u64::MAX,
+                                enforceLimits: true,
+                                limits: [token_a, token_b]
+                                    .into_iter()
+                                    .zip(limits)
+                                    .map(|(token, limit)| IAccountKeychain::TokenLimit {
+                                        token,
+                                        amount: U256::from(limit),
+                                        period: 0,
+                                    })
+                                    .collect(),
+                                allowAnyCalls: true,
+                                allowedCalls: vec![],
+                            },
+                            None,
+                        )?;
+                        keychain.set_tx_origin(user)?;
+                        keychain.set_transaction_key(key)?;
+                        let result = amm.burn(user, token_a, token_b, U256::from(100), recipient);
+                        let charged = if spec.is_t14() && reroute { 100 } else { 0 };
+                        if limits.into_iter().any(|limit| charged > limit) {
+                            assert_eq!(
+                                result,
+                                Err(AccountKeychainError::spending_limit_exceeded().into())
+                            );
+                            assert_eq!(amm.get_liquidity_balances(pool, user)?, U256::from(100));
+                            assert_eq!(amm.pools[pool].read()?.reserve_user_token, 100);
+                        } else {
+                            assert_eq!(result?, (U256::from(100), U256::from(100)));
+                            for (token, limit) in [token_a, token_b].into_iter().zip(limits) {
+                                assert_eq!(
+                                    TIP20Token::from_address(token)?
+                                        .balance_of(ITIP20::balanceOfCall { account: recipient })?,
+                                    U256::from(100)
+                                );
+                                assert_eq!(
+                                    keychain.get_remaining_limit(
+                                        IAccountKeychain::getRemainingLimitCall {
+                                            account: user,
+                                            keyId: key,
+                                            token,
+                                        }
+                                    )?,
+                                    U256::from(limit - charged)
+                                );
+                            }
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
 
     /// Integer square root using the Babylonian method
     fn sqrt(x: U256) -> U256 {
