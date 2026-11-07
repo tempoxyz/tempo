@@ -70,5 +70,7 @@ target "tempo-fuzz" {
   target = "tempo"
   args = {
     RUST_FEATURES = "asm-keccak,jemalloc,otlp,corpus,fuzz"
+    # Own cache mounts, so this builds alongside the regular builder instead of waiting for it.
+    CACHE_ID_SUFFIX = "-fuzz"
   }
 }
