@@ -3,7 +3,7 @@
 use crate::{
     code,
     exec::db::{View, change_from_update},
-    types::{Block as BlockInput, Case, Delta, Outcome, Phases, Transaction},
+    types::{Block as BlockInput, Case, Delta, DeltaView, Outcome, Phases, Transaction},
 };
 use alloy_consensus::{
     BlockHeader,
@@ -27,6 +27,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
+use tempo_chainspec::TempoHardforks as _;
 use tempo_evm::{ExecutorState, TempoBlockExecutor, TempoEvmConfig};
 use tempo_primitives::{Block, TempoPrimitives, TempoTxEnvelope};
 
@@ -188,17 +189,14 @@ where
             cases.len() == transactions.len(),
             "transaction count mismatch"
         );
-        eyre::ensure!(
-            expected_phases.pre == phases.pre,
-            "pre-execution delta mismatch"
-        );
-        eyre::ensure!(
-            expected_phases.post == phases.post,
-            "post-execution delta mismatch"
-        );
-        for (case, actual) in cases.iter().zip(&transactions) {
-            case.check(actual)?;
-        }
+        let check = || -> eyre::Result<()> {
+            phase_check("pre-execution", &expected_phases.pre, &phases.pre)?;
+            for (case, actual) in cases.iter().zip(&transactions) {
+                case.check(actual)?;
+            }
+            phase_check("post-execution", &expected_phases.post, &phases.post)
+        };
+        check().wrap_err_with(|| block_context(config, block))?;
     }
     let bal_hash = bal.map(|bal| Bal::from(bal).compute_hash_with_buf(&mut Vec::new()));
     consensus.validate_block_post_execution(block, &output.result, None, bal_hash)?;
@@ -254,11 +252,35 @@ pub fn standalone_cases(
     for (index, case) in cases.iter().enumerate() {
         if select(case) {
             let actual = run_standalone(config, block, &view, case.ordinal, index, &case.before)?;
-            case.check(&actual)?;
+            case.check(&actual)
+                .wrap_err_with(|| block_context(config, block))?;
         }
         view.apply(&case.delta)?;
     }
     Ok(())
+}
+
+/// Compares a block's recorded pre- or post-execution system changes with the replayed ones.
+fn phase_check(phase: &str, recorded: &Delta, replayed: &Delta) -> eyre::Result<()> {
+    if recorded == replayed {
+        return Ok(());
+    }
+    eyre::bail!(
+        "{phase} delta mismatch (< recorded, > replayed)\n{}",
+        pretty_assertions::Comparison::new(&DeltaView::from(recorded), &DeltaView::from(replayed))
+    )
+}
+
+/// The block a mismatch happened in: its number, hash, timestamp and active hardfork.
+fn block_context(config: &TempoEvmConfig, block: &RecoveredBlock<Block>) -> String {
+    let header = block.header();
+    format!(
+        "block {} ({}) at timestamp {}, hardfork {:?}",
+        header.number(),
+        block.hash(),
+        header.timestamp(),
+        config.chain_spec().tempo_hardfork_at(header.timestamp()),
+    )
 }
 
 /// Decodes a stored block and checks it against its recorded hash and parent.
@@ -385,7 +407,7 @@ fn boundary() -> impl bincode::Options {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ChangeSet;
+    use crate::types::{Change, ChangeSet};
     use reth_trie_common::bundle_state::{AccountRevert, Reverts};
 
     fn bundle(reverts: Vec<(Address, AccountRevert)>) -> BundleState {
@@ -448,6 +470,30 @@ mod tests {
             err.to_string()
                 .contains("expected a block section id from 0 to 4"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn phase_check_diffs_mismatched_phases() {
+        let empty = Delta::default();
+        assert!(phase_check("pre-execution", &empty, &empty).is_ok());
+        let change = Change {
+            info: None,
+            created: true,
+            storage: BTreeMap::new(),
+            code: None,
+        };
+        let replayed = Delta(vec![BTreeMap::from([([1; 20], change)])]);
+        let message = phase_check("post-execution", &empty, &replayed)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.starts_with("post-execution delta mismatch (< recorded, > replayed)"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&Address::from([1; 20]).to_string()),
+            "{message}"
         );
     }
 }
