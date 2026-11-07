@@ -804,6 +804,9 @@ where
                             Some((outcome, elapsed))
                         }
                         Err(err) => {
+                            self.metrics
+                                .sparse_trie_state_root_fallback_total
+                                .increment(1);
                             warn!(
                                 target: "payload_builder",
                                 id = %payload_id,
