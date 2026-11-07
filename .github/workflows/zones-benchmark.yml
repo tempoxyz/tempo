@@ -41,8 +41,8 @@ jobs:
       actions: read
       contents: read
     outputs:
-      baseline-ref: ${{ steps.refs.outputs.baseline-ref }}
-      baseline-name: ${{ steps.refs.outputs.baseline-name }}
+      baseline-ref: ${{ steps.guard.outputs.baseline-ref }}
+      baseline-name: ${{ steps.guard.outputs.baseline-name }}
       feature-ref: ${{ steps.refs.outputs.feature-ref }}
       feature-name: ${{ steps.refs.outputs.feature-name }}
       should-skip: ${{ steps.refs.outputs.should-skip }}
@@ -66,6 +66,19 @@ jobs:
           BENCH_STATE_SERIES: zones
           INPUT_FORCE: ${{ inputs.force || 'false' }}
         run: bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" prover
+
+      # Baselines before #8731 run a bench L1 that schedules forks their zone tools
+      # reject, so they fail every night and never advance; replace them for one run.
+      - name: Re-baseline if the baseline predates the harness
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+          FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+        run: bash .github/scripts/bench-baseline-guard.sh min-commit daa3f8f654e9a16aa01535120b42dd2160556d98
 
   bench-zones:
     needs: resolve-refs

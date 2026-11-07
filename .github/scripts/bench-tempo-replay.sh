@@ -321,11 +321,13 @@ run_single() {
       > "$log" 2>&1 &
   fi
   stdbuf -oL tail -f "$log" | sed -u "s/^/[$label] /" &
-  local tail_pid=$!
+  # Globals: the EXIT trap runs after this function's locals are gone.
+  BENCH_TAIL_PID=$!
+  BENCH_RUN_OUTPUT_DIR="$output_dir"
 
   # Ensure node and tail are cleaned up on any exit from run_single
   cleanup_run() {
-    kill "$tail_pid" 2>/dev/null || true
+    kill "${BENCH_TAIL_PID:-}" 2>/dev/null || true
     if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
       sudo pkill -INT -x tempo 2>/dev/null || true
       local samply_wait
@@ -337,7 +339,7 @@ run_single() {
     sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
     sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
     cleanup_reth_ipc
-    sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
+    sudo chown -R "$(id -un):$(id -gn)" "$BENCH_RUN_OUTPUT_DIR" 2>/dev/null || true
     bench_schelk cleanup "$SCHELK_STATE_PATH" || true
   }
   trap cleanup_run EXIT
