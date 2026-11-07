@@ -34,7 +34,7 @@ use alloy_primitives::{Address, B256};
 use alloy_provider::DynProvider;
 use alloy_signer_local::PrivateKeySigner;
 use eyre::{Result, WrapErr};
-use futures::StreamExt;
+use futures::{StreamExt, stream::FuturesOrdered};
 use reth_chain_state::PersistedBlockSubscriptions;
 use tempo_alloy::TempoNetwork;
 use tokio::sync::{Notify, mpsc};
@@ -51,8 +51,8 @@ use crate::{
     resolve_portal_zone_anchor,
     settlement::{
         BatchAnchorConfig, BatchData, BatchSubmitError, BatchSubmitter, FinalizedBatchLog,
-        PreparedBatch, WithdrawalPage, ZoneBlockSnapshot, fetch_finalized_batch,
-        fetch_finalized_batch_boundaries, read_zone_block_snapshot,
+        PendingSettlements, PreparedBatch, WithdrawalPage, ZoneBlockSnapshot,
+        fetch_finalized_batch, fetch_finalized_batch_boundaries, read_zone_block_snapshot,
     },
     withdrawals::SharedWithdrawalStore,
 };
@@ -68,6 +68,15 @@ const INITIAL_RESTART_BACKOFF: Duration = Duration::from_millis(200);
 
 /// Longest backoff between consecutive monitor rebuilds.
 const MAX_RESTART_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Number of finalized batches prepared and proven concurrently ahead of submission.
+const PREPARATION_WINDOW: usize = crate::prover::SETTLEMENT_PROVER_CONCURRENCY;
+
+/// Maximum number of `submitBatch` transactions sent to L1 but not yet confirmed.
+///
+/// Each settlement builds on the previous one, so a pipeline lets several land in one L1 block
+/// instead of waiting a block for every receipt.
+const SUBMISSION_WINDOW: usize = 4;
 
 /// Configuration for the [`ZoneMonitor`].
 #[derive(Debug, Clone)]
@@ -114,7 +123,8 @@ impl ZoneMonitorSharedState {
 /// Monitors the Zone L2 chain for new finalized batch boundaries and submits
 /// them to the ZonePortal on L1.
 ///
-/// Prepared batches are submitted in order. A submission failure rebuilds the monitor and its
+/// Several batches are prepared concurrently and several settlements are in flight on L1 at once,
+/// always submitted and confirmed in order. A submission failure rebuilds the monitor and its
 /// preparation pipeline from the portal-confirmed checkpoint.
 ///
 /// At startup, a non-zero portal anchor must resolve to a canonical local block. Startup fails
@@ -142,6 +152,32 @@ pub struct ZoneMonitor<P: ZoneSequencerProvider> {
     submitted_zone_block: Arc<AtomicU64>,
     /// Backpressured SPF and Nitro attestation worker required before configured settlement.
     settlement_prover: Option<SettlementProver>,
+    /// `submitBatch` transactions sent but not yet confirmed, completing in submission order.
+    in_flight: FuturesOrdered<AbortOnDropHandle<CompletedSubmission>>,
+    /// Where the next submission continues while [`Self::in_flight`] is non-empty.
+    pipeline_tail: Option<PipelineTail>,
+}
+
+/// The end of the in-flight settlement chain, which the next submission must extend.
+#[derive(Debug, Clone, Copy)]
+struct PipelineTail {
+    /// Zone block hash the last in-flight settlement moves the portal to.
+    block_hash: B256,
+    /// Lane nonce following the last in-flight settlement.
+    next_nonce: u64,
+}
+
+/// A sent settlement and the outcome of waiting for its receipt.
+type CompletedSubmission = (SentBatch, Result<abi::BatchSubmitted, BatchSubmitError>);
+
+/// Bookkeeping for a settlement sent to L1, applied once its receipt arrives.
+#[derive(Debug)]
+struct SentBatch {
+    batch: BatchData,
+    verifier_mode: VerifierMode,
+    proved_hardfork: Option<tempo_chainspec::hardfork::TempoHardfork>,
+    withdrawals: Vec<abi::Withdrawal>,
+    sent_at: std::time::Instant,
 }
 
 /// Commitments at the tail of the prepared batch chain.
@@ -155,12 +191,12 @@ struct BatchCursor {
 }
 
 impl BatchCursor {
-    fn advance(&mut self, batch: &BatchData) {
-        self.zone_height = batch.zone_height;
-        self.block_hash = batch.next_block_hash;
-        self.processed_deposit_hash = batch.next_processed_deposit_hash;
-        self.processed_deposit_number = batch.next_deposit_number;
-        self.processed_token_count = batch.next_processed_token_count;
+    fn advance(&mut self, zone_height: u64, end_state: &ZoneBlockSnapshot) {
+        self.zone_height = zone_height;
+        self.block_hash = end_state.block_hash;
+        self.processed_deposit_hash = end_state.processed_deposit_hash;
+        self.processed_deposit_number = end_state.processed_deposit_number;
+        self.processed_token_count = end_state.processed_token_count;
     }
 }
 
@@ -335,6 +371,8 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
             preparation_cursor,
             submitted_zone_block,
             settlement_prover,
+            in_flight: FuturesOrdered::new(),
+            pipeline_tail: None,
         };
 
         // Restore pending withdrawal data from zone L2 events so the
@@ -355,7 +393,8 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
         inbox = %self.config.inbox_address,
     ))]
     /// Returns `Ok(())` only when `shutdown` fires; the token is observed at the poll
-    /// boundary so an in-flight batch submission resolves before teardown.
+    /// boundary. Settlements already sent may still land after teardown; the next monitor
+    /// resumes from whatever the portal has confirmed.
     pub async fn run(mut self, shutdown: &sync::CancellationToken) -> Result<()>
     where
         P: PersistedBlockSubscriptions,
@@ -363,7 +402,7 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
         info!("Native zone monitor started");
 
         let preparation = self.batch_preparer();
-        let (ready_tx, mut ready_rx) = mpsc::channel(1);
+        let (ready_tx, mut ready_rx) = mpsc::channel(PREPARATION_WINDOW);
         let mut preparation_task = AbortOnDropHandle::new(tokio::spawn(preparation.run(ready_tx)));
 
         // Poll the head even while proving, queue backpressure, or L1 submission is pending.
@@ -387,7 +426,11 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     _ = self.repair_notify.notified() => {
                         self.refill_withdrawal_cache().await;
                     }
-                    ready = ready_rx.recv() => {
+                    Some(completed) = self.in_flight.next(), if !self.in_flight.is_empty() => {
+                        let completed = completed.wrap_err("batch submission task failed")?;
+                        self.complete_submission(completed).await?;
+                    }
+                    ready = ready_rx.recv(), if self.in_flight.len() < SUBMISSION_WINDOW => {
                         let Some(ready) = ready else {
                             return Err(eyre::eyre!("batch preparation channel closed"));
                         };
@@ -538,43 +581,66 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
             "Preparing finalized Zone batches"
         );
 
+        // Each batch starts from the previous boundary's end state, so the cursor advances before
+        // the previous batch is proven and the window's batches are prepared concurrently.
+        let mut cursor = self.cursor;
+        let mut preparing = FuturesOrdered::new();
         for (idx, boundary) in boundaries.into_iter().enumerate() {
             let boundary_block = boundary.block_number;
-            if boundary_block <= self.cursor.zone_height {
+            if boundary_block <= cursor.zone_height {
                 continue;
             }
-            let range_start = self.cursor.zone_height + 1;
             info!(
                 batch = idx + 1,
-                zone_from = range_start,
+                zone_from = cursor.zone_height + 1,
                 zone_to = boundary_block,
                 "Preparing finalized zone batch"
             );
 
-            // Reserve queue capacity before doing expensive work. This bounds speculative work to
-            // one ready batch beyond the batch currently being submitted.
-            let permit = ready_tx
-                .reserve()
+            // Bound speculative work to the window, handing batches over in boundary order.
+            if preparing.len() == PREPARATION_WINDOW {
+                let ready = preparing
+                    .next()
+                    .await
+                    .expect("preparation window is full")?;
+                ready_tx
+                    .send(ready)
+                    .await
+                    .map_err(|_| eyre::eyre!("batch submission worker stopped"))?;
+            }
+            let end_state = read_zone_block_snapshot(
+                &self.provider,
+                self.config.inbox_address,
+                boundary_block,
+            )?;
+            let start = cursor;
+            cursor.advance(boundary_block, &end_state);
+            preparing.push_back(self.process_finalized_batch(start, boundary, end_state));
+        }
+        while let Some(ready) = preparing.next().await {
+            ready_tx
+                .send(ready?)
                 .await
                 .map_err(|_| eyre::eyre!("batch submission worker stopped"))?;
-            let ready = self.process_finalized_batch(boundary).await?;
-            self.cursor.advance(&ready.prepared.batch);
-            permit.send(ready);
         }
+        drop(preparing);
+        self.cursor = cursor;
 
         Ok(true)
     }
 
-    /// Process one boundary-aligned finalized batch.
+    /// Process one boundary-aligned finalized batch that starts at `cursor` and ends in
+    /// `end_state`.
     async fn process_finalized_batch(
         &self,
+        cursor: BatchCursor,
         boundary: FinalizedBatchLog,
+        end_state: ZoneBlockSnapshot,
     ) -> std::result::Result<ReadyBatch, BatchSubmitError> {
-        let from = self.cursor.zone_height.saturating_add(1);
+        let from = cursor.zone_height.saturating_add(1);
         let to = boundary.block_number;
         let finalized_batch =
             fetch_finalized_batch(&self.provider, self.config.outbox_address, &boundary).await?;
-        let end_state = read_zone_block_snapshot(&self.provider, self.config.inbox_address, to)?;
 
         if !finalized_batch.withdrawals.is_empty() {
             info!(
@@ -590,13 +656,13 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
         let batch = BatchData {
             zone_height: to,
             tempo_block_number: end_state.tempo_block_number,
-            prev_block_hash: self.cursor.block_hash,
+            prev_block_hash: cursor.block_hash,
             next_block_hash: end_state.block_hash,
-            prev_processed_deposit_hash: self.cursor.processed_deposit_hash,
+            prev_processed_deposit_hash: cursor.processed_deposit_hash,
             next_processed_deposit_hash: end_state.processed_deposit_hash,
-            prev_deposit_number: self.cursor.processed_deposit_number,
+            prev_deposit_number: cursor.processed_deposit_number,
             next_deposit_number: end_state.processed_deposit_number,
-            prev_processed_token_count: self.cursor.processed_token_count,
+            prev_processed_token_count: cursor.processed_token_count,
             next_processed_token_count: end_state.processed_token_count,
             withdrawal_queue_hash: finalized_batch.finalized_hash,
             withdrawal_batch_index: finalized_batch.finalized_index,
@@ -713,11 +779,16 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
 }
 
 impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
-    /// Submit a prepared batch to the ZonePortal on L1 with exponential backoff retry.
+    /// Validate a prepared batch against the portal and send its `submitBatch` transaction.
     ///
-    /// A portal mismatch or exhausted retries invalidates the pipeline so the monitor can restart
-    /// from portal-confirmed state. The verifier mode, proof, and certificate stay fixed across
-    /// retries.
+    /// With nothing in flight the batch must extend the portal's confirmed block. Otherwise it
+    /// must extend the last in-flight settlement and takes the next lane nonce. Failures building
+    /// the transaction are retried with exponential backoff; a portal mismatch or exhausted
+    /// retries invalidates the pipeline so the monitor can restart from portal-confirmed state.
+    /// The verifier mode, proof, and certificate stay fixed across retries.
+    ///
+    /// Returns once the transaction is handed to a task waiting for its receipt, which
+    /// [`Self::complete_submission`] then applies in order.
     async fn submit_ready_batch(&mut self, ready: ReadyBatch) -> Result<()> {
         let ReadyBatch {
             prepared,
@@ -731,124 +802,93 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
         let mut delay = INITIAL_RETRY_DELAY;
 
         for attempt in 1..=MAX_RETRIES {
-            // A prior transaction may have landed even if its receipt timed out. Check the portal
-            // before each attempt and rebuild the whole pipeline if its predecessor has changed.
-            let portal_hash = match self.batch_submitter.read_portal_block_hash().await {
-                Ok(portal_hash) => portal_hash,
-                Err(error) => {
-                    if attempt < MAX_RETRIES {
-                        self.metrics.batch_submit_retry_total.increment(1);
-                        warn!(
-                            attempt,
-                            max_retries = MAX_RETRIES,
-                            delay_secs = delay.as_secs(),
-                            %error,
-                            "Failed reading portal state before batch submission, retrying"
+            let pending = match self.pipeline_tail {
+                Some(tail) => {
+                    if tail.block_hash != batch_data.prev_block_hash {
+                        eyre::bail!(
+                            "in-flight settlement tip {} no longer matches predecessor {} for zone batch {last_zone_block}; invalidating prepared batch pipeline",
+                            tail.block_hash,
+                            batch_data.prev_block_hash
                         );
-                        tokio::time::sleep(delay).await;
-                        delay *= 2;
-                        continue;
                     }
-                    self.metrics.batch_submit_failure_total.increment(1);
-                    error!(
-                        %error,
-                        last_zone_block,
-                        "Failed reading portal state before batch submission after {MAX_RETRIES} retries"
-                    );
-                    break;
+                    Some(PendingSettlements {
+                        count: self.in_flight.len() as u64,
+                        next_nonce: tail.next_nonce,
+                    })
+                }
+                None => {
+                    // A prior transaction may have landed even if its receipt timed out. Check the
+                    // portal before each attempt and rebuild the whole pipeline if its predecessor
+                    // has changed.
+                    let portal_hash = match self.batch_submitter.read_portal_block_hash().await {
+                        Ok(portal_hash) => portal_hash,
+                        Err(error) => {
+                            if attempt < MAX_RETRIES {
+                                self.metrics.batch_submit_retry_total.increment(1);
+                                warn!(
+                                    attempt,
+                                    max_retries = MAX_RETRIES,
+                                    delay_secs = delay.as_secs(),
+                                    %error,
+                                    "Failed reading portal state before batch submission, retrying"
+                                );
+                                tokio::time::sleep(delay).await;
+                                delay *= 2;
+                                continue;
+                            }
+                            self.metrics.batch_submit_failure_total.increment(1);
+                            error!(
+                                %error,
+                                last_zone_block,
+                                "Failed reading portal state before batch submission after {MAX_RETRIES} retries"
+                            );
+                            break;
+                        }
+                    };
+                    if portal_hash != batch_data.prev_block_hash {
+                        eyre::bail!(
+                            "portal block hash {portal_hash} no longer matches predecessor {} for zone batch {last_zone_block}; invalidating prepared batch pipeline",
+                            batch_data.prev_block_hash
+                        );
+                    }
+                    None
                 }
             };
-            if portal_hash != batch_data.prev_block_hash {
-                eyre::bail!(
-                    "portal block hash {portal_hash} no longer matches predecessor {} for zone \
-                     batch {last_zone_block}; invalidating prepared batch pipeline",
-                    batch_data.prev_block_hash
-                );
-            }
 
-            let submit_started = std::time::Instant::now();
             match self
                 .batch_submitter
-                .submit_batch(
+                .build_submission(
                     &prepared,
                     proof.as_ref(),
                     certificate.as_ref(),
                     verifier_mode,
+                    pending,
                 )
                 .await
             {
-                Ok(event) => {
-                    let portal_index = if event.withdrawalQueueIndex == NO_QUEUE_INDEX {
-                        None
-                    } else {
-                        Some(event.withdrawalQueueIndex.try_into().map_err(|_| {
-                            eyre::eyre!("withdrawal queue index overflow in BatchSubmitted")
-                        })?)
+                Ok(submission) => {
+                    self.pipeline_tail = Some(PipelineTail {
+                        block_hash: batch_data.next_block_hash,
+                        next_nonce: submission.nonce + 1,
+                    });
+                    let sent = SentBatch {
+                        batch: prepared.batch,
+                        verifier_mode,
+                        proved_hardfork: proof.as_ref().map(|proof| proof.hardfork),
+                        withdrawals,
+                        sent_at: std::time::Instant::now(),
                     };
-
-                    self.metrics
-                        .batch_submit_latency_seconds
-                        .record(submit_started.elapsed().as_secs_f64());
-                    let previous_zone_block = self.submitted_zone_block();
-                    let blocks_in_batch = last_zone_block - previous_zone_block;
-                    info!(
-                        last_zone_block,
-                        blocks_in_batch,
-                        zone_from = previous_zone_block + 1,
-                        zone_to = last_zone_block,
-                        prev_block_hash = %batch_data.prev_block_hash,
-                        ?verifier_mode,
-                        tempo_block_number = batch_data.tempo_block_number,
-                        withdrawal_batch_index = event.withdrawalBatchIndex,
-                        withdrawal_queue_index = %event.withdrawalQueueIndex,
-                        withdrawal_queue_hash = %batch_data.withdrawal_queue_hash,
-                        "Batch successfully submitted to L1"
-                    );
-                    self.metrics.batch_submit_success_total.increment(1);
-                    self.metrics
-                        .batch_size_blocks
-                        .record(blocks_in_batch as f64);
-                    self.metrics
-                        .withdrawals_per_batch
-                        .record(withdrawals.len() as f64);
-
-                    self.submitted_zone_block
-                        .store(last_zone_block, Ordering::Relaxed);
-                    self.metrics
-                        .latest_zone_block_submitted_to_l1
-                        .set(last_zone_block as f64);
-
-                    if let Some(portal_index) = portal_index {
-                        if !withdrawals.is_empty() {
-                            let count = withdrawals.len();
-                            let mut store = self.withdrawal_store.lock();
-                            if !store.add_batch(portal_index, withdrawals) {
-                                debug!(
-                                    portal_index,
-                                    count,
-                                    "Withdrawal cache full; dropped reconstructible far-tail payload"
-                                );
-                            }
-                        }
-                    } else if !batch_data.withdrawal_queue_hash.is_zero() || !withdrawals.is_empty()
-                    {
-                        warn!(
-                            withdrawal_queue_hash = %batch_data.withdrawal_queue_hash,
-                            withdrawal_count = withdrawals.len(),
-                            "submitBatch emitted NO_QUEUE_INDEX for a batch that locally had withdrawals"
-                        );
-                    }
-
-                    self.withdrawal_notify.notify_one();
+                    let submitter = self.batch_submitter.clone();
+                    self.in_flight
+                        .push_back(AbortOnDropHandle::new(tokio::spawn(async move {
+                            let result = submitter.send_submission(submission).await;
+                            (sent, result)
+                        })));
                     return Ok(());
                 }
                 Err(BatchSubmitError::PortalAdvanced) => {
-                    self.metrics
-                        .batch_submit_latency_seconds
-                        .record(submit_started.elapsed().as_secs_f64());
                     eyre::bail!(
-                        "portal advanced while submitting zone batch {last_zone_block}; \
-                         invalidating prepared batch pipeline"
+                        "portal advanced while submitting zone batch {last_zone_block}; invalidating prepared batch pipeline"
                     );
                 }
                 Err(BatchSubmitError::PreparedAnchorInvalid(error)) => {
@@ -861,33 +901,10 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     return Err(error.into());
                 }
                 Err(BatchSubmitError::Other(error)) => {
-                    self.metrics
-                        .batch_submit_latency_seconds
-                        .record(submit_started.elapsed().as_secs_f64());
-
-                    // A failed submission may mean L1 crossed a prover-policy hardfork while this
-                    // batch was being prepared. Rebuild it with the current verifier in that case.
-                    if let Some(proved) = proof.as_ref().map(|proof| proof.hardfork) {
-                        match active_l1_hardfork(
-                            self.batch_submitter.l1_provider(),
-                            self.config.chain_spec.as_ref(),
-                        )
-                        .await
-                        {
-                            Ok(current) if current != proved => {
-                                self.metrics.prover_hardfork_rebuild_total.increment(1);
-                                return Err(BatchSubmitError::ProverHardforkChanged {
-                                    proved,
-                                    current,
-                                }
-                                .into());
-                            }
-                            Err(error) => {
-                                warn!(%error, "Failed checking L1 hardfork after batch submission error");
-                            }
-                            Ok(_) => {}
-                        }
-                    }
+                    self.ensure_prover_hardfork_unchanged(
+                        proof.as_ref().map(|proof| proof.hardfork),
+                    )
+                    .await?;
 
                     if attempt < MAX_RETRIES {
                         self.metrics.batch_submit_retry_total.increment(1);
@@ -918,6 +935,142 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
         Err(eyre::eyre!(
             "batch submission failed after {MAX_RETRIES} retries for zone block {last_zone_block}"
         ))
+    }
+
+    /// Apply the receipt of the oldest in-flight settlement.
+    ///
+    /// A failed settlement invalidates the pipeline: every later in-flight settlement builds on
+    /// it, so the monitor restarts from portal-confirmed state instead of retrying in place.
+    async fn complete_submission(&mut self, completed: CompletedSubmission) -> Result<()> {
+        let (sent, result) = completed;
+        if self.in_flight.is_empty() {
+            self.pipeline_tail = None;
+        }
+        self.metrics
+            .batch_submit_latency_seconds
+            .record(sent.sent_at.elapsed().as_secs_f64());
+        let SentBatch {
+            batch: batch_data,
+            verifier_mode,
+            proved_hardfork,
+            withdrawals,
+            ..
+        } = sent;
+        let last_zone_block = batch_data.zone_height;
+
+        let event = match result {
+            Ok(event) => event,
+            Err(error @ BatchSubmitError::ProverHardforkChanged { .. }) => {
+                self.metrics.prover_hardfork_rebuild_total.increment(1);
+                return Err(error.into());
+            }
+            Err(error) => {
+                // A failed submission may mean L1 crossed a prover-policy hardfork while this
+                // batch was being prepared. Rebuild it with the current verifier in that case.
+                self.ensure_prover_hardfork_unchanged(proved_hardfork)
+                    .await?;
+                self.metrics.batch_submit_failure_total.increment(1);
+                error!(
+                    error = %eyre::Report::from(error),
+                    last_zone_block,
+                    tempo_block_number = batch_data.tempo_block_number,
+                    prev_block_hash = %batch_data.prev_block_hash,
+                    next_block_hash = %batch_data.next_block_hash,
+                    "Batch submission failed"
+                );
+                eyre::bail!(
+                    "batch submission failed for zone block {last_zone_block}; invalidating prepared batch pipeline"
+                );
+            }
+        };
+
+        let portal_index =
+            if event.withdrawalQueueIndex == NO_QUEUE_INDEX {
+                None
+            } else {
+                Some(event.withdrawalQueueIndex.try_into().map_err(|_| {
+                    eyre::eyre!("withdrawal queue index overflow in BatchSubmitted")
+                })?)
+            };
+
+        let previous_zone_block = self.submitted_zone_block();
+        let blocks_in_batch = last_zone_block - previous_zone_block;
+        info!(
+            last_zone_block,
+            blocks_in_batch,
+            zone_from = previous_zone_block + 1,
+            zone_to = last_zone_block,
+            prev_block_hash = %batch_data.prev_block_hash,
+            ?verifier_mode,
+            tempo_block_number = batch_data.tempo_block_number,
+            withdrawal_batch_index = event.withdrawalBatchIndex,
+            withdrawal_queue_index = %event.withdrawalQueueIndex,
+            withdrawal_queue_hash = %batch_data.withdrawal_queue_hash,
+            in_flight = self.in_flight.len(),
+            "Batch successfully submitted to L1"
+        );
+        self.metrics.batch_submit_success_total.increment(1);
+        self.metrics
+            .batch_size_blocks
+            .record(blocks_in_batch as f64);
+        self.metrics
+            .withdrawals_per_batch
+            .record(withdrawals.len() as f64);
+
+        self.submitted_zone_block
+            .store(last_zone_block, Ordering::Relaxed);
+        self.metrics
+            .latest_zone_block_submitted_to_l1
+            .set(last_zone_block as f64);
+
+        if let Some(portal_index) = portal_index {
+            if !withdrawals.is_empty() {
+                let count = withdrawals.len();
+                let mut store = self.withdrawal_store.lock();
+                if !store.add_batch(portal_index, withdrawals) {
+                    debug!(
+                        portal_index,
+                        count, "Withdrawal cache full; dropped reconstructible far-tail payload"
+                    );
+                }
+            }
+        } else if !batch_data.withdrawal_queue_hash.is_zero() || !withdrawals.is_empty() {
+            warn!(
+                withdrawal_queue_hash = %batch_data.withdrawal_queue_hash,
+                withdrawal_count = withdrawals.len(),
+                "submitBatch emitted NO_QUEUE_INDEX for a batch that locally had withdrawals"
+            );
+        }
+
+        self.withdrawal_notify.notify_one();
+        Ok(())
+    }
+
+    /// Fail with [`BatchSubmitError::ProverHardforkChanged`] when L1 has moved past the hardfork
+    /// a batch was `proved` under; a failed check is only logged.
+    async fn ensure_prover_hardfork_unchanged(
+        &self,
+        proved: Option<tempo_chainspec::hardfork::TempoHardfork>,
+    ) -> Result<()> {
+        let Some(proved) = proved else {
+            return Ok(());
+        };
+        match active_l1_hardfork(
+            self.batch_submitter.l1_provider(),
+            self.config.chain_spec.as_ref(),
+        )
+        .await
+        {
+            Ok(current) if current != proved => {
+                self.metrics.prover_hardfork_rebuild_total.increment(1);
+                Err(BatchSubmitError::ProverHardforkChanged { proved, current }.into())
+            }
+            Err(error) => {
+                warn!(%error, "Failed checking L1 hardfork after batch submission error");
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+        }
     }
 
     fn snapshot_at_or_genesis(
@@ -1193,6 +1346,8 @@ mod tests {
             preparation_cursor: cursor,
             submitted_zone_block: Arc::new(AtomicU64::new(10)),
             settlement_prover: None,
+            in_flight: FuturesOrdered::new(),
+            pipeline_tail: None,
         }
     }
 
@@ -1589,6 +1744,88 @@ mod tests {
             monitor.preparation_cursor.processed_deposit_hash,
             batch_data.next_processed_deposit_hash
         );
+        assert!(l1.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn in_flight_tip_mismatch_invalidates_pipeline() {
+        let l1 = Asserter::new();
+        let mut monitor = test_monitor(l1.clone(), TestZoneProvider::new());
+        monitor.pipeline_tail = Some(PipelineTail {
+            block_hash: B256::repeat_byte(0x44),
+            next_nonce: 9,
+        });
+        let batch_data = BatchData {
+            zone_height: 21,
+            tempo_block_number: 123,
+            prev_block_hash: B256::repeat_byte(0x99),
+            next_block_hash: B256::repeat_byte(0x55),
+            prev_processed_deposit_hash: B256::ZERO,
+            next_processed_deposit_hash: B256::ZERO,
+            prev_deposit_number: 0,
+            next_deposit_number: 0,
+            prev_processed_token_count: 0,
+            next_processed_token_count: 0,
+            withdrawal_queue_hash: B256::ZERO,
+            withdrawal_batch_index: 9,
+        };
+
+        let error = monitor
+            .submit_ready_batch(ready_batch(batch_data))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("in-flight settlement tip"),
+            "{error}"
+        );
+        assert!(monitor.in_flight.is_empty());
+        // The in-flight tip is checked locally; the portal is not read.
+        assert!(l1.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_in_flight_settlement_invalidates_pipeline() {
+        let l1 = Asserter::new();
+        let mut monitor = test_monitor(l1.clone(), TestZoneProvider::new());
+        monitor.pipeline_tail = Some(PipelineTail {
+            block_hash: B256::repeat_byte(0x55),
+            next_nonce: 9,
+        });
+        let sent = SentBatch {
+            batch: BatchData {
+                zone_height: 20,
+                tempo_block_number: 123,
+                prev_block_hash: B256::repeat_byte(0xbb),
+                next_block_hash: B256::repeat_byte(0x55),
+                prev_processed_deposit_hash: B256::ZERO,
+                next_processed_deposit_hash: B256::ZERO,
+                prev_deposit_number: 0,
+                next_deposit_number: 0,
+                prev_processed_token_count: 0,
+                next_processed_token_count: 0,
+                withdrawal_queue_hash: B256::ZERO,
+                withdrawal_batch_index: 1,
+            },
+            verifier_mode: VerifierMode::NoProof,
+            proved_hardfork: None,
+            withdrawals: Vec::new(),
+            sent_at: std::time::Instant::now(),
+        };
+
+        let error = monitor
+            .complete_submission((sent, Err(eyre::eyre!("reverted").into())))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("batch submission failed for zone block 20"),
+            "{error}"
+        );
+        assert!(monitor.pipeline_tail.is_none());
+        assert_eq!(monitor.submitted_zone_block(), 10);
         assert!(l1.read_q().is_empty());
     }
 

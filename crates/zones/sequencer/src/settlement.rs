@@ -123,6 +123,23 @@ const DEFAULT_EIP2935_SAFETY_MARGIN: u64 = 360;
 /// map overhead while covering more than the current Zone E recovery gap.
 const DEFAULT_ANCESTRY_HEADER_CACHE_CAPACITY: u32 = 262_144;
 
+/// Settlements sent to the portal but not yet confirmed, which a new submission builds on.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingSettlements {
+    /// Number of unconfirmed `submitBatch` transactions ahead of the new one.
+    pub(crate) count: u64,
+    /// `SUBMIT_BATCH_NONCE_KEY` lane nonce following the last unconfirmed transaction.
+    pub(crate) next_nonce: u64,
+}
+
+/// A `submitBatch` transaction built for one prepared batch, ready to send.
+#[derive(Debug)]
+pub(crate) struct BatchSubmission {
+    request: <TempoNetwork as alloy_network::Network>::TransactionRequest,
+    /// `SUBMIT_BATCH_NONCE_KEY` lane nonce assigned to the transaction.
+    pub(crate) nonce: u64,
+}
+
 /// Bounded gas for one `submitBatch` call when gas estimation is unavailable.
 ///
 /// Estimation against state N cannot see hash(N) in EIP-2935, but a transaction submitted after
@@ -386,6 +403,26 @@ impl BatchSubmitter {
     /// proof must match the mode's shape; without one, an empty proof is left to the verifier.
     ///
     /// Returns the `BatchSubmitted` event decoded from the confirmed receipt.
+    pub async fn submit_batch(
+        &self,
+        prepared: &PreparedBatch,
+        proof_bundle: Option<&SettlementProof>,
+        certificate: Option<&SettlementCertificate>,
+        verifier_mode: VerifierMode,
+    ) -> std::result::Result<BatchSubmitted, BatchSubmitError> {
+        let submission = self
+            .build_submission(prepared, proof_bundle, certificate, verifier_mode, None)
+            .await?;
+        self.send_submission(submission).await
+    }
+
+    /// Validate a prepared batch against live portal state and build its `submitBatch`
+    /// transaction without sending it.
+    ///
+    /// With `pending`, the batch builds on that many earlier settlements that were sent but are
+    /// not yet confirmed: the portal is expected to have advanced past them, the transaction takes
+    /// the lane nonce after theirs, and its gas limit is fixed because estimating it against the
+    /// current portal state would revert.
     #[instrument(skip_all, fields(
         portal = %self.portal_address,
         tempo_block = prepared.batch.tempo_block_number,
@@ -396,13 +433,14 @@ impl BatchSubmitter {
         withdrawal_batch_index = prepared.batch.withdrawal_batch_index,
         prover_hardfork = ?proof_bundle.map(|proof| proof.hardfork),
     ))]
-    pub async fn submit_batch(
+    pub(crate) async fn build_submission(
         &self,
         prepared: &PreparedBatch,
         proof_bundle: Option<&SettlementProof>,
         certificate: Option<&SettlementCertificate>,
         verifier_mode: VerifierMode,
-    ) -> std::result::Result<BatchSubmitted, BatchSubmitError> {
+        pending: Option<PendingSettlements>,
+    ) -> std::result::Result<BatchSubmission, BatchSubmitError> {
         let active = active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?;
         if let Some(proved) = proof_bundle.map(|proof| proof.hardfork)
             && proved != active
@@ -435,7 +473,12 @@ impl BatchSubmitter {
         let metadata = self
             .read_submission_metadata(signer.map_or(Address::ZERO, PrivateKeySigner::address))
             .await?;
-        self.validate_submission_metadata(batch, metadata, certificate.is_some())?;
+        self.validate_submission_metadata(
+            batch,
+            metadata,
+            certificate.is_some(),
+            pending.map_or(0, |pending| pending.count),
+        )?;
         if let Some(certificate) = certificate {
             self.validate_certificate(
                 prepared,
@@ -488,11 +531,15 @@ impl BatchSubmitter {
         let submission_address = signer
             .ok_or_eyre("batch submission requires the local sequencer signer")?
             .address();
-        let nonce = self
-            .l1_provider
-            .get_transaction_count_with_nonce_key(submission_address, SUBMIT_BATCH_NONCE_KEY)
-            .await
-            .map_err(|error| BatchSubmitError::Other(error.into()))?;
+        let nonce = match pending {
+            Some(pending) => pending.next_nonce,
+            None => self
+                .l1_provider
+                .get_transaction_count_with_nonce_key(submission_address, SUBMIT_BATCH_NONCE_KEY)
+                .await
+                .map_err(|error| BatchSubmitError::Other(error.into()))?,
+        };
+        let fixed_gas = anchors_to_current_tip || pending.is_some();
 
         info!(
             anchor_mode = prepared.anchor.mode_name(),
@@ -505,10 +552,11 @@ impl BatchSubmitter {
             batch_prev_block_hash = %batch.prev_block_hash,
             nonce_key = ?SUBMIT_BATCH_NONCE_KEY,
             nonce,
+            pending_settlements = pending.map_or(0, |pending| pending.count),
             "Submitting batch to ZonePortal on L1"
         );
 
-        let receipt = match settlement_abi {
+        let request = match settlement_abi {
             SettlementAbi::Legacy => {
                 let mut submission = self
                     .portal
@@ -527,13 +575,10 @@ impl BatchSubmitter {
                     .nonce(nonce)
                     .max_fee_per_gas(crate::TEMPO_L1_MAX_FEE_PER_GAS)
                     .max_priority_fee_per_gas(0);
-                if anchors_to_current_tip {
+                if fixed_gas {
                     submission = submission.gas(SUBMIT_BATCH_GAS_LIMIT);
                 }
-                submission
-                    .send_sync()
-                    .timeout(Duration::from_secs(30))
-                    .await
+                submission.into_transaction_request()
             }
             SettlementAbi::T13 => {
                 let mut submission = self
@@ -554,15 +599,27 @@ impl BatchSubmitter {
                     .nonce(nonce)
                     .max_fee_per_gas(crate::TEMPO_L1_MAX_FEE_PER_GAS)
                     .max_priority_fee_per_gas(0);
-                if anchors_to_current_tip {
+                if fixed_gas {
                     submission = submission.gas(SUBMIT_BATCH_GAS_LIMIT);
                 }
-                submission
-                    .send_sync()
-                    .timeout(Duration::from_secs(30))
-                    .await
+                submission.into_transaction_request()
             }
-        }
+        };
+        Ok(BatchSubmission { request, nonce })
+    }
+
+    /// Send a built `submitBatch` transaction and wait for its receipt.
+    ///
+    /// Returns the `BatchSubmitted` event decoded from the confirmed receipt.
+    pub(crate) async fn send_submission(
+        &self,
+        submission: BatchSubmission,
+    ) -> std::result::Result<BatchSubmitted, BatchSubmitError> {
+        let receipt = tokio::time::timeout(
+            Duration::from_secs(30),
+            self.l1_provider.send_transaction_sync(submission.request),
+        )
+        .await
         .map_err(|_| eyre::eyre!("submitBatch sync submission timed out after 30 seconds"))?
         .map_err(|error| BatchSubmitError::Other(error.into()))?;
 
@@ -718,14 +775,20 @@ impl BatchSubmitter {
         batch: &BatchData,
         metadata: PortalSubmissionMetadata,
         has_certificate: bool,
+        pending_settlements: u64,
     ) -> Result<()> {
         let expected_l2_index = metadata
             .withdrawal_batch_index
             .checked_add(1)
             .ok_or_else(|| eyre::eyre!("portal withdrawal batch index overflow"))?;
+        // Pending settlements may already have landed by the time the portal is read, so the
+        // batch may follow anywhere from none to all of them.
+        let latest_l2_index = expected_l2_index
+            .checked_add(pending_settlements)
+            .ok_or_else(|| eyre::eyre!("portal withdrawal batch index overflow"))?;
         eyre::ensure!(
-            batch.withdrawal_batch_index == expected_l2_index,
-            "withdrawal batch index mismatch for zone block {}: L2 finalized index {}, expected portal index + 1 ({expected_l2_index})",
+            (expected_l2_index..=latest_l2_index).contains(&batch.withdrawal_batch_index),
+            "withdrawal batch index mismatch for zone block {}: L2 finalized index {}, expected portal index + 1 ({expected_l2_index}) plus up to {pending_settlements} pending",
             batch.zone_height,
             batch.withdrawal_batch_index,
         );
@@ -2853,7 +2916,7 @@ mod tests {
         };
 
         let err = submitter
-            .validate_submission_metadata(&batch, metadata, false)
+            .validate_submission_metadata(&batch, metadata, false, 0)
             .unwrap_err();
         assert!(
             err.to_string()
@@ -2861,8 +2924,77 @@ mod tests {
         );
 
         submitter
-            .validate_submission_metadata(&batch, metadata, true)
+            .validate_submission_metadata(&batch, metadata, true, 0)
             .unwrap();
+    }
+
+    #[test]
+    fn submission_metadata_expects_index_past_pending_settlements() {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(Asserter::new())
+            .erased();
+        let submitter = BatchSubmitter::new(Address::ZERO, provider, test_chain_spec());
+        let batch = BatchData {
+            zone_height: 3,
+            tempo_block_number: 1,
+            prev_block_hash: B256::repeat_byte(0x22),
+            next_block_hash: B256::repeat_byte(0x33),
+            prev_processed_deposit_hash: B256::ZERO,
+            next_processed_deposit_hash: B256::ZERO,
+            prev_deposit_number: 0,
+            next_deposit_number: 0,
+            prev_processed_token_count: 0,
+            next_processed_token_count: 0,
+            withdrawal_queue_hash: B256::ZERO,
+            withdrawal_batch_index: 7,
+        };
+        let metadata = PortalSubmissionMetadata {
+            withdrawal_batch_index: 4,
+            stable: StablePortalMetadata {
+                zone_id: 1,
+                chain_id: 1,
+            },
+            sequencer_set_version: 1,
+            sequencer_threshold: 1,
+            signer_is_sequencer: true,
+            verifier: Address::ZERO,
+        };
+
+        // Two pending settlements take indices 5 and 6, so this batch, 7, follows both.
+        submitter
+            .validate_submission_metadata(&batch, metadata, false, 2)
+            .unwrap();
+        // Both have landed by the time the portal reports index 6.
+        let landed = PortalSubmissionMetadata {
+            withdrawal_batch_index: 6,
+            ..metadata
+        };
+        submitter
+            .validate_submission_metadata(&batch, landed, false, 2)
+            .unwrap();
+        let err = submitter
+            .validate_submission_metadata(&batch, metadata, false, 1)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected portal index + 1 (5) plus up to 1 pending"),
+            "{err}"
+        );
+        let err = submitter
+            .validate_submission_metadata(
+                &batch,
+                PortalSubmissionMetadata {
+                    withdrawal_batch_index: 7,
+                    ..metadata
+                },
+                false,
+                2,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("withdrawal batch index mismatch"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

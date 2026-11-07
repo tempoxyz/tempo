@@ -34,7 +34,7 @@ use tempo_contracts::zones::{
 use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{mpsc, oneshot},
+    sync::{Mutex, mpsc, oneshot},
 };
 use tracing::{debug, info, warn};
 use zone_chainspec::ZoneChainSpec;
@@ -56,8 +56,12 @@ use crate::{
     settlement::BatchSubmitError,
 };
 
-/// Number of candidates allowed to wait behind the active validation.
+/// Number of candidates allowed to wait behind the active validations.
 const SETTLEMENT_PROVER_QUEUE_CAPACITY: usize = 2;
+/// Number of settlement candidates validated and proven concurrently.
+///
+/// Matches [`crate::monitor`]'s preparation window so every prepared batch can be in flight.
+pub(crate) const SETTLEMENT_PROVER_CONCURRENCY: usize = 4;
 /// Number of finalized follower candidates allowed to wait behind validation.
 pub const SHADOW_PROVER_QUEUE_CAPACITY: usize = 5;
 const RPC_CONCURRENCY: usize = 8;
@@ -157,6 +161,10 @@ struct ProverContext<P> {
     config: SettlementProverConfig,
     zone_provider: P,
     l1_provider: DynProvider<TempoNetwork>,
+    /// Held for each remote proof: the enclave serves one connection at a time and a queued
+    /// connection's handshake timeout runs while it waits, so jobs build witnesses concurrently
+    /// but prove remotely one at a time.
+    remote_prover: Mutex<()>,
 }
 
 struct ZoneInputs {
@@ -219,6 +227,7 @@ pub fn spawn_settlement_prover<P: ZoneSequencerProvider>(
             zone_provider,
             l1_provider,
             SETTLEMENT_PROVER_QUEUE_CAPACITY,
+            SETTLEMENT_PROVER_CONCURRENCY,
             Some(proofs),
         ),
     }
@@ -237,6 +246,7 @@ pub fn spawn_shadow_prover<P: ZoneSequencerProvider>(
             zone_provider,
             l1_provider,
             SHADOW_PROVER_QUEUE_CAPACITY,
+            1,
             proofs,
         ),
     }
@@ -247,6 +257,7 @@ fn spawn_prover<P: ZoneSequencerProvider>(
     zone_provider: P,
     l1_provider: DynProvider<TempoNetwork>,
     queue_capacity: usize,
+    concurrency: usize,
     proofs: Option<ProofCollectorHandle>,
 ) -> mpsc::Sender<ProverJob> {
     info!(
@@ -255,6 +266,7 @@ fn spawn_prover<P: ZoneSequencerProvider>(
         prover_addresses = ?config.prover_addresses,
         shadow_proof_verification = config.proof_verifier.is_some(),
         queue_capacity,
+        concurrency,
         "Prover enabled"
     );
     let (sender, mut receiver) = mpsc::channel::<ProverJob>(queue_capacity);
@@ -262,18 +274,26 @@ fn spawn_prover<P: ZoneSequencerProvider>(
         config,
         zone_provider,
         l1_provider,
+        remote_prover: Mutex::new(()),
     };
     let metrics = ProverMetrics::default();
 
     tokio::spawn(async move {
-        while let Some(job) = receiver.recv().await {
-            metrics
-                .queue_duration_seconds
-                .record(job.enqueued_at.elapsed().as_secs_f64());
-            let started = Instant::now();
-            let result = validate_candidate(&context, &job, proofs.as_ref(), &metrics).await;
-            if let Some(proofs) = &proofs {
-                // Jobs are processed in order, and failed ones are not retried.
+        let (context, metrics, collector) = (&context, &metrics, proofs.as_ref());
+        // Validate up to `concurrency` jobs at once, but complete them in submission order.
+        let mut completed = stream::poll_fn(|cx| receiver.poll_recv(cx))
+            .map(|job: ProverJob| async move {
+                metrics
+                    .queue_duration_seconds
+                    .record(job.enqueued_at.elapsed().as_secs_f64());
+                let started = Instant::now();
+                let result = validate_candidate(context, &job, collector, metrics).await;
+                (job, started, result)
+            })
+            .buffered(concurrency);
+        while let Some((job, started, result)) = completed.next().await {
+            if let Some(proofs) = collector {
+                // Jobs complete in order, and failed ones are not retried.
                 proofs.mark_shadow_proven(job.to);
             }
             metrics
@@ -447,6 +467,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
             zone_to = job.to,
             "Selected remote prover"
         );
+        let _remote_prover = context.remote_prover.lock().await;
         let (output, bundle) =
             verify_remotely(remote, context.config.zone_id, job, witness, metrics).await?;
         (output, Some(SettlementProof { bundle, hardfork }))
