@@ -1,0 +1,12 @@
+[package]
+name = "pop-source-frontend"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+syn = { version = "=2.0.117", features = ["full", "visit"] }
+quote = "=1.0.45"
+thiserror = "=2.0.18"
