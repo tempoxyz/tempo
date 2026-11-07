@@ -16,6 +16,7 @@
 #   feature-ref
 #   feature-name
 #   should-skip
+#   refresh-state
 #   is-stale
 #   stale-age-hours
 #   nightly-created
@@ -111,12 +112,20 @@ else
   echo "New nightly commit detected"
 fi
 
+# A run that doesn't benchmark because the nightly is unchanged, whether skipped
+# or stale, re-saves the state so it only ages while benchmarks fail.
+REFRESH_STATE="false"
+if [ "$LAST_FEATURE_REF" = "$FEATURE_REF" ] && { [ "$SHOULD_SKIP" = "true" ] || [ "$IS_STALE" = "true" ]; }; then
+  REFRESH_STATE="true"
+fi
+
 BASELINE_NAME="nightly-${BASELINE_REF:0:8}"
 FEATURE_NAME="nightly-${FEATURE_REF:0:8}"
 
 echo "Baseline: $BASELINE_REF"
 echo "Feature:  $FEATURE_REF"
 echo "Skip:     $SHOULD_SKIP"
+echo "Refresh:  $REFRESH_STATE"
 echo "Stale:    $IS_STALE"
 echo "::endgroup::"
 
@@ -127,6 +136,7 @@ echo "::endgroup::"
   echo "feature-ref=$FEATURE_REF"
   echo "feature-name=$FEATURE_NAME"
   echo "should-skip=$SHOULD_SKIP"
+  echo "refresh-state=$REFRESH_STATE"
   echo "is-stale=$IS_STALE"
   echo "stale-age-hours=$AGE_HOURS"
   echo "nightly-created=$CREATED_AT"

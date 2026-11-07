@@ -61,7 +61,8 @@ gh() {
       if [[ "$*" == *'--status=in_progress'* ]]; then
         printf '0\n'
       else
-        printf '[{"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","createdAt":"%s","conclusion":"success"}]\n' "$STATE_TEST_DATE"
+        printf '[{"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","createdAt":"%s","conclusion":"success"}]\n' \
+          "${STATE_TEST_NIGHTLY_DATE:-$STATE_TEST_DATE}"
       fi
       ;;
     *) return 1 ;;
@@ -153,8 +154,10 @@ for series in replay e2e zones; do
       bash "$resolver" false "$key" > "$scratch/log" 2>&1
       if [[ "$value" == "$feature" ]]; then
         grep -q '^should-skip=true$' "$GITHUB_OUTPUT"
+        [[ "$series" != replay ]] || grep -q '^refresh-state=true$' "$GITHUB_OUTPUT"
       else
         grep -q '^should-skip=false$' "$GITHUB_OUTPUT"
+        [[ "$series" != replay ]] || grep -q '^refresh-state=false$' "$GITHUB_OUTPUT"
       fi
       baseline="${value:-$feature}"
       grep -q "^baseline-ref=$baseline$" "$GITHUB_OUTPUT"
@@ -164,12 +167,30 @@ for series in replay e2e zones; do
     : > "$GITHUB_OUTPUT"
     bash "$resolver" true "$key" > "$scratch/log" 2>&1
     grep -q '^should-skip=false$' "$GITHUB_OUTPUT"
+    [[ "$series" != replay ]] || grep -q '^refresh-state=false$' "$GITHUB_OUTPUT"
     export STATE_TEST_FAILURE=list
     if bash "$resolver" false "$key" > "$scratch/log" 2>&1; then exit 1; fi
     export STATE_TEST_FAILURE=""
     echo "PASS: $series $key first run, unchanged/changed commit, force, and API failure"
   done
 done
+
+# A Docker outage must not age out replay state that the stale nightly matches,
+# but a stale nightly past the baseline must not refresh it.
+export STATE_TEST_WORKFLOW=.github/workflows/bench-replay-scheduled.yml BENCH_STATE_SERIES=replay BENCH_REPLAY_CHAIN=mainnet
+export STATE_TEST_NIGHTLY_DATE
+STATE_TEST_NIGHTLY_DATE=$(jq -nr 'now - 2 * 86400 | todate')
+for value in "$feature" "$previous"; do
+  export STATE_TEST_VALUE="$value"
+  : > "$GITHUB_OUTPUT"
+  bash "$scripts/bench-replay-scheduled-refs.sh" false > "$scratch/log" 2>&1
+  grep -q '^is-stale=true$' "$GITHUB_OUTPUT"
+  grep -q '^should-skip=false$' "$GITHUB_OUTPUT"
+  refresh=$([[ "$value" == "$feature" ]] && echo true || echo false)
+  grep -q "^refresh-state=$refresh$" "$GITHUB_OUTPUT"
+done
+unset STATE_TEST_NIGHTLY_DATE
+echo 'PASS: stale replay nightly refreshes only unchanged state'
 
 export STATE_TEST_VALUE="$previous"
 for path in bench-zones-scheduled zones-benchmark; do

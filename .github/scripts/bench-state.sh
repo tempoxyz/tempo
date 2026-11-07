@@ -22,9 +22,10 @@ esac
 name="bench-state-$series-$key"
 workflow=".github/workflows/bench-$series-scheduled.yml"
 branch=${GITHUB_REF_NAME:-main}
-# Passing runs save state and runs skipped for an unchanged ref re-save it, so
-# old state means every run since has failed, e.g. a baseline too old to run
-# current blocks or workloads. Old state bootstraps instead.
+# Passing runs save state, and runs that don't benchmark because the ref is
+# unchanged (skipped, or a stale replay nightly) re-save it. Old state therefore
+# means every benchmark since has failed, e.g. a baseline too old to run current
+# blocks or workloads. Old state bootstraps instead.
 max_age_days=${BENCH_STATE_MAX_AGE_DAYS:-3}
 
 # Filter before downloading: dispatches on test branches must not change main's
