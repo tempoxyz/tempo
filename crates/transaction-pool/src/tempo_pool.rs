@@ -324,6 +324,10 @@ where
 
         for tx in transactions {
             if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Pool maintenance evicts a transaction past its valid_before or key expiry"
+                );
                 to_remove.push(*tx.hash());
                 continue;
             }
@@ -1559,7 +1563,10 @@ mod tests {
         txs.iter().map(|tx| *tx.hash()).collect()
     }
 
-    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
+    use crate::{
+        test_utils::{MockProviderStorageExt, TxBuilder, wrap_valid_tx},
+        transaction::KeychainSubject,
+    };
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
@@ -1787,8 +1794,6 @@ mod tests {
 
     #[test]
     fn pending_transactions_by_address_and_nonce_key() {
-        use crate::test_utils::{TxBuilder, wrap_valid_tx};
-
         let pool = create_test_pool(create_provider_with_tip());
         let sender = Address::random();
         let nonce_key = U256::from(7);
@@ -1832,9 +1837,6 @@ mod tests {
 
     #[test]
     fn canonical_state_change_refreshes_aa_2d_base_fee() {
-        use reth_primitives_traits::SealedBlock;
-        use reth_transaction_pool::PoolUpdateKind;
-
         let pool = create_test_pool(create_provider_with_tip());
         let initial_base_fee = pool.aa_2d_pool.read().base_fee();
 

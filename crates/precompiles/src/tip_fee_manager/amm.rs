@@ -1,6 +1,8 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{ContractStorage, Handler, StorageAction, StorageCtx, StorageKey},
+    storage::{
+        ContractStorage, Handler, StorageAction, StorageCtx, StorageKey, packing::insert_into_word,
+    },
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip403_registry::AuthRole,
@@ -71,8 +73,6 @@ impl Pool {
 
     /// Encodes a [`Pool`] into the raw EVM storage slot value.
     pub fn encode_to_slot(&self) -> Result<U256> {
-        use crate::storage::packing::insert_into_word;
-
         let slot = insert_into_word(
             U256::ZERO,
             &self.reserve_user_token,
@@ -482,6 +482,16 @@ impl TipFeeManager {
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
         let total_supply = self.get_total_supply(pool_id)?;
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always_or_unreachable!(
+            liquidity <= total_supply,
+            "Fee AMM LP burn stays within the pool's LP total supply",
+            &serde_json::json!({
+                "pool_id": pool_id.to_string(),
+                "liquidity": liquidity.to_string(),
+                "total_supply": total_supply.to_string(),
+            })
+        );
         self.set_total_supply(
             pool_id,
             total_supply

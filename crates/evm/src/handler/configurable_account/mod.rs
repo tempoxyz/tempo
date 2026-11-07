@@ -119,7 +119,7 @@ impl TempoTxEnv {
         let eligibility = if match aa {
             None => self
                 .as_eip7702()
-                .is_some_and(|tx| !tx.authorization_list.is_empty()),
+                .is_some_and(|tx| tx.authorizations().len() != 0),
             Some(aa) => !aa.tx().tempo_authorization_list.is_empty(),
         } {
             UpgradeEligibility::HasAuthorizationList
@@ -163,7 +163,7 @@ impl TempoTxEnv {
 /// simulation skips only the sender check.
 /// Loads and warms accounts, but does not register commitments.
 /// Caller must charge both components.
-/// Transaction access-list and beneficiary warmth must be initialized before loading non-caller
+/// Transaction warmth, but not the beneficiary's, must be initialized before loading non-caller
 /// accounts.
 pub(crate) fn validate_state(
     host: &mut Evm<'_, TempoEvmTypes>,

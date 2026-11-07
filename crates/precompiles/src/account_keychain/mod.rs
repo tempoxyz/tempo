@@ -1665,6 +1665,7 @@ impl AccountKeychain {
 mod tests {
     use super::*;
     use crate::{
+        Precompile,
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
@@ -1978,8 +1979,6 @@ mod tests {
 
     #[test]
     fn test_t14_stored_admin_keys_become_regular_keys() -> eyre::Result<()> {
-        use crate::Precompile;
-
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         let account = Address::random();
         let admin_key = Address::random();

@@ -15,8 +15,15 @@ use alloy::{
     transports::{RpcError, TransportErrorKind},
 };
 use alloy_primitives::TxKind;
+use alloy_rlp::Encodable as _;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use core::num::NonZeroU64;
 use eyre::WrapErr;
+use p256::{
+    ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
+    elliptic_curve::rand_core::OsRng,
+};
+use sha2::{Digest, Sha256};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
@@ -25,7 +32,7 @@ use tempo_primitives::{
     SignatureType, TempoTransaction,
     transaction::{
         CallScope, FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SelectorRule,
-        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit, calc_gas_balance_spending,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -344,7 +351,6 @@ pub(crate) fn create_signed_key_authorization(
 pub(super) fn compute_authorization_signature_hash(
     auth: &alloy_eips::eip7702::Authorization,
 ) -> B256 {
-    use alloy_rlp::Encodable as _;
     let mut sig_buf = Vec::new();
     sig_buf.push(tempo_primitives::transaction::tt_authorization::MAGIC);
     auth.encode(&mut sig_buf);
@@ -404,8 +410,6 @@ pub(crate) fn generate_p256_access_key() -> (
     alloy::primitives::B256,
     Address,
 ) {
-    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-
     let signing_key = SigningKey::random(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     let encoded_point = verifying_key.to_encoded_point(false);
@@ -519,9 +523,6 @@ pub(super) fn sign_p256_primitive(
     pub_key_x: B256,
     pub_key_y: B256,
 ) -> eyre::Result<PrimitiveSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-
     let pre_hashed = Sha256::digest(sig_hash);
     let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = p256_signature.to_bytes();
@@ -602,9 +603,6 @@ pub(super) fn sign_webauthn_primitive(
     pub_key_y: B256,
     origin: &str,
 ) -> eyre::Result<PrimitiveSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-
     let (authenticator_data, client_data_json) = create_webauthn_data(sig_hash, origin);
 
     let client_data_hash = Sha256::digest(client_data_json.as_bytes());
@@ -660,8 +658,6 @@ pub(super) fn create_transfer_call(token: Address, to: Address, amount: U256) ->
 
 /// Helper to create a TIP20 balanceOf call (useful as a benign call for key authorization txs)
 pub(super) fn create_balance_of_call(account: Address) -> Call {
-    use alloy::sol_types::SolCall;
-
     Call {
         to: DEFAULT_FEE_TOKEN.into(),
         value: U256::ZERO,
@@ -704,8 +700,6 @@ pub(crate) fn create_mock_webauthn_sig(pub_key_x: B256, pub_key_y: B256) -> Temp
 pub(crate) fn create_default_token_limit(
     funded: U256,
 ) -> Vec<tempo_primitives::transaction::TokenLimit> {
-    use tempo_primitives::transaction::TokenLimit;
-
     vec![TokenLimit {
         token: DEFAULT_FEE_TOKEN,
         limit: funded / U256::from(2),
@@ -787,8 +781,6 @@ pub(crate) fn sign_aa_tx_p256(
 
 /// Helper to create WebAuthn authenticator data and client data JSON
 pub(super) fn create_webauthn_data(sig_hash: B256, origin: &str) -> (Vec<u8>, String) {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-
     // Create minimal authenticator data
     let mut authenticator_data = vec![0u8; 37];
     authenticator_data[0..32].copy_from_slice(&[0xAA; 32]); // rpIdHash
@@ -952,8 +944,6 @@ pub(crate) async fn assert_fee_payer_spent(
     fee_payer: FeePayerContext,
     receipt: &serde_json::Value,
 ) -> eyre::Result<()> {
-    use tempo_primitives::transaction::calc_gas_balance_spending;
-
     let gas_used = parse_hex_u64(receipt, "gasUsed")?
         .ok_or_else(|| eyre::eyre!("Receipt missing 'gasUsed'"))?;
     let effective_gas_price = parse_hex_u128(receipt, "effectiveGasPrice")?
