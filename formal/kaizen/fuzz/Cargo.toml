@@ -1,0 +1,70 @@
+[package]
+name = "kaizen-fuzz"
+description = "Differential fuzzer: the Lean-extracted Kaizen follower core against an independent Rust reference built on commonware and Tempo's code paths"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96.0"
+publish = false
+
+[lib]
+name = "kaizen_fuzz"
+path = "src/lib.rs"
+
+[[bin]]
+name = "diff"
+path = "src/bin/diff.rs"
+required-features = ["net"]
+
+[features]
+default = ["net"]
+# The real-testnet mode of the diff binary (RPC client, Tempo header types).
+net = ["dep:tempo-primitives", "dep:tempo-dkg-onchain-artifacts", "dep:alloy-consensus", "dep:alloy-primitives", "dep:serde", "dep:serde_json", "dep:reqwest", "dep:rustls", "dep:tokio", "dep:futures"]
+
+[dependencies]
+commonware-codec = { version = "2026.9.0" }
+commonware-consensus = { version = "2026.9.0" }
+commonware-cryptography = { version = "2026.9.0", default-features = false, features = ["std"] }
+commonware-parallel = { version = "2026.9.0" }
+rand = { version = "0.10" }
+arbitrary = { version = "1" }
+sha2 = { version = "0.10" }
+rand_chacha = { version = "0.9" }
+
+hex = "0.4"
+tempo-primitives = { path = "../../../crates/primitives", default-features = false, features = ["serde", "std"], optional = true }
+tempo-dkg-onchain-artifacts = { path = "../../../crates/dkg-onchain-artifacts", default-features = false, optional = true }
+alloy-consensus = { version = "2.5.0", default-features = false, features = ["std"], optional = true }
+alloy-primitives = { version = "1.7.3", default-features = false, features = ["std"], optional = true }
+serde = { version = "1.0.228", features = ["derive"], default-features = false, optional = true }
+serde_json = { version = "1.0.149", features = ["alloc", "raw_value", "std"], default-features = false, optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"], optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["ring"], optional = true }
+tokio = { version = "1.49.0", features = ["full"], optional = true }
+futures = { version = "0.3.31", optional = true }
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+debug = 1
+
+# Standalone workspace (links the Lean runtime). fuzz/ is the cargo-fuzz package.
+[workspace]
+members = [".", "fuzz"]
+
+[patch.crates-io]
+# LLVM 23 support is not released yet.
+inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff" }
+
+# reth-core
+reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-rpc-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+
+[patch."https://github.com/alloy-rs/evm2"]
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }

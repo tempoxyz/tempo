@@ -1,0 +1,63 @@
+[package]
+name = "kaizen-follower"
+description = "Unverified Rust shim (Kaizen stage III) around the Lean-verified Simplex follower core"
+version = "1.17.0"
+edition = "2024"
+rust-version = "1.96.0"
+publish = false
+
+[dependencies]
+tempo-primitives = { path = "../../../crates/primitives", default-features = false, features = ["serde", "std"] }
+tempo-dkg-onchain-artifacts = { path = "../../../crates/dkg-onchain-artifacts", default-features = false }
+commonware-codec = { version = "2026.9.0" }
+commonware-consensus = { version = "2026.9.0" }
+commonware-cryptography = { version = "2026.9.0", default-features = false, features = ["std"] }
+commonware-parallel = { version = "2026.9.0" }
+alloy-consensus = { version = "2.5.0", default-features = false, features = ["std"] }
+alloy-primitives = { version = "1.7.3", default-features = false, features = ["std"] }
+alloy-eips = { version = "2.5.0", default-features = false }
+eyre = { version = "0.6.12" }
+rand = { version = "0.10" }
+serde = { version = "1.0.228", features = ["derive"], default-features = false }
+serde_json = { version = "1.0.149", features = ["alloc", "raw_value", "std"], default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "blocking"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
+tokio = { version = "1.49.0", features = ["full"] }
+futures = { version = "0.3.31" }
+clap = { version = "4.5.57", features = ["derive", "env"] }
+
+tempo-evm = { path = "../../../crates/evm" }
+tempo-chainspec = { path = "../../../crates/chainspec", features = ["reth"] }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487", features = ["account-ext"] }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "966010c905449163ef161530a5ee95ac1e0c8487" }
+reth-primitives-traits = { version = "0.8.1", default-features = false, features = ["account-ext", "std"] }
+alloy-trie = { version = "0.9.8", features = ["account-ext"] }
+alloy-rlp = "0.3.16"
+rayon = "1.11"
+
+[build-dependencies]
+cc = "1"
+
+# Standalone workspace: it links the Lean runtime, so it stays out of the Tempo workspace and its CI.
+[workspace]
+
+[patch.crates-io]
+# LLVM 23 support is not released yet.
+inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff" }
+
+# reth-core
+reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-rpc-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
+
+# evm2 is patched through its pre-transfer URL, which redirects to alloy-rs/evm2, because Cargo
+# rejects a patch from the same source.
+[patch."https://github.com/alloy-rs/evm2"]
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "a29a283f6cd4bc65e44f5813de5e9f43553c5fda" }
+
