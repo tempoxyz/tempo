@@ -68,6 +68,13 @@ impl Context {
                 let spender = approval_spender(*owner, random_below(APPROVAL_SPENDERS));
                 nested_mapping_key(*owner, spender, index + 1)
             }));
+            // Half the time, one owner's whole approval set in the same request, so one proof
+            // covers many keys of the same subtrie.
+            if let Some(owner) = accounts.first().filter(|_| random_below(2) == 0) {
+                zone_slots.extend((0..APPROVAL_SPENDERS).map(|spender| {
+                    nested_mapping_key(*owner, approval_spender(*owner, spender), index + 1)
+                }));
+            }
         }
         let mut addresses: Vec<Address> =
             vec![PATH_USD_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS];
@@ -85,7 +92,14 @@ impl Context {
             println!("check-proofs: no zone node reachable");
             return Ok(());
         };
-        let height = lowest.saturating_sub(random_below(4));
+        // Half the time a recent block, otherwise any earlier one, which nodes answer from
+        // historical state rather than the latest trie.
+        let historical = random_below(2) == 0;
+        let height = if historical {
+            random_below(lowest + 1)
+        } else {
+            lowest.saturating_sub(random_below(4))
+        };
         let mut zone_proofs = Vec::new();
         for (url, zone) in self.zone_urls.iter().zip(&self.zones) {
             let requests: Vec<(Address, Vec<B256>)> = addresses
@@ -110,6 +124,11 @@ impl Context {
                 Err(error) => return Err(error),
             }
         }
+        assert_sometimes!(
+            historical && lowest.saturating_sub(height) > 100 && zone_proofs.len() > 1,
+            "Zone proofs served for a block over 100 blocks old",
+            &json!({ "height": height, "tip": lowest, "nodes": zone_proofs.len() })
+        );
         self.assert_proofs("Zone", height, zone_proofs).await?;
 
         // L1 proofs: the portal's storage holds the zone's settled state and deposit queue.
