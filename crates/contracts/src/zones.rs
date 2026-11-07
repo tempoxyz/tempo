@@ -1,5 +1,6 @@
 //! Zone contract bindings and runtimes.
 
+pub mod allowlist;
 pub mod common;
 pub mod constants;
 pub mod messenger;
@@ -12,6 +13,7 @@ pub mod zone_portal;
 pub use crate::precompiles::{
     IZoneFactory as ZoneFactory, zone_factory::*, zone_verifier::NitroBatchAttestation,
 };
+pub use allowlist::*;
 pub use common::*;
 pub use constants::*;
 pub use messenger::*;

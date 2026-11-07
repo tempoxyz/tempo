@@ -8,7 +8,7 @@
 //!
 //! 1. Direct-call-only rules reject delegate calls before storage access.
 //! 2. Reject calls that cannot cover the calldata input cost before admission rules decode it.
-//! 3. Decode the selector and reject calls that cannot cover a configured fixed gas charge.
+//! 3. Compute any fixed gas charge from the calldata and reject calls that cannot cover it.
 //! 4. Apply [`CallRules`] admission checks using calldata, caller metadata, and anchored state.
 //! 5. Forward the original calldata and caller, applying any configured fixed gas charge.
 //!
@@ -43,7 +43,7 @@ use tempo_precompiles::{
 /// Shared EVM configuration and accounting state installed for every Zone precompile wrapper.
 #[derive(Clone, Debug)]
 pub struct ZonePrecompileEnv {
-    spec: TempoHardfork,
+    pub(crate) spec: TempoHardfork,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 }
@@ -83,6 +83,14 @@ pub(crate) trait CallRules: 'static {
         None
     }
 
+    /// Return the fixed gas charge for this calldata, if one applies.
+    ///
+    /// Defaults to [`Self::fixed_gas`] for the calldata's selector. Override it when the charge
+    /// depends on the arguments; the calldata may be malformed.
+    fn fixed_gas_for_call(&self, data: &[u8]) -> Option<u64> {
+        self.fixed_gas(selector_from_calldata(data))
+    }
+
     /// Applies Zone-specific admission rules.
     fn admit(&self, _data: &[u8], _caller: Address) -> CallCheck {
         CallCheck::Continue
@@ -119,7 +127,7 @@ where
         return Err(PrecompileHalt::OutOfGas.into());
     }
 
-    let fixed_gas = rules.fixed_gas(selector_from_calldata(data));
+    let fixed_gas = rules.fixed_gas_for_call(data);
     if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
         return Err(PrecompileHalt::OutOfGas.into());
     }

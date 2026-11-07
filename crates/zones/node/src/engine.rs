@@ -47,16 +47,19 @@ use reth_node_builder::ConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{BuiltPayload, PayloadKind};
 use reth_primitives_traits::SealedHeader;
+use reth_storage_api::StateProviderFactory;
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tempo_chainspec::spec::TempoHardforks as _;
+use tempo_evm::TempoStateAccess as _;
+use tempo_precompiles::storage::StorageActions;
 use tempo_primitives::TempoHeader;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::deposit_allowlist::DepositAllowlist;
+use crate::allowlist;
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::{
     DepositQueue, EncryptionKeyRing, FinalizedTarget, L1BlockDeposits, L1BlockTracker, L1Deposit,
@@ -188,7 +191,7 @@ where
 ///
 /// On failure the L1 block stays in the queue and is retried.
 #[derive(Debug)]
-pub struct ZoneEngine {
+pub struct ZoneEngine<TProvider> {
     /// Chain spec for hardfork checks when building attributes.
     chain_spec: Arc<ZoneChainSpec>,
     /// Engine API handle for FCU and newPayload.
@@ -212,11 +215,11 @@ pub struct ZoneEngine {
     production_permit: Option<ProductionPermit>,
     /// Proof WAL writer invoked after execution and before canonicalization.
     proof_collector: Option<ProofCollectorHandle>,
-    /// Depositors whose L1 deposits are credited. `None` credits every deposit.
-    deposit_allowlist: Option<DepositAllowlist>,
+    /// Zone state provider, read for the deposit allowlist at the parent of each built block.
+    provider: TProvider,
 }
 
-impl ZoneEngine {
+impl<TProvider: StateProviderFactory> ZoneEngine<TProvider> {
     pub fn new(
         chain_spec: Arc<ZoneChainSpec>,
         to_engine: ConsensusEngineHandle<ZonePayloadTypes>,
@@ -228,6 +231,7 @@ impl ZoneEngine {
         encryption_keys: EncryptionKeyRing,
         portal_address: Address,
         proof_collector: Option<ProofCollectorHandle>,
+        provider: TProvider,
     ) -> Self {
         Self {
             chain_spec,
@@ -241,14 +245,8 @@ impl ZoneEngine {
             portal_address,
             production_permit: None,
             proof_collector,
-            deposit_allowlist: None,
+            provider,
         }
-    }
-
-    /// Bounce deposits whose L1 sender is not on `allowlist`. `None` credits every deposit.
-    pub fn with_deposit_allowlist(mut self, allowlist: Option<DepositAllowlist>) -> Self {
-        self.deposit_allowlist = allowlist;
-        self
     }
 
     /// Enforce the per-anchor leadership permit before every advance.
@@ -381,24 +379,32 @@ impl ZoneEngine {
             let portal_work = self
                 .deposit_queue
                 .operational_work(l1_block.header.num_hash())?;
-            let senders = self.deposit_allowlist.as_ref().map(|_| {
-                portal_work
-                    .iter()
-                    .flat_map(|block| &block.events.deposits)
-                    .filter_map(|deposit| match deposit {
-                        L1Deposit::Deposit(deposit) => Some(deposit.sender),
-                        L1Deposit::WithdrawalBounceBack(_) => None,
-                    })
-                    .collect::<Vec<_>>()
-            });
+            let senders = portal_work
+                .iter()
+                .flat_map(|block| &block.events.deposits)
+                .filter_map(|deposit| match deposit {
+                    L1Deposit::Deposit(deposit) => Some(deposit.sender),
+                    L1Deposit::WithdrawalBounceBack(_) => None,
+                })
+                .collect::<Vec<_>>();
             let mut prepared = L1BlockDeposits::prepare_many(
                 portal_work,
                 &self.encryption_keys,
                 self.portal_address,
             )
             .await?;
-            if let Some((allowlist, senders)) = self.deposit_allowlist.as_ref().zip(senders) {
-                let rejected = allowlist.reject_unlisted(&senders, &mut prepared.decryptions)?;
+            if !senders.is_empty() {
+                // The block applies the list as of its parent, so an update takes effect for
+                // deposits from the next block on.
+                let mut state = self
+                    .provider
+                    .state_by_block_hash(self.last_header.hash())
+                    .wrap_err("open parent state to read the deposit allowlist")?;
+                let rejected = state.with_read_only_storage_ctx(
+                    self.chain_spec.tempo_hardfork_at(timestamp_secs),
+                    StorageActions::disabled(),
+                    || allowlist::reject_unlisted(&senders, &mut prepared.decryptions),
+                )?;
                 if rejected > 0 {
                     info!(target: "zone::engine", rejected, "Bouncing deposits from senders not on the allowlist");
                     metrics::counter!("zone_deposit_allowlist_rejected_total")
@@ -494,7 +500,7 @@ impl ZoneEngine {
     }
 }
 
-impl AvailableBlockDrain for ZoneEngine {
+impl<TProvider: StateProviderFactory> AvailableBlockDrain for ZoneEngine<TProvider> {
     type Block = AvailableTempoImport;
 
     fn next_available(&self) -> eyre::Result<Option<Self::Block>> {

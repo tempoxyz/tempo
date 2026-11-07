@@ -24,6 +24,7 @@
 //! - **StorageCredits** (`storage_credits`) — upstream storage-credit accounting with
 //!   account-scoped read rules.
 //! - **Zone Inbox** ([`inbox`]) — advances Tempo state and processes the deposit queue.
+//! - **Zone Allowlist** ([`allowlist`]) — on-chain deposit allowlist, from T15.
 //! - **TIP-403 Registry** ([`tip403_proxy`]) — upstream registry over finalized L1 state.
 //! - **Zone TIP-20** ([`ztip20`]) — upstream TIP-20 with zone call rules.
 
@@ -67,6 +68,7 @@ mod execution;
 mod privacy;
 pub use execution::ZonePrecompileEnv;
 mod account_keychain;
+pub mod allowlist;
 pub mod inbox;
 mod nonce;
 pub mod receive_policy_guard;
@@ -80,6 +82,7 @@ pub mod zone_fee_manager;
 pub mod zone_state;
 pub mod ztip20;
 
+pub use allowlist::{ZONE_ALLOWLIST_ADDRESS, ZoneAllowlist};
 pub use inbox::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR, ZoneInbox};
 pub use outbox::ZoneOutbox;
 pub use storage::{L1State, L1StateError, L1StorageReader};
@@ -190,6 +193,7 @@ where
                     | STORAGE_CREDITS_ADDRESS
             )
             || cfg!(feature = "std") && *address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS
+            || self.env.spec.is_t15() && *address == ZONE_ALLOWLIST_ADDRESS
     }
 
     fn execute(
@@ -246,6 +250,15 @@ where
                 &self.env,
                 execution::NoCallRules,
                 |data, caller| ZoneInbox::new().call(&self.l1, data, caller),
+            )
+        } else if address == ZONE_ALLOWLIST_ADDRESS && self.env.spec.is_t15() {
+            execution::execute_precompile(
+                evm,
+                message,
+                gas,
+                &self.env,
+                allowlist::AllowlistRules,
+                |data, caller| ZoneAllowlist::new().call(&self.l1, data, caller),
             )
         } else if address == ZONE_FEE_MANAGER_ADDRESS {
             zone_precompile!(evm, message, gas, &self.env, ZoneFeeManager)
