@@ -36,6 +36,7 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     in_ptr: *const u8,
     in_len: usize,
 ) -> c_int {
+    execute::reset_execution_time();
     if in_ptr.is_null() {
         execute::reject(ErrorClass::InvalidInput, execute::Check::Null);
         return FUZZ_REJECT;
@@ -46,10 +47,65 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
         return FUZZ_REJECT;
     };
     let Ok(outcome) = bincode_options().serialize(&execute::run(input)) else {
+        execute::reset_execution_time();
         execute::reject(ErrorClass::Internal, execute::Check::OutcomeEncoding);
         return FUZZ_REJECT;
     };
-    unsafe { write_output(out_ptr, out_len, out_written, &outcome) }
+    let result = unsafe { write_output(out_ptr, out_len, out_written, &outcome) };
+    if result == FUZZ_REJECT {
+        execute::reset_execution_time();
+    }
+    result
+}
+
+/// Returns executor nanoseconds for the last execution request on the calling thread.
+///
+/// Includes pre-execution changes, transactions and finalization, but excludes input decoding,
+/// state setup, invariant checks and outcome encoding. Rejected requests reset the counter;
+/// a partial execution can have a nonzero value, so callers must check the outcome separately.
+/// This optional symbol does not change the serialized harness ABI.
+#[unsafe(no_mangle)]
+pub extern "C" fn tempo_fuzz_execution_nanos_v1() -> u64 {
+    execute::execution_nanos()
+}
+
+/// Copies executor-only LLVM counters for the last request on this thread.
+///
+/// Requires an `executor-counters` build with `-C instrument-coverage`. Slots match the LLVM
+/// counter section. Snapshots bracket only the executor's timed regions, including finalization;
+/// decoding, state setup, invariants and outcome encoding are excluded. Snapshot and timer
+/// bookkeeping may contribute a small number of counts. LLVM counters are process-global, so
+/// concurrent harness calls or other instrumented work must be excluded by the caller.
+///
+/// Lengths are in `u64` elements, not bytes. A null or short destination reports the required
+/// length through `out_written` and returns `FUZZ_REJECT`; a sufficient destination returns
+/// `FUZZ_ACCEPT`. A null `out_written` returns `FUZZ_REJECT`. Retrieval never resamples counters
+/// or changes saved values. Before the first execution it reports a full zero-filled vector.
+/// Rejected execution ABI calls zero the saved vector.
+///
+/// # Safety
+///
+/// `out_written` must be writable and aligned when nonnull. When nonnull and sufficiently long,
+/// `out_ptr` must be aligned and writable for the reported number of `u64` elements. These
+/// destinations must not overlap each other or the harness's internal counter storage.
+#[cfg(feature = "executor-counters")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tempo_fuzz_executor_counts_v1(
+    out_ptr: *mut u64,
+    out_len: usize,
+    out_written: *mut usize,
+) -> c_int {
+    if out_written.is_null() {
+        return FUZZ_REJECT;
+    }
+    execute::with_executor_counts(|counts| {
+        unsafe { *out_written = counts.len() };
+        if out_ptr.is_null() || out_len < counts.len() {
+            return FUZZ_REJECT;
+        }
+        unsafe { core::ptr::copy_nonoverlapping(counts.as_ptr(), out_ptr, counts.len()) };
+        FUZZ_ACCEPT
+    })
 }
 
 /// Writes the bincode-encoded [`TempoHarnessCapabilities`] to `out_ptr`, with the same return
