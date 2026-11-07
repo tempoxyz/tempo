@@ -166,7 +166,7 @@ async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
     // bytes, then independently validated by the leader pool for the next L1-derived build.
     let (follower_wallet, sender) = local_dev_zone_account(&follower)?;
     let transfer_recipient = address!("0x0000000000000000000000000000000000009abc");
-    fixture.seed_no_receive_policy(transfer_recipient)?;
+    fixture.seed_transfer_recipient(transfer_recipient)?;
     let sender_deposit = fixture.make_deposit(PATH_USD_ADDRESS, sender, sender, amount);
     let observed = fixture.portal_events_from_deposits(std::slice::from_ref(&sender_deposit));
     let anchor = fixture.inject_deposits_into(
@@ -344,7 +344,7 @@ async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Res
     const POLICY_L1_BLOCK: u64 = 2;
     let policy_block = fixture.next_block();
     assert_eq!(policy_block.header.inner.number, POLICY_L1_BLOCK);
-    fixture.seed_no_receive_policy(bob)?;
+    fixture.seed_transfer_recipient(bob)?;
     for node in [&leader, &follower] {
         seed_raw_tip403_policy(
             node.l1_state_cache(),

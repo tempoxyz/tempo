@@ -3,17 +3,28 @@
 
 use std::{collections::HashMap, fmt};
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
 use evm2::{
     DatabaseError, JournalEntry, PendingState,
     bytecode::Bytecode,
-    evm::{AccountChangeRef, AccountInfo, DynDatabase, State, StateChangeSink, StorageChange},
+    evm::{
+        AccountChangeRef, AccountExtension, AccountInfo, DynDatabase, State, StateChangeSink,
+        StorageChange,
+    },
 };
+use reth_execution_types::StateUpdate;
+use reth_trie_common::bundle_state::{AccountInfoRevert, AccountStatus, BundleState};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::tip20::{self, is_tip20_prefix};
+use tempo_precompiles::{
+    configurable_account::{
+        CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, is_valid_account,
+    },
+    tip20::{self, is_tip20_prefix},
+};
+use tempo_primitives::account::encode_config_commitment;
 use thiserror::Error;
 use zone_precompiles::{
-    TIP403_REGISTRY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, is_zone_precompile,
     storage::{L1State, L1StorageReader},
 };
 
@@ -22,6 +33,10 @@ use zone_precompiles::{
 ///
 /// The whole TIP-403 registry is mirrored. From T15, each TIP-20 token's pause flag is mirrored
 /// too, so upstream pause checks block on the Zone exactly what they block on Tempo.
+///
+/// From T14, account loads also carry Tempo's TIP-1108 commitment and the account marker code
+/// (TIP-1154). Block outputs drop them again through `strip_bundle_commitment_overlays` and
+/// `strip_update_commitment_overlays`, so zone state never stores them.
 pub struct L1OverlayDB<DB, L1> {
     inner: DB,
     l1: L1State<L1>,
@@ -160,7 +175,36 @@ impl StateChangeSink for L1WriteGuard {
 
 impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, DatabaseError> {
-        self.inner.get_account(address)
+        let mut info = self.inner.get_account(address)?;
+        // Only accounts without zone code carry a Tempo commitment (TIP-1154): zones reject
+        // authorization lists and contract creation, so code belongs to a protocol contract.
+        // Outside a zone transaction, such as in block-level system calls, accounts load with
+        // their zone-local view.
+        if !self.spec.is_t14()
+            || info.as_ref().is_some_and(|info| !info.is_empty_code_hash())
+            || !is_valid_account(*address, self.spec)
+            || is_zone_precompile(*address, self.spec)
+            || self.l1.initial_anchor().is_none()
+        {
+            return Ok(info);
+        }
+
+        let anchor = self.anchor()?;
+        // The EVM already charges this account load; the host-side L1 fetch must not be charged
+        // again.
+        let commitment = self
+            .l1
+            .read_l1_commitment_unmetered(*address, anchor)
+            .map_err(|error| DatabaseError::new(error, true))?;
+        self.l1.note_mirrored_read(anchor);
+        if commitment.is_zero() {
+            return Ok(info);
+        }
+        let account = info.get_or_insert_with(AccountInfo::empty);
+        account.extension = AccountExtension::from(encode_config_commitment(commitment));
+        account.code_hash = CONFIGURABLE_ACCOUNT_CODE_HASH;
+        account.code = Some(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+        Ok(info)
     }
 
     fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, DatabaseError> {
@@ -205,6 +249,71 @@ fn is_mirrored_slot(address: &Address, slot: &U256) -> bool {
     *address == TIP403_REGISTRY_ADDRESS || is_tip20_pause_slot(address, slot)
 }
 
+/// Removes the commitment overlays of [`L1OverlayDB`] from a block's state (see
+/// [`strip_commitment_overlay`]).
+///
+/// The result equals the state of the same block executed without overlays.
+pub(crate) fn strip_bundle_commitment_overlays(state: &mut BundleState) {
+    // The status of an account that only the overlay made exist.
+    let not_existing = |status| match status {
+        AccountStatus::Loaded => AccountStatus::LoadedNotExisting,
+        AccountStatus::Changed => AccountStatus::InMemoryChange,
+        status => status,
+    };
+    for account in state.state.values_mut() {
+        strip_commitment_overlay(&mut account.info);
+        if strip_commitment_overlay(&mut account.original_info) {
+            account.status = not_existing(account.status);
+        }
+    }
+    for (_, revert) in state.reverts.iter_mut().flatten() {
+        if let AccountInfoRevert::RevertTo(info) = &revert.account
+            && is_overlaid(info)
+        {
+            let mut info = Some(info.clone());
+            if strip_commitment_overlay(&mut info) {
+                revert.previous_status = not_existing(revert.previous_status);
+            }
+            revert.account = info.map_or(AccountInfoRevert::DeleteIt, AccountInfoRevert::RevertTo);
+        }
+    }
+}
+
+/// Removes the commitment overlays of [`L1OverlayDB`] from a transaction's streamed state, as
+/// [`strip_bundle_commitment_overlays`] does.
+pub(crate) fn strip_update_commitment_overlays(update: &mut StateUpdate) {
+    for account in &mut update.accounts {
+        strip_commitment_overlay(&mut account.current);
+        strip_commitment_overlay(&mut account.original);
+    }
+}
+
+/// Whether `info` carries the commitment overlay of [`L1OverlayDB`]: zones never write a
+/// commitment, so a nonempty extension marks an overlaid account.
+fn is_overlaid(info: &AccountInfo) -> bool {
+    !info.extension.is_empty()
+}
+
+/// Restores the zone-local view of an account loaded through [`L1OverlayDB`], returning whether
+/// the account does not exist locally.
+///
+/// The overlay replaces an overlaid account's code with the account marker. Its zone code was
+/// empty: zones reject authorization lists and contract creation (see `validate_transaction`). An
+/// overlaid account that is empty without its overlay does not exist locally.
+fn strip_commitment_overlay(info: &mut Option<AccountInfo>) -> bool {
+    let Some(account) = info.as_mut().filter(|account| is_overlaid(account)) else {
+        return false;
+    };
+    account.extension = AccountExtension::new();
+    account.code_hash = KECCAK256_EMPTY;
+    account.code = None;
+    if !account.is_empty() {
+        return false;
+    }
+    *info = None;
+    true
+}
+
 /// Database error produced by [`L1OverlayDB`].
 #[derive(Debug, Error)]
 pub enum ZoneDbError {
@@ -222,14 +331,15 @@ pub enum ZoneDbError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::Bytes;
     use evm2::evm::{InMemoryDB, StateChangeSource};
-    use reth_execution_types::{BlockState, BundleSource, TransactionChanges};
-    use tempo_precompiles::PATH_USD_ADDRESS;
+    use reth_execution_types::{AccountUpdate, BlockState, BundleSource, TransactionChanges};
+    use tempo_precompiles::{PATH_USD_ADDRESS, storage::account_config_commitment};
     use zone_precompiles::{
         storage::L1StateError, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
         test_utils::MockL1Reader as TestL1,
     };
-    use zone_primitives::constants::TEMPO_STATE_ADDRESS;
+    use zone_primitives::constants::{TEMPO_STATE_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     fn test_db(anchor: u64) -> InMemoryDB {
         let mut db = InMemoryDB::default();
@@ -502,5 +612,127 @@ mod tests {
             DynDatabase::get_storage(&mut inner, &address, &slot).unwrap(),
             value
         );
+    }
+
+    #[test]
+    fn overlays_tempo_commitment_on_native_accounts_without_code() {
+        let (anchor, account, commitment) = (42, Address::repeat_byte(0x11), B256::repeat_byte(1));
+        let l1 = TestL1::default();
+        l1.insert_commitment(account, anchor, commitment);
+        let mut db = test_overlay(anchor, l1.clone());
+
+        let info = db.get_account(&account).unwrap().unwrap();
+        assert_eq!(
+            account_config_commitment(&info, TempoHardfork::T14).unwrap(),
+            commitment
+        );
+        assert_eq!(info.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
+        assert_eq!(
+            info.code,
+            Some(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE))
+        );
+        assert_eq!(db.l1_state().get_anchor(), Some(anchor));
+
+        // Without a Tempo commitment, the local view is unchanged.
+        let unregistered = Address::repeat_byte(0x12);
+        assert_eq!(db.get_account(&unregistered).unwrap(), None);
+        assert_eq!(
+            l1.commitment_requests(),
+            [(account, anchor), (unregistered, anchor)]
+        );
+    }
+
+    #[test]
+    fn overlay_skips_accounts_that_cannot_carry_a_commitment() {
+        let (anchor, account) = (42, Address::repeat_byte(0x11));
+        let contract = Address::repeat_byte(0x12);
+        let mut inner = test_db(anchor);
+        inner.insert_account_info(
+            &contract,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0x00]))),
+        );
+        let l1 = TestL1::default();
+        let mut db = L1OverlayDB::new(inner, l1.clone(), Address::ZERO, TempoHardfork::T14);
+        db.l1_state().begin_transaction(U256::from(anchor));
+        db.get_account(&contract).unwrap();
+        db.get_account(&PATH_USD_ADDRESS).unwrap();
+        db.get_account(&Address::ZERO).unwrap();
+        // Zone system contracts are excluded by address, whatever their code.
+        db.get_account(&ZONE_OUTBOX_ADDRESS).unwrap();
+
+        let mut before_t14 = L1OverlayDB::new(
+            test_db(anchor),
+            l1.clone(),
+            Address::ZERO,
+            TempoHardfork::T13,
+        );
+        before_t14.l1_state().begin_transaction(U256::from(anchor));
+        before_t14.get_account(&account).unwrap();
+
+        // Block-level system calls load accounts outside any zone transaction.
+        let mut outside_transaction = L1OverlayDB::new(
+            test_db(anchor),
+            l1.clone(),
+            Address::ZERO,
+            TempoHardfork::T14,
+        );
+        outside_transaction.get_account(&account).unwrap();
+
+        assert_eq!(l1.commitment_requests(), []);
+    }
+
+    #[test]
+    fn commitment_overlay_is_removed_from_canonical_transition() {
+        let (anchor, account) = (42, Address::repeat_byte(0x11));
+        let bundle = |original: Option<AccountInfo>, current: Option<AccountInfo>| {
+            let mut state = PendingState::default();
+            state.insert_account(account, original, current);
+            let mut block = BlockState::new();
+            let mut changes = TransactionChanges::default();
+            state.visit(&mut changes).unwrap();
+            block.commit(&changes);
+            block.into_bundle()
+        };
+        // An account absent from the zone, and one that already sent from it.
+        for local in [None, Some(AccountInfo::empty().with_nonce(2))] {
+            let l1 = TestL1::default();
+            l1.insert_commitment(account, anchor, B256::repeat_byte(1));
+            let mut inner = test_db(anchor);
+            if let Some(local) = &local {
+                inner.insert_account_info(&account, local.clone());
+            }
+            let mut db = L1OverlayDB::new(inner, l1, Address::ZERO, TempoHardfork::T14);
+            db.l1_state().begin_transaction(U256::from(anchor));
+            let original = db.get_account(&account).unwrap().unwrap();
+            let nonce = original.nonce + 1;
+            let current = original.clone().with_nonce(nonce);
+            let local_current = AccountInfo::empty().with_nonce(nonce);
+
+            let mut update = StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: account,
+                    original: Some(original.clone()),
+                    current: Some(current.clone()),
+                    created: false,
+                    wiped: false,
+                    storage: Vec::new(),
+                }],
+            };
+            strip_update_commitment_overlays(&mut update);
+            assert_eq!(update.accounts[0].original, local);
+            assert_eq!(update.accounts[0].current, Some(local_current.clone()));
+
+            // The block state equals that of the same transition without the overlay.
+            let mut overlaid = bundle(Some(original), Some(current));
+            strip_bundle_commitment_overlays(&mut overlaid);
+            assert_eq!(overlaid, bundle(local, Some(local_current.clone())));
+
+            let mut inner = db.into_inner();
+            inner.commit_source(&BundleSource(&overlaid));
+            assert_eq!(
+                DynDatabase::get_account(&mut inner, &account).unwrap(),
+                Some(local_current)
+            );
+        }
     }
 }
