@@ -430,12 +430,13 @@ reth-rpc-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275
 reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
 
 # evm2 is patched through its pre-transfer URL, which redirects to alloy-rs/evm2, because Cargo
-# rejects a patch from the same source. This revision is on alloy-rs/evm2's mattsse/perf-call branch.
+# rejects a patch from the same source. This revision is on alloy-rs/evm2's
+# mattsse/perf-call-trace-log-fix branch.
 [patch."https://github.com/alloy-rs/evm2"]
-evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "fc6acadec5972f0cff0a104a0c6249d8ac5af14d" }
-evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "fc6acadec5972f0cff0a104a0c6249d8ac5af14d" }
-evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "fc6acadec5972f0cff0a104a0c6249d8ac5af14d" }
-evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "fc6acadec5972f0cff0a104a0c6249d8ac5af14d" }
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "54cc68aad6fbbc5ecb233f7a3ea3f921dcf5a278" }
+evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "54cc68aad6fbbc5ecb233f7a3ea3f921dcf5a278" }
+evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "54cc68aad6fbbc5ecb233f7a3ea3f921dcf5a278" }
+evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "54cc68aad6fbbc5ecb233f7a3ea3f921dcf5a278" }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
