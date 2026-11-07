@@ -38,6 +38,9 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     tip1060_storage_credits_enabled: bool,
     tip1060_storage_credit_minting_enabled: bool,
     non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
+    /// Number of recorded storage actions when each open checkpoint was created, so a revert
+    /// can drop the actions of the reverted batch along with its state changes.
+    checkpoint_action_lens: Vec<usize>,
     /// Recorded storage actions.
     actions: StorageActions,
 }
@@ -87,6 +90,7 @@ where
             tip1060_storage_credits_enabled: spec.is_t7(),
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: None,
+            checkpoint_action_lens: Vec::new(),
             actions: StorageActions::disabled(),
         }
     }
@@ -642,14 +646,22 @@ where
 
     #[inline]
     fn checkpoint(&mut self) -> StateCheckpoint {
+        self.checkpoint_action_lens.push(self.actions.len());
         self.evm.state_mut().checkpoint()
     }
 
     #[inline]
-    fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {}
+    fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {
+        self.checkpoint_action_lens.pop();
+    }
 
     #[inline]
     fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+        // The state forgets the reverted writes; the replay log must forget them too, or a
+        // consumer replaying the actions would apply state the EVM never committed.
+        if let Some(len) = self.checkpoint_action_lens.pop() {
+            self.actions.truncate(len);
+        }
         self.evm
             .state_mut()
             .rollback(checkpoint, self.version.features);
@@ -1110,6 +1122,53 @@ mod tests {
                 StorageAction::Sinc(addr, k1, v1_new, U256::from(4)),
                 StorageAction::Sdec(addr, k2, v2, U256::from(5)),
             ])
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_checkpoint_revert_drops_recorded_actions() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let addr = Address::random();
+
+        let mut provider = evm
+            .provider_max_gas()
+            .with_actions(StorageActions::enabled());
+
+        let (k1, v1) = (U256::from(1), U256::from(10));
+        let (k2, v2) = (U256::from(2), U256::from(20));
+        provider.sstore(addr, k1, v1)?;
+
+        // A nested batch commits inside a batch that is then reverted.
+        let outer = provider.checkpoint();
+        provider.sstore(addr, k1, U256::from(99))?;
+        let inner = provider.checkpoint();
+        provider.sstore(addr, k2, v2)?;
+        provider.checkpoint_commit(inner);
+        let _ = provider.sload(addr, k2)?;
+        provider.checkpoint_revert(outer);
+
+        assert_eq!(provider.sload(addr, k1)?, v1);
+        assert_eq!(provider.sload(addr, k2)?, U256::ZERO);
+
+        // Only the actions recorded before the reverted batch survive, plus the reads after it.
+        assert_eq!(
+            provider.take_actions(),
+            Some(vec![
+                StorageAction::Sstore(addr, k1, U256::ZERO, v1),
+                StorageAction::Sload(addr, k1, v1),
+                StorageAction::Sload(addr, k2, U256::ZERO),
+            ])
+        );
+
+        // A committed batch keeps its actions.
+        let cp = provider.checkpoint();
+        provider.sstore(addr, k2, v2)?;
+        provider.checkpoint_commit(cp);
+        assert_eq!(
+            provider.take_actions(),
+            Some(vec![StorageAction::Sstore(addr, k2, U256::ZERO, v2)])
         );
 
         Ok(())
