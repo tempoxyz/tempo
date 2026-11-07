@@ -1,9 +1,10 @@
 //! Executing a harness input.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fmt::{Debug, Display, Write as _},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use alloy_consensus::{
@@ -41,7 +42,25 @@ use crate::{
 type ExecutionBlock = RecoveredBlock<Block>;
 
 thread_local! {
+    static EXECUTION_TIME: Cell<Duration> = const { Cell::new(Duration::ZERO) };
     static REJECTION: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Clears timing before decoding each ABI request, including requests that are rejected.
+pub(crate) fn reset_execution_time() {
+    EXECUTION_TIME.set(Duration::ZERO);
+}
+
+/// Executor-only time for the last request on this thread, excluding harness invariants and I/O.
+pub(crate) fn execution_nanos() -> u64 {
+    u64::try_from(EXECUTION_TIME.get().as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn timed<T>(f: impl FnOnce() -> T) -> T {
+    let start = Instant::now();
+    let result = f();
+    EXECUTION_TIME.set(EXECUTION_TIME.get() + start.elapsed());
+    result
 }
 
 /// A harness check that rejects an input with no error value of its own.
@@ -415,7 +434,7 @@ fn execute_block(
         &mut outputs,
     )
     .map_err(|err| class(&err))?;
-    let output = executor.finish().map_err(|err| class(&err))?;
+    let output = timed(|| executor.finish()).map_err(|err| class(&err))?;
     let post_block = take(&hooked);
     let net = Net::of(&post_block);
     let cache = db.cache.borrow();
@@ -440,7 +459,7 @@ fn execute_txs(
     updates: &mut Vec<StateUpdate>,
     outputs: &mut BlockOutputs,
 ) -> Result<(), BlockExecutionError> {
-    executor.apply_pre_execution_changes()?;
+    timed(|| executor.apply_pre_execution_changes())?;
     let view_cache = invariants::ViewCache::default();
     outputs.changes.pre_block = step(
         evm_config,
@@ -460,7 +479,7 @@ fn execute_txs(
         let tx_index = tx_index as u64;
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
-        let result = executor.execute_transaction_without_commit(tx)?;
+        let result = timed(|| executor.execute_transaction_without_commit(tx))?;
         let execution = result.result();
         let outcome = if execution.status {
             TxOutcome::Success
@@ -476,7 +495,7 @@ fn execute_txs(
             floor_gas: execution.floor_gas,
         };
         let output = execution.output.clone();
-        executor.commit_transaction(result)?;
+        timed(|| executor.commit_transaction(result))?;
         // `finish` returns the receipts the executor records here, unchanged.
         let receipt = executor
             .receipts()

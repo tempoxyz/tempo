@@ -36,6 +36,7 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     in_ptr: *const u8,
     in_len: usize,
 ) -> c_int {
+    execute::reset_execution_time();
     if in_ptr.is_null() {
         execute::reject(ErrorClass::InvalidInput, execute::Check::Null);
         return FUZZ_REJECT;
@@ -50,6 +51,17 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &outcome) }
+}
+
+/// Returns executor nanoseconds for the last execution request on the calling thread.
+///
+/// Includes pre-execution changes, transactions and finalization, but excludes input decoding,
+/// state setup, invariant checks and outcome encoding. Rejected requests reset the counter;
+/// a partial execution can have a nonzero value, so callers must check the outcome separately.
+/// This optional symbol does not change the serialized harness ABI.
+#[unsafe(no_mangle)]
+pub extern "C" fn tempo_fuzz_execution_nanos_v1() -> u64 {
+    execute::execution_nanos()
 }
 
 /// Writes the bincode-encoded [`TempoHarnessCapabilities`] to `out_ptr`, with the same return
