@@ -476,19 +476,15 @@ impl TipFeeManager {
         }
 
         if self.storage.spec().is_t14() {
-            // Custody transfers debit the AMM, but diverted assets belong to the LP.
-            let receiver = if to == msg_sender {
-                Recipient::resolve(to)?.target
-            } else {
-                to
-            };
+            // Escrow recoverable by the receiver remains in their custody.
+            let receiver = Recipient::resolve(to)?.target;
             let mut keychain = AccountKeychain::new();
             for (token, amount) in [
                 (user_token.address(), amount_user_token),
                 (validator_token.address(), amount_validator_token),
             ] {
                 if !amount.is_zero()
-                    && (to != msg_sender
+                    && (receiver != msg_sender
                         || TIP403Registry::new()
                             .check_receive_policy(token, self.address, receiver)?
                             .is_some_and(|(_, recovery)| recovery != receiver))
@@ -761,6 +757,7 @@ mod tests {
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         account_keychain::IAccountKeychain,
+        address_registry::{AddressRegistry, MasterId, TempoAddressExt, UserTag},
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
@@ -772,23 +769,48 @@ mod tests {
     #[test]
     fn burn_reroutes_obey_access_key_limits_at_t14() -> eyre::Result<()> {
         for spec in [TempoHardfork::T13, TempoHardfork::T14] {
-            for (reroute, blocked, self_recovery) in [
-                (false, [false, false], false),
-                (true, [false, false], false),
-                (false, [true, true], false),
-                (false, [true, true], true),
-                (false, [true, false], false),
-                (false, [true, false], true),
-                (false, [false, true], false),
-                (false, [false, true], true),
+            for (reroute, blocked, third_party_recovery, virtual_recipient) in [
+                (false, [false, false], false, false),
+                (true, [false, false], false, false),
+                (true, [false, false], false, true),
+                (true, [true, true], false, false),
+                (true, [true, false], false, false),
+                (true, [false, true], false, false),
+                (true, [true, true], true, false),
+                (true, [true, true], false, true),
+                (true, [true, true], true, true),
+                (false, [true, true], true, false),
+                (false, [true, false], true, false),
+                (false, [false, true], true, false),
+                (false, [true, true], false, false),
+                (false, [true, false], false, false),
+                (false, [false, true], false, false),
+                (false, [false, false], false, true),
+                (false, [true, true], true, true),
+                (false, [true, false], true, true),
+                (false, [false, true], true, true),
+                (false, [true, true], false, true),
+                (false, [true, false], false, true),
+                (false, [false, true], false, true),
             ] {
                 for (reserve_a, reserve_b) in [(100u128, 100u128), (0, 100), (100, 0)] {
-                    for limits in [[0u128, 100], [100, 0], [100, 100]] {
+                    for limits in [[0u128, 0], [0, 100], [100, 0], [100, 100]] {
                         let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                             let user = Address::random();
                             let key = Address::random();
-                            let recipient = if reroute { Address::random() } else { user };
+                            let receiver = if reroute { Address::random() } else { user };
+                            let recipient = if virtual_recipient {
+                                let master_id = MasterId::random();
+                                assert_eq!(
+                                    AddressRegistry::new()
+                                        .register_virtual_master_unchecked(master_id, receiver)?,
+                                    master_id
+                                );
+                                Address::new_virtual(master_id, UserTag::random())
+                            } else {
+                                receiver
+                            };
                             let token_a = TIP20Setup::create("A", "A", user)
                                 .with_issuer(user)
                                 .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100))
@@ -832,7 +854,7 @@ mod tests {
                                     )?
                                 };
                                 registry.set_receive_policy(
-                                    user,
+                                    receiver,
                                     ITIP403Registry::setReceivePolicyCall {
                                         senderPolicyId: if blocked == [true, true] {
                                             crate::tip403_registry::REJECT_ALL_POLICY_ID
@@ -840,10 +862,10 @@ mod tests {
                                             crate::tip403_registry::ALLOW_ALL_POLICY_ID
                                         },
                                         tokenFilterId: token_filter,
-                                        recoveryAuthority: if self_recovery {
-                                            user
-                                        } else {
+                                        recoveryAuthority: if third_party_recovery {
                                             Address::random()
+                                        } else {
+                                            receiver
                                         },
                                     },
                                 )?;
@@ -879,7 +901,9 @@ mod tests {
                                 amm.burn(user, token_a, token_b, U256::from(100), recipient);
                             let charges = [(reserve_a, blocked[0]), (reserve_b, blocked[1])].map(
                                 |(reserve, blocked)| {
-                                    if spec.is_t14() && (reroute || (blocked && !self_recovery)) {
+                                    if spec.is_t14()
+                                        && (reroute || (blocked && third_party_recovery))
+                                    {
                                         reserve
                                     } else {
                                         0
@@ -938,7 +962,7 @@ mod tests {
                                                 account: if blocked {
                                                     crate::RECEIVE_POLICY_GUARD_ADDRESS
                                                 } else {
-                                                    recipient
+                                                    receiver
                                                 },
                                             }
                                         )?,
