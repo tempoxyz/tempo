@@ -346,6 +346,7 @@ where
             signer: self.private_key.clone(),
             share: self.share.clone(),
             mailbox_size: commonware_utils::NZUsize!(1024),
+            max_peers: commonware_utils::NZUsize!(128),
             deque_size: 10,
             max_message_size: crate::MAX_MESSAGE_SIZE,
             verification_mode: self.verification_mode,

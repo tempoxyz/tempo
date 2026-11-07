@@ -133,6 +133,7 @@ pub async fn run_consensus_stack(
         share,
 
         mailbox_size: config.mailbox_size,
+        max_peers: config.max_peers_per_set,
         deque_size: config.deque_size,
         max_message_size: config.max_message_size_bytes,
         verification_mode: config.verification_mode,

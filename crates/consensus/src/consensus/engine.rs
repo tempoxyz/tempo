@@ -66,6 +66,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub share: Option<Share>,
 
     pub mailbox_size: NonZeroUsize,
+    pub max_peers: NonZeroUsize,
     pub deque_size: usize,
     pub max_message_size: u32,
     pub verification_mode: VerificationMode,
@@ -217,6 +218,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_tip: (finalized_tip.1, finalized_tip.2),
+                max_peers: self.max_peers,
             },
         )
         .wrap_err("failed initializing peer manager")?;
