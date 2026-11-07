@@ -1,19 +1,22 @@
 name: Tempo Network E2E
 
 on:
-  # Detection reads PR data through pinned actions; fork code is never executed.
-  pull_request_target: # zizmor: ignore[dangerous-triggers]
+  pull_request:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
   merge_group:
 
 permissions: {}
 
 concurrency:
-  group: network-e2e-${{ github.event.pull_request.number || github.ref }}
+  # Keyed by event so this run never cancels main's pull_request_target copy while this change lands.
+  group: network-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   detect:
+    # Fork pull_request runs get a read-only token and no secrets, so they can't post statuses or publish
+    # images; a maintainer imports fork revisions into a branch here instead.
+    if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,7 +123,8 @@ jobs:
   dispatch:
     name: Dispatch network tests
     needs: [detect, build]
-    if: always()
+    # A superseded run (cancel-in-progress) is not a dispatch failure; the newer run owns the status.
+    if: ${{ !cancelled() && needs.detect.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -164,7 +168,7 @@ jobs:
             --key "$RUNNER_TEMP/network-e2e.key" --cert "$RUNNER_TEMP/network-e2e.crt" \
             -H 'Content-Type: application/json' --data "$payload"
       - name: Report skipped tests or dispatch failure
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}

@@ -3,12 +3,10 @@ name: Pull request audit
 on:
   pull_request:
     types: [labeled, opened, synchronize, reopened, ready_for_review]
-  pull_request_target: # zizmor: ignore[dangerous-triggers]
-    types: [opened, reopened, synchronize, labeled, unlabeled]
   pull_request_review:
     types: [submitted]
   merge_group:
-  issue_comment:
+  issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
 
 permissions: {}
@@ -17,7 +15,6 @@ jobs:
   pr-audit:
     if: >-
       github.event_name == 'pull_request' ||
-      github.event_name == 'pull_request_target' ||
       github.event_name == 'pull_request_review' ||
       github.event_name == 'merge_group'
     permissions:
