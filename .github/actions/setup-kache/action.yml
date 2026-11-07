@@ -1,0 +1,126 @@
+name: "Set up kache"
+description: >-
+  Installs kache and makes it Cargo's rustc wrapper, backed by the shared cache at osprey.tempo.xyz.
+  Pushes to main exchange the job's GitHub OIDC token for write credentials, every other run for
+  read-only ones. Without a token or credentials (fork pull requests, or while kache-sts is down) it
+  warns and falls back to sccache, which Depot's runners back with their shared cache, as before kache. Run after the Rust toolchain is installed and before the first cargo build, and
+  end write jobs with `kache save-manifest` and `kache daemon stop` so queued uploads finish.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install kache
+      id: install
+      shell: bash
+      env:
+        KACHE_VERSION: v2.0.0
+        # sha256 of kache-x86_64-unknown-linux-musl.tar.gz from the v2.0.0 release.
+        KACHE_SHA256: 6c59665faf1b14d0944391e6f2a1b510195e6be92c63060a9d1770ed00676824
+      run: |
+        set -uo pipefail
+        if [[ "$RUNNER_OS" != Linux || "$RUNNER_ARCH" != X64 ]]; then
+          echo "::warning title=kache::kache is set up for Linux x64 only; building without it"
+          exit 0
+        fi
+        dir="$RUNNER_TEMP/kache"
+        archive="$dir/kache.tar.gz"
+        mkdir -p "$dir/bin"
+        if ! curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$archive" \
+          "https://github.com/kunobi-ninja/kache/releases/download/$KACHE_VERSION/kache-x86_64-unknown-linux-musl.tar.gz"; then
+          echo "::warning title=kache::Could not download kache $KACHE_VERSION; building without it"
+          exit 0
+        fi
+        if ! echo "$KACHE_SHA256  $archive" | sha256sum --check --quiet; then
+          echo "::warning title=kache::kache $KACHE_VERSION does not match its pinned sha256; building without it"
+          exit 0
+        fi
+        # The client needs its kache-engine companion from the same release beside it.
+        tar -xzf "$archive" -C "$dir/bin" kache kache-engine
+        echo "$dir/bin" >> "$GITHUB_PATH"
+        echo "bin=$dir/bin/kache" >> "$GITHUB_OUTPUT"
+
+    - name: Configure kache
+      id: configure
+      if: steps.install.outputs.bin != ''
+      shell: bash
+      env:
+        KACHE: ${{ steps.install.outputs.bin }}
+        EVENT_NAME: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+        STS_URL: https://kestrel.tempo.xyz/v1/credentials
+        S3_ENDPOINT: https://osprey.tempo.xyz
+      run: |
+        set -uo pipefail
+        local_only() {
+          echo "::warning title=kache::$1; falling back to sccache"
+          echo "fallback=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+        dir="$RUNNER_TEMP/kache"
+
+        # Only reviewed code on main writes; the STS enforces the same rule on the write route.
+        route=read
+        if [[ "$EVENT_NAME" == push && "$REF" == refs/heads/main ]]; then
+          route=write
+        fi
+
+        if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+          local_only "No GitHub OIDC token (the job needs id-token: write; fork pull requests get none)"
+        fi
+        jwt="$(curl -fsS --retry 3 --max-time 30 \
+          -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=kache" | jq -r '.value // empty')" || jwt=""
+        [[ -n "$jwt" ]] || local_only "Could not get a GitHub OIDC token"
+        echo "::add-mask::$jwt"
+
+        creds="$(curl -fsS --retry 3 --max-time 30 -X POST \
+          -H "Authorization: Bearer $jwt" "$STS_URL/$route")" || creds=""
+        key_id="$(jq -r '.AccessKeyId // empty' <<< "$creds" 2>/dev/null)" || key_id=""
+        secret="$(jq -r '.SecretAccessKey // empty' <<< "$creds" 2>/dev/null)" || secret=""
+        [[ -n "$key_id" && -n "$secret" ]] || local_only "kache-sts gave no $route credentials"
+        echo "::add-mask::$key_id"
+        echo "::add-mask::$secret"
+
+        # A daemon kache starts drops KACHE_S3_* from its environment, so the remote also goes
+        # in the config file it reads. Credentials stay in the environment.
+        config="$dir/config.toml"
+        {
+          if [[ "$route" == read ]]; then
+            printf '[cache]\nremote_readonly = true\n\n'
+          fi
+          printf '[cache.remote]\ntype = "s3"\nbucket = "kache"\nregion = "garage"\nendpoint = "%s"\n' "$S3_ENDPOINT"
+        } > "$config"
+        {
+          echo "RUSTC_WRAPPER=kache"
+          # Keep the store on the workspace's mount so restores hardlink instead of copying.
+          echo "KACHE_CACHE_DIR=$dir/store"
+          echo "KACHE_CONFIG=$config"
+          echo "KACHE_S3_ENDPOINT=$S3_ENDPOINT"
+          echo "KACHE_S3_BUCKET=kache"
+          echo "KACHE_S3_REGION=garage"
+          echo "AWS_ACCESS_KEY_ID=$key_id"
+          echo "AWS_SECRET_ACCESS_KEY=$secret"
+          if [[ "$route" == write ]]; then
+            echo "KACHE_REMOTE_WRITE=true"
+          else
+            echo "KACHE_REMOTE_READONLY=1"
+          fi
+        } >> "$GITHUB_ENV"
+
+        # Start the daemon now so its manifest prefetch overlaps the rest of setup.
+        export KACHE_CONFIG="$config" KACHE_CACHE_DIR="$dir/store" AWS_ACCESS_KEY_ID="$key_id" AWS_SECRET_ACCESS_KEY="$secret"
+        if [[ "$route" == read ]]; then export KACHE_REMOTE_READONLY=1; fi
+        "$KACHE" daemon start || echo "::warning title=kache::kache daemon did not start; the first build starts it"
+        echo "kache uses s3://kache at $S3_ENDPOINT with $route credentials"
+
+    # Without kache's shared cache, build through sccache as before kache: Depot's runners give it
+    # a shared backend, so fork pull requests and runs while kache-sts is down don't compile cold.
+    - name: Fall back to sccache
+      if: steps.install.outputs.bin == '' || steps.configure.outputs.fallback == 'true'
+      shell: bash
+      run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+    - name: Install sccache
+      if: steps.install.outputs.bin == '' || steps.configure.outputs.fallback == 'true'
+      uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      with:
+        version: v0.15.0
