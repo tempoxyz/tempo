@@ -8,15 +8,37 @@ from pathlib import Path
 # ── Depth-aware line skipping ─────────────────────────────────────────────────
 
 def _strip_comment(line):
-    """Return line with trailing # comments removed (string-aware)."""
-    in_str = False
-    for i, c in enumerate(line):
-        if c == '"' and (i == 0 or line[i - 1] != '\\'):
-            in_str = not in_str
-        elif c == '#' and not in_str:
-            return line[:i]
-    return line
+    """Return line with trailing # comments removed (string-aware).
 
+    Handles both TOML double-quoted strings and single-quoted literal
+    strings.  A ``#`` inside either kind of string is *not* a comment
+    delimiter.  For double-quoted strings, backslash-escaped characters
+    are skipped with ``i += 2`` so that only a true closing quote
+    toggles the in-string state.
+    """
+    in_double = False  # inside "..." string
+    in_single = False  # inside '...' literal string
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if in_double:
+            if c == '\\':
+                i += 2       # skip the escaped character
+                continue
+            if c == '"':
+                in_double = False
+        elif in_single:
+            if c == "'":    # single-quoted strings have no escape sequences
+                in_single = False
+        else:
+            if c == '"':
+                in_double = True
+            elif c == "'":
+                in_single = True
+            elif c == '#':
+                return line[:i]
+        i += 1
+    return line
 
 def _depth_delta(line):
     """Return (brace_delta, bracket_delta) for a line, ignoring comments."""
