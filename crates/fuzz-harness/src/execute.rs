@@ -141,9 +141,12 @@ pub(crate) fn reset_executor_counts() {
     });
 }
 
-/// Borrows the saved vector without sampling or modifying it.
+/// Initializes dimensions if needed, then borrows saved values without sampling counters.
 #[cfg(feature = "executor-counters")]
 pub(crate) fn with_executor_counts<T>(f: impl FnOnce(&[u64]) -> T) -> T {
+    if EXECUTOR_COUNTS.with_borrow(|counts| counts.start.is_null()) {
+        reset_executor_counts();
+    }
     EXECUTOR_COUNTS.with_borrow(|counts| f(&counts.total))
 }
 

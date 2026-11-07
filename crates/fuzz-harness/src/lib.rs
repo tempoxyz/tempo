@@ -47,15 +47,13 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
         return FUZZ_REJECT;
     };
     let Ok(outcome) = bincode_options().serialize(&execute::run(input)) else {
-        #[cfg(feature = "executor-counters")]
-        execute::reset_executor_counts();
+        execute::reset_execution_time();
         execute::reject(ErrorClass::Internal, execute::Check::OutcomeEncoding);
         return FUZZ_REJECT;
     };
     let result = unsafe { write_output(out_ptr, out_len, out_written, &outcome) };
-    #[cfg(feature = "executor-counters")]
     if result == FUZZ_REJECT {
-        execute::reset_executor_counts();
+        execute::reset_execution_time();
     }
     result
 }
@@ -82,7 +80,8 @@ pub extern "C" fn tempo_fuzz_execution_nanos_v1() -> u64 {
 /// Lengths are in `u64` elements, not bytes. A null or short destination reports the required
 /// length through `out_written` and returns `FUZZ_REJECT`; a sufficient destination returns
 /// `FUZZ_ACCEPT`. A null `out_written` returns `FUZZ_REJECT`. Retrieval never resamples counters
-/// or changes the saved vector. Rejected execution ABI calls clear the saved vector.
+/// or changes saved values. Before the first execution it reports a full zero-filled vector.
+/// Rejected execution ABI calls zero the saved vector.
 ///
 /// # Safety
 ///
