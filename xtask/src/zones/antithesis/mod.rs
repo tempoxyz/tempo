@@ -121,6 +121,8 @@ enum Command {
     CheckProofs,
     /// Checks that zone nodes agree with L1 settlement while faults run.
     CheckConsistency,
+    /// Checks that zone nodes never hold different blocks at a height or replace one.
+    CheckForks,
     /// After faults stop: every confirmed deposit and withdrawal lands and nodes converge.
     CheckSettled,
     /// After a fault-free completion: `check-settled`, then each account's zone balance equals
@@ -135,6 +137,7 @@ impl Antithesis {
         let driver = match self.command {
             Command::Seed => return ctx.seed().await,
             Command::CheckConsistency => return ctx.check_consistency().await,
+            Command::CheckForks => return ctx.check_forks().await,
             Command::CheckSettled => return ctx.check_settled().await,
             Command::CheckLedger => return ctx.check_ledger().await,
             Command::CheckProofs => return ctx.check_proofs().await,

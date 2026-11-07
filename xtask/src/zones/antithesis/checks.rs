@@ -10,19 +10,24 @@ use antithesis_sdk::{assert_always, assert_sometimes};
 use eyre::WrapErr as _;
 use futures::{StreamExt as _, TryStreamExt as _, stream};
 use serde_json::json;
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZonePortal},
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
 
-use super::{Context, Record, is_rpc_error, poll_until, shuffled};
+use super::{Context, Record, is_rpc_error, poll_until, random_below, shuffled};
 
 /// How long `check-settled` waits for the system to recover once faults stop.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Accounts and transactions `check-consistency` samples per run.
 const SAMPLE: usize = 16;
+/// Extra heights, 8 blocks apart below the lowest tip, each `check-forks` run compares.
+const FORK_SAMPLE: u64 = 24;
 /// Blocks per `eth_getLogs` request.
 const LOG_CHUNK: u64 = 10_000;
 /// Concurrent balance reads in `check-ledger`.
@@ -141,6 +146,81 @@ impl Context {
             &json!({ "height": height })
         );
         println!("check-consistency: settled height {height}");
+        Ok(())
+    }
+
+    /// Zone nodes treat every block they import as final, so while faults move leadership
+    /// between sequencers no two nodes may hold different blocks at a height, and no node may
+    /// replace a block it already holds.
+    pub(super) async fn check_forks(&self) -> eyre::Result<()> {
+        let mut tips = Vec::new();
+        for (url, zone) in self.zone_urls.iter().zip(&self.zones) {
+            if let Ok(Some(block)) = zone.get_block_by_number(BlockNumberOrTag::Latest).await {
+                tips.push((
+                    url.to_string(),
+                    zone,
+                    block.header.number,
+                    block.header.hash,
+                ));
+            }
+        }
+        let Some(lowest) = tips.iter().map(|(_, _, number, _)| *number).min() else {
+            println!("check-forks: no zone node reachable");
+            return Ok(());
+        };
+        let mut heights = vec![
+            lowest,
+            lowest.saturating_sub(1 + random_below(32)),
+            random_below(lowest + 1),
+        ];
+        heights.extend((0..FORK_SAMPLE).map(|i| lowest.saturating_sub(i * 8)));
+        heights.sort_unstable();
+        heights.dedup();
+        let mut builders = BTreeSet::new();
+        for &height in &heights {
+            let mut by_node: BTreeMap<String, (B256, Address)> = BTreeMap::new();
+            for (url, zone, _, _) in &tips {
+                if let Ok(Some(block)) = zone
+                    .get_block_by_number(BlockNumberOrTag::Number(height))
+                    .await
+                {
+                    by_node.insert(url.clone(), (block.header.hash, block.header.beneficiary));
+                }
+            }
+            builders.extend(by_node.values().map(|(_, builder)| *builder));
+            let mut hashes = by_node.values().map(|(hash, _)| hash);
+            let first = hashes.next();
+            assert_always!(
+                hashes.all(|hash| Some(hash) == first),
+                "Zone nodes never hold different blocks at the same height",
+                &json!({ "height": height, "blocks": by_node })
+            );
+        }
+        assert_sometimes!(
+            builders.len() > 1,
+            "Zone blocks sampled together were built by more than one sequencer",
+            &json!({ "builders": builders, "heights": heights })
+        );
+        // A block a node reported as its head must still be there a moment later.
+        tokio::time::sleep(Duration::from_millis(500 + random_below(2_000))).await;
+        for (url, zone, number, hash) in &tips {
+            let Ok(Some(block)) = zone
+                .get_block_by_number(BlockNumberOrTag::Number(*number))
+                .await
+            else {
+                continue;
+            };
+            assert_always!(
+                block.header.hash == *hash,
+                "A zone node never replaces a block it imported",
+                &json!({ "node": url, "height": number, "before": hash, "after": block.header.hash })
+            );
+        }
+        println!(
+            "check-forks: {} heights up to {lowest} agree, {} builders",
+            heights.len(),
+            builders.len()
+        );
         Ok(())
     }
 
