@@ -6,13 +6,14 @@
 //! [`Ledger`] in the workload container.
 
 use alloy::{
-    primitives::{Address, B256, Bytes, I256, U256},
+    eips::Encodable2718 as _,
+    primitives::{Address, B256, Bytes, I256, TxKind, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
     },
     rpc::types::{BlockId, Filter, TransactionReceipt},
-    signers::local::PrivateKeySigner,
-    sol_types::SolEvent as _,
+    signers::{SignerSync as _, local::PrivateKeySigner},
+    sol_types::{SolCall as _, SolEvent as _},
     transports::{TransportError, http::reqwest},
 };
 use antithesis_sdk::{
@@ -29,7 +30,10 @@ use tempo_contracts::{
     },
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_primitives::transaction::calc_gas_balance_spending;
+use tempo_primitives::{
+    TempoTransaction,
+    transaction::{Call, calc_gas_balance_spending},
+};
 use zone_precompiles::ecies::encrypt_deposit;
 
 use ledger::{Account, Lease, Ledger, Record};
@@ -64,6 +68,12 @@ const RECEIPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a driver watches for its deposit or withdrawal to land on the other chain.
 const BRIDGE_WAIT: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(500);
+/// Most approvals one batched Tempo transaction carries.
+const BATCH_APPROVALS: u128 = 32;
+/// Gas a batched approval transaction gets on top of its calls.
+const BATCH_BASE_GAS: u64 = 100_000;
+/// Gas each call of a batched approval transaction gets.
+const BATCH_CALL_GAS: u64 = 400_000;
 /// Spenders each owner approves, so repeated approvals overwrite and clear earlier ones.
 const APPROVAL_SPENDERS: u64 = 64;
 /// How many leased-account candidates a driver tries before giving up for this run.
@@ -576,6 +586,19 @@ impl Context {
         let mut expected: Vec<(Address, U256)> = Vec::new();
         let mut last_block = None;
         let mut remaining = count;
+        // Half the time the approvals go out as calls of one Tempo transaction, so a single
+        // block writes many slots of the same storage trie at once.
+        if random_below(2) == 0 {
+            remaining = 0;
+            let calls = count.min(BATCH_APPROVALS);
+            if let Some((batch, block)) = self
+                .approve_batch(&zone, &sender, balance, gas_price, calls, nonce)
+                .await?
+            {
+                expected = batch;
+                last_block = Some(block);
+            }
+        }
         while remaining > 0 {
             let chunk = remaining.min(FANOUT_CHUNK);
             remaining -= chunk;
@@ -652,6 +675,101 @@ impl Context {
             sender.address()
         );
         Ok(())
+    }
+
+    /// Sends `calls` approvals from `sender` as the calls of one Tempo transaction at `nonce`.
+    /// Returns the last amount each spender was given and the block it landed in, or `None`
+    /// when it reverted or the batch does not fit half the balance.
+    async fn approve_batch(
+        &self,
+        zone: &DynProvider,
+        sender: &Account,
+        balance: u128,
+        gas_price: u128,
+        calls: u128,
+        nonce: u64,
+    ) -> eyre::Result<Option<(Vec<(Address, U256)>, u64)>> {
+        let mut calls = calls;
+        let gas_limit = |calls: u128| BATCH_BASE_GAS + BATCH_CALL_GAS * calls as u64;
+        while calls > 1
+            && calc_gas_balance_spending(gas_limit(calls), gas_price) > U256::from(balance / 2)
+        {
+            calls /= 2;
+        }
+        let gas_limit = gas_limit(calls);
+        let max_fee: u128 = calc_gas_balance_spending(gas_limit, gas_price).try_into()?;
+        if max_fee > balance / 2 {
+            return Ok(None);
+        }
+        let approvals: Vec<(Address, U256)> = (0..calls)
+            .map(|_| {
+                let spender = approval_spender(sender.address(), random_below(APPROVAL_SPENDERS));
+                let amount = if random_below(3) == 0 {
+                    U256::ZERO
+                } else {
+                    U256::from(random_between(1, u128::from(u64::MAX)))
+                };
+                (spender, amount)
+            })
+            .collect();
+        let tx = TempoTransaction {
+            chain_id: zone.get_chain_id().await?,
+            max_fee_per_gas: gas_price,
+            max_priority_fee_per_gas: gas_price,
+            gas_limit,
+            calls: approvals
+                .iter()
+                .map(|(spender, amount)| Call {
+                    to: TxKind::Call(PATH_USD_ADDRESS),
+                    value: U256::ZERO,
+                    input: ITIP20::approveCall {
+                        spender: *spender,
+                        amount: *amount,
+                    }
+                    .abi_encode()
+                    .into(),
+                })
+                .collect(),
+            nonce,
+            ..Default::default()
+        };
+        let signature = sender.signer.sign_hash_sync(&tx.signature_hash())?;
+        let encoded = tx.into_signed(signature.into()).encoded_2718();
+        let hash = *zone.send_raw_transaction(&encoded).await?.tx_hash();
+        // Tempo transaction receipts are read raw: only their status and block matter here.
+        let mut receipt = None;
+        poll_until(RECEIPT_TIMEOUT, async || {
+            receipt = zone
+                .raw_request::<_, Option<serde_json::Value>>(
+                    "eth_getTransactionReceipt".into(),
+                    (hash,),
+                )
+                .await?;
+            Ok(receipt.is_some())
+        })
+        .await?;
+        let receipt = receipt.ok_or_eyre("batch approval receipt not found")?;
+        let status = receipt["status"].as_str() == Some("0x1");
+        let block = receipt["blockNumber"]
+            .as_str()
+            .and_then(|number| u64::from_str_radix(number.trim_start_matches("0x"), 16).ok())
+            .ok_or_eyre("batch approval receipt has no block")?;
+        assert_sometimes!(
+            status,
+            "Batched zone approvals succeed",
+            &json!({ "tx": hash, "owner": sender.address(), "calls": calls })
+        );
+        if !status {
+            println!("approve: batch {hash} of {calls} reverted");
+            return Ok(None);
+        }
+        let mut expected: Vec<(Address, U256)> = Vec::new();
+        for (spender, amount) in approvals {
+            expected.retain(|(seen, _)| *seen != spender);
+            expected.push((spender, amount));
+        }
+        println!("approve: batch of {calls} calls in block {block}");
+        Ok(Some((expected, block)))
     }
 
     /// Empties one sender into another account, so its pathUSD balance slot is deleted from the
