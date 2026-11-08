@@ -17,7 +17,7 @@ use alloy_consensus::{BlockHeader, Sealable as _, Transaction as _, transaction:
 use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
 use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U64, U256, keccak256};
-use alloy_provider::{DynProvider, Provider, ProviderBuilder};
+use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
     Filter, FilterChanges, FilterId, TransactionRequest,
@@ -64,11 +64,7 @@ use tokio::{
 };
 use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
 
-use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
-use alloy_transport::{
-    TransportError,
-    layers::{RetryBackoffLayer, RetryPolicy},
-};
+use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
@@ -372,6 +368,14 @@ where
     }
 }
 
+/// Attempts of `eth_getMultiProof` while the serving L1 node has not imported the block.
+///
+/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
+/// collection timeout.
+const MULTI_PROOF_ATTEMPTS: u32 = 8;
+/// Delay before each `eth_getMultiProof` retry.
+const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
+
 /// Fetch all L1 read proofs at the checkpoint selected by the opening advanceTempo transaction.
 async fn collect_tempo_witness(
     provider: &DynProvider<TempoNetwork>,
@@ -412,14 +416,35 @@ async fn collect_tempo_witness(
         .into_iter()
         .map(|(account, slots)| (account, slots.into_iter().collect::<Vec<_>>()))
         .collect::<Vec<_>>();
-    let proofs = provider
-        .client()
-        .request::<_, Vec<EIP1186AccountProofResponse>>(
-            "eth_getMultiProof",
-            (targets, BlockId::number(tempo_block_number)),
-        )
-        .await
-        .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
+    // The L1 RPC may balance connections across nodes whose heads differ by a few
+    // milliseconds, so the node serving this request can lack a block the subscriber already
+    // saw finalized. Retry only that answer (`block not found`); return every other error.
+    let mut attempt = 1;
+    let proofs = loop {
+        let result = provider
+            .client()
+            .request::<_, Vec<EIP1186AccountProofResponse>>(
+                "eth_getMultiProof",
+                (targets.clone(), BlockId::number(tempo_block_number)),
+            )
+            .await;
+        match result {
+            Err(error)
+                if attempt < MULTI_PROOF_ATTEMPTS
+                    && error.as_error_resp().is_some_and(|response| {
+                        response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+                    }) =>
+            {
+                attempt += 1;
+                tokio::time::sleep(MULTI_PROOF_RETRY_DELAY).await;
+            }
+            result => {
+                break result.wrap_err_with(|| {
+                    format!("eth_getMultiProof at Tempo block {tempo_block_number}")
+                })?;
+            }
+        }
+    };
 
     let mut nodes = BTreeMap::new();
     for proof in proofs {
@@ -1607,50 +1632,6 @@ fn redact_block(block: &mut RpcBlock) {
     block.withdrawals = block.withdrawals.take().map(|_| Default::default());
 }
 
-/// Retries of an L1 call answered with [`EthRpcErrorCode::ResourceNotFound`].
-const L1_NOT_FOUND_RETRIES: u32 = 8;
-/// Delay before each of the [`L1_NOT_FOUND_RETRIES`], in milliseconds.
-const L1_NOT_FOUND_BACKOFF_MS: u64 = 25;
-
-/// Retries L1 calls the serving node answers with [`EthRpcErrorCode::ResourceNotFound`].
-///
-/// The L1 RPC URL may balance connections across nodes whose heads differ by a few
-/// milliseconds, so a block another connection already saw finalized can still be missing on
-/// this one (`block not found`). Every other error is returned at once.
-#[derive(Debug, Clone, Copy)]
-struct L1NotFoundRetryPolicy;
-
-impl RetryPolicy for L1NotFoundRetryPolicy {
-    fn should_retry(&self, error: &TransportError) -> bool {
-        error.as_error_resp().is_some_and(|response| {
-            response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
-        })
-    }
-
-    fn backoff_hint(&self, _error: &TransportError) -> Option<Duration> {
-        None
-    }
-}
-
-/// Connects to the Tempo L1 RPC with [`L1NotFoundRetryPolicy`] retries.
-pub(crate) async fn connect_l1_provider(
-    l1_rpc_url: &str,
-    retry_connection_interval: Duration,
-) -> Result<DynProvider<TempoNetwork>, TransportError> {
-    let client = RpcClient::builder()
-        .layer(RetryBackoffLayer::new_with_policy(
-            L1_NOT_FOUND_RETRIES,
-            L1_NOT_FOUND_BACKOFF_MS,
-            u64::MAX,
-            L1NotFoundRetryPolicy,
-        ))
-        .connect_with_config(l1_rpc_url, rpc_connection_config(retry_connection_interval))
-        .await?;
-    Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
-        .connect_client(client)
-        .erased())
-}
-
 pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> ConnectionConfig {
     ConnectionConfig::new()
         .with_max_retries(u32::MAX)
@@ -1672,26 +1653,6 @@ mod tests {
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
     use zone_primitives::constants::zone_chain_id;
-
-    #[test]
-    fn l1_retry_policy_retries_only_resource_not_found() {
-        let error_response = |code: i64| {
-            TransportError::err_resp(
-                serde_json::from_value(serde_json::json!({
-                    "code": code,
-                    "message": "block not found: 0x2dd18e7",
-                }))
-                .unwrap(),
-            )
-        };
-
-        assert!(L1NotFoundRetryPolicy.should_retry(&error_response(-32001)));
-        assert!(!L1NotFoundRetryPolicy.should_retry(&error_response(-32000)));
-        assert!(!L1NotFoundRetryPolicy.should_retry(&error_response(-32603)));
-        assert!(
-            !L1NotFoundRetryPolicy.should_retry(&TransportError::local_usage_str("disconnected"))
-        );
-    }
 
     #[test]
     fn records_block_hashes_as_eip2935_storage_targets() {
@@ -1812,6 +1773,76 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("checkpoint hash mismatch"));
+        handle.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tempo_witness_retries_multi_proof_only_while_block_not_found() -> eyre::Result<()> {
+        let header = TempoHeader::default();
+        let initial = alloy_eips::NumHash {
+            number: 0,
+            hash: header.hash_slow(),
+        };
+        // Number of leading calls answered with `block not found`.
+        let not_found_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let requests = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut module = RpcModule::new((not_found_calls.clone(), requests.clone()));
+        let mut block = serde_json::to_value(TempoHeaderResponse {
+            inner: alloy_rpc_types_eth::Header::new(header.clone()),
+            timestamp_millis: 0,
+        })?;
+        block["transactions"] = serde_json::json!([]);
+        block["uncles"] = serde_json::json!([]);
+        module.register_method("eth_getBlockByNumber", move |_, _, _| block.clone())?;
+        module.register_method("eth_getMultiProof", |_, ctx, _| {
+            ctx.1.fetch_add(1, Ordering::Relaxed);
+            let remaining = ctx.0.load(Ordering::Relaxed);
+            if remaining > 0 {
+                ctx.0.store(remaining - 1, Ordering::Relaxed);
+                return Err(ErrorObjectOwned::owned(
+                    EthRpcErrorCode::ResourceNotFound.code(),
+                    "block not found: 0xa",
+                    None::<()>,
+                ));
+            }
+            Ok::<_, ErrorObjectOwned>(Vec::<serde_json::Value>::new())
+        })?;
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build("127.0.0.1:0")
+            .await?;
+        let address = server.local_addr()?;
+        let handle = server.start(module);
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_http(format!("http://{address}").parse()?)
+            .erased();
+        let reads = HashSet::from([zone_evm::TempoStorageRead {
+            account: Address::repeat_byte(0xaa),
+            slot: B256::repeat_byte(0xbb),
+        }]);
+        let mut checkpoint = TempoHeader::default();
+        checkpoint.inner.number = 10;
+        let first_tx_input = IZoneInbox::advanceTempoCall {
+            header: alloy_rlp::encode(&checkpoint).into(),
+            deposits: Vec::new(),
+            decryptions: Vec::new(),
+            enabledTokens: Vec::new(),
+        }
+        .abi_encode();
+
+        // A node that catches up within the retry budget yields the proofs.
+        not_found_calls.store(2, Ordering::Relaxed);
+        collect_tempo_witness(&provider, initial, Some(&first_tx_input), &reads).await?;
+        assert_eq!(requests.load(Ordering::Relaxed), 3);
+
+        // A node that never catches up fails after the last attempt.
+        requests.store(0, Ordering::Relaxed);
+        not_found_calls.store(u32::MAX, Ordering::Relaxed);
+        let error = collect_tempo_witness(&provider, initial, Some(&first_tx_input), &reads)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("block not found: 0xa"));
+        assert_eq!(requests.load(Ordering::Relaxed), MULTI_PROOF_ATTEMPTS);
         handle.stop()?;
         Ok(())
     }

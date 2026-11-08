@@ -15,8 +15,8 @@ use crate::{
     },
     rpc::{
         NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
-        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, connect_l1_provider, operator_zone_rpc_module,
-        rpc_connection_config, start_redacted_rpc,
+        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_zone_rpc_module, rpc_connection_config,
+        start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
     shadow_prover::RpcFollowerShadowProver,
@@ -619,11 +619,13 @@ where
             self.l1_config.deferred_work_start =
                 Some(last_operational_tempo_block.saturating_add(1));
         }
-        let l1_provider = connect_l1_provider(
-            &self.l1_config.l1_rpc_url,
-            self.l1_config.retry_connection_interval,
-        )
-        .await?;
+        let l1_provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_with_config(
+                &self.l1_config.l1_rpc_url,
+                rpc_connection_config(self.l1_config.retry_connection_interval),
+            )
+            .await?
+            .erased();
         let l1_chain_id = l1_provider.get_chain_id().await?;
         let chain_spec = ctx.node.provider().chain_spec();
         let chain_id = chain_spec.genesis().config.chain_id;
@@ -1634,7 +1636,13 @@ where
         max_response_size: usize,
     ) -> eyre::Result<()> {
         let eth_handlers = handle.eth_handlers().clone();
-        let l1_provider = connect_l1_provider(&l1_rpc_url, retry_connection_interval).await?;
+        let l1_provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_with_config(
+                &l1_rpc_url,
+                rpc_connection_config(retry_connection_interval),
+            )
+            .await?
+            .erased();
         let redacted_rpc_config = zone_rpc::RedactedRpcConfig {
             listen_addr: ([0, 0, 0, 0], config.redacted_rpc_port).into(),
             zone_id: config.zone_id,
