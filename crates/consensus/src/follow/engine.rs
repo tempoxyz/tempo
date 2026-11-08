@@ -102,6 +102,7 @@ impl<TUpstream> Config<TUpstream> {
         // verifies, the resolver fetches the uncertified fill blocks below it by hash from the
         // upstream node or devp2p, and the execution layer checks them like any other block.
         let mut network_identity = self.network_identity;
+        let mut recovered_identity = None;
         if let Some(recovery) =
             Recovery::from_chainspec(&self.execution_node.chain_spec(), &self.epoch_strategy)
                 .wrap_err("invalid chain recovery in chainspec")?
@@ -109,7 +110,7 @@ impl<TUpstream> Config<TUpstream> {
             // A configured identity from a later full DKG ceremony still takes precedence.
             let recovered = recovery.network_identity();
             if recovered.from_epoch > network_identity.from_epoch {
-                network_identity = recovered;
+                network_identity = recovered.clone();
             } else {
                 ensure!(
                     recovered.from_epoch < network_identity.from_epoch
@@ -119,6 +120,7 @@ impl<TUpstream> Config<TUpstream> {
                     recovered.from_epoch,
                 );
             }
+            recovered_identity = Some(recovered);
         }
 
         let scheme_provider = SchemeProvider::new();
@@ -127,6 +129,14 @@ impl<TUpstream> Config<TUpstream> {
             Epoch::new(network_identity.from_epoch),
             Scheme::certificate_verifier(crate::config::NAMESPACE, network_identity.identity),
         );
+        // The recovery's boundary has no certificate, so a follower catching up one epoch at a
+        // time after a later identity rotation crosses it with the recovered scheme instead.
+        if let Some(recovered) = recovered_identity {
+            scheme_provider.register(
+                Epoch::new(recovered.from_epoch),
+                Scheme::certificate_verifier(crate::config::NAMESPACE, recovered.identity),
+            );
+        }
 
         let page_cache_ref = CacheRef::new(
             storage::BUFFER_POOL_PAGE_SIZE,
