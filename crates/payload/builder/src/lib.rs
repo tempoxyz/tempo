@@ -807,16 +807,22 @@ where
             Some(qmdb) => std::thread::scope(|scope| {
                 let (number, parent_hash) = (parent_header.number() + 1, parent_header.hash());
                 let build_parent = finish_span.clone();
+                let (writes_tx, writes_rx) = std::sync::mpsc::sync_channel::<()>(1);
                 let batch = scope.spawn(move || {
                     let _parent = build_parent.enter();
                     let writes = debug_span!(target: "payload_builder", "qmdb_block_writes")
-                        .in_scope(|| diff::block_writes(execution_state))
-                        .map_err(PayloadBuilderError::other)?;
+                        .in_scope(|| diff::block_writes(execution_state));
+                    drop(writes_tx);
+                    let writes = writes.map_err(PayloadBuilderError::other)?;
                     let _span = debug_span!(target: "payload_builder", "qmdb_build").entered();
                     qmdb.store
                         .build_unregistered(number, parent_hash, writes)
                         .map_err(PayloadBuilderError::other)
                 });
+                // The QMDB batch waits on its writes and the hashed state waits on nothing, so
+                // hashing both at once only slows the writes down. Hash the state while the batch
+                // builds instead, whose serial phases leave cores idle.
+                let _ = writes_rx.recv();
                 let hashed_state = compute_hashed_state();
                 let batch = batch
                     .join()
