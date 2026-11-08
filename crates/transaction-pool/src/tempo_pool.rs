@@ -29,6 +29,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
+    pool::AddedTransaction,
 };
 use reth_trie_common::bundle_state::BundleAccount;
 use std::{sync::Arc, time::Instant};
@@ -584,15 +585,29 @@ where
                     let hardfork = self.protocol_pool.validator().validator().active_hardfork();
 
                     let tx = Arc::new(tx);
-                    let added =
-                        self.aa_2d_pool
-                            .write()
-                            .add_transaction(tx, state_nonce, hardfork)?;
+                    let (added, discarded) = {
+                        let mut aa_2d_pool = self.aa_2d_pool.write();
+                        let mut added = aa_2d_pool.add_transaction(tx, state_nonce, hardfork)?;
+                        // Taken so `notify_event_listeners` doesn't report them a second time.
+                        let discarded = match &mut added {
+                            AddedTransaction::Pending(pending) => {
+                                std::mem::take(&mut pending.discarded)
+                            }
+                            AddedTransaction::Parked { .. } => aa_2d_pool.discard(),
+                        };
+                        (added, discarded)
+                    };
                     let hash = *added.hash();
-                    if let Some(pending) = added.as_pending() {
-                        if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
+                    if !discarded.is_empty() {
+                        let is_discarded = discarded.iter().any(|tx| *tx.hash() == hash);
+                        self.protocol_pool
+                            .inner()
+                            .notify_on_transaction_updates(Vec::new(), discarded);
+                        if is_discarded {
                             return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
                         }
+                    }
+                    if let Some(pending) = added.as_pending() {
                         self.protocol_pool
                             .inner()
                             .on_new_pending_transaction(pending);
@@ -1454,17 +1469,19 @@ mod tests {
     use crate::{
         test_utils::{MockProviderStorageExt, TxBuilder, wrap_valid_tx},
         transaction::KeychainSubject,
+        tt_2d_pool::AA2dPoolConfig,
     };
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use futures::{FutureExt, StreamExt};
     use reth_primitives_traits::{Recovered, SealedBlock};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        PoolConfig, PoolUpdateKind, TransactionOrigin, TransactionPool,
-        TransactionValidationTaskExecutor,
+        FullTransactionEvent, PoolConfig, PoolUpdateKind, SubPoolLimit, TransactionOrigin,
+        TransactionPool, TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -2941,5 +2958,57 @@ mod tests {
             10,
             TempoHardfork::T3,
         ));
+    }
+
+    #[test]
+    fn aa_2d_queued_eviction_rejects_self_and_emits_discarded() {
+        let pool = create_test_pool(create_provider_with_tip());
+        *pool.aa_2d_pool.write() = AA2dPool::new(AA2dPoolConfig {
+            queued_limit: SubPoolLimit {
+                max_txs: 1,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        });
+        let mut events = pool.all_transactions_event_listener();
+        let add_queued = |priority_fee| {
+            let tx = TxBuilder::aa(Address::random())
+                .nonce_key(U256::ONE)
+                .nonce(1)
+                .max_priority_fee(priority_fee)
+                .build();
+            let hash = *tx.hash();
+            let outcome = TransactionValidationOutcome::Valid {
+                balance: *tx.cost(),
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(tx, None),
+                propagate: true,
+                authorities: None,
+            };
+            let result = pool.add_validated_transaction(TransactionOrigin::External, outcome);
+            (hash, result)
+        };
+
+        let (queued, result) = add_queued(2_000_000_000);
+        assert!(result.is_ok());
+        let (self_evicted, result) = add_queued(1_000_000_000);
+        assert!(matches!(
+            result.unwrap_err().kind,
+            PoolErrorKind::DiscardedOnInsert
+        ));
+        let (displacing, result) = add_queued(3_000_000_000);
+        assert!(result.is_ok());
+
+        assert!(!pool.contains(&queued));
+        assert!(!pool.contains(&self_evicted));
+        assert!(pool.contains(&displacing));
+        let discarded: Vec<_> = std::iter::from_fn(|| events.next().now_or_never().flatten())
+            .filter_map(|event| match event {
+                FullTransactionEvent::Discarded(hash) => Some(hash),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(discarded, [self_evicted, queued]);
     }
 }
