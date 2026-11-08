@@ -202,23 +202,13 @@ where
         // authorization.
         let is_t8 = spec.is_t8();
         // NOTE: We can remove this logic after T8 activation
-        let (fee_manager_blacklisted, fee_manager_unwhitelisted): (Vec<u64>, Vec<u64>) = if !is_t8 {
+        let (fee_manager_blacklisted, fee_manager_unwhitelisted) = if !is_t8 {
             (
-                updates
-                    .blacklist_additions
-                    .iter()
-                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-                    .map(|(policy_id, _)| *policy_id)
-                    .collect(),
-                updates
-                    .whitelist_removals
-                    .iter()
-                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-                    .map(|(policy_id, _)| *policy_id)
-                    .collect(),
+                updates.blacklist_additions.get(&TIP_FEE_MANAGER_ADDRESS),
+                updates.whitelist_removals.get(&TIP_FEE_MANAGER_ADDRESS),
             )
         } else {
-            (Vec::new(), Vec::new())
+            (None, None)
         };
 
         // Re-check liquidity for all pooled txs when an active validator changes token.
@@ -429,31 +419,23 @@ where
                     .unwrap_or_else(|_| tx.transaction.sender());
 
                 // Check if any blacklist addition applies to this transaction's fee payer
-                let mut sender_evicted = false;
-                for &(blacklist_policy_id, blacklisted_account) in &updates.blacklist_additions {
-                    if fee_payer != blacklisted_account {
-                        continue;
-                    }
-
-                    let token_policies =
-                        get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache);
-
-                    if token_policies
-                        .as_ref()
-                        .is_some_and(|ids| ids.contains(&blacklist_policy_id))
-                    {
-                        sender_evicted = true;
-                        break;
-                    }
-                }
+                let sender_evicted =
+                    updates
+                        .blacklist_additions
+                        .get(&fee_payer)
+                        .is_some_and(|policy_ids| {
+                            get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache)
+                                .is_some_and(|ids| ids.iter().any(|id| policy_ids.contains(id)))
+                        });
 
                 // Check if the fee manager (recipient) was blacklisted on this token's
                 // recipient policy — the tx would fail at execution since the fee
                 // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
                 let recipient_evicted = !sender_evicted
-                    && !fee_manager_blacklisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec)
-                        .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
+                    && fee_manager_blacklisted.is_some_and(|policy_ids| {
+                        get_recipient_policy_ids(provider, fee_token, spec)
+                            .is_some_and(|ids| ids.iter().any(|id| policy_ids.contains(id)))
+                    });
 
                 if sender_evicted || recipient_evicted {
                     to_remove.push(*tx.hash());
@@ -473,30 +455,21 @@ where
                     .fee_payer()
                     .unwrap_or_else(|_| tx.transaction.sender());
 
-                let mut sender_evicted = false;
-                for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
-                    if fee_payer != unwhitelisted_account {
-                        continue;
-                    }
-
-                    let token_policies =
-                        get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache);
-
-                    if token_policies
-                        .as_ref()
-                        .is_some_and(|ids| ids.contains(&whitelist_policy_id))
-                    {
-                        sender_evicted = true;
-                        break;
-                    }
-                }
+                let sender_evicted =
+                    updates
+                        .whitelist_removals
+                        .get(&fee_payer)
+                        .is_some_and(|policy_ids| {
+                            get_sender_policy_ids(provider, fee_token, spec, &mut policy_cache)
+                                .is_some_and(|ids| ids.iter().any(|id| policy_ids.contains(id)))
+                        });
 
                 // Check if the fee manager (recipient) was un-whitelisted on this
                 // token's recipient policy.
                 let recipient_evicted = !sender_evicted
-                    && !fee_manager_unwhitelisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec).is_some_and(|ids| {
-                        fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
+                    && fee_manager_unwhitelisted.is_some_and(|policy_ids| {
+                        get_recipient_policy_ids(provider, fee_token, spec)
+                            .is_some_and(|ids| ids.iter().any(|id| policy_ids.contains(id)))
                     });
 
                 if sender_evicted || recipient_evicted {
@@ -2158,7 +2131,11 @@ mod tests {
         add_validated(&pool, pooled.clone());
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.blacklist_additions.push((policy_id, sender));
+        updates
+            .blacklist_additions
+            .entry(sender)
+            .or_default()
+            .insert(policy_id);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
@@ -2197,7 +2174,11 @@ mod tests {
         add_validated(&pool, pooled.clone());
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.whitelist_removals.push((policy_id, sender));
+        updates
+            .whitelist_removals
+            .entry(sender)
+            .or_default()
+            .insert(policy_id);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);

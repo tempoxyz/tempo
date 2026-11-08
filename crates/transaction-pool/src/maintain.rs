@@ -6,7 +6,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Set},
+    map::{AddressMap, AddressSet, B256Set, HashSet},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -59,10 +59,14 @@ pub struct TempoPoolUpdates {
     /// Uses a set since a user can emit multiple events in the same block; we only need to
     /// process each user once. No cleanup needed as this is ephemeral per-block data.
     pub user_token_changes: AddressSet,
-    /// TIP403 blacklist additions: (policy_id, account).
-    pub blacklist_additions: Vec<(u64, Address)>,
-    /// TIP403 whitelist removals: (policy_id, account).
-    pub whitelist_removals: Vec<(u64, Address)>,
+    /// TIP403 blacklist additions: account to the policy IDs that blacklisted it.
+    ///
+    /// Keyed by account so duplicate events are processed once and each pooled transaction
+    /// looks up only its fee payer.
+    pub blacklist_additions: AddressMap<HashSet<u64>>,
+    /// TIP403 whitelist removals: account to the policy IDs that removed it, keyed like
+    /// [`Self::blacklist_additions`].
+    pub whitelist_removals: AddressMap<HashSet<u64>>,
     /// Fee tokens paused by this block.
     pub paused_tokens: AddressSet,
     /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
@@ -223,12 +227,16 @@ impl TempoPoolUpdates {
                     Some(Tip403PoolEvent::BlacklistUpdated(event)) if event.restricted => {
                         updates
                             .blacklist_additions
-                            .push((event.policyId, event.account));
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.policyId);
                     }
                     Some(Tip403PoolEvent::WhitelistUpdated(event)) if !event.allowed => {
                         updates
                             .whitelist_removals
-                            .push((event.policyId, event.account));
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.policyId);
                     }
                     Some(_) | None => {}
                 }
