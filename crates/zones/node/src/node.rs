@@ -14,9 +14,9 @@ use crate::{
         route_events_to_generations, run_role_controller,
     },
     rpc::{
-        L1_NOT_FOUND_BACKOFF_MS, L1_NOT_FOUND_RETRIES, L1NotFoundRetryPolicy, NodeZoneDebugApi,
-        OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext, ZoneApiServer as _, ZoneRpc,
-        ZoneRpcApi, operator_zone_rpc_module, rpc_connection_config, start_redacted_rpc,
+        NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
+        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, connect_l1_provider, operator_zone_rpc_module,
+        rpc_connection_config, start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
     shadow_prover::RpcFollowerShadowProver,
@@ -26,10 +26,8 @@ use alloy_consensus::{BlockHeader as _, TxReceipt as _};
 use alloy_eips::{BlockHashOrNumber, BlockNumberOrTag};
 use alloy_primitives::{Address, U256};
 use alloy_provider::{DynProvider, Provider as _};
-use alloy_rpc_client::RpcClient;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolEvent as _;
-use alloy_transport::layers::RetryBackoffLayer;
 use evm2::registry::HandlerError;
 use k256::SecretKey;
 use reth_chainspec::EthChainSpec;
@@ -621,21 +619,11 @@ where
             self.l1_config.deferred_work_start =
                 Some(last_operational_tempo_block.saturating_add(1));
         }
-        let l1_client = RpcClient::builder()
-            .layer(RetryBackoffLayer::new_with_policy(
-                L1_NOT_FOUND_RETRIES,
-                L1_NOT_FOUND_BACKOFF_MS,
-                u64::MAX,
-                L1NotFoundRetryPolicy,
-            ))
-            .connect_with_config(
-                &self.l1_config.l1_rpc_url,
-                rpc_connection_config(self.l1_config.retry_connection_interval),
-            )
-            .await?;
-        let l1_provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_client(l1_client)
-            .erased();
+        let l1_provider = connect_l1_provider(
+            &self.l1_config.l1_rpc_url,
+            self.l1_config.retry_connection_interval,
+        )
+        .await?;
         let l1_chain_id = l1_provider.get_chain_id().await?;
         let chain_spec = ctx.node.provider().chain_spec();
         let chain_id = chain_spec.genesis().config.chain_id;
@@ -1646,13 +1634,7 @@ where
         max_response_size: usize,
     ) -> eyre::Result<()> {
         let eth_handlers = handle.eth_handlers().clone();
-        let l1_provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_with_config(
-                &l1_rpc_url,
-                rpc_connection_config(retry_connection_interval),
-            )
-            .await?
-            .erased();
+        let l1_provider = connect_l1_provider(&l1_rpc_url, retry_connection_interval).await?;
         let redacted_rpc_config = zone_rpc::RedactedRpcConfig {
             listen_addr: ([0, 0, 0, 0], config.redacted_rpc_port).into(),
             zone_id: config.zone_id,

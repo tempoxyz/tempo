@@ -17,7 +17,7 @@ use alloy_consensus::{BlockHeader, Sealable as _, Transaction as _, transaction:
 use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
 use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U64, U256, keccak256};
-use alloy_provider::{DynProvider, Provider};
+use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
     Filter, FilterChanges, FilterId, TransactionRequest,
@@ -64,8 +64,11 @@ use tokio::{
 };
 use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
 
-use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
-use alloy_transport::{TransportError, layers::RetryPolicy};
+use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
+use alloy_transport::{
+    TransportError,
+    layers::{RetryBackoffLayer, RetryPolicy},
+};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
@@ -1605,9 +1608,9 @@ fn redact_block(block: &mut RpcBlock) {
 }
 
 /// Retries of an L1 call answered with [`EthRpcErrorCode::ResourceNotFound`].
-pub(crate) const L1_NOT_FOUND_RETRIES: u32 = 8;
+const L1_NOT_FOUND_RETRIES: u32 = 8;
 /// Delay before each of the [`L1_NOT_FOUND_RETRIES`], in milliseconds.
-pub(crate) const L1_NOT_FOUND_BACKOFF_MS: u64 = 25;
+const L1_NOT_FOUND_BACKOFF_MS: u64 = 25;
 
 /// Retries L1 calls the serving node answers with [`EthRpcErrorCode::ResourceNotFound`].
 ///
@@ -1615,7 +1618,7 @@ pub(crate) const L1_NOT_FOUND_BACKOFF_MS: u64 = 25;
 /// milliseconds, so a block another connection already saw finalized can still be missing on
 /// this one (`block not found`). Every other error is returned at once.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct L1NotFoundRetryPolicy;
+struct L1NotFoundRetryPolicy;
 
 impl RetryPolicy for L1NotFoundRetryPolicy {
     fn should_retry(&self, error: &TransportError) -> bool {
@@ -1627,6 +1630,25 @@ impl RetryPolicy for L1NotFoundRetryPolicy {
     fn backoff_hint(&self, _error: &TransportError) -> Option<Duration> {
         None
     }
+}
+
+/// Connects to the Tempo L1 RPC with [`L1NotFoundRetryPolicy`] retries.
+pub(crate) async fn connect_l1_provider(
+    l1_rpc_url: &str,
+    retry_connection_interval: Duration,
+) -> Result<DynProvider<TempoNetwork>, TransportError> {
+    let client = RpcClient::builder()
+        .layer(RetryBackoffLayer::new_with_policy(
+            L1_NOT_FOUND_RETRIES,
+            L1_NOT_FOUND_BACKOFF_MS,
+            u64::MAX,
+            L1NotFoundRetryPolicy,
+        ))
+        .connect_with_config(l1_rpc_url, rpc_connection_config(retry_connection_interval))
+        .await?;
+    Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect_client(client)
+        .erased())
 }
 
 pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> ConnectionConfig {
