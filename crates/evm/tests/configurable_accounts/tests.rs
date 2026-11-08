@@ -4462,9 +4462,9 @@ fn zones_charge_the_sender_read_instead_of_registering() {
     );
 }
 
-/// On a zone, the first call target pays its Tempo read in intrinsic gas when it can hold a
-/// commitment. Later call targets and access-list entries pay it through the zone's cold access
-/// and access-list costs, whatever the address.
+/// On a zone, the first call target pays its Tempo read in intrinsic gas, whatever its code.
+/// Later call targets and access-list entries pay it through the zone's cold access and access-list
+/// costs, whatever the address.
 #[test]
 fn zone_commitment_reads_are_charged_once_per_read_account() {
     let contract = Address::repeat_byte(0x55);
@@ -4508,6 +4508,8 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
     );
 
     let base = run(vec![], vec![contract]);
+    // A contract target pays the read like an eligible one.
+    assert_eq!(run(vec![], vec![eligible]), base);
     assert_eq!(
         run(
             vec![CONFIGURABLE_ACCOUNT_ADDRESS, contract, other],
@@ -4515,12 +4517,8 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
         ) - base,
         3 * access_list_entry
     );
-    assert_eq!(run(vec![], vec![eligible]) - base, L1_COMMITMENT_READ_GAS);
     // A second call pays the zone's cold access, whatever its target.
-    assert_eq!(
-        run(vec![], vec![eligible, eligible]) - base,
-        L1_COMMITMENT_READ_GAS + cold_access
-    );
+    assert_eq!(run(vec![], vec![eligible, eligible]) - base, cold_access);
 }
 
 /// A threshold above eight is met by eight approvals whose weights reach it.

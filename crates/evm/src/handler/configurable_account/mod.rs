@@ -5,7 +5,7 @@ use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx as _, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
-use alloy_primitives::{Address, B256, IntoLogData as _, KECCAK256_EMPTY};
+use alloy_primitives::{Address, B256, IntoLogData as _};
 use evm2::{
     Evm,
     evm::AccountInfo,
@@ -16,8 +16,8 @@ use evm2::{
 use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
 use tempo_precompiles::{
     configurable_account::{
-        CONFIGURABLE_ACCOUNT_CODE_HASH, ConfigurableAccount, UpgradeEligibility,
-        registration_event, valid_account, valid_account_code,
+        ConfigurableAccount, UpgradeEligibility, registration_event, valid_account,
+        valid_account_code,
     },
     error::TempoPrecompileError,
     storage::{StorageCtx, account_config_commitment},
@@ -261,9 +261,10 @@ pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
 
 /// Intrinsic gas for the Tempo commitment reads (TIP-1154) of the accounts a zone transaction
 /// warms without paying a cold access: a full cold access for the sender, and
-/// [`L1_COMMITMENT_READ_GAS`] for the first call target when it can hold a commitment. A zone's gas
-/// schedule charges every other read through the cold access (see
-/// [`tempo_chainspec::gas_params::apply_zone`]). Zero on Tempo L1.
+/// [`L1_COMMITMENT_READ_GAS`] for the first call target unless it is the sender, a precompile or an
+/// address that can't be an account. Like every cold load, a target with zone code pays too, so
+/// the target isn't loaded here. A zone's gas schedule charges every other read through the cold
+/// access (see [`tempo_chainspec::gas_params::apply_zone`]). Zero on Tempo L1.
 fn zone_commitment_reads_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
@@ -282,14 +283,7 @@ fn zone_commitment_reads_gas(
         return Ok(gas);
     };
     if to != envelope.caller() && valid_account(to, spec) && !host.precompiles().contains(&to) {
-        let code_hash = host
-            .state_mut()
-            .account(&to)?
-            .get()
-            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
-        if code_hash == KECCAK256_EMPTY || code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH {
-            gas += L1_COMMITMENT_READ_GAS;
-        }
+        gas += L1_COMMITMENT_READ_GAS;
     }
     Ok(gas)
 }
