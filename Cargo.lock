@@ -1205,7 +1205,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1216,7 +1216,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2455,7 +2455,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "regex",
@@ -3294,7 +3294,7 @@ dependencies = [
 [[package]]
 name = "commonware-actor"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -3307,7 +3307,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -3323,7 +3323,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "arbitrary",
  "bytes",
@@ -3340,7 +3340,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec-macros"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3351,7 +3351,7 @@ dependencies = [
 [[package]]
 name = "commonware-coding"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -3369,7 +3369,7 @@ dependencies = [
 [[package]]
 name = "commonware-conformance"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "commonware-conformance-macros",
  "commonware-formatting",
@@ -3383,7 +3383,7 @@ dependencies = [
 [[package]]
 name = "commonware-conformance-macros"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3393,7 +3393,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -3423,7 +3423,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3465,7 +3465,7 @@ dependencies = [
 [[package]]
 name = "commonware-formatting"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "commonware-macros",
  "const-hex",
@@ -3474,7 +3474,7 @@ dependencies = [
 [[package]]
 name = "commonware-invariants"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "arbitrary",
  "commonware-formatting",
@@ -3487,7 +3487,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "commonware-macros-impl",
  "tokio",
@@ -3496,7 +3496,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros-impl"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3508,7 +3508,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "arbitrary",
  "bytes",
@@ -3523,7 +3523,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -3549,7 +3549,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -3561,7 +3561,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "bytes",
  "commonware-actor",
@@ -3582,7 +3582,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "ahash",
  "axum",
@@ -3622,7 +3622,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime-macros"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3633,7 +3633,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3657,7 +3657,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "chacha20poly1305 0.11.0",
  "commonware-codec",
@@ -3676,7 +3676,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "2026.9.0"
-source = "git+https://github.com/klkvr/monorepo?rev=ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24#ed1237fa5b75c02b32a15ab9f3c9ccc25b05de24"
+source = "git+https://github.com/klkvr/monorepo?rev=b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8#b84dd3ad4f9594583d97bcbdc5c86348b8fb61c8"
 dependencies = [
  "ahash",
  "arbitrary",
@@ -4859,7 +4859,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6751,7 +6751,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8047,7 +8047,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9254,7 +9254,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9418,7 +9418,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -12937,7 +12937,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -13017,7 +13017,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 1.0.10",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -13837,7 +13837,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -14175,7 +14175,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -16622,7 +16622,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
