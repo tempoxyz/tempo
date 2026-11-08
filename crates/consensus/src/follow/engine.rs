@@ -97,17 +97,15 @@ impl<TUpstream> Config<TUpstream> {
     where
         TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + Send + 'static,
     {
-        // Like validators, followers rebuild a chain recovery's fill blocks and trust the identity
-        // it hands the next epoch.
+        // Followers only need to trust the identity a chain recovery hands the next epoch. Unlike
+        // validators they do not rebuild its fill blocks: once a finalization from that epoch
+        // verifies, the resolver fetches the uncertified fill blocks below it by hash from the
+        // upstream node or devp2p, and the execution layer checks them like any other block.
         let mut network_identity = self.network_identity;
         if let Some(recovery) =
             Recovery::from_chainspec(&self.execution_node.chain_spec(), &self.epoch_strategy)
                 .wrap_err("invalid chain recovery in chainspec")?
         {
-            recovery
-                .fill_to_boundary(&self.execution_node)
-                .await
-                .wrap_err("failed filling the halted epoch up to the recovery boundary")?;
             // A configured identity from a later full DKG ceremony still takes precedence.
             let recovered = recovery.network_identity();
             if recovered.from_epoch > network_identity.from_epoch {

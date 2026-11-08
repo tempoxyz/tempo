@@ -158,14 +158,13 @@ fn restart_after_epoch_lost_its_signing_key(t14_fee_recipient: Option<Address>) 
         validators[0].stop().await;
         validators[0].share = member_share;
 
-        // The last node follows the recovery instead of validating it.
-        let donor = validators.pop().unwrap();
+        // A fresh follower never had the halted chain and does not fill it: it trusts the
+        // recovered identity and fetches the fill blocks from the validators.
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
         connect_execution_peers(&validators).await;
         let follower = Follower::builder()
             .epoch_length(epoch_length)
             .runtime(execution_runtime.handle())
-            .donor(donor)
             .follow(&mut context, &validators[0])
             .await;
         follower.connect_peers(&validators).await;
