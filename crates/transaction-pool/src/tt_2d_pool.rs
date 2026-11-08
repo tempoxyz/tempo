@@ -816,7 +816,8 @@ impl AA2dPool {
     /// Returns pooled transaction elements for the given hashes while respecting the size limit.
     ///
     /// This method collects transactions from the pool, converts them to pooled format,
-    /// and tracks the accumulated size. It stops collecting when the limit is exceeded.
+    /// and tracks the accumulated size. It stops collecting when the limit is exceeded and skips
+    /// transactions that must not be propagated.
     ///
     /// The `accumulated_size` is updated with the total encoded size of returned transactions.
     pub(crate) fn append_pooled_transaction_elements<'a>(
@@ -827,7 +828,7 @@ impl AA2dPool {
         out: &mut Vec<<TempoPooledTransaction as PoolTransaction>::Pooled>,
     ) {
         for tx_hash in tx_hashes {
-            let Some(tx) = self.by_hash.get(tx_hash) else {
+            let Some(tx) = self.by_hash.get(tx_hash).filter(|tx| tx.propagate) else {
                 continue;
             };
 
@@ -4185,6 +4186,30 @@ mod tests {
             tx0_len + tx1_len,
             "Should add to pre-accumulated size"
         );
+    }
+
+    #[test]
+    fn append_pooled_transaction_elements_skips_non_propagatable() {
+        let mut pool = AA2dPool::default();
+        let tx = TxBuilder::aa(Address::random())
+            .nonce_key(U256::ONE)
+            .build();
+        let tx_hash = *tx.hash();
+        let mut tx = wrap_valid_tx(tx, TransactionOrigin::Local);
+        tx.propagate = false;
+        pool.add_transaction(Arc::new(tx), 0, TempoHardfork::T1)
+            .unwrap();
+
+        let mut accumulated = 0;
+        let mut elements = Vec::new();
+        pool.append_pooled_transaction_elements(
+            &[tx_hash],
+            GetPooledTransactionLimit::None,
+            &mut accumulated,
+            &mut elements,
+        );
+        assert!(elements.is_empty());
+        assert_eq!(accumulated, 0);
     }
     // ============================================
     // Helper function tests
