@@ -876,7 +876,22 @@ impl Actor {
                 }
                 Command::Register { hash, batch, reply } => reply(self.register(hash, batch)),
                 Command::Root { hash, reply } => reply(Ok(self.root(hash))),
-                Command::Finalize { hash, reply } => reply(self.finalize(hash).await),
+                Command::Finalize { hash, reply } => {
+                    let result = self.finalize(hash).await;
+                    // Applying moved the committed state under every open stage: look up their
+                    // predecessors again while their blocks still execute.
+                    if result.is_ok() {
+                        for stage in self.stages.values() {
+                            self.spawn_stage(
+                                stage.clone(),
+                                Vec::new(),
+                                Vec::new(),
+                                Box::new(|_| {}),
+                            );
+                        }
+                    }
+                    reply(result)
+                }
                 Command::Import { writes, end, reply } => reply(self.import(writes, end).await),
                 Command::RewindTo { number, reply } => reply(self.rewind_to(number).await),
                 Command::Prefetch {
@@ -1427,6 +1442,10 @@ async fn stage_db<const N: usize, const P: usize>(
         }
     }
     if new.is_empty() {
+        // Applying a block since the last read discards the predecessors looked up on the old
+        // state: look them up again.
+        let mut staged = staged;
+        staged.prefetch_predecessors(db).await?;
         return Ok(StagedDb { staged, index });
     }
     let (reads, _, mut staged) = staged.expand(&new, db).await?;
