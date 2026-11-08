@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --locked --profile ${RUST_PROFILE} --target "$target" \
         -p tempo -p tempo-zone -p tempo-xtask \
         --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask \
-        --features tempo/fuzz-execution,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
+        --features tempo/fuzz-execution,tempo/trie-debug,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
     && mkdir -p /out \
     && cd "target/$target/${RUST_PROFILE}" \
     && cp tempo tempo-zone tempo-xtask tempo-zone-xtask /out/

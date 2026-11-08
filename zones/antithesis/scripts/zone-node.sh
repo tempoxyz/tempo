@@ -18,6 +18,8 @@
 # Sparse-trie nodes prune deep subtries between blocks, so later proofs target blinded children
 # of revealed parents, and batch many targets per multiproof: 128 (zone-0), 32 (zone-2) and 64
 # (zone-rpc), so one proof spans several children of the same parent.
+# Proof workers sleep a random time up to --engine.proof-jitter (trie-debug builds) before each
+# proof, so multiproof results reach the sparse trie in varied orders.
 set -eu
 
 S=/shared
@@ -27,7 +29,7 @@ L1_WS=ws://10.20.0.10:8546
 case "$NODE" in
     0)
         ROLE_ARGS="--secp256k1.key $S/seq-0.key --sequencer-key-file $S/seq-0.key"
-        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.multiproof-chunk-size 128 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2"
+        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.multiproof-chunk-size 128 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2 --engine.proof-jitter 20ms"
         P2P_KEY=$S/p2p-0.key
         ;;
     1 | 2)
@@ -36,12 +38,12 @@ case "$NODE" in
         if [ "$NODE" = 1 ]; then
             ROLE_ARGS="$ROLE_ARGS --engine.state-root-fallback --engine.persistence-threshold 0"
         else
-            ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.multiproof-chunk-size 32 --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
+            ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.multiproof-chunk-size 32 --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8 --engine.proof-jitter 50ms"
         fi
         ;;
     rpc)
         # Without --sequencer.prover-address the shadow prover runs the native prover in-process.
-        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --cpu-cores 8 --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates"
+        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --cpu-cores 8 --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates --engine.proof-jitter 5ms"
         P2P_KEY=$S/p2p-rpc.key
         ;;
     *)
