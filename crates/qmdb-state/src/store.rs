@@ -1453,9 +1453,9 @@ async fn stage_db<const N: usize, const P: usize>(
         index.insert(key.clone(), read);
     }
     // The floor raise moves about one operation per key the block writes, and every write was
-    // staged first, so reading candidates for every staged key covers it without waiting on the
-    // block's final writes.
-    staged.prefetch_floor(index.len(), db).await?;
+    // staged first. It scans past about as many inactive candidates again, so reading twice as
+    // many candidates as staged keys covers it without waiting on the block's final writes.
+    staged.prefetch_floor(2 * index.len(), db).await?;
     // Keys that read as absent are created if the block writes them, and creating a key rewrites
     // its predecessor, so read those predecessors now rather than while building the block.
     staged.prefetch_predecessors(db).await?;
