@@ -585,7 +585,7 @@ where
                     let hardfork = self.protocol_pool.validator().validator().active_hardfork();
 
                     let tx = Arc::new(tx);
-                    let (added, discarded) = {
+                    let (added, mut discarded) = {
                         let mut aa_2d_pool = self.aa_2d_pool.write();
                         let mut added = aa_2d_pool.add_transaction(tx, state_nonce, hardfork)?;
                         // Taken so `notify_event_listeners` doesn't report them a second time.
@@ -598,14 +598,14 @@ where
                         (added, discarded)
                     };
                     let hash = *added.hash();
-                    if !discarded.is_empty() {
-                        let is_discarded = discarded.iter().any(|tx| *tx.hash() == hash);
+                    if discarded.iter().any(|tx| *tx.hash() == hash) {
+                        // The insert's own events are skipped, so the transaction it replaced is
+                        // reported as discarded instead.
+                        discarded.extend(added.replaced().cloned());
                         self.protocol_pool
                             .inner()
                             .notify_on_transaction_updates(Vec::new(), discarded);
-                        if is_discarded {
-                            return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
-                        }
+                        return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
                     }
                     if let Some(pending) = added.as_pending() {
                         self.protocol_pool
@@ -616,6 +616,13 @@ where
                     let state = added.transaction_state();
                     // notify regular event listeners from the protocol pool
                     self.protocol_pool.inner().notify_event_listeners(&added);
+                    // Sent after the insert's events so a promoted transaction that was evicted
+                    // again ends as discarded.
+                    if !discarded.is_empty() {
+                        self.protocol_pool
+                            .inner()
+                            .notify_on_transaction_updates(Vec::new(), discarded);
+                    }
                     self.protocol_pool
                         .inner()
                         .on_new_transaction(added.into_new_transaction_event());
@@ -1472,16 +1479,16 @@ mod tests {
         tt_2d_pool::AA2dPoolConfig,
     };
     use alloy_consensus::Header;
-    use alloy_primitives::{Signature, U256, address, uint};
+    use alloy_primitives::{Signature, TxKind, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use futures::{FutureExt, StreamExt};
-    use reth_primitives_traits::{Recovered, SealedBlock};
+    use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        FullTransactionEvent, PoolConfig, PoolUpdateKind, SubPoolLimit, TransactionOrigin,
-        TransactionPool, TransactionValidationTaskExecutor,
+        AllTransactionsEvents, FullTransactionEvent, PoolConfig, PoolUpdateKind, SubPoolLimit,
+        TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -1502,7 +1509,9 @@ mod tests {
     };
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
-        transaction::{KeyAuthorization, PrimitiveSignature, SignatureType},
+        transaction::{
+            KeyAuthorization, PrimitiveSignature, SignatureType, tempo_transaction::Call,
+        },
     };
 
     fn provider_with_spending_limit(
@@ -2977,17 +2986,7 @@ mod tests {
                 .nonce(1)
                 .max_priority_fee(priority_fee)
                 .build();
-            let hash = *tx.hash();
-            let outcome = TransactionValidationOutcome::Valid {
-                balance: *tx.cost(),
-                state_nonce: 0,
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(tx, None),
-                propagate: true,
-                authorities: None,
-            };
-            let result = pool.add_validated_transaction(TransactionOrigin::External, outcome);
-            (hash, result)
+            add_aa_2d(&pool, tx)
         };
 
         let (queued, result) = add_queued(2_000_000_000);
@@ -3003,12 +3002,118 @@ mod tests {
         assert!(!pool.contains(&queued));
         assert!(!pool.contains(&self_evicted));
         assert!(pool.contains(&displacing));
-        let discarded: Vec<_> = std::iter::from_fn(|| events.next().now_or_never().flatten())
+        assert_eq!(discarded_hashes(&mut events), [self_evicted, queued]);
+    }
+
+    #[test]
+    fn aa_2d_promoted_then_evicted_transaction_ends_discarded() {
+        let pool = create_test_pool(create_provider_with_tip());
+        *pool.aa_2d_pool.write() = AA2dPool::new(AA2dPoolConfig {
+            pending_limit: SubPoolLimit {
+                max_txs: 1,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        });
+        let mut events = pool.all_transactions_event_listener();
+        let sender = Address::random();
+        let lane_tx = |nonce, priority_fee| {
+            TxBuilder::aa(sender)
+                .nonce_key(U256::ONE)
+                .nonce(nonce)
+                .max_priority_fee(priority_fee)
+                .build()
+        };
+
+        let (promoted, result) = add_aa_2d(&pool, lane_tx(1, 1_000_000_000));
+        assert!(result.is_ok());
+        // Filling the gap promotes the queued transaction, which the pending limit then evicts.
+        let (head, result) = add_aa_2d(&pool, lane_tx(0, 3_000_000_000));
+        assert!(result.is_ok());
+        assert!(pool.contains(&head));
+        assert!(!pool.contains(&promoted));
+
+        let last_event = std::iter::from_fn(|| events.next().now_or_never().flatten())
+            .filter(|event| {
+                matches!(
+                    event,
+                    FullTransactionEvent::Pending(hash)
+                        | FullTransactionEvent::Queued(hash, _)
+                        | FullTransactionEvent::Discarded(hash)
+                        if *hash == promoted
+                )
+            })
+            .last();
+        assert!(
+            matches!(last_event, Some(FullTransactionEvent::Discarded(hash)) if hash == promoted)
+        );
+    }
+
+    #[test]
+    fn aa_2d_self_evicted_replacement_discards_replaced_transaction() {
+        let sender = Address::random();
+        let lane_tx = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(1);
+        let replaced = lane_tx.clone().build();
+        let pool = create_test_pool(create_provider_with_tip());
+        *pool.aa_2d_pool.write() = AA2dPool::new(AA2dPoolConfig {
+            queued_limit: SubPoolLimit {
+                max_txs: usize::MAX,
+                max_size: replaced.size(),
+            },
+            ..Default::default()
+        });
+        let mut events = pool.all_transactions_event_listener();
+
+        let (replaced, result) = add_aa_2d(&pool, replaced);
+        assert!(result.is_ok());
+        // A larger replacement pushes the queued subpool over its size limit and evicts itself.
+        let replacement = lane_tx
+            .max_fee(40_000_000_000)
+            .max_priority_fee(2_000_000_000)
+            .calls(vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: vec![0; 256].into(),
+            }])
+            .build();
+        let (replacement, result) = add_aa_2d(&pool, replacement);
+        assert!(matches!(
+            result.unwrap_err().kind,
+            PoolErrorKind::DiscardedOnInsert
+        ));
+
+        assert!(!pool.contains(&replaced));
+        assert!(!pool.contains(&replacement));
+        assert_eq!(discarded_hashes(&mut events), [replacement, replaced]);
+    }
+
+    /// Adds `tx` with an on-chain nonce of 0 and returns its hash with the insert result.
+    fn add_aa_2d(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        tx: TempoPooledTransaction,
+    ) -> (TxHash, PoolResult<AddedTransactionOutcome>) {
+        let hash = *tx.hash();
+        let outcome = TransactionValidationOutcome::Valid {
+            balance: *tx.cost(),
+            state_nonce: 0,
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(tx, None),
+            propagate: true,
+            authorities: None,
+        };
+        (
+            hash,
+            pool.add_validated_transaction(TransactionOrigin::External, outcome),
+        )
+    }
+
+    /// Returns the hashes of the `Discarded` events received so far, in order.
+    fn discarded_hashes(events: &mut AllTransactionsEvents<TempoPooledTransaction>) -> Vec<TxHash> {
+        std::iter::from_fn(|| events.next().now_or_never().flatten())
             .filter_map(|event| match event {
                 FullTransactionEvent::Discarded(hash) => Some(hash),
                 _ => None,
             })
-            .collect();
-        assert_eq!(discarded, [self_evicted, queued]);
+            .collect()
     }
 }
