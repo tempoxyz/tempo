@@ -704,7 +704,7 @@ pub struct StageId(u64);
 /// One database's staged reads, and the read index of each key read.
 struct StagedDb<const N: usize> {
     staged: Staged<Family, Sha256, Update<Key, FixedBytes<N>>, CHUNK, Rayon>,
-    index: HashMap<Key, usize>,
+    index: alloy_primitives::map::HashMap<Key, usize>,
 }
 
 /// The staged reads of a block on `parent_hash`.
@@ -978,11 +978,11 @@ impl Actor {
             reads: Some((
                 StagedDb {
                     staged: accounts,
-                    index: HashMap::new(),
+                    index: Default::default(),
                 },
                 StagedDb {
                     staged: slots,
-                    index: HashMap::new(),
+                    index: Default::default(),
                 },
             )),
         };
