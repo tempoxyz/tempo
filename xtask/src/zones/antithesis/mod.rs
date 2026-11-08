@@ -21,7 +21,7 @@ use antithesis_sdk::{
 };
 use eyre::{OptionExt as _, WrapErr as _, eyre};
 use serde_json::json;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{
@@ -68,6 +68,8 @@ const RECEIPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a driver watches for its deposit or withdrawal to land on the other chain.
 const BRIDGE_WAIT: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(500);
+/// Most senders one burst leases.
+const BURST_SENDERS: u128 = 16;
 /// Most approvals one batched Tempo transaction carries.
 const BATCH_APPROVALS: u128 = 32;
 /// Gas a batched approval transaction gets on top of its calls.
@@ -127,6 +129,8 @@ enum Command {
     Sweep,
     /// Sets, changes and clears a batch of allowances, inserting, updating and deleting slots.
     Approve,
+    /// Sends transfers from many senders at once, so they land in the same blocks.
+    Burst,
     /// Checks that state proofs verify against the block's state root and that nodes agree.
     CheckProofs,
     /// Checks that zone nodes agree with L1 settlement while faults run.
@@ -157,6 +161,7 @@ impl Antithesis {
             Command::Fanout => ctx.fanout().await,
             Command::Sweep => ctx.sweep().await,
             Command::Approve => ctx.approve().await,
+            Command::Burst => ctx.burst().await,
         };
         // Under faults, or on a node that lags the sequencer, a send can be rejected (nonce too
         // low) or never confirm. Drivers record only confirmed operations, so such an RPC error
@@ -372,6 +377,88 @@ impl Context {
             &details
         );
         println!("transfer: {amount} {} -> {to}", sender.address());
+        Ok(())
+    }
+
+    /// Leases up to BURST_SENDERS senders on one node and has each send up to FANOUT_CHUNK
+    /// transfers to new or existing accounts at once, so many independent transactions, each
+    /// touching its own slots, land in the same few blocks.
+    async fn burst(&self) -> eyre::Result<()> {
+        let node = random_index(self.zones.len());
+        let url = &self.zone_urls[node];
+        let mut senders = Vec::new();
+        for _ in 0..random_between(2, BURST_SENDERS) {
+            match self.lease_zone_sender(&self.zones[node]).await? {
+                Some(leased) => senders.push(leased),
+                None => break,
+            }
+        }
+        if senders.is_empty() {
+            return Ok(());
+        }
+        let gas_price = self.zones[node].get_gas_price().await?;
+        let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
+        let mut pending = Vec::new();
+        for (sender, balance, _) in &senders {
+            let zone = self.wallet(sender, url);
+            let count = random_between(1, FANOUT_CHUNK);
+            let amount = (balance / 4) / count;
+            if amount == 0 {
+                continue;
+            }
+            let mut nonce = zone
+                .get_transaction_count(sender.address())
+                .pending()
+                .await?;
+            for _ in 0..count {
+                let (to, _) = self.pick_recipient(sender.address())?;
+                let tx = ITIP20::new(PATH_USD_ADDRESS, &zone)
+                    .transfer(to, U256::from(amount))
+                    .gas(TIP20_TX_GAS)
+                    .gas_price(gas_price)
+                    .nonce(nonce)
+                    .send()
+                    .await?;
+                nonce += 1;
+                pending.push((zone.clone(), sender.address(), to, amount, tx));
+            }
+        }
+        let mut blocks = BTreeSet::new();
+        let sent = pending.len();
+        for (zone, from, to, amount, tx) in pending {
+            let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
+            let funded_revert = !receipt.status()
+                && self
+                    .covered_before(&zone, &receipt, from, amount + max_fee)
+                    .await?;
+            assert_always!(
+                !funded_revert,
+                "Funded zone transfer succeeds",
+                &json!({ "tx": receipt.transaction_hash, "from": from, "to": to })
+            );
+            if !receipt.status() {
+                continue;
+            }
+            let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
+            blocks.insert(zone_block);
+            self.ledger.append(&Record::Transfer {
+                zone_tx: receipt.transaction_hash,
+                zone_block,
+                from,
+                to,
+                amount,
+            })?;
+        }
+        assert_sometimes!(
+            sent >= 16 && blocks.len() <= 2,
+            "A burst lands 16 or more transfers in at most two blocks",
+            &json!({ "senders": senders.len(), "sent": sent, "blocks": blocks })
+        );
+        println!(
+            "burst: {sent} transfers from {} senders in {} blocks",
+            senders.len(),
+            blocks.len()
+        );
         Ok(())
     }
 
