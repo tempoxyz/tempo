@@ -499,6 +499,21 @@ impl Context {
         // Only FANOUT_CHUNK transfers are pending at once, so the batch goes out
         // in chunks, each confirmed before the next.
         let mut remaining = count;
+        // Half the time the transfers go out as the calls of Tempo transactions, up to
+        // BATCH_APPROVALS per transaction, so one block creates many balance slots.
+        if random_below(2) == 0 {
+            while remaining > 0 {
+                let calls = remaining.min(BATCH_APPROVALS);
+                remaining -= calls;
+                if !self
+                    .fanout_batch(&zone, &sender, gas_price, calls, amount, nonce)
+                    .await?
+                {
+                    break;
+                }
+                nonce += 1;
+            }
+        }
         while remaining > 0 {
             let chunk = remaining.min(FANOUT_CHUNK);
             remaining -= chunk;
@@ -689,6 +704,106 @@ impl Context {
             sender.address()
         );
         Ok(())
+    }
+
+    /// Sends `calls` transfers of `amount` to new sink accounts from `sender` as the calls of
+    /// one Tempo transaction at `nonce`, and records them. Returns whether it landed.
+    async fn fanout_batch(
+        &self,
+        zone: &DynProvider,
+        sender: &Account,
+        gas_price: u128,
+        calls: u128,
+        amount: u128,
+        nonce: u64,
+    ) -> eyre::Result<bool> {
+        let recipients = (0..calls)
+            .map(|_| Ok(self.ledger.new_sink_account()?.address()))
+            .collect::<eyre::Result<Vec<Address>>>()?;
+        let calls = recipients
+            .iter()
+            .map(|to| Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: *to,
+                    amount: U256::from(amount),
+                }
+                .abi_encode()
+                .into(),
+            })
+            .collect();
+        let Some((hash, block, status)) = self
+            .send_calls(zone, sender, gas_price, calls, nonce)
+            .await?
+        else {
+            return Ok(false);
+        };
+        assert_sometimes!(
+            status,
+            "Batched zone transfers succeed",
+            &json!({ "tx": hash, "from": sender.address(), "calls": recipients.len() })
+        );
+        if !status {
+            println!("fanout: batch {hash} reverted");
+            return Ok(false);
+        }
+        for to in recipients {
+            self.ledger.append(&Record::Transfer {
+                zone_tx: hash,
+                zone_block: block,
+                from: sender.address(),
+                to,
+                amount,
+            })?;
+        }
+        Ok(true)
+    }
+
+    /// Signs and sends `calls` from `sender` as one Tempo transaction at `nonce` and waits for
+    /// its receipt. Returns its hash, block and status, or `None` when it was not confirmed
+    /// within the timeout.
+    async fn send_calls(
+        &self,
+        zone: &DynProvider,
+        sender: &Account,
+        gas_price: u128,
+        calls: Vec<Call>,
+        nonce: u64,
+    ) -> eyre::Result<Option<(B256, u64, bool)>> {
+        let tx = TempoTransaction {
+            chain_id: zone.get_chain_id().await?,
+            max_fee_per_gas: gas_price,
+            max_priority_fee_per_gas: gas_price,
+            gas_limit: BATCH_BASE_GAS + BATCH_CALL_GAS * calls.len() as u64,
+            calls,
+            nonce,
+            ..Default::default()
+        };
+        let signature = sender.signer.sign_hash_sync(&tx.signature_hash())?;
+        let encoded = tx.into_signed(signature.into()).encoded_2718();
+        let hash = *zone.send_raw_transaction(&encoded).await?.tx_hash();
+        let mut receipt = None;
+        poll_until(RECEIPT_TIMEOUT, async || {
+            receipt = zone
+                .raw_request::<_, Option<serde_json::Value>>(
+                    "eth_getTransactionReceipt".into(),
+                    (hash,),
+                )
+                .await?;
+            Ok(receipt.is_some())
+        })
+        .await?;
+        let Some(receipt) = receipt else {
+            println!("batch {hash} not confirmed within the timeout");
+            return Ok(None);
+        };
+        let status = receipt["status"].as_str() == Some("0x1");
+        let block = receipt["blockNumber"]
+            .as_str()
+            .and_then(|number| u64::from_str_radix(number.trim_start_matches("0x"), 16).ok())
+            .ok_or_eyre("batch receipt has no block")?;
+        Ok(Some((hash, block, status)))
     }
 
     /// Sends `calls` approvals from `sender` as the calls of one Tempo transaction at `nonce`.
