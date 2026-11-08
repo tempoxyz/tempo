@@ -15,6 +15,8 @@
 # trie-oracle.sh reports. reth only runs the sparse-trie task with at least 5 CPUs and Antithesis
 # containers report fewer, so those nodes claim 8 with --cpu-cores; zone-1 stays synchronous.
 # Sequencers zone-0 and zone-2 also build their payloads' state roots on the shared sparse trie.
+# Sparse-trie nodes keep their whole trie between blocks, so later proofs target known parents,
+# and split proof targets into multiproofs of 64 (zone-0), 1 (zone-2) and 16 (zone-rpc).
 set -eu
 
 S=/shared
@@ -33,12 +35,12 @@ case "$NODE" in
         if [ "$NODE" = 1 ]; then
             ROLE_ARGS="$ROLE_ARGS --engine.state-root-fallback --engine.persistence-threshold 0"
         else
-            ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
+            ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.disable-sparse-trie-cache-pruning --engine.multiproof-chunk-size 1 --engine.disable-parallel-sparse-trie --engine.state-root-task-compare-updates --engine.persistence-threshold 64 --engine.num-state-masking-blocks 48 --engine.memory-block-buffer-target 8"
         fi
         ;;
     rpc)
         # Without --sequencer.prover-address the shadow prover runs the native prover in-process.
-        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --cpu-cores 8 --engine.state-root-task-compare-updates"
+        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --cpu-cores 8 --engine.disable-sparse-trie-cache-pruning --engine.multiproof-chunk-size 16 --engine.state-root-task-compare-updates"
         P2P_KEY=$S/p2p-rpc.key
         ;;
     *)
