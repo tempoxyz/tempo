@@ -1182,7 +1182,8 @@ impl AA2dPool {
             let mut newly_queued = 0usize;
             let mut newly_pending_size = 0usize;
             let mut newly_queued_size = 0usize;
-            for (existing_id, existing_tx) in std::iter::once(current).chain(iter) {
+            let mut remaining = std::iter::once(current).chain(iter);
+            while let Some((existing_id, existing_tx)) = remaining.next() {
                 if existing_id.nonce == next_nonce {
                     // Promote if transaction was previously queued (not pending)
                     let was_pending = existing_tx.set_pending(true);
@@ -1207,22 +1208,29 @@ impl AA2dPool {
 
                     next_nonce = next_nonce.saturating_add(1);
                 } else {
-                    // Gap detected - mark this and all remaining transactions as non-pending
-                    if existing_tx.set_pending(false) {
-                        #[cfg(feature = "fuzz")]
-                        antithesis_sdk::assert_reachable!(
-                            "AA 2D pool demotes a pending transaction when its on-chain nonce moves back"
-                        );
-                        newly_queued += 1;
-                        newly_queued_size += existing_tx.inner.size();
-                        let key = EvictionKey::with_base_fee(
-                            &existing_tx.inner,
-                            *existing_id,
-                            self.base_fee,
-                        );
-                        self.pending_eviction_order.remove(&key);
-                        self.queued_eviction_order.insert(key);
+                    // Gap detected - demote this transaction and every subsequent one for
+                    // this seq_id. Do not keep scanning for a later matching nonce: anything
+                    // after a hole is blocked until the gap is filled.
+                    for (gap_id, gap_tx) in
+                        std::iter::once((existing_id, existing_tx)).chain(remaining)
+                    {
+                        if gap_tx.set_pending(false) {
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "AA 2D pool demotes a pending transaction when its on-chain nonce moves back"
+                            );
+                            newly_queued += 1;
+                            newly_queued_size += gap_tx.inner.size();
+                            let key = EvictionKey::with_base_fee(
+                                &gap_tx.inner,
+                                *gap_id,
+                                self.base_fee,
+                            );
+                            self.pending_eviction_order.remove(&key);
+                            self.queued_eviction_order.insert(key);
+                        }
                     }
+                    break;
                 }
             }
             self.pending_count += newly_pending;
@@ -7055,13 +7063,18 @@ mod tests {
         assert_eq!(pool.independent_transactions.len(), 1);
         pool.assert_invariants();
 
-        // Step 2: Remove tx6 to create a gap at nonce 6
-        // Pool now has: [5, _, 7, 8] where _ is the gap
-        let removed = pool.remove_transactions(std::iter::once(&tx6_hash));
-        assert_eq!(removed.len(), 1, "Should remove exactly tx6");
+        // Step 2: Remove tx6 without demoting descendants so tx7/tx8 stay
+        // pending until on_nonce_changes discovers the gap. Pool: [5, _, 7, 8].
+        let (removed, _) = pool
+            .remove_transaction_by_hash_no_demote(&tx6_hash)
+            .expect("tx6 present");
+        assert_eq!(removed.hash(), &tx6_hash, "Should remove exactly tx6");
 
-        // Step 3: Trigger nonce change processing to re-evaluate pending status
-        // The on-chain nonce is still 5
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 3, "tx5/tx7/tx8 still pending before nonce sync");
+        assert_eq!(queued, 0);
+
+        // Step 3: Re-evaluate pending status with on-chain nonce still 5.
         let mut on_chain_ids = HashMap::default();
         on_chain_ids.insert(seq_id, 5u64);
         let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
@@ -7069,8 +7082,9 @@ mod tests {
         assert!(mined.is_empty(), "No transactions should be mined");
         assert!(promoted.is_empty(), "No promotions expected");
 
-        // Step 4: Verify that tx7 AND tx8 are both queued (not pending)
-        // BUG: Current code only marks tx7 as non-pending, tx8 incorrectly stays pending
+        // Step 4: Verify that tx7 AND tx8 are both queued (not pending).
+        // A prior bug demoted only the first tx after the gap and left later
+        // nonces pending; gap handling must demote the entire tail.
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(
             pending, 1,
@@ -7079,6 +7093,17 @@ mod tests {
         assert_eq!(
             queued, 2,
             "tx7 and tx8 should both be queued due to gap at nonce 6"
+        );
+
+        let tx7_id = AA2dTransactionId::new(seq_id, 7);
+        let tx8_id = AA2dTransactionId::new(seq_id, 8);
+        assert!(
+            !pool.by_id.get(&tx7_id).expect("tx7 present").is_pending(),
+            "tx7 must be queued after gap at nonce 6"
+        );
+        assert!(
+            !pool.by_id.get(&tx8_id).expect("tx8 present").is_pending(),
+            "tx8 must be queued after gap at nonce 6"
         );
 
         pool.assert_invariants();
