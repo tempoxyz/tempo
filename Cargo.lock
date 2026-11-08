@@ -17700,6 +17700,7 @@ dependencies = [
  "alloy-sol-types",
  "alloy-transport",
  "antithesis_sdk",
+ "backon",
  "base64 0.22.1",
  "clap",
  "commonware-codec",

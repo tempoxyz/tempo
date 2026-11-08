@@ -25,6 +25,7 @@ use alloy_rpc_types_eth::{
     state::{EvmOverrides, StateOverride},
 };
 use alloy_sol_types::SolCall;
+use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
 use futures::StreamExt;
 use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
@@ -368,11 +369,11 @@ where
     }
 }
 
-/// Attempts of `eth_getMultiProof` while the serving L1 node has not imported the block.
+/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
 ///
 /// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
 /// collection timeout.
-const MULTI_PROOF_ATTEMPTS: u32 = 8;
+const MULTI_PROOF_RETRIES: usize = 7;
 /// Delay before each `eth_getMultiProof` retry.
 const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -419,32 +420,26 @@ async fn collect_tempo_witness(
     // The L1 RPC may balance connections across nodes whose heads differ by a few
     // milliseconds, so the node serving this request can lack a block the subscriber already
     // saw finalized. Retry only that answer (`block not found`); return every other error.
-    let mut attempt = 1;
-    let proofs = loop {
-        let result = provider
+    let proofs = (|| {
+        provider
             .client()
             .request::<_, Vec<EIP1186AccountProofResponse>>(
                 "eth_getMultiProof",
                 (targets.clone(), BlockId::number(tempo_block_number)),
             )
-            .await;
-        match result {
-            Err(error)
-                if attempt < MULTI_PROOF_ATTEMPTS
-                    && error.as_error_resp().is_some_and(|response| {
-                        response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
-                    }) =>
-            {
-                attempt += 1;
-                tokio::time::sleep(MULTI_PROOF_RETRY_DELAY).await;
-            }
-            result => {
-                break result.wrap_err_with(|| {
-                    format!("eth_getMultiProof at Tempo block {tempo_block_number}")
-                })?;
-            }
-        }
-    };
+    })
+    .retry(
+        ConstantBuilder::default()
+            .with_delay(MULTI_PROOF_RETRY_DELAY)
+            .with_max_times(MULTI_PROOF_RETRIES),
+    )
+    .when(|error| {
+        error.as_error_resp().is_some_and(|response| {
+            response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+        })
+    })
+    .await
+    .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
 
     let mut nodes = BTreeMap::new();
     for proof in proofs {
@@ -1842,7 +1837,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{error:#}").contains("block not found: 0xa"));
-        assert_eq!(requests.load(Ordering::Relaxed), MULTI_PROOF_ATTEMPTS);
+        assert_eq!(
+            requests.load(Ordering::Relaxed) as usize,
+            MULTI_PROOF_RETRIES + 1
+        );
         handle.stop()?;
         Ok(())
     }
