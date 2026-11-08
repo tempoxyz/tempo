@@ -380,9 +380,11 @@ impl Context {
         Ok(())
     }
 
-    /// Leases up to BURST_SENDERS senders on one node and has each send up to FANOUT_CHUNK
-    /// transfers to new or existing accounts at once, so many independent transactions, each
-    /// touching its own slots, land in the same few blocks.
+    /// Leases up to BURST_SENDERS senders on one node and sends their transfers at once, so many
+    /// independent transactions land in the same few blocks. About half the senders empty their
+    /// whole balance in one transfer, deleting their balance slot, while the others each send up
+    /// to FANOUT_CHUNK transfers, sometimes to an emptying sender, so slots are deleted and
+    /// recreated in the same blocks.
     async fn burst(&self) -> eyre::Result<()> {
         let node = random_index(self.zones.len());
         let url = &self.zone_urls[node];
@@ -398,21 +400,58 @@ impl Context {
         }
         let gas_price = self.zones[node].get_gas_price().await?;
         let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
+        let emptying: Vec<bool> = senders.iter().map(|_| random_below(2) == 0).collect();
+        let emptied: Vec<Address> = senders
+            .iter()
+            .zip(&emptying)
+            .filter(|(_, empties)| **empties)
+            .map(|((sender, _, _), _)| sender.address())
+            .collect();
         let mut pending = Vec::new();
-        for (sender, balance, _) in &senders {
+        for ((sender, balance, _), empties) in senders.iter().zip(&emptying) {
             let zone = self.wallet(sender, url);
+            let mut nonce = zone
+                .get_transaction_count(sender.address())
+                .pending()
+                .await?;
+            let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
+            if *empties {
+                let Some(to) = self.random_existing_account(Some(sender.address()))? else {
+                    continue;
+                };
+                let to = to.address();
+                // The fee is charged on gas used, so leaving exactly the estimated fee empties
+                // the account when the estimate holds.
+                let gas = token
+                    .transfer(to, U256::from(1))
+                    .gas_price(gas_price)
+                    .estimate_gas()
+                    .await?;
+                let fee: u128 = calc_gas_balance_spending(gas, gas_price).try_into()?;
+                let Some(amount) = balance.checked_sub(fee).filter(|amount| *amount > 0) else {
+                    continue;
+                };
+                let tx = token
+                    .transfer(to, U256::from(amount))
+                    .gas(gas)
+                    .gas_price(gas_price)
+                    .nonce(nonce)
+                    .send()
+                    .await?;
+                pending.push((zone.clone(), sender.address(), to, amount, fee, tx));
+                continue;
+            }
             let count = random_between(1, FANOUT_CHUNK);
             let amount = (balance / 4) / count;
             if amount == 0 {
                 continue;
             }
-            let mut nonce = zone
-                .get_transaction_count(sender.address())
-                .pending()
-                .await?;
             for _ in 0..count {
-                let (to, _) = self.pick_recipient(sender.address())?;
-                let tx = ITIP20::new(PATH_USD_ADDRESS, &zone)
+                let to = match random_choice(emptied.clone()) {
+                    Some(to) if to != sender.address() && random_below(3) == 0 => to,
+                    _ => self.pick_recipient(sender.address())?.0,
+                };
+                let tx = token
                     .transfer(to, U256::from(amount))
                     .gas(TIP20_TX_GAS)
                     .gas_price(gas_price)
@@ -420,16 +459,18 @@ impl Context {
                     .send()
                     .await?;
                 nonce += 1;
-                pending.push((zone.clone(), sender.address(), to, amount, tx));
+                pending.push((zone.clone(), sender.address(), to, amount, max_fee, tx));
             }
         }
         let mut blocks = BTreeSet::new();
+        let mut emptied_in = Vec::new();
+        let mut credited_in = Vec::new();
         let sent = pending.len();
-        for (zone, from, to, amount, tx) in pending {
+        for (zone, from, to, amount, fee, tx) in pending {
             let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
             let funded_revert = !receipt.status()
                 && self
-                    .covered_before(&zone, &receipt, from, amount + max_fee)
+                    .covered_before(&zone, &receipt, from, amount + fee)
                     .await?;
             assert_always!(
                 !funded_revert,
@@ -441,6 +482,12 @@ impl Context {
             }
             let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
             blocks.insert(zone_block);
+            if emptied.contains(&from) {
+                emptied_in.push((from, zone_block));
+            }
+            if emptied.contains(&to) {
+                credited_in.push((to, zone_block));
+            }
             self.ledger.append(&Record::Transfer {
                 zone_tx: receipt.transaction_hash,
                 zone_block,
@@ -449,15 +496,25 @@ impl Context {
                 amount,
             })?;
         }
+        let refilled = emptied_in
+            .iter()
+            .filter(|emptied| credited_in.contains(emptied))
+            .count();
         assert_sometimes!(
             sent >= 16 && blocks.len() <= 2,
             "A burst lands 16 or more transfers in at most two blocks",
             &json!({ "senders": senders.len(), "sent": sent, "blocks": blocks })
         );
+        assert_sometimes!(
+            refilled > 0,
+            "A burst empties and credits the same account in one block",
+            &json!({ "emptied": emptied_in, "credited": credited_in })
+        );
         println!(
-            "burst: {sent} transfers from {} senders in {} blocks",
+            "burst: {sent} transfers from {} senders in {} blocks, {} emptied, {refilled} refilled",
             senders.len(),
-            blocks.len()
+            blocks.len(),
+            emptied_in.len()
         );
         Ok(())
     }
