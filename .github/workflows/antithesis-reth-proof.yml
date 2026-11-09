@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [main]
+    branches: [main, antithesis/reth-proof-poc]
     paths:
       # The workload shares Cargo resolution with every root workspace member.
       - "Cargo.toml"
