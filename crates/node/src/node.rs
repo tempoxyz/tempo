@@ -935,8 +935,6 @@ where
                 .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
 
         if !ctx.config().debug.lazy_kzg_settings {
-            // initializing the KZG settings can be expensive, this should be done upfront so that
-            // it doesn't impact block execution, so we initialize this in the background
             let kzg_settings = validator.validator().kzg_settings().clone();
             ctx.task_executor().spawn_blocking_task(async move {
                 let _ = kzg_settings.get();
