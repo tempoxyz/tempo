@@ -325,10 +325,10 @@ fn intrinsic_gas(
         // From T14 the handler warms the transaction's accounts before this runs, so only a
         // target outside that warm set pays the cold access, once per batch.
         let warm = host.state().prewarm_set();
-        let mut targeted =
-            AddressSet::from_iter(tx.calls.first().and_then(|call| call.to.to()).copied());
+        let mut targeted = AddressSet::default();
+        let first = tx.calls.first().and_then(|call| call.to.to());
         for to in tx.calls.iter().skip(1).filter_map(|call| call.to.to()) {
-            let access = if warm.is_warm(to) || !targeted.insert(*to) {
+            let access = if Some(to) == first || warm.is_warm(to) || !targeted.insert(*to) {
                 warm_account
             } else {
                 cold_account

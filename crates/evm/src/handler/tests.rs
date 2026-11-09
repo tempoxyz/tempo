@@ -14,6 +14,7 @@ use evm2::{
     DatabaseError, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     evm::{DynDatabase, InMemoryDB, precompile::NoPrecompiles},
+    interpreter::gas::WARM_STORAGE_READ_COST,
 };
 use proptest::prelude::*;
 use tempo_contracts::precompiles::{AccountKeychainError, IFeeManager};
@@ -826,7 +827,6 @@ fn batch_intrinsic_gas(spec: TempoHardfork, targets: &[Address], access_list: Ve
 
 #[test]
 fn test_t14_batch_charges_cold_access_once_per_cold_target() {
-    const WARM_ACCOUNT_ACCESS_COST: u64 = 100;
     let [a, b, c, listed] = [1, 2, 3, 4].map(Address::with_last_byte);
     // `Address::ZERO` stands for the transaction's sender.
     let sender = Address::ZERO;
@@ -840,11 +840,11 @@ fn test_t14_batch_charges_cold_access_once_per_cold_target() {
     // Repeated targets, including the first call's, pay only the warm access.
     assert_eq!(
         batch_intrinsic_gas(spec, &[a, b, b, a], vec![]),
-        single + COLD_ACCOUNT_ACCESS_COST + 2 * WARM_ACCOUNT_ACCESS_COST
+        single + COLD_ACCOUNT_ACCESS_COST + 2 * u64::from(WARM_STORAGE_READ_COST)
     );
     assert_eq!(
         batch_intrinsic_gas(spec, &[a, sender], vec![]),
-        single + WARM_ACCOUNT_ACCESS_COST
+        single + u64::from(WARM_STORAGE_READ_COST)
     );
     // The block's fee recipient is warm during execution, but intrinsic gas must not depend on
     // which validator builds the block.
@@ -854,7 +854,7 @@ fn test_t14_batch_charges_cold_access_once_per_cold_target() {
     );
     assert_eq!(
         batch_intrinsic_gas(spec, &[a, listed], vec![listed]),
-        batch_intrinsic_gas(spec, &[a], vec![listed]) + WARM_ACCOUNT_ACCESS_COST
+        batch_intrinsic_gas(spec, &[a], vec![listed]) + u64::from(WARM_STORAGE_READ_COST)
     );
 }
 
