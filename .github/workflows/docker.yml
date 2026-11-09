@@ -408,7 +408,7 @@ jobs:
       # cosign signatures above stay for consumers that verify with cosign. PR-head
       # builds would attest unreviewed code as the dispatching ref, so they are skipped.
       - name: Attest the ghcr.io tempo image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/tempo
@@ -416,7 +416,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the Docker Hub tempo image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: index.docker.io/tempoxyz/tempo
@@ -424,7 +424,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the ghcr.io tempo-devnet image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/tempo-devnet
@@ -432,7 +432,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the Docker Hub tempo-devnet image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: index.docker.io/tempoxyz/tempo-devnet
@@ -440,7 +440,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the ghcr.io tempo-localnet image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/tempo-localnet
@@ -448,7 +448,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the Docker Hub tempo-localnet image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: index.docker.io/tempoxyz/tempo-localnet
@@ -456,7 +456,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the ghcr.io tempo-xtask image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/tempo-xtask
@@ -464,7 +464,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the Docker Hub tempo-xtask image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: index.docker.io/tempoxyz/tempo-xtask
@@ -472,7 +472,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the ghcr.io tempo-fuzz image
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == '' && fromJSON(steps.build-and-push.outputs.metadata)['tempo-fuzz']['containerimage.digest'] != null
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == '' && fromJSON(steps.build-and-push.outputs.metadata)['tempo-fuzz']['containerimage.digest'] != null
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/tempo
