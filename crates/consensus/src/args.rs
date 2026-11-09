@@ -545,12 +545,10 @@ impl Args {
         )
     }
 
-    /// Builds the shared proposal budget estimator configuration from the
-    /// consensus timing flags and the payload builder's initial multiplier.
-    pub fn estimator_config(
-        &self,
-        build_time_multiplier: tempo_payload_types::estimator::BuildTimeMultiplier,
-    ) -> tempo_payload_types::EstimatorConfig {
+    /// Builds proposal timing inputs for the payload builder's estimator resolver.
+    /// The resolver supplies its build multiplier and validates these inputs when
+    /// no estimator override is set.
+    pub fn estimator_config(&self) -> tempo_payload_types::EstimatorConfig {
         tempo_payload_types::EstimatorConfig {
             target_block_time: self.target_block_time.into_duration(),
             network_budget: self.network_budget.into_duration(),
@@ -558,33 +556,14 @@ impl Args {
             network_budget_max: self.network_budget_max(),
             network_reserve_percentile: self.network_reserve_percentile,
             network_reserve_fast_rise: self.network_reserve_fast_rise,
-            build_time_multiplier,
             return_budget_overrun_tolerance: self.return_budget_overrun_tolerance.into_duration(),
+            ..tempo_payload_types::EstimatorConfig::default()
         }
-    }
-
-    /// Builds the shared proposal budget estimator from the consensus timing
-    /// flags and the payload builder's initial multiplier.
-    ///
-    /// This is where invalid proposal budget flags are reported: the binary
-    /// builds the estimator before the node launches, and an estimator only
-    /// exists for a valid configuration, so [`Self::validate_simplex_timing`] does not check
-    /// them again.
-    pub fn estimator(
-        &self,
-        build_time_multiplier: tempo_payload_types::estimator::BuildTimeMultiplier,
-    ) -> eyre::Result<tempo_payload_types::Estimator> {
-        let config = self.estimator_config(build_time_multiplier);
-        config
-            .validate()
-            .wrap_err("invalid proposal budget flags")?;
-        Ok(tempo_payload_types::Estimator::new(config))
     }
 
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
     /// would panic on when the first epoch is entered, so a misconfiguration
-    /// fails at startup with a descriptive error instead. Proposal budget
-    /// flags are checked by [`Self::estimator`].
+    /// fails at startup with a descriptive error instead.
     pub fn validate_simplex_timing(&self) -> eyre::Result<()> {
         let wait_for_proposal = self.wait_for_proposal.into_duration();
         let wait_for_notarizations = self.wait_for_notarizations.into_duration();

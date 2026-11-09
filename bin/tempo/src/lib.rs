@@ -582,12 +582,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 None => node,
             }
         });
-        let payload_builder = tempo_node.payload_builder_builder();
-        // Validate the pacing flags even when an override supplies an estimator.
-        let estimator = args
-            .consensus
-            .estimator(payload_builder.build_time_multiplier)?;
-        let estimator = payload_builder.estimator.clone().unwrap_or(estimator);
+        let estimator = tempo_node
+            .payload_builder_builder()
+            .resolve_estimator(args.consensus.estimator_config())
+            .wrap_err("invalid proposal budget flags")?;
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
