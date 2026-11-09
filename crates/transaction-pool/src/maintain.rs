@@ -227,11 +227,14 @@ impl TempoPoolUpdates {
                     None => {}
                 }
             }
-            // Holds placed or adjusted, which both index the owner and token as topics 1 and 3.
+            // Hold changes, which all index the owner and token as topics 1 and 3. Releases and
+            // captures raise the available balance, which can change a fallback fee-token choice.
             else if log.address == RESERVATIONS_ADDRESS {
                 if let Some(&topic0) = log.topics().first()
                     && (topic0 == IReservations::HoldPlaced::SIGNATURE_HASH
-                        || topic0 == IReservations::HoldAdjusted::SIGNATURE_HASH)
+                        || topic0 == IReservations::HoldAdjusted::SIGNATURE_HASH
+                        || topic0 == IReservations::HoldReleased::SIGNATURE_HASH
+                        || topic0 == IReservations::HoldCaptured::SIGNATURE_HASH)
                     && let [_, owner, _, token] = log.topics()
                 {
                     updates
@@ -596,6 +599,12 @@ where
                                     .get(token)
                                     .and_then(|account| account.storage.get(&slot))
                                     .is_some_and(|value| {
+                                        // (+T15) The resolver needs `fee` above the reserved
+                                        // amount, which this slot does not show, so any change
+                                        // may cross it.
+                                        if spec.is_t15() {
+                                            return value.original_value() != value.present_value;
+                                        }
                                         let had_sufficient_balance = value.original_value() >= fee;
                                         let has_sufficient_balance = value.present_value >= fee;
                                         had_sufficient_balance != has_sufficient_balance
@@ -1400,10 +1409,10 @@ mod tests {
                         amount: 2,
                     }
                     .into_log_data(),
-                    // Releases only raise the available balance.
                     IReservations::HoldReleased {
                         owner: released_owner,
                         id,
+                        token,
                     }
                     .into_log_data(),
                 ]
@@ -1420,7 +1429,11 @@ mod tests {
 
             assert_eq!(
                 updates.reservation_changes.get(&token),
-                Some(&AddressSet::from_iter([placed_owner, adjusted_owner]))
+                Some(&AddressSet::from_iter([
+                    placed_owner,
+                    adjusted_owner,
+                    released_owner
+                ]))
             );
             assert!(updates.fee_balance_changes.is_empty());
             assert!(updates.has_invalidation_events());

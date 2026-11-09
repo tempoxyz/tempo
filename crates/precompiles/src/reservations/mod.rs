@@ -35,10 +35,23 @@ pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
 /// TIP-20 reads this slot on every debit and credit from T15.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct Position {
-    /// Sum of the owner's live holds in the token, or less after a compliance burn.
+    /// Sum of the owner's live holds in the token, less `unbacked`.
     reserved: u128,
     /// Debt owed to the creditor stored in `Reservations::creditors`.
     debt: u128,
+    /// Part of the live holds a compliance burn took, which ending or shrinking holds consumes
+    /// before `reserved`.
+    unbacked: u128,
+}
+
+impl Position {
+    /// Removes `amount` of live holds, taking it from `unbacked` first so the reservation behind
+    /// other holds stays in place.
+    fn unreserve(&mut self, amount: u128) {
+        let from_unbacked = self.unbacked.min(amount);
+        self.unbacked -= from_unbacked;
+        self.reserved = self.reserved.saturating_sub(amount - from_unbacked);
+    }
 }
 
 /// One authorization of an owner, from its hold to its refunds, in four slots.
@@ -124,7 +137,9 @@ impl Reservations {
             return Ok(());
         }
         // `max` is below `reserved`, so it fits.
-        position.reserved = max.to();
+        let max: u128 = max.to();
+        position.unbacked = position.unbacked.saturating_add(position.reserved - max);
+        position.reserved = max;
         self.positions[owner][token].write(position)
     }
 
@@ -206,6 +221,7 @@ impl Reservations {
         let mut position = self.positions[owner][auth.token].read()?;
         let decrease = previous.saturating_sub(call.amount);
         if call.amount > previous {
+            ensure_placing_key(owner, &auth)?;
             let increase = call.amount - previous;
             let token = TIP20Token::from_address(auth.token)?;
             if increase > available(&token, owner, &position)? {
@@ -217,8 +233,7 @@ impl Reservations {
                 .ok_or_else(TempoPrecompileError::under_overflow)?;
             AccountKeychain::new().spend_limit(owner, auth.token, U256::from(increase))?;
         } else {
-            // A compliance burn may have lowered `reserved` below the sum of the live holds.
-            position.reserved = position.reserved.saturating_sub(decrease);
+            position.unreserve(decrease);
         }
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][call.id].held.write(held)?;
@@ -236,13 +251,15 @@ impl Reservations {
         ensure_key_may_act(owner, &auth)?;
         let captured = amount_u96(call.amount)?;
         let held = auth.held.to::<u128>();
+        if call.amount > held {
+            ensure_placing_key(owner, &auth)?;
+        }
         let mut token = TIP20Token::from_address(auth.token)?;
         // The payee may have become forbidden since the hold was placed.
         token.ensure_transfer_authorized(owner, auth.payee)?;
         let mut position = self.positions[owner][auth.token].read()?;
-        // Releasing the hold first lets the payment spend the reservation it consumes. A
-        // compliance burn may have lowered `reserved` below the sum of the live holds.
-        position.reserved = position.reserved.saturating_sub(held);
+        // Releasing the hold first lets the payment spend the reservation it consumes.
+        position.unreserve(held);
         // The hold already counted against the key's limit; only an excess is new spend.
         let (debt, _) = self.pay(
             &mut token,
@@ -261,6 +278,7 @@ impl Reservations {
         self.emit_event(ReservationsEvent::hold_captured(
             owner,
             call.id,
+            auth.token,
             call.amount,
             debt,
         ))
@@ -278,7 +296,7 @@ impl Reservations {
         }
         // A new charge records the key that signs it; a later one must come from that key.
         if auth.exists() {
-            ensure_key_may_act(owner, &auth)?;
+            ensure_placing_key(owner, &auth)?;
         }
 
         let position = self.positions[owner][call.token].read()?;
@@ -490,12 +508,11 @@ impl Reservations {
 
     fn end_hold(&mut self, owner: Address, id: B256, auth: Authorization) -> Result<()> {
         let mut position = self.positions[owner][auth.token].read()?;
-        // A compliance burn may have lowered `reserved` below the sum of the live holds.
-        position.reserved = position.reserved.saturating_sub(auth.held.to::<u128>());
+        position.unreserve(auth.held.to());
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][id].delete()?;
         restore_limit(owner, &auth, auth.held.to())?;
-        self.emit_event(ReservationsEvent::hold_released(owner, id))
+        self.emit_event(ReservationsEvent::hold_released(owner, id, auth.token))
     }
 
     fn live_hold(&self, owner: Address, id: B256) -> Result<Authorization> {
@@ -518,6 +535,18 @@ fn ensure_key_may_act(owner: Address, auth: &Authorization) -> Result<()> {
         Some(key_id) if key_id != auth.key_id => Err(ReservationsError::unauthorized().into()),
         _ => Ok(()),
     }
+}
+
+/// Rejects any signer but the one that placed `auth`, root key included, for new spend on it;
+/// limit given back to `auth.key_id` then never exceeds what was counted against it.
+fn ensure_placing_key(owner: Address, auth: &Authorization) -> Result<()> {
+    let signer = AccountKeychain::new()
+        .signing_access_key(owner)?
+        .unwrap_or_default();
+    if signer != auth.key_id {
+        return Err(ReservationsError::unauthorized().into());
+    }
+    Ok(())
 }
 
 /// Gives `amount` back to the limit of the access key that placed `auth`, within the period
@@ -873,7 +902,13 @@ mod tests {
             let hold = f.reservations.get_hold(f.owner, id)?;
             assert_eq!((hold.amount, hold.expiresAt), (0, 0));
             f.reservations
-                .assert_emitted_events(vec![ReservationsEvent::hold_captured(f.owner, id, 550, 0)]);
+                .assert_emitted_events(vec![ReservationsEvent::hold_captured(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    550,
+                    0,
+                )]);
 
             // The hold is settled: it can be neither captured again nor re-held.
             assert_eq!(
@@ -939,7 +974,11 @@ mod tests {
             );
             f.reservations
                 .assert_emitted_events(vec![ReservationsEvent::hold_captured(
-                    f.owner, id, 600, 100,
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    600,
+                    100,
                 )]);
             Ok(())
         })
@@ -1002,7 +1041,11 @@ mod tests {
                 }
             );
             f.reservations
-                .assert_emitted_events(vec![ReservationsEvent::hold_released(f.owner, id)]);
+                .assert_emitted_events(vec![ReservationsEvent::hold_released(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                )]);
             assert_eq!(
                 f.reservations.release(f.owner, id).unwrap_err(),
                 ReservationsError::hold_not_found().into()
@@ -1344,6 +1387,42 @@ mod tests {
     }
 
     #[test]
+    fn test_burned_holds_keep_later_holds_backed() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let old = B256::random();
+            f.hold(old, 100)?;
+            f.token.grant_role_internal(f.admin, BURN_AT_ROLE)?;
+            f.token.burn_at(
+                f.admin,
+                ITIP20::burnAtCall {
+                    from: f.owner,
+                    amount: U256::from(100),
+                },
+            )?;
+            assert_eq!(f.reserved()?, 0);
+
+            f.token.mint(
+                f.admin,
+                ITIP20::mintCall {
+                    to: f.owner,
+                    amount: U256::from(80),
+                },
+            )?;
+            let new = B256::random();
+            f.hold(new, 80)?;
+            // Releasing the burned hold leaves the newer hold's reservation in place.
+            f.reservations.release(f.owner, old)?;
+            assert_eq!(f.reserved()?, 80);
+            assert_eq!(f.available()?, 0);
+            f.capture(new, 80)?;
+            assert_eq!(f.balance(f.payee)?, U256::from(80));
+            assert_eq!(f.reserved()?, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_compliance_burns_take_reserved_funds() -> eyre::Result<()> {
         at_t15(|| {
             let mut f = Fixture::new(1_000)?;
@@ -1362,11 +1441,11 @@ mod tests {
             assert_eq!(f.available()?, 0);
             assert_eq!(f.reservations.get_hold(f.owner, released)?.amount, 300);
 
-            // Holds settle against what remains: releasing one frees the rest of the balance.
+            // Ending a hold consumes the burned part first, so what remains still backs the others.
             f.blacklist(vec![])?;
             f.reservations.release(f.owner, released)?;
-            assert_eq!(f.reserved()?, 0);
-            assert_eq!(f.available()?, 200);
+            assert_eq!(f.reserved()?, 200);
+            assert_eq!(f.available()?, 0);
             // A capture pays only the available balance; the rest needs debt headroom.
             assert_eq!(
                 f.capture(captured, 600).unwrap_err(),
@@ -1706,8 +1785,14 @@ mod tests {
                 );
             }
 
-            // The root key may release it, which gives the placing key its headroom back.
+            // The root key may release it but adds no spend the placing key's limit never counted.
             keychain.set_transaction_key(Address::ZERO)?;
+            for result in [f.adjust(id, 90), f.capture(id, 90)] {
+                assert_eq!(
+                    result.unwrap_err(),
+                    ReservationsError::unauthorized().into()
+                );
+            }
             f.reservations.release(f.owner, id)?;
             assert_eq!(
                 remaining_limit(&keychain, f.owner, key, f.token.address())()?,
