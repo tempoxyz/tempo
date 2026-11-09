@@ -35,26 +35,24 @@ pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
 /// TIP-20 reads this slot on every debit and credit from T15.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct Position {
-    /// Sum of the owner's live holds in the token, less `unbacked`.
+    /// Sum of the owner's live holds in the token, less the burned part in `Shortfall`.
     reserved: u128,
     /// Debt owed to the creditor stored in `Reservations::creditors`.
     debt: u128,
-    /// Part of the live holds a compliance burn took, which ending or shrinking holds consumes
-    /// before `reserved`.
+}
+
+/// Part of an owner's holds in one token that compliance burns took, in one slot.
+///
+/// Only hold changes read it, keeping TIP-20 debits and credits at one slot.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct Shortfall {
+    /// Amount of the holds live at the last burn that `reserved` no longer backs.
     unbacked: u128,
+    /// Count of burns that lowered `reserved`; holds placed before the latest share `unbacked`.
+    epoch: u32,
 }
 
-impl Position {
-    /// Removes `amount` of live holds, taking it from `unbacked` first so the reservation behind
-    /// other holds stays in place.
-    fn unreserve(&mut self, amount: u128) {
-        let from_unbacked = self.unbacked.min(amount);
-        self.unbacked -= from_unbacked;
-        self.reserved = self.reserved.saturating_sub(amount - from_unbacked);
-    }
-}
-
-/// One authorization of an owner, from its hold to its refunds, in four slots.
+/// One authorization of an owner, from its hold to its refunds, in five slots.
 ///
 /// The record exists while `token` is non-zero and the hold is live while `expires_at` is
 /// non-zero. A live hold has nothing captured yet, since capturing ends the hold. The captured
@@ -67,6 +65,8 @@ struct Authorization {
     /// Resolved payee, the only account allowed to refund.
     payee: Address,
     expires_at: u64,
+    /// `Shortfall::epoch` when the hold was placed; an earlier epoch means a burn took part of it.
+    burn_epoch: u32,
     /// Total captured or charged under this id, including any part that became debt.
     captured: U96,
     /// Total refunded by the payee under this id.
@@ -74,9 +74,12 @@ struct Authorization {
     /// Access key that placed the hold or first charge, whose limit counts it; zero for the root
     /// key. Other access keys of the owner cannot act on this id.
     key_id: Address,
-    /// End of `key_id`'s limit period when the authorization was counted; limit is given back
-    /// only within that period.
+    /// End of `key_id`'s limit period of the latest spend counted; limit is given back only
+    /// within that period.
     limit_period_end: u64,
+    /// Amount `key_id`'s limit counted in that period and not yet given back. Spend the root key
+    /// adds is never counted, so it is never given back.
+    counted: U96,
 }
 
 impl Authorization {
@@ -100,6 +103,8 @@ pub struct Reservations {
     debt_caps: Mapping<Address, Mapping<Address, Mapping<Address, u128>>>,
     /// Authorizations keyed by owner then hold id.
     authorizations: Mapping<Address, Mapping<B256, Authorization>>,
+    /// Burned part of the live holds, keyed by owner then token.
+    shortfalls: Mapping<Address, Mapping<Address, Shortfall>>,
 }
 
 impl Reservations {
@@ -138,7 +143,10 @@ impl Reservations {
         }
         // `max` is below `reserved`, so it fits.
         let max: u128 = max.to();
-        position.unbacked = position.unbacked.saturating_add(position.reserved - max);
+        let mut shortfall = self.shortfalls[owner][token].read()?;
+        shortfall.unbacked = shortfall.unbacked.saturating_add(position.reserved - max);
+        shortfall.epoch = shortfall.epoch.saturating_add(1);
+        self.shortfalls[owner][token].write(shortfall)?;
         position.reserved = max;
         self.positions[owner][token].write(position)
     }
@@ -193,16 +201,17 @@ impl Reservations {
         let spend =
             AccountKeychain::new().spend_limit(owner, call.token, U256::from(call.amount))?;
         self.positions[owner][call.token].write(position)?;
-        self.authorizations[owner][call.id].write(Authorization {
+        let mut auth = Authorization {
             token: call.token,
             held,
             payee,
             expires_at: call.expiresAt,
-            captured: U96::ZERO,
-            refunded: U96::ZERO,
+            burn_epoch: self.shortfalls[owner][call.token].epoch.read()?,
             key_id: spend.map_or(Address::ZERO, |spend| spend.key_id),
-            limit_period_end: spend.map_or(0, |spend| spend.period_end),
-        })?;
+            ..Default::default()
+        };
+        record_spend(&mut auth, spend, call.amount);
+        self.authorizations[owner][call.id].write(auth)?;
         self.emit_event(ReservationsEvent::hold_placed(
             owner,
             call.id,
@@ -214,14 +223,13 @@ impl Reservations {
     }
 
     fn adjust(&mut self, owner: Address, call: IReservations::adjustCall) -> Result<()> {
-        let auth = self.live_hold(owner, call.id)?;
+        let mut auth = self.live_hold(owner, call.id)?;
         ensure_key_may_act(owner, &auth)?;
         let held = amount_u96(call.amount)?;
         let previous = auth.held.to::<u128>();
         let mut position = self.positions[owner][auth.token].read()?;
         let decrease = previous.saturating_sub(call.amount);
         if call.amount > previous {
-            ensure_placing_key(owner, &auth)?;
             let increase = call.amount - previous;
             let token = TIP20Token::from_address(auth.token)?;
             if increase > available(&token, owner, &position)? {
@@ -231,13 +239,16 @@ impl Reservations {
                 .reserved
                 .checked_add(increase)
                 .ok_or_else(TempoPrecompileError::under_overflow)?;
-            AccountKeychain::new().spend_limit(owner, auth.token, U256::from(increase))?;
+            let spend =
+                AccountKeychain::new().spend_limit(owner, auth.token, U256::from(increase))?;
+            record_spend(&mut auth, spend, increase);
         } else {
-            position.unreserve(decrease);
+            self.unreserve(owner, &auth, &mut position, decrease)?;
         }
         self.positions[owner][auth.token].write(position)?;
-        self.authorizations[owner][call.id].held.write(held)?;
-        restore_limit(owner, &auth, decrease)?;
+        restore_limit(owner, &mut auth, decrease)?;
+        auth.held = held;
+        self.authorizations[owner][call.id].write(auth)?;
         self.emit_event(ReservationsEvent::hold_adjusted(
             owner,
             call.id,
@@ -251,25 +262,18 @@ impl Reservations {
         ensure_key_may_act(owner, &auth)?;
         let captured = amount_u96(call.amount)?;
         let held = auth.held.to::<u128>();
-        if call.amount > held {
-            ensure_placing_key(owner, &auth)?;
-        }
         let mut token = TIP20Token::from_address(auth.token)?;
         // The payee may have become forbidden since the hold was placed.
         token.ensure_transfer_authorized(owner, auth.payee)?;
         let mut position = self.positions[owner][auth.token].read()?;
         // Releasing the hold first lets the payment spend the reservation it consumes.
-        position.unreserve(held);
+        self.unreserve(owner, &auth, &mut position, held)?;
         // The hold already counted against the key's limit; only an excess is new spend.
-        let (debt, _) = self.pay(
-            &mut token,
-            owner,
-            auth.payee,
-            call.amount,
-            call.amount.saturating_sub(held),
-            position,
-        )?;
-        restore_limit(owner, &auth, held.saturating_sub(call.amount))?;
+        let excess = call.amount.saturating_sub(held);
+        let (debt, spend) =
+            self.pay(&mut token, owner, auth.payee, call.amount, excess, position)?;
+        record_spend(&mut auth, spend, excess);
+        restore_limit(owner, &mut auth, held.saturating_sub(call.amount))?;
 
         auth.held = U96::ZERO;
         auth.expires_at = 0;
@@ -294,23 +298,21 @@ impl Reservations {
         if auth.is_held() || (auth.exists() && (auth.token != call.token || auth.payee != payee)) {
             return Err(ReservationsError::hold_exists().into());
         }
-        // A new charge records the key that signs it; a later one must come from that key.
+        // A new charge records the key that signs it; other access keys cannot charge it again.
         if auth.exists() {
-            ensure_placing_key(owner, &auth)?;
+            ensure_key_may_act(owner, &auth)?;
         }
 
         let position = self.positions[owner][call.token].read()?;
         let (debt, spend) =
             self.pay(&mut token, owner, payee, call.amount, call.amount, position)?;
 
-        if let Some(spend) = spend {
-            // Refunds give back to the latest period charged, so a charge in a new period stays
-            // refundable; the keychain clamps the give-back at the key's limit.
-            if !auth.exists() {
-                auth.key_id = spend.key_id;
-            }
-            auth.limit_period_end = spend.period_end;
+        if !auth.exists()
+            && let Some(spend) = spend
+        {
+            auth.key_id = spend.key_id;
         }
+        record_spend(&mut auth, spend, call.amount);
         auth.token = call.token;
         auth.payee = payee;
         auth.captured = auth
@@ -343,7 +345,7 @@ impl Reservations {
     }
 
     fn refund(&mut self, payee: Address, call: IReservations::refundCall) -> Result<()> {
-        let auth = self.authorizations[call.owner][call.id].read()?;
+        let mut auth = self.authorizations[call.owner][call.id].read()?;
         if !auth.exists() {
             return Err(ReservationsError::hold_not_found().into());
         }
@@ -375,11 +377,10 @@ impl Reservations {
             self.reduce_debt(call.owner, auth.token, position, payee, offset)?;
         }
         token.reservation_transfer(payee, call.owner, U256::from(moved))?;
-        restore_limit(call.owner, &auth, call.amount)?;
+        restore_limit(call.owner, &mut auth, call.amount)?;
 
-        self.authorizations[call.owner][call.id]
-            .refunded
-            .write(refunded)?;
+        auth.refunded = refunded;
+        self.authorizations[call.owner][call.id].write(auth)?;
         self.emit_event(ReservationsEvent::refunded(
             call.owner,
             call.id,
@@ -506,13 +507,36 @@ impl Reservations {
         ))
     }
 
-    fn end_hold(&mut self, owner: Address, id: B256, auth: Authorization) -> Result<()> {
+    fn end_hold(&mut self, owner: Address, id: B256, mut auth: Authorization) -> Result<()> {
         let mut position = self.positions[owner][auth.token].read()?;
-        position.unreserve(auth.held.to());
+        self.unreserve(owner, &auth, &mut position, auth.held.to())?;
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][id].delete()?;
-        restore_limit(owner, &auth, auth.held.to())?;
+        let held = auth.held.to();
+        restore_limit(owner, &mut auth, held)?;
         self.emit_event(ReservationsEvent::hold_released(owner, id, auth.token))
+    }
+
+    /// Removes `amount` of `auth`'s hold from `position`. A hold live at the latest burn first
+    /// consumes the burned part, so the reservation behind the other holds stays in place.
+    fn unreserve(
+        &mut self,
+        owner: Address,
+        auth: &Authorization,
+        position: &mut Position,
+        amount: u128,
+    ) -> Result<()> {
+        let mut from_unbacked = 0;
+        if amount != 0 {
+            let mut shortfall = self.shortfalls[owner][auth.token].read()?;
+            if shortfall.unbacked != 0 && auth.burn_epoch < shortfall.epoch {
+                from_unbacked = shortfall.unbacked.min(amount);
+                shortfall.unbacked -= from_unbacked;
+                self.shortfalls[owner][auth.token].write(shortfall)?;
+            }
+        }
+        position.reserved = position.reserved.saturating_sub(amount - from_unbacked);
+        Ok(())
     }
 
     fn live_hold(&self, owner: Address, id: B256) -> Result<Authorization> {
@@ -537,21 +561,30 @@ fn ensure_key_may_act(owner: Address, auth: &Authorization) -> Result<()> {
     }
 }
 
-/// Rejects any signer but the one that placed `auth`, root key included, for new spend on it;
-/// limit given back to `auth.key_id` then never exceeds what was counted against it.
-fn ensure_placing_key(owner: Address, auth: &Authorization) -> Result<()> {
-    let signer = AccountKeychain::new()
-        .signing_access_key(owner)?
-        .unwrap_or_default();
-    if signer != auth.key_id {
-        return Err(ReservationsError::unauthorized().into());
+/// Records `amount` that `auth.key_id`'s limit counted in `spend`. A spend in a new period drops
+/// what earlier periods counted, since the keychain gives back only within the current period.
+fn record_spend(auth: &mut Authorization, spend: Option<LimitSpend>, amount: u128) {
+    let Some(spend) = spend else { return };
+    if amount == 0 || spend.key_id != auth.key_id {
+        return;
     }
-    Ok(())
+    if spend.period_end != auth.limit_period_end {
+        auth.limit_period_end = spend.period_end;
+        auth.counted = U96::ZERO;
+    }
+    let counted = auth.counted.to::<u128>().saturating_add(amount);
+    auth.counted = U96::try_from(counted).unwrap_or(U96::MAX);
 }
 
 /// Gives `amount` back to the limit of the access key that placed `auth`, within the period
 /// it was counted in.
-fn restore_limit(owner: Address, auth: &Authorization, amount: u128) -> Result<()> {
+fn restore_limit(owner: Address, auth: &mut Authorization, amount: u128) -> Result<()> {
+    // Never more than the key's limit counted, so spend the root key added is not given back.
+    let amount = amount.min(auth.counted.to());
+    if amount == 0 {
+        return Ok(());
+    }
+    auth.counted = U96::from(auth.counted.to::<u128>() - amount);
     AccountKeychain::new().restore_limit(
         owner,
         auth.key_id,
@@ -1411,13 +1444,24 @@ mod tests {
             )?;
             let new = B256::random();
             f.hold(new, 80)?;
-            // Releasing the burned hold leaves the newer hold's reservation in place.
-            f.reservations.release(f.owner, old)?;
-            assert_eq!(f.reserved()?, 80);
-            assert_eq!(f.available()?, 0);
+            // A hold placed after the burn is fully backed, even while the burned hold is live.
             f.capture(new, 80)?;
             assert_eq!(f.balance(f.payee)?, U256::from(80));
             assert_eq!(f.reserved()?, 0);
+
+            f.token.mint(
+                f.admin,
+                ITIP20::mintCall {
+                    to: f.owner,
+                    amount: U256::from(50),
+                },
+            )?;
+            let later = B256::random();
+            f.hold(later, 50)?;
+            // Releasing the burned hold leaves the newer hold's reservation in place.
+            f.reservations.release(f.owner, old)?;
+            assert_eq!(f.reserved()?, 50);
+            assert_eq!(f.available()?, 0);
             Ok(())
         })
     }
@@ -1785,14 +1829,9 @@ mod tests {
                 );
             }
 
-            // The root key may release it but adds no spend the placing key's limit never counted.
+            // The root key may enlarge and release it; only what the key's limit counted comes back.
             keychain.set_transaction_key(Address::ZERO)?;
-            for result in [f.adjust(id, 90), f.capture(id, 90)] {
-                assert_eq!(
-                    result.unwrap_err(),
-                    ReservationsError::unauthorized().into()
-                );
-            }
+            f.adjust(id, 90)?;
             f.reservations.release(f.owner, id)?;
             assert_eq!(
                 remaining_limit(&keychain, f.owner, key, f.token.address())()?,

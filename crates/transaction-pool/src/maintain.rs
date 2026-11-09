@@ -21,9 +21,10 @@ use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{
     IAccountKeychain, IFeeManager, IReservations, ITIP20, ITIP403Registry,
 };
+use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, RESERVATIONS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP403_REGISTRY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, storage::StorageActions,
 };
 use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
@@ -580,6 +581,7 @@ where
         let mut revalidate_txs = Vec::new();
 
         // Refresh implicit fee-token choices before eviction checks the cached token.
+        let mut latest = None;
         let hashes: Vec<TxHash> = {
             let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
             all_txs
@@ -600,13 +602,35 @@ where
                                     .and_then(|account| account.storage.get(&slot))
                                     .is_some_and(|value| {
                                         // (+T15) The resolver needs `fee` above the reserved
-                                        // amount, which this slot does not show, so any change
-                                        // may cross it.
-                                        if spec.is_t15() {
-                                            return value.original_value() != value.present_value;
-                                        }
-                                        let had_sufficient_balance = value.original_value() >= fee;
-                                        let has_sufficient_balance = value.present_value >= fee;
+                                        // amount. Reservation changes trigger below, so the
+                                        // present reserved amount held before this block too.
+                                        let threshold = if spec.is_t15() {
+                                            let Ok(fee_payer) = tx.transaction.fee_payer() else {
+                                                return true;
+                                            };
+                                            let state = latest
+                                                .get_or_insert_with(|| pool.client().latest().ok());
+                                            let Some(state) = state.as_mut() else {
+                                                return true;
+                                            };
+                                            let Ok(available) = state.get_token_balance(
+                                                *token,
+                                                fee_payer,
+                                                spec,
+                                                StorageActions::disabled(),
+                                            ) else {
+                                                return true;
+                                            };
+                                            fee.saturating_add(
+                                                value.present_value.saturating_sub(available),
+                                            )
+                                        } else {
+                                            fee
+                                        };
+                                        let had_sufficient_balance =
+                                            value.original_value() >= threshold;
+                                        let has_sufficient_balance =
+                                            value.present_value >= threshold;
                                         had_sufficient_balance != has_sufficient_balance
                                     })
                                 {
