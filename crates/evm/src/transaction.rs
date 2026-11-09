@@ -48,8 +48,14 @@ impl TempoAaTx {
             override_key_id: None,
         };
         // Decoded transactions whose sender came from the recovery cache have not verified their
-        // configurable account approvals: warm them here, off the serial execution path.
+        // configurable account approvals or recovered their keychain access key: warm both here,
+        // off the serial execution path. A configurable delegate's key is covered by its approvals.
         tx.warm_configurable_approvals();
+        if let Some(keychain) = tx.signature().as_keychain()
+            && keychain.signature.as_configurable_account().is_none()
+        {
+            let _ = keychain.key_id(&tx.inner().signature_hash());
+        }
         tx
     }
 
