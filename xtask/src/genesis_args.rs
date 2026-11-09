@@ -56,6 +56,7 @@ use tempo_precompiles::{
     configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
+    reservations::Reservations,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::ContractStorage,
@@ -443,6 +444,11 @@ impl GenesisArgs {
         if self.hardforks.active_at_genesis(TempoHardfork::T14) {
             println!("Initializing configurable account (T14 active at genesis)");
             with_genesis_storage(&mut evm, || ConfigurableAccount::new().initialize())?;
+        }
+
+        if self.hardforks.active_at_genesis(TempoHardfork::T15) {
+            println!("Initializing account reservations (T15 active at genesis)");
+            with_genesis_storage(&mut evm, || Reservations::new().initialize())?;
         }
 
         if !self.no_pairwise_liquidity {

@@ -75,6 +75,15 @@ pub struct AuthorizedKey {
     pub is_admin: bool,
 }
 
+/// An access key limit charge made by [`AccountKeychain::spend_limit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LimitSpend {
+    /// Access key whose limit was charged.
+    pub(crate) key_id: Address,
+    /// End of the key's limit period after the charge; zero for one-time limits.
+    pub(crate) period_end: u64,
+}
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub enum StoredSignatureType {
@@ -776,6 +785,77 @@ impl AccountKeychain {
     /// Uses transient storage, so it's automatically cleared after the transaction.
     pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
         self.tx_origin.t_write(origin)
+    }
+
+    /// Returns the access key authorizing a call from `account`: the key that signed the
+    /// transaction when `account` is its origin, or `None` for the root key and other callers.
+    pub(crate) fn signing_access_key(&self, account: Address) -> Result<Option<Address>> {
+        let key_id = self.transaction_key.t_read()?;
+        if key_id.is_zero() || self.tx_origin.t_read()? != account {
+            return Ok(None);
+        }
+        Ok(Some(key_id))
+    }
+
+    /// Charges `amount` of `token` to the access key signing for `account`, like
+    /// [`Self::authorize_transfer`].
+    ///
+    /// Returns the key and the end of its limit period after the charge, which
+    /// [`Self::restore_limit`] takes to give the amount back, or `None` when no access key
+    /// signed for `account`.
+    ///
+    /// # Errors
+    /// - `KeyAlreadyRevoked`, `KeyExpired`, `KeyNotFound` — the signing key is not active
+    /// - `SpendingLimitExceeded` — `amount` exceeds the key's remaining limit for `token`
+    pub(crate) fn spend_limit(
+        &mut self,
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<Option<LimitSpend>> {
+        let Some(key_id) = self.signing_access_key(account)? else {
+            return Ok(None);
+        };
+        self.verify_and_update_spending(account, key_id, token, amount)?;
+        let period_end = self.spending_limits[Self::spending_limit_key(account, key_id)][token]
+            .period_end
+            .read()?;
+        Ok(Some(LimitSpend { key_id, period_end }))
+    }
+
+    /// Gives `amount` of `token` limit back to `key_id` of `account` for spend that never
+    /// happened, such as a released card hold, if the limit is still in the period ending at
+    /// `period_end` (as returned by [`Self::spend_limit`]).
+    ///
+    /// Does nothing for the root key, for inactive keys or keys without limits, and once the period
+    /// rolled over, since the new period already starts at the full limit. Never raises the
+    /// remaining limit above its maximum, so a limit the owner set to zero stays frozen.
+    pub(crate) fn restore_limit(
+        &mut self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+        amount: U256,
+        period_end: u64,
+    ) -> Result<()> {
+        if key_id.is_zero() || amount.is_zero() {
+            return Ok(());
+        }
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        let key = match self.load_active_key(account, key_id, current_timestamp) {
+            Ok(key) => key,
+            Err(err) if err.is_system_error() => return Err(err),
+            Err(_) => return Ok(()),
+        };
+        if !key.enforce_limits {
+            return Ok(());
+        }
+        self.restore_remaining(
+            Self::spending_limit_key(account, key_id),
+            token,
+            amount,
+            Some(period_end),
+        )
     }
 
     /// Persists the authorization-time restrictions for a freshly created key.
@@ -1521,7 +1601,28 @@ impl AccountKeychain {
                 .write(refunded);
         }
 
+        self.restore_remaining(limit_key, token, amount, None)
+    }
+
+    /// Adds `amount` back to a T3+ limit row, clamped to its maximum. With `period_end`, only
+    /// while the row is still in that period, and never to a row whose maximum is zero.
+    fn restore_remaining(
+        &mut self,
+        limit_key: B256,
+        token: Address,
+        amount: U256,
+        period_end: Option<u64>,
+    ) -> Result<()> {
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
+        if period_end.is_some_and(|period_end| period_end != limit_state.period_end) {
+            return Ok(());
+        }
+        // A zero maximum is a key frozen with `updateSpendingLimit(.., 0)` or a legacy row. Fee
+        // refunds keep the legacy unclamped behavior below; reservation give-backs (the only
+        // callers passing `period_end`) must not unfreeze the key.
+        if period_end.is_some() && limit_state.max == 0 {
+            return Ok(());
+        }
         // (T7+) decode the periodic zero sentinel before adding the refund.
         let refunded = if self.storage.spec().is_t7()
             && limit_state.period != 0
@@ -3923,6 +4024,135 @@ mod tests {
                 "Validation should succeed when signature type check is skipped (pre-T1)"
             );
 
+            Ok(())
+        })
+    }
+
+    /// Authorizes `access_key` on `eoa` with a 100 `token` limit renewing every 60 s, at
+    /// timestamp 1000, and makes it sign the current transaction.
+    fn authorize_periodic_key(
+        eoa: Address,
+        access_key: Address,
+        token: Address,
+    ) -> Result<AccountKeychain> {
+        StorageCtx.set_timestamp(U256::from(1000));
+        let mut keychain = AccountKeychain::new();
+        keychain.initialize()?;
+        keychain.set_transaction_key(Address::ZERO)?;
+        keychain.set_tx_origin(eoa)?;
+        authorize_key(
+            &mut keychain,
+            eoa,
+            authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                config: KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token,
+                        amount: U256::from(100),
+                        period: 60,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+            },
+        )?;
+        keychain.set_transaction_key(access_key)?;
+        Ok(keychain)
+    }
+
+    #[test]
+    fn test_spend_limit_reports_key_and_period() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let (eoa, access_key, token) = (Address::random(), Address::random(), Address::random());
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = authorize_periodic_key(eoa, access_key, token)?;
+            let remaining = |keychain: &AccountKeychain| {
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: eoa,
+                    keyId: access_key,
+                    token,
+                })
+            };
+
+            assert_eq!(
+                keychain.spend_limit(Address::random(), token, U256::from(60))?,
+                None
+            );
+            assert_eq!(
+                keychain.spend_limit(eoa, token, U256::from(60))?,
+                Some(LimitSpend {
+                    key_id: access_key,
+                    period_end: 1060
+                })
+            );
+            assert_eq!(remaining(&keychain)?, U256::from(40));
+            assert_eq!(
+                keychain.spend_limit(eoa, token, U256::from(41)),
+                Err(AccountKeychainError::spending_limit_exceeded().into())
+            );
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            assert_eq!(keychain.signing_access_key(eoa)?, None);
+            assert_eq!(keychain.spend_limit(eoa, token, U256::from(1_000))?, None);
+            assert_eq!(remaining(&keychain)?, U256::from(40));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_restore_limit() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let (eoa, access_key, token) = (Address::random(), Address::random(), Address::random());
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = authorize_periodic_key(eoa, access_key, token)?;
+            let remaining = |keychain: &AccountKeychain| {
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: eoa,
+                    keyId: access_key,
+                    token,
+                })
+            };
+            keychain.spend_limit(eoa, token, U256::from(60))?;
+
+            // The root key, zero amounts and other periods restore nothing.
+            keychain.restore_limit(eoa, Address::ZERO, token, U256::from(25), 1060)?;
+            keychain.restore_limit(eoa, access_key, token, U256::from(25), 1061)?;
+            keychain.restore_limit(eoa, access_key, token, U256::ZERO, 1060)?;
+            assert_eq!(remaining(&keychain)?, U256::from(40));
+
+            keychain.restore_limit(eoa, access_key, token, U256::from(25), 1060)?;
+            assert_eq!(remaining(&keychain)?, U256::from(65));
+            keychain.restore_limit(eoa, access_key, token, U256::from(100), 1060)?;
+            assert_eq!(remaining(&keychain)?, U256::from(100));
+
+            // An exhausted periodic limit is stored as a sentinel, which restores decode.
+            keychain.spend_limit(eoa, token, U256::from(100))?;
+            keychain.restore_limit(eoa, access_key, token, U256::from(30), 1060)?;
+            assert_eq!(remaining(&keychain)?, U256::from(30));
+
+            // Once a spend rolls the period, amounts counted in the old one are not given back.
+            StorageCtx.set_timestamp(U256::from(1060));
+            keychain.spend_limit(eoa, token, U256::from(10))?;
+            keychain.restore_limit(eoa, access_key, token, U256::from(10), 1060)?;
+            assert_eq!(remaining(&keychain)?, U256::from(90));
+
+            // Revoked keys get nothing back.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.revoke_key(eoa, revokeKeyCall { keyId: access_key })?;
+            let revoked = keychain.spending_limits
+                [AccountKeychain::spending_limit_key(eoa, access_key)][token]
+                .read()?;
+            keychain.restore_limit(eoa, access_key, token, U256::from(10), 1120)?;
+            assert_eq!(
+                keychain.spending_limits[AccountKeychain::spending_limit_key(eoa, access_key)]
+                    [token]
+                    .read()?
+                    .remaining,
+                revoked.remaining
+            );
             Ok(())
         })
     }

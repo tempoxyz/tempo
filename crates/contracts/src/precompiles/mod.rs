@@ -5,6 +5,7 @@ pub mod configurable_account;
 pub mod current_committee;
 pub mod nonce;
 pub mod receive_policy_guard;
+pub mod reservations;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
 pub mod storage_credits;
@@ -25,6 +26,7 @@ pub use configurable_account::*;
 pub use current_committee::*;
 pub use nonce::*;
 pub use receive_policy_guard::*;
+pub use reservations::*;
 pub use signature_verifier::*;
 pub use stablecoin_dex::*;
 pub use storage_credits::*;
@@ -86,4 +88,5 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (ZONE_FACTORY_ADDRESS, TempoHardfork::T10),
     (ZONE_VERIFIER_ADDRESS, TempoHardfork::T13),
     (CONFIGURABLE_ACCOUNT_ADDRESS, TempoHardfork::T14),
+    (RESERVATIONS_ADDRESS, TempoHardfork::T15),
 ];
