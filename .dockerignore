@@ -1,5 +1,7 @@
 **/.git
 contrib/
+!contrib/antithesis/reth-trie/Cargo.toml
+!contrib/antithesis/reth-trie/src/**
 docs/
 localnet/
 scripts/

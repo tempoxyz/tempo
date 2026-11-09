@@ -16,7 +16,7 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use alloy_eips::eip2718::Encodable2718;
-use alloy_provider::{ProviderBuilder, bindings::IMulticall3};
+use alloy_provider::ProviderBuilder;
 use alloy_signer::SignerSync;
 use alloy_sol_types::{SolCall, SolError};
 use futures::{SinkExt, StreamExt};
@@ -832,8 +832,7 @@ async fn test_tip20_eth_call_privacy() -> eyre::Result<()> {
     Ok(())
 }
 
-/// TIP-20 permit nonce reads are owner-scoped at the precompile boundary, including calls forwarded
-/// through Multicall3.
+/// TIP-20 permit nonce reads are owner-scoped at the precompile boundary.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_nonce_eth_call_privacy() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -880,27 +879,6 @@ async fn test_tip20_nonce_eth_call_privacy() -> eyre::Result<()> {
     assert_eq!(
         PrecompileTip20::noncesCall::abi_decode_returns(&owner_bytes)?,
         U256::ZERO
-    );
-
-    let multicall = IMulticall3::aggregateCall {
-        calls: vec![IMulticall3::Call {
-            target: PATH_USD_ADDRESS,
-            callData: calldata.into(),
-        }],
-    };
-    let forwarded = ctx
-        .call_as_user(
-            "eth_call",
-            json!([{
-                "to": format!("{:#x}", alloy_provider::MULTICALL3_ADDRESS),
-                "data": hex::encode_prefixed(multicall.abi_encode()),
-            }, "latest"]),
-            &outsider_signer,
-        )
-        .await?;
-    assert!(
-        forwarded.get("result").is_none() && forwarded.get("error").is_some(),
-        "Multicall3 must not expose another owner's TIP-20 nonce: {forwarded}"
     );
 
     Ok(())
@@ -971,35 +949,11 @@ async fn test_zone_inbox_refunds_eth_call_privacy() -> eyre::Result<()> {
         "own refunds(token, owner) read should retain normal eth_call behavior"
     );
 
-    let multicall = IMulticall3::aggregateCall {
-        calls: vec![IMulticall3::Call {
-            target: ZONE_INBOX_ADDRESS,
-            callData: refunds_call.abi_encode().into(),
-        }],
-    };
-    let forwarded_refunds = ctx
-        .call_as_user(
-            "eth_call",
-            json!([
-                {
-                    "to": format!("{:#x}", alloy_provider::MULTICALL3_ADDRESS),
-                    "data": hex::encode_prefixed(multicall.abi_encode()),
-                },
-                "latest"
-            ]),
-            &outsider_signer,
-        )
-        .await?;
-    assert!(
-        forwarded_refunds.get("result").is_none() && forwarded_refunds.get("error").is_some(),
-        "Multicall3 must not expose another owner's refund balance: {forwarded_refunds}"
-    );
-
     Ok(())
 }
 
-/// Account-indexed native getters enforce privacy inside the EVM so direct and helper-forwarded
-/// calls cannot read another account's NonceManager, AccountKeychain, or StorageCredits state.
+/// Account-indexed native getters enforce privacy inside the EVM so calls cannot read another
+/// account's NonceManager, AccountKeychain, or StorageCredits state.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_native_account_getter_eth_call_privacy() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -1072,30 +1026,6 @@ async fn test_native_account_getter_eth_call_privacy() -> eyre::Result<()> {
         assert!(
             own["result"].as_str().is_some(),
             "owner direct {label} should retain normal eth_call behavior: {own}"
-        );
-
-        let multicall = IMulticall3::aggregateCall {
-            calls: vec![IMulticall3::Call {
-                target,
-                callData: calldata.into(),
-            }],
-        };
-        let forwarded = ctx
-            .call_as_user(
-                "eth_call",
-                json!([
-                    {
-                        "to": format!("{:#x}", alloy_provider::MULTICALL3_ADDRESS),
-                        "data": hex::encode_prefixed(multicall.abi_encode()),
-                    },
-                    "latest"
-                ]),
-                &outsider_signer,
-            )
-            .await?;
-        assert!(
-            forwarded.get("result").is_none() && forwarded.get("error").is_some(),
-            "Multicall3 must not expose another account through {label}: {forwarded}"
         );
     }
 

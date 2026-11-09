@@ -8,7 +8,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Ident, Type};
 
-use crate::{FieldInfo, FieldKind};
+use crate::{FieldInfo, FieldKind, utils::extract_mapping_types};
 
 /// Helper for generating packing constant identifiers
 pub(crate) struct PackingConstants(String);
@@ -225,8 +225,6 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
 /// Nested mappings like `Mapping<K, Mapping<K2, V>>` are handled automatically
 /// since the value type includes the full nested type.
 pub(crate) fn classify_field_type(ty: &Type) -> syn::Result<FieldKind<'_>> {
-    use crate::utils::extract_mapping_types;
-
     // Check if it's a mapping (mappings have fundamentally different API)
     if let Some((key_ty, value_ty)) = extract_mapping_types(ty) {
         return Ok(FieldKind::Mapping {
@@ -443,8 +441,10 @@ pub(crate) fn gen_collision_check_fn(
     }
 
     let check_fn = quote! {
+        // Never inline: unoptimized builds keep every inlined check's temporaries in the caller's
+        // frame, which for large contracts outgrows a 2 MiB thread stack.
         #[cfg(all(debug_assertions, not(feature = "fuzz")))]
-        #[inline(always)]
+        #[inline(never)]
         #[allow(non_snake_case)]
         fn #check_fn_name() {
             #checks

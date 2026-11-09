@@ -255,6 +255,10 @@ where
 
         for tx in transactions {
             if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Pool maintenance evicts a transaction past its valid_before or key expiry"
+                );
                 to_remove.push(*tx.hash());
                 continue;
             }
@@ -685,12 +689,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        let res = self.add_validated_transaction(origin, tx)?;
+        let res = self.add_transaction(origin, transaction).await?;
         self.transaction_event_listener(res.hash)
             .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
     }
@@ -1452,16 +1451,20 @@ mod tests {
         txs.iter().map(|tx| *tx.hash()).collect()
     }
 
-    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
+    use crate::{
+        test_utils::{MockProviderStorageExt, TxBuilder, wrap_valid_tx},
+        transaction::KeychainSubject,
+    };
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use reth_primitives_traits::Recovered;
+    use reth_primitives_traits::{Recovered, SealedBlock};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+        PoolConfig, PoolUpdateKind, TransactionOrigin, TransactionPool,
+        TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -1669,8 +1672,6 @@ mod tests {
 
     #[test]
     fn pending_transactions_by_address_and_nonce_key() {
-        use crate::test_utils::{TxBuilder, wrap_valid_tx};
-
         let pool = create_test_pool(create_provider_with_tip());
         let sender = Address::random();
         let nonce_key = U256::from(7);
@@ -1714,9 +1715,6 @@ mod tests {
 
     #[test]
     fn canonical_state_change_refreshes_aa_2d_base_fee() {
-        use reth_primitives_traits::SealedBlock;
-        use reth_transaction_pool::PoolUpdateKind;
-
         let pool = create_test_pool(create_provider_with_tip());
         let initial_base_fee = pool.aa_2d_pool.read().base_fee();
 
@@ -2309,16 +2307,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2400,16 +2389,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2487,16 +2467,7 @@ mod tests {
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
+            add_validated(&pool, pooled.clone());
         }
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();

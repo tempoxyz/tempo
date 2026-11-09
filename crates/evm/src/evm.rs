@@ -183,7 +183,7 @@ mod runtime_tests {
         *,
     };
     use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -195,8 +195,10 @@ mod runtime_tests {
             StorageChange, SystemTx,
         },
         interpreter::{InstrStop, op as opcode},
+        version::GasId,
     };
     use indexmap::IndexMap;
+    use reth_evm::BlockExecutorFactory;
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::{
@@ -234,7 +236,7 @@ mod runtime_tests {
     };
     use tempo_primitives::{
         AASigned, TempoAddressExt, TempoTransaction, TempoTxEnvelope,
-        transaction::{Call, KeychainSignature, PrimitiveSignature, TempoSignature},
+        transaction::{Call, KeychainSignature, PrimitiveSignature, TempoSignature, envelope},
     };
 
     fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
@@ -273,10 +275,7 @@ mod runtime_tests {
             input,
             ..Default::default()
         };
-        let tx = Signed::new_unhashed(
-            tx,
-            tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        );
+        let tx = tx.into_signed(envelope::TEMPO_SYSTEM_TX_SIGNATURE);
         Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), Address::ZERO).into()
     }
 
@@ -1547,8 +1546,6 @@ mod runtime_tests {
     /// The factory must preserve the resolved environment's nondefault gas cap.
     #[test]
     fn test_tempo_evm_respects_gas_cap() {
-        use reth_evm::BlockExecutorFactory;
-
         let spec = TempoHardfork::T1A;
         let mut version = *crate::tempo_execution_config(spec, 1).version();
         let cap = spec.tx_gas_limit_cap().unwrap();
@@ -1594,8 +1591,6 @@ mod runtime_tests {
     /// Test that T1 has significantly higher state creation costs.
     #[test]
     fn test_tempo_evm_t1_state_creation_costs() {
-        use evm2::version::GasId;
-
         let evm = configured_evm(TempoHardfork::T1, 0, false, InMemoryDB::default());
         let gas_params = &evm.version().gas_params;
 
@@ -1789,7 +1784,7 @@ mod runtime_tests {
                 ITIP20::BurnAt::SIGNATURE_HASH,
                 MULTICALL3_ADDRESS.into_word(),
                 fixture.holder.into_word(),
-                B256::from(amount.to_be_bytes::<32>()),
+                B256::from(amount),
             ],
         );
         assert!(logs[1].data.data.is_empty());

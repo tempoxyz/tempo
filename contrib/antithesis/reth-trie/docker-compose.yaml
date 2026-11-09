@@ -1,0 +1,15 @@
+services:
+  reth-trie:
+    image: ${RETH_TRIE_IMAGE:-tempo-reth-trie-antithesis:latest}
+    container_name: reth-trie
+    hostname: reth-trie
+    init: true
+    # Antithesis controls kill/restart timing; Docker restart policies mask faults.
+    # The binary initializes the database, emits setup_complete, then continuously
+    # runs bounded rounds. No test-template driver or shell restart loop is needed.
+    command: ['{"datadir":"/state"}']
+    volumes:
+      - trie-state:/state
+
+volumes:
+  trie-state:
