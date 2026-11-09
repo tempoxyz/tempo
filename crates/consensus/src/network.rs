@@ -46,7 +46,7 @@ pub(crate) fn max_message_size(max_participants: NonZeroU32) -> u32 {
             max_participants.get(),
             &(),
         ),
-        dkg::manager::max_message_size(max_participants),
+        dkg::max_message_size(max_participants),
     ])
 }
 
