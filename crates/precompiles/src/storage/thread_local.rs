@@ -12,7 +12,7 @@ use evm2::{
 use scoped_tls::scoped_thread_local;
 use std::cell::RefCell;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
@@ -270,6 +270,12 @@ impl StorageCtx {
     /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
     pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
+    }
+
+    /// Returns the kind of EVM this context executes over. See
+    /// [`PrecompileStorageProvider::kind`].
+    pub fn kind(&self) -> TempoEvmKind {
+        Self::with_storage(|s| s.kind())
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.

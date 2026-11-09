@@ -148,7 +148,7 @@ BASELINE_REF="$FEATURE_REF"
 
 if [ -z "$LAST_FEATURE_REF" ]; then
   BASELINE_REF="$FEATURE_REF"
-  echo "First run; benchmarking main against itself to establish $SERIES state"
+  echo "No recent $SERIES state; benchmarking main against itself to establish it"
 elif [ "$LAST_FEATURE_REF" = "$FEATURE_REF" ]; then
   BASELINE_REF="$LAST_FEATURE_REF"
   if [ "$FORCE" = "true" ] || [ "$FORCE" = "--force" ]; then

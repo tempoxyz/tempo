@@ -39,7 +39,10 @@ pub(crate) fn read_outcome_from_validator(
         return None;
     }
 
-    Some(OnchainDkgOutcome::read(&mut extra_data.as_ref()).expect("valid DKG outcome"))
+    Some(
+        OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+            .expect("valid DKG outcome"),
+    )
 }
 
 /// Waits for and reads the DKG outcome from the last block of the given epoch.

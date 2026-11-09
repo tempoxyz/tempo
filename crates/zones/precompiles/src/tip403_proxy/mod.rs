@@ -144,7 +144,7 @@ mod tests {
         let message = Message::<TempoEvmTypes> {
             gas_limit: u64::MAX,
             caller: CALLER,
-            input: ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
+            input: Bytes::from(ITIP403Registry::policyIdCounterCall {}.abi_encode()).into(),
             destination: TIP403_REGISTRY_ADDRESS,
             call_target: TIP403_REGISTRY_ADDRESS,
             code_address: delegate,

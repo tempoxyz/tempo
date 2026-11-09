@@ -55,12 +55,12 @@ mod tests {
     };
     use alloy::{
         primitives::{Address, FixedBytes},
-        sol_types::{SolCall, SolValue},
+        sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig::{self, IValidatorConfigCalls},
-        ValidatorConfigError,
+        UnknownFunctionSelector, ValidatorConfigError,
     };
 
     #[test]
@@ -209,9 +209,6 @@ mod tests {
 
     #[test]
     fn test_change_validator_status_by_index_t1_gating() -> eyre::Result<()> {
-        use alloy::sol_types::SolError;
-        use tempo_contracts::precompiles::UnknownFunctionSelector;
-
         let owner = Address::random();
         let validator = Address::random();
         let public_key = FixedBytes::<32>::repeat_byte(0x42);

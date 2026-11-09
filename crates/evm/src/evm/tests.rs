@@ -1,4 +1,7 @@
-use crate::{TempoBlockEnv, TempoEvmTypes, tempo_tx_registry};
+use crate::{
+    TempoBlockEnv, TempoEvmTypes, tempo_tx_registry,
+    test_utils::{TestExecutorBuilder, test_chainspec},
+};
 use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
@@ -12,6 +15,8 @@ use evm2::{
 };
 use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
 use rand_08::rngs::OsRng;
+use reth_chainspec::EthChainSpec;
+use reth_evm::{BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError};
 use sha2::{Digest, Sha256};
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{
@@ -22,9 +27,13 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
     STORAGE_CREDITS_ADDRESS,
+    account_keychain::AccountKeychain,
     error::TempoPrecompileError,
     nonce::NonceManager,
-    storage::{ContractStorage, FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
+    storage::{
+        ContractStorage, FromWord, Handler, StorageAction, StorageCtx,
+        evm::EvmPrecompileStorageProvider,
+    },
     storage_credits::{CreditMode, StorageCredits},
     test_util::TIP20Setup,
     tip_fee_manager::TipFeeManager,
@@ -34,7 +43,7 @@ use tempo_primitives::{
     AASigned, TempoTransaction, TempoTxEnvelope,
     transaction::{
         AccountSignature, KeyAuthorization, KeychainSignature, SignatureType,
-        TempoSignedAuthorization,
+        TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization,
         tempo_transaction::Call,
         tt_signature::{
             PrimitiveSignature, TempoSignature, WebAuthnSignature, derive_p256_address,
@@ -164,8 +173,6 @@ pub(super) fn configured_evm(
     amsterdam: bool,
     database: InMemoryDB,
 ) -> TempoEvm<'static> {
-    use reth_evm::BlockExecutorFactory;
-
     let mut version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, amsterdam);
     version.chain_id = 1;
     version.features.remove(EvmFeatures::BALANCE_CHECK);
@@ -2609,10 +2616,6 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
 /// recreation costs 245k) before the Direct phase runs, so the transaction reverts.
 #[test]
 fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
-    use alloy_primitives::{Address, Bytes, TxKind, U256};
-    use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
-
     // Initcode:
     //   constructor: SSTORE(0, 1)
     //   runtime: setMode(Preserve); 500x clear/restore slot0; setMode(Direct); 500x create
@@ -2660,7 +2663,7 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     let balance = evm
         .overlay_db_mut()
         .get_storage(&STORAGE_CREDITS_ADDRESS, &StorageCredits::slot(contract))?
-        .as_limbs()[0];
+        .wrapping_to::<u64>();
     let slots = evm
         .overlay_db()
         .cache
@@ -3012,7 +3015,8 @@ fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
             .get_storage(&contract, &U256::from(slot))
             .unwrap()
     };
-    let mut delta = |slots: (u8, u8)| word(slots.0).as_limbs()[0] - word(slots.1).as_limbs()[0];
+    let mut delta =
+        |slots: (u8, u8)| word(slots.0).wrapping_to::<u64>() - word(slots.1).wrapping_to::<u64>();
 
     assert!(
         delta(EXHAUSTED_GAS) > STORAGE_CREDIT_VALUE
@@ -3393,8 +3397,6 @@ fn test_tip1060_sstore_clear_mint_saturates_at_u64_max() -> eyre::Result<()> {
 /// Expiring nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
 #[test]
 fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::Result<()> {
-    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
     let timestamp = 1000u64;
@@ -3448,8 +3450,6 @@ fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::R
 /// TIP-1106: expiring nonces become opaque discriminators at T12.
 #[test]
 fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
-    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
     let timestamp = 1_000u64;
@@ -3514,11 +3514,6 @@ fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
 /// payload builder can tell apart from other invalid txs.
 #[test]
 fn test_block_executor_expiring_nonce_replay_error() -> eyre::Result<()> {
-    use crate::test_utils::{TestExecutorBuilder, test_chainspec};
-    use reth_chainspec::EthChainSpec;
-    use reth_evm::{BlockExecutionError, BlockExecutor, BlockValidationError};
-    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
     let timestamp = 1_000u64;
@@ -3953,8 +3948,6 @@ fn test_aa_tx_gas_create_with_2d_nonce() -> eyre::Result<()> {
 /// This validates the fix for audit issue #182.
 #[test]
 fn test_aa_tx_gas_create_with_expiring_nonce() -> eyre::Result<()> {
-    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
     let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3]; // PUSH0 PUSH0 RETURN
@@ -4204,8 +4197,6 @@ fn test_system_call_and_inspector() -> eyre::Result<()> {
 #[test_case::test_case(TempoHardfork::T1)]
 #[test_case::test_case(TempoHardfork::T1A)]
 fn test_key_authorization_t1(spec: TempoHardfork) -> eyre::Result<()> {
-    use tempo_precompiles::account_keychain::AccountKeychain;
-
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
@@ -4384,8 +4375,6 @@ fn test_key_authorization_t1(spec: TempoHardfork) -> eyre::Result<()> {
 /// replay is impossible.
 #[test]
 fn test_create_nonce_replay_regression() -> eyre::Result<()> {
-    use tempo_precompiles::account_keychain::AccountKeychain;
-
     /// Run a CREATE+KeyAuth transaction on the given hardfork and return
     /// (caller_nonce_after, key_expiry).
     fn run_create_with_key_auth(spec: TempoHardfork, gas_limit: u64) -> eyre::Result<(u64, u64)> {
@@ -5007,8 +4996,6 @@ fn test_fee_fallback_before_t13_remains_path_usd_only() -> eyre::Result<()> {
 
 #[test]
 fn test_fee_fallback_records_affordability_instead_of_exact_balances() -> eyre::Result<()> {
-    use tempo_precompiles::storage::StorageAction;
-
     for (balances, selected) in [([2_000_000, 3_000_000], 0), ([999_999, 2_000_000], 1)] {
         let (mut evm, payer, tokens) =
             create_fee_fallback_evm(TempoHardfork::T13, balances, selected)?;

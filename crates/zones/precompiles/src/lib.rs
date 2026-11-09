@@ -106,7 +106,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
-    storage::actions::StorageActions,
+    storage::{actions::StorageActions, evm::EvmStorageExt},
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip20::{ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token, is_tip20_prefix},
     tip403_registry::TIP403Registry,
@@ -157,6 +157,7 @@ where
 impl<T, P> PrecompileProvider<T> for ZonePrecompiles<T, P>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
     P: L1StorageReader,
 {
     fn move_precompiles(
@@ -210,7 +211,9 @@ where
                 message,
                 gas,
                 &self.env,
-                ztip20::TIP20Rules,
+                ztip20::TIP20Rules {
+                    l1: self.l1.clone(),
+                },
                 |data, caller| {
                     TIP20Token::from_address_unchecked(address)
                         .call(data, caller)

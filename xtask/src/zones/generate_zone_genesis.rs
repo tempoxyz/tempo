@@ -12,14 +12,16 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{cli::TempoHardforkArgs, spec::TEMPO_T0_BASE_FEE};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::{CreateX, Multicall3, SafeDeployer},
-    zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal},
+    CREATEX_ADDRESS, SAFE_DEPLOYER_ADDRESS,
+    contracts::{CreateX, SafeDeployer},
+    zones::{
+        TEMPO_STATE_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
+        ZonePortal,
+    },
 };
 use tempo_evm::genesis::{
-    GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
-    ethereum_chain_config, genesis_account, genesis_evm_env, predeployed_contract,
-    with_genesis_storage,
+    GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, ethereum_chain_config,
+    genesis_account, genesis_evm_env, predeployed_contract, with_genesis_storage,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
@@ -67,6 +69,10 @@ pub(crate) struct GenerateZoneGenesis {
     )]
     pub(crate) tempo_portal: Option<Address>,
 
+    /// ZoneFactory that created `--tempo-portal`, used to find its ZoneCreated event.
+    #[arg(long, env = "ZONE_FACTORY", default_value_t = ZONE_FACTORY_ADDRESS)]
+    pub(crate) zone_factory: Address,
+
     /// Tempo L1 RPC URL used to inherit fork activations and optionally derive the anchor.
     #[arg(long, required_unless_present = "hardfork")]
     pub(crate) l1_rpc_url: Option<String>,
@@ -96,8 +102,6 @@ pub(crate) struct GenerateZoneGenesis {
     pub(crate) with_safe_deployer: bool,
 
     /// Include Arachnid CREATE2 factory in genesis.
-    /// The factory is always used internally to deploy Permit2; this flag
-    /// controls whether it remains in the final genesis state.
     #[arg(long)]
     pub(crate) with_create2_factory: bool,
 
@@ -127,7 +131,7 @@ impl GenerateZoneGenesis {
                 const_hex::decode(header_rlp).wrap_err("failed to decode hex string")?
             }
             (None, Some(portal), Some(provider)) => {
-                finalized_pre_creation_anchor(provider, portal, None)
+                finalized_pre_creation_anchor(provider, self.zone_factory, portal, None)
                     .await?
                     .rlp
             }
@@ -166,8 +170,10 @@ impl GenerateZoneGenesis {
         // Initialize all precompiles and deploy standard contracts to match the
         // L1 genesis setup. The zone EVM uses the same TempoEvmFactory, so all
         // precompiles must be initialized for user transactions to work correctly.
-        deploy_arachnid_create2_factory(&mut evm);
-        deploy_permit2(&mut evm)?;
+        // Zones omit Permit2 and Multicall3, which T15 removes from existing zones.
+        if self.with_create2_factory {
+            deploy_arachnid_create2_factory(&mut evm);
+        }
 
         with_genesis_storage(&mut evm, || {
             // Required for fee token transfer checks.
@@ -236,9 +242,6 @@ impl GenerateZoneGenesis {
             .accounts
             .iter()
             .filter(|(addr, _)| **addr != DEPLOYER && **addr != TIP20_FACTORY_ADDRESS)
-            .filter(|(addr, _)| {
-                self.with_create2_factory || **addr != ARACHNID_CREATE2_FACTORY_ADDRESS
-            })
             .filter_map(|(address, account)| account.as_ref().map(|account| (address, account)))
             .map(|(address, account)| {
                 let storage = db
@@ -267,7 +270,6 @@ impl GenerateZoneGenesis {
 
         // Deploy standard utility contracts matching L1 genesis.
         for (address, code, enabled) in [
-            (MULTICALL3_ADDRESS, &Multicall3::DEPLOYED_BYTECODE, true),
             (
                 CREATEX_ADDRESS,
                 &CreateX::DEPLOYED_BYTECODE,
@@ -328,6 +330,7 @@ pub(crate) struct PreCreationAnchor {
 
 pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     provider: &P,
+    factory: Address,
     portal: Address,
     expected_creation_block: Option<u64>,
 ) -> eyre::Result<PreCreationAnchor> {
@@ -371,6 +374,7 @@ pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     // portal was deployed in exactly that block.
     let creation_block = find_zone_deployment_block(
         provider,
+        factory,
         zone_id,
         portal,
         expected_creation_block.unwrap_or(0),
@@ -438,6 +442,7 @@ pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
 
 pub(crate) async fn wait_for_finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     provider: &P,
+    factory: Address,
     portal: Address,
     creation_block: u64,
 ) -> eyre::Result<PreCreationAnchor> {
@@ -451,7 +456,8 @@ pub(crate) async fn wait_for_finalized_pre_creation_anchor<P: Provider<TempoNetw
             .wrap_err("failed to fetch finalized Tempo L1 block")?
             .ok_or_else(|| eyre!("Tempo L1 returned no finalized block"))?;
         if finalized.number() >= creation_block {
-            return finalized_pre_creation_anchor(provider, portal, Some(creation_block)).await;
+            return finalized_pre_creation_anchor(provider, factory, portal, Some(creation_block))
+                .await;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
