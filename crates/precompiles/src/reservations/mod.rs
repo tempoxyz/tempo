@@ -246,7 +246,7 @@ impl Reservations {
             self.unreserve(owner, &auth, &mut position, decrease)?;
         }
         self.positions[owner][auth.token].write(position)?;
-        restore_limit(owner, &mut auth, decrease)?;
+        settle_limit(owner, &mut auth, call.amount)?;
         auth.held = held;
         self.authorizations[owner][call.id].write(auth)?;
         self.emit_event(ReservationsEvent::hold_adjusted(
@@ -273,7 +273,7 @@ impl Reservations {
         let (debt, spend) =
             self.pay(&mut token, owner, auth.payee, call.amount, excess, position)?;
         record_spend(&mut auth, spend, excess);
-        restore_limit(owner, &mut auth, held.saturating_sub(call.amount))?;
+        settle_limit(owner, &mut auth, call.amount)?;
 
         auth.held = U96::ZERO;
         auth.expires_at = 0;
@@ -377,7 +377,8 @@ impl Reservations {
             self.reduce_debt(call.owner, auth.token, position, payee, offset)?;
         }
         token.reservation_transfer(payee, call.owner, U256::from(moved))?;
-        restore_limit(call.owner, &mut auth, call.amount)?;
+        let outstanding = (auth.captured - refunded).to();
+        settle_limit(call.owner, &mut auth, outstanding)?;
 
         auth.refunded = refunded;
         self.authorizations[call.owner][call.id].write(auth)?;
@@ -512,8 +513,7 @@ impl Reservations {
         self.unreserve(owner, &auth, &mut position, auth.held.to())?;
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][id].delete()?;
-        let held = auth.held.to();
-        restore_limit(owner, &mut auth, held)?;
+        settle_limit(owner, &mut auth, 0)?;
         self.emit_event(ReservationsEvent::hold_released(owner, id, auth.token))
     }
 
@@ -576,15 +576,16 @@ fn record_spend(auth: &mut Authorization, spend: Option<LimitSpend>, amount: u12
     auth.counted = U96::try_from(counted).unwrap_or(U96::MAX);
 }
 
-/// Gives `amount` back to the limit of the access key that placed `auth`, within the period
-/// it was counted in.
-fn restore_limit(owner: Address, auth: &mut Authorization, amount: u128) -> Result<()> {
-    // Never more than the key's limit counted, so spend the root key added is not given back.
-    let amount = amount.min(auth.counted.to());
+/// Lowers `auth.counted` to at most `committed`, what the authorization still holds or paid, and
+/// gives the difference back to the placing key within the period it was counted in. Amounts
+/// the root key added are released first, so they never turn into key limit.
+fn settle_limit(owner: Address, auth: &mut Authorization, committed: u128) -> Result<()> {
+    let counted = auth.counted.to::<u128>();
+    let amount = counted.saturating_sub(committed);
     if amount == 0 {
         return Ok(());
     }
-    auth.counted = U96::from(auth.counted.to::<u128>() - amount);
+    auth.counted = U96::from(counted - amount);
     AccountKeychain::new().restore_limit(
         owner,
         auth.key_id,
@@ -1769,8 +1770,9 @@ mod tests {
             StorageCtx.set_timestamp(U256::from(NOW + CARD_LIMIT_PERIOD));
             f.charge(id, 800, f.payee)?;
             assert_eq!(remaining()?, U256::from(200));
+            // Refunds settle against what is still paid, so the earlier period's 1 stays counted.
             f.refund(f.payee, id, 800)?;
-            assert_eq!(remaining()?, U256::from(1_000));
+            assert_eq!(remaining()?, U256::from(999));
             Ok(())
         })
     }
@@ -1836,6 +1838,28 @@ mod tests {
             assert_eq!(
                 remaining_limit(&keychain, f.owner, key, f.token.address())()?,
                 U256::from(100)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_root_top_ups_never_become_key_limit() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let mut keychain = authorize_card_key(f.owner, key, f.token.address(), 100)?;
+            let id = B256::random();
+            f.hold(id, 100)?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            f.adjust(id, 200)?;
+            keychain.set_transaction_key(key)?;
+            // The unused root top-up is released first; the key's own 100 was captured.
+            f.capture(id, 100)?;
+            assert_eq!(
+                remaining_limit(&keychain, f.owner, key, f.token.address())()?,
+                U256::ZERO
             );
             Ok(())
         })
