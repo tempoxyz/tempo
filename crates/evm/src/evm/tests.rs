@@ -26,12 +26,13 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    STORAGE_CREDITS_ADDRESS,
+    RESERVATIONS_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::TempoPrecompileError,
     nonce::NonceManager,
+    reservations::Reservations,
     storage::{
-        ContractStorage, FromWord, Handler, StorageAction, StorageCtx,
+        ContractStorage, FromWord, Handler, StorageAction, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
     },
     storage_credits::{CreditMode, StorageCredits},
@@ -52,7 +53,10 @@ use tempo_primitives::{
     },
 };
 
-use crate::{FeePaymentError, ResolvedFeeToken, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
+use crate::{
+    FeePaymentError, ResolvedFeeToken, TempoEvm, TempoInvalidTransaction, TempoStateAccess,
+    TempoTxEnv,
+};
 
 // ==================== Test Constants ====================
 
@@ -4991,6 +4995,69 @@ fn test_fee_fallback_before_t13_remains_path_usd_only() -> eyre::Result<()> {
         FEE_FALLBACK_GAS_PRICE,
     ));
     assert!(is_insufficient_fee_token_balance(result, 999_999));
+    Ok(())
+}
+
+#[test]
+fn test_token_balance_excludes_reserved_funds_from_t15() -> eyre::Result<()> {
+    for (spec, expected) in [
+        (TempoHardfork::T14, 2_000_000),
+        (TempoHardfork::T15, 500_000),
+    ] {
+        let (mut evm, payer, tokens) = create_fee_fallback_evm(spec, [2_000_000, 3_000_000], 0)?;
+        with_fee_fallback_storage(&mut evm, || {
+            Reservations::new().set_reserved_unchecked(payer, tokens[0], 1_500_000)
+        })?;
+        assert_eq!(
+            evm.get_token_balance(tokens[0], payer, spec, StorageActions::disabled())?,
+            U256::from(expected)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_skips_reserved_funds_from_t15() -> eyre::Result<()> {
+    let (mut evm, payer, tokens) =
+        create_fee_fallback_evm(TempoHardfork::T15, [2_000_000, 3_000_000], 1)?;
+    let reserved = U256::from(1_500_000);
+    with_fee_fallback_storage(&mut evm, || {
+        Reservations::new().set_reserved_unchecked(payer, tokens[0], reserved.to())
+    })?;
+    evm.ext_mut().actions.enable();
+    let actions = evm.ext().actions.clone();
+    let result = evm.transact_detach(fee_fallback_tx(
+        payer,
+        IDENTITY_PRECOMPILE,
+        Bytes::new(),
+        FEE_FALLBACK_GAS_PRICE,
+    ))?;
+    assert!(result.result.status);
+    let recorded = actions.take().unwrap();
+
+    // The first token's balance covers the fee but its available balance does not. Replay checks
+    // the balance against the fee plus the exactly replayed reserved amount.
+    let checks: Vec<_> = recorded
+        .iter()
+        .filter_map(|action| match action {
+            StorageAction::FeeTokenBalanceCheck(token, _, balance, required, sufficient) => {
+                Some((*token, *balance, *required, *sufficient))
+            }
+            _ => None,
+        })
+        .collect();
+    let fee = U256::from(1_000_000);
+    assert_eq!(
+        checks,
+        vec![
+            (tokens[0], U256::from(2_000_000), fee + reserved, false),
+            (tokens[1], U256::from(3_000_000), fee, true),
+        ]
+    );
+    assert!(recorded.iter().any(|action| matches!(action,
+        StorageAction::Sload(address, _, value) if *address == RESERVATIONS_ADDRESS
+            && *value == reserved
+    )));
     Ok(())
 }
 

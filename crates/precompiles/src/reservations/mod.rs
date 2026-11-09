@@ -1,9 +1,10 @@
 //! Account reservations precompile: native holds on TIP-20 balances, capped debt and linked
 //! refunds.
 //!
-//! Held funds never leave the owner's balance. From T15, every TIP-20 debit requires the amount to
-//! fit in the balance minus the owner's reserved total, and every TIP-20 credit to an owner with
-//! debt in that token pays the creditor first. A capture or charge releases the hold before paying,
+//! Held funds never leave the owner's balance. From T15, every TIP-20 debit except compliance burns
+//! requires the amount to fit in the balance minus the owner's reserved total, and every TIP-20
+//! credit to an owner with debt in that token pays the creditor first when the token's and the
+//! creditor's policies admit that payment. A capture or charge releases the hold before paying,
 //! so it spends the reservation it consumes.
 //!
 //! Open holds count as spend of the access key that placed them (TIP-1011 limits), and every
@@ -23,12 +24,18 @@ pub use tempo_contracts::precompiles::{
 };
 use tempo_precompiles_macros::{Storable, contract};
 
+/// Longest a hold may last, in seconds: 31 days.
+///
+/// Card authorizations expire within 30 days under network rules, so a longer hold has no use
+/// and would only lock funds; the bound also caps how long a hold outlives a policy change.
+pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
+
 /// Reserved and owed amounts of one owner in one token, packed in one slot.
 ///
 /// TIP-20 reads this slot on every debit and credit from T15.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct Position {
-    /// Sum of the owner's live holds in the token.
+    /// Sum of the owner's live holds in the token, or less after a compliance burn.
     reserved: u128,
     /// Debt owed to the creditor stored in `Reservations::creditors`.
     debt: u128,
@@ -95,29 +102,62 @@ impl Reservations {
         self.positions[owner][token].reserved.read()
     }
 
+    /// Sets `owner`'s reserved amount of `token` without a hold, so test fixtures outside this
+    /// crate can reserve funds.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_reserved_unchecked(
+        &mut self,
+        owner: Address,
+        token: Address,
+        reserved: u128,
+    ) -> Result<()> {
+        self.positions[owner][token].reserved.write(reserved)
+    }
+
+    /// Lowers `owner`'s reserved amount of `token` to at most `max`, leaving its holds as they are.
+    ///
+    /// Called by TIP-20 before a compliance burn from T15, so the burn may take reserved funds.
+    /// Afterwards `reserved` may be below the sum of the owner's live holds.
+    pub(crate) fn cap_reserved(&mut self, owner: Address, token: Address, max: U256) -> Result<()> {
+        let mut position = self.positions[owner][token].read()?;
+        if U256::from(position.reserved) <= max {
+            return Ok(());
+        }
+        // `max` is below `reserved`, so it fits.
+        position.reserved = max.to();
+        self.positions[owner][token].write(position)
+    }
+
     /// Settles up to `received` of `owner`'s debt in `token` and emits `DebtRepaid`.
     ///
-    /// Called by TIP-20 after crediting `owner` from T15. Returns the creditor and the amount
-    /// TIP-20 must move from `owner` to it, or `None` when `owner` has no debt.
+    /// Called by TIP-20 after crediting `owner` from T15. `admits` tells from the creditor whether
+    /// the repayment may move now. Returns the creditor and the amount TIP-20 must move from
+    /// `owner` to it, or `None` when `owner` has no debt or `admits` returns false, which leaves
+    /// the debt unchanged.
     pub(crate) fn take_repayment(
         &mut self,
         owner: Address,
         token: Address,
         received: U256,
+        admits: impl FnOnce(Address) -> Result<bool>,
     ) -> Result<Option<(Address, U256)>> {
         let position = self.positions[owner][token].read()?;
         if position.debt == 0 {
             return Ok(None);
         }
-        let repaid = position.debt.min(received.saturating_to::<u128>());
         let creditor = self.creditors[owner][token].read()?;
+        if !admits(creditor)? {
+            return Ok(None);
+        }
+        let repaid = position.debt.min(received.saturating_to::<u128>());
         self.reduce_debt(owner, token, position, creditor, repaid)?;
         Ok(Some((creditor, U256::from(repaid))))
     }
 
     fn hold(&mut self, owner: Address, call: IReservations::holdCall) -> Result<()> {
         let held = amount_u96(call.amount)?;
-        if call.expiresAt <= self.now() {
+        let now = self.now();
+        if call.expiresAt <= now || call.expiresAt > now.saturating_add(MAX_HOLD_DURATION) {
             return Err(ReservationsError::invalid_amount().into());
         }
         let token = TIP20Token::from_address(call.token)?;
@@ -177,10 +217,8 @@ impl Reservations {
                 .ok_or_else(TempoPrecompileError::under_overflow)?;
             AccountKeychain::new().spend_limit(owner, auth.token, U256::from(increase))?;
         } else {
-            position.reserved = position
-                .reserved
-                .checked_sub(decrease)
-                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            // A compliance burn may have lowered `reserved` below the sum of the live holds.
+            position.reserved = position.reserved.saturating_sub(decrease);
         }
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][call.id].held.write(held)?;
@@ -188,6 +226,7 @@ impl Reservations {
         self.emit_event(ReservationsEvent::hold_adjusted(
             owner,
             call.id,
+            auth.token,
             call.amount,
         ))
     }
@@ -197,13 +236,13 @@ impl Reservations {
         ensure_key_may_act(owner, &auth)?;
         let captured = amount_u96(call.amount)?;
         let held = auth.held.to::<u128>();
-        let mut position = self.positions[owner][auth.token].read()?;
-        // Releasing the hold first lets the payment spend the reservation it consumes.
-        position.reserved = position
-            .reserved
-            .checked_sub(held)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
         let mut token = TIP20Token::from_address(auth.token)?;
+        // The payee may have become forbidden since the hold was placed.
+        token.ensure_transfer_authorized(owner, auth.payee)?;
+        let mut position = self.positions[owner][auth.token].read()?;
+        // Releasing the hold first lets the payment spend the reservation it consumes. A
+        // compliance burn may have lowered `reserved` below the sum of the live holds.
+        position.reserved = position.reserved.saturating_sub(held);
         // The hold already counted against the key's limit; only an excess is new spend.
         let (debt, _) = self.pay(
             &mut token,
@@ -330,11 +369,13 @@ impl Reservations {
         if AccountKeychain::new().signing_access_key(owner)?.is_some() {
             return Err(ReservationsError::unauthorized().into());
         }
-        if call.creditor.is_zero() || call.creditor == owner {
+        // Debt is owed to resolved payees, so a cap for a virtual address applies to its master.
+        let creditor = Recipient::resolve(call.creditor)?.target;
+        if creditor.is_zero() || creditor == owner {
             return Err(ReservationsError::unauthorized().into());
         }
         TIP20Token::from_address(call.token)?;
-        self.debt_caps[owner][call.creditor][call.token].write(call.cap)
+        self.debt_caps[owner][creditor][call.token].write(call.cap)
     }
 
     fn get_hold(&self, owner: Address, id: B256) -> Result<IReservations::Hold> {
@@ -353,7 +394,7 @@ impl Reservations {
     }
 
     fn debt_cap(&self, owner: Address, creditor: Address, token: Address) -> Result<u128> {
-        self.debt_caps[owner][creditor][token].read()
+        self.debt_caps[owner][Recipient::resolve(creditor)?.target][token].read()
     }
 
     fn debt_of(&self, owner: Address, token: Address) -> Result<IReservations::debtOfReturn> {
@@ -444,10 +485,8 @@ impl Reservations {
 
     fn end_hold(&mut self, owner: Address, id: B256, auth: Authorization) -> Result<()> {
         let mut position = self.positions[owner][auth.token].read()?;
-        position.reserved = position
-            .reserved
-            .checked_sub(auth.held.to::<u128>())
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        // A compliance burn may have lowered `reserved` below the sum of the live holds.
+        position.reserved = position.reserved.saturating_sub(auth.held.to::<u128>());
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][id].delete()?;
         restore_limit(owner, &auth, auth.held.to())?;
@@ -519,10 +558,13 @@ mod tests {
     use super::*;
     use crate::{
         account_keychain::AccountKeychain,
+        address_registry::{AddressRegistry, MasterId, TempoAddressExt, UserTag},
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-        tip20::{ITIP20, TIP20Error, TIP20Event},
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip20::{BURN_AT_ROLE, BURN_BLOCKED_ROLE, ITIP20, PAUSE_ROLE, TIP20Error, TIP20Event},
+        tip403_registry::{
+            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+        },
     };
     use alloy::{
         primitives::{IntoLogData, TxKind, U256},
@@ -654,6 +696,26 @@ mod tests {
         fn debt(&self) -> Result<IReservations::debtOfReturn> {
             self.reservations.debt_of(self.owner, self.token.address())
         }
+
+        /// Makes the token's transfer policy a blacklist of `accounts`.
+        fn blacklist(&mut self, accounts: Vec<Address>) -> Result<()> {
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let policy = registry.create_policy_with_accounts(
+                self.admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin: self.admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    accounts,
+                },
+            )?;
+            self.token.change_transfer_policy_id(
+                self.admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy,
+                },
+            )
+        }
     }
 
     /// Runs `f` at T15 with the block timestamp at [`NOW`].
@@ -732,8 +794,13 @@ mod tests {
         at_t15(|| {
             let mut f = Fixture::new(1_000)?;
             let id = B256::random();
-            for (amount, expires_at) in [(0, EXPIRY), (1u128 << 96, EXPIRY), (1, NOW), (1, NOW - 1)]
-            {
+            for (amount, expires_at) in [
+                (0, EXPIRY),
+                (1u128 << 96, EXPIRY),
+                (1, NOW),
+                (1, NOW - 1),
+                (1, NOW + MAX_HOLD_DURATION + 1),
+            ] {
                 assert_eq!(
                     f.hold_until(id, amount, expires_at).unwrap_err(),
                     ReservationsError::invalid_amount().into()
@@ -882,8 +949,16 @@ mod tests {
             let id = B256::random();
             f.hold(id, 500)?;
 
+            f.reservations.clear_emitted_events();
             f.adjust(id, 800)?;
             assert_eq!(f.reserved()?, 800);
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::hold_adjusted(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    800,
+                )]);
             assert_eq!(
                 f.adjust(id, 1_001).unwrap_err(),
                 ReservationsError::insufficient_available().into()
@@ -1183,27 +1258,20 @@ mod tests {
     fn test_policy_forbids_hold_and_charge() -> eyre::Result<()> {
         at_t15(|| {
             let mut f = Fixture::new(1_000)?;
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-            let policy = registry.create_policy_with_accounts(
-                f.admin,
-                ITIP403Registry::createPolicyWithAccountsCall {
-                    admin: f.admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                    accounts: vec![f.payee],
-                },
-            )?;
-            f.token.change_transfer_policy_id(
-                f.admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy,
-                },
-            )?;
+            let held = B256::random();
+            f.hold(held, 100)?;
+            f.blacklist(vec![f.payee])?;
 
             assert_eq!(
                 f.hold(B256::random(), 1).unwrap_err(),
                 TIP20Error::policy_forbids().into()
             );
+            // A hold placed before the payee was forbidden cannot settle; it can only be released.
+            assert_eq!(
+                f.capture(held, 100).unwrap_err(),
+                TIP20Error::policy_forbids().into()
+            );
+            f.reservations.release(f.owner, held)?;
             assert_eq!(
                 f.charge(B256::random(), 1, f.payee).unwrap_err(),
                 TIP20Error::policy_forbids().into()
@@ -1212,6 +1280,208 @@ mod tests {
             assert_eq!(
                 TIP20Error::policy_forbids().selector(),
                 ReservationsError::policy_forbids().selector()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_repayment_waits_until_the_creditor_may_receive() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            f.set_debt_cap(f.payee, 500)?;
+            f.charge(B256::random(), 300, f.payee)?;
+            let sender = Address::random();
+            f.token.mint(
+                f.admin,
+                ITIP20::mintCall {
+                    to: sender,
+                    amount: U256::from(1_000),
+                },
+            )?;
+            // Credits stay with the owner and the debt stays in place while repayment is blocked.
+            let assert_unrepaid = |f: &Fixture, owner_balance: u64, debt: u128| -> Result<()> {
+                assert_eq!(f.balance(f.owner)?, U256::from(owner_balance));
+                assert_eq!(f.balance(f.payee)?, U256::from(300 - debt as u64));
+                assert_eq!(f.debt()?.amount, debt);
+                Ok(())
+            };
+
+            // The creditor's receive policy rejects the owner.
+            set_receive_policy(f.payee, REJECT_ALL_POLICY_ID)?;
+            assert!(f.transfer(sender, f.owner, 10)?);
+            assert_unrepaid(&f, 10, 200)?;
+            set_receive_policy(f.payee, ALLOW_ALL_POLICY_ID)?;
+            assert!(f.transfer(sender, f.owner, 10)?);
+            assert_unrepaid(&f, 10, 190)?;
+
+            // The token's transfer policy forbids the creditor as recipient.
+            f.blacklist(vec![f.payee])?;
+            assert!(f.transfer(sender, f.owner, 10)?);
+            assert_unrepaid(&f, 20, 190)?;
+            // ... or the owner as sender; fee refunds credit without a policy check.
+            f.blacklist(vec![f.owner])?;
+            f.token.transfer_fee_pre_tx(sender, U256::from(100))?;
+            f.token
+                .transfer_fee_post_tx(f.owner, U256::from(10), U256::from(90))?;
+            assert_unrepaid(&f, 30, 190)?;
+            f.blacklist(vec![])?;
+            assert!(f.transfer(sender, f.owner, 10)?);
+            assert_unrepaid(&f, 30, 180)?;
+
+            // A fee refund while the token is paused credits without repaying.
+            f.token.transfer_fee_pre_tx(sender, U256::from(100))?;
+            f.token.grant_role_internal(f.admin, PAUSE_ROLE)?;
+            f.token.pause(f.admin, ITIP20::pauseCall {})?;
+            f.token
+                .transfer_fee_post_tx(f.owner, U256::from(60), U256::from(40))?;
+            assert_unrepaid(&f, 90, 180)?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compliance_burns_take_reserved_funds() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let captured = B256::random();
+            let released = B256::random();
+            f.hold(captured, 600)?;
+            f.hold(released, 300)?;
+            f.token.grant_role_internal(f.admin, BURN_BLOCKED_ROLE)?;
+            f.blacklist(vec![f.owner])?;
+            f.token
+                .burn_blocked(f.admin, f.owner, U256::from(800), true)?;
+
+            // The burn caps the reserved amount at the remaining balance; holds keep their amounts.
+            assert_eq!(f.balance(f.owner)?, U256::from(200));
+            assert_eq!(f.reserved()?, 200);
+            assert_eq!(f.available()?, 0);
+            assert_eq!(f.reservations.get_hold(f.owner, released)?.amount, 300);
+
+            // Holds settle against what remains: releasing one frees the rest of the balance.
+            f.blacklist(vec![])?;
+            f.reservations.release(f.owner, released)?;
+            assert_eq!(f.reserved()?, 0);
+            assert_eq!(f.available()?, 200);
+            // A capture pays only the available balance; the rest needs debt headroom.
+            assert_eq!(
+                f.capture(captured, 600).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+            f.set_debt_cap(f.payee, 400)?;
+            f.capture(captured, 600)?;
+            assert_eq!(f.balance(f.payee)?, U256::from(200));
+            assert_eq!(f.debt()?.amount, 400);
+
+            // Burns at an address are compliance burns too.
+            let mut f = Fixture::new(1_000)?;
+            f.hold(B256::random(), 700)?;
+            f.token.grant_role_internal(f.admin, BURN_AT_ROLE)?;
+            let burn_at = |f: &mut Fixture, amount: u64| {
+                f.token.burn_at(
+                    f.admin,
+                    ITIP20::burnAtCall {
+                        from: f.owner,
+                        amount: U256::from(amount),
+                    },
+                )
+            };
+            burn_at(&mut f, 500)?;
+            assert_eq!(f.balance(f.owner)?, U256::from(500));
+            assert_eq!(f.reserved()?, 500);
+            // Ordinary debits still respect the reservation.
+            assert_eq!(
+                f.transfer(f.owner, Address::random(), 1).unwrap_err(),
+                TIP20Error::insufficient_balance(U256::ZERO, U256::ONE, f.token.address()).into()
+            );
+            assert_eq!(
+                burn_at(&mut f, 501).unwrap_err(),
+                TIP20Error::insufficient_balance(
+                    U256::from(500),
+                    U256::from(501),
+                    f.token.address()
+                )
+                .into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_virtual_addresses_resolve_to_their_master() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let mut registry = AddressRegistry::new();
+            registry.register_virtual_master_unchecked(MasterId::repeat_byte(1), f.payee)?;
+            registry.register_virtual_master_unchecked(MasterId::repeat_byte(2), f.owner)?;
+            let virtual_payee = Address::new_virtual(MasterId::repeat_byte(1), UserTag::ZERO);
+            let virtual_owner = Address::new_virtual(MasterId::repeat_byte(2), UserTag::ZERO);
+
+            // Debt caps are kept for the master, which is the creditor a virtual payee resolves to.
+            f.set_debt_cap(virtual_payee, 300)?;
+            let token = f.token.address();
+            assert_eq!(f.reservations.debt_cap(f.owner, f.payee, token)?, 300);
+            assert_eq!(f.reservations.debt_cap(f.owner, virtual_payee, token)?, 300);
+            assert_eq!(
+                f.set_debt_cap(virtual_owner, 1).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            f.charge(B256::random(), 300, virtual_payee)?;
+            assert_eq!(f.debt()?.creditor, f.payee);
+
+            // A credit to the owner's virtual address repays after the forwarding event.
+            let sender = Address::random();
+            f.token.mint(
+                f.admin,
+                ITIP20::mintCall {
+                    to: sender,
+                    amount: U256::from(50),
+                },
+            )?;
+            f.token.clear_emitted_events();
+            assert!(f.transfer(sender, virtual_owner, 50)?);
+            f.token.assert_emitted_events(vec![
+                TIP20Event::transfer(sender, virtual_owner, U256::from(50)),
+                TIP20Event::transfer(virtual_owner, f.owner, U256::from(50)),
+                TIP20Event::transfer(f.owner, f.payee, U256::from(50)),
+            ]);
+            assert_eq!(f.debt()?.amount, 150);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_give_backs_never_unfreeze_a_key() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let mut keychain = authorize_card_key(f.owner, key, f.token.address(), 100)?;
+            let released = B256::random();
+            let expiring = B256::random();
+            let captured = B256::random();
+            f.hold(released, 20)?;
+            f.hold(expiring, 20)?;
+            f.hold(captured, 20)?;
+            f.capture(captured, 20)?;
+
+            // The owner freezes the key with its root key.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.update_spending_limit(
+                f.owner,
+                IAccountKeychain::updateSpendingLimitCall {
+                    keyId: key,
+                    token: f.token.address(),
+                    newLimit: U256::ZERO,
+                },
+            )?;
+            f.reservations.release(f.owner, released)?;
+            StorageCtx.set_timestamp(U256::from(EXPIRY));
+            f.reservations.release_expired(f.owner, expiring)?;
+            f.refund(f.payee, captured, 20)?;
+            assert_eq!(
+                remaining_limit(&keychain, f.owner, key, f.token.address())()?,
+                U256::ZERO
             );
             Ok(())
         })
@@ -1491,6 +1761,18 @@ mod tests {
             assert!(f.transfer(f.owner, Address::random(), 1_000)?);
             Ok(())
         })
+    }
+
+    /// Sets `receiver`'s TIP-1028 receive policy to admit senders under `sender_policy_id`.
+    fn set_receive_policy(receiver: Address, sender_policy_id: u64) -> Result<()> {
+        TIP403Registry::new().set_receive_policy(
+            receiver,
+            ITIP403Registry::setReceivePolicyCall {
+                senderPolicyId: sender_policy_id,
+                tokenFilterId: ALLOW_ALL_POLICY_ID,
+                recoveryAuthority: Address::ZERO,
+            },
+        )
     }
 
     /// Returns a reader of @@key@@'s remaining @@token@@ limit on @@owner@@.

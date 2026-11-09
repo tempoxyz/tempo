@@ -18,9 +18,12 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
 use std::time::Instant;
 use tempo_chainspec::hardfork::TempoHardforks;
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
+use tempo_contracts::precompiles::{
+    IAccountKeychain, IFeeManager, IReservations, ITIP20, ITIP403Registry,
+};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, RESERVATIONS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
 };
 use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
@@ -78,6 +81,12 @@ pub struct TempoPoolUpdates {
     /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
     /// `to` account cannot make an already-admitted transaction newly invalid.
     pub fee_balance_changes: AddressMap<AddressSet>,
+    /// Accounts whose reserved amount of a token was raised or adjusted (TIP-1153), keyed by token.
+    ///
+    /// From T15 fees can only be paid from the balance not reserved, so a new or larger hold
+    /// lowers what the account can pay without a `Transfer` log. Other reservation operations
+    /// that lower the available balance move tokens and are tracked in `fee_balance_changes`.
+    pub reservation_changes: AddressMap<AddressSet>,
     /// Spending-limit spends emitted by the account keychain during execution.
     ///
     /// We record the exact `(account, key_id, token)` triples emitted by `AccessKeySpend`
@@ -112,6 +121,7 @@ impl TempoPoolUpdates {
             && self.transfer_policy_updates.is_empty()
             && self.quote_token_updates.is_empty()
             && self.fee_balance_changes.is_empty()
+            && self.reservation_changes.is_empty()
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
     }
@@ -217,6 +227,20 @@ impl TempoPoolUpdates {
                     None => {}
                 }
             }
+            // Holds placed or adjusted, which both index the owner and token as topics 1 and 3.
+            else if log.address == RESERVATIONS_ADDRESS {
+                if let Some(&topic0) = log.topics().first()
+                    && (topic0 == IReservations::HoldPlaced::SIGNATURE_HASH
+                        || topic0 == IReservations::HoldAdjusted::SIGNATURE_HASH)
+                    && let [_, owner, _, token] = log.topics()
+                {
+                    updates
+                        .reservation_changes
+                        .entry(Address::from_word(*token))
+                        .or_default()
+                        .insert(Address::from_word(*owner));
+                }
+            }
             // TIP403 blacklist additions and whitelist removals
             else if log.address == TIP403_REGISTRY_ADDRESS {
                 match Tip403PoolEvent::decode(log) {
@@ -248,6 +272,7 @@ impl TempoPoolUpdates {
             || !self.whitelist_removals.is_empty()
             || !self.paused_tokens.is_empty()
             || !self.fee_balance_changes.is_empty()
+            || !self.reservation_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
     }
 
@@ -574,6 +599,18 @@ where
                                         let had_sufficient_balance = value.original_value() >= fee;
                                         let has_sufficient_balance = value.present_value >= fee;
                                         had_sufficient_balance != has_sufficient_balance
+                                    })
+                                {
+                                    return true;
+                                }
+                                // (+T15) Holds change the payable balance without balance writes.
+                                if updates
+                                    .reservation_changes
+                                    .get(token)
+                                    .is_some_and(|owners| {
+                                        tx.transaction
+                                            .fee_payer()
+                                            .is_ok_and(|fee_payer| owners.contains(&fee_payer))
                                     })
                                 {
                                     return true;
@@ -1332,6 +1369,60 @@ mod tests {
                     .is_some_and(|accounts| accounts.len() == 1 && accounts.contains(&from)),
                 "TIP20 transfer logs should only mark the debited sender as balance-changed"
             );
+            assert!(updates.has_invalidation_events());
+        }
+
+        #[test]
+        fn extracts_reservation_changes_from_hold_logs() {
+            let token = tempo_precompiles::PATH_USD_ADDRESS;
+            let placed_owner = Address::random();
+            let adjusted_owner = Address::random();
+            let released_owner = Address::random();
+            let id = B256::random();
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs: [
+                    IReservations::HoldPlaced {
+                        owner: placed_owner,
+                        id,
+                        token,
+                        payee: Address::random(),
+                        amount: 1,
+                        expiresAt: 1,
+                    }
+                    .into_log_data(),
+                    IReservations::HoldAdjusted {
+                        owner: adjusted_owner,
+                        id,
+                        token,
+                        amount: 2,
+                    }
+                    .into_log_data(),
+                    // Releases only raise the available balance.
+                    IReservations::HoldReleased {
+                        owner: released_owner,
+                        id,
+                    }
+                    .into_log_data(),
+                ]
+                .into_iter()
+                .map(|data| {
+                    Log::new_unchecked(RESERVATIONS_ADDRESS, data.topics().to_vec(), data.data)
+                })
+                .collect(),
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert_eq!(
+                updates.reservation_changes.get(&token),
+                Some(&AddressSet::from_iter([placed_owner, adjusted_owner]))
+            );
+            assert!(updates.fee_balance_changes.is_empty());
             assert!(updates.has_invalidation_events());
         }
 

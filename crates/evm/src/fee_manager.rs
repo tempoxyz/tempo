@@ -12,7 +12,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    error::Result as TempoResult,
+    error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, StorageAction, StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Error, TIP20Token},
@@ -314,22 +314,33 @@ where
     let mut highest_balance = U256::ZERO;
     // Replay depends on affordability, not the exact balance.
     for &token in candidates {
-        let balance = actions
-            .unrecorded(|| state.get_token_balance(token, fee_payer, spec, actions.clone()))?;
-        let sufficient = balance >= max_fee;
+        let (balance, reserved) =
+            state.with_read_only_storage_ctx(spec, actions.clone(), || {
+                let token = TIP20Token::from_address_unchecked(token);
+                // (+T15) The reserved amount is replayed as an exact read, so the balance
+                // check below stays equivalent to comparing the available balance with the fee.
+                let reserved = token.reserved_balance(fee_payer)?;
+                let balance = actions.unrecorded(|| token.balances[fee_payer].read())?;
+                TempoResult::Ok((balance, reserved))
+            })?;
+        let required = max_fee
+            .checked_add(reserved)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        let sufficient = balance >= required;
         actions.record(StorageAction::FeeTokenBalanceCheck(
             token,
             TIP20Token::from_address_unchecked(token).balances[fee_payer].slot(),
             balance,
-            max_fee,
+            required,
             sufficient,
         ));
         if sufficient {
             return Ok(ResolvedFeeToken::Fallback(token));
         }
-        if balance > highest_balance {
+        let available = balance.saturating_sub(reserved);
+        if available > highest_balance {
             richest_token = token;
-            highest_balance = balance;
+            highest_balance = available;
         }
     }
 

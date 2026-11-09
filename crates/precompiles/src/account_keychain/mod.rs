@@ -829,7 +829,7 @@ impl AccountKeychain {
     ///
     /// Does nothing for the root key, for inactive keys or keys without limits, and once the period
     /// rolled over, since the new period already starts at the full limit. Never raises the
-    /// remaining limit above its maximum.
+    /// remaining limit above its maximum, so a limit the owner set to zero stays frozen.
     pub(crate) fn restore_limit(
         &mut self,
         account: Address,
@@ -1605,7 +1605,7 @@ impl AccountKeychain {
     }
 
     /// Adds `amount` back to a T3+ limit row, clamped to its maximum. With `period_end`, only
-    /// while the row is still in that period.
+    /// while the row is still in that period, and never to a row whose maximum is zero.
     fn restore_remaining(
         &mut self,
         limit_key: B256,
@@ -1615,6 +1615,12 @@ impl AccountKeychain {
     ) -> Result<()> {
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         if period_end.is_some_and(|period_end| period_end != limit_state.period_end) {
+            return Ok(());
+        }
+        // A zero maximum is a key frozen with `updateSpendingLimit(.., 0)` or a legacy row. Fee
+        // refunds keep the legacy unclamped behavior below; reservation give-backs (the only
+        // callers passing `period_end`) must not unfreeze the key.
+        if period_end.is_some() && limit_state.max == 0 {
             return Ok(());
         }
         // (T7+) decode the periodic zero sentinel before adding the refund.

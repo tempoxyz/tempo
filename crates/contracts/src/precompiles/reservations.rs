@@ -45,7 +45,7 @@ crate::sol! {
         function captured(address owner, bytes32 id) external view returns (uint128 captured, uint128 refunded);
 
         event HoldPlaced(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint64 expiresAt);
-        event HoldAdjusted(address indexed owner, bytes32 indexed id, uint128 amount);
+        event HoldAdjusted(address indexed owner, bytes32 indexed id, address indexed token, uint128 amount);
         event HoldReleased(address indexed owner, bytes32 indexed id);
         event HoldCaptured(address indexed owner, bytes32 indexed id, uint128 amount, uint128 debt);
         event Charged(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint128 debt);

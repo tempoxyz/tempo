@@ -174,6 +174,7 @@ where
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
             || !updates.fee_balance_changes.is_empty()
+            || !updates.reservation_changes.is_empty()
             || !updates.spending_limit_spends.is_empty()
         {
             self.client().latest().ok()
@@ -251,6 +252,8 @@ where
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
+        let has_fee_balance_changes =
+            !updates.fee_balance_changes.is_empty() || !updates.reservation_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
         for tx in transactions {
@@ -379,19 +382,22 @@ where
             }
 
             // Check 3b: Fee payer balance changes.
-            // When a TIP20 transfer changes a fee payer's balance, pending transactions for that
-            // (fee_token, fee_payer) pair may no longer be executable.
-            if !updates.fee_balance_changes.is_empty()
-                && let Some(ref mut provider) = state_provider
-            {
+            // When a TIP20 transfer changes a fee payer's balance, or (+T15) a hold changes its
+            // reserved amount, pending transactions for that (fee_token, fee_payer) pair may no
+            // longer be executable. The balance read is the available balance.
+            if has_fee_balance_changes && let Some(ref mut provider) = state_provider {
                 let fee_token = tx.transaction.effective_fee_token();
+                let debited = updates.fee_balance_changes.get(&fee_token);
+                let reserved = updates.reservation_changes.get(&fee_token);
                 // only resolve the fee payer if the fee token saw balance changes
-                if let Some(accounts) = updates.fee_balance_changes.get(&fee_token) {
+                if debited.is_some() || reserved.is_some() {
                     let Ok(fee_payer) = tx.transaction.fee_payer() else {
                         continue;
                     };
 
-                    if accounts.contains(&fee_payer) {
+                    if debited.is_some_and(|accounts| accounts.contains(&fee_payer))
+                        || reserved.is_some_and(|accounts| accounts.contains(&fee_payer))
+                    {
                         let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
                             Entry::Occupied(entry) => *entry.get(),
                             Entry::Vacant(entry) => {
@@ -1480,6 +1486,7 @@ mod tests {
         account_keychain::{
             AccountKeychain, AuthorizedKey, SpendingLimitState, StoredSignatureType,
         },
+        reservations::Reservations,
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
@@ -2094,6 +2101,87 @@ mod tests {
             .entry(PATH_USD_ADDRESS)
             .or_default()
             .insert(fee_payer);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn evicts_transactions_when_a_hold_reserves_the_fee_balance() {
+        let sender = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(sender)
+            .fee_token(PATH_USD_ADDRESS)
+            .build();
+        let fee = pooled.fee_token_cost();
+
+        // DEV activates T15 at genesis, where fees are paid from the available balance only.
+        let provider = crate::test_utils::create_mock_provider();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, fee + U256::ONE);
+
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(tempo_chainspec::spec::DEV.clone()),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider.clone()).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            TempoTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
+        let validated = TransactionValidationOutcome::Valid {
+            balance: *pooled.cost(),
+            state_nonce: pooled.nonce(),
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(pooled.clone(), None),
+            propagate: true,
+            authorities: None,
+        };
+        assert!(
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .is_ok()
+        );
+
+        // A hold leaves the balance untouched but the available balance below the fee.
+        provider
+            .setup_storage(TempoHardfork::T15, || {
+                Reservations::new().set_reserved_unchecked(sender, PATH_USD_ADDRESS, 2)
+            })
+            .unwrap();
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates
+            .reservation_changes
+            .entry(PATH_USD_ADDRESS)
+            .or_default()
+            .insert(sender);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
