@@ -163,7 +163,7 @@ where
                     |record, bytes, cases| {
                         eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
                         let input = store::decode(&bytes, record)?;
-                        replay::verify(config, consensus, &input, &cases, record)
+                        replay::verify(config, consensus, &input, &cases, record).map(drop)
                     },
                 ))
             })

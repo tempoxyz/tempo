@@ -28,7 +28,7 @@ use std::{
     sync::Arc,
 };
 use tempo_evm::{ExecutorState, TempoBlockExecutor, TempoEvmConfig};
-use tempo_primitives::{Block, TempoPrimitives, TempoTxEnvelope};
+use tempo_primitives::{Block, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
 /// A block's execution records and resulting state.
 #[derive(Debug)]
@@ -39,9 +39,19 @@ pub struct Executed {
     pub gas: u64,
 }
 
-type Updates = Arc<Mutex<Vec<StateUpdate>>>;
+impl Executed {
+    /// The receipts the block's transactions produced, in order.
+    pub fn receipts(&self) -> alloy_rlp::Result<Vec<TempoReceipt>> {
+        self.transactions
+            .iter()
+            .map(|transaction| alloy_rlp::decode_exact(&transaction.receipt))
+            .collect()
+    }
+}
 
-fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
+pub type Updates = Arc<Mutex<Vec<StateUpdate>>>;
+
+pub fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
     let updates = Updates::default();
     let sink = updates.clone();
     eyre::ensure!(
@@ -51,7 +61,7 @@ fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
     Ok(updates)
 }
 
-fn drain(updates: &Updates) -> Vec<StateUpdate> {
+pub fn drain(updates: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *updates.lock())
 }
 

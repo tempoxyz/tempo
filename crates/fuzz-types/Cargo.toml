@@ -18,3 +18,4 @@ evm2 = { workspace = true, features = ["serde", "std"] }
 invariants-core = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["std"] }
 tempo-hardfork = { workspace = true, features = ["serde", "std"] }
+tempo-primitives = { workspace = true, features = ["serde"] }
