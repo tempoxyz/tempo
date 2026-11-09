@@ -19,6 +19,7 @@ pub mod metrics;
 mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
+pub(crate) mod startup;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_utils;
@@ -28,9 +29,17 @@ pub(crate) mod validators;
 use std::sync::Arc;
 
 use commonware_consensus::types::FixedEpocher;
-use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
+use commonware_cryptography::{
+    ChaCha20Poly1305,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
+use commonware_stream::{
+    SakeCups,
+    cups::{self, Cups},
+    sake::{self, Sake},
+};
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -54,6 +63,11 @@ const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
 /// the finalized tip should be able to sync from peers.
 pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
 
+/// Starts consensus using `estimator` as the authority for proposal pacing.
+///
+/// The estimator must be shared with the payload builder. Timing fields in
+/// `config` seed that estimator at the launch boundary; this function does not
+/// apply them again, so an explicit estimator override takes precedence.
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
@@ -61,6 +75,7 @@ pub async fn run_consensus_stack(
     executed_state: tempo_node::ExecutedState,
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
+    estimator: tempo_payload_types::Estimator,
 ) -> eyre::Result<()> {
     config.validate_simplex_timing()?;
 
@@ -101,12 +116,6 @@ pub async fn run_consensus_stack(
     let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
-    let target_block_time = config.target_block_time.into_duration();
-    // Reserve time for propagation. The remaining application budget starts
-    // after commonware fetches the parent; that fetch time is not deducted.
-    let proposal_return_budget =
-        target_block_time.saturating_sub(config.network_budget.into_duration());
-
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,
         execution_node: Some(execution_node),
@@ -134,7 +143,7 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
-        proposal_return_budget,
+        estimator,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
 
         feed_state,
@@ -230,12 +239,31 @@ pub async fn run_follow_stack(
         .wrap_err("follow engine task failed")
 }
 
+/// Pins the v2026.9.0 wire protocol (SAKE V0, CUPS V0) so that validators on
+/// either commonware release can talk during a rolling upgrade. Versions are
+/// not negotiated: moving to V1 needs every validator to switch together.
+fn p2p_upgrader(
+    signing_key: PrivateKey,
+    synchrony_bound: std::time::Duration,
+    max_handshake_age: std::time::Duration,
+) -> SakeCups<PrivateKey, ChaCha20Poly1305> {
+    Cups::new(
+        Sake {
+            signer: signing_key,
+            synchrony_bound,
+            max_handshake_age,
+            version: sake::Version::V0,
+        },
+        cups::Version::V0,
+    )
+}
+
 async fn instantiate_network(
     context: &commonware_runtime::tokio::Context,
     config: &Args,
     signing_key: PrivateKey,
 ) -> eyre::Result<(
-    lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
+    lookup::Network<commonware_runtime::tokio::Context, SakeCups<PrivateKey, ChaCha20Poly1305>>,
     lookup::Oracle<PublicKey>,
 )> {
     // TODO: Find out why `union_unique` should be used. This is the only place
@@ -243,7 +271,11 @@ async fn instantiate_network(
     let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
     let cfg = lookup::Config {
         namespace,
-        crypto: signing_key,
+        handshake: p2p_upgrader(
+            signing_key,
+            config.synchrony_bound.into_duration(),
+            config.handshake_stale_after.into_duration(),
+        ),
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
@@ -253,8 +285,6 @@ async fn instantiate_network(
         allow_dns: config.allow_dns,
         tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
         max_peers_per_set: config.max_peers_per_set,
-        synchrony_bound: config.synchrony_bound.into_duration(),
-        max_handshake_age: config.handshake_stale_after.into_duration(),
         handshake_timeout: config.handshake_timeout.into_duration(),
         dial_timeout: config.dial_timeout.into_duration(),
         max_concurrent_handshakes: config.max_concurrent_handshakes,

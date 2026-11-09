@@ -11,10 +11,13 @@ use reth_e2e_test_utils::{
     wallet::test_signer,
 };
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
+use tempo_contracts::precompiles::{
+    IAddressRegistry, IFeeManager, IRolesAuth, ITIP20, ITIP403Registry, ITIPFeeAMM, TIP20Error,
+};
 use tempo_precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
+    tip20::PAUSE_ROLE,
 };
 use tempo_primitives::TempoAddressExt;
 
@@ -300,7 +303,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
             .call()
             .await;
 
-        // TODO: update to expect the exact error once PrecompileError is propagated through revm
+        // TODO: update to expect the exact error once PrecompileError is propagated through EVM2
         assert!(
             excess_result.is_err(),
             "Transfer should fail when exceeding allowance"
@@ -468,7 +471,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         let token = ITIP20::new(*token.address(), provider);
 
         let transfer_result = token.transfer(Address::random(), U256::ONE).call().await;
-        // TODO: assert the actual error once PrecompileError is propagated through revm
+        // TODO: assert the actual error once PrecompileError is propagated through EVM2
         assert!(transfer_result.is_err(),);
     }
 
@@ -485,7 +488,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
                 .transfer(blacklisted.address(), U256::ONE)
                 .call()
                 .await;
-            // TODO: assert the actual error once PrecompileError is propagated through revm
+            // TODO: assert the actual error once PrecompileError is propagated through EVM2
             assert!(transfer_result.is_err(),);
 
             token
@@ -615,7 +618,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     // Ensure whitelisted accounts can't send to non-whitelisted receivers
     for sender in whitelisted_senders.iter() {
         let transfer_result = sender.transfer(Address::random(), U256::ONE).call().await;
-        // TODO: assert the actual error once PrecompileError is propagated through revm
+        // TODO: assert the actual error once PrecompileError is propagated through EVM2
         assert!(transfer_result.is_err());
     }
 
@@ -758,9 +761,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 /// and subsequent transactions fail at fee collection.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIPFeeAMM};
-    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::PAUSE_ROLE};
-
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;

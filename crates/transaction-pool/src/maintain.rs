@@ -596,6 +596,43 @@ where
             revalidate_txs.extend(transactions);
         }
 
+        // Revalidate transactions whose authorities' configuration commitment changed,
+        // including eventless first registration (TIP-1112).
+        let changed_commitments: AddressSet = bundle_state
+            .iter()
+            .filter(|(_, account)| {
+                account
+                    .original_info
+                    .as_ref()
+                    .map(|info| info.extension.as_ref())
+                    .unwrap_or_default()
+                    != account
+                        .info
+                        .as_ref()
+                        .map(|info| info.extension.as_ref())
+                        .unwrap_or_default()
+            })
+            .map(|(address, _)| *address)
+            .collect();
+        if !changed_commitments.is_empty() {
+            let hashes: Vec<TxHash> = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .filter(|tx| tx.transaction.has_authority_in(&changed_commitments))
+                    .map(|tx| *tx.hash())
+                    .collect()
+            };
+            if !hashes.is_empty() {
+                let transactions = pool.remove_transactions(hashes);
+                for tx in &transactions {
+                    removed_this_iteration.insert(*tx.hash());
+                }
+                revalidate_txs.extend(transactions);
+            }
+        }
+
         // 4. Handle potentially invalidating updates
         // When a cached value changes of a token (transfer policy, or quote token) changes,
         // pending transactions using that token may become invalid. We need to remove them
@@ -733,6 +770,7 @@ mod tests {
     use crate::test_utils::TxBuilder;
     use alloy_primitives::{Address, B256, TxHash};
     use reth_primitives_traits::RecoveredBlock;
+    use reth_provider::ExecutionOutcome;
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
@@ -1081,14 +1119,9 @@ mod tests {
         blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,
         receipts: Vec<Vec<tempo_primitives::TempoReceipt>>,
     ) -> Arc<Chain<TempoPrimitives>> {
-        use reth_provider::{Chain, ExecutionOutcome};
-
         Arc::new(Chain::new(
             blocks,
-            ExecutionOutcome {
-                receipts,
-                ..Default::default()
-            },
+            ExecutionOutcome::default().with_receipts(receipts),
             Default::default(),
         ))
     }

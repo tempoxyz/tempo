@@ -37,6 +37,10 @@ jobs:
   resolve-release:
     if: github.repository == 'tempoxyz/tempo'
     name: Resolve release inputs
+    # Publishing needs the triggering user and a code owner of bin/tempo-zone/
+    # to approve in VK (review.yml deployments). The environment
+    # only admits release tags, so publishing dispatches run from the tag.
+    environment: ${{ (github.event_name == 'push' || inputs.dry_run == false) && 'release' || '' }}
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -70,6 +74,12 @@ jobs:
             }
           elif [[ -z "$INPUT_TAG" && "$DRY_RUN" != "true" ]]; then
             echo "Provide a release tag, or set dry_run to verify a commit" >&2
+            exit 1
+          fi
+          # VK picks the approving code owners from the dispatched ref, so a
+          # publishing dispatch must run from the tag it releases.
+          if [[ "$DRY_RUN" != "true" && "$GITHUB_REF" != "refs/tags/$INPUT_TAG" ]]; then
+            echo "Publishing dispatches must run from refs/tags/$INPUT_TAG, not $GITHUB_REF" >&2
             exit 1
           fi
 
@@ -138,10 +148,30 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           }
-          git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main || {
-            echo "Release source $commit_sha is not a commit on main" >&2
-            exit 1
-          }
+          if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
+            # Prepare Zones Release tags the commit on its pre-release branch,
+            # which a squash merge keeps off main. Accept it only as one commit
+            # on main that changes nothing but Zones version lines.
+            read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit_sha")"
+            parent="${ancestry[1]:-}"
+            # Without rename detection a moved file shows as a deletion and an
+            # addition, so only in-place edits of regular allowlisted files pass.
+            changed_files="$(git diff --no-renames --raw --no-abbrev "$parent" "$commit_sha" || true)"
+            unexpected_files="$(
+              printf '%s\n' "$changed_files" | grep -v '^$' |
+                grep -Ev $'^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(Cargo\\.lock|bin/tempo-zone/Cargo\\.toml|crates/zones/[^/]+/Cargo\\.toml)$' || true
+            )"
+            unexpected_lines="$(
+              git diff --no-renames -U0 "$parent" "$commit_sha" | grep -E '^[+-]' |
+                grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
+            )"
+            if [[ "${#ancestry[@]}" -ne 2 ]] ||
+               ! git merge-base --is-ancestor "$parent" refs/remotes/origin/main ||
+               [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
+              echo "Release source $commit_sha is not a commit on main or a Zones version bump on one" >&2
+              exit 1
+            fi
+          fi
 
           {
             echo "tag=$tag"

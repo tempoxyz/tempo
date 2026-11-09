@@ -474,6 +474,7 @@ fn genesis_state_witness(genesis: &Genesis) -> (B256, Vec<Bytes>, Vec<Bytes>) {
             balance: account.balance,
             storage_root,
             code_hash,
+            ..Default::default()
         };
         account_leaves.push((keccak256(address), alloy_rlp::encode(trie_account)));
     }

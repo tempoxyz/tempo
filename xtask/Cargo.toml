@@ -25,14 +25,15 @@ tempo-validator-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm = { workspace = true, features = ["genesis"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
-tempo-revm.workspace = true
 tempo-state-bloat.workspace = true
+tempo-nitro-attestation.workspace = true
 
-alloy = { workspace = true, features = ["contract", "genesis", "getrandom", "provider-ws", "providers", "rand", "reqwest", "reqwest-rustls-tls", "rpc-types", "signer-local", "signer-mnemonic", "signers", "sol-types"] }
+alloy = { workspace = true, features = ["contract", "genesis", "getrandom", "provider-debug-api", "provider-ws", "providers", "rand", "reqwest", "reqwest-rustls-tls", "rpc-types", "signer-local", "signer-mnemonic", "signers", "sol-types"] }
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
+antithesis_sdk = { workspace = true, features = ["full"] }
 bytes.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 commonware-codec.workspace = true
@@ -49,13 +50,12 @@ itertools.workspace = true
 rand_08.workspace = true
 rand.workspace = true
 rayon.workspace = true
-reth-evm.workspace = true
 reth-db.workspace = true
 reth-db-api.workspace = true
 reth-provider.workspace = true
 reth-primitives-traits.workspace = true
 reth-network-peers = { workspace = true, features = ["secp256k1"] }
-revm.workspace = true
+evm2 = { workspace = true, features = ["std"] }
 secp256k1 = { workspace = true, features = ["rand"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -76,7 +76,16 @@ toml.workspace = true
 zeroize.workspace = true
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+antithesis-instrumentation = { workspace = true, optional = true }
+
+[features]
+# Link Antithesis's coverage runtime shim, for binaries built with its sancov flags (see
+# zones/antithesis/Dockerfile). Linux only.
+antithesis-coverage = ["dep:antithesis-instrumentation"]
+
 [dev-dependencies]
+base64.workspace = true
 zone-chainspec.workspace = true
 tempfile.workspace = true
 

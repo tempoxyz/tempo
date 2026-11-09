@@ -8,6 +8,11 @@ on:
     paths:
       - "Cargo.lock"
       - "**/Cargo.toml"
+      - "!crates/corpus/Cargo.toml"
+      - "!crates/fuzz-harness/Cargo.toml"
+      - "!crates/fuzz-types/Cargo.toml"
+      - "!crates/invariants/Cargo.toml"
+      - "!crates/nitro-attestation/fuzz/Cargo.toml"
       - "tips/verify/**"
       - "crates/alloy/**"
       - "crates/chainspec/**"
@@ -18,7 +23,6 @@ on:
       - "crates/precompiles/**"
       - "crates/precompiles-macros/**"
       - "crates/primitives/**"
-      - "crates/revm/**"
       - "scripts/foundry-patch.sh"
       - ".github/workflows/specs.yml"
       - ".github/workflows/update-reth.yml"
@@ -30,6 +34,10 @@ env:
   CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
+  # Foundry's evm2 migration (foundry-rs/foundry#17541) with commonware 2026.10.0
+  # (foundry-rs/foundry#18098). Pin to a commit and move the pin to
+  # Foundry master once that PR merges.
+  FOUNDRY_REF: a19afdbf9b54e94842c0fc797d37d1a1a17dc491
 
 jobs:
   check-specs-changes:
@@ -58,6 +66,11 @@ jobs:
               # Dependency updates can change native precompile behavior without Rust source changes.
               - 'Cargo.lock'
               - '**/Cargo.toml'
+              - '!crates/corpus/Cargo.toml'
+              - '!crates/fuzz-harness/Cargo.toml'
+              - '!crates/fuzz-types/Cargo.toml'
+              - '!crates/invariants/Cargo.toml'
+              - '!crates/nitro-attestation/fuzz/Cargo.toml'
               - 'tips/verify/**'
               - 'crates/alloy/**'
               - 'crates/chainspec/**'
@@ -68,12 +81,16 @@ jobs:
               - 'crates/precompiles/**'
               - 'crates/precompiles-macros/**'
               - 'crates/primitives/**'
-              - 'crates/revm/**'
               - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
             foundry_smoke:
               - 'Cargo.lock'
               - '**/Cargo.toml'
+              - '!crates/corpus/Cargo.toml'
+              - '!crates/fuzz-harness/Cargo.toml'
+              - '!crates/fuzz-types/Cargo.toml'
+              - '!crates/invariants/Cargo.toml'
+              - '!crates/nitro-attestation/fuzz/Cargo.toml'
               - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
               - '.github/workflows/update-reth.yml'
@@ -106,8 +123,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
-          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
+          ref: ${{ env.FOUNDRY_REF }}
           path: foundry
           persist-credentials: false
 
@@ -234,8 +250,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # Keep Foundry on revm 43.0.2 to match the version used by reth and Tempo.
-          ref: 4e9eba80e77a8e696a9c888c6af058da65c12fc8
+          ref: ${{ env.FOUNDRY_REF }}
           path: foundry
           persist-credentials: false
 

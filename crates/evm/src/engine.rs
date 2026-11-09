@@ -1,14 +1,16 @@
-use crate::TempoEvmConfig;
-use alloy_consensus::crypto::RecoveryError;
+use crate::{TempoEvmConfig, TempoTxEnv};
+use alloy_consensus::{
+    crypto::RecoveryError,
+    transaction::{Recovered, TxHashRef},
+};
 use alloy_primitives::Address;
 use reth_evm::{
-    ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-    FromRecoveredTx, RecoveredTx, SenderRecoveryCache, ToTxEnv, block::ExecutableTxParts,
+    ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutableTxParts,
+    ExecutionCtxFor, RecoveredTx, SenderRecoveryCache,
 };
 use reth_primitives_traits::{SealedOrRecoveredBlock, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{Block, TempoTxEnvelope};
-use tempo_revm::TempoTxEnv;
 
 impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     fn evm_env_for_payload(
@@ -31,7 +33,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let sender_recovery_cache = self.inner.sender_recovery_cache.clone();
+        let sender_recovery_cache = self.sender_recovery_cache.clone();
         let mut transactions = Vec::with_capacity(block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
@@ -105,29 +107,25 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
     }
 }
 
-impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
-    fn to_tx_env(&self) -> TempoTxEnv {
-        let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
-        }
-
-        tx_env
-    }
-}
-
-impl ExecutableTxParts<TempoTxEnv, TempoTxEnvelope> for RecoveredInBlock {
+impl ExecutableTxParts<Recovered<TempoTxEnv>, TempoTxEnvelope> for RecoveredInBlock {
     type Recovered = Self;
 
-    fn into_parts(self) -> (TempoTxEnv, Self::Recovered) {
-        (self.to_tx_env(), self)
+    fn into_parts(self) -> (Recovered<TempoTxEnv>, Self::Recovered) {
+        let signer = *self.signer();
+        // Populate the original envelope's lazy hash before cloning it into the EVM transaction
+        // environment so both copies carry the cached value.
+        let _ = self.tx().tx_hash();
+        let recovered = Recovered::new_unchecked(self.tx().clone(), signer);
+        let mut tx_env = TempoTxEnv::from(recovered);
+        tx_env.set_expiring_nonce_idx(self.expiring_nonce_idx);
+        (Recovered::new_unchecked(tx_env, signer), self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockHeader, Signed, TxLegacy, transaction::TxHashRef};
+    use alloy_consensus::{BlockHeader, SignableTransaction, TxLegacy, transaction::TxHashRef};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -150,7 +148,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     fn create_subblock_metadata_tx(chain_id: u64, block_number: u64) -> TempoTxEnvelope {
@@ -159,7 +157,7 @@ mod tests {
         metadata.encode(&mut input);
         input.extend_from_slice(&U256::from(block_number).to_be_bytes::<32>());
 
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chain_id),
                 nonce: 0,
@@ -168,9 +166,9 @@ mod tests {
                 to: TxKind::Call(Address::ZERO),
                 value: U256::ZERO,
                 input: input.freeze().into(),
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ))
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        )
     }
 
     fn create_test_block(transactions: Vec<TempoTxEnvelope>) -> Arc<SealedBlock<Block>> {
@@ -233,8 +231,8 @@ mod tests {
             let recovered = recovered.unwrap();
             let (env, _) = recovered.into_parts();
             assert!(matches!(
-                env.execution_context,
-                tempo_revm::ExecutionContext::Transaction { .. }
+                env.execution_context(),
+                crate::ExecutionContext::Transaction { .. }
             ));
         }
 
@@ -281,15 +279,12 @@ mod tests {
         let evm_env = result.unwrap();
 
         // Verify EVM environment fields
-        assert_eq!(evm_env.block_env.inner.number, U256::from(block.number()));
+        assert_eq!(evm_env.block.number, U256::from(block.number()));
+        assert_eq!(evm_env.block.timestamp, U256::from(block.timestamp()));
         assert_eq!(
-            evm_env.block_env.inner.timestamp,
-            U256::from(block.timestamp())
+            evm_env.block.gas_limit,
+            U256::from(block.header().gas_limit())
         );
-        assert_eq!(
-            evm_env.block_env.inner.gas_limit,
-            block.header().gas_limit()
-        );
-        assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
+        assert_eq!(evm_env.block.ext.timestamp_millis_part, 500);
     }
 }

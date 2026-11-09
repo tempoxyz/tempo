@@ -151,6 +151,7 @@ crate::sol! {
         error IngressAlreadyExists(string ingress);
         error EmptyV1ValidatorSet();
         error InvalidMigrationIndex();
+        error InvalidIp(string input, string reason);
         error InvalidOwner();
         error InvalidPublicKey();
         error InvalidSignature();

@@ -1057,7 +1057,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{Header as ConsensusHeader, Signed, TxLegacy};
+    use alloy_consensus::{Header as ConsensusHeader, SignableTransaction, TxLegacy};
     use alloy_primitives::{Bytes, Log, Signature, U256};
     use alloy_provider::Provider as _;
     use alloy_rpc_types_eth::Header as RpcHeader;
@@ -1070,6 +1070,7 @@ mod tests {
         Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
     };
     use zone_chainspec::test_utils::set_tempo_fork;
+    use zone_prover::{NITRO_VERIFIER_CONFIG_V1, ProofBundle};
 
     fn mock_provider(asserter: Asserter) -> DynProvider<TempoNetwork> {
         alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -1112,10 +1113,8 @@ mod tests {
             lastProcessedDepositNumber: 0,
             lastProcessedEnabledTokenCount: 0,
         };
-        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy::default(),
-            Signature::test_signature(),
-        ));
+        let tx =
+            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::test_signature()));
         let mut header = TempoHeader::default();
         header.inner.number = number;
         provider.add_block(
@@ -1411,8 +1410,6 @@ mod tests {
 
     #[tokio::test]
     async fn submission_error_invalidates_pipeline_on_hardfork_change() {
-        use zone_prover::{NITRO_VERIFIER_CONFIG_V1, ProofBundle};
-
         let l1 = Asserter::new();
         let mut monitor = test_monitor(l1.clone(), TestZoneProvider::new());
         let batch = BatchData {

@@ -1,3 +1,4 @@
+use crate::samples::percentile_rank;
 use std::{collections::BTreeMap, time::Duration};
 use tracing::debug;
 
@@ -43,17 +44,6 @@ fn remove_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
     }
 }
 
-fn percentile_rank(len: usize, numerator: usize, denominator: usize) -> Option<usize> {
-    debug_assert!(numerator > 0);
-    debug_assert!(denominator > 0);
-    debug_assert!(numerator <= denominator);
-
-    if len == 0 {
-        return None;
-    }
-    Some((len * numerator).div_ceil(denominator))
-}
-
 fn percentile_from_counts<T: Copy + Ord>(
     counts: &BTreeMap<T, usize>,
     len: usize,
@@ -68,6 +58,11 @@ fn percentile_from_counts<T: Copy + Ord>(
             return Some(*value);
         }
     }
+    #[cfg(feature = "fuzz")]
+    antithesis_sdk::assert_unreachable!(
+        "Validation latency percentile rank exceeds its sample counts",
+        &serde_json::json!({ "len": len, "target": target, "seen": seen })
+    );
     debug_assert!(false, "validation latency sample index out of sync");
     None
 }
@@ -139,7 +134,7 @@ impl ValidationLatencyEstimate {
 /// reserving validator headroom when the builder grows beyond the workloads
 /// that produced the feedback.
 #[derive(Clone, Debug, Default)]
-pub struct ValidationLatencyEstimator {
+pub(crate) struct ValidationLatencyEstimator {
     /// Samples are kept in id order for retention; count maps are keyed by
     /// observed values so estimate snapshots can read percentiles without
     /// sorting.
@@ -190,7 +185,7 @@ impl ValidationLatencyEstimator {
     }
 
     /// Records local time spent validating a block through the execution layer.
-    pub fn observe(
+    pub(crate) fn observe(
         &mut self,
         sample_id: u64,
         workload: ValidationLatencyWorkload,
@@ -218,7 +213,7 @@ impl ValidationLatencyEstimator {
     /// `None` means this node has not yet observed any successful validations.
     /// Callers should fall back to their conservative validator-work estimate in
     /// that case.
-    pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
+    pub(crate) fn estimate(&self) -> Option<ValidationLatencyEstimate> {
         let sample_count = self.sample_window.len();
         let p90_elapsed = percentile_from_counts(&self.elapsed_counts, sample_count, 9, 10)?;
         Some(ValidationLatencyEstimate {

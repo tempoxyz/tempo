@@ -13,7 +13,7 @@ use commonware_consensus::{
     marshal::Update,
     types::{Epocher, FixedEpocher, Height},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digestible as _, ed25519::PublicKey};
 use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
 use commonware_runtime::{
     Clock, ContextCell, Metrics, Spawner, spawn_cell,
@@ -130,12 +130,6 @@ where
     #[instrument(parent = &cause, skip_all)]
     async fn handle_message(&mut self, cause: Span, message: Message) -> eyre::Result<()> {
         match message {
-            Message::Track { id, peers } => {
-                AddressableManager::track(&mut self.oracle, id, peers);
-            }
-            Message::Overwrite { peers } => {
-                AddressableManager::overwrite(&mut self.oracle, peers);
-            }
             Message::PeerSet { id, response } => {
                 let result = Provider::peer_set(&mut self.oracle, id).await;
                 let _ = response.send(result);
@@ -214,13 +208,12 @@ where
             read_header_at_height(self.execution_node.as_ref(), highest_finalized)
                 .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "boundary block at `{latest_boundary}` did not contain a valid DKG outcome"
-                    )
-                })?;
+        let onchain_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+            latest_boundary_header.extra_data().as_ref(),
+        ))
+        .wrap_err_with(|| {
+            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+        })?;
 
         let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
             .resolve_at_hash(
@@ -486,13 +479,12 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{N3f1, TryFromIterator as _};
     use rand::SeedableRng as _;
-    use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
-    use reth_node_builder::ConfigureEvm as _;
+    use reth_evm::{ConfigureEvm as _, database::StateProviderDatabase};
     use reth_provider::{
         EvmStateProviderBox, StateProvider as _,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
-    use tempo_node::evm::{TempoEvmConfig, evm::TempoEvm};
+    use tempo_node::evm::{TempoEvm, TempoEvmConfig};
     use tempo_precompiles::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
@@ -525,9 +517,9 @@ mod tests {
 
         fn evm_for_block(
             &self,
-            db: State<StateProviderDatabase<EvmStateProviderBox>>,
+            db: StateProviderDatabase<EvmStateProviderBox>,
             header: &TempoHeader,
-        ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
+        ) -> eyre::Result<TempoEvm<'static>> {
             TempoEvmConfig::moderato()
                 .evm_for_block(db, header)
                 .map_err(eyre::Report::new)

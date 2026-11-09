@@ -17,14 +17,17 @@ use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random as _;
 use commonware_runtime::{
-    BufferPooler, Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
+    Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
     deterministic::{self, Context, Runner},
 };
 use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
-use tempo_consensus::{feed::FeedStateHandle, follow};
+use tempo_consensus::{
+    feed::FeedStateHandle,
+    follow::{self, upstream::in_process},
+};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Event, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
@@ -227,9 +230,8 @@ impl FollowerBuilder {
         upstream: impl FeedStateProvider,
     ) -> Follower
     where
-        TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
+        TContext: Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
-        use tempo_consensus::follow::upstream::in_process;
         let Self {
             name,
             partition_prefix,
@@ -258,6 +260,7 @@ impl FollowerBuilder {
             // A follower is the only mode with a driver that can verify an
             // inbound certificate, so it is also the only one that ingests.
             gossip: with_gossip.then(|| crate::execution_runtime::gossip_config(true)),
+            estimator: None,
         };
 
         let (spawn_name, db, rocksdb) = if let Some(donor) = donor {
@@ -631,7 +634,6 @@ fn follower_bootstraps_from_follower() {
 fn follower_starts_from_validator_archives() {
     let _ = tempo_eyre::install();
     let target_height = 15;
-    let follower_target_height = target_height + 5;
 
     let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(4)
@@ -650,6 +652,14 @@ fn follower_starts_from_validator_archives() {
         // Stop validator[0] and donate both its consensus archive and EL chaindata
         // to the follower. Block production continues with 3/4 validators.
         let mut donor = validators.remove(0);
+        // The follower starts from the donor's processed height, which can
+        // be well past `target_height`; require progress beyond it.
+        let follower_target_height = context
+            .to_metrics()
+            .for_scope(&donor)
+            .latest_consensus_height()
+            .unwrap()
+            + 5;
         donor.stop().await;
 
         let follower = Follower::builder()

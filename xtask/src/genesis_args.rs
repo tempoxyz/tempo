@@ -12,17 +12,17 @@ use commonware_cryptography::{
         dkg::{self, feldman_desmedt::Output},
         primitives::{sharing::Mode, variant::MinSig},
     },
-    ed25519::PublicKey,
+    ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
+use evm2::bytecode::Bytecode;
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rand::SeedableRng as _;
 use rand_08::SeedableRng as _;
 use rayon::prelude::*;
-use reth_evm::revm::context_interface::JournalTr as _;
 use std::{
     collections::BTreeMap,
     iter::repeat_with,
@@ -36,12 +36,11 @@ use tempo_chainspec::{
 };
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    SAFE_DEPLOYER_ADDRESS,
+    CREATEX_ADDRESS, MULTICALL3_ADDRESS, SAFE_DEPLOYER_ADDRESS,
     contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
-        t13_zone_factory_state,
+        t13_zone_factory_state, t15_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -54,6 +53,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
+    configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -399,11 +399,9 @@ impl GenesisArgs {
         )?;
 
         println!("Initializing fee manager");
-        let default_user_fee_token = if let Some(address) = deployment_gas_token {
-            address
-        } else {
-            alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
-        };
+        let default_user_fee_token = deployment_gas_token
+            .or(alpha_token_address)
+            .unwrap_or(PATH_USD_ADDRESS);
 
         let default_validator_fee_token = if let Some(address) = deployment_gas_token {
             address
@@ -442,6 +440,11 @@ impl GenesisArgs {
             with_genesis_storage(&mut evm, || ReceivePolicyGuard::new().initialize())?;
         }
 
+        if self.hardforks.active_at_genesis(TempoHardfork::T14) {
+            println!("Initializing configurable account (T14 active at genesis)");
+            with_genesis_storage(&mut evm, || ConfigurableAccount::new().initialize())?;
+        }
+
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta), Some(ousd)) = (
                 alpha_token_address,
@@ -472,25 +475,38 @@ impl GenesisArgs {
             println!("Skipping pairwise liquidity (--no-pairwise-liquidity)");
         }
 
-        evm.ctx_mut()
-            .journaled_state
-            .load_account(ARACHNID_CREATE2_FACTORY_ADDRESS)?;
-        evm.ctx_mut()
-            .journaled_state
-            .load_account(PERMIT2_ADDRESS)?;
-
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
-        let evm_state = evm.ctx_mut().journaled_state.evm_state();
-        let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
-            .iter()
+        let state = &evm.overlay_db().cache;
+        let addresses = state
+            .accounts
+            .keys()
+            .chain(state.storage.keys())
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = addresses
+            .into_iter()
             .progress()
-            .map(|(address, account)| {
-                let storage = account
+            .map(|address| {
+                let account = state
+                    .accounts
+                    .get(&address)
+                    .and_then(Option::as_ref)
+                    .cloned()
+                    .unwrap_or_default();
+                let storage = state
                     .storage
-                    .iter()
-                    .map(|(key, val)| (*key, val.present_value));
-                (*address, genesis_account(&account.info, storage))
+                    .get(&address)
+                    .into_iter()
+                    .flat_map(|storage| storage.slots.iter())
+                    .map(|(key, value)| (*key, *value));
+                let mut genesis_account = genesis_account(&account, storage);
+                genesis_account.code = state
+                    .contracts
+                    .get(&account.code_hash)
+                    .filter(|code| !code.is_empty())
+                    .map(Bytecode::original_bytes);
+                (address, genesis_account)
             })
             .collect();
 
@@ -562,9 +578,19 @@ fn insert_zone_state_at_genesis(
     hardforks: &TempoHardforkArgs,
     genesis_alloc: &mut BTreeMap<Address, GenesisAccount>,
 ) {
-    if hardforks.active_at_genesis(TempoHardfork::T10) {
+    // Match the block executor, which gates the ZoneFactory and its runtime upgrades on the EVM
+    // spec: the newest fork active at genesis, even when an earlier fork activates later.
+    let spec = TempoHardfork::VARIANTS
+        .iter()
+        .rev()
+        .copied()
+        .find(|&fork| hardforks.active_at_genesis(fork))
+        .expect("Genesis is always active at genesis");
+    if spec.is_t10() {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if hardforks.active_at_genesis(TempoHardfork::T13) {
+        let accounts = if spec.is_t15() {
+            t15_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else if spec.is_t13() {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
@@ -857,8 +883,6 @@ fn generate_consensus_config(
     seed: Option<u64>,
     no_dkg_in_genesis: bool,
 ) -> Option<ConsensusConfig> {
-    use commonware_cryptography::ed25519::PrivateKey;
-
     match (validators.is_empty(), no_dkg_in_genesis) {
         (_, true) => {
             println!(
@@ -933,7 +957,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
 
@@ -944,7 +969,6 @@ mod tests {
     }
 
     fn parse(args: &str) -> Result<GenesisArgs, clap::Error> {
-        use clap::Parser as _;
         let base = "xtask --accounts 2 --no-dkg-in-genesis --seed 1";
         Cli::try_parse_from(format!("{base} {args}").split_whitespace()).map(|cli| cli.genesis)
     }
@@ -971,6 +995,11 @@ mod tests {
                 .alloc
                 .contains_key(&tempo_precompiles::SIGNATURE_VERIFIER_ADDRESS)
         );
+        // T14 is active at genesis, so the configurable account marker is installed.
+        assert_eq!(
+            genesis.alloc[&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS].code,
+            Some(Bytes::from_static(&[0xef]))
+        );
     }
 
     #[tokio::test]
@@ -994,12 +1023,41 @@ mod tests {
             genesis.alloc[&ZONE_PORTAL_IMPL_ADDRESS].code.as_ref(),
             Some(&T13_ZONE_PORTAL_RUNTIME)
         );
+        assert!(
+            !genesis
+                .alloc
+                .contains_key(&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS)
+        );
+    }
+
+    #[tokio::test]
+    async fn t14_genesis_preserves_t13_portal() {
+        let genesis = generate("--hardfork T14").await;
+        let chainspec = tempo_chainspec::TempoChainSpec::from_genesis(genesis.clone());
+
+        assert_eq!(
+            genesis.config.extra_fields.get("t14Time"),
+            Some(&serde_json::json!(0))
+        );
+        assert_eq!(
+            genesis.config.extra_fields.get("t15Time"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            tempo_chainspec::TempoHardforks::tempo_hardfork_at(&chainspec, u64::MAX),
+            TempoHardfork::T14
+        );
+        assert_eq!(
+            genesis.alloc[&ZONE_PORTAL_IMPL_ADDRESS].code.as_ref(),
+            Some(&T13_ZONE_PORTAL_RUNTIME)
+        );
     }
 
     #[test]
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         let hardforks = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T12),
             t13_time: Some(1),
             ..Default::default()
         };
@@ -1026,6 +1084,7 @@ mod tests {
     fn future_t10_does_not_install_zone_factory_at_genesis() {
         let mut alloc = BTreeMap::new();
         let hardforks = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T9),
             t10_time: Some(1),
             ..Default::default()
         };
@@ -1037,7 +1096,10 @@ mod tests {
     #[test]
     fn t13_genesis_installs_t13_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        let hardforks = TempoHardforkArgs::default();
+        let hardforks = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T13),
+            ..Default::default()
+        };
         insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
         for (destination, expected) in [
@@ -1046,6 +1108,30 @@ mod tests {
             (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
         ] {
             assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
+        }
+    }
+
+    #[test]
+    fn t15_genesis_installs_t15_shared_runtimes() {
+        // The block executor runs a later T10 or T13 activation as T15 from genesis.
+        for hardforks in [
+            TempoHardforkArgs::default(),
+            TempoHardforkArgs {
+                t10_time: Some(200),
+                t13_time: Some(200),
+                ..Default::default()
+            },
+        ] {
+            let mut alloc = BTreeMap::new();
+            insert_zone_state_at_genesis(&hardforks, &mut alloc);
+
+            for (destination, expected) in [
+                (ZONE_PORTAL_IMPL_ADDRESS, T15_ZONE_PORTAL_RUNTIME),
+                (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+                (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+            ] {
+                assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
+            }
         }
     }
 

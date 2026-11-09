@@ -10,14 +10,14 @@ use alloy_network::{
     UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
-use alloy_provider::fillers::{ChainIdFiller, JoinFill, NonceFiller, RecommendedFillers};
-use alloy_rpc_types_eth::{AccessList, Block, Transaction};
+use alloy_provider::fillers::{ChainIdFiller, JoinFill, RecommendedFillers};
+use alloy_rpc_types_eth::{AccessList, Block, Transaction, TransactionInputKind};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
-use crate::fillers::TempoGasFiller;
+use crate::fillers::{TempoGasFiller, TempoNonceFiller};
 
 /// Set of recommended fillers.
 ///
@@ -69,6 +69,10 @@ impl TransactionBuilder for TempoTransactionRequest {
 
     fn set_input<T: Into<Bytes>>(&mut self, input: T) {
         TransactionBuilder::set_input(&mut self.inner, input)
+    }
+
+    fn set_input_kind<T: Into<Bytes>>(&mut self, input: T, kind: TransactionInputKind) {
+        TransactionBuilder::set_input_kind(&mut self.inner, input, kind)
     }
 
     fn from(&self) -> Option<Address> {
@@ -292,7 +296,7 @@ impl TempoTransactionRequest {
 }
 
 impl RecommendedFillers for TempoNetwork {
-    type RecommendedFillers = TempoFillers<NonceFiller>;
+    type RecommendedFillers = TempoFillers<TempoNonceFiller>;
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
@@ -320,6 +324,16 @@ mod tests {
             TempoSignedAuthorization,
         },
     };
+
+    #[test]
+    fn test_set_input_kind_is_forwarded() {
+        let input = Bytes::from_static(&[0xab, 0xcd]);
+        let request = TempoTransactionRequest::default()
+            .with_input_kind(input.clone(), TransactionInputKind::Data);
+
+        assert_eq!(request.inner.input.data, Some(input));
+        assert_eq!(request.inner.input.input, None);
+    }
 
     #[test_case::test_case(
         TempoTransactionRequest {

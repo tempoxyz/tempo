@@ -1,0 +1,13 @@
+**/.git
+# Foundry validates locks in contract CI; Docker has no submodule Git metadata.
+crates/zones/contracts/foundry.lock
+contrib/
+!contrib/antithesis/reth-trie/Cargo.toml
+!contrib/antithesis/reth-trie/src/**
+docs/
+localnet/
+target/
+**/target/
+zones/contrib/
+zones/docs/
+zones/localnet/

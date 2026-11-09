@@ -26,7 +26,6 @@ use tempo_precompiles::{
     tip20,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt};
-use tempo_revm::IntoAddress;
 
 /// Number of recent validators/tokens to track.
 const LAST_SEEN_WINDOW: usize = 10;
@@ -219,7 +218,7 @@ impl AmmLiquidityCache {
                     // Update validator fee token preferences
                     inner
                         .validator_preferences
-                        .insert(validator, value.present_value().into_address());
+                        .insert(validator, Address::from_word(value.present_value.into()));
                 }
             }
         }
@@ -272,12 +271,14 @@ impl AmmLiquidityCache {
                     state = Some(client.state_by_block_hash(latest_hash)?);
                 }
 
-                state
-                    .as_mut()
-                    .expect("initialized above")
-                    .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
-                    .unwrap_or_default()
-                    .into_address()
+                Address::from_word(
+                    state
+                        .as_mut()
+                        .expect("initialized above")
+                        .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
+                        .unwrap_or_default()
+                        .into(),
+                )
             };
 
             // Get the actual fee token, accounting for defaults.
@@ -426,7 +427,9 @@ impl AmmLiquidityCache {
 mod tests {
     use super::*;
     use crate::test_utils::create_mock_provider;
+    use alloy_consensus::Header;
     use alloy_primitives::address;
+    use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, BundleState, StorageSlot};
 
     // ============================================
     // has_enough_liquidity tests (using MockEthProvider)
@@ -678,9 +681,6 @@ mod tests {
 
     #[test]
     fn test_on_new_state_early_return_no_fee_manager_account() {
-        use reth_provider::ExecutionOutcome;
-        use tempo_primitives::TempoReceipt;
-
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner::default())),
         };
@@ -696,10 +696,6 @@ mod tests {
 
     #[test]
     fn test_on_new_state_invalidates_stale_quote_token_cache() {
-        use reth_provider::ExecutionOutcome;
-        use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
-        use tempo_primitives::TempoReceipt;
-
         // TIP-20-prefixed addresses so `from_address_unchecked`'s debug_assert holds.
         let user_token = address!("20c0000000000000000000000000000000000001");
         let hop_old = address!("20c0000000000000000000000000000000000002");
@@ -984,8 +980,6 @@ mod tests {
 
     #[test]
     fn test_repopulate_clears_stale_data_and_rebuilds_from_canonical_chain() {
-        use alloy_consensus::Header;
-
         let stale_validator = Address::random();
         let stale_token = Address::random();
         let stale_user_token = Address::random();

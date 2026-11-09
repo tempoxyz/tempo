@@ -13,8 +13,9 @@ use alloy_rpc_types_eth::{
     TransactionInput,
     state::{AccountOverride, StateOverride},
 };
+use evm2::PrecompileError;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wait::poll_until, wallet::test_signer};
-use reth_evm::revm::interpreter::instructions::utility::IntoU256;
+use std::sync::{Arc, Mutex};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager,
@@ -36,10 +37,10 @@ fn extract_revert_data(
 
 /// Expected revert bytes for `Panic(UnderOverflow)`.
 fn under_overflow_revert() -> Bytes {
-    TempoPrecompileError::under_overflow()
-        .into_precompile_result(0, 0)
-        .unwrap()
-        .bytes
+    match TempoPrecompileError::under_overflow().into_precompile_result() {
+        Err(PrecompileError::Revert(bytes)) => bytes,
+        result => panic!("expected precompile revert, got {result:?}"),
+    }
 }
 
 /// Builds a `StateOverride` targeting `address` with the given slot→value diffs.
@@ -184,8 +185,8 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
         let Delta::Changed(ChangedType { from, to }) = sender_balance else {
             panic!("Unexpected delta");
         };
-        assert_eq!(from.into_u256(), mint_amount);
-        assert_eq!(to.into_u256(), U256::ZERO);
+        assert_eq!(U256::from_be_slice(from.as_slice()), mint_amount);
+        assert_eq!(U256::from_be_slice(to.as_slice()), U256::ZERO);
 
         // Assert recipient token balance is changed
         let slot = TIP20Token::from_address(token_address)
@@ -200,8 +201,8 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
         let Delta::Changed(ChangedType { from, to }) = recipient_balance else {
             panic!("Unexpected delta");
         };
-        assert_eq!(from.into_u256(), U256::ZERO);
-        assert_eq!(to.into_u256(), mint_amount);
+        assert_eq!(U256::from_be_slice(from.as_slice()), U256::ZERO);
+        assert_eq!(U256::from_be_slice(to.as_slice()), mint_amount);
 
         Ok(())
     })
@@ -446,8 +447,6 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 /// In phase 2, the test wallet becomes the block producer, reproducing the bug scenario.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()> {
-    use std::sync::{Arc, Mutex};
-
     reth_tracing::init_test_tracing();
 
     let wallet = test_signer(0);

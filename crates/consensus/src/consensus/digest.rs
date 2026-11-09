@@ -69,7 +69,7 @@ impl Read for Digest {
     type Cfg = ();
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let array = <[u8; 32]>::read(buf)?;
