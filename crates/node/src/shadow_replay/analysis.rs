@@ -121,10 +121,10 @@ impl Report {
         {
             field.fee_associated = ctx.real.txs[index]
                 .as_ref()
-                .is_ok_and(|tx| tx.fee.slots.contains(&(address, slot)))
+                .is_ok_and(|tx| tx.fee_slots.contains(&(address, slot)))
                 || ctx.shadow.txs[index]
                     .as_ref()
-                    .is_ok_and(|tx| tx.fee.slots.contains(&(address, slot)));
+                    .is_ok_and(|tx| tx.fee_slots.contains(&(address, slot)));
         }
         let accepted = rules
             .iter()

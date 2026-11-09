@@ -24,7 +24,7 @@ use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::TempoPrecompileError,
-    storage::{FromWord, StorageActions, StorageCtx},
+    storage::{FeeHook, FromWord, StorageAction, StorageActions, StorageCtx},
     storage_credits::{NonCreditableSlots, TransientState},
     tip20::TIP20Error,
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -291,14 +291,20 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
             U256::ZERO
         } else {
-            fee_manager.collect_fee_post_tx(
-                ProtocolFeeContext { host },
-                fee_payer,
-                actual_spending,
+            let marker = FeeHook::PostTx {
                 refund,
-                fee_token,
-                beneficiary,
-            )?
+                log: host.logs().len(),
+            };
+            fee_hook(host, marker, |host| {
+                fee_manager.collect_fee_post_tx(
+                    ProtocolFeeContext { host },
+                    fee_payer,
+                    actual_spending,
+                    refund,
+                    fee_token,
+                    beneficiary,
+                )
+            })?
         };
         result.ext.validator_fee = validator_fee;
         Ok(result)
@@ -387,15 +393,22 @@ impl TempoHandlerHooks {
         let beneficiary = host.block().beneficiary;
         let skip_liquidity_check = host.ext().skip_liquidity_check;
         let fee_manager = host.ext().fee_manager.clone();
+        let marker = FeeHook::PreTx {
+            payer: context.fee_payer,
+            token: context.fee_token,
+            amount: context.collected,
+        };
         if !context.collected.is_zero()
-            && let Err(error) = fee_manager.collect_fee_pre_tx(
-                ProtocolFeeContext { host },
-                context.fee_payer,
-                context.fee_token,
-                context.collected,
-                beneficiary,
-                skip_liquidity_check,
-            )
+            && let Err(error) = fee_hook(host, marker, |host| {
+                fee_manager.collect_fee_pre_tx(
+                    ProtocolFeeContext { host },
+                    context.fee_payer,
+                    context.fee_token,
+                    context.collected,
+                    beneficiary,
+                    skip_liquidity_check,
+                )
+            })
         {
             host.state_mut().rollback(checkpoint, features);
             return Err(match error {
@@ -439,6 +452,22 @@ impl TempoHandlerHooks {
 
         Ok(())
     }
+}
+
+/// Runs a fee hook between `start` and [`FeeHook::End`], when storage actions are recorded.
+fn fee_hook<'a, T, E>(
+    host: &mut Evm<'a, TempoEvmTypes>,
+    start: FeeHook,
+    hook: impl FnOnce(&mut Evm<'a, TempoEvmTypes>) -> Result<T, E>,
+) -> Result<T, E> {
+    host.ext()
+        .actions
+        .record_always(StorageAction::Marker(start));
+    let out = hook(host)?;
+    host.ext()
+        .actions
+        .record_always(StorageAction::Marker(FeeHook::End));
+    Ok(out)
 }
 
 fn settle_storage_credit_refunds(
