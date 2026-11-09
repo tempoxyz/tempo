@@ -31,13 +31,13 @@ use tempo_primitives::{
 };
 
 /// An independently signed role. Repeated accounts still require both role digests.
-struct ConfigurableRole<'a> {
-    signature: &'a ConfigurableAccountSignature,
-    signed: ConfigurableRoleSigned<'a>,
+pub(crate) struct ConfigurableRole<'a> {
+    pub(crate) signature: &'a ConfigurableAccountSignature,
+    pub(crate) signed: ConfigurableRoleSigned<'a>,
 }
 
 /// What a configurable role signs, hashed into its digest only for quorum verification.
-enum ConfigurableRoleSigned<'a> {
+pub(crate) enum ConfigurableRoleSigned<'a> {
     Transaction,
     /// The transaction, on behalf of a keychain user address.
     Keychain(Address),
@@ -46,7 +46,7 @@ enum ConfigurableRoleSigned<'a> {
 
 impl ConfigurableRoleSigned<'_> {
     /// Returns the digest this role signs, before configurable account domain separation.
-    fn inner_digest(&self, aa: &TempoAaTx) -> B256 {
+    pub(crate) fn inner_digest(&self, aa: &TempoAaTx) -> B256 {
         match self {
             Self::Transaction => aa.signature_hash(),
             Self::Keychain(user_address) => {
@@ -77,7 +77,7 @@ struct LoadedAccount {
 
 impl TempoAaTx {
     /// Outer (direct or delegated) role, then inline grant role; either slot may be absent.
-    fn configurable_roles(&self) -> [Option<ConfigurableRole<'_>>; 2] {
+    pub(crate) fn configurable_roles(&self) -> [Option<ConfigurableRole<'_>>; 2] {
         [
             match self.signature() {
                 TempoSignature::ConfigurableAccount(signature) => Some(ConfigurableRole {
@@ -109,16 +109,6 @@ impl TempoAaTx {
             .as_ref()
             .filter(|auth| auth.key_type == SignatureType::ConfigurableAccount)
             .map(|auth| auth.key_id)
-    }
-
-    // Verifies the owner approvals of each role ahead of execution, caching the digests `verify`
-    // checks; failures are left for `verify` to report.
-    pub(crate) fn warm_configurable_approvals(&self) {
-        for role in self.configurable_roles().into_iter().flatten() {
-            let _ = role
-                .signature
-                .verify_approvals(role.signed.inner_digest(self));
-        }
     }
 }
 
