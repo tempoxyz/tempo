@@ -38,7 +38,7 @@ use alloy_provider::{DynProvider, Provider};
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::Mutex;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
-use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
+use tempo_contracts::precompiles::{ITIP20, OUSD_ADDRESS, PATH_USD_ADDRESS};
 use tokio::sync::Notify;
 use tokio_util::sync;
 use tracing::{debug, error, info, instrument, warn};
@@ -416,7 +416,7 @@ impl WithdrawalProcessor {
                 warn!(
                     %error,
                     sequencer = %self.config.sequencer_address,
-                    "Failed to refresh sequencer PathUSD balance metric"
+                    "Failed to refresh sequencer fee token balance metrics"
                 );
             }
         }
@@ -424,13 +424,19 @@ impl WithdrawalProcessor {
 
     /// Update sequencer metrics from Tempo L1 state.
     async fn update_sequencer_metrics(&self) -> eyre::Result<()> {
-        let balance = ITIP20::new(PATH_USD_ADDRESS, &self.provider)
-            .balanceOf(self.config.sequencer_address)
+        let sequencer = self.config.sequencer_address;
+        let path_usd = ITIP20::new(PATH_USD_ADDRESS, &self.provider)
+            .balanceOf(sequencer)
+            .call()
+            .await?;
+        let ousd = ITIP20::new(OUSD_ADDRESS, &self.provider)
+            .balanceOf(sequencer)
             .call()
             .await?;
         self.sequencer_metrics
             .pathusd_balance
-            .set(f64::from(balance));
+            .set(f64::from(path_usd));
+        self.sequencer_metrics.ousd_balance.set(f64::from(ousd));
         Ok(())
     }
 
