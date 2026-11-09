@@ -47,6 +47,7 @@ jobs:
         run: echo "shortsha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker images
+        id: build-and-push
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           files: |
@@ -61,3 +62,13 @@ jobs:
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
+
+      - name: Install cosign
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Sign the published image
+        env:
+          IMAGES: ${{ env.REGISTRY }}/tempo-zone@${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-zone']['containerimage.digest'] }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r ref; do if [ -n "$ref" ]; then cosign sign --yes --recursive "$ref"; fi; done <<< "$IMAGES"

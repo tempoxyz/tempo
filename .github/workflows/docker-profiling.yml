@@ -132,6 +132,16 @@ jobs:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
 
+      - name: Install cosign
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Sign the published image
+        env:
+          IMAGES: ${{ env.REGISTRY }}/tempo@${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo']['containerimage.digest'] }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r ref; do if [ -n "$ref" ]; then cosign sign --yes --recursive "$ref"; fi; done <<< "$IMAGES"
+
       - name: Record published PR images
         id: image-report
         if: inputs.pr_number != ''

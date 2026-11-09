@@ -389,9 +389,22 @@ jobs:
               tempo-zone-prover-eif-builder
             digest="$(jq -er '.["tempo-zone-prover-eif-builder"]["containerimage.digest"]' "$metadata")"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
           fi
           echo "image=$TOOLCHAIN_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
           echo "EIF toolchain: \`$TOOLCHAIN_REPOSITORY@$digest\` (main recipe $(git rev-parse HEAD), inputs-$recipe_sha)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install cosign
+        if: steps.toolchain.outputs.pushed == 'true'
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Sign the published toolchain image
+        if: steps.toolchain.outputs.pushed == 'true'
+        env:
+          IMAGES: ${{ steps.toolchain.outputs.image }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r ref; do if [ -n "$ref" ]; then cosign sign --yes --recursive "$ref"; fi; done <<< "$IMAGES"
 
   reproducible-eif-verify:
     name: Verify reproducible prover EIF
@@ -854,7 +867,7 @@ jobs:
       packages: write
       id-token: write
     outputs:
-      prover_image_refs: ${{ steps.publish.outputs.prover_image_refs }}
+      image_refs: ${{ steps.publish.outputs.image_refs }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -946,26 +959,26 @@ jobs:
           BUILDER_REF: ${{ needs.build-and-push.outputs.builder_ref }}
         run: |
           set -euo pipefail
-          : > "$RUNNER_TEMP/prover-image-refs.txt"
+          : > "$RUNNER_TEMP/image-refs.txt"
+          # Bind signing to this push receipt, never a mutable tag lookup.
+          push_and_record() {
+            local tag="$1" digest
+            docker push "$tag" | tee "$RUNNER_TEMP/push.log"
+            digest="$(sed -nE 's/^.*: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$RUNNER_TEMP/push.log")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "Invalid push digest for $tag: $digest" >&2
+              exit 1
+            }
+            printf '%s@%s\n' "${tag%:*}" "$digest" >> "$RUNNER_TEMP/image-refs.txt"
+          }
           publish() {
-            local image="$1" metadata="$2" tag digest
+            local image="$1" metadata="$2" tag
             docker load --input "$RUNNER_TEMP/candidate-images/$image.tar"
             while IFS= read -r tag; do
               [[ -z "$tag" ]] && continue
               [[ "$tag" == "$REGISTRY/$image:"* || "$tag" == "docker.io/tempoxyz/$image:"* ]]
               docker tag "$image:candidate" "$tag"
-              if [[ "$image" == tempo-zone-prover ]]; then
-                # Bind signing to this push receipt, never a mutable tag lookup.
-                docker push "$tag" | tee "$RUNNER_TEMP/prover-push.log"
-                digest="$(sed -nE 's/^.*: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$RUNNER_TEMP/prover-push.log")"
-                [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-                  echo "Invalid prover push digest for $tag: $digest" >&2
-                  exit 1
-                }
-                printf '%s@%s\n' "${tag%:*}" "$digest" >> "$RUNNER_TEMP/prover-image-refs.txt"
-              else
-                docker push "$tag"
-              fi
+              push_and_record "$tag"
             done <<< "$metadata"
           }
           publish tempo-zone-xtask "$XTASK_TAGS"
@@ -975,12 +988,12 @@ jobs:
             [[ "$BUILDER_REF" =~ ^ghcr.io/tempoxyz/tempo-zone-prover-eif-builder:inputs-[0-9a-f]{64}$ ]]
             docker load --input "$RUNNER_TEMP/candidate-images/eif-builder.tar"
             docker tag tempo-zone-prover-eif-builder:local "$BUILDER_REF"
-            docker push "$BUILDER_REF"
+            push_and_record "$BUILDER_REF"
           fi
-          printf 'prover_image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/prover-image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+          printf 'image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
 
-  sign-prover-images:
-    name: Sign published prover images
+  sign-companion-images:
+    name: Sign published companion images
     needs: publish-companion-images
     runs-on: ubuntu-latest
     permissions:
@@ -1003,27 +1016,27 @@ jobs:
       - name: Install cosign
         uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      - name: Sign published prover image digests
+      - name: Sign published companion image digests
         shell: bash
         env:
-          PROVER_IMAGE_REFS: ${{ needs.publish-companion-images.outputs.prover_image_refs }}
+          IMAGE_REFS: ${{ needs.publish-companion-images.outputs.image_refs }}
         run: |
           set -euo pipefail
-          printf '%s' "$PROVER_IMAGE_REFS" | jq -er '.[]' > "$RUNNER_TEMP/prover-image-refs.txt"
-          [[ -s "$RUNNER_TEMP/prover-image-refs.txt" ]] || {
-            echo "No published prover image digests to sign" >&2
+          printf '%s' "$IMAGE_REFS" | jq -er '.[]' > "$RUNNER_TEMP/image-refs.txt"
+          [[ -s "$RUNNER_TEMP/image-refs.txt" ]] || {
+            echo "No published companion image digests to sign" >&2
             exit 1
           }
 
           # Keyless signatures identify the publishing workflow, not human/VK
           # approval or L1-approved PCRs. Tags already exist if signing fails.
           while IFS= read -r ref; do
-            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-prover@sha256:[0-9a-f]{64}$ ]] || {
-              echo "Invalid prover image reference: $ref" >&2
+            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-(xtask|prover|prover-utils|prover-eif-builder)@sha256:[0-9a-f]{64}$ ]] || {
+              echo "Invalid companion image reference: $ref" >&2
               exit 1
             }
             for attempt in 1 2 3; do
-              if cosign sign --yes "$ref"; then
+              if cosign sign --yes --recursive "$ref"; then
                 break
               fi
               if [[ "$attempt" -eq 3 ]]; then
@@ -1032,7 +1045,7 @@ jobs:
               fi
               sleep "$((attempt * 15))"
             done
-          done < "$RUNNER_TEMP/prover-image-refs.txt"
+          done < "$RUNNER_TEMP/image-refs.txt"
 
   production-reproducible-clean-rebuild:
     name: Rebuild production tempo-zone image without cache
@@ -1418,6 +1431,20 @@ jobs:
             echo "binary_sha256=$promoted_sha256"
             echo "image_sha_tag=$image_sha_tag"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      # Sign before the CI event announces the image, so deployments admit it.
+      - name: Sign the promoted image
+        env:
+          IMAGES: |
+            ${{ env.REGISTRY }}/tempo-zone@${{ steps.promote.outputs.image_digest }}
+            docker.io/tempoxyz/tempo-zone@${{ steps.promote.outputs.image_digest }}
+            ${{ env.STAGING_REPOSITORY }}@${{ steps.promote.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r ref; do if [ -n "$ref" ]; then cosign sign --yes --recursive "$ref"; fi; done <<< "$IMAGES"
 
       - name: Publish Zones CI event
         if: github.ref == 'refs/heads/main'
