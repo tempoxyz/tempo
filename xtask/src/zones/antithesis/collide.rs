@@ -266,21 +266,25 @@ impl Context {
                 Ok((height, _)) => height >= zone_block,
                 Err(_) => false,
             };
+            // Record a grown group before sending: a send whose receipt times out can still land,
+            // and later revisits must count its new key. The earliest block it can land in stands
+            // for when it was set; a key that never lands just reads as cleared.
+            if grown.len() > members.len() {
+                let next_block = self.zones[node].get_block_number().await? + 1;
+                self.ledger.append(&Record::Collision {
+                    kind,
+                    owner,
+                    members: grown.clone(),
+                    depth: deepest_shared(base, &grown),
+                    zone_block: next_block,
+                })?;
+            }
             let Some((block, after)) = self
                 .write_group(node, account, balance, kind, &writes, &grown)
                 .await?
             else {
                 return Ok(true);
             };
-            if grown.len() > members.len() {
-                self.ledger.append(&Record::Collision {
-                    kind,
-                    owner,
-                    members: grown.clone(),
-                    depth: deepest_shared(base, &grown),
-                    zone_block: block,
-                })?;
-            }
             // Keys this block took from set to zero, and keys of the group left set, when known.
             let (cleared, present) = after.unzip();
             let details = json!({
