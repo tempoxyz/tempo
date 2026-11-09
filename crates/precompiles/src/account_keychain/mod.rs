@@ -30,7 +30,7 @@ use crate::{
     configurable_account::{valid_account, valid_account_code},
     error::Result,
     has_duplicates_metered,
-    storage::{Handler, Mapping, Set, StorageCtx, account_config_commitment},
+    storage::{Handler, Mapping, Set, StorageAction, StorageCtx, account_config_commitment},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -292,9 +292,12 @@ impl AccountKeychain {
         }
         if is_delegate_grant {
             let spec = self.storage.spec();
+            let actions = self.storage.actions();
             // Naming a delegate does not register it or require a configuration witness.
             if !valid_account(key_id, self.storage.spec())
                 || self.storage.with_account_info(key_id, |info| {
+                    // Parallel replay rechecks the code, which an earlier tx can change.
+                    actions.record(StorageAction::CodeHash(key_id, info.code_hash));
                     Ok(!valid_account_code(
                         info.code_hash,
                         account_config_commitment(info, spec)?,

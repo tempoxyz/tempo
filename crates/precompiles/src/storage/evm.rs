@@ -444,13 +444,7 @@ where
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        let code_hash = self.with_loaded_account(address, |info| {
-            f(info);
-            info.code_hash
-        })?;
-        self.actions
-            .record(StorageAction::CodeHash(address, code_hash));
-        Ok(())
+        self.with_loaded_account(address, |info| f(info))
     }
 
     fn with_warm_caller_info(
