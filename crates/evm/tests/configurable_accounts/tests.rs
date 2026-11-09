@@ -5463,17 +5463,19 @@ fn native_sender_signing_its_own_grant_registers_once() {
         let grant = tx.key_authorization.as_mut().unwrap();
         let tx = if invalid_grant {
             // A valid outer signature must not mask an invalid grant quorum.
-            grant.signature = configurable_account_approval(
-                account,
-                &f.config,
-                &signer(3),
-                grant.signature_hash(),
-            )
-            .into();
+            *grant = grant
+                .authorization()
+                .clone()
+                .into_signed(configurable_account_approval(
+                    account,
+                    &f.config,
+                    &signer(3),
+                    grant.signature_hash(),
+                ));
             configurable_account_signed(&f, tx)
         } else {
             // The grant's approval does not authorize the transaction's digest.
-            let approval = grant.signature.as_configurable_account().unwrap().clone();
+            let approval = grant.signature().as_configurable_account().unwrap().clone();
             tx.into_signed(TempoSignature::ConfigurableAccount(approval))
         };
         assert_eq!(

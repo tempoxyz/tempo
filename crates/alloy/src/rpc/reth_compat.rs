@@ -162,12 +162,12 @@ impl TempoTransactionRequest {
         {
             let parent = parent()?;
             let grant = grant
-                .authorization
+                .authorization()
                 .clone()
                 .into_signed(spec.mock_signature(spec.signer.unwrap_or(parent))?);
             self.set_key_authorization(grant);
         } else if let Some(grant) = &self.key_authorization
-            && let Some(signature) = grant.signature.as_configurable_account()
+            && let Some(signature) = grant.signature().as_configurable_account()
         {
             signature
                 .verify_approvals(grant.signature_hash())

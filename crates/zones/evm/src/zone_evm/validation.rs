@@ -43,7 +43,7 @@ pub fn validate_transaction(
                     .tx()
                     .key_authorization
                     .as_ref()
-                    .is_some_and(|auth| auth.signature.is_configurable_account())
+                    .is_some_and(|auth| auth.signature().is_configurable_account())
         }) || tx.calls().any(|(kind, input)| {
             kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
                 && matches!(

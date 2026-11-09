@@ -186,9 +186,9 @@ fn grant_simulation_signs_the_grant_with_mock_owner_approvals() {
         .key_authorization
         .as_ref()
         .expect("the grant is kept");
-    assert_eq!(signed.authorization, grant());
+    assert_eq!(signed.authorization(), &grant());
     let signature = signed
-        .signature
+        .signature()
         .as_configurable_account()
         .expect("the grant carries the mock quorum");
     assert_eq!(signature.account(), admin);
