@@ -104,11 +104,13 @@ where
             .amm_liquidity_cache()
     }
 
-    /// Returns the best transactions whose time bounds permit inclusion at `timestamp`.
+    /// Returns the best transactions whose time bounds and keychain key expiry permit inclusion
+    /// at `timestamp`.
     ///
-    /// AA transactions outside their validity window and their nonce-dependent successors are
-    /// skipped for this iterator only. Future-valid transactions remain in the pool for later
-    /// blocks. Apply this filter before prewarming so skipped transactions are never prewarmed.
+    /// AA transactions outside their validity window or signed with a keychain key that has
+    /// expired by `timestamp`, and their nonce-dependent successors, are skipped for this
+    /// iterator only. Future-valid transactions remain in the pool for later blocks. Apply this
+    /// filter before prewarming so skipped transactions are never prewarmed.
     pub fn best_transactions_for_block(
         &self,
         attributes: BestTransactionsAttributes,
@@ -116,7 +118,13 @@ where
     ) -> impl BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
     + use<Client, EvmConfig> {
         self.best_transactions_with_attributes(attributes)
-            .filter_transactions(move |tx| tx.transaction.inner().is_valid_at(timestamp))
+            .filter_transactions(move |tx| {
+                tx.transaction.inner().is_valid_at(timestamp)
+                    && tx
+                        .transaction
+                        .key_expiry()
+                        .is_none_or(|expiry| timestamp < expiry)
+            })
     }
 
     /// Returns the configured client
@@ -1735,6 +1743,39 @@ mod tests {
             (100, false),
             (101, false),
         ] {
+            let hashes: Vec<_> = pool
+                .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), timestamp)
+                .without_updates()
+                .map(|tx| *tx.hash())
+                .collect();
+            assert_eq!(
+                hashes,
+                if eligible { vec![hash] } else { vec![] },
+                "timestamp {timestamp}"
+            );
+            assert!(
+                pool.get(&hash).is_some(),
+                "filtering must not evict transactions"
+            );
+        }
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[test_case::test_case(U256::MAX; "expiring")]
+    fn best_transactions_for_block_key_expiry_boundary(nonce_key: U256) {
+        let pool = create_test_pool(
+            create_provider_with_tip().with_chain_spec(Arc::unwrap_or_clone(DEV.clone())),
+        );
+        let tx = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .valid_before(200)
+            .build();
+        tx.set_key_expiry(Some(100));
+        let hash = *tx.hash();
+        add_validated(&pool, tx);
+
+        for (timestamp, eligible) in [(99, true), (100, false), (101, false)] {
             let hashes: Vec<_> = pool
                 .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), timestamp)
                 .without_updates()
