@@ -1,5 +1,5 @@
-//! `check-proofs`: state proofs every node serves verify against the block's state root, and nodes that
-//! hold the same block serve the same proof.
+//! `check-proofs`: state proofs every node serves through `eth_getMultiProof` verify against
+//! the block's state root, and nodes that hold the same block serve the same proof.
 //!
 //! A trie bug that computes a wrong root or a wrong proof node shows up here as a proof that does
 //! not verify, or as two nodes on one block disagreeing, whichever part of the trie it touches:
@@ -209,8 +209,8 @@ impl Context {
                         zone,
                         assert_always,
                         failure.is_none(),
-                        "Zone eth_getProof verifies against the block's state root",
-                        "L1 eth_getProof verifies against the block's state root",
+                        "Zone eth_getMultiProof verifies against the block's state root",
+                        "L1 eth_getMultiProof verifies against the block's state root",
                         &json!({
                             "node": node.node,
                             "height": height,
@@ -335,15 +335,20 @@ async fn prove(
         return Ok(None);
     };
     let block_hash = block.header.hash;
-    let mut proofs = Vec::with_capacity(requests.len());
-    for (address, keys) in requests {
-        proofs.push(
-            provider
-                .get_proof(*address, keys.clone())
-                .block_id(BlockId::hash(block_hash))
-                .await?,
-        );
-    }
+    // One multiproof for every target, so a single proof_v2 calculation covers many keys of the
+    // same subtries and the V2 proof encoding is what gets verified.
+    let proofs: Vec<EIP1186AccountProofResponse> = provider
+        .raw_request(
+            "eth_getMultiProof".into(),
+            (requests, BlockId::hash(block_hash)),
+        )
+        .await?;
+    eyre::ensure!(
+        proofs.len() == requests.len(),
+        "eth_getMultiProof returned {} proofs for {} targets",
+        proofs.len(),
+        requests.len()
+    );
     Ok(Some((block_hash, proofs)))
 }
 
