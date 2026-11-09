@@ -176,20 +176,7 @@ where
     }
 
     fn contains(&self, address: &Address) -> bool {
-        self.base.contains(address)
-            || is_tip20_prefix(*address)
-            || matches!(
-                *address,
-                TEMPO_STATE_ADDRESS
-                    | ZONE_INBOX_ADDRESS
-                    | ZONE_FEE_MANAGER_ADDRESS
-                    | TIP403_REGISTRY_ADDRESS
-                    | NONCE_PRECOMPILE_ADDRESS
-                    | ACCOUNT_KEYCHAIN_ADDRESS
-                    | RECEIVE_POLICY_GUARD_ADDRESS
-                    | STORAGE_CREDITS_ADDRESS
-            )
-            || cfg!(feature = "std") && *address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS
+        self.base.contains(address) || is_zone_precompile(*address)
     }
 
     fn execute(
@@ -318,6 +305,27 @@ where
 
         Some(result)
     }
+}
+
+/// Whether `address` is a precompile a Zone adds to Ethereum's built-ins: a Zone system contract,
+/// or a Tempo precompile the Zone wraps, including every TIP-20 token.
+fn is_zone_precompile(address: Address) -> bool {
+    if is_tip20_prefix(address)
+        || cfg!(feature = "std") && address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS
+    {
+        return true;
+    }
+    matches!(
+        address,
+        TEMPO_STATE_ADDRESS
+            | ZONE_INBOX_ADDRESS
+            | ZONE_FEE_MANAGER_ADDRESS
+            | TIP403_REGISTRY_ADDRESS
+            | NONCE_PRECOMPILE_ADDRESS
+            | ACCOUNT_KEYCHAIN_ADDRESS
+            | RECEIVE_POLICY_GUARD_ADDRESS
+            | STORAGE_CREDITS_ADDRESS
+    )
 }
 
 #[cfg(any(test, feature = "test-utils"))]
