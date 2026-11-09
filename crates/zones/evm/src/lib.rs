@@ -15,7 +15,7 @@ pub mod precompiles;
 mod zone_evm;
 
 pub use database::{L1OverlayDB, ZoneDbError};
-pub use executor::{ExcludedByFilter, InclusionFilter, ZoneBlockExecutor, ZoneTxResult};
+pub use executor::{ZoneBlockExecutor, ZoneTxResult};
 pub use zone_evm::validate_transaction;
 
 use crate::{
@@ -23,6 +23,7 @@ use crate::{
     precompiles::{L1StorageReader, ZonePrecompiles},
     zone_evm::{zone_execution_config, zone_tx_registry},
 };
+use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, B256};
 use alloy_provider::{Provider, ProviderBuilder};
 use evm2::evm::DynDatabase;
@@ -31,8 +32,10 @@ use reth_evm::{
     BlockAssembler, BlockAssemblerInput, BlockExecutorFactory, ConfigureEngineEvm, ConfigureEvm,
     EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
 };
+use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use std::{
+    borrow::Cow,
     collections::HashSet,
     fmt,
     num::NonZeroU32,
@@ -338,10 +341,6 @@ where
     where
         Self: 'a,
     {
-        use alloy_consensus::BlockHeader;
-        use reth_evm_ethereum::EthBlockExecutionCtx;
-        use std::borrow::Cow;
-
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
@@ -447,7 +446,7 @@ pub struct TempoStorageRead {
 mod tests {
     use super::*;
 
-    use alloy_consensus::{Sealable as _, Signed, TxLegacy};
+    use alloy_consensus::{Sealable as _, SignableTransaction, TxLegacy};
     use alloy_primitives::{B256, Bytes, U256, address};
     use alloy_sol_types::SolCall;
     use evm2::{
@@ -498,14 +497,14 @@ mod tests {
 
     fn system_tx_env(to: Address, input: Bytes) -> Recovered<TempoTxEnv> {
         let tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     to: to.into(),
                     input,
                     ..Default::default()
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
+                }
+                .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+            ),
             TEMPO_SYSTEM_TX_SENDER,
         );
         Recovered::new_unchecked(tx.into(), TEMPO_SYSTEM_TX_SENDER)

@@ -930,9 +930,14 @@ impl<T> ConfigureTempoPoolEvm for T where
 mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
+    use alloy_consensus::{Header, SignableTransaction, Transaction, TxLegacy};
+    use alloy_eips::{
+        eip2930::{AccessList, AccessListItem},
+        eip7702::Authorization,
+    };
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
-    use alloy_signer::Signature;
+    use alloy_signer::{Signature, SignerSync};
+    use alloy_signer_local::PrivateKeySigner;
     use evm2::{
         DatabaseError, TxResult,
         bytecode::Bytecode as EvmBytecode,
@@ -962,7 +967,8 @@ mod tests {
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
-            TempoTransaction, envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call,
+            KeyAuthorization, SignatureType, TempoSignedAuthorization, TempoTransaction,
+            envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call,
             tt_signature::PrimitiveSignature,
         },
     };
@@ -1254,11 +1260,6 @@ mod tests {
 
     #[tokio::test]
     async fn address_filter_checks_recovered_authorization_authority() {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        use tempo_primitives::transaction::TempoSignedAuthorization;
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1372,11 +1373,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_authorization_list_authorities_tracked() {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        use tempo_primitives::transaction::TempoSignedAuthorization;
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1456,7 +1452,7 @@ mod tests {
             value: U256::ZERO,
             input: Default::default(),
         };
-        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
         let transaction = TempoPooledTransaction::new(
             reth_primitives_traits::Recovered::new_unchecked(envelope, Address::ZERO),
         );
@@ -1527,9 +1523,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_self_sponsored_fee_payer_rejected() {
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-
         let signer = PrivateKeySigner::random();
         let sender = signer.address();
 
@@ -1704,9 +1697,6 @@ mod tests {
     /// This is the fix for the audit finding about mempool DoS via gas calculation mismatch.
     #[tokio::test]
     async fn test_aa_intrinsic_gas_validation() {
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1786,7 +1776,6 @@ mod tests {
     /// - Account nonce is 0
     #[tokio::test]
     async fn test_aa_create_tx_with_2d_nonce_intrinsic_gas() {
-        use alloy_primitives::Signature;
         use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call as TxCall};
 
         let current_time = std::time::SystemTime::now()
@@ -1923,9 +1912,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_expiring_nonce_intrinsic_gas_uses_lower_cost() {
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1990,9 +1976,6 @@ mod tests {
     /// pass pool validation but fail at execution time.
     #[tokio::test]
     async fn test_existing_2d_nonce_key_intrinsic_gas() {
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -2392,12 +2375,6 @@ mod tests {
     fn create_aa_transaction_with_authorizations(
         authorization_count: usize,
     ) -> TempoPooledTransaction {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::transaction::{
-            TempoSignedAuthorization, TempoTransaction, tempo_transaction::Call,
-        };
-
         // Create dummy authorizations
         let authorizations: Vec<TempoSignedAuthorization> = (0..authorization_count)
             .map(|i| {
@@ -2685,10 +2662,6 @@ mod tests {
     /// CREATE calls must not have any entries in the authorization list.
     #[tokio::test]
     async fn test_aa_create_call_with_authorization_list_rejected() {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_primitives::Signature;
-        use tempo_primitives::transaction::TempoSignedAuthorization;
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3074,8 +3047,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_exactly_max_access_list_accounts_accepted() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3112,8 +3083,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_too_many_access_list_accounts_rejected() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3155,8 +3124,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_exactly_max_storage_keys_per_account_accepted() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3193,8 +3160,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_too_many_storage_keys_per_account_rejected() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3236,8 +3201,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_exactly_max_total_storage_keys_accepted() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3280,8 +3243,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_too_many_total_storage_keys_rejected() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3333,10 +3294,6 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_inline_key_authorization_does_not_poison_next_root_aa_transaction() {
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
-
         const TIP_TIMESTAMP: u64 = 1_788_393_600;
 
         let root = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();

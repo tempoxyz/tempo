@@ -2597,6 +2597,7 @@ mod tests {
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
+    use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
     use std::collections::HashSet;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_primitives::{
@@ -4618,8 +4619,6 @@ mod tests {
 
     #[test]
     fn test_best_transactions_mark_invalid() {
-        use reth_primitives_traits::transaction::error::InvalidTransactionError;
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
@@ -6017,8 +6016,6 @@ mod tests {
 
     #[test]
     fn test_best_transactions_mark_invalid_skips_sequence() {
-        use reth_primitives_traits::transaction::error::InvalidTransactionError;
-
         let mut pool = AA2dPool::default();
         let sender1 = Address::random();
         let sender2 = Address::random();
@@ -6446,8 +6443,6 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_with_nonce_precompile_slot() {
-        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let nonce_key = U256::ONE;
@@ -6510,8 +6505,6 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_creates_gap_demotion() {
-        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let nonce_key = U256::ONE;
@@ -6572,8 +6565,6 @@ mod tests {
 
     #[test]
     fn on_state_updates_returns_promotions_before_discard() {
-        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
-
         let mut pool = AA2dPool::new(AA2dPoolConfig {
             pending_limit: SubPoolLimit {
                 max_txs: 1,
@@ -7236,8 +7227,6 @@ mod tests {
 
     #[test]
     fn on_state_updates_removes_included_expiring_nonce_from_eviction_index() {
-        use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, StorageSlot};
-
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 

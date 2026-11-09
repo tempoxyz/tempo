@@ -1,13 +1,12 @@
 // Additional regression coverage introduced with the EVM2 migration.
 use super::*;
+use tempo_precompiles::{
+    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    tip20::slots as tip20_slots,
+};
 
 #[test]
 fn test_resolve_fee_context_warms_balance_without_fee_collection() {
-    use tempo_precompiles::{
-        storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
-        tip20::slots as tip20_slots,
-    };
-
     for (spec, disable_fee, gas_price) in [
         (TempoHardfork::T1, false, 0),
         (TempoHardfork::T7, false, 0),
@@ -300,8 +299,6 @@ fn test_2d_authorization_refund_for_absent_caller() {
 #[test_case::test_case(TempoHardfork::T1B)]
 #[test_case::test_case(TempoHardfork::T4)]
 fn test_aa_create_protocol_nonce_overflow(spec: TempoHardfork) {
-    use evm2::bytecode::Bytecode;
-
     for nonce_key in [U256::ONE, TEMPO_EXPIRING_NONCE_KEY] {
         for protocol_nonce in [u64::MAX, u64::MAX - 1] {
             for with_followup_call in [false, true] {

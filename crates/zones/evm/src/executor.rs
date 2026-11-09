@@ -6,29 +6,39 @@
 
 use alloy_consensus::TxReceipt as _;
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
-use alloy_primitives::{Bytes, TxKind};
+use alloy_primitives::{Address, Bytes, TxKind};
 use alloy_sol_types::{SolCall as _, SolEvent as _};
 use evm2::{
     SpecId, TxResultWithState,
-    evm::{Bal, HISTORY_STORAGE_ADDRESS, SystemTx},
+    bytecode::Bytecode,
+    evm::{Bal, HISTORY_STORAGE_ADDRESS, PendingState, SystemTx},
 };
 use reth_chainspec::EthereumHardforks as _;
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
-    BlockValidationError, ExecutorTx, GasOutput, RecoveredTx, execute::map_handler_error,
+    BlockValidationError, ExecutorTx, GasOutput, RecoveredTx,
+    execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
 use std::sync::Arc;
-use tempo_contracts::zones::{IZoneOutbox, TempoAdvanced};
+use tempo_contracts::{
+    MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
+    zones::{IZoneOutbox, TempoAdvanced},
+};
 use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
-use thiserror::Error;
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
 use crate::{ZoneEvm, database::validate_pending_state};
+
+/// Predeploys whose code T15 removes from zones, since zone transfers would make them reachable.
+///
+/// Permit2's allowance and nonce getters are public, which would expose approvals, and anyone can
+/// make Multicall3 call a TIP-20 token as itself.
+const T15_REMOVED_PREDEPLOYS: [Address; 2] = [PERMIT2_ADDRESS, MULTICALL3_ADDRESS];
 
 /// The current transaction-ordering phase of a zone block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -153,15 +163,6 @@ impl BlockTransactionResult<TempoEvmTypes> for ZoneTxResult {
     }
 }
 
-/// Decides from an executed transaction's result and state changes whether a block builder may
-/// include it. See [`ZoneBlockExecutor::set_inclusion_filter`].
-pub type InclusionFilter = Box<dyn Fn(&TxResultWithState<TempoEvmTypes>) -> bool + Send + Sync>;
-
-/// Error for a transaction that the executor's [`InclusionFilter`] left out.
-#[derive(Debug, Error)]
-#[error("transaction left out by the block builder's inclusion filter")]
-pub struct ExcludedByFilter;
-
 /// Simplified block executor for zone nodes.
 ///
 /// Enforces the successful block-opening `advanceTempo` system transaction and same-block
@@ -172,8 +173,6 @@ pub struct ZoneBlockExecutor<'a> {
     inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
     phase: ZoneBlockPhase,
     prague_active: bool,
-    /// Builder-local policy that executed transactions must pass before they can be committed.
-    inclusion_filter: Option<InclusionFilter>,
 }
 
 impl<'a> ZoneBlockExecutor<'a> {
@@ -194,17 +193,32 @@ impl<'a> ZoneBlockExecutor<'a> {
             ),
             phase: ZoneBlockPhase::AwaitingAdvanceTempo,
             prague_active,
-            inclusion_filter: None,
         }
     }
 
-    /// Sets the filter that later transactions must pass, or clears it with `None`.
+    /// Clears the code of [`T15_REMOVED_PREDEPLOYS`], keeping their balance, nonce, and storage.
     ///
-    /// A transaction the filter rejects fails with [`ExcludedByFilter`] before it is committed,
-    /// so it leaves no state change and is not part of the block. Only a block builder sets one,
-    /// for local policy that consensus does not replicate; block validation never does.
-    pub fn set_inclusion_filter(&mut self, filter: Option<InclusionFilter>) {
-        self.inclusion_filter = filter;
+    /// Runs before every T15 block and changes nothing once the code is gone, which also covers
+    /// zones whose genesis omits these contracts. Contract creation is disabled, so the code
+    /// cannot return.
+    fn remove_t15_predeploys(&mut self) -> Result<(), BlockExecutionError> {
+        let mut state = PendingState::default();
+        for address in T15_REMOVED_PREDEPLOYS {
+            let original = self
+                .inner
+                .evm_mut()
+                .state_mut()
+                .account_info_untracked(&address)
+                .map_err(map_database_error)?;
+            if let Some(info) = original.as_ref().filter(|info| !info.is_empty_code_hash()) {
+                let current = info.clone().with_code(Bytecode::default());
+                state.insert_account(address, original, Some(current));
+            }
+        }
+        if !state.is_empty() {
+            self.inner.commit_pending_state(&state);
+        }
+        Ok(())
     }
 }
 
@@ -238,6 +252,9 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
                     .detach();
                 self.inner.commit_pending_state(&result.pending_state);
             }
+            if self.inner.evm().config_spec_id().is_t15() {
+                self.remove_t15_predeploys()?;
+            }
             Ok(())
         } else {
             self.inner.apply_pre_execution_changes()
@@ -261,13 +278,6 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         let inner = result?;
         validate_pending_state(&inner.result().pending_state)
             .map_err(BlockExecutionError::other)?;
-        if self
-            .inclusion_filter
-            .as_ref()
-            .is_some_and(|filter| !filter(inner.result()))
-        {
-            return Err(BlockExecutionError::other(ExcludedByFilter));
-        }
 
         Ok(ZoneTxResult { inner, next_phase })
     }
@@ -395,11 +405,11 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ADVANCE_TEMPO_SELECTOR, ExcludedByFilter, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
+        ADVANCE_TEMPO_SELECTOR, T15_REMOVED_PREDEPLOYS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
         ZoneBlockExecutor, ZoneBlockPhase, ZoneTransactionKind,
     };
 
-    use alloy_consensus::{Header, Sealable as _, Signed, TxLegacy};
+    use alloy_consensus::{Header, Sealable as _, SignableTransaction, TxLegacy};
     use alloy_eips::{
         eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
         eip4788::BEACON_ROOTS_ADDRESS,
@@ -454,14 +464,14 @@ mod tests {
     use crate::{ZoneDbError, ZoneEvmConfig};
 
     fn system_tx(to: Address, input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 to: to.into(),
                 input,
                 ..Default::default()
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ))
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        )
     }
 
     fn advance_tempo_tx() -> TempoTxEnvelope {
@@ -507,14 +517,14 @@ mod tests {
     }
 
     fn ordinary_tx(to: Address, input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 to: to.into(),
                 input,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn subblock_tx() -> TempoTxEnvelope {
@@ -1164,81 +1174,6 @@ mod tests {
     }
 
     #[test]
-    fn inclusion_filter_leaves_out_rejected_transactions_before_commit() {
-        let mut db = InMemoryDB::default();
-        db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
-        let mut zone_genesis = DEV.genesis().clone();
-        zone_genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 1).unwrap();
-        let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap());
-        let config = ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
-        let mut env = TempoEvmEnv {
-            spec: TempoHardfork::T7,
-            ..Default::default()
-        };
-        // Zero-sender operator simulations run without fee charging.
-        env.version.features.remove(EvmFeatures::BALANCE_CHECK);
-        env.version.features.remove(EvmFeatures::BALANCE_TOP_UP);
-        env.version.features.remove(EvmFeatures::FEE_CHARGE);
-        let evm = config.evm_with_env(db, env);
-        let ctx = TempoBlockExecutionCtx {
-            inner: EthBlockExecutionCtx {
-                parent_hash: B256::ZERO,
-                parent_beacon_block_root: None,
-                ommers: &[],
-                withdrawals: None,
-                extra_data: Bytes::new(),
-                tx_count_hint: Some(1),
-                slot_number: None,
-            },
-            general_gas_limit: 0,
-            shared_gas_limit: 0,
-            consensus_context: None,
-        };
-        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
-        executor.phase = ZoneBlockPhase::Executing;
-        let tx = |nonce| {
-            let envelope = TempoTxEnvelope::AA(
-                TempoTransaction {
-                    calls: vec![Call {
-                        to: TIP403_REGISTRY_ADDRESS.into(),
-                        value: U256::ZERO,
-                        input: ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
-                    }],
-                    chain_id: 1,
-                    fee_token: Some(DEFAULT_FEE_TOKEN),
-                    gas_limit: 1_000_000,
-                    nonce,
-                    ..Default::default()
-                }
-                .into_signed(TempoSignature::from(Signature::test_signature())),
-            );
-            Recovered::new_unchecked(envelope, Address::ZERO)
-        };
-
-        executor.set_inclusion_filter(Some(Box::new(|result| !result.result.status)));
-        let error = executor
-            .execute_transaction_without_commit(tx(0))
-            .unwrap_err();
-        assert!(
-            error
-                .as_internal()
-                .and_then(InternalBlockExecutionError::as_other)
-                .is_some_and(|error| error.is::<ExcludedByFilter>()),
-            "{error}"
-        );
-
-        // A transaction the filter accepts, or one run without a filter, executes as usual.
-        executor.set_inclusion_filter(Some(Box::new(|result| result.result.status)));
-        // The rejected transaction left no state change, so its nonce is still free.
-        let accepted = executor.execute_transaction_without_commit(tx(0)).unwrap();
-        executor.commit_transaction(accepted).unwrap();
-        executor.set_inclusion_filter(None);
-        let unfiltered = executor.execute_transaction_without_commit(tx(1)).unwrap();
-        executor.commit_transaction(unfiltered).unwrap();
-        assert_eq!(executor.receipts().len(), 2);
-    }
-
-    #[test]
     fn clears_only_prewarming_expiring_nonce_index() {
         let mut tx_env: TempoTxEnv = Recovered::new_unchecked(
             TempoTxEnvelope::AA(
@@ -1499,6 +1434,64 @@ mod tests {
                         "{address} at {fork:?}, block {block_number}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn t15_removes_permit2_and_multicall3_code() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
+        let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
+        let config = ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
+        let account = AccountInfo::default()
+            .with_balance(U256::from(7))
+            .with_nonce(1)
+            .with_code(Bytecode::new_raw(alloy_primitives::bytes!("00")));
+        for (fork, removed) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
+            let mut db = InMemoryDB::default();
+            for address in T15_REMOVED_PREDEPLOYS {
+                db.insert_account_info(&address, account.clone());
+                db.insert_account_storage(&address, &U256::ZERO, &U256::from(1));
+            }
+            let evm = config.evm_with_env(
+                &mut db,
+                TempoEvmEnv {
+                    spec: fork,
+                    ..Default::default()
+                },
+            );
+            let ctx = TempoBlockExecutionCtx {
+                inner: EthBlockExecutionCtx {
+                    parent_hash: B256::ZERO,
+                    parent_beacon_block_root: None,
+                    ommers: &[],
+                    withdrawals: None,
+                    extra_data: Bytes::new(),
+                    tx_count_hint: None,
+                    slot_number: None,
+                },
+                general_gas_limit: 0,
+                shared_gas_limit: 0,
+                consensus_context: None,
+            };
+            let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+            executor.apply_pre_execution_changes().unwrap();
+            // Isolate the pre-execution change from the required opening transaction.
+            executor.phase = ZoneBlockPhase::Executing;
+            let output = executor.finish().unwrap();
+            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+
+            for address in T15_REMOVED_PREDEPLOYS {
+                let info = db.get_account(&address).unwrap().unwrap();
+                assert_eq!(info.is_empty_code_hash(), removed, "{address} at {fork:?}");
+                assert_eq!(info.balance, account.balance, "{address} at {fork:?}");
+                assert_eq!(info.nonce, account.nonce, "{address} at {fork:?}");
+                assert_eq!(
+                    db.get_storage(&address, &U256::ZERO).unwrap(),
+                    U256::from(1),
+                    "{address} at {fork:?}"
+                );
             }
         }
     }

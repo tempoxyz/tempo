@@ -854,16 +854,19 @@ mod tests {
         Signer as _,
         ed25519::{PrivateKey, PublicKey},
     };
-    use commonware_runtime::IoBuf;
+    use commonware_p2p::{AddressableManager as _, Receiver as _, Recipients, Sender as _};
+    use commonware_runtime::{IoBuf, Runner as _, Spawner as _};
 
     use super::{
         P2pCommand, P2pConfig, P2pEvent, P2pReceivers, into_bounded_payload, run_receivers,
         spawn_p2p, validate_ip_check_configuration,
     };
     use crate::{
-        P2pNetworkId, ZoneManifest,
+        EncodedBlock, P2pNetworkId, ZoneManifest,
+        capabilities::{ANNOUNCEMENT_INTERVAL, ANNOUNCEMENT_TTL, LOCAL_CAPABILITIES_VERSION},
         identity::{Ed25519Identity, Secp256k1Identity},
-        network::MAX_TRANSACTION_MESSAGE_SIZE,
+        network::{self, MAX_TRANSACTION_MESSAGE_SIZE},
+        protocol::{DecodeError, RequestFrame, ResponseFrame},
         routing::RoutingMembership,
     };
 
@@ -1131,16 +1134,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn witness_transport_requires_peer_announcements() {
-        use commonware_p2p::{AddressableManager as _, Receiver as _, Recipients, Sender as _};
-        use commonware_runtime::{Runner as _, Spawner as _};
-
-        use crate::{
-            EncodedBlock,
-            capabilities::{ANNOUNCEMENT_INTERVAL, ANNOUNCEMENT_TTL, LOCAL_CAPABILITIES_VERSION},
-            network,
-            protocol::{DecodeError, RequestFrame, ResponseFrame},
-        };
-
         enum Command {
             Advertise(bool),
             Request(RequestFrame),
@@ -2128,7 +2121,10 @@ mod tests {
             .allowlist
             .client
             .clone();
-        let relayed = tokio::spawn(async move { rpc_client.request(b"request".to_vec()).await });
+        let relayed = {
+            let rpc_client = rpc_client.clone();
+            tokio::spawn(async move { rpc_client.request(None, b"request".to_vec()).await })
+        };
         for &(index, _) in &quorum {
             let requests = &mut handles[index].parts.as_mut().unwrap().allowlist.requests;
             let request = tokio::time::timeout(Duration::from_secs(15), requests.recv())
@@ -2172,6 +2168,54 @@ mod tests {
             "a resent allowlist request reached the leader's node twice"
         );
 
+        // A request for one member reaches only that member.
+        let relayed = {
+            let leader_peer = leader_peer.clone();
+            tokio::spawn(
+                async move { rpc_client.request(Some(leader_peer), b"one".to_vec()).await },
+            )
+        };
+        let request = tokio::time::timeout(
+            Duration::from_secs(15),
+            handles[LEADER]
+                .parts
+                .as_mut()
+                .unwrap()
+                .allowlist
+                .requests
+                .recv(),
+        )
+        .await
+        .expect("leader did not receive the allowlist request")
+        .expect("allowlist request channel closed");
+        assert_eq!(request.payload, b"one");
+        request.respond(b"leader".to_vec()).await;
+        let responses = tokio::time::timeout(Duration::from_secs(15), relayed)
+            .await
+            .expect("allowlist request did not finish")
+            .unwrap()
+            .expect("allowlist request failed");
+        assert_eq!(
+            responses,
+            crate::AllowlistResponses {
+                answers: vec![(leader_peer.clone(), b"leader".to_vec())],
+                unanswered: vec![],
+            }
+        );
+        for index in [QUORUM_FOLLOWER, QUORUM_FOLLOWER_B] {
+            assert!(
+                handles[index]
+                    .parts
+                    .as_mut()
+                    .unwrap()
+                    .allowlist
+                    .requests
+                    .try_recv()
+                    .is_err(),
+                "node-{index} received a request addressed to the leader"
+            );
+        }
+
         // Quorum members cannot relay allowlist requests.
         let quorum_client = handles[QUORUM_FOLLOWER]
             .parts
@@ -2181,7 +2225,7 @@ mod tests {
             .client
             .clone();
         assert_eq!(
-            quorum_client.request(b"forged".to_vec()).await,
+            quorum_client.request(None, b"forged".to_vec()).await,
             Err(crate::AllowlistRequestError::NotRelayer)
         );
 

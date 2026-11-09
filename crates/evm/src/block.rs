@@ -51,6 +51,66 @@ pub(crate) enum BlockSection {
     System { seen_subblocks_signatures: bool },
 }
 
+impl serde::Serialize for BlockSection {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(match self {
+            Self::StartOfBlock => 0,
+            Self::NonShared => 1,
+            Self::GasIncentive => 2,
+            Self::System {
+                seen_subblocks_signatures: false,
+            } => 3,
+            Self::System {
+                seen_subblocks_signatures: true,
+            } => 4,
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BlockSection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match u8::deserialize(deserializer)? {
+            0 => Self::StartOfBlock,
+            1 => Self::NonShared,
+            2 => Self::GasIncentive,
+            3 => Self::System {
+                seen_subblocks_signatures: false,
+            },
+            4 => Self::System {
+                seen_subblocks_signatures: true,
+            },
+            id => {
+                return Err(serde::de::Error::invalid_value(
+                    serde::de::Unexpected::Unsigned(id.into()),
+                    &"a block section id from 0 to 4",
+                ));
+            }
+        })
+    }
+}
+
+/// Block-level counters of a [`TempoBlockExecutor`] between transactions, from
+/// [`TempoBlockExecutor::executor_state`]. The section serializes as its numeric id, and
+/// deserializing an unknown id fails.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExecutorState {
+    /// Section the next transaction is admitted in.
+    section: BlockSection,
+    /// Gas left for non-shared transactions.
+    non_shared_gas_left: u64,
+    /// Gas left for non-payment transactions.
+    non_payment_gas_left: u64,
+    /// Gas used by the gas incentive section.
+    incentive_gas_used: u64,
+    /// Block gas used.
+    block_gas_used: u64,
+    /// Inner executor's cumulative gas used.
+    cumulative_gas_used: u64,
+    /// Inner executor's blob gas used.
+    blob_gas_used: u64,
+}
+
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
@@ -241,6 +301,41 @@ impl<'a> TempoBlockExecutor<'a> {
         }
     }
 
+    /// Block-level counters after all prior transactions were committed.
+    ///
+    /// With [`Self::with_executor_state`] this executes one transaction from its exact
+    /// prestate (as `tempo-corpus` does), not a whole block. The inner executor's separate
+    /// regular/state block gas counters are not restorable; they only gate block-gas
+    /// admission, which a canonical transaction passes either way.
+    #[doc(hidden)]
+    pub fn executor_state(&self) -> ExecutorState {
+        ExecutorState {
+            section: self.section,
+            non_shared_gas_left: self.non_shared_gas_left,
+            non_payment_gas_left: self.non_payment_gas_left,
+            incentive_gas_used: self.incentive_gas_used,
+            block_gas_used: self.block_gas_used,
+            cumulative_gas_used: self.inner.cumulative_gas_used,
+            blob_gas_used: self.inner.blob_gas_used,
+        }
+    }
+
+    /// Restores [`Self::executor_state`] into a fresh executor over the matching prestate.
+    ///
+    /// Do not apply pre-execution changes again or finalize this executor. Storage-action
+    /// replay memoization is reset: an isolated transaction always executes normally.
+    #[doc(hidden)]
+    pub fn with_executor_state(&mut self, state: ExecutorState) {
+        self.section = state.section;
+        self.non_shared_gas_left = state.non_shared_gas_left;
+        self.non_payment_gas_left = state.non_payment_gas_left;
+        self.incentive_gas_used = state.incentive_gas_used;
+        self.block_gas_used = state.block_gas_used;
+        self.inner.cumulative_gas_used = state.cumulative_gas_used;
+        self.inner.blob_gas_used = state.blob_gas_used;
+        self.replay_state = StorageActionReplayState::default();
+    }
+
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
     ///
     /// This also dispatches the state change to the system caller's state hook so that the
@@ -303,39 +398,23 @@ impl<'a> TempoBlockExecutor<'a> {
         }
 
         self.deploy_precompile_at_boundary(factory.address, factory.storage.as_slice())?;
-        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])?;
+        self.install_zone_runtimes([portal, verifier, messenger])?;
         Ok(())
     }
 
-    /// Exercises the shared runtime upgrade path at T13.
-    fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
-        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
-    }
-
-    /// Installs the T15 shared runtimes, which add the zone transfer opt-in to the portal.
-    fn upgrade_zone_runtimes_at_t15_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t15_zone_factory_state(INITIAL_FACTORY_OWNER);
-        self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
-    }
-
-    /// Returns the fork whose shared Zone runtimes are live at `timestamp`, or `None` before T13.
-    ///
-    /// A runtime set is live only once every earlier runtime upgrade is also active, matching how
-    /// genesis generation picks the set. So a chain with T15 at genesis and T13 later installs the
-    /// T15 set when T13 activates.
-    fn zone_runtime_fork_at(&self, timestamp: u64) -> Option<TempoHardfork> {
-        if !self.chain_spec.is_t13_active_at_timestamp(timestamp) {
-            None
-        } else if self.chain_spec.is_t15_active_at_timestamp(timestamp) {
-            Some(TempoHardfork::T15)
+    /// Installs the shared Zone runtime set for `fork`, as returned by [`zone_runtime_fork`].
+    /// T15 adds the zone transfer opt-in to the portal.
+    fn upgrade_zone_runtimes(&mut self, fork: TempoHardfork) -> Result<(), BlockExecutionError> {
+        let [_, portal, verifier, messenger] = if fork.is_t15() {
+            t15_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
-            Some(TempoHardfork::T13)
-        }
+            t13_zone_factory_state(INITIAL_FACTORY_OWNER)
+        };
+        self.install_zone_runtimes([portal, verifier, messenger])
     }
 
     /// Installs shared Zone runtimes without modifying their existing storage.
-    fn install_zone_runtimes_at_boundary(
+    fn install_zone_runtimes(
         &mut self,
         runtimes: [InitialZoneFactoryAccount; 3],
     ) -> Result<(), BlockExecutionError> {
@@ -497,13 +576,18 @@ impl<'a> TempoBlockExecutor<'a> {
 
     /// Returns whether `tx` qualifies for the payment lane under the active hardfork.
     ///
+    /// T15+: TIP-1045 classification with bounded trailing calldata ([`is_payment_v3`]).
     /// T5+: TIP-1045 classification ([`is_payment_v2`]).
     /// Pre-T5: legacy TIP-20 prefix-only check ([`is_payment_v1`]).
     ///
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
+    /// [`is_payment_v3`]: TempoTxEnvelope::is_payment_v3
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        if self.evm().config_spec_id().is_t5() {
+        let spec = self.evm().config_spec_id();
+        if spec.is_t15() {
+            tx.is_payment_v3()
+        } else if spec.is_t5() {
             tx.is_payment_v2()
         } else {
             tx.is_payment_v1()
@@ -710,14 +794,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // those allocations (including locally compiled contracts on test chains). Chains that
         // activate the fork later follow the normal runtime upgrade path. Only the newest live
         // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
-        let runtime_fork =
-            self.zone_runtime_fork_at(self.evm().block().timestamp.saturating_to::<u64>());
-        if runtime_fork != self.zone_runtime_fork_at(self.chain_spec.genesis().timestamp) {
-            match runtime_fork {
-                Some(TempoHardfork::T15) => self.upgrade_zone_runtimes_at_t15_boundary()?,
-                Some(TempoHardfork::T13) => self.upgrade_zone_runtimes_at_boundary()?,
-                _ => {}
-            }
+        let runtime_fork = zone_runtime_fork(self.evm().config_spec_id());
+        let genesis_spec = self
+            .chain_spec
+            .tempo_hardfork_at(self.chain_spec.genesis().timestamp);
+        if let Some(fork) = runtime_fork
+            && runtime_fork != zone_runtime_fork(genesis_spec)
+        {
+            self.upgrade_zone_runtimes(fork)?;
         }
 
         Ok(())
@@ -945,6 +1029,20 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     }
 }
 
+/// Returns the fork whose shared Zone runtimes are live under `spec`, or `None` before T13.
+///
+/// Like every other fork boundary, this follows the EVM spec, so an out-of-order schedule such as
+/// T15 at genesis and T13 later runs the T15 runtimes from genesis.
+fn zone_runtime_fork(spec: TempoHardfork) -> Option<TempoHardfork> {
+    if spec.is_t15() {
+        Some(TempoHardfork::T15)
+    } else if spec.is_t13() {
+        Some(TempoHardfork::T13)
+    } else {
+        None
+    }
+}
+
 // Test-only methods to set internal state without exposing fields as pub(crate)
 #[cfg(test)]
 impl TempoBlockExecutor<'_> {
@@ -963,7 +1061,7 @@ impl TempoBlockExecutor<'_> {
 mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_eips::{
         eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
         eip4788::BEACON_ROOTS_ADDRESS,
@@ -1517,7 +1615,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     /// Creates a non-payment transaction result as produced by a speculative executor.
@@ -1556,7 +1654,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     fn read_current_committee(
@@ -1637,7 +1735,7 @@ mod tests {
     }
 
     fn create_system_tx(chain_id: u64, input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chain_id),
                 nonce: 0,
@@ -1646,9 +1744,9 @@ mod tests {
                 to: TxKind::Call(Address::ZERO),
                 value: U256::ZERO,
                 input,
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ))
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        )
     }
 
     fn create_subblock_metadata(signer: &PrivateKey) -> SubBlockMetadata {
@@ -1719,6 +1817,89 @@ mod tests {
     }
 
     #[test]
+    fn test_restored_executor_state_matches_in_block_execution() {
+        let chainspec = test_chainspec();
+        let signer = PrivateKey::from_seed(0);
+        let input = create_system_tx_input(vec![create_subblock_metadata(&signer)], 1);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
+
+        let mut db = InMemoryDB::default();
+        let mut in_block = TestExecutorBuilder::default()
+            .with_section(BlockSection::NonShared)
+            .build(&mut db, &chainspec);
+        let start = in_block.executor_state();
+        in_block
+            .execute_transaction(Recovered::new_unchecked(system_tx.clone(), Address::ZERO))
+            .unwrap();
+        let end = in_block.executor_state();
+        let receipts = in_block.receipts().to_vec();
+
+        let mut db = InMemoryDB::default();
+        let mut restored = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        for section in [
+            BlockSection::StartOfBlock,
+            BlockSection::NonShared,
+            BlockSection::GasIncentive,
+            BlockSection::System {
+                seen_subblocks_signatures: false,
+            },
+            BlockSection::System {
+                seen_subblocks_signatures: true,
+            },
+        ] {
+            let state = ExecutorState {
+                section,
+                non_shared_gas_left: 11,
+                non_payment_gas_left: 12,
+                incentive_gas_used: 13,
+                block_gas_used: 14,
+                cumulative_gas_used: 15,
+                blob_gas_used: 16,
+            };
+            restored.with_executor_state(state);
+            assert_eq!(restored.executor_state(), state);
+        }
+        assert_ne!(restored.executor_state(), start);
+
+        restored.with_executor_state(start);
+        assert_eq!(restored.executor_state(), start);
+        restored
+            .execute_transaction(Recovered::new_unchecked(system_tx, Address::ZERO))
+            .unwrap();
+        assert_eq!(restored.executor_state(), end);
+        assert_eq!(restored.receipts(), receipts.as_slice());
+    }
+
+    #[test]
+    fn test_executor_state_serde_rejects_unknown_section() {
+        let state = ExecutorState {
+            section: BlockSection::System {
+                seen_subblocks_signatures: true,
+            },
+            non_shared_gas_left: 1,
+            non_payment_gas_left: 2,
+            incentive_gas_used: 3,
+            block_gas_used: 4,
+            cumulative_gas_used: 5,
+            blob_gas_used: 6,
+        };
+        let mut json = serde_json::to_value(state).unwrap();
+        assert_eq!(json["section"], 4);
+        assert_eq!(
+            serde_json::from_value::<ExecutorState>(json.clone()).unwrap(),
+            state
+        );
+
+        json["section"] = 5.into();
+        let err = serde_json::from_value::<ExecutorState>(json).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected a block section id from 0 to 4"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn test_validate_system_tx_invalid_sublocks_metadata() {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
@@ -1726,7 +1907,7 @@ mod tests {
 
         let mut input = BytesMut::new();
         input.extend_from_slice(&[0xff, 0xff, 0xff]); // Invalid RLP
-        input.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
+        input.extend_from_slice(B256::with_last_byte(1).as_slice());
         let system_tx = create_system_tx(chainspec.chain_id(), input.freeze().into());
 
         let result = executor.validate_system_tx(&system_tx);
@@ -1744,7 +1925,7 @@ mod tests {
         let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Create system tx with non-zero `to` address
-        let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        let system_tx = TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
@@ -1753,9 +1934,9 @@ mod tests {
                 to: TxKind::Call(Address::repeat_byte(0x01)), // Non-zero address
                 value: U256::ZERO,
                 input: Bytes::new(),
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ));
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        );
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());
@@ -2638,8 +2819,6 @@ mod tests {
 
     #[test]
     fn test_deploy_precompile_at_boundary_preserves_existing_original_info() {
-        use std::sync::{Arc, Mutex};
-
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let addr = Address::with_last_byte(0xfe);
@@ -2680,6 +2859,12 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
+            for fork in ["t14Time", "t15Time"] {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert(fork.into(), serde_json::Value::Null);
+            }
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
             let mut expected = Vec::new();
@@ -2783,10 +2968,12 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            genesis
-                .config
-                .extra_fields
-                .insert("t15Time".into(), serde_json::Value::Null);
+            for fork in ["t14Time", "t15Time"] {
+                genesis
+                    .config
+                    .extra_fields
+                    .insert(fork.into(), serde_json::Value::Null);
+            }
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
@@ -2842,10 +3029,11 @@ mod tests {
             (in_order, 14, TempoHardfork::T13, t13.clone()),
             (in_order, 19, TempoHardfork::T14, t13),
             (in_order, 20, TempoHardfork::T15, t15.clone()),
-            (in_order, 21, TempoHardfork::T15, t15.clone()),
-            (t15_before_t13, 199, TempoHardfork::T15, initial),
-            (t15_before_t13, 200, TempoHardfork::T15, t15.clone()),
-            (t15_before_t13, 201, TempoHardfork::T15, t15),
+            (in_order, 21, TempoHardfork::T15, t15),
+            // The spec is T15 from genesis, whose allocations supply the T15 runtimes, so the
+            // executor never upgrades the runtimes it finds, even once T13's own time passes.
+            (t15_before_t13, 199, TempoHardfork::T15, initial.clone()),
+            (t15_before_t13, 200, TempoHardfork::T15, initial),
         ] {
             let mut genesis = DEV.genesis().clone();
             for (fork, activation) in ["t13Time", "t14Time", "t15Time"].into_iter().zip(schedule) {
@@ -2899,8 +3087,8 @@ mod tests {
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes(TempoHardfork::T13).unwrap();
+        executor.upgrade_zone_runtimes(TempoHardfork::T13).unwrap();
 
         let factory = executor
             .evm()

@@ -460,6 +460,7 @@ mod tests {
         TempoHardfork,
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
     };
+    use alloy_genesis::Genesis;
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
     use reth_chainspec::EthChainSpec;
@@ -602,8 +603,6 @@ mod tests {
 
     #[test]
     fn test_from_genesis_with_hardforks_at_zero() {
-        use alloy_genesis::Genesis;
-
         // Build genesis config with every post-Genesis fork at timestamp 0
         let mut config = serde_json::Map::new();
         config.insert("chainId".into(), 1234.into());

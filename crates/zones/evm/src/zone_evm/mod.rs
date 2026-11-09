@@ -15,13 +15,14 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
+use tempo_precompiles::tip20::{self, is_tip20_prefix};
 use zone_precompiles::{
     L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     tx_context,
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
 
-use crate::database::{is_tip20_pause_slot, validate_journal};
+use crate::database::validate_journal;
 
 /// Wraps Tempo's handlers with Zone transaction validation and transaction-local L1 context.
 pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
@@ -41,6 +42,7 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
             ZoneTxHandler {
                 inner: handler,
                 l1: l1.clone(),
+                spec,
             },
         );
     }
@@ -52,6 +54,7 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
 struct ZoneTxHandler<L1> {
     inner: AnyTxHandler<TempoEvmTypes, TxResult<TempoEvmTypes>>,
     l1: L1State<L1>,
+    spec: TempoHardfork,
 }
 
 impl<L1: L1StorageReader> ZoneTxHandler<L1> {
@@ -60,7 +63,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<ZoneTxContext<L1>> {
         self.l1.reset_transaction_state();
-        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
+        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST, self.spec)?;
 
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
@@ -84,9 +87,9 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             cache.remove(&TIP403_REGISTRY_ADDRESS);
             // The Zone never writes pause flags, so dropping them loses no local change.
             for (address, storage) in cache.iter_mut() {
-                storage
-                    .slots
-                    .retain(|slot, _| !is_tip20_pause_slot(address, slot));
+                if is_tip20_prefix(*address) {
+                    storage.slots.remove(&tip20::slots::PAUSED);
+                }
             }
         }
         self.l1.begin_transaction(initial_anchor);
@@ -336,7 +339,7 @@ pub(crate) mod tests {
                 TempoTxEnvelope::Legacy(
                     TxLegacy {
                         to: ZONE_INBOX_ADDRESS.into(),
-                        input: ADVANCE_TEMPO_SELECTOR.to_vec().into(),
+                        input: (&ADVANCE_TEMPO_SELECTOR).into(),
                         ..Default::default()
                     }
                     .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
@@ -399,6 +402,7 @@ pub(crate) mod tests {
             ZoneTxHandler {
                 inner: inner.get_by_type(0).unwrap(),
                 l1: l1.clone(),
+                spec,
             },
         );
         evm.set_execution_config(
@@ -498,6 +502,7 @@ pub(crate) mod tests {
                 ZoneTxHandler {
                     inner: inner.get_by_type(0).unwrap(),
                     l1,
+                    spec,
                 },
             );
             let mut version = production;

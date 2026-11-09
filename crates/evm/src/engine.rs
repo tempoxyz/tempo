@@ -125,7 +125,7 @@ impl ExecutableTxParts<Recovered<TempoTxEnv>, TempoTxEnvelope> for RecoveredInBl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockHeader, Signed, TxLegacy, transaction::TxHashRef};
+    use alloy_consensus::{BlockHeader, SignableTransaction, TxLegacy, transaction::TxHashRef};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -148,7 +148,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     fn create_subblock_metadata_tx(chain_id: u64, block_number: u64) -> TempoTxEnvelope {
@@ -157,7 +157,7 @@ mod tests {
         metadata.encode(&mut input);
         input.extend_from_slice(&U256::from(block_number).to_be_bytes::<32>());
 
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chain_id),
                 nonce: 0,
@@ -166,9 +166,9 @@ mod tests {
                 to: TxKind::Call(Address::ZERO),
                 value: U256::ZERO,
                 input: input.freeze().into(),
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ))
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        )
     }
 
     fn create_test_block(transactions: Vec<TempoTxEnvelope>) -> Arc<SealedBlock<Block>> {

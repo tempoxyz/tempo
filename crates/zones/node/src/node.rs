@@ -7,7 +7,7 @@ use crate::{
     DepositAllowlist, DepositAllowlistAdmin, ZoneConsensus, ZoneEngine,
     deposit_allowlist::{
         AllowlistMirror, AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests,
-        mirror_sequencers, validate_transfer_calls,
+        mirror_leader,
     },
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
@@ -64,11 +64,11 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::{
-    num::{NonZeroU32, NonZeroUsize},
+    num::NonZeroU32,
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt as _};
 use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
@@ -104,7 +104,7 @@ use zone_p2p::{
 };
 use zone_payload::{
     DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, TransferAllowlist, WithdrawalRevealEncryptor,
-    ZonePayloadAttributes, ZonePayloadFactory, ZonePayloadTypes,
+    ZonePayloadAttributes, ZonePayloadFactory, ZonePayloadTypes, validate_transfer_calls,
 };
 use zone_primitives::constants::{decode_l1_chain_id, zone_chain_id};
 use zone_rpc::ZoneDebugApiRpcServer;
@@ -249,7 +249,7 @@ impl ZoneProverConfig {
 }
 
 /// Configuration for the Zone redacted RPC server extension.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ZoneRedactedRpcConfig {
     /// Port for RPC traffic.
     pub redacted_rpc_port: u16,
@@ -257,19 +257,6 @@ pub struct ZoneRedactedRpcConfig {
     pub zone_id: u32,
     /// Max duration for redacted RPC auth.
     pub max_auth_token_validity: Duration,
-    /// Maximum simulation requests the redacted RPC runs at once across all callers.
-    pub max_concurrent_simulations: NonZeroUsize,
-}
-
-impl Default for ZoneRedactedRpcConfig {
-    fn default() -> Self {
-        Self {
-            redacted_rpc_port: 0,
-            zone_id: 0,
-            max_auth_token_validity: Duration::ZERO,
-            max_concurrent_simulations: zone_rpc::config::DEFAULT_MAX_CONCURRENT_SIMULATIONS,
-        }
-    }
 }
 
 /// Tempo Zone node type configuration.
@@ -554,7 +541,7 @@ where
     N: FullNodeTypes<Types = ZoneNode>,
 {
     /// Creates a new ZoneAddOns instance.
-    pub fn new(
+    pub(crate) fn new(
         deposit_queue: DepositQueue,
         l1_config: L1SubscriberConfig,
         l1_state_cache: L1StateCache,
@@ -864,8 +851,9 @@ where
                     apply_relayed_requests(local_allowlist, ports.requests),
                 );
             } else {
-                task_executor.spawn_task(mirror_sequencers(
+                task_executor.spawn_task(mirror_leader(
                     ports.client.clone(),
+                    runtime.schedule.clone(),
                     self.allowlist_mirror.clone(),
                     pool.clone(),
                 ));
@@ -1384,7 +1372,6 @@ where
         let peer_tips = PeerTipRegistry::default();
         let relayer = match individual_signer {
             Some(signer) => {
-                use tempo_alloy::provider::ext::TempoProviderBuilderExt as _;
                 let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
                     .with_nonce_key_filler()
                     .wallet(signer)
@@ -1683,7 +1670,6 @@ where
             chain_id,
             max_auth_token_validity: config.max_auth_token_validity,
             max_response_size,
-            max_concurrent_simulations: config.max_concurrent_simulations,
             zone_portal: portal_address,
         };
         let api: Arc<dyn ZoneRpcApi> = Arc::new(ZoneRpc::new(
@@ -2082,11 +2068,11 @@ where
         let enabled_tokens = self.enabled_tokens;
         let transfer_allowlist = self.transfer_allowlist;
         validator.set_additional_stateful_validation(move |_origin, tx, _account_state| {
-            validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())?;
+            // The in-memory allowlist check runs before the balance check, which reads state.
             if let Some(allowlist) = &transfer_allowlist {
                 validate_transfer_calls(allowlist.as_ref(), tx)?;
             }
-            Ok(())
+            validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
         });
 
         let validator =
@@ -2185,11 +2171,12 @@ where
 mod tests {
 
     use super::*;
-    use alloy_consensus::{Signed, TxEip1559};
+    use alloy_consensus::{SignableTransaction, TxEip1559};
     use alloy_primitives::{Bytes, Signature, TxKind, U256};
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::Recovered;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::transaction::{Call, TempoTransaction};
     use zone_chainspec::tempo_chain_spec_for_l1;
 
@@ -2341,21 +2328,25 @@ mod tests {
     #[test]
     fn pool_policy_allows_allowlisted_plain_create() {
         let sender = Address::repeat_byte(0x11);
-        let envelope = TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+        let envelope = TempoTxEnvelope::Eip1559(
             TxEip1559 {
                 to: TxKind::Create,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ));
+            }
+            .into_signed(Signature::test_signature()),
+        );
         let transaction = pooled_transaction(envelope, sender);
 
-        let err = zone_evm::validate_transaction(transaction.tx_env(), &[]).unwrap_err();
+        let err = zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7)
+            .unwrap_err();
         assert!(matches!(
             err,
             tempo_evm::TempoInvalidTransaction::CallsValidation(_)
         ));
-        assert!(zone_evm::validate_transaction(transaction.tx_env(), &[sender]).is_ok());
+        assert!(
+            zone_evm::validate_transaction(transaction.tx_env(), &[sender], TempoHardfork::T7)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2376,6 +2367,8 @@ mod tests {
             ],
         );
 
-        assert!(zone_evm::validate_transaction(transaction.tx_env(), &[]).is_err());
+        assert!(
+            zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7).is_err()
+        );
     }
 }

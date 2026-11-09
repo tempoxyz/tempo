@@ -42,12 +42,15 @@ fn zone_portal_slot_constants_match_solidity() {
             "abdicationEffectiveAt",
             portal::slots::ABDICATION_EFFECTIVE_AT,
         ),
-        ("transfersEnabled", portal::slots::TRANSFERS_ENABLED),
     ]
     .map(|(name, slot)| RustStorageSlot::new(name, slot));
-    assert_foundry_slots(&artifact("ZonePortal"), &fields);
-    // Packed after `tokenEnablementCursorInitialized`; see `storage-layouts/ZonePortal.json`.
-    assert_eq!(portal::slots::TRANSFERS_ENABLED_OFFSET, 9);
+    let transfers_enabled =
+        RustStorageSlot::new("transfersEnabled", portal::slots::TRANSFERS_ENABLED)
+            .with_offset(portal::slots::TRANSFERS_ENABLED_OFFSET);
+    assert_foundry_slots(
+        &artifact("ZonePortal"),
+        &[&fields[..], &[transfers_enabled]].concat(),
+    );
 }
 
 #[test]

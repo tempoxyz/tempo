@@ -1,5 +1,5 @@
 use super::SignatureType;
-use crate::transaction::PrimitiveSignature;
+use crate::transaction::AccountSignature;
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -356,7 +356,7 @@ impl KeyAuthorization {
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
-    pub fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
+    pub fn into_signed(self, signature: impl Into<AccountSignature>) -> SignedKeyAuthorization {
         SignedKeyAuthorization::new(self, signature)
     }
 
@@ -420,8 +420,8 @@ pub struct SignedKeyAuthorization {
     #[deref]
     pub authorization: KeyAuthorization,
 
-    /// Signature authorizing this key (signed by root key)
-    pub signature: PrimitiveSignature,
+    /// Direct primitive or configurable account signature authorizing this key.
+    pub signature: AccountSignature,
 
     /// Cached signer recovered from `signature`.
     ///
@@ -434,26 +434,41 @@ pub struct SignedKeyAuthorization {
 
 impl SignedKeyAuthorization {
     /// Create a signed key authorization with an empty signer cache.
-    pub fn new(authorization: KeyAuthorization, signature: PrimitiveSignature) -> Self {
+    pub fn new(authorization: KeyAuthorization, signature: impl Into<AccountSignature>) -> Self {
         Self {
             authorization,
-            signature,
+            signature: signature.into(),
             signer: OnceLock::new(),
         }
     }
 
-    /// Recover the signer of the [`KeyAuthorization`].
+    /// Recover the signer of the [`KeyAuthorization`]. Returns `Err` for a configurable account
+    /// signature, which has no single signer.
     pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
+        let AccountSignature::Primitive(signature) = &self.signature else {
+            return Err(RecoveryError::new());
+        };
         if let Some(signer) = self.signer.get() {
             return Ok(*signer);
         }
 
-        let signer = self
-            .signature
-            .recover_signer(&self.authorization.signature_hash())?;
+        let signer = signature.recover_signer(&self.authorization.signature_hash())?;
         self.cache_signer(signer);
 
         Ok(signer)
+    }
+
+    /// Recovers a primitive signer or returns the named configurable account.
+    ///
+    /// For configurable account results, the owner quorum needs only stateless verification
+    /// ([`verify_approvals`](crate::transaction::ConfigurableAccountSignature::verify_approvals));
+    /// only the account's configuration commitment and code must be checked against state.
+    /// Primitive results still require grant-authority checks.
+    pub fn authorizing_account(&self) -> Result<Address, RecoveryError> {
+        match &self.signature {
+            AccountSignature::Primitive(_) => self.recover_signer(),
+            AccountSignature::ConfigurableAccount(signature) => Ok(signature.account()),
+        }
     }
 
     #[cfg(feature = "std")]
@@ -747,6 +762,7 @@ mod tests {
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
     use alloy_rlp::{Decodable, Encodable};
+    use arbitrary::{Arbitrary, Unstructured};
 
     fn nonzero(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test expiry must be non-zero")
@@ -754,8 +770,6 @@ mod tests {
 
     #[test]
     fn arbitrary_expiry_boundaries() {
-        use arbitrary::{Arbitrary, Unstructured};
-
         for value in [None, Some(0u64), Some(1), Some(u64::MAX)] {
             // Default chain ID, key type and key ID, followed by Some's tag.
             let mut input = vec![0; 32];
@@ -792,8 +806,7 @@ mod tests {
         let auth = make_auth(None, None);
         let zero_witness_auth = auth.clone().with_witness(B256::ZERO);
 
-        let mut encoded = Vec::new();
-        zero_witness_auth.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&zero_witness_auth);
 
         assert_eq!(zero_witness_auth.witness(), Some(B256::ZERO));
         assert!(zero_witness_auth.has_witness());
@@ -803,8 +816,7 @@ mod tests {
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
         assert_eq!(decoded, zero_witness_auth);
 
-        let mut reencoded = Vec::new();
-        decoded.encode(&mut reencoded);
+        let reencoded = alloy_rlp::encode(&decoded);
         assert_eq!(reencoded, encoded);
     }
 
@@ -818,15 +830,13 @@ mod tests {
         assert!(witness_auth.has_witness());
         assert_ne!(witness_auth.signature_hash(), auth.signature_hash());
 
-        let mut encoded = Vec::new();
-        witness_auth.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&witness_auth);
 
         let decoded =
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
         assert_eq!(decoded, witness_auth);
 
-        let mut reencoded = Vec::new();
-        decoded.encode(&mut reencoded);
+        let reencoded = alloy_rlp::encode(&decoded);
         assert_eq!(reencoded, encoded);
     }
 
@@ -854,8 +864,7 @@ mod tests {
         assert_eq!(account_bound.account, Some(account));
         assert!(!account_bound.is_legacy_compatible());
 
-        let mut encoded = Vec::new();
-        admin.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&admin);
         let decoded =
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
         assert_eq!(decoded, admin);
@@ -877,8 +886,7 @@ mod tests {
         let witness = B256::repeat_byte(0x53);
         let auth = make_auth(None, None).with_witness(witness);
 
-        let mut encoded = Vec::new();
-        auth.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&auth);
 
         let mut payload = &encoded[..];
         let header = alloy_rlp::Header::decode(&mut payload).expect("decode list header");
@@ -1140,14 +1148,12 @@ mod tests {
                     },
                 ]);
 
-        let mut encoded = Vec::new();
-        auth.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&auth);
 
         let decoded =
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
 
-        let mut reencoded = Vec::new();
-        decoded.encode(&mut reencoded);
+        let reencoded = alloy_rlp::encode(&decoded);
 
         assert_eq!(reencoded, encoded);
     }
@@ -1175,8 +1181,7 @@ mod tests {
             selector_rules: Vec::new(),
         };
 
-        let mut encoded = Vec::new();
-        scope.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&scope);
 
         let mut payload = &encoded[..];
         let header = alloy_rlp::Header::decode(&mut payload).expect("decode list header");
@@ -1209,8 +1214,7 @@ mod tests {
         assert_eq!(decoded.target, target);
         assert!(decoded.selector_rules.is_empty());
 
-        let mut reencoded = Vec::new();
-        decoded.encode(&mut reencoded);
+        let reencoded = alloy_rlp::encode(&decoded);
         assert_eq!(reencoded, encoded);
     }
 
@@ -1237,8 +1241,7 @@ mod tests {
             recipients: Vec::new(),
         };
 
-        let mut encoded = Vec::new();
-        rule.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&rule);
 
         let mut payload = &encoded[..];
         let header = alloy_rlp::Header::decode(&mut payload).expect("decode list header");
@@ -1271,8 +1274,7 @@ mod tests {
         assert_eq!(decoded.selector, selector);
         assert!(decoded.recipients.is_empty());
 
-        let mut reencoded = Vec::new();
-        decoded.encode(&mut reencoded);
+        let reencoded = alloy_rlp::encode(&decoded);
         assert_eq!(reencoded, encoded);
     }
 
@@ -1283,8 +1285,7 @@ mod tests {
             recipients: vec![Address::repeat_byte(0x11), Address::repeat_byte(0x22)],
         };
 
-        let mut encoded = Vec::new();
-        rule.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&rule);
 
         let decoded =
             <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
@@ -1402,8 +1403,7 @@ mod tests {
         assert_eq!(decoded.limits, None);
         assert_eq!(decoded.allowed_calls, None);
 
-        let mut reencoded = Vec::new();
-        decoded.encode(&mut reencoded);
+        let reencoded = alloy_rlp::encode(&decoded);
         assert_eq!(reencoded.len(), encoded.len());
     }
 
@@ -1440,8 +1440,7 @@ mod tests {
         assert_eq!(decoded.limits, None);
         assert_eq!(decoded.allowed_calls, Some(vec![]));
 
-        let mut reencoded = Vec::new();
-        decoded.encode(&mut reencoded);
+        let reencoded = alloy_rlp::encode(&decoded);
         assert_eq!(reencoded, encoded);
     }
 

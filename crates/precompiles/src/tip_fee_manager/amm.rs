@@ -1,6 +1,8 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{ContractStorage, Handler, StorageAction, StorageCtx, StorageKey},
+    storage::{
+        ContractStorage, Handler, StorageAction, StorageCtx, StorageKey, packing::insert_into_word,
+    },
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip403_registry::AuthRole,
@@ -71,8 +73,6 @@ impl Pool {
 
     /// Encodes a [`Pool`] into the raw EVM storage slot value.
     pub fn encode_to_slot(&self) -> Result<U256> {
-        use crate::storage::packing::insert_into_word;
-
         let slot = insert_into_word(
             U256::ZERO,
             &self.reserve_user_token,
@@ -120,7 +120,8 @@ impl Pool {
 
     /// Returns whether the pool has enough reserve validator token to cover the given amount.
     pub fn has_enough_reserve_validator_token(&self, amount: U256) -> bool {
-        U256::from(self.reserve_validator_token) >= amount
+        // Reject empty pools, even for zero-output swaps, so no input lands in an LP-less pool.
+        self.reserve_validator_token != 0 && U256::from(self.reserve_validator_token) >= amount
     }
 }
 

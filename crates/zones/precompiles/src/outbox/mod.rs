@@ -13,7 +13,7 @@ use tempo_contracts::zones::{
 use tempo_precompiles::{
     Result as TempoResult,
     error::TempoPrecompileError,
-    storage::{ContractStorage, Handler, Mapping, StorageCtx},
+    storage::{ContractStorage, Handler, Mapping},
     tip20::{ITIP20, TIP20Error, TIP20Token},
 };
 use tempo_precompiles_macros::{Storable, contract};
@@ -25,7 +25,6 @@ use crate::{
     ZoneResult,
     ecies::{AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE, decode_compressed_public_key},
     storage::{L1State, L1StorageReader},
-    ztip20::RELAY_PREDEPLOYS,
 };
 
 /// Maximum callback payload accepted by the Zone Outbox.
@@ -182,13 +181,6 @@ impl ZoneOutbox {
         // If necessary, validate reveal
         if !call.revealTo.is_empty() && decode_compressed_public_key(&call.revealTo).is_none() {
             return Err(ZoneOutboxError::invalid_reveal_to().into());
-        }
-
-        // The TIP-20 relay ban does not cover this internal `transfer_from`, which could otherwise
-        // spend an allowance a relay granted the outbox before T15. A fee payer signs, so it is
-        // never a relay.
-        if RELAY_PREDEPLOYS.contains(&caller) && StorageCtx::default().spec().is_t15() {
-            return Err(ZoneOutboxError::transfer_failed().into());
         }
 
         let fee = self.calculate_fee_unchecked(call.gasLimit)?;
@@ -397,11 +389,6 @@ impl ZoneOutbox {
             withdrawalQueueHash: self.withdrawal_queue_hash.read()?,
             withdrawalBatchIndex: self.withdrawal_batch_index.read()?,
         })
-    }
-
-    /// Storage slot holding the Zone fallback recipient of the withdrawal with `fallback_nonce`.
-    pub fn fallback_recipient_slot(&self, fallback_nonce: u64) -> U256 {
-        self.fallback_recipients[fallback_nonce].slot()
     }
 }
 

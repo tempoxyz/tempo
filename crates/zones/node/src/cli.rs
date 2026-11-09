@@ -1,6 +1,6 @@
 //! Tempo Zone CLI.
 
-use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
@@ -25,7 +25,7 @@ use crate::{
     ZoneSequencerAddOnsConfig,
     deposit_allowlist::{DEPOSIT_ALLOWLIST_FILE_NAME, DepositAllowlistAdmin},
     dev::DevCommand,
-    rpc::{auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS, config::DEFAULT_MAX_CONCURRENT_SIMULATIONS},
+    rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS,
     state_bloat::InitZoneFromBinaryDump,
 };
 use zone_checker::{CheckerConfig, CheckerExEx, CheckerMode};
@@ -230,7 +230,6 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             max_auth_token_validity: Duration::from_secs(
                 args.redacted_rpc_max_auth_token_validity_secs,
             ),
-            max_concurrent_simulations: args.redacted_rpc_max_concurrent_simulations,
         });
         if !additional_decryption_keys.is_empty() {
             node = node.with_deposit_decryption_keys(additional_decryption_keys);
@@ -684,16 +683,6 @@ pub struct ZoneArgs {
     )]
     pub redacted_rpc_max_auth_token_validity_secs: u64,
 
-    /// Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC
-    /// runs at once across all callers. Further simulations wait in arrival order and fail with
-    /// `-32009` if no permit frees up within two seconds of their request or batch arriving.
-    #[arg(
-        long = "redacted-rpc.max-concurrent-simulations",
-        env = "REDACTED_RPC_MAX_CONCURRENT_SIMULATIONS",
-        default_value_t = DEFAULT_MAX_CONCURRENT_SIMULATIONS
-    )]
-    pub redacted_rpc_max_concurrent_simulations: NonZeroUsize,
-
     /// Enable the Zone node in sequencer mode. This advances block production and submits
     /// withdrawal batches.
     #[arg(
@@ -758,7 +747,7 @@ pub struct ZoneArgs {
 
     /// Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes. On a sequencer it
     /// applies with `--deposits.allowlist`; on an rpc_only node it enables relaying those writes
-    /// to the sequencers. Every rpc_only node rejects transfers the sequencers' list forbids.
+    /// to the sequencers. Every rpc_only node rejects transfers the current leader's list forbids.
     #[arg(
         long = "deposits.allowlist.admin",
         env = "DEPOSITS_ALLOWLIST_ADMIN",
@@ -815,7 +804,9 @@ fn validate_deprecated_zone_id(configured: Option<u32>, derived: u32) -> eyre::R
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
+    use alloy_primitives::address;
     use clap::Parser as _;
+    use reth_evm::ConfigureEvm as _;
 
     use super::*;
     use zone_sequencer::MAX_WITHDRAWAL_BATCH_GAS;
@@ -828,8 +819,6 @@ mod tests {
 
     #[test]
     fn re_execute_parses_without_portal_address() {
-        use reth_chainspec::EthChainSpec as _;
-
         let parent = tempo_chainspec::spec::MODERATO.clone();
         let mut genesis = parent.genesis().clone();
         genesis.config.chain_id =
@@ -926,9 +915,6 @@ mod tests {
 
     #[tokio::test]
     async fn cli_evm_derives_portal_from_chain_spec() {
-        use reth_chainspec::EthChainSpec as _;
-        use reth_evm::ConfigureEvm as _;
-
         let parent = tempo_chainspec::spec::MODERATO.clone();
         for (zone_id, expected) in [
             (
@@ -1339,9 +1325,7 @@ mod tests {
     #[test]
     fn deposit_allowlist_is_enforced_only_when_enabled() {
         let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
-        let admin: Address = "0x00000000000000000000000000000000000000ad"
-            .parse()
-            .unwrap();
+        let admin = address!("0x00000000000000000000000000000000000000ad");
         let admin_arg = admin.to_string();
         let parse = |extra: &[&str]| {
             ZoneArgsParser::try_parse_from(common.iter().chain(extra))

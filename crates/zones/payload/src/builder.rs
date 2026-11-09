@@ -6,10 +6,9 @@
 use crate::{
     TransferAllowlist, WithdrawalRevealEncryptor,
     abi::{self, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
-    transfer_allowlist::allows_executed,
-    unlisted_transfer_error,
+    validate_transfer_calls,
 };
-use alloy_consensus::{Signed, TxLegacy};
+use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
 use alloy_primitives::{Bytes, TxHash, U256};
 use alloy_sol_types::SolCall;
@@ -48,7 +47,7 @@ use tempo_transaction_pool::{
 };
 use tracing::{error, info, warn};
 use zone_chainspec::ZoneChainSpec;
-use zone_evm::{ExcludedByFilter, ZoneEvm, ZoneEvmConfig};
+use zone_evm::{ZoneEvm, ZoneEvmConfig};
 use zone_l1::{PreparedL1Block, TempoStateExt};
 use zone_precompiles::L1StateError;
 use zone_primitives::constants::MAX_RLP_BLOCK_SIZE;
@@ -350,15 +349,6 @@ where
                 .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
             // Zones resolve fee tokens without a fallback list.
             let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
-            // Only pool transactions are checked; the system transactions around them are not.
-            if let Some(allowlist) = self.transfer_allowlist.clone() {
-                let beneficiary = builder.evm().block().beneficiary;
-                builder
-                    .executor_mut()
-                    .set_inclusion_filter(Some(Box::new(move |result| {
-                        allows_executed(&*allowlist, beneficiary, result)
-                    })));
-            }
             let mut unlisted = Vec::new();
             let outcome = execute_pool_transactions(
                 |tx, best_txs| {
@@ -371,12 +361,12 @@ where
                 &mut best_txs,
                 &cancel,
                 pool_tx_size_budget,
+                self.transfer_allowlist.as_deref(),
                 &mut unlisted,
             );
             drop(pool_prewarming);
-            builder.executor_mut().set_inclusion_filter(None);
             if !unlisted.is_empty() {
-                // Otherwise every later build would execute and drop them again.
+                // Otherwise every later build would check and skip them again.
                 info!(
                     target: "zone::payload",
                     count = unlisted.len(),
@@ -569,13 +559,15 @@ enum PoolExecutionOutcome {
 /// Execute the best pool transactions, skipping any whose RLP size would push the packed pool
 /// transaction bytes past `pool_tx_size_budget`.
 ///
-/// A transaction that `execute_tx` leaves out with [`ExcludedByFilter`] moves funds outside the
-/// transfer allowlist; its hash is pushed to `unlisted`.
+/// Transactions that `transfer_allowlist` rejects against its current list are skipped without
+/// executing them, and their hashes are pushed to `unlisted`. This catches list changes after
+/// pool admission.
 fn execute_pool_transactions<T, F>(
     mut execute_tx: F,
     best_txs: &mut T,
     cancel: &CancelOnDrop,
     pool_tx_size_budget: usize,
+    transfer_allowlist: Option<&dyn TransferAllowlist>,
     unlisted: &mut Vec<TxHash>,
 ) -> Result<PoolExecutionOutcome, PayloadBuilderError>
 where
@@ -589,6 +581,14 @@ where
     while let Some(pool_tx) = best_txs.next() {
         if cancel.is_cancelled() {
             return Ok(PoolExecutionOutcome::Cancelled);
+        }
+
+        if let Some(allowlist) = transfer_allowlist
+            && let Err(error) = validate_transfer_calls(allowlist, &pool_tx.transaction)
+        {
+            best_txs.mark_invalid(&pool_tx, error);
+            unlisted.push(*pool_tx.hash());
+            continue;
         }
 
         let packed_bytes_with_tx =
@@ -632,12 +632,6 @@ where
                         ),
                     );
                 }
-            }
-            Err(BlockExecutionError::Internal(InternalBlockExecutionError::Other(ref error)))
-                if error.is::<ExcludedByFilter>() =>
-            {
-                best_txs.mark_invalid(&pool_tx, unlisted_transfer_error());
-                unlisted.push(*pool_tx.hash());
             }
             Err(BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
                 ref error,
@@ -795,7 +789,7 @@ pub(crate) fn build_finalize_withdrawal_batch_tx(
     };
 
     Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     )
 }
@@ -904,7 +898,7 @@ fn build_advance_tempo_tx_from_parts(
     };
 
     Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     )
 }
@@ -939,14 +933,14 @@ pub fn build_advance_tempo_headers_tx(
         input: calldata.into(),
     };
     Ok(Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{Header, Signed, TxLegacy};
+    use alloy_consensus::{Header, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, U256, address};
     use alloy_sol_types::SolCall;
     use reth_primitives_traits::{Recovered, SealedHeader};
@@ -957,13 +951,17 @@ mod tests {
         identifier::{SenderId, TransactionId},
     };
     use std::{collections::VecDeque, sync::Arc, time::Instant};
+    use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::{
-        TempoHeader, TempoTxEnvelope,
+        TempoAddressExt as _, TempoHeader, TempoTxEnvelope,
         transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
     };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
-    use crate::abi::{self, DepositType, IZoneInbox};
+    use crate::{
+        TransferAllowlist,
+        abi::{self, DepositType, IZoneInbox},
+    };
     use zone_l1::PreparedL1Block;
 
     #[test]
@@ -1064,7 +1062,7 @@ mod tests {
             value: U256::ZERO,
             input: vec![0u8; input_len].into(),
         };
-        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
         let recovered = Recovered::new_unchecked(envelope, TEMPO_SYSTEM_TX_SENDER);
         Arc::new(ValidPoolTransaction {
             transaction: TempoPooledTransaction::new(recovered),
@@ -1117,6 +1115,7 @@ mod tests {
             &mut best_txs,
             &cancel,
             budget,
+            None,
             &mut unlisted,
         )
         .expect("pool execution should not error");
@@ -1129,15 +1128,50 @@ mod tests {
         assert!(unlisted.is_empty());
     }
 
-    /// Transactions the allowlist leaves out are marked invalid, reported for pool removal, and
-    /// take no block space, so a later transaction still fits.
+    /// Lists no account, so every transfer between accounts is rejected.
+    #[derive(Debug)]
+    struct EmptyAllowlist;
+
+    impl TransferAllowlist for EmptyAllowlist {
+        fn allows_all(&self, _addresses: &[Address]) -> bool {
+            false
+        }
+    }
+
+    /// Transactions the current allowlist rejects are skipped without executing, marked invalid,
+    /// reported for pool removal, and take no block space, so a later transaction still fits.
     #[test]
-    fn unlisted_pool_transactions_are_left_out_without_using_block_space() {
+    fn unlisted_pool_transactions_are_skipped_without_using_block_space() {
         let per_tx = pool_tx_with_calldata(1_000_000, 0).encoded_length();
-        let queue = (0..3)
-            .map(|nonce| pool_tx_with_calldata(1_000_000, nonce))
-            .collect::<VecDeque<_>>();
-        let left_out = *queue[0].hash();
+        let transfer = TxLegacy {
+            to: Address::new_tip20(0).into(),
+            input: ITIP20::transferCall {
+                to: address!("0x0000000000000000000000000000000000000b0b"),
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into(),
+            ..Default::default()
+        };
+        let transfer = Arc::new(ValidPoolTransaction {
+            transaction: TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::Legacy(transfer.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
+                address!("0x00000000000000000000000000000000000a11ce"),
+            )),
+            transaction_id: TransactionId::new(SenderId::from(1u64), 0),
+            propagate: false,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        });
+        let left_out = *transfer.hash();
+        let queue = [
+            transfer,
+            pool_tx_with_calldata(1_000_000, 0),
+            pool_tx_with_calldata(1_000_000, 1),
+        ]
+        .into_iter()
+        .collect::<VecDeque<_>>();
         let mut best_txs = MockBestTransactions {
             queue,
             oversized_marked: 0,
@@ -1145,26 +1179,22 @@ mod tests {
         let mut executed = 0usize;
         let mut unlisted = Vec::new();
 
-        // The budget fits two transactions; the first is left out, so both others are included.
+        // The budget fits two transactions; the transfer is skipped, so both others are included.
         let outcome = super::execute_pool_transactions(
             |_tx, _best_txs| -> Result<(), reth_evm::BlockExecutionError> {
                 executed += 1;
-                if executed == 1 {
-                    return Err(reth_evm::BlockExecutionError::other(
-                        zone_evm::ExcludedByFilter,
-                    ));
-                }
                 Ok(())
             },
             &mut best_txs,
             &CancelOnDrop::default(),
             2 * per_tx,
+            Some(&EmptyAllowlist),
             &mut unlisted,
         )
         .expect("pool execution should not error");
 
         assert_eq!(outcome, super::PoolExecutionOutcome::Complete);
-        assert_eq!(executed, 3);
+        assert_eq!(executed, 2);
         assert_eq!(best_txs.oversized_marked, 0);
         assert_eq!(unlisted, vec![left_out]);
     }

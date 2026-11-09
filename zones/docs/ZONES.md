@@ -349,34 +349,35 @@ Users keep the same address on Tempo and the zone, so the list also restricts zo
 transfers once [transfers are enabled](#enabling-zone-transfers). A sequencer with
 `--deposits.allowlist` rejects a transaction on submission when one of its calls (including the
 calls of an AA batch) is a `transfer`, `transferFrom`, or memo variant whose `from` or `to` is not
-listed. While it leads, it also executes each pool transaction and leaves it out of the block,
-dropping it from its pool, when any TIP-20 `Transfer` it emits names an unlisted `from` or `to`.
-Submission also rejects a `transferFrom` from an unlisted caller, whatever parties it names, so
-an unlisted account cannot learn whether an address is listed from whether its transaction is
-accepted.
+listed, or a `ReceivePolicyGuard` `claim` whose caller or `to` is not listed. While it leads, it
+checks each pool transaction again against its current list before executing it, and leaves out
+and drops from its pool any that the list now rejects. Submission also rejects a `transferFrom`
+from an unlisted caller, whatever parties it names, so an unlisted account cannot learn whether
+an address is listed from whether its transaction is accepted. A screened call whose arguments do
+not decode is rejected with `malformed transfer calldata`, since the precompile would revert it.
 
-Once the list is written, submission also rejects any call to Multicall3, the only zone contract
-that relays calls. Zone TIP-20 transfers through it always revert, but it can still withdraw its
-own balance through an outbox allowance granted before T15. Its calldata does not show that
-withdrawal's fallback recipient, so one the leader leaves out would otherwise be forwarded and
-executed again every few seconds without paying fees. Read-only `eth_call`s through it are
-unaffected, and an AA batch replaces batched writes.
+Checking calls is enough because zones disable contract creation and authorization lists, and
+T15, which enables transfers, removes the Multicall3 and Permit2 predeploys. No contract can move
+funds on a user's behalf through calls the check does not see.
 
-Every RPC follower keeps an in-memory copy of the list so it can reject the same transactions
-on submission, returning `transfer sender or recipient is not allowlisted` instead of forwarding
-them. It needs no flag: reading the list needs no signature. It fetches the newest list any
-sequencer holds (by nonce) at startup, after every write it relays, and within 5 seconds of a
-write relayed through another follower, then drops pooled transactions the new list rejects. It
-holds no file. It moves back to an older list, or drops its copy once no sequencer holds a written
-list (for example after `--deposits.allowlist` is turned off), only when every sequencer answers,
-so a lagging sequencer cannot roll it back. Until it finds a written list it admits every transfer,
-and the sequencers still enforce their own lists.
+Every RPC follower keeps an in-memory copy of the leader's list so it can reject the same
+transactions on submission, returning `transfer sender or recipient is not allowlisted` instead of
+forwarding them. It needs no flag: reading the list needs no signature. It copies the list of the
+leader it forwards transactions to at startup, after every write it relays, and every second
+after that, then drops pooled transactions the new list rejects. It asks only the leader, and
+only every 30 seconds while the leader has no written list. It holds no file. The copy
+follows the leader wherever its list goes, including to an older list after a leader change or to
+none once the leader runs without `--deposits.allowlist`, and keeps its last list while the leader
+does not answer. While it holds no written list it admits every transfer, and the leader still
+enforces its own list.
 
-Removing an account from the list does not trap its funds. Transfers to the outbox and to the
-block's fee recipient (the leading sequencer's fee address) are exempt, so it can still pay fees
-and withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if the withdrawal
-bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback recipient must
-both be listed.
+Removing an account from the list does not trap its funds. Fees and transfers to the outbox are
+exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if
+the withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback
+recipient must both be listed. The fallback is checked when the withdrawal is requested, so it is
+still credited if it is removed from the list before the bounce. The withdrawal's Tempo recipient
+is not checked, since Tempo transfers are open anyway. Funds that a receive policy held in the `ReceivePolicyGuard` can be
+claimed only while the claimer and the destination are both listed.
 
 Limits:
 
@@ -384,9 +385,6 @@ Limits:
 - The submission error tells a listed sender that a counterparty is not listed, so a listed
   account can check addresses one at a time.
 - Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
-- The leader exempts every transfer to the block's fee recipient, not only fee payments.
-  Submission still requires both parties to be listed, so this only lets an account removed
-  after its transaction was admitted also pay the leader's fee address in that transaction.
 - Deposit recipients are not checked, so a listed depositor can still credit an unlisted zone
   address. That address can only withdraw.
 
@@ -969,7 +967,6 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--http.port` | 8546 | HTTP JSON-RPC port |
 | `--redacted-rpc.port` | 8544 | Redacted RPC server port |
 | `--redacted-rpc.max-auth-token-validity-secs` | 2592000 | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
-| `--redacted-rpc.max-concurrent-simulations` | 16 | Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC runs at once across all callers. Further simulations wait in arrival order and fail with `-32009` if no permit frees up within two seconds of their request or batch arriving. |
 
 ### Environment Variables
 
@@ -990,7 +987,6 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `L1_PORTAL_ADDRESS` | For deposits | ZonePortal address (from `zone.json`) |
 | `ROUTER_BOUNCEBACK_RECIPIENT` | No | Optional controlled burner/stealth address for `demo-swap-and-deposit` routed deposit refunds |
 | `REDACTED_RPC_MAX_AUTH_TOKEN_VALIDITY_SECS` | No | Maximum auth token validity the redacted RPC accepts, in seconds. The effective limit is capped at 30 days. |
-| `REDACTED_RPC_MAX_CONCURRENT_SIMULATIONS` | No | Maximum simulation requests the redacted RPC runs at once across all callers (default 16). |
 | `WITHDRAWAL_MAX_BATCH_GAS` | No | Override the per-transaction withdrawal gas budget (maximum 20000000) |
 | `WITHDRAWAL_MAX_IN_FLIGHT_BATCHES` | No | Override the maximum number of ordered withdrawal transactions in flight |
 | `ZONE_TOKEN` | No | Default initial TIP-20 for `just create-zone` / `just deploy-zone`; defaults to `pathUSD` |

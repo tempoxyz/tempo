@@ -228,8 +228,8 @@ mod tests {
             }
             .into_signed(Signature::test_signature()),
         );
-        assert!(validate_transaction(tx.inner(), &[]).is_err());
-        assert!(validate_transaction(tx.inner(), &[caller]).is_ok());
+        assert!(validate_transaction(tx.inner(), &[], TempoHardfork::T7).is_err());
+        assert!(validate_transaction(tx.inner(), &[caller], TempoHardfork::T7).is_ok());
     }
 
     #[test]
@@ -304,15 +304,18 @@ mod tests {
             Address::repeat_byte(0x11),
             TxKind::Call(Address::repeat_byte(0x22)),
         );
-        assert!(validate_transaction(tx.inner(), CONTRACT_DEPLOYER_ALLOWLIST).is_ok());
+        assert!(
+            validate_transaction(tx.inner(), CONTRACT_DEPLOYER_ALLOWLIST, TempoHardfork::T7)
+                .is_ok()
+        );
     }
 
     #[test]
     fn aa_create_respects_allowlist() {
         let caller = Address::repeat_byte(0x11);
         let tx = aa_tx(caller, TxKind::Create);
-        assert!(validate_transaction(tx.inner(), &[]).is_err());
-        assert!(validate_transaction(tx.inner(), &[caller]).is_ok());
+        assert!(validate_transaction(tx.inner(), &[], TempoHardfork::T7).is_err());
+        assert!(validate_transaction(tx.inner(), &[caller], TempoHardfork::T7).is_ok());
     }
 
     fn aa_tx(caller: Address, to: TxKind) -> Recovered<TempoTxEnv> {

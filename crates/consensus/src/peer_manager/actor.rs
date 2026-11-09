@@ -130,12 +130,6 @@ where
     #[instrument(parent = &cause, skip_all)]
     async fn handle_message(&mut self, cause: Span, message: Message) -> eyre::Result<()> {
         match message {
-            Message::Track { id, peers } => {
-                AddressableManager::track(&mut self.oracle, id, peers);
-            }
-            Message::Overwrite { peers } => {
-                AddressableManager::overwrite(&mut self.oracle, peers);
-            }
             Message::PeerSet { id, response } => {
                 let result = Provider::peer_set(&mut self.oracle, id).await;
                 let _ = response.send(result);

@@ -25,8 +25,8 @@ use zone_precompiles::{
 pub struct L1OverlayDB<DB, L1> {
     inner: DB,
     l1: L1State<L1>,
-    /// Whether TIP-20 pause flags are read from L1 rather than Zone storage.
-    mirror_tip20_pause: bool,
+    /// Tempo hardfork the adapter executes at. From T15, TIP-20 pause flags are read from L1.
+    spec: TempoHardfork,
 }
 
 impl<DB, L1> L1OverlayDB<DB, L1> {
@@ -35,7 +35,7 @@ impl<DB, L1> L1OverlayDB<DB, L1> {
         Self {
             inner,
             l1: L1State::new(l1, portal_address),
-            mirror_tip20_pause: spec.is_t15(),
+            spec,
         }
     }
 
@@ -83,42 +83,43 @@ impl<DB: DynDatabase, L1: L1StorageReader> L1OverlayDB<DB, L1> {
     }
 }
 
-/// Rejects net registry storage changes made by the in-flight transaction.
+/// Rejects net changes to mirrored storage made by the in-flight transaction.
 ///
 /// Handlers run before the transaction state is finalized into a [`PendingState`], so this is the
 /// check available to every execution path. Like [`validate_pending_state`] it ignores slots that
 /// end at their original value, but it only sees storage writes; the block executor's check also
 /// covers account changes and wipes.
 pub(crate) fn validate_journal(state: &State<'_>) -> Result<(), ZoneDbError> {
-    let mut originals = HashMap::<U256, U256>::new();
+    let mut originals = HashMap::<(Address, U256), U256>::new();
     for entry in state.journal() {
         if let JournalEntry::StorageChange {
             address,
             key,
             previous,
         } = entry
-            && *address == TIP403_REGISTRY_ADDRESS
+            && is_mirrored_slot(address, key)
         {
-            originals.entry(*key).or_insert(*previous);
+            originals.entry((*address, *key)).or_insert(*previous);
         }
     }
-    for (key, original) in originals {
-        if state.get_storage(&TIP403_REGISTRY_ADDRESS, &key) != Some(original) {
-            return Err(ZoneDbError::L1Write {
-                address: TIP403_REGISTRY_ADDRESS,
-                slot: key,
-            });
+    for ((address, slot), original) in originals {
+        if state.get_storage(&address, &slot) != Some(original) {
+            return Err(ZoneDbError::L1Write { address, slot });
         }
     }
     Ok(())
 }
 
+/// Rejects persistent changes to mirrored storage in a finalized transaction state.
 pub(crate) fn validate_pending_state(state: &PendingState) -> Result<(), ZoneDbError> {
-    // Only the registry account can fail the guard; skip visiting every other account's storage.
+    // Only the registry and TIP-20 accounts can fail the guard; skip visiting every other
+    // account's storage.
     state
         .account_changes()
-        .find(|changes| changes.address == TIP403_REGISTRY_ADDRESS)
-        .map_or(Ok(()), |changes| changes.visit(&mut L1WriteGuard))
+        .filter(|changes| {
+            changes.address == TIP403_REGISTRY_ADDRESS || is_tip20_prefix(changes.address)
+        })
+        .try_for_each(|changes| changes.visit(&mut L1WriteGuard))
 }
 
 struct L1WriteGuard;
@@ -147,7 +148,7 @@ impl StateChangeSink for L1WriteGuard {
     }
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        if change.address == TIP403_REGISTRY_ADDRESS {
+        if is_mirrored_slot(&change.address, &change.key) {
             return Err(ZoneDbError::L1Write {
                 address: change.address,
                 slot: change.key,
@@ -168,7 +169,7 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
 
     fn get_storage(&mut self, address: &Address, slot: &U256) -> Result<U256, DatabaseError> {
         if *address != TIP403_REGISTRY_ADDRESS
-            && !(self.mirror_tip20_pause && is_tip20_pause_slot(address, slot))
+            && !(self.spec.is_t15() && is_tip20_pause_slot(address, slot))
         {
             return self.inner.get_storage(address, slot);
         }
@@ -191,8 +192,17 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
 /// Returns whether `slot` is the pause flag of the TIP-20 token at `address`.
 ///
 /// The Zone never writes it: `TIP20Rules` blocks `pause` and `unpause` for every caller.
-pub(crate) fn is_tip20_pause_slot(address: &Address, slot: &U256) -> bool {
+fn is_tip20_pause_slot(address: &Address, slot: &U256) -> bool {
     is_tip20_prefix(*address) && *slot == tip20::slots::PAUSED
+}
+
+/// Returns whether `slot` at `address` is mirrored from Tempo, so the Zone must never persist a
+/// change to it.
+///
+/// Pause flags are guarded at every fork: they are only mirrored from T15, but the Zone never
+/// writes them.
+fn is_mirrored_slot(address: &Address, slot: &U256) -> bool {
+    *address == TIP403_REGISTRY_ADDRESS || is_tip20_pause_slot(address, slot)
 }
 
 /// Database error produced by [`L1OverlayDB`].
@@ -269,6 +279,41 @@ mod tests {
                 address: TIP403_REGISTRY_ADDRESS,
                 slot: s,
             }) if s == slot
+        ));
+    }
+
+    #[test]
+    fn guards_reject_tip20_pause_flag_writes() {
+        let token = PATH_USD_ADDRESS;
+        let mut state = State::new(InMemoryDB::default());
+        state
+            .storage_slot(&token, tip20::slots::TOTAL_SUPPLY)
+            .unwrap()
+            .set(U256::ONE);
+        validate_journal(&state).unwrap();
+        state
+            .storage_slot(&token, tip20::slots::PAUSED)
+            .unwrap()
+            .set(U256::ONE);
+        assert!(matches!(
+            validate_journal(&state),
+            Err(ZoneDbError::L1Write { address, slot })
+                if address == token && slot == tip20::slots::PAUSED
+        ));
+
+        let mut state = PendingState::default();
+        state.insert_account(
+            token,
+            Some(AccountInfo::default()),
+            Some(AccountInfo::default()),
+        );
+        state.insert_storage(token, tip20::slots::TOTAL_SUPPLY, U256::ZERO, U256::ONE);
+        validate_pending_state(&state).unwrap();
+        state.insert_storage(token, tip20::slots::PAUSED, U256::ZERO, U256::ONE);
+        assert!(matches!(
+            validate_pending_state(&state),
+            Err(ZoneDbError::L1Write { address, slot })
+                if address == token && slot == tip20::slots::PAUSED
         ));
     }
 

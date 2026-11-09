@@ -116,53 +116,19 @@ pub(crate) struct SetGateway {
 
 impl EnableToken {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        if let Some(proposal) = self.args.safe_proposal() {
-            let (portal, provider) = connect_safe(&self.args, proposal.safe).await?;
-            portal
-                .enableToken(self.token)
-                .from(proposal.safe)
-                .call()
-                .await
-                .wrap_err("ZonePortal.enableToken Safe simulation failed")?;
-            let calldata = ZonePortal::enableTokenCall { token: self.token }.abi_encode();
-            return write_safe_proposal(
-                &provider,
-                &proposal,
-                "ZonePortal.enableToken",
-                self.args.portal,
-                calldata,
-            )
-            .await;
-        }
-
         let token = self.token;
-        let (portal, provider, nonce) = connect(self.args).await?;
-        ensure!(
-            !portal
-                .isTokenEnabled(token)
-                .call()
-                .await
-                .wrap_err("failed checking whether token is already enabled")?,
-            "token {token} is already enabled"
-        );
-        let receipt = portal
-            .enableToken(token)
-            .nonce_key(ADMIN_OPS_NONCE_KEY)
-            .nonce(nonce)
-            .send()
-            .await
-            .wrap_err("failed sending ZonePortal.enableToken")?
-            .get_receipt()
-            .await
-            .wrap_err("failed waiting for enableToken receipt")?;
-        ensure!(receipt.status(), "enableToken transaction reverted");
+        // `ZonePortal.enableToken` reverts with `TokenAlreadyEnabled`, which fails the Safe
+        // simulation or gas estimation before anything is sent.
+        let call = ZonePortal::enableTokenCall { token };
+        let Some((portal, tx_hash)) = update_portal(self.args, call).await? else {
+            return Ok(());
+        };
         ensure!(
             portal.isTokenEnabled(token).call().await?,
             "portal did not enable token {token}"
         );
         println!("Enabled token {token}");
-        println!("Transaction: {}", receipt.transaction_hash());
-        drop(provider);
+        println!("Transaction: {tx_hash}");
         Ok(())
     }
 }
@@ -317,7 +283,7 @@ async fn update_portal<C: SolCall>(
         return Ok(None);
     }
 
-    let (portal, _provider, nonce) = connect(args).await?;
+    let (portal, nonce) = connect(args).await?;
     let receipt = portal
         .call_builder(&call)
         .nonce_key(ADMIN_OPS_NONCE_KEY)
@@ -332,7 +298,7 @@ async fn update_portal<C: SolCall>(
     Ok(Some((portal, receipt.transaction_hash())))
 }
 
-async fn connect(args: PortalAccessArgs) -> eyre::Result<(Portal, DynProvider<TempoNetwork>, u64)> {
+async fn connect(args: PortalAccessArgs) -> eyre::Result<(Portal, u64)> {
     let admin_key = args
         .admin_key
         .as_deref()
@@ -359,7 +325,7 @@ async fn connect(args: PortalAccessArgs) -> eyre::Result<(Portal, DynProvider<Te
         .get_transaction_count_with_nonce_key(signer_address, ADMIN_OPS_NONCE_KEY)
         .await
         .wrap_err("failed reading portal admin nonce")?;
-    Ok((portal, provider, nonce))
+    Ok((portal, nonce))
 }
 
 async fn connect_safe(
