@@ -286,12 +286,20 @@ fn spawn_prefetch(
         let mut rounds = 0u64;
         let mut keys = PrefetchKeys::default();
         let mut finished = false;
+        // Whether the stage has staged every key sent so far, which the block's build waits for.
+        let caught_up = |caught_up| {
+            if let Some(stage) = stage {
+                store.set_stage_caught_up(stage, caught_up);
+            }
+        };
         while !finished && let Ok(message) = updates_rx.recv() {
+            caught_up(false);
             for message in std::iter::once(message).chain(updates_rx.try_iter()) {
                 finished |= keys.add(message);
             }
             let (accounts, slots) = keys.take();
             if accounts.is_empty() && slots.is_empty() {
+                caught_up(updates_rx.is_empty());
                 continue;
             }
             rounds += 1;
@@ -309,14 +317,14 @@ fn spawn_prefetch(
             };
             if let Err(err) = result {
                 debug!(target: "qmdb", %err, "QMDB prefetch failed");
+                caught_up(true);
                 return;
             }
             metrics.prefetch_duration.record(started.elapsed());
+            caught_up(updates_rx.is_empty());
         }
         block_span.record("rounds", rounds);
-        if let Some(stage) = stage {
-            store.seal_stage(stage);
-        }
+        caught_up(true);
     };
     if let Err(err) = std::thread::Builder::new()
         .name("qmdb-prefetch".into())

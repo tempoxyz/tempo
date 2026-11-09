@@ -255,21 +255,21 @@ pub struct Store {
     /// The latest stage the payload builder opened on each parent, which
     /// [`Self::build_unregistered`] builds with.
     builder_stages: Mutex<HashMap<B256, StageId>>,
-    /// Builder stages whose execution may still stage keys, which
-    /// [`Self::build_unregistered`] waits on: see [`Self::seal_stage`].
+    /// Whether each builder stage has staged every key its block sent so far, which
+    /// [`Self::build_unregistered`] waits for: see [`Self::set_stage_caught_up`].
     unsealed: Mutex<HashMap<StageId, Arc<StageSeal>>>,
 }
 
-/// Set once a builder stage's execution has staged its last keys.
-#[derive(Debug, Default)]
+/// Whether a builder stage has staged every key its block sent so far.
+#[derive(Debug)]
 struct StageSeal {
     sealed: Mutex<bool>,
     cond: Condvar,
 }
 
-/// How long [`Store::build_unregistered`] waits for its stage's last keys before building
-/// without them.
-const SEAL_TIMEOUT: Duration = Duration::from_millis(50);
+/// How long [`Store::build_unregistered`] waits for its stage to catch up before building
+/// without its last keys.
+const SEAL_TIMEOUT: Duration = Duration::from_millis(20);
 
 impl Store {
     /// Opens or creates the databases in [`Config::directory`] and starts their thread.
@@ -424,8 +424,8 @@ impl Store {
             .lock()
             .expect("never poisoned")
             .remove(&parent_hash);
-        // Keys the block's last transactions wrote may still be on their way into the stage, and
-        // building without them reads their predecessors serially: let them land first.
+        // The block's last transactions may still be staging their keys, and building without
+        // them reads their predecessors serially: let the stage catch up first.
         if let Some(seal) =
             stage.and_then(|stage| self.unsealed.lock().expect("never poisoned").remove(&stage))
         {
@@ -556,14 +556,20 @@ impl Store {
             if let Some(replaced) = replaced {
                 unsealed.remove(&replaced);
             }
-            unsealed.insert(id, Arc::default());
+            unsealed.insert(
+                id,
+                Arc::new(StageSeal {
+                    sealed: Mutex::new(true),
+                    cond: Condvar::new(),
+                }),
+            );
         }
         Ok(id)
     }
 
-    /// Marks that `stage`'s block staged its last keys, which [`Self::build_unregistered`]
-    /// waits for on a builder stage.
-    pub fn seal_stage(&self, stage: StageId) {
+    /// Records whether `stage` has staged every key its block sent so far, which
+    /// [`Self::build_unregistered`] waits for on a builder stage.
+    pub fn set_stage_caught_up(&self, stage: StageId, caught_up: bool) {
         let Some(seal) = self
             .unsealed
             .lock()
@@ -573,8 +579,10 @@ impl Store {
         else {
             return;
         };
-        *seal.sealed.lock().expect("never poisoned") = true;
-        seal.cond.notify_all();
+        *seal.sealed.lock().expect("never poisoned") = caught_up;
+        if caught_up {
+            seal.cond.notify_all();
+        }
     }
 
     /// Reads account keys `accounts` and slot keys `slots` into `stage`, then prefetches
