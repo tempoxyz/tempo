@@ -58,7 +58,8 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     Err(error) => return Err(ValueError::new(self, error)),
                 };
                 // eth_simulateV1 fills a missing `to` with `Create`, which `build_aa` would append
-                // to a batch's calls as another call.
+                // after a batch's calls. A CREATE must be the first call, so a `Create` here can
+                // only be that filled default.
                 if !self.calls.is_empty() && self.inner.to == Some(TxKind::Create) {
                     self.inner.to = None;
                 }
