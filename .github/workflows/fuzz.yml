@@ -142,10 +142,24 @@ jobs:
           rift/driver/target/release/rift-fuzz --session "$FUZZ_DIR/bundle/fuzz-session.json" \
             --out "$FUZZ_DIR/out" --seed "$GITHUB_RUN_ID" --workers "$FUZZ_WORKERS" \
             --duration "$FUZZ_DURATION" --stop-on-objective
-          # Fail when a client wrote no status or rift's status schema changed, rather than pass as clean.
-          objectives=$(jq -s 'if length == 0 then error("no status.json") else . end
-            | map(.objectives | if type == "number" then . else error("status.json has no objectives count") end)
-            | add' "$FUZZ_DIR"/out/client-*/status.json)
+          # Every client rift admitted must have finished and reported, so a crashed client
+          # cannot pass as clean; rift-fuzz also exits non-zero on a missing completion marker.
+          shopt -s nullglob
+          done_markers=("$FUZZ_DIR"/out/client-*.done)
+          statuses=()
+          for marker in "${done_markers[@]}"; do
+            status="${marker%.done}/status.json"
+            [ -f "$status" ] || { echo "::error::$(basename "${marker%.done}") wrote no status.json"; exit 1; }
+            statuses+=("$status")
+          done
+          errors=("$FUZZ_DIR"/out/client-*.error)
+          if [ ${#statuses[@]} -eq 0 ] || [ ${#errors[@]} -ne 0 ]; then
+            echo "::error::${#statuses[@]} client(s) reported, ${#errors[@]} failed"
+            exit 1
+          fi
+          # Fail when rift's status schema changed, rather than pass as clean.
+          objectives=$(jq -s 'map(.objectives | if type == "number" then . else error("status.json has no objectives count") end)
+            | add' "${statuses[@]}")
           echo "objectives: $objectives"
           if [ "$objectives" != 0 ]; then
             echo "::error::the campaign found $objectives objective(s); replay an input.bin with tuner tempo replay"
