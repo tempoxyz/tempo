@@ -181,8 +181,6 @@ impl L1StateProvider {
             }
         }
 
-        warn!(%address, %slot, block_number, "L1 storage cache miss, fetching from RPC");
-
         let value = self.fetch_blocking(
             format_args!("storage address={address} slot={slot} block={block_number}"),
             || self.fetch_slot(address, slot, block_number),
@@ -215,7 +213,7 @@ impl L1StateProvider {
                     if attempt > 1 {
                         info!(%read, %value, ?elapsed, attempt, "L1 RPC fetch succeeded after retries");
                     } else {
-                        info!(%read, %value, ?elapsed, "L1 RPC fetch succeeded");
+                        debug!(%read, %value, ?elapsed, "L1 RPC fetch succeeded");
                     }
                     return Ok(value);
                 }
@@ -250,8 +248,6 @@ impl L1StateProvider {
                 return Ok(value);
             }
         }
-
-        warn!(%address, %slot, block_number, "L1 storage cache miss, fetching from RPC");
 
         let value = self.fetch_slot(address, slot, block_number).await?;
         self.cache.lock().set(address, slot, block_number, value);
@@ -303,7 +299,6 @@ impl L1StorageReader for L1StateProvider {
         if let Some(commitment) = self.cache.lock().get_commitment(account, block_number) {
             return Ok(commitment);
         }
-        warn!(%account, block_number, "L1 account commitment cache miss, fetching from RPC");
         let unavailable = |reason: String| L1StateError::AccountUnavailable {
             account,
             block_number,
