@@ -6,7 +6,8 @@
 # - zone-0..2: the sequencer quorum; zone-0 is the initial leader
 # - zone-rpc: RPC follower outside the quorum that re-proves every settled batch with the
 #   native prover and runs the solvency checker
-# - workload: waits until the zone replicates, then signals that setup is complete
+# - workload: waits until the zone replicates, then signals that setup is complete; the test
+#   commands in /opt/antithesis/test run here and keep their ledger in /state
 #
 # Static addresses keep the P2P manifest free of DNS names. Every container_name matches its
 # hostname, and init: true keeps the entrypoint off PID 1 so core dumps work.
@@ -141,7 +142,8 @@ services:
         ipv4_address: 10.20.0.20
 
   workload:
-    image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+    # The node image plus the test template; see the workload target in the Dockerfile.
+    image: ${WORKLOAD_IMAGE:-tempo-zones-antithesis-workload:latest}
     container_name: workload
     hostname: workload
     init: true
@@ -149,6 +151,9 @@ services:
     depends_on:
       provision:
         condition: service_completed_successfully
+    volumes:
+      - shared:/shared:ro
+      - workload-state:/state
     networks:
       zones:
         ipv4_address: 10.20.0.30
@@ -160,6 +165,7 @@ volumes:
   zone-1-data:
   zone-2-data:
   zone-rpc-data:
+  workload-state:
 
 networks:
   zones:

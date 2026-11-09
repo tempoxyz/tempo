@@ -397,6 +397,16 @@ impl TempoPooledTransaction {
             .is_some_and(|expiry| expiry <= cutoff)
     }
 
+    /// Returns whether the transaction can be included in a block with `timestamp`: its
+    /// `valid_after` has been reached and neither its `valid_before` nor its signing key has
+    /// expired.
+    ///
+    /// Unlike [`Self::is_expired_by`], this also rejects transactions that are not valid yet, so
+    /// it must not drive eviction.
+    pub(crate) fn is_includable_at(&self, timestamp: u64) -> bool {
+        self.inner().ensure_valid_after(timestamp).is_ok() && !self.is_expired_by(timestamp)
+    }
+
     /// Caches the effective fee token determined during transaction validation.
     ///
     /// The validator sets this after EVM validation resolves the token from the
@@ -758,7 +768,8 @@ pub enum TempoPoolTransactionError {
     /// The access key used by a keychain transaction expires too soon.
     ///
     /// Thrown after EVM validation when the effective access-key expiry is less
-    /// than or equal to the latest tip timestamp plus the pool's propagation buffer.
+    /// than or equal to the latest tip timestamp plus the pool's propagation buffer,
+    /// or to the transaction's `valid_after`.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
     AccessKeyExpired {
         /// The effective access-key expiry timestamp returned by EVM validation.

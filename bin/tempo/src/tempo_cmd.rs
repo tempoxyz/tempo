@@ -472,7 +472,7 @@ pub struct ValidatorTransactionArgs {
     wallet: WalletArgs,
 
     /// The RPC URL to submit the transaction to.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Skip the interactive confirmation prompt.
@@ -699,7 +699,7 @@ pub struct CreateAddValidatorSignatureArgs {
     #[arg(
         long,
         value_name = "RPC_URL",
-        default_value = "https://rpc.presto.tempo.xyz"
+        default_value = "https://rpc.mainnet.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
     #[command(flatten)]
@@ -740,7 +740,7 @@ pub struct CreateRotateValidatorSignatureArgs {
     #[arg(
         long,
         value_name = "RPC_URL",
-        default_value = "https://rpc.presto.tempo.xyz"
+        default_value = "https://rpc.mainnet.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
     #[command(flatten)]
@@ -1225,7 +1225,7 @@ pub struct ValidatorInfo {
     id: ValidatorId,
 
     /// RPC URL to query.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
@@ -2231,7 +2231,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(requested_url.as_deref(), Some("wss://rpc.presto.tempo.xyz"));
+        assert_eq!(
+            requested_url.as_deref(),
+            Some("wss://rpc.mainnet.tempo.xyz")
+        );
         assert_eq!(err.to_string(), "failed to get latest block number");
         assert!(asserter.read_q().is_empty());
     }
