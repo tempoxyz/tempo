@@ -225,6 +225,9 @@ impl AA2dPool {
     /// `hardfork` indicates the active Tempo hardfork. When T1 or later, expiring nonce
     /// transactions (nonce_key == U256::MAX) are handled specially. Otherwise, they are
     /// treated as regular 2D nonce transactions.
+    ///
+    /// Pending insertions enforce the subpool limits and return the evicted transactions in
+    /// `discarded`. Queued insertions don't; the caller enforces them with [`Self::discard`].
     pub(crate) fn add_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
@@ -459,9 +462,6 @@ impl AA2dPool {
                 discarded: self.discard(),
             }));
         }
-
-        // Call discard for queued transactions too
-        let _ = self.discard();
 
         Ok(AddedTransaction::Parked {
             transaction,
@@ -1262,7 +1262,7 @@ impl AA2dPool {
     /// Evicts queued transactions first, then pending if either the transaction count or reported
     /// size exceeds the configured subpool limit. Pending eviction can demote descendants, so the
     /// queued limit is checked again afterwards.
-    fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+    pub(crate) fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
         if self
@@ -5185,6 +5185,9 @@ mod tests {
             .unwrap();
         pool.add_transaction(Arc::new(tx1), 0, TempoHardfork::T1)
             .unwrap();
+        let discarded = pool.discard();
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0].hash(), &tx1_hash);
 
         assert!(pool.contains(&tx0_hash));
         assert!(!pool.contains(&tx1_hash));
@@ -5372,6 +5375,7 @@ mod tests {
             );
             assert!(result.is_ok(), "Transaction {i} should be added");
         }
+        assert_eq!(pool.discard().len(), 3);
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(
@@ -5414,6 +5418,7 @@ mod tests {
                 TempoHardfork::T1,
             );
         }
+        assert_eq!(pool.discard().len(), 2);
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(queued, 3, "Queued should be capped at 3");
@@ -5594,6 +5599,7 @@ mod tests {
                 TempoHardfork::T1,
             );
         }
+        assert_eq!(pool.discard().len(), 8);
 
         // All pending should still be there
         for hash in &pending_hashes {
