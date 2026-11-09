@@ -117,11 +117,7 @@ pub async fn run_consensus_stack(
             .max_peers_per_set
             .try_into()
             .wrap_err("consensus.max-peers-per-set must fit in u32")?,
-    )
-    .ok_or_eyre(
-        "consensus.max-peers-per-set is too large: consensus messages would exceed the p2p \
-         transport limit",
-    )?;
+    );
 
     let (mut network, oracle) = instantiate_network(
         &context,
@@ -156,7 +152,6 @@ pub async fn run_consensus_stack(
 
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
-        max_message_size,
         verification_mode: config.verification_mode,
 
         time_to_propose: config.wait_for_proposal.into_duration(),

@@ -44,8 +44,21 @@ pub(crate) struct Block {
 }
 
 impl Block {
-    /// Creates a block after validating its body and rejecting BAL header commitments.
+    /// Creates a block after validating its body, rejecting BAL header commitments, and rejecting
+    /// blocks whose RLP encoding exceeds [`MAX_RLP_BLOCK_SIZE`].
     pub(crate) fn try_from_execution_block<T>(execution_block: T) -> Result<Self, Error>
+    where
+        T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
+    {
+        Self::try_from_execution_block_with_encoded_cache(execution_block, EncodedBlock::default())
+    }
+
+    /// Creates a validated block with a shared execution-layer RLP byte cache, encoding the block
+    /// into the cache if it is empty.
+    pub(crate) fn try_from_execution_block_with_encoded_cache<T>(
+        execution_block: T,
+        execution_block_encoded: EncodedBlock,
+    ) -> Result<Self, Error>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
@@ -55,23 +68,23 @@ impl Block {
             return Err(ConsensusError::BlockAccessListHashUnexpected.into());
         }
 
-        Ok(Self::from_execution_block_unchecked(execution_block))
-    }
-
-    /// Creates a validated block with a shared execution-layer RLP byte cache.
-    pub(crate) fn try_from_execution_block_with_encoded_cache<T>(
-        execution_block: T,
-        execution_block_encoded: EncodedBlock,
-    ) -> Result<Self, Error>
-    where
-        T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
-    {
-        let mut block = Self::try_from_execution_block(execution_block)?;
-        block.execution_block_encoded = execution_block_encoded;
+        let block = Self::from_execution_block_unchecked_with_encoded_cache(
+            execution_block,
+            execution_block_encoded,
+        );
+        let rlp_length = block.encoded_execution_block().len();
+        if rlp_length > MAX_RLP_BLOCK_SIZE {
+            return Err(ConsensusError::BlockTooLarge {
+                rlp_length,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }
+            .into());
+        }
         Ok(block)
     }
 
-    /// Creates a block without validating its body or rejecting BAL header commitments.
+    /// Creates a block without validating its body, rejecting BAL header commitments, or enforcing
+    /// [`MAX_RLP_BLOCK_SIZE`], which [`commonware_consensus::BoundedBlock`] promises.
     ///
     /// This is for reconstructing trusted blocks from persisted execution-layer data.
     /// Callers must not encode or broadcast a block whose header commits to a BAL.
@@ -180,12 +193,6 @@ impl Read for Block {
             return Err(commonware_codec::Error::EndOfBuffer);
         }
         let execution_block_encoded_size = header.length_with_payload();
-        if execution_block_encoded_size > MAX_RLP_BLOCK_SIZE {
-            return Err(commonware_codec::Error::Invalid(
-                "Block",
-                "execution block exceeds MAX_RLP_BLOCK_SIZE",
-            ));
-        }
         let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
         let inner = <tempo_primitives::Block as reth_primitives_traits::Block>::decode_sealed(
@@ -381,25 +388,36 @@ mod tests {
     }
 
     #[test]
-    fn read_rejects_block_larger_than_max_rlp_block_size() {
-        let mut encoded = Vec::new();
-        alloy_rlp::Header {
-            list: true,
-            payload_length: MAX_RLP_BLOCK_SIZE,
-        }
-        .encode(&mut encoded);
-        encoded.resize(encoded.len() + MAX_RLP_BLOCK_SIZE, 0);
+    fn constructor_rejects_block_larger_than_max_rlp_block_size() {
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    base_fee_per_gas: Some(0),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    extra_data: vec![0; MAX_RLP_BLOCK_SIZE].into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: BlockBody {
+                withdrawals: Some(Default::default()),
+                ..Default::default()
+            },
+        });
 
-        let err =
-            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
+        let err = Block::try_from_execution_block(execution_block).unwrap_err();
 
         assert!(
             matches!(
-                err,
-                commonware_codec::Error::Invalid(
-                    "Block",
-                    "execution block exceeds MAX_RLP_BLOCK_SIZE"
-                )
+                err.0,
+                ConsensusError::BlockTooLarge {
+                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                    ..
+                }
             ),
             "unexpected error: {err:?}"
         );
