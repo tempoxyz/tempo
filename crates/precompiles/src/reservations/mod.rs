@@ -276,7 +276,10 @@ impl Reservations {
         if auth.is_held() || (auth.exists() && (auth.token != call.token || auth.payee != payee)) {
             return Err(ReservationsError::hold_exists().into());
         }
-        ensure_key_may_act(owner, &auth)?;
+        // A new charge records the key that signs it; a later one must come from that key.
+        if auth.exists() {
+            ensure_key_may_act(owner, &auth)?;
+        }
 
         let position = self.positions[owner][call.token].read()?;
         let (debt, spend) =
@@ -506,13 +509,11 @@ impl Reservations {
     }
 }
 
-/// Rejects an access key of `owner` other than the one that placed `auth`; the root key and
-/// authorizations the root key placed accept any signer.
+/// Rejects an access key of `owner` other than the one that placed `auth`. Only the root key
+/// acts on authorizations the root key placed, so an access key never spends them outside its limit.
 fn ensure_key_may_act(owner: Address, auth: &Authorization) -> Result<()> {
     match AccountKeychain::new().signing_access_key(owner)? {
-        Some(key_id) if !auth.key_id.is_zero() && key_id != auth.key_id => {
-            Err(ReservationsError::unauthorized().into())
-        }
+        Some(key_id) if key_id != auth.key_id => Err(ReservationsError::unauthorized().into()),
         _ => Ok(()),
     }
 }
