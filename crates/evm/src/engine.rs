@@ -83,7 +83,14 @@ impl RecoveredInBlock {
             sender
         } else if tx.is_system_tx() {
             tx.try_recover()?
-        } else if let Some(cache) = sender_recovery_cache {
+        } else if let Some(cache) = sender_recovery_cache
+            // Recovering keychain and configurable account signatures caches the access key id and
+            // verified owner quorums on the transaction, which execution reuses. A sender cache hit
+            // would skip that and leave the work to serial execution.
+            && !tx.as_aa().is_some_and(|aa| {
+                aa.signature().is_keychain() || aa.has_configurable_approvals()
+            })
+        {
             cache.recover(tx)?
         } else {
             tx.try_recover()?
@@ -128,6 +135,8 @@ mod tests {
     use alloy_consensus::{BlockHeader, SignableTransaction, TxLegacy, transaction::TxHashRef};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use reth_chainspec::EthChainSpec;
     use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
@@ -135,7 +144,11 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_primitives::{
-        BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+        AASigned, BlockBody, SubBlockMetadata, TempoHeader, TempoTransaction,
+        transaction::{
+            KeychainSignature, PrimitiveSignature, TempoSignature,
+            envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+        },
     };
 
     fn create_legacy_tx() -> TempoTxEnvelope {
@@ -286,5 +299,44 @@ mod tests {
             U256::from(block.header().gas_limit())
         );
         assert_eq!(evm_env.block.ext.timestamp_millis_part, 500);
+    }
+
+    #[test]
+    fn test_sender_cache_skipped_for_keychain() {
+        let holder = Address::repeat_byte(0x11);
+        let transaction = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            ..Default::default()
+        };
+        let signature = PrivateKeySigner::random()
+            .sign_hash_sync(&KeychainSignature::signing_hash(
+                transaction.signature_hash(),
+                holder,
+            ))
+            .unwrap();
+        let keychain_tx = TempoTxEnvelope::AA(AASigned::new_unhashed(
+            transaction,
+            TempoSignature::Keychain(KeychainSignature::new(
+                holder,
+                PrimitiveSignature::Secp256k1(signature),
+            )),
+        ));
+        let legacy_tx = create_legacy_tx();
+
+        // Seed the cache with a sender neither transaction recovers to.
+        let cache = SenderRecoveryCache::new(4);
+        let cached = Address::repeat_byte(0x22);
+        for tx in [&keychain_tx, &legacy_tx] {
+            assert_eq!(cache.recover_with(tx, |_| Ok(cached)).unwrap(), cached);
+        }
+
+        let block: SealedOrRecoveredBlock<Block> =
+            create_test_block(vec![keychain_tx, legacy_tx]).into();
+        let keychain = RecoveredInBlock::new(block.clone(), 0, None, Some(&cache)).unwrap();
+        let legacy = RecoveredInBlock::new(block, 1, None, Some(&cache)).unwrap();
+
+        assert_eq!(keychain.sender, holder);
+        assert_eq!(legacy.sender, cached);
     }
 }
