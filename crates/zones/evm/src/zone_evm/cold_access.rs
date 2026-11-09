@@ -61,6 +61,7 @@ fn run(spec: TempoHardfork, code: Bytes, gas_limit: u64) -> TxResult<TempoEvmTyp
         ..Default::default()
     };
     env.version = tempo_chainspec::gas_params::version(evm2::SpecId::from(spec), spec, false);
+    tempo_chainspec::gas_params::apply_zone(&mut env.version, spec);
     env.version.features.remove(EvmFeatures::FEE_CHARGE);
     env.block.gas_limit = U256::from(30_000_000);
     env.block.beneficiary = BENEFICIARY;

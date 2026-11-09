@@ -286,10 +286,8 @@ where
             ext.non_creditable_slots.clone(),
             l1.clone(),
         );
-        let mut version = env.version;
-        tempo_chainspec::gas_params::apply_zone(&mut version, env.spec);
         evm2::Evm::new_with_execution_config_and_ext(
-            zone_execution_config(env.spec, version),
+            zone_execution_config(env.spec, env.version),
             env.spec,
             env.block,
             zone_tx_registry(env.spec, l1),
@@ -319,7 +317,10 @@ where
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.inner.evm_env(header)
+        let mut env = self.inner.evm_env(header)?;
+        // The env carries the zone's gas schedule, so RPC gas estimates price what execution charges.
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, env.spec);
+        Ok(env)
     }
 
     fn next_evm_env(
@@ -335,6 +336,7 @@ where
             .next_block_base_fee(parent, attributes.timestamp)
             .unwrap_or_default();
         env.block.basefee = alloy_primitives::U256::from_limbs([basefee, 0, 0, 0]);
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, env.spec);
         Ok(env)
     }
 
@@ -807,6 +809,26 @@ mod tests {
             let evm = BlockExecutorFactory::evm_with_env(&config, InMemoryDB::default(), env);
             assert_eq!(evm.config_spec_id(), expected);
         }
+    }
+
+    #[test]
+    fn evm_env_carries_the_zone_gas_schedule() {
+        let mut genesis = tempo_chainspec::spec::DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(tempo_chainspec::spec::DEV.chain_id(), 1).unwrap();
+        let config = ZoneEvmConfig::new(
+            Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap()),
+            MockL1Reader::default(),
+            Address::ZERO,
+        );
+        let header = TempoHeader::default();
+        let zone = config.evm_env(&header).unwrap();
+        let tempo = config.inner.evm_env(&header).unwrap();
+        assert!(zone.spec.is_t14());
+        assert_eq!(
+            zone.version.gas_params.cold_account_additional_cost(),
+            tempo.version.gas_params.cold_account_additional_cost()
+                + tempo_chainspec::constants::gas::L1_COMMITMENT_READ_GAS
+        );
     }
 
     #[tokio::test]
