@@ -4463,8 +4463,8 @@ fn zones_charge_the_sender_read_instead_of_registering() {
 }
 
 /// On a zone, the first call target pays its Tempo read in intrinsic gas, whatever its code.
-/// Later call targets and access-list entries pay it through the zone's cold access and access-list
-/// costs, whatever the address.
+/// A later call to a new target and access-list entries pay it through the zone's cold access and
+/// access-list costs, whatever the address. A later call to a repeated target pays a warm access.
 #[test]
 fn zone_commitment_reads_are_charged_once_per_read_account() {
     let contract = Address::repeat_byte(0x55);
@@ -4517,8 +4517,12 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
         ) - base,
         3 * access_list_entry
     );
-    // A second call pays the zone's cold access, whatever its target.
-    assert_eq!(run(vec![], vec![eligible, eligible]) - base, cold_access);
+    // A second call pays the zone's cold access for a new target, and a warm access for a repeated one.
+    assert_eq!(run(vec![], vec![eligible, other]) - base, cold_access);
+    assert_eq!(
+        run(vec![], vec![eligible, eligible]) - base,
+        gas.get(GasId::WarmStorageReadCost)
+    );
 }
 
 /// A threshold above eight is met by eight approvals whose weights reach it.
