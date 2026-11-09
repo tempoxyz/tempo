@@ -1,0 +1,175 @@
+name: Fuzz
+
+# A short Rift campaign of the PR's fuzz harness against itself, so any objective is one of its own
+# invariants (TEMPO-*) breaking or the harness crashing: the fuzz-harness counterpart of the Foundry
+# invariant tests Specs runs on every PR. Long campaigns run nightly in tempoxyz/workflows.
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
+  CARGO_HTTP_TIMEOUT: "180"
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
+  # How long the campaign runs, and on how many workers.
+  FUZZ_DURATION: 5m
+  FUZZ_WORKERS: "24"
+
+jobs:
+  changes:
+    name: Check harness changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+    outputs:
+      harness: ${{ contains(fromJSON(steps.filter.outputs.changes), 'harness') }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        id: filter
+        with:
+          # The harness links the node's execution crates, so any of them can break an invariant.
+          filters: |
+            harness:
+              - 'crates/**'
+              - 'Cargo.lock'
+              - '*.toml'
+              - '.cargo/**'
+              - '.github/workflows/fuzz.yml'
+
+  smoke:
+    name: invariant smoke
+    needs: changes
+    if: needs.changes.outputs.harness == 'true'
+    runs-on: depot-ubuntu-latest-32
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: tempo
+          # Tuner builds the harness from a git checkout of this commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get a tuner token
+        id: tuner-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          scope: tempoxyz/tuner
+          policy: tempo-fuzz
+
+      - name: Checkout tuner
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: tempoxyz/tuner
+          ref: master
+          path: tuner
+          persist-credentials: false
+          token: ${{ steps.tuner-sts.outputs.token }}
+
+      - name: Get a rift token
+        id: rift-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          scope: tempoxyz/rift
+          policy: tempo-fuzz
+
+      - name: Checkout rift
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: tempoxyz/rift
+          ref: main
+          path: rift
+          persist-credentials: false
+          token: ${{ steps.rift-sts.outputs.token }}
+
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          version: v0.15.0
+
+      - name: Build rift-fuzz and tuner
+        run: |
+          cargo build --release --locked --manifest-path rift/driver/Cargo.toml
+          cargo build --release --locked --manifest-path tuner/Cargo.toml -p tuner -p tuner-runner
+
+      - name: Prepare the Rift bundle
+        working-directory: tuner
+        env:
+          TEMPO_REPO: ${{ github.workspace }}/tempo
+          RUN_DIR: ${{ runner.temp }}/fuzz/bundle
+        run: |
+          set -euo pipefail
+          sha=$(git -C "$TEMPO_REPO" rev-parse HEAD)
+          # The same harness twice: the differential oracle then reports only its invariants.
+          jq -n --arg r "$sha" '{refs: [$r, $r], mode: "blockchain", diff_hardforks: "all"}' \
+            > "$RUNNER_TEMP/fuzz/request.json"
+          cargo run --release --locked -p tuner -- __rift-tempo-transaction prepare \
+            "$RUNNER_TEMP/fuzz/request.json"
+
+      - name: Fuzz
+        env:
+          FUZZ_DIR: ${{ runner.temp }}/fuzz
+        run: |
+          set -euo pipefail
+          rift/driver/target/release/rift-fuzz --session "$FUZZ_DIR/bundle/fuzz-session.json" \
+            --out "$FUZZ_DIR/out" --seed "$GITHUB_RUN_ID" --workers "$FUZZ_WORKERS" \
+            --duration "$FUZZ_DURATION" --stop-on-objective
+          objectives=$(jq -s 'map(.objectives) | add // 0' "$FUZZ_DIR"/out/client-*/status.json)
+          echo "objectives: $objectives"
+          if [ "$objectives" != 0 ]; then
+            echo "::error::the campaign found $objectives objective(s); replay an input.bin with tuner tempo replay"
+            find "$FUZZ_DIR/out" -path '*/objectives/*' -name failures.txt -exec sh -c 'echo "== $1"; cat "$1"' _ {} \;
+            exit 1
+          fi
+
+      - name: Upload objectives
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-objectives
+          path: ${{ runner.temp }}/fuzz/out/*/objectives
+          if-no-files-found: ignore
+          retention-days: 14
+
+  fuzz-success:
+    name: fuzz success
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      id-token: write
+    needs:
+      - changes
+      - smoke
+    timeout-minutes: 5
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: tempoxyz/gh-actions/actions/check-needs@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          allowed-skips: smoke
+          jobs: ${{ toJSON(needs) }}
