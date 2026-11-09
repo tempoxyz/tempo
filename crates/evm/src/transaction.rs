@@ -47,16 +47,20 @@ impl TempoAaTx {
             expiring_nonce_idx: None,
             override_key_id: None,
         };
-        // Decoded transactions whose sender came from the recovery cache have not verified their
-        // configurable account approvals or recovered their keychain access key: warm both here,
-        // off the serial execution path. A configurable delegate's key is covered by its approvals.
-        tx.warm_configurable_approvals();
-        if let Some(keychain) = tx.signature().as_keychain()
+        tx.warm_signatures();
+        tx
+    }
+
+    // Decoded transactions whose sender came from the recovery cache have not verified their
+    // configurable account approvals or recovered their keychain access key: warm both here,
+    // off the serial execution path. Failures are left for execution to report.
+    fn warm_signatures(&self) {
+        self.warm_configurable_approvals();
+        if let Some(keychain) = self.signature().as_keychain()
             && keychain.signature.as_configurable_account().is_none()
         {
-            let _ = keychain.key_id(&tx.inner().signature_hash());
+            let _ = keychain.key_id(&self.inner().signature_hash());
         }
-        tx
     }
 
     /// Returns the transaction's index among expiring-nonce transactions in the block.
