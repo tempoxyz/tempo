@@ -14,7 +14,7 @@ use crate::{
     signature_gas::{calldata_tokens, tempo_signature_verification_gas},
     transaction_error::ConfigurableAccountError,
 };
-use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, map::AddressSet};
 use evm2::{
     Evm, EvmFeatures, TxResult,
     env::TxEnv,
@@ -286,8 +286,11 @@ fn calculate_key_authorization_gas(
 /// This includes:
 /// - Base 21k stipend (once for the transaction)
 /// - Signature verification gas (P256: 5k, WebAuthn: 5k + webauthn_data)
-/// - Per-call account access cost (`COLD_ACCOUNT_ACCESS_COST * (calls.len() - 1)`); the 21k
-///   stipend above already covers the first call's target access
+/// - Per-call account access cost for calls after the first; the 21k stipend above already covers
+///   the first call's target access:
+///   - Pre-T14: `COLD_ACCOUNT_ACCESS_COST` per call
+///   - T14+: `COLD_ACCOUNT_ACCESS_COST` per distinct target outside the warm set, and
+///     `WARM_STORAGE_READ_COST` for every other call
 /// - Per-call input data gas (calldata tokens * 4 gas)
 /// - Per-call CREATE costs (if applicable):
 ///   - Additional 32k base (CREATE constant)
@@ -314,12 +317,28 @@ fn intrinsic_gas(
     // 2. Signature verification gas
     regular = regular.saturating_add(tempo_signature_verification_gas(signed.signature()));
 
-    // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
+    // 3. Per-call overhead: account access for calls after the first. The 21k base stipend
     // already covers the first call's target access.
-    let cold_account =
-        params.get(GasId::WarmStorageReadCost) + params.get(GasId::ColdAccountAdditionalCost);
-    regular = regular
-        .saturating_add(cold_account.saturating_mul(tx.calls.len().saturating_sub(1) as u64));
+    let warm_account = params.get(GasId::WarmStorageReadCost);
+    let cold_account = warm_account + params.get(GasId::ColdAccountAdditionalCost);
+    if spec.is_t14() {
+        // From T14 the handler warms the transaction's accounts before this runs, so only a
+        // target outside that warm set pays the cold access, once per batch.
+        let warm = host.state().prewarm_set();
+        let mut targeted =
+            AddressSet::from_iter(tx.calls.first().and_then(|call| call.to.to()).copied());
+        for to in tx.calls.iter().skip(1).filter_map(|call| call.to.to()) {
+            let access = if warm.is_warm(to) || !targeted.insert(*to) {
+                warm_account
+            } else {
+                cold_account
+            };
+            regular = regular.saturating_add(access);
+        }
+    } else {
+        regular = regular
+            .saturating_add(cold_account.saturating_mul(tx.calls.len().saturating_sub(1) as u64));
+    }
 
     // 4. Authorization list costs (EIP-7702)
     // TIP-1016: Track state gas portion of per-auth cost (225k on T4, 0 pre-T4).

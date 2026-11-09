@@ -764,6 +764,99 @@ fn test_aa_gas_multiple_calls_overhead() {
     assert_eq!((gas.0 + gas.1), expected,);
 }
 
+fn batch_intrinsic_gas(spec: TempoHardfork, targets: &[Address], access_list: Vec<Address>) -> u64 {
+    let signer = PrivateKeySigner::random();
+    let caller = signer.address();
+    let gas_limit = 1_000_000;
+    let gas_price = 1_000_000_000_000;
+    let mut evm = test_evm(spec);
+    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+        TIP20Setup::path_usd(caller)
+            .with_issuer(caller)
+            .with_mint(caller, calc_gas_balance_spending(gas_limit, gas_price))
+            .apply()
+    })
+    .unwrap();
+    let tx = TempoTransaction {
+        chain_id: 1,
+        fee_token: Some(PATH_USD_ADDRESS),
+        gas_limit,
+        max_fee_per_gas: gas_price,
+        max_priority_fee_per_gas: gas_price,
+        calls: targets
+            .iter()
+            .map(|&to| Call {
+                to: TxKind::Call(if to.is_zero() { caller } else { to }),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            })
+            .collect(),
+        access_list: access_list
+            .into_iter()
+            .map(|address| alloy_eips::eip2930::AccessListItem {
+                address,
+                storage_keys: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        ..Default::default()
+    };
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let env: TempoTxEnv = Recovered::new_unchecked(
+        TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Primitive(
+            PrimitiveSignature::Secp256k1(signature),
+        ))),
+        caller,
+    )
+    .into();
+    let prepared = prepare_aa(&mut TxRequest {
+        envelope: &env,
+        tx: Recovered::new_unchecked(env.as_aa().unwrap(), caller),
+        host: &mut evm,
+        _non_exhaustive: (),
+    })
+    .unwrap();
+    prepared.intrinsic
+}
+
+#[test]
+fn test_t14_batch_charges_cold_access_once_per_cold_target() {
+    const WARM_ACCOUNT_ACCESS_COST: u64 = 100;
+    let [a, b, c, listed] = [1, 2, 3, 4].map(Address::with_last_byte);
+    // `Address::ZERO` stands for the transaction's sender.
+    let sender = Address::ZERO;
+    let spec = TempoHardfork::T14;
+    let single = batch_intrinsic_gas(spec, &[a], vec![]);
+
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, b, c], vec![]),
+        single + 2 * COLD_ACCOUNT_ACCESS_COST
+    );
+    // Repeated targets, including the first call's, pay only the warm access.
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, b, b, a], vec![]),
+        single + COLD_ACCOUNT_ACCESS_COST + 2 * WARM_ACCOUNT_ACCESS_COST
+    );
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, sender], vec![]),
+        single + WARM_ACCOUNT_ACCESS_COST
+    );
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, listed], vec![listed]),
+        batch_intrinsic_gas(spec, &[a], vec![listed]) + WARM_ACCOUNT_ACCESS_COST
+    );
+}
+
+#[test]
+fn test_pre_t14_batch_charges_cold_access_per_call() {
+    let [a, b] = [1, 2].map(Address::with_last_byte);
+    let spec = TempoHardfork::T13;
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, b, b, a], vec![]),
+        batch_intrinsic_gas(spec, &[a], vec![]) + 3 * COLD_ACCOUNT_ACCESS_COST
+    );
+}
+
 #[test]
 fn test_aa_gas_p256_signature() {
     let spec = SpecId::CANCUN;
