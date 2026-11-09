@@ -15,6 +15,13 @@
 //!
 //! Sign-and-relay can forward original request headers to the sponsor; sign-only never forwards
 //! them to sponsor signing and preserves them only for the final default-transport broadcast.
+//!
+//! The local preflight is stateless: it checks the transaction's shape and that its signature
+//! recovers, but never reads chain state. For configurable accounts it only proves that the
+//! embedded configuration's owners signed, not that the configuration matches the claimed
+//! account's current commitment, so the recovered sender is an unauthenticated hint. Sponsor
+//! services must check the claim against chain state before applying identity-based policy,
+//! quotas, accounting, or signing; the node enforces the commitment before execution.
 
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_eips::Decodable2718;
@@ -54,6 +61,10 @@ pub enum SponsorshipMode {
 /// to the sponsor; sign-only keeps sponsor signing isolated and preserves original headers only for
 /// the final default-RPC broadcast. Advanced users can pass customized transports or connectors for
 /// auth, middleware, retry policy, proxies, or dynamic headers.
+///
+/// The local preflight is stateless signature and shape validation, not account authentication:
+/// a configurable-account sender recovered here may name a stale or unrelated configuration.
+/// Sponsors must verify the claimed account against chain state before identity-dependent work.
 ///
 /// The relay transport MUST point to a sponsor service.
 #[derive(Debug, Clone)]
@@ -437,6 +448,7 @@ fn decode_tempo_aa(raw_tx: &str, non_aa_error: &'static str) -> Result<AASigned,
     }
 }
 
+/// Stateless check only: configurable-account commitments are verified by the node, not here.
 fn recover_tempo_aa_signer(tx: AASigned) -> Result<AASigned, TransportError> {
     tx.recover_signer()
         .map_err(TransportErrorKind::non_retryable)?;
