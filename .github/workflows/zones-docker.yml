@@ -384,14 +384,14 @@ jobs:
           image_ref="$TOOLCHAIN_REPOSITORY:inputs-$recipe_sha"
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
-          # On main and tags, reuse a cached digest only if a main or tag run of this
-          # workflow signed it for this recipe_sha; otherwise rebuild it from the trusted
-          # recipe, so these runs never sign a digest someone else pushed under the tag.
+          # On main and tags, reuse a cached digest only if a main run of this workflow
+          # (protected branch, not any pushed tag) signed it for this recipe_sha; otherwise
+          # rebuild it from the trusted recipe, so these runs never sign a foreign digest.
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
             [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]] &&
             ! cosign verify "$TOOLCHAIN_REPOSITORY@$digest" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity-regexp '^https://github\.com/tempoxyz/tempo/\.github/workflows/zones-docker\.yml@refs/(heads/main|tags/.+)$' \
+              --certificate-identity-regexp '^https://github\.com/tempoxyz/tempo/\.github/workflows/zones-docker\.yml@refs/heads/main$' \
               -a "eif-toolchain-recipe=$recipe_sha" \
               > /dev/null 2>&1; then
             echo "Cached $image_ref has no trusted signature; rebuilding it" >&2
