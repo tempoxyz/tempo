@@ -290,8 +290,8 @@ fn spawn_prefetch(
             for message in std::iter::once(message).chain(updates_rx.try_iter()) {
                 finished |= keys.add(message);
             }
-            let (accounts, slots) = keys.take();
-            if accounts.is_empty() && slots.is_empty() {
+            let (accounts, slots, deleted_slots) = keys.take();
+            if accounts.is_empty() && slots.is_empty() && deleted_slots.is_empty() {
                 continue;
             }
             rounds += 1;
@@ -300,11 +300,12 @@ fn spawn_prefetch(
                 "qmdb.prefetch",
                 accounts = accounts.len() as u64,
                 slots = slots.len() as u64,
+                deleted_slots = deleted_slots.len() as u64,
             )
             .entered();
             let started = Instant::now();
             let result = match stage {
-                Some(stage) => store.stage(stage, accounts, slots),
+                Some(stage) => store.stage(stage, accounts, slots, deleted_slots),
                 None => store.prefetch(accounts, slots),
             };
             if let Err(err) = result {
@@ -331,6 +332,9 @@ struct PrefetchKeys {
     slots: Vec<layout::Key>,
     seen_accounts: HashSet<layout::Key>,
     seen_slots: HashSet<layout::Key>,
+    /// Slots an update zeroed, which the block deletes unless a later update sets them again.
+    deleted_slots: Vec<layout::Key>,
+    seen_deleted_slots: HashSet<layout::Key>,
 }
 
 impl PrefetchKeys {
@@ -363,8 +367,14 @@ impl PrefetchKeys {
             self.account(*hashed_address);
         }
         for (hashed_address, storage) in &state.storages {
-            for hashed_slot in storage.storage.keys() {
+            for (hashed_slot, value) in &storage.storage {
                 self.slot(*hashed_address, *hashed_slot);
+                if value.is_zero() {
+                    let key = layout::slot_key(*hashed_address, *hashed_slot);
+                    if self.seen_deleted_slots.insert(key.clone()) {
+                        self.deleted_slots.push(key);
+                    }
+                }
             }
         }
     }
@@ -383,11 +393,12 @@ impl PrefetchKeys {
         }
     }
 
-    /// Takes the queued keys, which stay seen.
-    fn take(&mut self) -> (Vec<layout::Key>, Vec<layout::Key>) {
+    /// Takes the queued account, slot and zeroed slot keys, which stay seen.
+    fn take(&mut self) -> (Vec<layout::Key>, Vec<layout::Key>, Vec<layout::Key>) {
         (
             std::mem::take(&mut self.accounts),
             std::mem::take(&mut self.slots),
+            std::mem::take(&mut self.deleted_slots),
         )
     }
 }

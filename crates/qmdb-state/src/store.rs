@@ -530,12 +530,20 @@ impl Store {
 
     /// Reads account keys `accounts` and slot keys `slots` into `stage`, then prefetches
     /// the rest of what building the block reads for them like [`Self::prefetch`], which is all
-    /// it does once the stage is closed.
-    pub fn stage(&self, stage: StageId, accounts: Vec<Key>, slots: Vec<Key>) -> Result<(), Error> {
+    /// it does once the stage is closed. `deleted_slots` are slots the block's execution so far
+    /// zeroed, whose predecessors deleting them rewrites, so they are read ahead too.
+    pub fn stage(
+        &self,
+        stage: StageId,
+        accounts: Vec<Key>,
+        slots: Vec<Key>,
+        deleted_slots: Vec<Key>,
+    ) -> Result<(), Error> {
         self.call(|reply| Command::Stage {
             stage,
             accounts,
             slots,
+            deleted_slots,
             reply,
         })
     }
@@ -693,6 +701,7 @@ enum Command {
         stage: StageId,
         accounts: Vec<Key>,
         slots: Vec<Key>,
+        deleted_slots: Vec<Key>,
         reply: Reply<()>,
     },
 }
@@ -886,6 +895,7 @@ impl Actor {
                                 stage.clone(),
                                 Vec::new(),
                                 Vec::new(),
+                                Vec::new(),
                                 Box::new(|_| {}),
                             );
                         }
@@ -908,9 +918,12 @@ impl Actor {
                     stage,
                     accounts,
                     slots,
+                    deleted_slots,
                     reply,
                 } => match self.stages.get(&stage) {
-                    Some(stage) => self.spawn_stage(stage.clone(), accounts, slots, reply),
+                    Some(stage) => {
+                        self.spawn_stage(stage.clone(), accounts, slots, deleted_slots, reply)
+                    }
                     None => self.spawn_prefetch(accounts, slots, reply),
                 },
             }
@@ -943,19 +956,24 @@ impl Actor {
     /// Serves a prefetch on its own task, so it runs concurrently with other commands.
     fn spawn_prefetch(&self, accounts: Vec<Key>, slots: Vec<Key>, reply: Reply<()>) {
         let (accounts_db, slots_db) = (self.accounts.clone(), self.slots.clone());
-        self.context.child("prefetch").spawn(move |_| async move {
-            // Lock in the order finalize takes its write locks, accounts then slots: holding
-            // slots while waiting for accounts deadlocks against a finalize that holds accounts.
-            let accounts_db = accounts_db.read().await;
-            let slots_db = slots_db.read().await;
-            reply(match (accounts_db.as_ref(), slots_db.as_ref()) {
-                (Some(accounts_db), Some(slots_db)) => try_join!(
-                    async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
-                    async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
-                )
-                .map(|_| ()),
-                _ => Err(Error::Stopped),
-            });
+        self.context.child("prefetch").spawn(move |_| {
+            // Staging runs while the block executes: keeping its strategy work on this task,
+            // with misses read on the runtime's blocking pool, leaves the strategy pool to
+            // execution and merkleize.
+            commonware_parallel::serial(async move {
+                // Lock in the order finalize takes its write locks, accounts then slots: holding
+                // slots while waiting for accounts deadlocks against a finalize that holds accounts.
+                let accounts_db = accounts_db.read().await;
+                let slots_db = slots_db.read().await;
+                reply(match (accounts_db.as_ref(), slots_db.as_ref()) {
+                    (Some(accounts_db), Some(slots_db)) => try_join!(
+                        async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
+                        async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
+                    )
+                    .map(|_| ()),
+                    _ => Err(Error::Stopped),
+                });
+            })
         });
     }
 
@@ -1037,36 +1055,42 @@ impl Actor {
         stage: SharedStage,
         accounts: Vec<Key>,
         slots: Vec<Key>,
+        deleted_slots: Vec<Key>,
         reply: Reply<()>,
     ) {
         let (accounts_db, slots_db) = (self.accounts.clone(), self.slots.clone());
-        self.context.child("stage").spawn(move |_| async move {
-            // The stage before the databases, which finalize never waits on with a database
-            // locked, and the databases in finalize's order, like `spawn_prefetch`.
-            let mut stage = stage.lock().await;
-            let accounts_db = accounts_db.read().await;
-            let slots_db = slots_db.read().await;
-            let (Some(accounts_db), Some(slots_db)) = (accounts_db.as_ref(), slots_db.as_ref())
-            else {
-                return reply(Err(Error::Stopped));
-            };
-            if let Some((staged_accounts, staged_slots)) = stage.reads.take() {
-                match try_join!(
-                    stage_db(accounts_db, staged_accounts, &accounts),
-                    stage_db(slots_db, staged_slots, &slots),
-                ) {
-                    Ok(reads) => stage.reads = Some(reads),
-                    Err(err) => debug!(%err, "failed staging QMDB reads"),
+        self.context.child("stage").spawn(move |_| {
+            // Staging runs while the block executes: keeping its strategy work on this task,
+            // with misses read on the runtime's blocking pool, leaves the strategy pool to
+            // execution and merkleize.
+            commonware_parallel::serial(async move {
+                // The stage before the databases, which finalize never waits on with a database
+                // locked, and the databases in finalize's order, like `spawn_prefetch`.
+                let mut stage = stage.lock().await;
+                let accounts_db = accounts_db.read().await;
+                let slots_db = slots_db.read().await;
+                let (Some(accounts_db), Some(slots_db)) = (accounts_db.as_ref(), slots_db.as_ref())
+                else {
+                    return reply(Err(Error::Stopped));
+                };
+                if let Some((staged_accounts, staged_slots)) = stage.reads.take() {
+                    match try_join!(
+                        stage_db(accounts_db, staged_accounts, &accounts, &[]),
+                        stage_db(slots_db, staged_slots, &slots, &deleted_slots),
+                    ) {
+                        Ok(reads) => stage.reads = Some(reads),
+                        Err(err) => debug!(%err, "failed staging QMDB reads"),
+                    }
                 }
-            }
-            drop(stage);
-            reply(
-                try_join!(
-                    async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
-                    async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
-                )
-                .map(|_| ()),
-            );
+                drop(stage);
+                reply(
+                    try_join!(
+                        async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
+                        async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
+                    )
+                    .map(|_| ()),
+                );
+            })
         });
     }
 
@@ -1427,13 +1451,19 @@ async fn merkleize_db<const N: usize, const P: usize>(
         .await?)
 }
 
-/// Reads the keys of `keys` that `staged` has not read yet into it.
+/// Reads the keys of `keys` that `staged` has not read yet into it, and the predecessors of
+/// `deletes`, keys the block is expected to delete.
 async fn stage_db<const N: usize, const P: usize>(
     db: &Db<N, P>,
     staged: StagedDb<N>,
     keys: &[Key],
+    deletes: &[Key],
 ) -> Result<StagedDb<N>, Error> {
-    let StagedDb { staged, mut index } = staged;
+    let StagedDb {
+        mut staged,
+        mut index,
+    } = staged;
+    staged.hint_deletes(deletes.iter().cloned());
     let mut new = Vec::new();
     for key in keys {
         if !index.contains_key(key) {
@@ -1444,7 +1474,6 @@ async fn stage_db<const N: usize, const P: usize>(
     if new.is_empty() {
         // Applying a block since the last read discards the predecessors looked up on the old
         // state: look them up again.
-        let mut staged = staged;
         staged.prefetch_predecessors(db).await?;
         return Ok(StagedDb { staged, index });
     }
@@ -1713,9 +1742,11 @@ mod tests {
         // staged and unstaged new keys, and a staged key left unwritten.
         let stage = store.open_stage(B256::ZERO, false).unwrap();
         store
-            .stage(stage, keys(&[2, 4, 9]), keys(&[2, 4, 9]))
+            .stage(stage, keys(&[2, 4, 9]), keys(&[2, 4, 9]), Vec::new())
             .unwrap();
-        store.stage(stage, keys(&[2, 5]), keys(&[2, 5])).unwrap();
+        store
+            .stage(stage, keys(&[2, 5]), keys(&[2, 5]), Vec::new())
+            .unwrap();
         let writes = || {
             vec![
                 write(2, Some(20)),
@@ -1736,7 +1767,9 @@ mod tests {
 
         // On an unapplied parent, including a key its batch wrote.
         let stage = store.open_stage(B256::repeat_byte(1), false).unwrap();
-        store.stage(stage, keys(&[2, 7]), keys(&[2, 7])).unwrap();
+        store
+            .stage(stage, keys(&[2, 7]), keys(&[2, 7]), Vec::new())
+            .unwrap();
         let writes = || vec![write(1, Some(10)), write(2, None), write(7, Some(7))];
         assert_eq!(
             store
@@ -1748,7 +1781,9 @@ mod tests {
 
         // The payload builder's stage.
         let stage = store.open_stage(B256::repeat_byte(2), true).unwrap();
-        store.stage(stage, keys(&[1, 8]), keys(&[1, 8])).unwrap();
+        store
+            .stage(stage, keys(&[1, 8]), keys(&[1, 8]), Vec::new())
+            .unwrap();
         let writes = || vec![write(1, None), write(8, Some(8))];
         assert_eq!(
             store
@@ -1763,7 +1798,9 @@ mod tests {
 
         // A stage on another parent is not used.
         let stage = store.open_stage(B256::repeat_byte(2), false).unwrap();
-        store.stage(stage, keys(&[5]), keys(&[5])).unwrap();
+        store
+            .stage(stage, keys(&[5]), keys(&[5]), Vec::new())
+            .unwrap();
         assert_eq!(
             store
                 .build_staged(block(2, 3, 1), vec![write(5, None)].into(), Some(stage))
