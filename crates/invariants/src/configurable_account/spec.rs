@@ -91,8 +91,7 @@ pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
         .map(|preimage| Address::from_word(keccak256(preimage)))
 }
 
-/// The reserved address space `account` lies in, `None` when it is outside them all. A ZonePortal
-/// has code, which MARKER-INSTALL judges.
+/// The reserved address space `account` lies in, `None` when it is outside them all.
 // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L501>
 pub fn reserved(account: Address) -> Option<&'static str> {
     let bytes = account.as_slice();
@@ -103,6 +102,8 @@ pub fn reserved(account: Address) -> Option<&'static str> {
         Some("a virtual address")
     } else if is_tip20_prefix(account) {
         Some("a TIP-20 token address")
+    } else if account.zone_portal_id().is_some() {
+        Some("a ZonePortal address")
     } else if SYSTEM_PRECOMPILES
         .iter()
         .any(|(precompile, _)| *precompile == account)
