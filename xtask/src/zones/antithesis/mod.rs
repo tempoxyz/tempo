@@ -11,7 +11,10 @@ use alloy::{
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
     },
-    rpc::types::{BlockId, Filter, TransactionReceipt},
+    rpc::{
+        client::{ClientBuilder, RpcClient},
+        types::{BlockId, Filter, TransactionReceipt},
+    },
     signers::{SignerSync as _, local::PrivateKeySigner},
     sol_types::{SolCall as _, SolEvent as _},
     transports::{TransportError, http::reqwest},
@@ -208,7 +211,7 @@ impl Context {
         let http = reqwest::Client::builder().timeout(RPC_TIMEOUT).build()?;
         let connect = |url: &reqwest::Url| {
             ProviderBuilder::new()
-                .connect_reqwest(http.clone(), url.clone())
+                .connect_client(rpc_client(&http, url))
                 .erased()
         };
         Ok(Self {
@@ -1417,8 +1420,16 @@ fn wallet_provider(
 ) -> DynProvider {
     ProviderBuilder::new()
         .wallet(signer)
-        .connect_reqwest(http.clone(), url.clone())
+        .connect_client(rpc_client(http, url))
         .erased()
+}
+
+/// An RPC client polling every [`POLL`]. Alloy polls non-local URLs such as the stack's
+/// 10.20.0.x nodes every 7 s, which made every receipt wait take seconds after its block.
+fn rpc_client(http: &reqwest::Client, url: &reqwest::Url) -> RpcClient {
+    ClientBuilder::default()
+        .http_with_client(http.clone(), url.clone())
+        .with_poll_interval(POLL)
 }
 
 /// How the zone inbox settled a deposit.
