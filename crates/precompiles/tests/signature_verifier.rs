@@ -20,7 +20,7 @@ use tempo_precompiles::{
     Precompile,
     account_keychain::AccountKeychain,
     signature_verifier::SignatureVerifier,
-    storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
+    storage::{StorageCtx, hashmap::HashMapStorageProvider},
 };
 use tempo_primitives::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH,
@@ -38,6 +38,9 @@ use tempo_primitives::{
 };
 
 use Committed::{Account, Nobody, Signer};
+use common::seed_commitment;
+
+mod common;
 
 const HASH: B256 = B256::repeat_byte(0x42);
 const COMMITMENT: B256 = B256::repeat_byte(0x11);
@@ -176,9 +179,7 @@ fn storage_at(
                 .unwrap(),
         }
         for address in committed {
-            StorageCtx
-                .set_config_commitment(*address, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
-                .unwrap();
+            seed_commitment(*address, COMMITMENT);
         }
     });
     storage.set_spec(spec);
