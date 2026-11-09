@@ -1,11 +1,11 @@
 //! Account reservations precompile: native holds on TIP-20 balances, capped debt and linked
 //! refunds.
 //!
-//! Held funds never leave the owner's balance. From T15, every TIP-20 debit except compliance burns
-//! requires the amount to fit in the balance minus the owner's reserved total, and every TIP-20
-//! credit to an owner with debt in that token pays the creditor first when the token's and the
-//! creditor's policies admit that payment. A capture or charge releases the hold before paying,
-//! so it spends the reservation it consumes.
+//! Held funds stay the owner's: a hold moves them from the owner's spendable TIP-20 balance into
+//! its reserved amount, and TIP-20 `balanceOf` reports both, so debits need no reservation check.
+//! From T15, every TIP-20 credit to an owner with debt in that token pays the creditor first when
+//! the token's and the creditor's policies admit that payment. A capture or charge releases the
+//! hold back to the spendable balance before paying, so it spends the reservation it consumes.
 //!
 //! Open holds count as spend of the access key that placed them (TIP-1011 limits), and every
 //! amount a hold stops committing, or a payee refunds, is given back to that key's limit.
@@ -17,6 +17,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{ContractStorage, Handler, Mapping},
     tip20::{Recipient, TIP20Token},
+    tip403_registry::TIP403Registry,
 };
 use alloy::primitives::{Address, B256, U256, aliases::U96};
 pub use tempo_contracts::precompiles::{
@@ -32,10 +33,12 @@ pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
 
 /// Reserved and owed amounts of one owner in one token, packed in one slot.
 ///
-/// TIP-20 reads this slot on every debit and credit from T15.
+/// Reserved funds are moved out of the owner's TIP-20 `balances` slot, so debits never read this.
+/// Credits read it only for owners the TIP-403 registry counts as debtors.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct Position {
-    /// Sum of the owner's live holds in the token, less the burned part in `Shortfall`.
+    /// Sum of the owner's live holds in the token, less the burned part in `Shortfall`. Held
+    /// outside the owner's spendable TIP-20 balance; `balanceOf` adds it back.
     reserved: u128,
     /// Debt owed to the creditor stored in `Reservations::creditors`.
     debt: u128,
@@ -115,13 +118,13 @@ impl Reservations {
 
     /// Returns the amount of `token` that `owner` has reserved.
     ///
-    /// Called by TIP-20 on every debit from T15.
+    /// Called by TIP-20 `balanceOf` from T15.
     pub(crate) fn reserved_of(&self, owner: Address, token: Address) -> Result<u128> {
         self.positions[owner][token].reserved.read()
     }
 
-    /// Sets `owner`'s reserved amount of `token` without a hold, so test fixtures outside this
-    /// crate can reserve funds.
+    /// Sets `owner`'s reserved amount of `token` without a hold, moving the difference out of or
+    /// back into its spendable balance, so test fixtures outside this crate can reserve funds.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn set_reserved_unchecked(
         &mut self,
@@ -129,31 +132,44 @@ impl Reservations {
         token: Address,
         reserved: u128,
     ) -> Result<()> {
+        let previous = self.positions[owner][token].reserved.read()?;
+        let mut tip20 = TIP20Token::from_address(token)?;
+        if reserved > previous {
+            tip20.decrement_balance(owner, U256::from(reserved - previous))?;
+        } else {
+            tip20.increment_balance(owner, U256::from(previous - reserved))?;
+        }
         self.positions[owner][token].reserved.write(reserved)
     }
 
-    /// Lowers `owner`'s reserved amount of `token` to at most `max`, leaving its holds as they are.
+    /// Lowers `owner`'s reserved amount of `token` by up to `needed`, leaving its holds as they
+    /// are, and returns the amount lowered, which TIP-20 adds back to the spendable balance.
     ///
-    /// Called by TIP-20 before a compliance burn from T15, so the burn may take reserved funds.
-    /// Afterwards `reserved` may be below the sum of the owner's live holds.
-    pub(crate) fn cap_reserved(&mut self, owner: Address, token: Address, max: U256) -> Result<()> {
+    /// Called by TIP-20 before a compliance burn above the spendable balance from T15, so the burn
+    /// may take reserved funds. Afterwards `reserved` may be below the sum of the live holds.
+    pub(crate) fn take_for_burn(
+        &mut self,
+        owner: Address,
+        token: Address,
+        needed: U256,
+    ) -> Result<U256> {
         let mut position = self.positions[owner][token].read()?;
-        if U256::from(position.reserved) <= max {
-            return Ok(());
+        let taken = position.reserved.min(needed.saturating_to());
+        if taken == 0 {
+            return Ok(U256::ZERO);
         }
-        // `max` is below `reserved`, so it fits.
-        let max: u128 = max.to();
         let mut shortfall = self.shortfalls[owner][token].read()?;
-        shortfall.unbacked = shortfall.unbacked.saturating_add(position.reserved - max);
+        shortfall.unbacked = shortfall.unbacked.saturating_add(taken);
         shortfall.epoch = shortfall.epoch.saturating_add(1);
         self.shortfalls[owner][token].write(shortfall)?;
-        position.reserved = max;
-        self.positions[owner][token].write(position)
+        position.reserved -= taken;
+        self.positions[owner][token].write(position)?;
+        Ok(U256::from(taken))
     }
 
     /// Settles up to `received` of `owner`'s debt in `token` and emits `DebtRepaid`.
     ///
-    /// Called by TIP-20 after crediting `owner` from T15. `admits` tells from the creditor whether
+    /// Called by TIP-20 after crediting an `owner` counted as a debtor from T15. `admits` tells from the creditor whether
     /// the repayment may move now. Returns the creditor and the amount TIP-20 must move from
     /// `owner` to it, or `None` when `owner` has no debt or `admits` returns false, which leaves
     /// the debt unchanged.
@@ -183,7 +199,7 @@ impl Reservations {
         if call.expiresAt <= now || call.expiresAt > now.saturating_add(MAX_HOLD_DURATION) {
             return Err(ReservationsError::invalid_amount().into());
         }
-        let token = TIP20Token::from_address(call.token)?;
+        let mut token = TIP20Token::from_address(call.token)?;
         let payee = resolve_payee(call.payee)?;
         token.ensure_transfer_authorized(owner, payee)?;
         if self.authorizations[owner][call.id].token.read()? != Address::ZERO {
@@ -191,7 +207,7 @@ impl Reservations {
         }
 
         let mut position = self.positions[owner][call.token].read()?;
-        if call.amount > available(&token, owner, &position)? {
+        if call.amount > available(&token, owner)? {
             return Err(ReservationsError::insufficient_available().into());
         }
         position.reserved = position
@@ -200,6 +216,7 @@ impl Reservations {
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         let spend =
             AccountKeychain::new().spend_limit(owner, call.token, U256::from(call.amount))?;
+        token.decrement_balance(owner, U256::from(call.amount))?;
         self.positions[owner][call.token].write(position)?;
         let mut auth = Authorization {
             token: call.token,
@@ -231,8 +248,8 @@ impl Reservations {
         let decrease = previous.saturating_sub(call.amount);
         if call.amount > previous {
             let increase = call.amount - previous;
-            let token = TIP20Token::from_address(auth.token)?;
-            if increase > available(&token, owner, &position)? {
+            let mut token = TIP20Token::from_address(auth.token)?;
+            if increase > available(&token, owner)? {
                 return Err(ReservationsError::insufficient_available().into());
             }
             position.reserved = position
@@ -242,8 +259,10 @@ impl Reservations {
             let spend =
                 AccountKeychain::new().spend_limit(owner, auth.token, U256::from(increase))?;
             record_spend(&mut auth, spend, increase);
+            token.decrement_balance(owner, U256::from(increase))?;
         } else {
-            self.unreserve(owner, &auth, &mut position, decrease)?;
+            let returned = self.unreserve(owner, &auth, &mut position, decrease)?;
+            return_to_balance(auth.token, owner, returned)?;
         }
         self.positions[owner][auth.token].write(position)?;
         settle_limit(owner, &mut auth, call.amount)?;
@@ -266,12 +285,21 @@ impl Reservations {
         // The payee may have become forbidden since the hold was placed.
         token.ensure_transfer_authorized(owner, auth.payee)?;
         let mut position = self.positions[owner][auth.token].read()?;
-        // Releasing the hold first lets the payment spend the reservation it consumes.
-        self.unreserve(owner, &auth, &mut position, held)?;
+        // Releasing the hold first returns the reservation it consumes to the spendable balance.
+        let released = self.unreserve(owner, &auth, &mut position, held)?;
         // The hold already counted against the key's limit; only an excess is new spend.
         let excess = call.amount.saturating_sub(held);
-        let (debt, spend) =
-            self.pay(&mut token, owner, auth.payee, call.amount, excess, position)?;
+        let (debt, spend) = self.pay(
+            &mut token,
+            owner,
+            auth.payee,
+            Payment {
+                amount: call.amount,
+                released,
+                spend: excess,
+            },
+            position,
+        )?;
         record_spend(&mut auth, spend, excess);
         settle_limit(owner, &mut auth, call.amount)?;
 
@@ -304,8 +332,17 @@ impl Reservations {
         }
 
         let position = self.positions[owner][call.token].read()?;
-        let (debt, spend) =
-            self.pay(&mut token, owner, payee, call.amount, call.amount, position)?;
+        let (debt, spend) = self.pay(
+            &mut token,
+            owner,
+            payee,
+            Payment {
+                amount: call.amount,
+                released: 0,
+                spend: call.amount,
+            },
+            position,
+        )?;
 
         if !auth.exists()
             && let Some(spend) = spend
@@ -414,8 +451,7 @@ impl Reservations {
     }
 
     fn available_of(&self, owner: Address, token: Address) -> Result<u128> {
-        let position = self.positions[owner][token].read()?;
-        available(&TIP20Token::from_address(token)?, owner, &position)
+        available(&TIP20Token::from_address(token)?, owner)
     }
 
     fn debt_cap(&self, owner: Address, creditor: Address, token: Address) -> Result<u128> {
@@ -442,8 +478,9 @@ impl Reservations {
         })
     }
 
-    /// Pays `amount` from `owner`'s available balance to `payee` and records the shortfall as
-    /// debt towards `payee`, within the owner's cap. Writes `position`.
+    /// Pays `payment.amount` from `owner`'s available balance plus the `released` reservation to
+    /// `payee` and records the shortfall as debt towards `payee`, within the owner's cap. Writes
+    /// `position` and returns the released reservation to the balance once every check passed.
     ///
     /// Counts `spend`, debt included, against the access key signing for `owner`. Returns the
     /// new debt and the limit charge, if any.
@@ -452,12 +489,16 @@ impl Reservations {
         token: &mut TIP20Token,
         owner: Address,
         payee: Address,
-        amount: u128,
-        spend: u128,
+        payment: Payment,
         mut position: Position,
     ) -> Result<(u128, Option<LimitSpend>)> {
+        let Payment {
+            amount,
+            released,
+            spend,
+        } = payment;
         let token_address = token.address();
-        let paid = amount.min(available(token, owner, &position)?);
+        let paid = amount.min(available(token, owner)?.saturating_add(released));
         let debt = amount - paid;
         let new_creditor = position.debt == 0;
         if debt != 0 {
@@ -479,9 +520,10 @@ impl Reservations {
         };
         if debt != 0 && new_creditor {
             self.creditors[owner][token_address].write(payee)?;
+            TIP403Registry::new().count_reservation_debt(owner, true)?;
         }
-        // TIP-20 reads the position during the transfer, so it must be written first.
         self.positions[owner][token_address].write(position)?;
+        return_to_balance(token_address, owner, released)?;
         token.reservation_transfer(owner, payee, U256::from(paid))?;
         Ok((debt, spend))
     }
@@ -502,6 +544,7 @@ impl Reservations {
         self.positions[owner][token].write(position)?;
         if position.debt == 0 {
             self.creditors[owner][token].delete()?;
+            TIP403Registry::new().count_reservation_debt(owner, false)?;
         }
         self.emit_event(ReservationsEvent::debt_repaid(
             owner, token, creditor, amount,
@@ -510,22 +553,25 @@ impl Reservations {
 
     fn end_hold(&mut self, owner: Address, id: B256, mut auth: Authorization) -> Result<()> {
         let mut position = self.positions[owner][auth.token].read()?;
-        self.unreserve(owner, &auth, &mut position, auth.held.to())?;
+        let returned = self.unreserve(owner, &auth, &mut position, auth.held.to())?;
+        return_to_balance(auth.token, owner, returned)?;
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][id].delete()?;
         settle_limit(owner, &mut auth, 0)?;
         self.emit_event(ReservationsEvent::hold_released(owner, id, auth.token))
     }
 
-    /// Removes `amount` of `auth`'s hold from `position`. A hold live at the latest burn first
-    /// consumes the burned part, so the reservation behind the other holds stays in place.
+    /// Removes `amount` of `auth`'s hold from `position` and returns the reserved amount it frees,
+    /// which the caller adds back to the spendable balance. A hold live at the latest burn first
+    /// consumes the burned part, which no longer exists, so the reservation behind the other
+    /// holds stays in place.
     fn unreserve(
         &mut self,
         owner: Address,
         auth: &Authorization,
         position: &mut Position,
         amount: u128,
-    ) -> Result<()> {
+    ) -> Result<u128> {
         let mut from_unbacked = 0;
         if amount != 0 {
             let mut shortfall = self.shortfalls[owner][auth.token].read()?;
@@ -535,8 +581,9 @@ impl Reservations {
                 self.shortfalls[owner][auth.token].write(shortfall)?;
             }
         }
-        position.reserved = position.reserved.saturating_sub(amount - from_unbacked);
-        Ok(())
+        let returned = position.reserved.min(amount - from_unbacked);
+        position.reserved -= returned;
+        Ok(returned)
     }
 
     fn live_hold(&self, owner: Address, id: B256) -> Result<Authorization> {
@@ -610,13 +657,27 @@ fn resolve_payee(payee: Address) -> Result<Address> {
     Ok(payee.target)
 }
 
-/// Returns `owner`'s balance of `token` minus its reserved amount.
-fn available(token: &TIP20Token, owner: Address, position: &Position) -> Result<u128> {
-    // Checked debits keep the balance at or above the reserved amount.
-    Ok(token.balances[owner]
-        .read()?
-        .saturating_sub(U256::from(position.reserved))
-        .saturating_to())
+/// Returns `owner`'s spendable balance of `token`, which excludes its reserved amount.
+fn available(token: &TIP20Token, owner: Address) -> Result<u128> {
+    Ok(token.balances[owner].read()?.saturating_to())
+}
+
+/// Adds `amount` of freed reservation back to `owner`'s spendable balance of `token`.
+fn return_to_balance(token: Address, owner: Address, amount: u128) -> Result<()> {
+    if amount == 0 {
+        return Ok(());
+    }
+    TIP20Token::from_address(token)?.increment_balance(owner, U256::from(amount))
+}
+
+/// Amounts of one capture or charge.
+struct Payment {
+    /// Amount owed to the payee, debt included.
+    amount: u128,
+    /// Reservation the settled hold frees, spendable by this payment.
+    released: u128,
+    /// Amount to count against the signing access key's limit.
+    spend: u128,
 }
 
 #[cfg(test)]
@@ -1243,6 +1304,42 @@ mod tests {
             // Without debt, credits stay with the owner.
             f.transfer(sender, f.owner, 10)?;
             assert_eq!(f.balance(f.owner)?, U256::from(40));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_debtor_count_gates_repayment() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let registry = TIP403Registry::new();
+            assert!(!registry.has_reservation_debt(f.owner)?);
+            f.set_debt_cap(f.payee, 500)?;
+            f.charge(B256::random(), 300, f.payee)?;
+            assert!(registry.has_reservation_debt(f.owner)?);
+
+            // Setting a receive policy keeps the count, so later credits still repay.
+            set_receive_policy(f.owner, ALLOW_ALL_POLICY_ID)?;
+            assert!(registry.has_reservation_debt(f.owner)?);
+            let sender = Address::random();
+            f.token.mint(
+                f.admin,
+                ITIP20::mintCall {
+                    to: sender,
+                    amount: U256::from(1_000),
+                },
+            )?;
+            assert!(f.transfer(sender, f.owner, 150)?);
+            assert_eq!(f.debt()?.amount, 50);
+            assert!(registry.has_reservation_debt(f.owner)?);
+
+            // Full repayment clears the count; the next credit stays with the owner.
+            assert!(f.transfer(sender, f.owner, 70)?);
+            assert_eq!(f.debt()?.amount, 0);
+            assert!(!registry.has_reservation_debt(f.owner)?);
+            assert!(f.transfer(sender, f.owner, 30)?);
+            assert_eq!(f.balance(f.owner)?, U256::from(50));
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
             Ok(())
         })
     }
@@ -1908,26 +2005,34 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t15_debits_ignore_reservations() -> eyre::Result<()> {
+    fn test_pre_t15_tip20_ignores_reservations() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         storage.set_timestamp(U256::from(NOW));
         StorageCtx::enter(&mut storage, || {
             let mut f = Fixture::new(1_000)?;
             // The precompile is not callable before T15; write its state directly.
-            f.hold(B256::random(), 1_000)?;
+            f.reservations.positions[f.owner][f.token.address()].write(Position {
+                reserved: 1_000,
+                debt: 0,
+            })?;
+            assert_eq!(f.balance(f.owner)?, U256::from(1_000));
             assert!(f.transfer(f.owner, Address::random(), 1_000)?);
             Ok(())
         })
     }
 
     #[test]
-    fn test_zone_debits_ignore_reservations() -> eyre::Result<()> {
+    fn test_zone_tip20_ignores_reservations() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15)
             .with_kind(tempo_primitives::TempoEvmKind::Zone);
         storage.set_timestamp(U256::from(NOW));
         StorageCtx::enter(&mut storage, || {
             let mut f = Fixture::new(1_000)?;
-            f.hold(B256::random(), 1_000)?;
+            f.reservations.positions[f.owner][f.token.address()].write(Position {
+                reserved: 1_000,
+                debt: 0,
+            })?;
+            assert_eq!(f.balance(f.owner)?, U256::from(1_000));
             assert!(f.transfer(f.owner, Address::random(), 1_000)?);
             Ok(())
         })

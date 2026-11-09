@@ -1486,7 +1486,6 @@ mod tests {
         account_keychain::{
             AccountKeychain, AuthorizedKey, SpendingLimitState, StoredSignatureType,
         },
-        reservations::Reservations,
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
@@ -2170,12 +2169,8 @@ mod tests {
                 .is_ok()
         );
 
-        // A hold leaves the balance untouched but the available balance below the fee.
-        provider
-            .setup_storage(TempoHardfork::T15, || {
-                Reservations::new().set_reserved_unchecked(sender, PATH_USD_ADDRESS, 2)
-            })
-            .unwrap();
+        // A hold moves funds out of the balance slot, below the fee, without a Transfer log.
+        set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, fee - U256::ONE);
         let mut updates = crate::maintain::TempoPoolUpdates::new();
         updates
             .reservation_changes

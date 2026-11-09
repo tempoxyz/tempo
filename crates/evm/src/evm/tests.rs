@@ -5000,19 +5000,16 @@ fn test_fee_fallback_before_t13_remains_path_usd_only() -> eyre::Result<()> {
 
 #[test]
 fn test_token_balance_excludes_reserved_funds_from_t15() -> eyre::Result<()> {
-    for (spec, expected) in [
-        (TempoHardfork::T14, 2_000_000),
-        (TempoHardfork::T15, 500_000),
-    ] {
-        let (mut evm, payer, tokens) = create_fee_fallback_evm(spec, [2_000_000, 3_000_000], 0)?;
-        with_fee_fallback_storage(&mut evm, || {
-            Reservations::new().set_reserved_unchecked(payer, tokens[0], 1_500_000)
-        })?;
-        assert_eq!(
-            evm.get_token_balance(tokens[0], payer, spec, StorageActions::disabled())?,
-            U256::from(expected)
-        );
-    }
+    let spec = TempoHardfork::T15;
+    let (mut evm, payer, tokens) = create_fee_fallback_evm(spec, [2_000_000, 3_000_000], 0)?;
+    // Reserving moves funds out of the balance slot, which then holds the spendable amount.
+    with_fee_fallback_storage(&mut evm, || {
+        Reservations::new().set_reserved_unchecked(payer, tokens[0], 1_500_000)
+    })?;
+    assert_eq!(
+        evm.get_token_balance(tokens[0], payer, spec, StorageActions::disabled())?,
+        U256::from(500_000)
+    );
     Ok(())
 }
 
@@ -5035,8 +5032,8 @@ fn test_fee_fallback_skips_reserved_funds_from_t15() -> eyre::Result<()> {
     assert!(result.result.status);
     let recorded = actions.take().unwrap();
 
-    // The first token's balance covers the fee but its available balance does not. Replay checks
-    // the balance against the fee plus the exactly replayed reserved amount.
+    // The first token's total covers the fee but its spendable balance slot does not. Replay checks
+    // the slot against the fee alone and never reads reservation state.
     let checks: Vec<_> = recorded
         .iter()
         .filter_map(|action| match action {
@@ -5050,13 +5047,12 @@ fn test_fee_fallback_skips_reserved_funds_from_t15() -> eyre::Result<()> {
     assert_eq!(
         checks,
         vec![
-            (tokens[0], U256::from(2_000_000), fee + reserved, false),
+            (tokens[0], U256::from(2_000_000) - reserved, fee, false),
             (tokens[1], U256::from(3_000_000), fee, true),
         ]
     );
-    assert!(recorded.iter().any(|action| matches!(action,
-        StorageAction::Sload(address, _, value) if *address == RESERVATIONS_ADDRESS
-            && *value == reserved
+    assert!(!recorded.iter().any(|action| matches!(action,
+        StorageAction::Sload(address, ..) if *address == RESERVATIONS_ADDRESS
     )));
     Ok(())
 }

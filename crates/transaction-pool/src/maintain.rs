@@ -21,10 +21,9 @@ use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{
     IAccountKeychain, IFeeManager, IReservations, ITIP20, ITIP403Registry,
 };
-use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, RESERVATIONS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, storage::StorageActions,
+    TIP403_REGISTRY_ADDRESS,
 };
 use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
@@ -84,9 +83,9 @@ pub struct TempoPoolUpdates {
     pub fee_balance_changes: AddressMap<AddressSet>,
     /// Accounts whose reserved amount of a token was raised or adjusted (TIP-1153), keyed by token.
     ///
-    /// From T15 fees can only be paid from the balance not reserved, so a new or larger hold
-    /// lowers what the account can pay without a `Transfer` log. Other reservation operations
-    /// that lower the available balance move tokens and are tracked in `fee_balance_changes`.
+    /// From T15 a new or larger hold moves funds out of the account's balance slot without a
+    /// `Transfer` log. Other reservation operations that lower the balance move tokens and are
+    /// tracked in `fee_balance_changes`.
     pub reservation_changes: AddressMap<AddressSet>,
     /// Spending-limit spends emitted by the account keychain during execution.
     ///
@@ -581,7 +580,6 @@ where
         let mut revalidate_txs = Vec::new();
 
         // Refresh implicit fee-token choices before eviction checks the cached token.
-        let mut latest = None;
         let hashes: Vec<TxHash> = {
             let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
             all_txs
@@ -601,42 +599,16 @@ where
                                     .get(token)
                                     .and_then(|account| account.storage.get(&slot))
                                     .is_some_and(|value| {
-                                        // (+T15) The resolver needs `fee` above the reserved
-                                        // amount. Reservation changes trigger below, so the
-                                        // present reserved amount held before this block too.
-                                        let threshold = if spec.is_t15() {
-                                            let Ok(fee_payer) = tx.transaction.fee_payer() else {
-                                                return true;
-                                            };
-                                            let state = latest
-                                                .get_or_insert_with(|| pool.client().latest().ok());
-                                            let Some(state) = state.as_mut() else {
-                                                return true;
-                                            };
-                                            let Ok(available) = state.get_token_balance(
-                                                *token,
-                                                fee_payer,
-                                                spec,
-                                                StorageActions::disabled(),
-                                            ) else {
-                                                return true;
-                                            };
-                                            fee.saturating_add(
-                                                value.present_value.saturating_sub(available),
-                                            )
-                                        } else {
-                                            fee
-                                        };
-                                        let had_sufficient_balance =
-                                            value.original_value() >= threshold;
-                                        let has_sufficient_balance =
-                                            value.present_value >= threshold;
+                                        // (+T15) The balance slot excludes reserved funds, so
+                                        // holds change it like any debit.
+                                        let had_sufficient_balance = value.original_value() >= fee;
+                                        let has_sufficient_balance = value.present_value >= fee;
                                         had_sufficient_balance != has_sufficient_balance
                                     })
                                 {
                                     return true;
                                 }
-                                // (+T15) Holds change the payable balance without balance writes.
+                                // (+T15) Holds change the payable balance without Transfer logs.
                                 if updates
                                     .reservation_changes
                                     .get(token)

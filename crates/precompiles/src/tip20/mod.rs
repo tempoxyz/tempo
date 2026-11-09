@@ -264,8 +264,14 @@ impl TIP20Token {
     }
 
     /// Returns the token balance of `account`.
+    ///
+    /// (+T15) Includes the amount `account` holds through [`Reservations`], which is kept outside
+    /// the spendable balance.
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
-        self.balances[call.account].read()
+        self.balances[call.account]
+            .read()?
+            .checked_add(self.reserved_balance(call.account)?)
+            .ok_or_else(TempoPrecompileError::under_overflow)
     }
 
     /// Returns the remaining allowance that `spender` can transfer on behalf of `owner`.
@@ -385,7 +391,7 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
     /// - `LogoURITooLong` — `bytes(newLogoURI).length > 256`
     /// - `InvalidLogoURI` — `newLogoURI` is non-empty and either has no
-    ///   parseable scheme (RFC 3986 §3.1) or its scheme is not in
+    ///   parseable scheme (RFC 3986 `3.1) or its scheme is not in
     ///   [`Self::ALLOWED_LOGO_URI_SCHEMES`]
     pub fn set_logo_uri(
         &mut self,
@@ -1016,8 +1022,8 @@ impl TIP20Token {
     /// Moves `amount` for a [`Reservations`] capture, charge or refund.
     ///
     /// This is an internal integration, not an ABI entrypoint. The reservations precompile checks
-    /// TIP-403 and the access key limit itself, and releases the hold being captured before
-    /// calling, so the debit only spends available balance. Reverts when `to`'s TIP-1028 receive
+    /// TIP-403 and the access key limit itself, and returns the hold being captured to the
+    /// spendable balance before calling. Reverts when `to`'s TIP-1028 receive
     /// policy rejects `from`, since a capture cannot represent a guarded payment.
     pub(crate) fn reservation_transfer(
         &mut self,
@@ -1347,7 +1353,6 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     pub fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
-        self.ensure_available(from, amount)?;
         let from_balance = if !self.storage.spec().is_t8() {
             let from_balance = self.get_balance(from)?;
             if amount > from_balance {
@@ -1406,29 +1411,10 @@ impl TIP20Token {
         self.storage.spec().is_t15() && matches!(self.storage.kind(), TempoEvmKind::L1)
     }
 
-    /// (+T15) Ensures `amount` fits in `from`'s balance minus the amount it has reserved.
+    /// Returns the amount of this token `account` has reserved through [`Reservations`]: zero
+    /// before T15 and on zones, where reservations do not apply.
     ///
-    /// Costs one extra SLOAD per debit, plus a balance read for accounts with reservations. A
-    /// reservation flag packed into the balance slot would remove the extra read.
-    ///
-    /// # Errors
-    /// - `InsufficientBalance` — carrying the available balance, not the full balance
-    fn ensure_available(&self, from: Address, amount: U256) -> Result<()> {
-        let reserved = self.reserved_balance(from)?;
-        if reserved.is_zero() {
-            return Ok(());
-        }
-        let available = self.get_balance(from)?.saturating_sub(reserved);
-        if amount > available {
-            return Err(TIP20Error::insufficient_balance(available, amount, self.address).into());
-        }
-        Ok(())
-    }
-
-    /// Returns the amount of this token `account` has reserved through [`Reservations`], which
-    /// no debit can spend: zero before T15 and on zones, where reservations do not apply.
-    ///
-    /// Reads one slot from T15. Fee affordability checks subtract it from the balance.
+    /// Reserved funds sit outside `balances`, so debits never read this; only `balanceOf` adds it.
     pub fn reserved_balance(&self, account: Address) -> Result<U256> {
         if !self.reservations_active() {
             return Ok(U256::ZERO);
@@ -1438,8 +1424,8 @@ impl TIP20Token {
         ))
     }
 
-    /// (+T15) Lowers `from`'s reserved amount so that a compliance burn of `amount` may take
-    /// reserved funds, leaving the reserved amount at most the balance after the burn.
+    /// (+T15) Returns reserved funds to `from`'s spendable balance when a compliance burn of
+    /// `amount` exceeds it, so the burn may take them.
     ///
     /// Compliance burns ignore reservations: holds are owner commitments, not claims that can
     /// shield funds from the issuer. Holds then settle against what remains.
@@ -1447,20 +1433,28 @@ impl TIP20Token {
         if !self.reservations_active() {
             return Ok(());
         }
-        let remaining = self.get_balance(from)?.saturating_sub(amount);
-        Reservations::new().cap_reserved(from, self.address, remaining)
+        let balance = self.get_balance(from)?;
+        if amount <= balance {
+            return Ok(());
+        }
+        let taken = Reservations::new().take_for_burn(from, self.address, amount - balance)?;
+        if taken.is_zero() {
+            return Ok(());
+        }
+        self.increment_balance(from, taken)
     }
 
     /// (+T15) Moves up to `received` of `owner`'s balance to the creditor of its debt in this
     /// token, emitting `DebtRepaid` and a `Transfer` to the creditor.
     ///
-    /// Called after every credit. Costs one extra SLOAD per credit; the repayment itself does not
-    /// repay the creditor's own debt. The repayment is skipped, leaving the debt in place, while
+    /// Called after every credit. Only accounts flagged as debtors in their TIP-1028 receive
+    /// policy slot, which the credit already read, reach the reservations precompile; the
+    /// repayment itself does not repay the creditor's own debt. The repayment is skipped, leaving the debt in place, while
     /// the token is paused, its TIP-403 policy rejects `owner` as sender or the creditor as
     /// recipient, or the creditor's TIP-1028 receive policy rejects `owner`; the credit itself
     /// never reverts for these reasons.
     fn repay_debt(&mut self, owner: Address, received: U256) -> Result<()> {
-        if !self.reservations_active() {
+        if !self.reservations_active() || !TIP403Registry::new().has_reservation_debt(owner)? {
             return Ok(());
         }
         let token = self.address;
@@ -1583,7 +1577,6 @@ impl TIP20Token {
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
         self.check_and_update_spending_limit(from, amount)?;
-        self.ensure_available(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
         let from_reward_recipient = self.update_rewards(from)?;
