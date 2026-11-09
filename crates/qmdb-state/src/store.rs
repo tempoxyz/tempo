@@ -1050,6 +1050,7 @@ impl Actor {
             else {
                 return reply(Err(Error::Stopped));
             };
+            let staged = stage.reads.is_some();
             if let Some((staged_accounts, staged_slots)) = stage.reads.take() {
                 match try_join!(
                     stage_db(accounts_db, staged_accounts, &accounts),
@@ -1060,13 +1061,25 @@ impl Actor {
                 }
             }
             drop(stage);
-            reply(
-                try_join!(
-                    async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
-                    async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
-                )
-                .map(|_| ()),
-            );
+            // Once the keys are staged the block's next keys can stage: warm up the rest of what
+            // building reads for these meanwhile rather than holding the sender back on it.
+            let mut reply = Some(reply);
+            if staged && let Some(reply) = reply.take() {
+                reply(Ok(()));
+            }
+            let prefetched = try_join!(
+                async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
+                async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
+            )
+            .map(|_| ());
+            match reply {
+                Some(reply) => reply(prefetched),
+                None => {
+                    if let Err(err) = prefetched {
+                        debug!(%err, "failed prefetching staged QMDB reads");
+                    }
+                }
+            }
         });
     }
 
