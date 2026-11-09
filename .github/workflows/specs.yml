@@ -35,9 +35,10 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
   # Foundry's evm2 migration (foundry-rs/foundry#17541) with commonware 2026.10.0
-  # (foundry-rs/foundry#18098). Pin to a commit and move the pin to
-  # Foundry master once that PR merges.
-  FOUNDRY_REF: a19afdbf9b54e94842c0fc797d37d1a1a17dc491
+  # (foundry-rs/foundry#18098) and private `SignedKeyAuthorization` fields
+  # (foundry-rs/foundry#18264). Pin to a commit and move the pin to
+  # Foundry master once those PRs merge.
+  FOUNDRY_REF: b37d5c267925927e868b0b99dbe54673a9dc7e4b
 
 jobs:
   check-specs-changes:

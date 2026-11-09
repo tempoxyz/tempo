@@ -3,7 +3,7 @@
 use alloy_primitives::{
     keccak256,
     map::{HashMap, U256Map},
-    Address, B256, KECCAK256_EMPTY, U256,
+    Address, B256, U256,
 };
 use alloy_trie::{HashBuilder, Nibbles, TrieAccount};
 use evm2::evm::AccountInfo;
@@ -169,19 +169,10 @@ pub(crate) fn apply(
     for (address, slots) in touched {
         let (old_account, old_slots) = &before[&address];
         let current = &state[&address];
-        let info = AccountInfo {
-            balance: current.account.balance,
-            nonce: current.account.nonce,
-            code_hash: current.account.bytecode_hash.unwrap_or(KECCAK256_EMPTY),
-            ..Default::default()
-        };
+        // Preserve chain-specific extensions in both overlay state and unwind data.
+        let info = AccountInfo::from(current.account.clone());
         bundle = bundle.state_present_account_info(address, info);
-        let old_info = old_account.as_ref().map(|account| AccountInfo {
-            balance: account.balance,
-            nonce: account.nonce,
-            code_hash: account.bytecode_hash.unwrap_or(KECCAK256_EMPTY),
-            ..Default::default()
-        });
+        let old_info = old_account.clone().map(AccountInfo::from);
         if let Some(info) = &old_info {
             bundle = bundle.state_original_account_info(address, info.clone());
         }

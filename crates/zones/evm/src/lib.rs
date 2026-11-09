@@ -317,7 +317,9 @@ where
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.inner.evm_env(header)
+        let mut env = self.inner.evm_env(header)?;
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, env.spec);
+        Ok(env)
     }
 
     fn next_evm_env(
@@ -333,6 +335,7 @@ where
             .next_block_base_fee(parent, attributes.timestamp)
             .unwrap_or_default();
         env.block.basefee = alloy_primitives::U256::from_limbs([basefee, 0, 0, 0]);
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, env.spec);
         Ok(env)
     }
 
@@ -380,7 +383,7 @@ where
         &self,
         payload: &TempoExecutionData,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.inner.evm_env_for_payload(payload)
+        self.evm_env(payload.block.header())
     }
 
     fn context_for_payload<'a>(
@@ -430,18 +433,37 @@ impl<L1: L1StorageReader> L1StorageReader for RecordingL1StorageReader<L1> {
         self.reads
             .lock()
             .expect("L1 read recorder lock poisoned")
-            .insert(TempoStorageRead { account, slot });
+            .insert(TempoStorageRead {
+                account,
+                slot: Some(slot),
+            });
         Ok(value)
+    }
+
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, zone_precompiles::L1StateError> {
+        let commitment = self.inner.read_l1_commitment(account, block_number)?;
+        self.reads
+            .lock()
+            .expect("L1 read recorder lock poisoned")
+            .insert(TempoStorageRead {
+                account,
+                slot: None,
+            });
+        Ok(commitment)
     }
 }
 
-/// A Tempo L1 storage slot accessed while replaying a Zone block.
+/// A Tempo L1 account, or one of its storage slots, accessed while replaying a Zone block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TempoStorageRead {
     /// Tempo account whose storage was accessed.
     pub account: Address,
-    /// Storage slot that was accessed.
-    pub slot: B256,
+    /// Accessed storage slot, or `None` for an account-only read of the TIP-1108 commitment.
+    pub slot: Option<B256>,
 }
 
 #[cfg(test)]
@@ -489,7 +511,10 @@ mod tests {
         assert_eq!(reader.read_l1_storage(account, slot, 10).unwrap(), value);
         assert_eq!(
             reader.take_reads(),
-            HashSet::from_iter([TempoStorageRead { account, slot }])
+            HashSet::from_iter([TempoStorageRead {
+                account,
+                slot: Some(slot)
+            }])
         );
 
         let failing = RecordingL1StorageReader::new(MockL1Reader::failing_storage());
@@ -805,6 +830,41 @@ mod tests {
             let evm = BlockExecutorFactory::evm_with_env(&config, InMemoryDB::default(), env);
             assert_eq!(evm.config_spec_id(), expected);
         }
+    }
+
+    #[test]
+    fn zone_envs_carry_the_zone_gas_schedule() {
+        let mut genesis = tempo_chainspec::spec::DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(tempo_chainspec::spec::DEV.chain_id(), 1).unwrap();
+        let config = ZoneEvmConfig::new(
+            Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap()),
+            MockL1Reader::default(),
+            Address::ZERO,
+        );
+        let header = TempoHeader::default();
+        let zone = config.evm_env(&header).unwrap();
+        let tempo = config.inner.evm_env(&header).unwrap();
+        assert!(zone.spec.is_t14());
+        let payload = tempo_payload_types::TempoExecutionData {
+            block: reth_primitives_traits::SealedBlock::seal_slow(Block {
+                header,
+                body: Default::default(),
+            })
+            .into(),
+        };
+        assert_eq!(
+            config
+                .evm_env_for_payload(&payload)
+                .unwrap()
+                .version
+                .gas_params,
+            zone.version.gas_params
+        );
+        assert_eq!(
+            zone.version.gas_params.cold_account_additional_cost(),
+            tempo.version.gas_params.cold_account_additional_cost()
+                + tempo_chainspec::constants::gas::L1_COMMITMENT_READ_GAS
+        );
     }
 
     #[tokio::test]

@@ -978,6 +978,7 @@ mod runtime_tests {
                         action.address(),
                     );
                 }
+                StorageAction::ConfigCommitment(..) => {}
             }
         }
 
@@ -1102,6 +1103,9 @@ mod runtime_tests {
                         labels.address(action.address()),
                         labels.slot(action.address(), slot),
                     )
+                }
+                StorageAction::ConfigCommitment(address, before, after) => {
+                    format!("ConfigCommitment({}, {before}, {after})", labels.address(address))
                 }
             })
             .collect()
