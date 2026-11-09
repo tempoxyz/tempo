@@ -56,7 +56,11 @@ jobs:
   smoke:
     name: invariant smoke
     needs: changes
-    if: needs.changes.outputs.harness == 'true'
+    # Fork PRs get no OIDC token, so they can't read tuner or rift.
+    if: >-
+      needs.changes.outputs.harness == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 60
     permissions:
@@ -123,6 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           sha=$(git -C "$TEMPO_REPO" rev-parse HEAD)
+          mkdir -p "$RUNNER_TEMP/fuzz"
           # The same harness twice: the differential oracle then reports only its invariants.
           jq -n --arg r "$sha" '{refs: [$r, $r], mode: "blockchain", diff_hardforks: "all"}' \
             > "$RUNNER_TEMP/fuzz/request.json"
@@ -137,7 +142,10 @@ jobs:
           rift/driver/target/release/rift-fuzz --session "$FUZZ_DIR/bundle/fuzz-session.json" \
             --out "$FUZZ_DIR/out" --seed "$GITHUB_RUN_ID" --workers "$FUZZ_WORKERS" \
             --duration "$FUZZ_DURATION" --stop-on-objective
-          objectives=$(jq -s 'map(.objectives) | add // 0' "$FUZZ_DIR"/out/client-*/status.json)
+          # Fail when a client wrote no status or rift's status schema changed, rather than pass as clean.
+          objectives=$(jq -s 'if length == 0 then error("no status.json") else . end
+            | map(.objectives | if type == "number" then . else error("status.json has no objectives count") end)
+            | add' "$FUZZ_DIR"/out/client-*/status.json)
           echo "objectives: $objectives"
           if [ "$objectives" != 0 ]; then
             echo "::error::the campaign found $objectives objective(s); replay an input.bin with tuner tempo replay"
