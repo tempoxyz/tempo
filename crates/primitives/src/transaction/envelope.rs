@@ -645,7 +645,9 @@ mod tests {
         key_authorization::KeyAuthorization,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     };
-    use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702};
+    use alloy_consensus::{
+        TxEip1559, TxEip2930, TxEip4844, TxEip7702, transaction::SignerRecoverable,
+    };
     use alloy_eips::{
         eip2930::{AccessList, AccessListItem},
         eip7702::SignedAuthorization,
@@ -1282,8 +1284,6 @@ mod tests {
 
     #[test]
     fn test_system_tx_validation_and_recovery() {
-        use alloy_consensus::transaction::SignerRecoverable;
-
         let chain_id = 1u64;
 
         // Valid system tx: all fields zero, correct chain_id, system signature
@@ -1393,8 +1393,6 @@ mod tests {
 
     #[test]
     fn test_try_from_ethereum_envelope_eip4844_rejected() {
-        use alloy_consensus::TxEip4844;
-
         // EIP-4844 should be rejected
         let eip4844_tx = TxEip4844::default();
         let eth_envelope: EthereumTxEnvelope<TxEip4844> = EthereumTxEnvelope::Eip4844(

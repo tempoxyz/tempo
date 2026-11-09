@@ -11,6 +11,7 @@
 //! scripting. Fault injection (scripted payload statuses, FCU rejections,
 //! call gating) is layered on top.
 
+use commonware_cryptography::{Digested, Digestible as _};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     future::Future,
@@ -882,7 +883,7 @@ impl ExecutionLayer for FakeExecution {
 struct MarshalSubscription {
     digest: Digest,
     notarized_in: Round,
-    senders: Vec<oneshot::Sender<Arc<Block>>>,
+    senders: Vec<oneshot::Sender<Digested<Block>>>,
 }
 
 struct MarshalSubscriptions(Mutex<Vec<MarshalSubscription>>);
@@ -898,7 +899,7 @@ impl MarshalSubscriptions {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> (oneshot::Receiver<Arc<Block>>, bool) {
+    ) -> (oneshot::Receiver<Digested<Block>>, bool) {
         let (sender, receiver) = oneshot::channel();
         let mut subscriptions = self.0.lock();
         Self::prune(&mut subscriptions);
@@ -946,7 +947,7 @@ impl MarshalSubscriptions {
 
     /// Delivers `block` to every waiter for `digest`. Every waiter is
     /// served, not only the first; returns whether any received it.
-    fn fulfill(&self, digest: Digest, block: Arc<Block>) -> bool {
+    fn fulfill(&self, digest: Digest, block: Digested<Block>) -> bool {
         let Some(subscription) = self.take(digest) else {
             return false;
         };
@@ -1045,7 +1046,11 @@ impl FakeMarshal {
         digest: Digest,
         block: impl Into<Arc<Block>>,
     ) -> bool {
-        self.inner.subscriptions.fulfill(digest, block.into())
+        let block: Arc<Block> = block.into();
+        let block_digest = block.digest();
+        self.inner
+            .subscriptions
+            .fulfill(digest, Digested::precomputed(block, block_digest))
     }
 
     /// Drops the open subscription for `digest`, simulating marshal giving
@@ -1059,7 +1064,7 @@ impl Marshal for FakeMarshal {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send {
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let block = match identifier.into() {
             Identifier::Height(height) => {
                 self.inner.get_block_log.lock().push(height.get());
@@ -1080,6 +1085,7 @@ impl Marshal for FakeMarshal {
                 .max_by_key(|block| block.height())
                 .cloned(),
         };
+        let block = block.map(Digested::from);
         async move { block }
     }
 
@@ -1097,7 +1103,7 @@ impl Marshal for FakeMarshal {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         let (receiver, opened) = self.inner.subscriptions.subscribe(digest, notarized_in);
         if opened {
             self.inner.subscribe_log.lock().push((digest, notarized_in));
@@ -1288,7 +1294,7 @@ where
         let mailbox = self.mailbox.clone();
         let mut context = block.context();
         context.round = round;
-        async move { mailbox.verify_block(context, block).await }
+        async move { mailbox.verify_block(context, Digested::from(block)).await }
     }
 
     /// Requests a proposal build on top of `parent`, returning the payload

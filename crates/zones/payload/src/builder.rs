@@ -560,7 +560,7 @@ where
             Err(BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
                 ref error,
                 ..
-            })) if is_l1_storage_unavailable(error.as_ref()) => {
+            })) if is_l1_storage_unavailable(error) => {
                 warn!(
                     target: "zone::payload",
                     %error,

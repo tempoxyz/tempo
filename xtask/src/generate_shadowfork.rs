@@ -11,14 +11,13 @@ use alloy_consensus::Sealable as _;
 use commonware_codec::Encode as _;
 use commonware_cryptography::Signer as _;
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
-use rand_08::SeedableRng as _;
 use reth_db::{mdbx::DatabaseArguments, open_db};
 use reth_db_api::{database::Database as _, tables, transaction::DbTx};
 use reth_network_peers::pk2id;
 use reth_provider::{
     BlockHashReader as _, HeaderProvider as _, StaticFileProviderBuilder, StaticFileSegment,
 };
-use secp256k1::SECP256K1;
+use secp256k1::rand::{SeedableRng as _, rngs::StdRng};
 use serde::Serialize;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD;
@@ -125,12 +124,11 @@ impl GenerateShadowfork {
         let consensus_config = consensus_config
             .ok_or_eyre("no consensus config generated; did you provide --validators?")?;
 
-        let mut rng =
-            rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
+        let mut rng = StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
         let mut node_outputs = vec![];
         for (idx, validator) in consensus_config.validators.iter().enumerate() {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
-                let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
+                let (sk, pk) = secp256k1::generate_keypair(&mut rng);
                 (sk, pk2id(&pk))
             };
 

@@ -136,7 +136,7 @@ mod tests {
     use super::*;
 
     fn into_rpc_error(err: TempoInvalidTransaction) -> ErrorObject<'static> {
-        let error = BlockValidationError::Other(Box::new(HandlerError::external(err))).into();
+        let error = BlockValidationError::other(HandlerError::external(err)).into();
         <TempoEthApiError as FromEvmError<TempoEvmConfig>>::from_evm_err(error).into()
     }
 

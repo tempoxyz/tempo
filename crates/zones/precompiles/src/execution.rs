@@ -33,8 +33,9 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     input_cost,
     storage::{
-        PrecompileStorageProvider, StorageCtx, actions::StorageActions,
-        evm::EvmPrecompileStorageProvider,
+        PrecompileStorageProvider, StorageCtx,
+        actions::StorageActions,
+        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
     storage_credits::NonCreditableSlots,
 };
@@ -102,6 +103,7 @@ pub(crate) fn execute_precompile<T>(
 ) -> PrecompileResult
 where
     T: EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     if message.destination != message.call_target {
         return Err(PrecompileError::Revert(
@@ -109,7 +111,7 @@ where
         ));
     }
 
-    let (data, caller) = (message.input.as_ref(), message.caller);
+    let (data, caller): (&[u8], Address) = (&message.input, message.caller);
     let Ok(input_gas) = input_cost(env.spec, data.len()) else {
         return Err(PrecompileHalt::OutOfGas.into());
     };
@@ -227,7 +229,7 @@ mod tests {
         let message = Message::<TempoEvmTypes> {
             gas_limit: gas,
             caller,
-            input: Bytes::copy_from_slice(data),
+            input: Bytes::copy_from_slice(data).into(),
             destination: target,
             call_target: target,
             code_address: target,
