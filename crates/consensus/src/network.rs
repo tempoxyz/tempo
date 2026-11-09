@@ -14,22 +14,24 @@
 //! To avoid this waste, commonware either needs to change the assert! into a
 //! graceful rejection (so that the token can be reclaimed), or allow performing
 //! the size check before.
-use std::{
-    num::{NonZeroU32, TryFromIntError},
-    time::SystemTime,
-};
+use std::{num::NonZeroU32, time::SystemTime};
 
 use commonware_actor::{Feedback, Unreliable};
 use commonware_consensus::{
     marshal::{self, standard::Standard},
     simplex::{self, scheme::bls12381_threshold::vrf::Scheme},
 };
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_p2p::{Channel, CheckedSender, LimitedSender, Recipients};
+use commonware_cryptography::{
+    ChaCha20Poly1305,
+    bls12381::primitives::variant::MinSig,
+    ed25519::{PrivateKey, PublicKey},
+};
+use commonware_p2p::{Channel, CheckedSender, LimitedSender, Recipients, authenticated};
 use commonware_runtime::{
     IoBufs, Metrics,
     telemetry::metrics::{Counter, MetricsExt as _},
 };
+use commonware_stream::SakeCups;
 use tracing::warn;
 
 use crate::{
@@ -41,9 +43,9 @@ use crate::{
 /// most `max_participants`.
 ///
 /// Finalized and notarized backfill responses carry a certificate with a full block, so the limit
-/// exceeds the largest block. Fails if the limit does not fit in a `u32`, which happens once DKG
-/// messages for `max_participants` exceed 4 GiB.
-pub(crate) fn max_message_size(max_participants: NonZeroU32) -> Result<u32, TryFromIntError> {
+/// exceeds the largest block. Returns `None` if the limit exceeds what the p2p transport carries,
+/// which happens once DKG messages for `max_participants` approach 4 GiB.
+pub(crate) fn max_message_size(max_participants: NonZeroU32) -> Option<u32> {
     let largest =
         simplex::max_payload_size::<Scheme<PublicKey, MinSig>, Digest>(max_participants.get())
             .max(marshal::max_payload_size::<
@@ -51,7 +53,10 @@ pub(crate) fn max_message_size(max_participants: NonZeroU32) -> Result<u32, TryF
                 Scheme<PublicKey, MinSig>,
             >(max_participants.get(), &()))
             .max(dkg::max_message_size(max_participants));
+    let transport_limit = authenticated::max_size::<SakeCups<PrivateKey, ChaCha20Poly1305>>();
     u32::try_from(largest)
+        .ok()
+        .filter(|size| *size <= transport_limit)
 }
 
 /// A p2p sender that rejects messages larger than the configured network limit.
@@ -248,12 +253,15 @@ mod tests {
     fn max_message_size_for_20_validators_is_pinned() {
         assert_eq!(
             max_message_size(commonware_utils::NZU32!(20)),
-            Ok(8_388_780)
+            Some(8_388_780)
         );
     }
 
     #[test]
-    fn max_message_size_rejects_participants_whose_dkg_messages_exceed_u32() {
-        assert!(max_message_size(commonware_utils::NZU32!(44_739_243)).is_err());
+    fn max_message_size_rejects_limits_above_the_transport_maximum() {
+        // Fits in a u32 but exceeds the transport's limit.
+        assert_eq!(max_message_size(commonware_utils::NZU32!(44_739_242)), None);
+        // Does not fit in a u32.
+        assert_eq!(max_message_size(commonware_utils::NZU32!(44_739_243)), None);
     }
 }
