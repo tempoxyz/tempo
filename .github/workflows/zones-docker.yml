@@ -366,6 +366,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install cosign
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
       - name: Resolve or publish immutable toolchain
         id: toolchain
         env:
@@ -381,6 +384,18 @@ jobs:
           image_ref="$TOOLCHAIN_REPOSITORY:inputs-$recipe_sha"
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+          # On main and tags, reuse a cached digest only if a main or tag run of this
+          # workflow signed it; otherwise rebuild it from the trusted recipe, so these
+          # runs never sign a digest someone else pushed under the predictable tag.
+          if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
+            [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]] &&
+            ! cosign verify "$TOOLCHAIN_REPOSITORY@$digest" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp '^https://github\.com/tempoxyz/tempo/\.github/workflows/zones-docker\.yml@refs/(heads/main|tags/.+)$' \
+              > /dev/null 2>&1; then
+            echo "Cached $image_ref has no trusted signature; rebuilding it" >&2
+            digest=""
+          fi
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             metadata="$RUNNER_TEMP/eif-toolchain.json"
             depot bake --project 0c6tg19qsp --push \
@@ -394,26 +409,15 @@ jobs:
           echo "image=$TOOLCHAIN_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
           echo "EIF toolchain: \`$TOOLCHAIN_REPOSITORY@$digest\` (main recipe $(git rev-parse HEAD), inputs-$recipe_sha)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
-      - name: Sign the toolchain image
+      - name: Sign the published toolchain image
+        if: steps.toolchain.outputs.pushed == 'true'
         env:
           IMAGES: ${{ steps.toolchain.outputs.image }}
         run: |
           set -euo pipefail
-          # Sign reused digests too, so a rerun after a failed sign still signs the image.
-          # Skip digests that already carry a main or tag signature from this workflow.
-          trusted_identity='^https://github\.com/tempoxyz/tempo/\.github/workflows/zones-docker\.yml@refs/(heads/main|tags/.+)$'
           # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
           while IFS= read -r ref; do
             [ -n "$ref" ] || continue
-            if cosign verify "$ref" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity-regexp "$trusted_identity" > /dev/null 2>&1; then
-              echo "$ref is already signed; skipping"
-              continue
-            fi
             for attempt in 1 2 3; do
               if cosign sign --yes --recursive "$ref"; then
                 break
