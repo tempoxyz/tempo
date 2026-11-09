@@ -12,6 +12,7 @@ publish = false
 
 [workspace]
 members = [
+  "contrib/antithesis/reth-proof",
   "contrib/antithesis/reth-trie",
   "bin/tempo",
   "crates/alloy",

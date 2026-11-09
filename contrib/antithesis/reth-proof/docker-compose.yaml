@@ -1,0 +1,20 @@
+services:
+  reth-proof:
+    image: ${RETH_PROOF_IMAGE:-tempo-reth-proof-antithesis:latest}
+    container_name: reth-proof
+    hostname: reth-proof
+    init: true
+    networks:
+      antithesis:
+        ipv4_address: 10.20.0.10
+    # The binary emits setup_complete after its first database initialization, then runs
+    # bounded rounds on fresh databases indefinitely. Antithesis controls kill/restart timing.
+    command: ['{}']
+
+# Match the explicit bridge subnet used by the reth-trie and Zones Antithesis configurations.
+networks:
+  antithesis:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24

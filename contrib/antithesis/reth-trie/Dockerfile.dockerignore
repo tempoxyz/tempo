@@ -11,6 +11,8 @@
 !bin/**
 !crates/**
 !xtask/**
+!contrib/antithesis/reth-proof/Cargo.toml
+!contrib/antithesis/reth-proof/src/**
 !contrib/antithesis/reth-trie/Cargo.toml
 !contrib/antithesis/reth-trie/src/**
 
