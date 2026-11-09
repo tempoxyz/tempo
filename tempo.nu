@@ -550,7 +550,7 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
     let build_cmd = ["cargo" "build" "--profile" $profile]
         | append $feature_args
         | append ["--bin" "tempo"]
-    with-env { RUSTFLAGS: $rustflags } {
+    with-env { CARGO_BUILD_RUSTFLAGS: $rustflags } {
         do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
     }
 
