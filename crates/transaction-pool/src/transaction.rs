@@ -403,7 +403,7 @@ impl TempoPooledTransaction {
     ///
     /// Unlike [`Self::is_expired_by`], this also rejects transactions that are not valid yet, so
     /// it must not drive eviction.
-    pub fn is_includable_at(&self, timestamp: u64) -> bool {
+    pub(crate) fn is_includable_at(&self, timestamp: u64) -> bool {
         self.inner().ensure_valid_after(timestamp).is_ok() && !self.is_expired_by(timestamp)
     }
 
