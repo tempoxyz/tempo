@@ -13,8 +13,8 @@ on:
   merge_group:
 
 concurrency:
-  # The event name keeps a PR branch named like a run ID out of main and merge-queue groups.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.run_id }}
+  # One group per PR (by number, so same-named fork branches don't collide); other events never share one.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
