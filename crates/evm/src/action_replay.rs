@@ -742,6 +742,11 @@ mod tests {
         // An earlier tx in the block delegated the target with EIP-7702.
         let delegated =
             AccountInfo::default().with_code(Bytecode::new_eip7702(Address::repeat_byte(0x33)));
+        let registered = vec![StorageAction::ConfigCommitment(
+            target,
+            B256::ZERO,
+            B256::repeat_byte(0x77),
+        )];
         let tx = TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(1),
@@ -752,20 +757,33 @@ mod tests {
             }
             .into_signed(Signature::test_signature()),
         );
-        for recorded in [KECCAK256_EMPTY, delegated.code_hash] {
+        for (info, prior, recorded, replays) in [
+            (delegated.clone(), vec![], delegated.code_hash, true),
+            (delegated, vec![], KECCAK256_EMPTY, false),
+            // The tx's own first commitment installs the marker code.
+            (
+                AccountInfo::default(),
+                registered.clone(),
+                CONFIGURABLE_ACCOUNT_CODE_HASH,
+                true,
+            ),
+            (AccountInfo::default(), registered, KECCAK256_EMPTY, false),
+        ] {
             let mut executor = TestExecutorBuilder::default()
                 .with_spec(TempoHardfork::T14)
                 .build(InMemoryDB::default(), &chainspec);
             executor
                 .evm_mut()
                 .overlay_db_mut()
-                .insert_account_info(&target, delegated.clone());
+                .insert_account_info(&target, info);
+            let mut actions = prior;
+            actions.push(StorageAction::CodeHash(target, recorded));
             let replay = StorageActionReplay {
                 result: TxResult::<TempoEvmTypes> {
                     status: true,
                     ..Default::default()
                 },
-                actions: vec![StorageAction::CodeHash(target, recorded)],
+                actions,
                 expiring_nonce: None,
             };
             let result = executor.execute_transaction_with_actions(
@@ -773,15 +791,18 @@ mod tests {
                 replay,
                 |_| {},
             );
-            let reason = result
-                .as_ref()
-                .err()
-                .and_then(StorageActionReplayError::from_block_execution_error);
-            assert_eq!(
-                reason == Some(StorageActionReplayError::ActionConflict),
-                recorded == KECCAK256_EMPTY,
-                "{recorded}: {result:?}"
-            );
+            if replays {
+                assert!(result.is_ok(), "{recorded}: {result:?}");
+            } else {
+                assert_eq!(
+                    result
+                        .as_ref()
+                        .err()
+                        .and_then(StorageActionReplayError::from_block_execution_error),
+                    Some(StorageActionReplayError::ActionConflict),
+                    "{recorded}: {result:?}"
+                );
+            }
         }
     }
 
