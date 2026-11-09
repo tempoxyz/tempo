@@ -404,7 +404,21 @@ jobs:
           IMAGES: ${{ steps.toolchain.outputs.image }}
         run: |
           set -euo pipefail
-          while IFS= read -r ref; do if [ -n "$ref" ]; then cosign sign --yes --recursive "$ref"; fi; done <<< "$IMAGES"
+          # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
+          while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            for attempt in 1 2 3; do
+              if cosign sign --yes --recursive "$ref"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "Failed to sign $ref after $attempt attempts" >&2
+                exit 1
+              fi
+              echo "cosign sign failed for $ref; retrying in $((attempt * 15))s" >&2
+              sleep $((attempt * 15))
+            done
+          done <<< "$IMAGES"
 
   reproducible-eif-verify:
     name: Verify reproducible prover EIF
@@ -1444,7 +1458,21 @@ jobs:
             ${{ env.STAGING_REPOSITORY }}@${{ steps.promote.outputs.image_digest }}
         run: |
           set -euo pipefail
-          while IFS= read -r ref; do if [ -n "$ref" ]; then cosign sign --yes --recursive "$ref"; fi; done <<< "$IMAGES"
+          # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
+          while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            for attempt in 1 2 3; do
+              if cosign sign --yes --recursive "$ref"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "Failed to sign $ref after $attempt attempts" >&2
+                exit 1
+              fi
+              echo "cosign sign failed for $ref; retrying in $((attempt * 15))s" >&2
+              sleep $((attempt * 15))
+            done
+          done <<< "$IMAGES"
 
       - name: Publish Zones CI event
         if: github.ref == 'refs/heads/main'

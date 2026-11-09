@@ -132,15 +132,34 @@ jobs:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
 
+      # PR builds check out the PR head, but a keyless certificate names the
+      # dispatching ref (usually main), so signing them would vouch for
+      # unreviewed code as main. Only selected-ref builds are signed.
       - name: Install cosign
+        if: inputs.pr_number == ''
         uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Sign the published image
+        if: inputs.pr_number == ''
         env:
           IMAGES: ${{ env.REGISTRY }}/tempo@${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo']['containerimage.digest'] }}
         run: |
           set -euo pipefail
-          while IFS= read -r ref; do if [ -n "$ref" ]; then cosign sign --yes --recursive "$ref"; fi; done <<< "$IMAGES"
+          # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
+          while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            for attempt in 1 2 3; do
+              if cosign sign --yes --recursive "$ref"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "Failed to sign $ref after $attempt attempts" >&2
+                exit 1
+              fi
+              echo "cosign sign failed for $ref; retrying in $((attempt * 15))s" >&2
+              sleep $((attempt * 15))
+            done
+          done <<< "$IMAGES"
 
       - name: Record published PR images
         id: image-report
