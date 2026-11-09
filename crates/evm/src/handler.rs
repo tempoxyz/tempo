@@ -1481,19 +1481,20 @@ fn prepare_aa(
     )?;
 
     // From T14, configurable-account state checks load more accounts, so transaction warmth
-    // goes first, and the beneficiary after them so their gas ignores the fee recipient.
+    // goes first, and the beneficiary after them and intrinsic gas so their gas ignores the fee
+    // recipient.
     if spec.is_t14() {
         warm_aa_accounts(request.host, caller, tx);
     }
     let (configurable_gas, configurable_state_gas) =
         configurable_account::validate_state(request.host, request.envelope, spec)?;
-    if spec.is_t14() {
-        warm_beneficiary(request.host);
-    }
 
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
+    if spec.is_t14() {
+        warm_beneficiary(request.host);
+    }
     intrinsic = intrinsic.saturating_add(configurable_gas);
     initial_state_gas = initial_state_gas.saturating_add(configurable_state_gas);
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());

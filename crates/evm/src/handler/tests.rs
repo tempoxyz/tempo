@@ -764,12 +764,17 @@ fn test_aa_gas_multiple_calls_overhead() {
     assert_eq!((gas.0 + gas.1), expected,);
 }
 
+const BATCH_BENEFICIARY: Address = Address::new([0xbe; 20]);
+
 fn batch_intrinsic_gas(spec: TempoHardfork, targets: &[Address], access_list: Vec<Address>) -> u64 {
     let signer = PrivateKeySigner::random();
     let caller = signer.address();
     let gas_limit = 1_000_000;
     let gas_price = 1_000_000_000_000;
     let mut evm = test_evm(spec);
+    let mut block = *evm.block();
+    block.beneficiary = BATCH_BENEFICIARY;
+    evm.set_block(block);
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
         TIP20Setup::path_usd(caller)
             .with_issuer(caller)
@@ -840,6 +845,12 @@ fn test_t14_batch_charges_cold_access_once_per_cold_target() {
     assert_eq!(
         batch_intrinsic_gas(spec, &[a, sender], vec![]),
         single + WARM_ACCOUNT_ACCESS_COST
+    );
+    // The block's fee recipient is warm during execution, but intrinsic gas must not depend on
+    // which validator builds the block.
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, BATCH_BENEFICIARY], vec![]),
+        single + COLD_ACCOUNT_ACCESS_COST
     );
     assert_eq!(
         batch_intrinsic_gas(spec, &[a, listed], vec![listed]),
