@@ -8,7 +8,6 @@ mod validation;
 pub(crate) use contract_creation::zone_execution_config;
 pub use validation::validate_transaction;
 
-use crate::executor::ZoneTransactionKind;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use evm2::{
@@ -17,10 +16,8 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
-use tempo_precompiles::tip20::{self, is_tip20_prefix};
 use zone_precompiles::{
-    L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
-    tx_context,
+    L1State, L1StorageReader, tempo_state::TEMPO_BLOCK_NUMBER_SLOT, tx_context,
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
 
@@ -73,27 +70,8 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .host
             .state_mut()
             .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
-
-        // Mirrored registry and TIP-20 pause values depend on the anchor, but the accepted cache is
-        // keyed by slot only. Keep its entries only while they were loaded at this transaction's
-        // anchor. Anchor-changing transactions switch anchors mid-transaction, and a cache hit
-        // skips `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
-        let changes_anchor = matches!(
-            ZoneTransactionKind::classify(request.envelope.evm_tx().is_system_tx(), || {
-                request.envelope.evm_tx().calls()
-            }),
-            ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
-        );
-        if self.l1.select_mirror_cache_anchor(initial_anchor) || changes_anchor {
-            let cache = &mut request.host.state_mut().overlay_db_mut().cache.storage;
-            cache.remove(&TIP403_REGISTRY_ADDRESS);
-            // The Zone never writes pause flags, so dropping them loses no local change.
-            for (address, storage) in cache.iter_mut() {
-                if is_tip20_prefix(*address) {
-                    storage.slots.remove(&tip20::slots::PAUSED);
-                }
-            }
-        }
+        // The accepted cache keys mirrored slots without their anchor. That is sound because a
+        // Zone EVM executes one block, whose committed opening advanceTempo is its only anchor change.
         self.l1.begin_transaction(initial_anchor);
 
         let tx_hash = match request.envelope.execution_context() {
