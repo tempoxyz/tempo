@@ -14,7 +14,7 @@ use tempo_contracts::precompiles::{
         KeyRestrictions,
         SignatureType::{self, P256, Secp256k1},
     },
-    ISignatureVerifier,
+    ISignatureVerifier, SignatureVerifierError,
 };
 use tempo_precompiles::{
     Precompile,
@@ -384,4 +384,60 @@ fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14(
     })
     .unwrap();
     assert!(bool::abi_decode(output.bytes()).unwrap());
+}
+
+#[test]
+fn verify_keychain_accepts_configurable_delegates_from_t14() {
+    let owner = Key::random(Secp256k1);
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let delegate = config.derive_account().unwrap();
+    let account = Address::repeat_byte(0x01);
+    let digest = configurable_account_digest(
+        KeychainSignature::signing_hash(HASH, account),
+        delegate,
+        config.version,
+    );
+    let inner =
+        ConfigurableAccountSignature::try_new(delegate, config, vec![owner.sign(digest)]).unwrap();
+    let signature = TempoSignature::Keychain(KeychainSignature::new(account, inner)).to_bytes();
+    // `verifyKeychain` and `verifyKeychainAdmin` results for the delegate's signature.
+    let verify = |spec, grant, committed: &[Address]| {
+        let mut storage = storage_at(spec, account, delegate, grant, committed);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = SignatureVerifier::new();
+            [
+                verifier.verify_keychain(account, HASH, &signature),
+                verifier.verify_keychain_admin(account, HASH, &signature),
+            ]
+        })
+    };
+    let invalid_format = || Err(SignatureVerifierError::invalid_format().into());
+    let delegate_grant = key(SignatureType::ConfigurableAccount);
+    // An unregistered delegate is checked against its derived address.
+    assert_eq!(
+        verify(T14, delegate_grant, &[]),
+        [Ok(true), invalid_format()]
+    );
+    // A commitment of another configuration.
+    assert_eq!(
+        verify(T14, delegate_grant, &[delegate]),
+        [Ok(false), invalid_format()]
+    );
+    assert_eq!(
+        verify(T14, key(Secp256k1), &[]),
+        [Ok(false), invalid_format()]
+    );
+    assert_eq!(verify(T14, None, &[]), [Ok(false), invalid_format()]);
+    assert_eq!(
+        verify(T13, delegate_grant, &[]),
+        [invalid_format(), invalid_format()]
+    );
 }

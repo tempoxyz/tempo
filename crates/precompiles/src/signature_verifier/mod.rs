@@ -11,7 +11,7 @@ use alloy::primitives::{Address, B256};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
-    SignatureType,
+    ConfigurableAccountSignature, SignatureType,
     tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
 };
 use tracing::trace;
@@ -42,11 +42,31 @@ impl SignatureVerifier {
 
     /// Returns whether `signature` is an active access-key signature for `account`.
     ///
-    /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
-    /// (TIP-1112), even under a stored grant, or when the inner signature type differs from the
-    /// stored key type.
+    /// From T14, `false` when a primitive inner signature's key ID has a nonzero configuration
+    /// commitment (TIP-1112), even under a stored grant, or when the inner signature type differs
+    /// from the stored key type.
     pub fn verify_keychain(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
-        let recovered = self.recover_keychain_key(hash, signature)?;
+        let sig = TempoSignature::from_bytes(signature)
+            .map_err(|_| SignatureVerifierError::invalid_format())?;
+        if self.storage.spec().is_t14()
+            && let Some(keychain_sig) = sig.as_keychain()
+            && let Some(delegate) = keychain_sig.signature.as_configurable_account()
+        {
+            let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
+            if !self.verify_configurable_signature(delegate.account(), signing_hash, delegate)?
+                || keychain_sig.user_address != account
+            {
+                return Ok(false);
+            }
+            return Ok(self
+                .active_key(
+                    account,
+                    delegate.account(),
+                    SignatureType::ConfigurableAccount,
+                )?
+                .is_some());
+        }
+        let recovered = self.recover_keychain_key(hash, &sig)?;
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }
@@ -68,7 +88,9 @@ impl SignatureVerifier {
         hash: B256,
         signature: &[u8],
     ) -> Result<bool> {
-        let recovered = self.recover_keychain_key(hash, signature)?;
+        let sig = TempoSignature::from_bytes(signature)
+            .map_err(|_| SignatureVerifierError::invalid_format())?;
+        let recovered = self.recover_keychain_key(hash, &sig)?;
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }
@@ -110,9 +132,11 @@ impl SignatureVerifier {
         }
     }
 
-    fn recover_keychain_key(&self, hash: B256, signature: &[u8]) -> Result<RecoveredKeychainKey> {
-        let sig = TempoSignature::from_bytes(signature)
-            .map_err(|_| SignatureVerifierError::invalid_format())?;
+    fn recover_keychain_key(
+        &self,
+        hash: B256,
+        sig: &TempoSignature,
+    ) -> Result<RecoveredKeychainKey> {
         let keychain_sig = sig
             .as_keychain()
             .ok_or_else(SignatureVerifierError::invalid_format)?;
@@ -146,6 +170,15 @@ impl SignatureVerifier {
         let Some(signature) = signature.as_configurable_account() else {
             return Err(SignatureVerifierError::invalid_format().into());
         };
+        self.verify_configurable_signature(account, hash, signature)
+    }
+
+    fn verify_configurable_signature(
+        &self,
+        account: Address,
+        hash: B256,
+        signature: &ConfigurableAccountSignature,
+    ) -> Result<bool> {
         let spec = self.storage.spec();
         let (commitment, code_hash) = self.storage.with_account_info(account, |info| {
             Ok((account_config_commitment(info, spec)?, info.code_hash))
