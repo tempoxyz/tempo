@@ -1,10 +1,6 @@
 //! Tempo Accounts store persistence of configurable account key authorizations.
 
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::fs;
 
 use alloy_network::{NetworkWallet, TransactionBuilder};
 use alloy_primitives::{Address, B256};
@@ -24,17 +20,6 @@ use tempo_primitives::{
         TempoTypedTransaction,
     },
 };
-
-fn unique_test_directory() -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "tempo-alloy-accounts-store-{}-{unique}",
-        std::process::id()
-    ))
-}
 
 fn configurable_authorization(
     account: Address,
@@ -71,8 +56,8 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
         }
         .into_signed(authorization.signature().clone());
     }
-    let directory = unique_test_directory();
-    let path = directory.join("store.json");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store.json");
 
     TempoAccountsStore::at(&path)
         .upsert_secp256k1_access_key(account, &signer, &authorization)
@@ -82,7 +67,6 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
         .unwrap()
         .access_keys()
         .unwrap();
-    fs::remove_dir_all(directory).unwrap();
 
     // Stored like every other authorization signature: an object tagged by `type`.
     let signature = authorization.signature().as_configurable_account().unwrap();
@@ -104,8 +88,8 @@ async fn configurable_account_authorization_for_another_account_is_rejected() {
     let other = Address::repeat_byte(3);
     let signer = PrivateKeySigner::random();
     let authorization = configurable_authorization(other, &signer);
-    let directory = unique_test_directory();
-    let path = directory.join("store.json");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store.json");
     let store = TempoAccountsStore::at(&path);
 
     // Naming the account does not let another configurable account sign its grant, and a
@@ -211,5 +195,4 @@ async fn configurable_account_authorization_for_another_account_is_rejected() {
         Err(TempoAccountsError::MissingAccessKey { .. })
     ));
     wallet.access_key(other, 4217, usable.address()).unwrap();
-    fs::remove_dir_all(directory).unwrap();
 }
