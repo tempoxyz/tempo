@@ -23,7 +23,10 @@ use tempo_contracts::{
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
 
-use super::{APPROVAL_SPENDERS, Context, approval_spender, is_rpc_error, random_below, shuffled};
+use super::{
+    APPROVAL_SPENDERS, Context, approval_spender, is_rpc_error, random_below, random_spender,
+    shuffled,
+};
 
 /// Workload accounts whose pathUSD balance slot each run proves.
 const PROOF_ACCOUNTS: usize = 12;
@@ -64,10 +67,12 @@ impl Context {
             zone_slots.extend(accounts.iter().map(|account| mapping_key(*account, index)));
             // pathUSD's allowances mapping follows the balances one. Keys into owners'
             // approval sets cover set, cleared and never-set allowances.
-            zone_slots.extend(accounts.iter().take(PROOF_OWNERS).map(|owner| {
-                let spender = approval_spender(*owner, random_below(APPROVAL_SPENDERS));
-                nested_mapping_key(*owner, spender, index + 1)
-            }));
+            zone_slots.extend(
+                accounts
+                    .iter()
+                    .take(PROOF_OWNERS)
+                    .map(|owner| nested_mapping_key(*owner, random_spender(*owner), index + 1)),
+            );
             // Half the time, one owner's whole approval set in the same request, so one proof
             // covers many keys of the same subtrie.
             if let Some(owner) = accounts.first().filter(|_| random_below(2) == 0) {

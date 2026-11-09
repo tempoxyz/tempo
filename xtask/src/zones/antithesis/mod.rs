@@ -76,8 +76,11 @@ const BATCH_APPROVALS: u128 = 32;
 const BATCH_BASE_GAS: u64 = 100_000;
 /// Gas each call of a batched approval transaction gets.
 const BATCH_CALL_GAS: u64 = 400_000;
-/// Spenders each owner approves, so repeated approvals overwrite and clear earlier ones.
+/// Hot spenders each owner approves, so repeated approvals overwrite and clear earlier ones.
 const APPROVAL_SPENDERS: u64 = 64;
+/// All spenders an owner may approve: approvals outside the hot set keep adding new allowance
+/// slots, so the token's storage trie keeps growing deeper.
+const APPROVAL_SPENDERS_WIDE: u64 = 4096;
 /// How many leased-account candidates a driver tries before giving up for this run.
 const SENDER_CANDIDATES: usize = 16;
 /// Transfers one fanout keeps pending at once. A follower forwards a sender's transactions to the
@@ -764,7 +767,7 @@ impl Context {
             remaining -= chunk;
             let mut pending: Vec<(Address, U256, PendingTransactionBuilder<_>)> = Vec::new();
             for _ in 0..chunk {
-                let spender = approval_spender(sender.address(), random_below(APPROVAL_SPENDERS));
+                let spender = random_spender(sender.address());
                 // A third of approvals clear the allowance, deleting its slot.
                 let amount = if random_below(3) == 0 {
                     U256::ZERO
@@ -976,7 +979,7 @@ impl Context {
         }
         let approvals: Vec<(Address, U256)> = (0..calls)
             .map(|_| {
-                let spender = approval_spender(sender.address(), random_below(APPROVAL_SPENDERS));
+                let spender = random_spender(sender.address());
                 let amount = if random_below(3) == 0 {
                     U256::ZERO
                 } else {
@@ -1454,6 +1457,16 @@ async fn poll_until(
         }
         tokio::time::sleep(POLL).await;
     }
+}
+
+/// A spender of `owner`: from the hot set half the time, otherwise from the wide set.
+fn random_spender(owner: Address) -> Address {
+    let bound = if random_below(2) == 0 {
+        APPROVAL_SPENDERS
+    } else {
+        APPROVAL_SPENDERS_WIDE
+    };
+    approval_spender(owner, random_below(bound))
 }
 
 /// Spender `index` of `owner`'s approval set: a fixed address no key controls.
