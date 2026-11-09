@@ -146,7 +146,8 @@ mod tests {
     use tempo_primitives::{
         AASigned, BlockBody, SubBlockMetadata, TempoHeader, TempoTransaction,
         transaction::{
-            KeychainSignature, PrimitiveSignature, TempoSignature,
+            ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+            KeychainSignature, PrimitiveSignature, TempoSignature, configurable_account_digest,
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
         },
     };
@@ -302,41 +303,71 @@ mod tests {
     }
 
     #[test]
-    fn test_sender_cache_skipped_for_keychain() {
-        let holder = Address::repeat_byte(0x11);
+    fn test_sender_cache_skipped_for_keychain_and_configurable_account() {
         let transaction = TempoTransaction {
             chain_id: 1,
             gas_limit: 1_000_000,
             ..Default::default()
         };
-        let signature = PrivateKeySigner::random()
-            .sign_hash_sync(&KeychainSignature::signing_hash(
-                transaction.signature_hash(),
-                holder,
-            ))
-            .unwrap();
+        let sig_hash = transaction.signature_hash();
+        let signer = PrivateKeySigner::random();
+
+        let holder = Address::repeat_byte(0x11);
         let keychain_tx = TempoTxEnvelope::AA(AASigned::new_unhashed(
-            transaction,
+            transaction.clone(),
             TempoSignature::Keychain(KeychainSignature::new(
                 holder,
-                PrimitiveSignature::Secp256k1(signature),
+                PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&KeychainSignature::signing_hash(sig_hash, holder))
+                        .unwrap(),
+                ),
             )),
+        ));
+
+        let config = ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: signer.address(),
+                weight: 1,
+            }],
+        };
+        let account = config.derive_account().unwrap();
+        let approval = signer
+            .sign_hash_sync(&configurable_account_digest(sig_hash, account, 0))
+            .unwrap();
+        let configurable_tx = TempoTxEnvelope::AA(AASigned::new_unhashed(
+            transaction,
+            TempoSignature::ConfigurableAccount(
+                ConfigurableAccountSignature::try_new(
+                    account,
+                    config,
+                    vec![PrimitiveSignature::Secp256k1(approval)],
+                )
+                .unwrap(),
+            ),
         ));
         let legacy_tx = create_legacy_tx();
 
-        // Seed the cache with a sender neither transaction recovers to.
+        // Seed the cache with a sender none of the transactions recovers to.
         let cache = SenderRecoveryCache::new(4);
         let cached = Address::repeat_byte(0x22);
-        for tx in [&keychain_tx, &legacy_tx] {
+        for tx in [&keychain_tx, &configurable_tx, &legacy_tx] {
             assert_eq!(cache.recover_with(tx, |_| Ok(cached)).unwrap(), cached);
         }
 
         let block: SealedOrRecoveredBlock<Block> =
-            create_test_block(vec![keychain_tx, legacy_tx]).into();
-        let keychain = RecoveredInBlock::new(block.clone(), 0, None, Some(&cache)).unwrap();
-        let legacy = RecoveredInBlock::new(block, 1, None, Some(&cache)).unwrap();
+            create_test_block(vec![keychain_tx, configurable_tx, legacy_tx]).into();
+        let sender = |index| {
+            RecoveredInBlock::new(block.clone(), index, None, Some(&cache))
+                .unwrap()
+                .sender
+        };
 
-        assert_eq!(keychain.sender, holder);
-        assert_eq!(legacy.sender, cached);
+        assert_eq!(sender(0), holder);
+        assert_eq!(sender(1), account);
+        assert_eq!(sender(2), cached);
     }
 }
