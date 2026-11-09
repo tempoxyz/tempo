@@ -3521,7 +3521,6 @@ fn verify_keychain_accepts_large_configurable_delegate_signatures() {
 
 #[test]
 fn verify_keychain_rejects_another_accounts_delegate_before_reading_it() {
-    let hash = B256::repeat_byte(0x42);
     let mut f = Fixture::with_spec(false, TempoHardfork::T14);
     seed_relayer(&mut f);
     let account = f.account;
@@ -3533,9 +3532,11 @@ fn verify_keychain_rejects_another_accounts_delegate_before_reading_it() {
         owners: owner_set(vec![owner.address()]),
     };
     let delegate = config.derive_account().unwrap();
-    let signing_hash = KeychainSignature::signing_hash(hash, account);
-    let approval = configurable_account_approval(delegate, &config, &owner, signing_hash);
-    let signature = TempoSignature::Keychain(KeychainSignature::new(account, approval)).to_bytes();
+    // The delegate's signature of a transaction of the fixture's account.
+    let tx = aa_tx(0, Vec::new());
+    let hash = tx.signature_hash();
+    let signed = delegate_keychain_signed(tx, account, delegate, &config, &owner);
+    let signature = signed.signature().to_bytes();
     // Checked against another account than it names, the signature is rejected before the
     // delegate's commitment is read: listing the delegate costs its 2400 intrinsic gas and saves
     // nothing. The spent gas is compared before the calldata floor, which would hide the read.
