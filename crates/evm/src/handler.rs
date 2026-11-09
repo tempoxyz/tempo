@@ -1283,6 +1283,8 @@ fn execute_batch(
         chain_id: U256::from(host.version().chain_id),
         ..TxEnv::<TempoEvmTypes>::default()
     };
+    // Tracers nest the calls under one synthetic root, even a single call.
+    host.inspect_batch_start();
 
     for call in calls {
         if let TxKind::Call(address) = call.to {

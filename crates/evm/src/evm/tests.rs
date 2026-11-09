@@ -101,6 +101,7 @@ struct CountInspector {
     logs: usize,
     calls: usize,
     call_ends: usize,
+    batch_starts: usize,
 }
 
 impl Default for CountInspector {
@@ -110,6 +111,7 @@ impl Default for CountInspector {
             logs: 0,
             calls: 0,
             call_ends: 0,
+            batch_starts: 0,
         }
     }
 }
@@ -134,6 +136,10 @@ impl CountInspector {
     fn call_end_count(&self) -> usize {
         self.call_ends
     }
+
+    fn batch_start_count(&self) -> usize {
+        self.batch_starts
+    }
 }
 
 impl Inspector<TempoEvmTypes> for CountInspector {
@@ -143,6 +149,10 @@ impl Inspector<TempoEvmTypes> for CountInspector {
 
     fn log(&mut self, _log: &alloy_primitives::Log, _host: &mut TempoEvm<'_>) {
         self.logs += 1;
+    }
+
+    fn batch_start(&mut self) {
+        self.batch_starts += 1;
     }
 
     fn call(
@@ -783,6 +793,7 @@ fn test_inspector_calls() -> eyre::Result<()> {
 
     // Should have 2 call ends
     assert_eq!(inspector.call_end_count(), 2);
+    assert_eq!(inspector.batch_start_count(), 0);
 
     // ==================== Multi-call Tempo transaction test ====================
     // Test inspector with a Tempo transaction that has multiple calls
@@ -830,6 +841,8 @@ fn test_inspector_calls() -> eyre::Result<()> {
     // call_count = 3 (one for each identity precompile call)
     assert_eq!(multi_inspector.call_count(), 3,);
     assert_eq!(multi_inspector.call_end_count(), 3,);
+    // The calls run as one batch.
+    assert_eq!(multi_inspector.batch_start_count(), 1);
 
     Ok(())
 }
