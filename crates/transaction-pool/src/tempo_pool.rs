@@ -463,7 +463,11 @@ where
             // Check 3c: Fee token transfer policy changes.
             // The policy only gates fee collection from the fee payer, so checking that
             // authorization is enough; the rest of the transaction's validity is unaffected.
-            if has_transfer_policy_updates && let Some(ref mut provider) = state_provider {
+            // Zero-fee transactions skip fee collection and its policy authorization.
+            if has_transfer_policy_updates
+                && !tx.transaction.fee_token_cost().is_zero()
+                && let Some(ref mut provider) = state_provider
+            {
                 let fee_token = tx.transaction.effective_fee_token();
                 if updates.transfer_policy_updates.contains(&fee_token) {
                     let fee_payer = tx
@@ -2645,6 +2649,42 @@ mod tests {
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert!(evicted.is_empty());
         assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn transfer_policy_update_preserves_admitted_zero_fee_transaction() {
+        let provider = create_provider_with_tip();
+        let tx = TxBuilder::eip1559(Address::random())
+            .max_fee(0)
+            .max_priority_fee(0)
+            .build_eip1559();
+        provider.add_account(tx.sender(), ExtendedAccount::new(tx.nonce(), U256::ZERO));
+        set_transfer_policy(&provider, PATH_USD_ADDRESS, REJECT_ALL_POLICY_ID);
+
+        // Full admission skips fee collection, including the rejecting transfer policy.
+        let validator = create_test_validator(provider)
+            .with_minimum_fee_cap(0)
+            .with_disable_fee_amm_check(true);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx.clone())
+            .await;
+        assert!(outcome.is_valid(), "zero-fee admission failed: {outcome:?}");
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            TempoTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default().with_disabled_protocol_base_fee(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        pool.add_validated_transaction(TransactionOrigin::External, outcome)
+            .unwrap();
+        assert!(pool.get(tx.hash()).is_some());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.transfer_policy_updates.insert(PATH_USD_ADDRESS);
+        assert!(pool.evict_invalidated_transactions(&updates).is_empty());
+        assert!(pool.get(tx.hash()).is_some());
     }
 
     #[tokio::test]
