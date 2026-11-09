@@ -38,8 +38,11 @@ pub(crate) fn get_multi_proof(
         .collect::<Result<_, _>>()?)
 }
 
-/// Checks that every proof verifies against `root`, carries the model's values, and has exactly
-/// the nodes on its key's path in the model's trie.
+/// Checks that every proof verifies against `root`, carries the model's values, and starts with
+/// exactly the nodes on its key's path in the model's trie.
+///
+/// Proofs may carry extra trailing nodes: an exclusion proof that diverges inside an extension
+/// also includes the extension's child branch, unlike geth's.
 #[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
 pub(crate) fn check(
     state: &Model,
@@ -72,7 +75,7 @@ pub(crate) fn check(
         );
         let expected = path(&accounts, keccak256(address));
         ensure!(
-            proof.proof == expected,
+            proof.proof.starts_with(&expected),
             "{address}: account proof nodes {:?}, expected {expected:?}",
             proof.proof
         );
@@ -106,7 +109,7 @@ pub(crate) fn check(
             );
             let expected = path(&storage, keccak256(slot));
             ensure!(
-                storage_proof.proof == expected,
+                storage_proof.proof.starts_with(&expected),
                 "{address}/{slot}: storage proof nodes {:?}, expected {expected:?}",
                 storage_proof.proof
             );
