@@ -20,7 +20,7 @@ use tempo_precompiles::{
         valid_account_code,
     },
     error::TempoPrecompileError,
-    storage::{StorageCtx, account_config_commitment},
+    storage::{StorageAction, StorageCtx, account_config_commitment},
 };
 use tempo_primitives::transaction::{
     ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
@@ -260,10 +260,14 @@ fn load_account(
     address: Address,
     spec: TempoHardfork,
 ) -> HandlerResult<LoadedAccount> {
+    let actions = host.ext().actions.clone();
     let mut account = host.state_mut().account(&address)?;
     let was_cold = account.warm();
     let info = account.get();
     let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
+    actions.record(StorageAction::ConfigCommitment(
+        address, commitment, commitment,
+    ));
     Ok(LoadedAccount {
         was_cold,
         invalid_code: !valid_account_code(account.code_hash(), commitment),

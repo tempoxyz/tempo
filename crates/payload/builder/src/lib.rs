@@ -47,7 +47,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -211,8 +211,8 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(args, |attributes| {
-            self.pool.best_transactions_with_attributes(attributes)
+        self.build_payload(args, |attributes, timestamp| {
+            self.pool.best_transactions_for_block(attributes, timestamp)
         })
     }
 
@@ -236,7 +236,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
-            |_| core::iter::empty(),
+            |_, _| core::iter::empty(),
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -260,7 +260,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        best_txs: impl FnOnce(BestTransactionsAttributes, u64) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
@@ -422,10 +422,13 @@ where
         }
 
         let pool_fetch_start = Instant::now();
-        let raw_best_txs = best_txs(BestTransactionsAttributes::new(
-            executor.evm().block().basefee.to(),
-            Some(executor.evm().block().blob_basefee.to()),
-        ));
+        let raw_best_txs = best_txs(
+            BestTransactionsAttributes::new(
+                executor.evm().block().basefee.to(),
+                Some(executor.evm().block().blob_basefee.to()),
+            ),
+            executor.evm().block().timestamp.to(),
+        );
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
