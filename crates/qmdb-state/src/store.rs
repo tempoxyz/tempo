@@ -5,12 +5,12 @@ use std::{
     num::{NonZeroU16, NonZeroU64, NonZeroUsize},
     path::PathBuf,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use alloy_primitives::B256;
@@ -255,21 +255,7 @@ pub struct Store {
     /// The latest stage the payload builder opened on each parent, which
     /// [`Self::build_unregistered`] builds with.
     builder_stages: Mutex<HashMap<B256, StageId>>,
-    /// Whether each builder stage has staged every key its block sent so far, which
-    /// [`Self::build_unregistered`] waits for: see [`Self::set_stage_caught_up`].
-    unsealed: Mutex<HashMap<StageId, Arc<StageSeal>>>,
 }
-
-/// Whether a builder stage has staged every key its block sent so far.
-#[derive(Debug)]
-struct StageSeal {
-    sealed: Mutex<bool>,
-    cond: Condvar,
-}
-
-/// How long [`Store::build_unregistered`] waits for its stage to catch up before building
-/// without its last keys.
-const SEAL_TIMEOUT: Duration = Duration::from_millis(20);
 
 impl Store {
     /// Opens or creates the databases in [`Config::directory`] and starts their thread.
@@ -318,7 +304,6 @@ impl Store {
             readers,
             next_stage: AtomicU64::new(0),
             builder_stages: Mutex::new(HashMap::new()),
-            unsealed: Mutex::new(HashMap::new()),
         })
     }
 
@@ -424,18 +409,6 @@ impl Store {
             .lock()
             .expect("never poisoned")
             .remove(&parent_hash);
-        // The block's last transactions may still be staging their keys, and building without
-        // them reads their predecessors serially: let the stage catch up first.
-        if let Some(seal) =
-            stage.and_then(|stage| self.unsealed.lock().expect("never poisoned").remove(&stage))
-        {
-            let _span = debug_span!("qmdb_await_stage").entered();
-            let sealed = seal.sealed.lock().expect("never poisoned");
-            let _ = seal
-                .cond
-                .wait_timeout_while(sealed, SEAL_TIMEOUT, |sealed| !*sealed)
-                .expect("never poisoned");
-        }
         self.call(|reply| Command::BuildUnregistered {
             number,
             parent_hash,
@@ -547,42 +520,12 @@ impl Store {
         let id = StageId(self.next_stage.fetch_add(1, Ordering::Relaxed));
         self.send(Command::OpenStage { id, parent_hash })?;
         if builder {
-            let replaced = self
-                .builder_stages
+            self.builder_stages
                 .lock()
                 .expect("never poisoned")
                 .insert(parent_hash, id);
-            let mut unsealed = self.unsealed.lock().expect("never poisoned");
-            if let Some(replaced) = replaced {
-                unsealed.remove(&replaced);
-            }
-            unsealed.insert(
-                id,
-                Arc::new(StageSeal {
-                    sealed: Mutex::new(true),
-                    cond: Condvar::new(),
-                }),
-            );
         }
         Ok(id)
-    }
-
-    /// Records whether `stage` has staged every key its block sent so far, which
-    /// [`Self::build_unregistered`] waits for on a builder stage.
-    pub fn set_stage_caught_up(&self, stage: StageId, caught_up: bool) {
-        let Some(seal) = self
-            .unsealed
-            .lock()
-            .expect("never poisoned")
-            .get(&stage)
-            .cloned()
-        else {
-            return;
-        };
-        *seal.sealed.lock().expect("never poisoned") = caught_up;
-        if caught_up {
-            seal.cond.notify_all();
-        }
     }
 
     /// Reads account keys `accounts` and slot keys `slots` into `stage`, then prefetches
