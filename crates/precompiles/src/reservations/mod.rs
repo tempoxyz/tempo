@@ -285,10 +285,12 @@ impl Reservations {
         let (debt, spend) =
             self.pay(&mut token, owner, payee, call.amount, call.amount, position)?;
 
-        if !auth.exists()
-            && let Some(spend) = spend
-        {
-            auth.key_id = spend.key_id;
+        if let Some(spend) = spend {
+            // Refunds give back to the latest period charged, so a charge in a new period stays
+            // refundable; the keychain clamps the give-back at the key's limit.
+            if !auth.exists() {
+                auth.key_id = spend.key_id;
+            }
             auth.limit_period_end = spend.period_end;
         }
         auth.token = call.token;
@@ -1627,6 +1629,25 @@ mod tests {
             assert_eq!(remaining()?, U256::from(250));
             f.refund(f.payee, charged, 50)?;
             assert_eq!(remaining()?, U256::from(300));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_restores_a_later_period_charge() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 1_000)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+
+            let id = B256::random();
+            f.charge(id, 1, f.payee)?;
+            StorageCtx.set_timestamp(U256::from(NOW + CARD_LIMIT_PERIOD));
+            f.charge(id, 800, f.payee)?;
+            assert_eq!(remaining()?, U256::from(200));
+            f.refund(f.payee, id, 800)?;
+            assert_eq!(remaining()?, U256::from(1_000));
             Ok(())
         })
     }
