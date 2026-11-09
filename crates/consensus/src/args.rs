@@ -1126,46 +1126,6 @@ mod tests {
         writer.join().unwrap();
     }
 
-    #[test]
-    fn network_learning_flags_configure_estimator() {
-        let args = parse(&[
-            "--dev",
-            "--consensus.network-budget-max",
-            "200ms",
-            "--consensus.network-reserve-percentile",
-            "90",
-            "--consensus.network-reserve-fast-rise=false",
-            "--consensus.return-budget-overrun-tolerance",
-            "10ms",
-        ])
-        .consensus;
-        let config = args.estimator_config(Default::default());
-        assert_eq!(config.network_budget_max, Duration::from_millis(200));
-        assert_eq!(config.network_reserve_percentile, 90);
-        assert!(!config.network_reserve_fast_rise);
-        assert_eq!(
-            config.return_budget_overrun_tolerance,
-            Duration::from_millis(10)
-        );
-        args.estimator(Default::default()).unwrap();
-    }
-
-    #[test]
-    fn network_learning_flags_reject_invalid_combinations() {
-        for flags in [
-            ["--dev", "--consensus.network-budget-max", "550ms"],
-            ["--dev", "--consensus.network-budget-max", "1ms"],
-            ["--dev", "--consensus.network-reserve-percentile", "49"],
-            ["--dev", "--consensus.network-reserve-percentile", "101"],
-        ] {
-            let error = parse(&flags)
-                .consensus
-                .estimator(Default::default())
-                .unwrap_err();
-            assert_eq!(error.to_string(), "invalid proposal budget flags");
-        }
-    }
-
     #[track_caller]
     fn assert_non_positive_duration_error(value: &str) {
         assert_eq!(

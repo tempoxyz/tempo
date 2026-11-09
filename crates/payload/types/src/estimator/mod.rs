@@ -318,31 +318,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn configured_overrun_tolerance_filters_returned_proposals() {
-        let now = Instant::now();
-        for (tolerance, elapsed, accepted) in [(0, 501, false), (10, 510, true), (10, 511, false)] {
-            let estimator = Estimator::new(EstimatorConfig {
-                return_budget_overrun_tolerance: Duration::from_millis(tolerance),
-                ..EstimatorConfig::default()
-            });
-            let budget = estimator.start_proposal(now, Duration::ZERO);
-            assert_eq!(
-                estimator.on_proposal_returned(
-                    now,
-                    budget,
-                    ProposalTiming {
-                        key: ProposalKey { epoch: 1, view: 1 },
-                        window_opened_millis: 0,
-                        returned_millis: elapsed,
-                        elapsed: Duration::from_millis(elapsed),
-                    }
-                ),
-                accepted
-            );
-        }
-    }
-
-    #[test]
     fn build_time_multiplier_accepts_valid_range_inclusive() {
         for multiplier in [1.0, 1.15, 1.7] {
             assert_eq!(

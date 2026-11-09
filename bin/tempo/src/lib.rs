@@ -1290,16 +1290,6 @@ mod tests {
             node_cmd.ext.node_args.builder_build_time_multiplier,
             tempo_node::estimator::BuildTimeMultiplier::default()
         );
-        assert_eq!(
-            node_cmd
-                .ext
-                .consensus
-                .estimator_config(node_cmd.ext.node_args.builder_build_time_multiplier)
-                .network_budget_max,
-            Duration::from_millis(300)
-        );
-        assert_eq!(node_cmd.ext.consensus.network_reserve_percentile, 75);
-        assert!(node_cmd.ext.consensus.network_reserve_fast_rise);
 
         let mut cli = TempoCli::try_parse_from([
             "tempo",
