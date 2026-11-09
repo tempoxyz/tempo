@@ -1,6 +1,7 @@
 //! Scenario tests for proposal builds: forkchoice updates that carry
 //! payload attributes, and the payload jobs that deliver the built block.
 
+use commonware_cryptography::Digestible as _;
 use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::{B256, Bytes};

@@ -715,8 +715,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_rlp_encode_decode_roundtrip() {
-        use alloy_eips::eip2718::Encodable2718;
-
         let tx = make_tx();
         let signed = tx.into_signed(Signature::test_signature().into());
 

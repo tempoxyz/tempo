@@ -25,6 +25,10 @@ use tracy_client as _;
 #[cfg(feature = "otlp")]
 use opentelemetry_otlp as _;
 
+// Links Antithesis's coverage runtime shim into binaries built with its sancov flags.
+#[cfg(all(target_os = "linux", feature = "antithesis-coverage"))]
+use antithesis_instrumentation as _;
+
 pub mod cli;
 #[cfg(feature = "corpus")]
 pub mod corpus;
@@ -154,6 +158,9 @@ pub fn tempo_main() -> eyre::Result<()> {
 /// launched. See [`TempoOverrides`] for the currently supported hooks and an
 /// example that injects additional transaction pool validation.
 pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
+    #[cfg(feature = "fuzz-execution")]
+    antithesis_sdk::antithesis_init();
+
     // A JIT backend launches this binary as its out-of-process compiler.
     #[cfg(feature = "jit")]
     if tempo_evm::jit::maybe_run_jit_helper()?.is_break() {

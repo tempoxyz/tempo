@@ -270,10 +270,10 @@ fn keychain_verification_by_retired_roots_and_stored_key_types() {
             let verifier = SignatureVerifier::new();
             (
                 verifier
-                    .verify_keychain(account, HASH, signature.clone())
+                    .verify_keychain(account, HASH, &signature)
                     .expect(&name),
                 verifier
-                    .verify_keychain_admin(account, HASH, signature)
+                    .verify_keychain_admin(account, HASH, &signature)
                     .expect(&name),
             )
         });
@@ -290,14 +290,10 @@ fn keychain_signature_must_embed_the_verified_account() {
     StorageCtx::enter(&mut storage, || {
         let verifier = SignatureVerifier::new();
         let other = Address::repeat_byte(0x02);
+        assert!(!verifier.verify_keychain(other, HASH, &signature).unwrap());
         assert!(
             !verifier
-                .verify_keychain(other, HASH, signature.clone())
-                .unwrap()
-        );
-        assert!(
-            !verifier
-                .verify_keychain_admin(other, HASH, signature)
+                .verify_keychain_admin(other, HASH, &signature)
                 .unwrap()
         );
     });

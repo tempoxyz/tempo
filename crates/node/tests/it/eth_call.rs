@@ -15,6 +15,7 @@ use alloy_rpc_types_eth::{
 };
 use evm2::PrecompileError;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wait::poll_until, wallet::test_signer};
+use std::sync::{Arc, Mutex};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager,
@@ -446,8 +447,6 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 /// In phase 2, the test wallet becomes the block producer, reproducing the bug scenario.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()> {
-    use std::sync::{Arc, Mutex};
-
     reth_tracing::init_test_tracing();
 
     let wallet = test_signer(0);

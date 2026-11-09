@@ -257,7 +257,11 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, address};
+    use alloy::{
+        primitives::{Address, address},
+        sol_types::{SolCall, SolEvent},
+    };
+    use tempo_contracts::precompiles::ITIP20;
 
     #[test]
     fn test_is_initialized() -> eyre::Result<()> {
@@ -435,8 +439,6 @@ mod tests {
 
     #[test]
     fn test_create_token_selector_and_event_unchanged() {
-        use alloy::sol_types::{SolCall, SolEvent};
-
         assert_eq!(
             createTokenCall::SELECTOR,
             [0x68, 0x13, 0x04, 0x45],
@@ -454,9 +456,6 @@ mod tests {
 
     #[test]
     fn test_create_token_with_logo() -> eyre::Result<()> {
-        use alloy::sol_types::SolEvent;
-        use tempo_contracts::precompiles::ITIP20;
-
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         // Use a distinct `admin` to lock in the spec-mandated
@@ -524,9 +523,6 @@ mod tests {
 
     #[test]
     fn test_create_token_with_logo_empty_uri_skips_event() -> eyre::Result<()> {
-        use alloy::sol_types::SolEvent;
-        use tempo_contracts::precompiles::ITIP20;
-
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
 

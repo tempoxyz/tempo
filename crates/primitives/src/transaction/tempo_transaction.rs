@@ -1020,6 +1020,7 @@ mod tests {
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, b256, bytes};
     use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
+    use arbitrary::{Arbitrary, Unstructured};
 
     fn create_call(to: TxKind) -> Call {
         Call {
@@ -1127,8 +1128,6 @@ mod tests {
 
     #[test]
     fn arbitrary_timestamp_boundaries() {
-        use arbitrary::{Arbitrary, Unstructured};
-
         // With default preceding fields, bytes 97 and 98 select valid_after and
         // valid_before respectively. End just after Some's tag to exercise the
         // exhausted-input case that aborted the envelope proptest.

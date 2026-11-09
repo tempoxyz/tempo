@@ -2,7 +2,7 @@
 
 use crate::{
     TempoHardfork,
-    constants::gas::{SSTORE_CREATE_COST, SSTORE_SET_COST},
+    constants::gas::{L1_COMMITMENT_READ_GAS, SSTORE_CREATE_COST, SSTORE_SET_COST},
 };
 use evm2::{EvmFeatures, SpecId, Version, version::GasId};
 
@@ -76,6 +76,22 @@ pub fn configure_version(
 /// Creates an EVM2 version with Tempo's hardfork-specific gas schedule.
 pub fn version(spec_id: SpecId, spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Version {
     configure_version(Version::new(spec_id), spec, amsterdam_eip8037_enabled)
+}
+
+/// Applies a zone's changes to `spec`'s gas schedule (TIP-1154).
+///
+/// From T14, a zone reads the Tempo commitment of every account it loads from its database, so a
+/// cold account access also pays [`L1_COMMITMENT_READ_GAS`]. Access-list addresses, which skip the cold access,
+/// pay it up front. The transaction handler charges the sender and first call target, which a
+/// transaction warms for free. The beneficiary stays warm (EIP-3651): its read is unpaid, but it
+/// is one account per block.
+pub fn apply_zone(version: &mut Version, spec: TempoHardfork) {
+    if !spec.is_t14() {
+        return;
+    }
+    let read_gas = L1_COMMITMENT_READ_GAS as u32;
+    version.gas_params[GasId::ColdAccountAdditionalCost] += read_gas;
+    version.gas_params[GasId::TxAccessListAddressCost] += read_gas;
 }
 
 /// Applies the T1+ TIP-1000 costs, with no state gas split.
