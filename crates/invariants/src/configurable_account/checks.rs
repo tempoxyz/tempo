@@ -155,11 +155,19 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             }
             let derived = spec::derived_address(config);
             let listed = config.owners.iter().any(|o| o.owner == q.account);
+            // Without a later owner update, registration stores the configuration that signed.
+            let stored = s
+                .post
+                .of
+                .get(&q.account)
+                .filter(|_| own_writes(s, q.account).is_empty());
+            let other = stored.filter(|post| spec::commitment(config) != Some(**post));
             ensure!(
-                config.version == 0 && derived == Some(q.account) && !listed,
-                "registers with a version-{} configuration deriving {derived:?}{}",
+                config.version == 0 && derived == Some(q.account) && !listed && other.is_none(),
+                "registers with a version-{} configuration deriving {derived:?}{}{}",
                 config.version,
-                if listed { " that lists the account as an owner" } else { "" }
+                if listed { " that lists the account as an owner" } else { "" },
+                other.map_or_else(String::new, |post| format!(", storing commitment {post}"))
             )
         },
     },
@@ -362,15 +370,21 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             })
         },
     },
-    // Grants change only by the parent's own key or quorum, and never as an admin key.
+    // Grants change only in the parent's own transactions, by its key or quorum, and never as an admin key.
     // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1111.md#L174-L175>
     check! {
         id: "TEMPO-ACCOUNT-GRANT-AUTHORITY",
         over: |step: &AccountStep| grant_changes(step),
         judge: |s, change| {
             let tx = s.tx.as_ref()?;
-            if !tx.authority.active || change.account != tx.sender {
+            if !tx.authority.active {
                 return None;
+            }
+            if change.account != tx.sender {
+                return Some(Verdict::Broken(format!(
+                    "changed in a transaction from {}",
+                    tx.sender
+                )));
             }
             if change.kind == GrantKind::Admin {
                 return Some(Verdict::Broken("authorized an admin key".to_string()));
@@ -436,7 +450,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
             )
         },
     },
-    // A key-type-3 grant names a delegate other than the parent, without other code.
+    // A key-type-3 grant names a delegate other than the parent, outside the reserved spaces, without other code.
     // <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1111.md#L176>
     check! {
         id: "TEMPO-ACCOUNT-GRANT-DELEGATE",
@@ -448,12 +462,15 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
         },
         judge: |l, delegate| {
             let pre = l.of.get(delegate)?.before;
+            let reserved = spec::reserved(*delegate);
             ensure!(
                 *delegate != l.tx.sender
+                    && reserved.is_none()
                     && (pre.code_hash == KECCAK256_EMPTY || pre.code_hash == MARKER_CODE_HASH),
-                "granted by {} to a delegate with code hash {}",
+                "granted by {} to a delegate with code hash {}{}",
                 l.tx.sender,
-                pre.code_hash
+                pre.code_hash,
+                reserved.map_or_else(String::new, |space| format!(" at {space}"))
             )
         },
     },
