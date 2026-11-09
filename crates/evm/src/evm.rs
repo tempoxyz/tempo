@@ -978,7 +978,7 @@ mod runtime_tests {
                         action.address(),
                     );
                 }
-                StorageAction::ConfigCommitment(..) => {}
+                StorageAction::ConfigCommitment(..) | StorageAction::CodeHash(..) => {}
             }
         }
 
@@ -1106,6 +1106,9 @@ mod runtime_tests {
                 }
                 StorageAction::ConfigCommitment(address, before, after) => {
                     format!("ConfigCommitment({}, {before}, {after})", labels.address(address))
+                }
+                StorageAction::CodeHash(address, code_hash) => {
+                    format!("CodeHash({}, {code_hash})", labels.address(address))
                 }
             })
             .collect()

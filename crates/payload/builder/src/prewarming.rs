@@ -18,7 +18,6 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
-use tempo_primitives::SignatureType;
 use tempo_transaction_pool::{AASequenceId, StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
@@ -510,13 +509,6 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
             .transaction
             .nonce_key_ref()
             .is_some_and(|nonce_key| !nonce_key.is_zero())
-        // Replay does not track the grant target's code, which an earlier transaction can change.
-        && !tx.transaction.inner().as_aa().is_some_and(|aa| {
-            aa.tx()
-                .key_authorization
-                .as_ref()
-                .is_some_and(|auth| auth.key_type == SignatureType::ConfigurableAccount)
-        })
 }
 
 #[cfg(test)]

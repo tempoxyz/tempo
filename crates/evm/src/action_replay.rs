@@ -1,7 +1,7 @@
 use crate::{TempoBlockExecutor, TempoEvmTypes, TempoHardfork, TempoTxResult};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, B256, U256,
+    Address, B256, KECCAK256_EMPTY, U256,
     map::{AddressMap, U256Map, hash_map::Entry},
 };
 use evm2::{
@@ -15,7 +15,7 @@ use reth_evm::{
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
-    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
+    configurable_account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH},
     nonce::NonceManager,
     storage::{StorageAction, account_config_commitment},
     tip_fee_manager::amm::{Pool, compute_amount_out},
@@ -195,6 +195,21 @@ impl TempoBlockExecutor<'_> {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                     *current = after;
+                }
+                StorageAction::CodeHash(address, code_hash) => {
+                    let current = match commitments.get(&address) {
+                        // The tx's first commitment installs the marker code.
+                        Some((initial, current)) if initial.is_zero() && !current.is_zero() => {
+                            CONFIGURABLE_ACCOUNT_CODE_HASH
+                        }
+                        _ => db
+                            .get_account(&address)
+                            .map_err(map_database_error)?
+                            .map_or(KECCAK256_EMPTY, |info| info.code_hash),
+                    };
+                    if current != code_hash {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
                 }
             }
         }
@@ -714,6 +729,57 @@ mod tests {
             assert_eq!(
                 reason == Some(StorageActionReplayError::ActionConflict),
                 recorded != current,
+                "{recorded}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_hash_replays_only_when_unchanged() {
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x22);
+        // An earlier tx in the block delegated the target with EIP-7702.
+        let delegated =
+            AccountInfo::default().with_code(Bytecode::new_eip7702(Address::repeat_byte(0x33)));
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        for recorded in [KECCAK256_EMPTY, delegated.code_hash] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T14)
+                .build(InMemoryDB::default(), &chainspec);
+            executor
+                .evm_mut()
+                .overlay_db_mut()
+                .insert_account_info(&target, delegated.clone());
+            let replay = StorageActionReplay {
+                result: TxResult::<TempoEvmTypes> {
+                    status: true,
+                    ..Default::default()
+                },
+                actions: vec![StorageAction::CodeHash(target, recorded)],
+                expiring_nonce: None,
+            };
+            let result = executor.execute_transaction_with_actions(
+                tx.clone().with_signer(sender),
+                replay,
+                |_| {},
+            );
+            let reason = result
+                .as_ref()
+                .err()
+                .and_then(StorageActionReplayError::from_block_execution_error);
+            assert_eq!(
+                reason == Some(StorageActionReplayError::ActionConflict),
+                recorded == KECCAK256_EMPTY,
                 "{recorded}: {result:?}"
             );
         }

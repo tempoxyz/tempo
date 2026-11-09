@@ -63,7 +63,8 @@ impl RecordingFeeManager {
                 StorageAction::Sload(..)
                 | StorageAction::FeeTokenBalanceCheck(..)
                 | StorageAction::FeeAmmLiquidityCheck(..)
-                | StorageAction::ConfigCommitment(..) => return false,
+                | StorageAction::ConfigCommitment(..)
+                | StorageAction::CodeHash(..) => return false,
             };
             writes.slots.insert((action.address(), *slot));
             true
@@ -92,7 +93,8 @@ pub(super) fn post_fee_slot_change(
             StorageAction::Sload(..)
             | StorageAction::FeeTokenBalanceCheck(..)
             | StorageAction::FeeAmmLiquidityCheck(..)
-            | StorageAction::ConfigCommitment(..) => continue,
+            | StorageAction::ConfigCommitment(..)
+            | StorageAction::CodeHash(..) => continue,
         };
         if action.address() != address || key != slot {
             continue;
@@ -110,7 +112,8 @@ pub(super) fn post_fee_slot_change(
             StorageAction::Sload(..)
             | StorageAction::FeeTokenBalanceCheck(..)
             | StorageAction::FeeAmmLiquidityCheck(..)
-            | StorageAction::ConfigCommitment(..) => continue,
+            | StorageAction::ConfigCommitment(..)
+            | StorageAction::CodeHash(..) => continue,
         };
         let initial = match change {
             Some((initial, current)) if current == before => initial,

@@ -57,6 +57,8 @@ pub enum StorageAction {
     ///
     /// Commitments live in the account extension, not in a storage slot.
     ConfigCommitment(Address, B256, B256),
+    /// Records an account's code hash as read.
+    CodeHash(Address, B256),
 }
 
 impl StorageAction {
@@ -68,7 +70,8 @@ impl StorageAction {
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
             | Self::Sdec(address, ..)
-            | Self::ConfigCommitment(address, ..) => *address,
+            | Self::ConfigCommitment(address, ..)
+            | Self::CodeHash(address, _) => *address,
             Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => TIP_FEE_MANAGER_ADDRESS,
         }
     }
