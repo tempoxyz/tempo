@@ -10,6 +10,8 @@ use alloy::{
 };
 use eyre::WrapErr as _;
 use serde::{Deserialize, Serialize};
+
+use super::collide::CollisionKind;
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _},
@@ -62,11 +64,15 @@ pub(super) enum Record {
         to: Address,
         amount: u128,
     },
-    /// Two allowances of `owner` whose storage-trie keys share `depth` leading nibbles were set
-    /// in `zone_block`.
+    /// Keys of one pathUSD mapping whose storage-trie keys share long prefixes, the deepest pair
+    /// `depth` leading nibbles, were written in `zone_block`: spenders of `owner`'s
+    /// allowances, or holders `owner` funded.
     Collision {
+        #[serde(default)]
+        kind: CollisionKind,
         owner: Address,
-        spenders: Vec<Address>,
+        #[serde(alias = "spenders")]
+        members: Vec<Address>,
         depth: u64,
         zone_block: u64,
     },
@@ -319,8 +325,9 @@ mod tests {
                 amount: u128::MAX,
             },
             Record::Collision {
+                kind: CollisionKind::Balance,
                 owner: Address::repeat_byte(13),
-                spenders: vec![Address::repeat_byte(14), Address::repeat_byte(15)],
+                members: vec![Address::repeat_byte(14), Address::repeat_byte(15)],
                 depth: 8,
                 zone_block: 16,
             },

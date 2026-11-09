@@ -1,16 +1,23 @@
-//! `collide`: allowances whose storage-trie keys share a long prefix.
+//! `collide`: pathUSD storage keys that share long trie prefixes.
 //!
 //! Uniformly random keys keep a storage trie shallow and bushy: among 10,000 keys, two share eight
-//! leading nibbles in about one run in a hundred, and their values are almost never small. This
-//! driver grinds spender addresses until two allowance keys of one owner share a random number of
-//! leading nibbles, so pathUSD's storage trie also gets deep, narrow branches and extensions, and,
-//! from eight shared nibbles with small values, leaves short enough to be embedded in their parent
-//! branch instead of hashed. Later runs revisit recorded pairs, updating and clearing them after
-//! they may have settled, so blocks and batch proofs have to read, rewrite and collapse those
-//! shapes.
+//! leading nibbles in about one run in a hundred. This driver grinds addresses until the trie keys
+//! of a mapping share a random number of leading nibbles, so pathUSD's storage trie also gets the
+//! deep, narrow branches, extensions and nested subtries random traffic almost never builds.
+//!
+//! A group is a birthday-ground pair plus up to two neighbors matching a shorter prefix of the
+//! pair's keys, in either the allowances of one owner (spenders ground) or the balances mapping
+//! (holders ground and funded by a transfer). Values have a random byte width from 1 to 32, so
+//! leaves land on both sides of every encoding boundary, including the one below which a leaf is
+//! embedded in its parent instead of hashed. Later runs revisit recorded groups: rewriting or
+//! clearing some keys, clearing all of them, or growing the group with a new neighbor, at any time
+//! before or after the group settled, so blocks and batch proofs have to read, rewrite, split and
+//! collapse those shapes.
 
 use alloy::primitives::{Address, B256, TxKind, U256, keccak256};
+use alloy_trie::{Nibbles, nodes::LeafNode};
 use antithesis_sdk::{assert_always, assert_sometimes, random::get_random};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, hash_map::Entry};
 use tempo_contracts::precompiles::ITIP20;
@@ -23,45 +30,61 @@ use super::{
 };
 use alloy::{providers::Provider as _, rpc::types::BlockId, sol_types::SolCall as _};
 
-/// Deepest shared prefix, in nibbles, the driver grinds for. Finding a pair takes about
+/// Deepest shared prefix, in nibbles, a pair is ground for. Finding a pair takes about
 /// 16^(depth/2) candidates, about a million at 10.
 const MAX_DEPTH: u64 = 10;
-/// From this many shared nibbles, a leaf holding a value under 0x80 is embedded in its parent.
-const INLINE_DEPTH: u64 = 8;
-/// Largest allowance that still encodes as a single RLP byte, keeping a deep leaf embedded.
-const SMALL_AMOUNT: u128 = 0x7f;
-/// Recorded pairs a revisit considers before grinding a new one instead.
+/// Deepest prefix a neighbor is ground to match. A targeted search takes about 16^depth
+/// candidates, about a million at 5.
+const MAX_NEIGHBOR_DEPTH: u64 = 5;
+/// Most neighbors a new group gets on top of its pair.
+const MAX_NEIGHBORS: u64 = 2;
+/// Shared prefixes from this long count as deep for coverage.
+const DEEP: u64 = MAX_DEPTH - 2;
+/// Recorded groups a revisit considers before grinding a new one instead.
 const REVISIT_CANDIDATES: usize = 16;
 
-/// What one spender of a pair is set to.
-#[derive(Debug, Clone, Copy)]
-enum Write {
-    Small,
-    Large,
-    Clear,
+/// Which pathUSD mapping a collision group's keys are in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CollisionKind {
+    /// `allowances[owner][member]`: members are spenders of one owner.
+    #[default]
+    Allowance,
+    /// `balances[member]`: members are holders the owner funded.
+    Balance,
 }
 
-impl Write {
+impl CollisionKind {
     fn random() -> Self {
-        match random_below(4) {
-            0 | 1 => Self::Small,
-            2 => Self::Large,
-            _ => Self::Clear,
+        if random_below(2) == 0 {
+            Self::Allowance
+        } else {
+            Self::Balance
         }
     }
 
-    fn amount(self) -> U256 {
+    /// The mapping slot member keys hash into.
+    fn base(self, owner: Address) -> U256 {
         match self {
-            Self::Small => U256::from(random_between(1, SMALL_AMOUNT)),
-            Self::Large => U256::from(random_between(SMALL_AMOUNT + 1, u128::from(u64::MAX))),
-            Self::Clear => U256::ZERO,
+            Self::Allowance => owner.mapping_slot(slots::ALLOWANCES),
+            Self::Balance => slots::BALANCES,
         }
     }
+}
+
+/// The storage slot of `member` in a collision group of `kind` under `owner`.
+pub(super) fn collision_slot(kind: CollisionKind, owner: Address, member: Address) -> B256 {
+    B256::from(member.mapping_slot(kind.base(owner)))
+}
+
+/// Where that slot sits in pathUSD's storage trie: the hash of the slot.
+fn trie_key(base: U256, member: Address) -> B256 {
+    keccak256(member.mapping_slot(base).to_be_bytes::<32>())
 }
 
 impl Context {
-    /// Half the time revisits a recorded pair of colliding allowances, otherwise grinds and sets
-    /// a new pair for a leased owner.
+    /// Half the time revisits a recorded collision group, otherwise grinds and writes a new one
+    /// for a leased owner.
     pub(super) async fn collide(&self) -> eyre::Result<()> {
         if random_below(2) == 0 && self.revisit_collision().await? {
             return Ok(());
@@ -71,75 +94,118 @@ impl Context {
         else {
             return Ok(());
         };
+        let kind = CollisionKind::random();
+        let base = kind.base(owner.address());
         let depth = random_below(MAX_DEPTH) + 1;
-        let (first, second) = colliding_spenders(owner.address(), get_random(), depth);
-        let shared = shared_nibbles(
-            allowance_trie_key(owner.address(), first),
-            allowance_trie_key(owner.address(), second),
-        );
-        // Small amounts most of the time, so pairs at or past the inline depth stay embedded.
-        let writes = [
-            (
-                first,
-                if random_below(4) == 0 {
-                    Write::Large
-                } else {
-                    Write::Small
-                },
-            ),
-            (
-                second,
-                if random_below(4) == 0 {
-                    Write::Large
-                } else {
-                    Write::Small
-                },
-            ),
-        ];
-        let Some(block) = self
-            .write_allowances(node, &owner, balance, &writes)
+        let (first, second) = colliding_pair(base, get_random(), depth);
+        let mut members = vec![first, second];
+        let prefix_key = trie_key(base, first);
+        for _ in 0..random_below(MAX_NEIGHBORS + 1) {
+            let neighbor_depth = random_between(1, u128::from(depth.min(MAX_NEIGHBOR_DEPTH)));
+            let member = neighbor(base, get_random(), prefix_key, neighbor_depth as u64);
+            if !members.contains(&member) {
+                members.push(member);
+            }
+        }
+        let writes: Vec<(Address, U256)> = members
+            .iter()
+            .map(|member| (*member, random_value(kind, balance, members.len())))
+            .collect();
+        let shared = shared_nibbles(trie_key(base, first), trie_key(base, second));
+        let Some((block, _)) = self
+            .write_group(node, &owner, balance, kind, &writes, &members)
             .await?
         else {
             return Ok(());
         };
         self.ledger.append(&Record::Collision {
+            kind,
             owner: owner.address(),
-            spenders: vec![first, second],
+            members: members.clone(),
             depth: shared,
             zone_block: block,
         })?;
+        let details = json!({
+            "kind": kind,
+            "owner": owner.address(),
+            "members": members,
+            "shared": shared,
+            "block": block,
+        });
         assert_sometimes!(
-            shared >= INLINE_DEPTH,
-            "Colliding allowance keys share at least 8 trie nibbles",
-            &json!({ "owner": owner.address(), "shared": shared, "block": block })
+            shared < 4,
+            "Colliding storage keys share a short prefix",
+            &details
+        );
+        assert_sometimes!(
+            (4..DEEP).contains(&shared),
+            "Colliding storage keys share a medium prefix",
+            &details
+        );
+        assert_sometimes!(
+            shared >= DEEP,
+            "Colliding storage keys share a deep prefix",
+            &details
+        );
+        assert_sometimes!(
+            members[2..]
+                .iter()
+                .any(|member| shared_nibbles(prefix_key, trie_key(base, *member)) < shared),
+            "A collision group nests neighbors around its pair",
+            &details
+        );
+        assert_sometimes!(
+            kind == CollisionKind::Balance,
+            "Balance keys collide",
+            &details
         );
         println!(
-            "collide: allowances of {} to {first} and {second} share {shared} nibbles, block {block}",
+            "collide: {} {kind:?} keys under {} share {shared} nibbles, block {block}",
+            members.len(),
             owner.address()
         );
         Ok(())
     }
 
-    /// Updates or clears one or both allowances of a recorded pair whose owner is free and
-    /// funded. Returns whether it found such a pair.
+    /// Rewrites, clears or grows a recorded group whose owner is free and funded. Returns whether
+    /// it found such a group.
     async fn revisit_collision(&self) -> eyre::Result<bool> {
-        let pairs: Vec<(Address, Vec<Address>, u64, u64)> = self
+        let groups: Vec<(CollisionKind, Address, Vec<Address>, u64)> = self
             .ledger
             .records()?
             .into_iter()
             .filter_map(|record| match record {
                 Record::Collision {
+                    kind,
                     owner,
-                    spenders,
-                    depth,
+                    members,
                     zone_block,
-                } => Some((owner, spenders, depth, zone_block)),
+                    ..
+                } => Some((kind, owner, members, zone_block)),
                 _ => None,
             })
             .collect();
+        // A grown group is recorded again with its new key, first with the earliest block the key
+        // can land in and then with the block it landed in: only its largest, latest record is
+        // live.
+        let groups: Vec<_> = groups
+            .iter()
+            .filter(|(kind, owner, members, zone_block)| {
+                !groups
+                    .iter()
+                    .any(|(other_kind, other_owner, others, other_block)| {
+                        other_kind == kind
+                            && other_owner == owner
+                            && (others.len() > members.len()
+                                || (others.len() == members.len() && other_block > zone_block))
+                            && members.iter().all(|member| others.contains(member))
+                    })
+            })
+            .cloned()
+            .collect();
         let accounts = self.ledger.sender_accounts()?;
-        for (owner, spenders, depth, zone_block) in
-            shuffled(pairs).into_iter().take(REVISIT_CANDIDATES)
+        for (kind, owner, members, zone_block) in
+            shuffled(groups).into_iter().take(REVISIT_CANDIDATES)
         {
             let Some(account) = accounts.iter().find(|account| account.address() == owner) else {
                 continue;
@@ -157,36 +223,120 @@ impl Context {
             if balance < MIN_SENDER_BALANCE {
                 continue;
             }
-            // One spender alone half the time, so a clear can collapse the branch onto its
-            // remaining sibling.
-            let writes: Vec<(Address, Write)> = if random_below(2) == 0 {
-                random_choice(spenders.clone())
-                    .map(|spender| vec![(spender, Write::random())])
-                    .unwrap_or_default()
-            } else {
-                spenders
-                    .iter()
-                    .map(|spender| (*spender, Write::random()))
-                    .collect()
+            let base = kind.base(owner);
+            let mut grown = members.clone();
+            let action = random_below(4);
+            let writes: Vec<(Address, U256)> = match action {
+                // Grow: a new key under the group's prefix splits a branch or extension.
+                0 => {
+                    let anchor = random_choice(members.clone()).unwrap_or(owner);
+                    let depth = random_between(1, u128::from(MAX_NEIGHBOR_DEPTH)) as u64;
+                    let member = neighbor(base, get_random(), trie_key(base, anchor), depth);
+                    if members.contains(&member) {
+                        Vec::new()
+                    } else {
+                        grown.push(member);
+                        vec![(member, random_value(kind, balance, 1))]
+                    }
+                }
+                // Clear every allowance, so the whole subtree goes.
+                1 if kind == CollisionKind::Allowance => {
+                    members.iter().map(|member| (*member, U256::ZERO)).collect()
+                }
+                // Rewrite a random nonempty subset; allowances clear a quarter of the time.
+                _ => {
+                    let mut subset: Vec<Address> = members
+                        .iter()
+                        .copied()
+                        .filter(|_| random_below(2) == 0)
+                        .collect();
+                    if subset.is_empty() {
+                        subset.extend(random_choice(members.clone()));
+                    }
+                    subset
+                        .into_iter()
+                        .map(|member| {
+                            let value = if kind == CollisionKind::Allowance && random_below(4) == 0
+                            {
+                                U256::ZERO
+                            } else {
+                                random_value(kind, balance, members.len())
+                            };
+                            (member, value)
+                        })
+                        .collect()
+                }
             };
             let settled = match self.settled_block().await {
                 Ok((height, _)) => height >= zone_block,
                 Err(_) => false,
             };
-            let Some(block) = self
-                .write_allowances(node, account, balance, &writes)
+            // Record a grown group before sending: a send whose receipt times out can still land,
+            // and later revisits must count its new key. The earliest block it can land in stands
+            // for when it was set; a key that never lands just reads as cleared.
+            if grown.len() > members.len() {
+                let next_block = self.zones[node].get_block_number().await? + 1;
+                self.ledger.append(&Record::Collision {
+                    kind,
+                    owner,
+                    members: grown.clone(),
+                    depth: deepest_shared(base, &grown),
+                    zone_block: next_block,
+                })?;
+            }
+            let Some((block, after)) = self
+                .write_group(node, account, balance, kind, &writes, &grown)
                 .await?
             else {
                 return Ok(true);
             };
+            if grown.len() > members.len() {
+                self.ledger.append(&Record::Collision {
+                    kind,
+                    owner,
+                    members: grown.clone(),
+                    depth: deepest_shared(base, &grown),
+                    zone_block: block,
+                })?;
+            }
+            // Keys this block took from set to zero, and keys of the group left set, when known.
+            let (cleared, present) = after.unzip();
+            let details = json!({
+                "kind": kind,
+                "owner": owner,
+                "members": grown,
+                "writes": writes.len(),
+                "cleared": cleared,
+                "present": present,
+                "settled": settled,
+                "set_in": zone_block,
+                "block": block,
+            });
             assert_sometimes!(
-                settled && depth >= INLINE_DEPTH,
-                "Deep colliding allowance is rewritten after it settled",
-                &json!({ "owner": owner, "shared": depth, "set_in": zone_block, "block": block })
+                settled,
+                "A collision group is rewritten after it settled",
+                &details
+            );
+            assert_sometimes!(
+                // Growing into a subtree that still holds an earlier key, not an emptied one.
+                settled && grown.len() > members.len() && present > Some(1),
+                "A collision group grows after it settled",
+                &details
+            );
+            assert_sometimes!(
+                cleared > Some(0) && present > Some(0),
+                "A colliding key is cleared while a sibling keeps its value",
+                &details
+            );
+            assert_sometimes!(
+                cleared > Some(0) && present == Some(0),
+                "Every key of a collision group is cleared",
+                &details
             );
             println!(
-                "collide: revisited {} allowances of {owner} sharing {depth} nibbles (settled: {settled}), block {block}",
-                writes.len()
+                "collide: revisited {kind:?} group of {owner}: {} writes, {cleared:?} cleared, {} keys (settled: {settled}), block {block}",
+                writes.len(),
+                grown.len()
             );
             drop(lease);
             return Ok(true);
@@ -194,42 +344,59 @@ impl Context {
         Ok(false)
     }
 
-    /// Sends `writes` as the calls of one Tempo transaction from `owner` and checks every
-    /// allowance reads back at the block it landed in. Returns that block, or `None` when the
-    /// transaction did not fit half the balance, reverted or was not confirmed.
-    async fn write_allowances(
+    /// Sends `writes` as the calls of one Tempo transaction from `owner`: approvals for an
+    /// allowance group, transfers (adding to each holder's balance, recorded as transfers for the
+    /// finality checks) for a balance group. Checks every key reads back at the block it landed
+    /// in, and returns that block, or `None` when the transaction did not fit half the balance,
+    /// reverted or was not confirmed. `group` is every key of the group after these writes.
+    /// With the block, when no other send of the owner's shared it: how many keys it took from
+    /// set to zero, and how many keys of the group are set after it.
+    async fn write_group(
         &self,
         node: usize,
         owner: &super::Account,
         balance: u128,
-        writes: &[(Address, Write)],
-    ) -> eyre::Result<Option<u64>> {
+        kind: CollisionKind,
+        writes: &[(Address, U256)],
+        group: &[Address],
+    ) -> eyre::Result<Option<(u64, Option<(usize, usize)>)>> {
         if writes.is_empty() {
             return Ok(None);
         }
         let zone = self.wallet(owner, &self.zone_urls[node]);
         let gas_price = zone.get_gas_price().await?;
         let gas_limit = BATCH_BASE_GAS + BATCH_CALL_GAS * writes.len() as u64;
-        if calc_gas_balance_spending(gas_limit, gas_price) > U256::from(balance / 2) {
+        let spent: U256 = match kind {
+            CollisionKind::Allowance => U256::ZERO,
+            CollisionKind::Balance => writes.iter().map(|(_, value)| *value).sum(),
+        };
+        if calc_gas_balance_spending(gas_limit, gas_price) + spent > U256::from(balance / 2) {
             return Ok(None);
         }
-        let amounts: Vec<(Address, U256)> = writes
+        let writes = shuffled(writes.to_vec());
+        let calls = writes
             .iter()
-            .map(|(spender, write)| (*spender, write.amount()))
-            .collect();
-        let calls = amounts
-            .iter()
-            .map(|(spender, amount)| Call {
-                to: TxKind::Call(PATH_USD_ADDRESS),
-                value: U256::ZERO,
-                input: ITIP20::approveCall {
-                    spender: *spender,
-                    amount: *amount,
+            .map(|(member, value)| {
+                let input = match kind {
+                    CollisionKind::Allowance => ITIP20::approveCall {
+                        spender: *member,
+                        amount: *value,
+                    }
+                    .abi_encode(),
+                    CollisionKind::Balance => ITIP20::transferCall {
+                        to: *member,
+                        amount: *value,
+                    }
+                    .abi_encode(),
+                };
+                Call {
+                    to: TxKind::Call(PATH_USD_ADDRESS),
+                    value: U256::ZERO,
+                    input: input.into(),
                 }
-                .abi_encode()
-                .into(),
             })
             .collect();
+        let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
         let nonce = zone
             .get_transaction_count(owner.address())
             .pending()
@@ -244,46 +411,159 @@ impl Context {
             println!("collide: {hash} reverted");
             return Ok(None);
         }
+        if kind == CollisionKind::Balance {
+            for (member, value) in &writes {
+                self.ledger.append(&Record::Transfer {
+                    zone_tx: hash,
+                    zone_block: block,
+                    from: owner.address(),
+                    to: *member,
+                    amount: (*value).try_into()?,
+                })?;
+            }
+        }
         // Sends an earlier command gave up on can still land later in the same block and
-        // overwrite these allowances: then the block's end state is theirs.
+        // overwrite these keys: then the block's end state is theirs.
         let nonce_after = zone
             .get_transaction_count(owner.address())
             .block_id(BlockId::number(block))
             .await?;
         if nonce_after > nonce + 1 {
-            return Ok(Some(block));
+            return Ok(Some((block, None)));
         }
-        let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
-        for (spender, amount) in &amounts {
-            let read = token
-                .allowance(owner.address(), *spender)
-                .block(BlockId::number(block))
-                .call()
+        // Transfers add up, so for a balance group one the owner gave up on that landed earlier
+        // in the same block also counts between the two reads: then skip the check too.
+        if kind == CollisionKind::Balance {
+            let nonce_before = zone
+                .get_transaction_count(owner.address())
+                .block_id(BlockId::number(block.saturating_sub(1)))
                 .await?;
+            if nonce_before < nonce {
+                return Ok(Some((block, None)));
+            }
+        }
+        let read_at = async |member: Address, height: u64| -> eyre::Result<U256> {
+            let at = BlockId::number(height);
+            Ok(match kind {
+                CollisionKind::Allowance => {
+                    token
+                        .allowance(owner.address(), member)
+                        .block(at)
+                        .call()
+                        .await?
+                }
+                CollisionKind::Balance => {
+                    token
+                        .balanceOf(member)
+                        .from(member)
+                        .block(at)
+                        .call()
+                        .await?
+                }
+            })
+        };
+        for (member, value) in &writes {
+            let read = read_at(*member, block).await?;
+            let expected = match kind {
+                CollisionKind::Allowance => *value,
+                CollisionKind::Balance => read_at(*member, block.saturating_sub(1)).await? + *value,
+            };
             assert_always!(
-                read == *amount,
-                "Colliding allowance reads back the amount just set",
+                read == expected,
+                "Colliding storage key reads back the value just written",
                 &json!({
+                    "kind": kind,
                     "owner": owner.address(),
-                    "spender": spender,
-                    "approved": amount,
+                    "member": member,
+                    "expected": expected,
                     "read": read,
                     "block": block,
                 })
             );
         }
-        Ok(Some(block))
+        // Embedding depends on the keys still present after the block, cleared ones gone and
+        // members this transaction left alone included.
+        let mut present = Vec::new();
+        let mut values = Vec::new();
+        for member in group {
+            let value = read_at(*member, block).await?;
+            if !value.is_zero() {
+                present.push(*member);
+                values.push(value);
+            }
+        }
+        let base = kind.base(owner.address());
+        for (member, value) in present.iter().zip(&values) {
+            if !writes.iter().any(|(written, _)| written == member) {
+                continue;
+            }
+            assert_sometimes!(
+                embedded(leaf_depth(base, *member, &present), *value),
+                "A colliding leaf is small enough to embed in its branch",
+                &json!({ "kind": kind, "member": member, "value": value, "block": block })
+            );
+        }
+        let mut cleared = 0;
+        for (member, value) in &writes {
+            if value.is_zero() && !read_at(*member, block.saturating_sub(1)).await?.is_zero() {
+                cleared += 1;
+            }
+        }
+        Ok(Some((block, Some((cleared, present.len())))))
     }
 }
 
-/// The storage slot of `owner`'s allowance to `spender`.
-pub(super) fn allowance_slot(owner: Address, spender: Address) -> B256 {
-    B256::from(spender.mapping_slot(owner.mapping_slot(slots::ALLOWANCES)))
+/// A random nonzero value of random byte width, so leaves span every encoding size: half the
+/// time up to 4 bytes, as most real amounts are, otherwise up to 32. Balance values are capped so
+/// `count` of them fit in a quarter of `balance`.
+fn random_value(kind: CollisionKind, balance: u128, count: usize) -> U256 {
+    let max_width = if random_below(2) == 0 { 4 } else { 32 };
+    let width = random_between(1, max_width) as usize;
+    let mut bytes = [0u8; 32];
+    for chunk in bytes[32 - width..].chunks_mut(8) {
+        let random = get_random().to_be_bytes();
+        chunk.copy_from_slice(&random[..chunk.len()]);
+    }
+    let value = U256::from_be_bytes(bytes).max(U256::from(1));
+    match kind {
+        CollisionKind::Allowance => value,
+        CollisionKind::Balance => {
+            let cap = U256::from((balance / 4 / count.max(1) as u128).max(1));
+            if value > cap {
+                value % cap + U256::from(1)
+            } else {
+                value
+            }
+        }
+    }
 }
 
-/// Where the allowance sits in pathUSD's storage trie: the hash of its slot.
-fn allowance_trie_key(owner: Address, spender: Address) -> B256 {
-    keccak256(allowance_slot(owner, spender))
+/// Whether a storage leaf holding `value` below a branch at `depth` nibbles encodes in under
+/// 32 bytes, so its parent embeds it instead of referencing its hash.
+fn embedded(depth: u64, value: U256) -> bool {
+    let path = Nibbles::unpack(B256::ZERO).slice(depth as usize + 1..);
+    alloy_rlp::encode(LeafNode::new(path, alloy_rlp::encode(value))).len() < 32
+}
+
+/// The depth of the branch above `member`'s leaf among `members`: the most nibbles it shares
+/// with any of them.
+fn leaf_depth(base: U256, member: Address, members: &[Address]) -> u64 {
+    let key = trie_key(base, member);
+    members
+        .iter()
+        .filter(|other| **other != member)
+        .map(|other| shared_nibbles(key, trie_key(base, *other)))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The most nibbles any two of `members` share.
+fn deepest_shared(base: U256, members: &[Address]) -> u64 {
+    members
+        .iter()
+        .map(|member| leaf_depth(base, *member, members))
+        .max()
+        .unwrap_or(0)
 }
 
 fn shared_nibbles(a: B256, b: B256) -> u64 {
@@ -301,61 +581,106 @@ fn shared_nibbles(a: B256, b: B256) -> u64 {
     shared
 }
 
-/// Two spenders, derived from `seed` and no key, whose allowance keys under `owner` share at
-/// least the first `depth` nibbles. A birthday search: about 16^(depth/2) candidates.
-fn colliding_spenders(owner: Address, seed: u64, depth: u64) -> (Address, Address) {
+/// The first `depth` nibbles of `key`, as an integer.
+fn prefix(key: B256, depth: u64) -> u64 {
+    u64::from_be_bytes(key[..8].try_into().expect("8 bytes")) >> (64 - 4 * depth)
+}
+
+/// The address of candidate `counter` of a search tagged `tag` from `seed`. Nobody holds its key.
+fn candidate(tag: &[u8; 4], seed: u64, counter: u64) -> Address {
+    let mut bytes = [0u8; 20];
+    bytes[..4].copy_from_slice(tag);
+    bytes[4..12].copy_from_slice(&seed.to_be_bytes());
+    bytes[12..].copy_from_slice(&counter.to_be_bytes());
+    Address::from(bytes)
+}
+
+/// Two members, derived from `seed`, whose keys under `base` share at least the first `depth`
+/// nibbles. A birthday search: about 16^(depth/2) candidates.
+fn colliding_pair(base: U256, seed: u64, depth: u64) -> (Address, Address) {
     assert!((1..=16).contains(&depth));
-    let base = owner.mapping_slot(slots::ALLOWANCES);
     let mut seen: HashMap<u64, Address> = HashMap::new();
-    let mut counter = 0u64;
-    loop {
-        let mut bytes = [0u8; 20];
-        bytes[..4].copy_from_slice(b"coll");
-        bytes[4..12].copy_from_slice(&seed.to_be_bytes());
-        bytes[12..].copy_from_slice(&counter.to_be_bytes());
-        let spender = Address::from(bytes);
-        let key = keccak256(spender.mapping_slot(base).to_be_bytes::<32>());
-        let prefix = u64::from_be_bytes(key[..8].try_into().expect("8 bytes")) >> (64 - 4 * depth);
-        match seen.entry(prefix) {
-            Entry::Occupied(entry) => return (*entry.get(), spender),
+    for counter in 0.. {
+        let member = candidate(b"coll", seed, counter);
+        match seen.entry(prefix(trie_key(base, member), depth)) {
+            Entry::Occupied(entry) => return (*entry.get(), member),
             Entry::Vacant(entry) => {
-                entry.insert(spender);
+                entry.insert(member);
             }
         }
-        counter += 1;
     }
+    unreachable!("the search runs until it finds a pair")
+}
+
+/// A member, derived from `seed`, whose key under `base` shares at least the first `depth`
+/// nibbles of `key`. A targeted search: about 16^depth candidates.
+fn neighbor(base: U256, seed: u64, key: B256, depth: u64) -> Address {
+    assert!((1..=MAX_NEIGHBOR_DEPTH).contains(&depth));
+    let target = prefix(key, depth);
+    (0..)
+        .map(|counter| candidate(b"nbor", seed, counter))
+        .find(|member| prefix(trie_key(base, *member), depth) == target)
+        .expect("the search runs until it finds a neighbor")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_trie::{Nibbles, nodes::LeafNode};
 
     #[test]
-    fn ground_spenders_share_the_prefix() {
+    fn ground_pairs_share_the_prefix() {
         let owner = Address::repeat_byte(0xab);
-        for depth in [1, 4, 8] {
-            let (a, b) = colliding_spenders(owner, 7, depth);
-            assert_ne!(a, b);
-            let shared = shared_nibbles(allowance_trie_key(owner, a), allowance_trie_key(owner, b));
-            assert!(shared >= depth, "depth {depth}: shared {shared}");
+        for kind in [CollisionKind::Allowance, CollisionKind::Balance] {
+            let base = kind.base(owner);
+            for depth in [1, 4, 8] {
+                let (a, b) = colliding_pair(base, 7, depth);
+                assert_ne!(a, b);
+                let shared = shared_nibbles(trie_key(base, a), trie_key(base, b));
+                assert!(shared >= depth, "{kind:?} depth {depth}: shared {shared}");
+            }
         }
     }
 
     #[test]
-    fn deep_small_leaves_are_embedded() {
-        // A leaf below a branch at the inline depth keeps 64 - 8 - 1 nibbles of path.
-        let key = Nibbles::unpack(B256::repeat_byte(0x11));
-        let leaf = |depth: usize, amount: U256| {
-            alloy_rlp::encode(LeafNode::new(
-                key.slice(depth + 1..),
-                alloy_rlp::encode(amount),
-            ))
-            .len()
-        };
-        let small = U256::from(SMALL_AMOUNT);
-        assert!(leaf(INLINE_DEPTH as usize, small) < 32);
-        assert!(leaf(INLINE_DEPTH as usize - 1, small) >= 32);
-        assert!(leaf(INLINE_DEPTH as usize, U256::from(SMALL_AMOUNT + 1)) >= 32);
+    fn neighbors_share_the_prefix() {
+        let base = CollisionKind::Balance.base(Address::ZERO);
+        let key = trie_key(base, Address::repeat_byte(1));
+        for depth in 1..=4 {
+            let member = neighbor(base, 3, key, depth);
+            assert!(shared_nibbles(key, trie_key(base, member)) >= depth);
+        }
+    }
+
+    #[test]
+    fn slots_match_the_trie_keys() {
+        let owner = Address::repeat_byte(0xab);
+        let member = Address::repeat_byte(0xcd);
+        for kind in [CollisionKind::Allowance, CollisionKind::Balance] {
+            assert_eq!(
+                keccak256(collision_slot(kind, owner, member)),
+                trie_key(kind.base(owner), member)
+            );
+        }
+    }
+
+    #[test]
+    fn embedding_depends_on_depth_and_width() {
+        // One-byte values embed from 8 shared nibbles, wider ones need deeper branches.
+        assert!(embedded(8, U256::from(0x7f)));
+        assert!(!embedded(7, U256::from(0x7f)));
+        assert!(!embedded(8, U256::from(0x80)));
+        assert!(embedded(MAX_DEPTH, U256::from(0x7f)));
+        assert!(!embedded(MAX_DEPTH, U256::from(0xffff)));
+        assert!(!embedded(MAX_DEPTH, U256::MAX));
+    }
+
+    #[test]
+    fn values_span_widths_and_respect_the_cap() {
+        let balance = 1_000_000u128;
+        for _ in 0..1000 {
+            let value = random_value(CollisionKind::Balance, balance, 4);
+            assert!(!value.is_zero() && value <= U256::from(balance / 16));
+            assert!(!random_value(CollisionKind::Allowance, balance, 4).is_zero());
+        }
     }
 }
