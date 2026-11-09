@@ -115,12 +115,9 @@ impl TempoAaTx {
     // checks; failures are left for `verify` to report.
     pub(crate) fn warm_configurable_approvals(&self) {
         for role in self.configurable_roles().into_iter().flatten() {
-            match role
+            let _ = role
                 .signature
-                .verify_approvals(role.signed.inner_digest(self))
-            {
-                Ok(()) | Err(_) => {}
-            }
+                .verify_approvals(role.signed.inner_digest(self));
         }
     }
 }
