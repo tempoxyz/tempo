@@ -73,10 +73,10 @@ impl EstimatorConfig {
     /// Call before constructing an estimator to handle invalid inputs without panicking.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.network_budget >= self.target_block_time {
-            return Err(ConfigError(format!(
-                "network budget ({:?}) must be smaller than the target block time ({:?})",
-                self.network_budget, self.target_block_time,
-            )));
+            return Err(ConfigError(ConfigErrorKind::NetworkBudget {
+                network_budget: self.network_budget,
+                target_block_time: self.target_block_time,
+            }));
         }
         if matches!(
             self.network_reservation_policy,
@@ -84,16 +84,16 @@ impl EstimatorConfig {
         ) && (self.network_budget_max < self.network_budget
             || self.network_budget_max >= self.target_block_time)
         {
-            return Err(ConfigError(format!(
-                "maximum network budget ({:?}) must be at least the network budget ({:?}) and smaller than the target block time ({:?})",
-                self.network_budget_max, self.network_budget, self.target_block_time,
-            )));
+            return Err(ConfigError(ConfigErrorKind::NetworkBudgetMax {
+                network_budget_max: self.network_budget_max,
+                network_budget: self.network_budget,
+                target_block_time: self.target_block_time,
+            }));
         }
         if !(50..=100).contains(&self.network_reserve_percentile) {
-            return Err(ConfigError(format!(
-                "network reserve percentile ({}) must be between 50 and 100, inclusive",
-                self.network_reserve_percentile,
-            )));
+            return Err(ConfigError(ConfigErrorKind::NetworkPercentile {
+                percentile: self.network_reserve_percentile,
+            }));
         }
         Ok(())
     }
@@ -107,5 +107,37 @@ impl Default for EstimatorConfig {
 
 /// An invalid estimator configuration, with a human-readable explanation.
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct ConfigError(String);
+#[error(transparent)]
+pub struct ConfigError(ConfigErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+enum ConfigErrorKind {
+    /// The floor leaves no proposal allowance.
+    #[error(
+        "network budget ({network_budget:?}) must be smaller than the target block time ({target_block_time:?})"
+    )]
+    NetworkBudget {
+        /// Configured floor.
+        network_budget: Duration,
+        /// Configured target.
+        target_block_time: Duration,
+    },
+    /// The cap is below the floor or leaves no proposal allowance.
+    #[error(
+        "maximum network budget ({network_budget_max:?}) must be at least the network budget ({network_budget:?}) and smaller than the target block time ({target_block_time:?})"
+    )]
+    NetworkBudgetMax {
+        /// Configured cap.
+        network_budget_max: Duration,
+        /// Configured floor.
+        network_budget: Duration,
+        /// Configured target.
+        target_block_time: Duration,
+    },
+    /// The percentile falls outside the supported range.
+    #[error("network reserve percentile ({percentile}) must be between 50 and 100, inclusive")]
+    NetworkPercentile {
+        /// Configured percentile.
+        percentile: u8,
+    },
+}
