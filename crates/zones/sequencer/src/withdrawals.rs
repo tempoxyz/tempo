@@ -412,32 +412,39 @@ impl WithdrawalProcessor {
                 return;
             }
 
-            if let Err(error) = self.update_sequencer_metrics().await {
-                warn!(
-                    %error,
-                    sequencer = %self.config.sequencer_address,
-                    "Failed to refresh sequencer fee token balance metrics"
-                );
-            }
+            self.update_sequencer_metrics().await;
         }
     }
 
     /// Update sequencer metrics from Tempo L1 state.
-    async fn update_sequencer_metrics(&self) -> eyre::Result<()> {
+    ///
+    /// Each fee token's balance gauge is refreshed independently, so a failed read of one token
+    /// (such as OUSD on an L1 before T13) leaves the other gauge current and is logged by name.
+    async fn update_sequencer_metrics(&self) {
         let sequencer = self.config.sequencer_address;
-        let path_usd = ITIP20::new(PATH_USD_ADDRESS, &self.provider)
-            .balanceOf(sequencer)
-            .call()
-            .await?;
-        let ousd = ITIP20::new(OUSD_ADDRESS, &self.provider)
-            .balanceOf(sequencer)
-            .call()
-            .await?;
-        self.sequencer_metrics
-            .pathusd_balance
-            .set(f64::from(path_usd));
-        self.sequencer_metrics.ousd_balance.set(f64::from(ousd));
-        Ok(())
+        let tokens = [
+            (
+                "pathUSD",
+                PATH_USD_ADDRESS,
+                &self.sequencer_metrics.pathusd_balance,
+            ),
+            ("OUSD", OUSD_ADDRESS, &self.sequencer_metrics.ousd_balance),
+        ];
+        for (name, token, gauge) in tokens {
+            match ITIP20::new(token, &self.provider)
+                .balanceOf(sequencer)
+                .call()
+                .await
+            {
+                Ok(balance) => gauge.set(f64::from(balance)),
+                Err(error) => warn!(
+                    %error,
+                    %sequencer,
+                    token = name,
+                    "Failed to refresh sequencer fee token balance metric"
+                ),
+            }
+        }
     }
 
     /// Drain the portal's withdrawal queue on Tempo L1, slot by slot, until the
