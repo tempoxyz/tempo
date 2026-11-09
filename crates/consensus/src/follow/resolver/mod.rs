@@ -281,7 +281,7 @@ async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Option<
     let finalization = alloy_primitives::hex::decode(&certified_block.certificate)
         .map_err(Report::new)
         .and_then(|bytes| {
-            <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(&*bytes).map_err(Report::new)
+            <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(bytes).map_err(Report::new)
         })
         .inspect_err(|error| warn!(%error, "failed decoding certificate"))
         .ok()?;

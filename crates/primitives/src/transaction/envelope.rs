@@ -14,7 +14,9 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
 use core::{fmt, num::NonZeroU64};
-use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
+use tempo_contracts::precompiles::{
+    ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, tip20::MAX_PAYMENT_TRAILING_BYTES,
+};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
 /// (TIP-1045). Comfortably fits realistic provisioning payloads with limits and scopes.
@@ -278,21 +280,41 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
+        self.is_tip1045_payment(0)
+    }
+
+    /// T15+ [TIP-20 payment] (TIP-1045) classification.
+    ///
+    /// Like [`is_payment_v2`](Self::is_payment_v2), but static-only payment calls may carry up to
+    /// [`MAX_PAYMENT_TRAILING_BYTES`] bytes after their ABI-encoded arguments, e.g. an attribution
+    /// tag appended by integrators. Dynamic payment calls are unchanged.
+    ///
+    /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    pub fn is_payment_v3(&self) -> bool {
+        self.is_tip1045_payment(MAX_PAYMENT_TRAILING_BYTES)
+    }
+
+    /// TIP-1045 classification allowing `max_trailing_bytes` after static-only payment calls.
+    fn is_tip1045_payment(&self, max_trailing_bytes: usize) -> bool {
         match self {
-            Self::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input),
+            Self::Legacy(tx) => {
+                is_tip1045_call(tx.tx().to.to(), &tx.tx().input, max_trailing_bytes)
+            }
             Self::Eip2930(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
+                tx.access_list.is_empty()
+                    && is_tip1045_call(tx.to.to(), &tx.input, max_trailing_bytes)
             }
             Self::Eip1559(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
+                tx.access_list.is_empty()
+                    && is_tip1045_call(tx.to.to(), &tx.input, max_trailing_bytes)
             }
             Self::Eip7702(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
                     && tx.authorization_list.is_empty()
-                    && is_tip1045_call(Some(&tx.to), &tx.input)
+                    && is_tip1045_call(Some(&tx.to), &tx.input, max_trailing_bytes)
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
@@ -306,7 +328,7 @@ impl TempoTxEnvelope {
                     && tx
                         .calls
                         .iter()
-                        .all(|call| is_tip1045_call(call.to.to(), &call.input))
+                        .all(|call| is_tip1045_call(call.to.to(), &call.input, max_trailing_bytes))
             }
         }
     }
@@ -571,14 +593,15 @@ fn is_tip20_call(to: Option<&Address>) -> bool {
 
 /// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
 #[inline]
-fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
+fn is_tip1045_call(to: Option<&Address>, input: &[u8], max_trailing_bytes: usize) -> bool {
     match to {
         // TIP20 call + payment calldata constraints
-        Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
+        Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input, max_trailing_bytes),
         // TIP20ChannelReserve call + payment calldata constraints
         Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
             ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
                 input,
+                max_trailing_bytes,
                 |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
             )
         }
@@ -622,7 +645,9 @@ mod tests {
         key_authorization::KeyAuthorization,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     };
-    use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702};
+    use alloy_consensus::{
+        TxEip1559, TxEip2930, TxEip4844, TxEip7702, transaction::SignerRecoverable,
+    };
     use alloy_eips::{
         eip2930::{AccessList, AccessListItem},
         eip7702::SignedAuthorization,
@@ -684,14 +709,14 @@ mod tests {
 
     /// Returns one envelope per tx type, all targeting `to` with the given calldata.
     fn payment_envelopes_to(to: Address, calldata: Bytes) -> [TempoTxEnvelope; 5] {
-        let legacy = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        let legacy = TempoTxEnvelope::Legacy(
             TxLegacy {
                 to: TxKind::Call(to),
                 input: calldata.clone(),
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ));
+            }
+            .into_signed(Signature::test_signature()),
+        );
         let [eip2930, eip1559, eip7702, aa] =
             payment_envelopes_with_access_list_to(to, calldata, AccessList::default());
         [legacy, eip2930, eip1559, eip7702, aa]
@@ -708,16 +733,13 @@ mod tests {
     #[rustfmt::skip]
     fn payment_envelopes_with_access_list_to(to: Address, calldata: Bytes, access_list: AccessList) -> [TempoTxEnvelope; 4] {
         [
-            TempoTxEnvelope::Eip2930(Signed::new_unhashed(
-                TxEip2930 { to: TxKind::Call(to), input: calldata.clone(), access_list: access_list.clone(), ..Default::default() },
+            TempoTxEnvelope::Eip2930(TxEip2930 { to: TxKind::Call(to), input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }.into_signed(
                 Signature::test_signature(),
             )),
-            TempoTxEnvelope::Eip1559(Signed::new_unhashed(
-                TxEip1559 { to: TxKind::Call(to), input: calldata.clone(), access_list: access_list.clone(), ..Default::default() },
+            TempoTxEnvelope::Eip1559(TxEip1559 { to: TxKind::Call(to), input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }.into_signed(
                 Signature::test_signature(),
             )),
-            TempoTxEnvelope::Eip7702(Signed::new_unhashed(
-                TxEip7702 { to, input: calldata.clone(), access_list: access_list.clone(), ..Default::default() },
+            TempoTxEnvelope::Eip7702(TxEip7702 { to, input: calldata.clone(), access_list: access_list.clone(), ..Default::default() }.into_signed(
                 Signature::test_signature(),
             )),
             TempoTxEnvelope::AA(TempoTransaction {
@@ -737,7 +759,7 @@ mod tests {
             alloy_primitives::U256::ZERO,
             false,
         );
-        let signed = Signed::new_unhashed(legacy_tx, signature);
+        let signed = legacy_tx.into_signed(signature);
         let envelope = TempoTxEnvelope::Legacy(signed);
 
         assert!(!envelope.is_fee_token());
@@ -780,10 +802,8 @@ mod tests {
 
     #[test]
     fn test_time_bounds_ignore_non_aa_transactions() {
-        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy::default(),
-            Signature::test_signature(),
-        ));
+        let envelope =
+            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::test_signature()));
 
         assert!(envelope.is_valid_at(0));
         assert!(envelope.is_valid_at(u64::MAX));
@@ -800,7 +820,7 @@ mod tests {
             gas_limit: 21000,
             ..Default::default()
         };
-        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let signed = tx.into_signed(Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
 
         assert!(envelope.is_payment_v1());
@@ -814,7 +834,7 @@ mod tests {
             gas_limit: 21000,
             ..Default::default()
         };
-        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let signed = tx.into_signed(Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
 
         assert!(!envelope.is_payment_v1());
@@ -897,8 +917,7 @@ mod tests {
             to: TxKind::Call(PAYMENT_TKN),
             ..Default::default()
         };
-        let envelope =
-            TempoTxEnvelope::Eip2930(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Eip2930(tx.into_signed(Signature::test_signature()));
         assert!(envelope.is_payment_v1());
 
         // Eip2930 non-payment
@@ -906,8 +925,7 @@ mod tests {
             to: TxKind::Call(address!("1234567890123456789012345678901234567890")),
             ..Default::default()
         };
-        let envelope =
-            TempoTxEnvelope::Eip2930(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Eip2930(tx.into_signed(Signature::test_signature()));
         assert!(!envelope.is_payment_v1());
 
         // Eip1559 payment
@@ -915,8 +933,7 @@ mod tests {
             to: TxKind::Call(PAYMENT_TKN),
             ..Default::default()
         };
-        let envelope =
-            TempoTxEnvelope::Eip1559(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Eip1559(tx.into_signed(Signature::test_signature()));
         assert!(envelope.is_payment_v1());
 
         // Eip1559 non-payment
@@ -924,8 +941,7 @@ mod tests {
             to: TxKind::Call(address!("1234567890123456789012345678901234567890")),
             ..Default::default()
         };
-        let envelope =
-            TempoTxEnvelope::Eip1559(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Eip1559(tx.into_signed(Signature::test_signature()));
         assert!(!envelope.is_payment_v1());
 
         // Eip7702 payment (note: Eip7702 has direct `to` address, not TxKind)
@@ -933,8 +949,7 @@ mod tests {
             to: PAYMENT_TKN,
             ..Default::default()
         };
-        let envelope =
-            TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Eip7702(tx.into_signed(Signature::test_signature()));
         assert!(envelope.is_payment_v1());
 
         // Eip7702 non-payment
@@ -942,8 +957,7 @@ mod tests {
             to: address!("1234567890123456789012345678901234567890"),
             ..Default::default()
         };
-        let envelope =
-            TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Eip7702(tx.into_signed(Signature::test_signature()));
         assert!(!envelope.is_payment_v1());
     }
 
@@ -1270,8 +1284,6 @@ mod tests {
 
     #[test]
     fn test_system_tx_validation_and_recovery() {
-        use alloy_consensus::transaction::SignerRecoverable;
-
         let chain_id = 1u64;
 
         // Valid system tx: all fields zero, correct chain_id, system signature
@@ -1381,8 +1393,6 @@ mod tests {
 
     #[test]
     fn test_try_from_ethereum_envelope_eip4844_rejected() {
-        use alloy_consensus::TxEip4844;
-
         // EIP-4844 should be rejected
         let eip4844_tx = TxEip4844::default();
         let eth_envelope: EthereumTxEnvelope<TxEip4844> = EthereumTxEnvelope::Eip4844(

@@ -1,7 +1,7 @@
 //! EVM2 transaction envelope and conversion helpers.
 
 use alloy_consensus::{
-    Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
+    SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
     transaction::{Either, Recovered, TxHashRef},
 };
 use alloy_eips::eip2930::AccessList;
@@ -291,18 +291,18 @@ impl TempoTxEnv {
         let signature = Signature::test_signature();
         let envelope = match transaction {
             EthTxEnvelope::Legacy(transaction) => {
-                TempoTxEnvelope::Legacy(Signed::new_unhashed(transaction, signature))
+                TempoTxEnvelope::Legacy(transaction.into_signed(signature))
             }
             EthTxEnvelope::Eip2930(transaction) => {
-                TempoTxEnvelope::Eip2930(Signed::new_unhashed(transaction, signature))
+                TempoTxEnvelope::Eip2930(transaction.into_signed(signature))
             }
             EthTxEnvelope::Eip1559(transaction) => {
-                TempoTxEnvelope::Eip1559(Signed::new_unhashed(transaction, signature))
+                TempoTxEnvelope::Eip1559(transaction.into_signed(signature))
             }
             EthTxEnvelope::Eip4844(_) => return None,
             EthTxEnvelope::Eip7702(transaction) => {
                 let transaction_env = &transaction;
-                let envelope = TempoTxEnvelope::Eip7702(Signed::new_unhashed(
+                let envelope = TempoTxEnvelope::Eip7702(
                     TxEip7702 {
                         chain_id: transaction_env.chain_id,
                         nonce: transaction_env.nonce,
@@ -313,20 +313,14 @@ impl TempoTxEnv {
                         value: transaction_env.value,
                         access_list: transaction_env.access_list.clone(),
                         authorization_list: transaction_env
-                            .authorization_list
-                            .iter()
-                            .map(|authorization| {
-                                authorization.as_signed().cloned().unwrap_or_else(|| {
-                                    authorization.inner().clone().into_signed(signature)
-                                })
-                            })
-                            .collect(),
+                            .authorization_list()
+                            .expect("EIP-7702 transactions have an authorization list")
+                            .to_vec(),
                         input: transaction_env.input.clone(),
-                    },
-                    signature,
-                ));
-                // Keep the recovered authorizations: re-recovering the placeholder signatures
-                // above would yield wrong authorities.
+                    }
+                    .into_signed(signature),
+                );
+                // Keep the cached authority recovery results for execution.
                 return Some(Self {
                     evm_tx: TempoEvmTx::Eip7702(Recovered::new_unchecked(transaction, signer)),
                     execution_context: ExecutionContext::Simulation,
@@ -623,7 +617,7 @@ impl TransactionEnvMut for TempoTxEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{Signed, TxEip7702, transaction::TxHashRef};
+    use alloy_consensus::{TxEip7702, transaction::TxHashRef};
     use alloy_eips::eip2930::AccessListItem;
     use alloy_primitives::{B256, Signature, U256, keccak256};
     use alloy_signer::SignerSync;
@@ -646,10 +640,7 @@ mod tests {
 
     fn legacy_env(transaction: TxLegacy, signer: Address) -> TempoTxEnv {
         Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                transaction,
-                Signature::test_signature(),
-            )),
+            TempoTxEnvelope::Legacy(transaction.into_signed(Signature::test_signature())),
             signer,
         )
         .into()
@@ -667,18 +658,15 @@ mod tests {
 
     #[test]
     fn converts_standard_transactions() {
-        let legacy = convert(TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy::default(),
-            Signature::test_signature(),
-        )));
-        let eip2930 = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
-            TxEip2930::default(),
-            Signature::test_signature(),
-        )));
-        let eip1559 = convert(TempoTxEnvelope::Eip1559(Signed::new_unhashed(
-            TxEip1559::default(),
-            Signature::test_signature(),
-        )));
+        let legacy = convert(TempoTxEnvelope::Legacy(
+            TxLegacy::default().into_signed(Signature::test_signature()),
+        ));
+        let eip2930 = convert(TempoTxEnvelope::Eip2930(
+            TxEip2930::default().into_signed(Signature::test_signature()),
+        ));
+        let eip1559 = convert(TempoTxEnvelope::Eip1559(
+            TxEip1559::default().into_signed(Signature::test_signature()),
+        ));
 
         assert_eq!(legacy.ty(), 0);
         assert_eq!(eip2930.ty(), 1);
@@ -692,10 +680,9 @@ mod tests {
 
     #[test]
     fn converts_eip7702_to_lazy_authorizations() {
-        let transaction = convert(TempoTxEnvelope::Eip7702(Signed::new_unhashed(
-            TxEip7702::default(),
-            Signature::test_signature(),
-        )));
+        let transaction = convert(TempoTxEnvelope::Eip7702(
+            TxEip7702::default().into_signed(Signature::test_signature()),
+        ));
 
         assert_eq!(transaction.ty(), 4);
         assert_eq!(transaction.signer(), SIGNER);
@@ -704,10 +691,9 @@ mod tests {
 
     #[test]
     fn preserves_system_transaction_marker() {
-        let transaction = convert(TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy::default(),
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        )));
+        let transaction = convert(TempoTxEnvelope::Legacy(
+            TxLegacy::default().into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        ));
 
         assert!(transaction.is_system_tx());
     }
@@ -829,8 +815,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        let envelope =
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()));
         let tx_hash = *envelope.tx_hash();
         let TempoTxEnvelope::Legacy(signed) = &envelope else {
             unreachable!()
@@ -981,13 +966,13 @@ mod tests {
                 storage_keys: vec![B256::repeat_byte(1), B256::repeat_byte(2)],
             },
         ]);
-        let transaction = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+        let transaction = convert(TempoTxEnvelope::Eip2930(
             TxEip2930 {
                 access_list: access_list.clone(),
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        )));
+            }
+            .into_signed(Signature::test_signature()),
+        ));
         assert_eq!(transaction.as_eip2930().unwrap().access_list, access_list);
     }
 
@@ -997,15 +982,15 @@ mod tests {
             address: Address::repeat_byte(0xab),
             storage_keys: Vec::new(),
         }]);
-        let transaction = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+        let transaction = convert(TempoTxEnvelope::Eip2930(
             TxEip2930 {
                 gas_limit: 50_000,
                 nonce: 100,
                 access_list: access_list.clone(),
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        )));
+            }
+            .into_signed(Signature::test_signature()),
+        ));
         let transaction = transaction.as_eip2930().unwrap();
         assert_eq!(transaction.gas_limit, 50_000);
         assert_eq!(transaction.nonce, 100);

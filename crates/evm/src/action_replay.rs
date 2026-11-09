@@ -44,9 +44,7 @@ impl TempoBlockExecutor<'_> {
             return Err(StorageActionReplayError::TransactionExecutionFailed.into());
         }
 
-        let is_system_tx = self
-            .validate_tx_pre_execution(original)
-            .map_err(BlockExecutionError::from)?;
+        let is_system_tx = self.validate_tx_pre_execution(original)?;
 
         let state = self
             .replay_actions(actions.drain(..), expiring_nonce)
@@ -66,8 +64,7 @@ impl TempoBlockExecutor<'_> {
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
-        )
-        .map_err(BlockExecutionError::from)?;
+        )?;
 
         let result = TempoTxResult::new_precomputed(
             original,
@@ -259,7 +256,7 @@ impl TempoBlockExecutor<'_> {
             NONCE_PRECOMPILE_ADDRESS,
             ring_slot,
             old_hash,
-            U256::from_be_slice(expiring_nonce.hash.as_slice()),
+            expiring_nonce.hash.into(),
         );
         self.replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,

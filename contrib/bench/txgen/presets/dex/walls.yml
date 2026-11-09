@@ -1,4 +1,4 @@
-# Stablecoin DEX liquidity walls: a placeFlip bid and ask of 10,000 tokens around the
+# Stablecoin DEX liquidity walls: a placeFlip bid and ask of 1,000,000 tokens around the
 # peg for tokens 1-3, placed by users[0] in setup. An append piece, so presets can
 # combine it with other fixtures without replacing their setup steps.
 merge:
@@ -21,7 +21,7 @@ append:
             function: placeFlip
             args:
               - "0x20c0000000000000000000000000000000000001"
-              - 10000000000
+              - 1000000000000
               - true
               - -100
               - 100
@@ -38,7 +38,7 @@ append:
             function: placeFlip
             args:
               - "0x20c0000000000000000000000000000000000001"
-              - 10000000000
+              - 1000000000000
               - false
               - 100
               - -100
@@ -55,7 +55,7 @@ append:
             function: placeFlip
             args:
               - "0x20c0000000000000000000000000000000000002"
-              - 10000000000
+              - 1000000000000
               - true
               - -100
               - 100
@@ -72,7 +72,7 @@ append:
             function: placeFlip
             args:
               - "0x20c0000000000000000000000000000000000002"
-              - 10000000000
+              - 1000000000000
               - false
               - 100
               - -100
@@ -89,7 +89,7 @@ append:
             function: placeFlip
             args:
               - "0x20c0000000000000000000000000000000000003"
-              - 10000000000
+              - 1000000000000
               - true
               - -100
               - 100
@@ -106,7 +106,7 @@ append:
             function: placeFlip
             args:
               - "0x20c0000000000000000000000000000000000003"
-              - 10000000000
+              - 1000000000000
               - false
               - 100
               - -100
