@@ -111,6 +111,17 @@ impl AASigned {
             .get_or_init(|| self.tx.signature_hash().into())
     }
 
+    /// Whether configurable account approvals sign this transaction: the outer signature, directly
+    /// or inside a keychain envelope, or the inline key authorization.
+    pub fn has_configurable_approvals(&self) -> bool {
+        self.signature.is_or_wraps_configurable_account()
+            || self
+                .tx
+                .key_authorization
+                .as_ref()
+                .is_some_and(|auth| auth.signature().is_configurable_account())
+    }
+
     /// Recovers the sender and verifies any configurable account owner quorum signing an inline key
     /// authorization, so execution only checks commitments against state.
     fn recover_sender(
