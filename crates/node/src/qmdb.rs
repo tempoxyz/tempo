@@ -314,6 +314,9 @@ fn spawn_prefetch(
             metrics.prefetch_duration.record(started.elapsed());
         }
         block_span.record("rounds", rounds);
+        if let Some(stage) = stage {
+            store.seal_stage(stage);
+        }
     };
     if let Err(err) = std::thread::Builder::new()
         .name("qmdb-prefetch".into())
