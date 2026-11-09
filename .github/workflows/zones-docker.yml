@@ -333,6 +333,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      attestations: write
     outputs:
       image: ${{ steps.toolchain.outputs.image }}
     steps:
@@ -366,13 +367,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
       - name: Resolve or publish immutable toolchain
         id: toolchain
         env:
           TOOLCHAIN_REPOSITORY: ghcr.io/tempoxyz/tempo-zone-eif-toolchain
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Hash only the toolchain Dockerfile and resolved Bake dependency graph.
@@ -385,16 +384,21 @@ jobs:
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
           # On main and tags, reuse a cached digest only if a main run of this workflow
-          # (protected branch, not any pushed tag) signed it for this recipe_sha; otherwise
-          # rebuild it from the trusted recipe, so these runs never sign a foreign digest.
+          # (protected branch, not any pushed tag) attested it for this recipe_sha;
+          # otherwise rebuild it from the trusted recipe, so these runs never attest a
+          # foreign digest.
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
             [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]] &&
-            ! cosign verify "$TOOLCHAIN_REPOSITORY@$digest" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity-regexp '^https://github\.com/tempoxyz/tempo/\.github/workflows/zones-docker\.yml@refs/heads/main$' \
-              -a "eif-toolchain-recipe=$recipe_sha" \
-              > /dev/null 2>&1; then
-            echo "Cached $image_ref has no trusted signature; rebuilding it" >&2
+            ! gh attestation verify "oci://$TOOLCHAIN_REPOSITORY@$digest" \
+              --repo tempoxyz/tempo \
+              --signer-workflow tempoxyz/tempo/.github/workflows/zones-docker.yml \
+              --source-ref refs/heads/main \
+              --predicate-type https://tempo.xyz/attestations/eif-toolchain-recipe/v1 \
+              --format json 2> /dev/null |
+              jq -e --arg r "$recipe_sha" \
+                'any(.[]; .verificationResult.statement.predicate.recipe_sha == $r)' \
+                > /dev/null; then
+            echo "Cached $image_ref has no trusted attestation; rebuilding it" >&2
             digest=""
           fi
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -411,28 +415,34 @@ jobs:
           echo "recipe_sha=$recipe_sha" >> "$GITHUB_OUTPUT"
           echo "EIF toolchain: \`$TOOLCHAIN_REPOSITORY@$digest\` (main recipe $(git rev-parse HEAD), inputs-$recipe_sha)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Sign the published toolchain image
-        if: steps.toolchain.outputs.pushed == 'true'
+      - name: Split the published toolchain reference
+        id: toolchain-subject
+        if: steps.toolchain.outputs.pushed == 'true' && github.event_name != 'pull_request'
         env:
-          IMAGES: ${{ steps.toolchain.outputs.image }}
-          RECIPE_SHA: ${{ steps.toolchain.outputs.recipe_sha }}
+          IMAGE: ${{ steps.toolchain.outputs.image }}
         run: |
           set -euo pipefail
-          # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
-          while IFS= read -r ref; do
-            [ -n "$ref" ] || continue
-            for attempt in 1 2 3; do
-              if cosign sign --yes --recursive -a "eif-toolchain-recipe=$RECIPE_SHA" "$ref"; then
-                break
-              fi
-              if [ "$attempt" -eq 3 ]; then
-                echo "Failed to sign $ref after $attempt attempts" >&2
-                exit 1
-              fi
-              echo "cosign sign failed for $ref; retrying in $((attempt * 15))s" >&2
-              sleep $((attempt * 15))
-            done
-          done <<< "$IMAGES"
+          [[ "$IMAGE" =~ ^ghcr.io/tempoxyz/tempo-zone-eif-toolchain@sha256:[0-9a-f]{64}$ ]]
+          echo "digest=${IMAGE#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the toolchain image
+        if: steps.toolchain.outputs.pushed == 'true' && github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/tempoxyz/tempo-zone-eif-toolchain
+          subject-digest: ${{ steps.toolchain-subject.outputs.digest }}
+          push-to-registry: true
+
+      # Reuse on main and tags trusts a cached toolchain only with this recipe attestation.
+      - name: Attest the toolchain recipe
+        if: steps.toolchain.outputs.pushed == 'true' && github.event_name != 'pull_request'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ghcr.io/tempoxyz/tempo-zone-eif-toolchain
+          subject-digest: ${{ steps.toolchain-subject.outputs.digest }}
+          push-to-registry: true
+          predicate-type: https://tempo.xyz/attestations/eif-toolchain-recipe/v1
+          predicate: '{"recipe_sha":"${{ steps.toolchain.outputs.recipe_sha }}"}'
 
   reproducible-eif-verify:
     name: Verify reproducible prover EIF
@@ -895,6 +905,7 @@ jobs:
       packages: write
       id-token: write
     outputs:
+      prover_image_refs: ${{ steps.publish.outputs.prover_image_refs }}
       image_refs: ${{ steps.publish.outputs.image_refs }}
     steps:
       - name: Secure runner
@@ -988,7 +999,7 @@ jobs:
         run: |
           set -euo pipefail
           : > "$RUNNER_TEMP/image-refs.txt"
-          # Bind signing to this push receipt, never a mutable tag lookup.
+          # Bind attestations to this push receipt, never a mutable tag lookup.
           push_and_record() {
             local tag="$1" digest
             docker push "$tag" | tee "$RUNNER_TEMP/push.log"
@@ -1018,10 +1029,12 @@ jobs:
             docker tag tempo-zone-prover-eif-builder:local "$BUILDER_REF"
             push_and_record "$BUILDER_REF"
           fi
+          grep -E '/tempo-zone-prover@' "$RUNNER_TEMP/image-refs.txt" > "$RUNNER_TEMP/prover-image-refs.txt" || true
+          printf 'prover_image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/prover-image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
           printf 'image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
 
-  sign-companion-images:
-    name: Sign published companion images
+  sign-prover-images:
+    name: Sign published prover images
     needs: publish-companion-images
     runs-on: ubuntu-latest
     permissions:
@@ -1044,27 +1057,27 @@ jobs:
       - name: Install cosign
         uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      - name: Sign published companion image digests
+      - name: Sign published prover image digests
         shell: bash
         env:
-          IMAGE_REFS: ${{ needs.publish-companion-images.outputs.image_refs }}
+          PROVER_IMAGE_REFS: ${{ needs.publish-companion-images.outputs.prover_image_refs }}
         run: |
           set -euo pipefail
-          printf '%s' "$IMAGE_REFS" | jq -er '.[]' > "$RUNNER_TEMP/image-refs.txt"
-          [[ -s "$RUNNER_TEMP/image-refs.txt" ]] || {
-            echo "No published companion image digests to sign" >&2
+          printf '%s' "$PROVER_IMAGE_REFS" | jq -er '.[]' > "$RUNNER_TEMP/prover-image-refs.txt"
+          [[ -s "$RUNNER_TEMP/prover-image-refs.txt" ]] || {
+            echo "No published prover image digests to sign" >&2
             exit 1
           }
 
           # Keyless signatures identify the publishing workflow, not human/VK
           # approval or L1-approved PCRs. Tags already exist if signing fails.
           while IFS= read -r ref; do
-            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-(xtask|prover|prover-utils|prover-eif-builder)@sha256:[0-9a-f]{64}$ ]] || {
-              echo "Invalid companion image reference: $ref" >&2
+            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-prover@sha256:[0-9a-f]{64}$ ]] || {
+              echo "Invalid prover image reference: $ref" >&2
               exit 1
             }
             for attempt in 1 2 3; do
-              if cosign sign --yes --recursive "$ref"; then
+              if cosign sign --yes "$ref"; then
                 break
               fi
               if [[ "$attempt" -eq 3 ]]; then
@@ -1073,7 +1086,60 @@ jobs:
               fi
               sleep "$((attempt * 15))"
             done
-          done < "$RUNNER_TEMP/image-refs.txt"
+          done < "$RUNNER_TEMP/prover-image-refs.txt"
+
+  attest-companion-images:
+    name: Attest published companion image
+    needs: publish-companion-images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(needs.publish-companion-images.outputs.image_refs) }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      # Each reference is a repository@digest from the push receipt, never a mutable tag.
+      - name: Split the image reference
+        id: subject
+        env:
+          REF: ${{ matrix.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$REF" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-(xtask|prover|prover-utils|prover-eif-builder)@sha256:[0-9a-f]{64}$ ]] || {
+            echo "Invalid companion image reference: $REF" >&2
+            exit 1
+          }
+          name="${REF%@*}"
+          # Docker Hub attestations are pushed to and verified against index.docker.io.
+          [[ "$name" == docker.io/* ]] && name="index.$name"
+          {
+            echo "name=$name"
+            echo "digest=${REF#*@}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest the companion image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.subject.outputs.name }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          push-to-registry: true
 
   production-reproducible-clean-rebuild:
     name: Rebuild production tempo-zone image without cache
@@ -1314,6 +1380,7 @@ jobs:
     permissions:
       id-token: write
       packages: write
+      attestations: write
     outputs:
       image_digest: ${{ steps.promote.outputs.image_digest }}
       binary_sha256: ${{ steps.promote.outputs.binary_sha256 }}
@@ -1460,33 +1527,27 @@ jobs:
             echo "image_sha_tag=$image_sha_tag"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      # Attest before the CI event announces the image, so deployments admit it.
+      - name: Attest the promoted ghcr.io tempo-zone image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/tempo-zone
+          subject-digest: ${{ steps.promote.outputs.image_digest }}
+          push-to-registry: true
 
-      # Sign before the CI event announces the image, so deployments admit it.
-      - name: Sign the promoted image
-        env:
-          IMAGES: |
-            ${{ env.REGISTRY }}/tempo-zone@${{ steps.promote.outputs.image_digest }}
-            docker.io/tempoxyz/tempo-zone@${{ steps.promote.outputs.image_digest }}
-            ${{ env.STAGING_REPOSITORY }}@${{ steps.promote.outputs.image_digest }}
-        run: |
-          set -euo pipefail
-          # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
-          while IFS= read -r ref; do
-            [ -n "$ref" ] || continue
-            for attempt in 1 2 3; do
-              if cosign sign --yes --recursive "$ref"; then
-                break
-              fi
-              if [ "$attempt" -eq 3 ]; then
-                echo "Failed to sign $ref after $attempt attempts" >&2
-                exit 1
-              fi
-              echo "cosign sign failed for $ref; retrying in $((attempt * 15))s" >&2
-              sleep $((attempt * 15))
-            done
-          done <<< "$IMAGES"
+      - name: Attest the promoted Docker Hub tempo-zone image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/tempoxyz/tempo-zone
+          subject-digest: ${{ steps.promote.outputs.image_digest }}
+          push-to-registry: true
+
+      - name: Attest the promoted staging image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.STAGING_REPOSITORY }}
+          subject-digest: ${{ steps.promote.outputs.image_digest }}
+          push-to-registry: true
 
       - name: Publish Zones CI event
         if: github.ref == 'refs/heads/main'

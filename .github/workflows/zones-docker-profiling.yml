@@ -15,6 +15,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      attestations: write
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -63,26 +64,9 @@ jobs:
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
-      - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
-      - name: Sign the published image
-        env:
-          IMAGES: ${{ env.REGISTRY }}/tempo-zone@${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-zone']['containerimage.digest'] }}
-        run: |
-          set -euo pipefail
-          # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
-          while IFS= read -r ref; do
-            [ -n "$ref" ] || continue
-            for attempt in 1 2 3; do
-              if cosign sign --yes --recursive "$ref"; then
-                break
-              fi
-              if [ "$attempt" -eq 3 ]; then
-                echo "Failed to sign $ref after $attempt attempts" >&2
-                exit 1
-              fi
-              echo "cosign sign failed for $ref; retrying in $((attempt * 15))s" >&2
-              sleep $((attempt * 15))
-            done
-          done <<< "$IMAGES"
+      - name: Attest the tempo-zone image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/tempo-zone
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-zone']['containerimage.digest'] }}
+          push-to-registry: true
