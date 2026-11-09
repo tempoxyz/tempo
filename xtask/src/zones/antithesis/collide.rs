@@ -185,16 +185,21 @@ impl Context {
                 _ => None,
             })
             .collect();
-        // A grown group is recorded again with its new key: only its largest record is live.
+        // A grown group is recorded again with its new key, first with the earliest block the key
+        // can land in and then with the block it landed in: only its largest, latest record is
+        // live.
         let groups: Vec<_> = groups
             .iter()
-            .filter(|(kind, owner, members, _)| {
-                !groups.iter().any(|(other_kind, other_owner, others, _)| {
-                    other_kind == kind
-                        && other_owner == owner
-                        && others.len() > members.len()
-                        && members.iter().all(|member| others.contains(member))
-                })
+            .filter(|(kind, owner, members, zone_block)| {
+                !groups
+                    .iter()
+                    .any(|(other_kind, other_owner, others, other_block)| {
+                        other_kind == kind
+                            && other_owner == owner
+                            && (others.len() > members.len()
+                                || (others.len() == members.len() && other_block > zone_block))
+                            && members.iter().all(|member| others.contains(member))
+                    })
             })
             .cloned()
             .collect();
@@ -285,6 +290,15 @@ impl Context {
             else {
                 return Ok(true);
             };
+            if grown.len() > members.len() {
+                self.ledger.append(&Record::Collision {
+                    kind,
+                    owner,
+                    members: grown.clone(),
+                    depth: deepest_shared(base, &grown),
+                    zone_block: block,
+                })?;
+            }
             // Keys this block took from set to zero, and keys of the group left set, when known.
             let (cleared, present) = after.unzip();
             let details = json!({
@@ -304,7 +318,8 @@ impl Context {
                 &details
             );
             assert_sometimes!(
-                settled && grown.len() > members.len(),
+                // Growing into a subtree that still holds an earlier key, not an emptied one.
+                settled && grown.len() > members.len() && present > Some(1),
                 "A collision group grows after it settled",
                 &details
             );
