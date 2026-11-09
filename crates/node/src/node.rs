@@ -934,6 +934,14 @@ where
                 .no_eip4844()
                 .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
 
+        if !ctx.config().debug.lazy_kzg_settings {
+            let kzg_settings = validator.validator().kzg_settings().clone();
+            ctx.task_executor().spawn_blocking_task(async move {
+                let _ = kzg_settings.get();
+                debug!(target: "reth::cli", "Initialized KZG settings");
+            });
+        }
+
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
             pending_limit: pool_config.pending_limit,
