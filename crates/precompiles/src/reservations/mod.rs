@@ -5,11 +5,14 @@
 //! fit in the balance minus the owner's reserved total, and every TIP-20 credit to an owner with
 //! debt in that token pays the creditor first. A capture or charge releases the hold before paying,
 //! so it spends the reservation it consumes.
+//!
+//! Open holds count as spend of the access key that placed them (TIP-1011 limits), and every
+//! amount a hold stops committing, or a payee refunds, is given back to that key's limit.
 
 pub mod dispatch;
 
 use crate::{
-    account_keychain::AccountKeychain,
+    account_keychain::{AccountKeychain, LimitSpend},
     error::{Result, TempoPrecompileError},
     storage::{ContractStorage, Handler, Mapping},
     tip20::{Recipient, TIP20Token},
@@ -31,10 +34,11 @@ struct Position {
     debt: u128,
 }
 
-/// One authorization of an owner, from its hold to its refunds, in three slots.
+/// One authorization of an owner, from its hold to its refunds, in four slots.
 ///
 /// The record exists while `token` is non-zero and the hold is live while `expires_at` is
-/// non-zero. A live hold has nothing captured yet, since capturing ends the hold.
+/// non-zero. A live hold has nothing captured yet, since capturing ends the hold. The captured
+/// slot is written on settlement and the key slot only for authorizations an access key placed.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct Authorization {
     token: Address,
@@ -47,6 +51,12 @@ struct Authorization {
     captured: U96,
     /// Total refunded by the payee under this id.
     refunded: U96,
+    /// Access key that placed the hold or first charge, whose limit counts it; zero for the root
+    /// key. Other access keys of the owner cannot act on this id.
+    key_id: Address,
+    /// End of `key_id`'s limit period when the authorization was counted; limit is given back
+    /// only within that period.
+    limit_period_end: u64,
 }
 
 impl Authorization {
@@ -125,6 +135,8 @@ impl Reservations {
             .reserved
             .checked_add(call.amount)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
+        let spend =
+            AccountKeychain::new().spend_limit(owner, call.token, U256::from(call.amount))?;
         self.positions[owner][call.token].write(position)?;
         self.authorizations[owner][call.id].write(Authorization {
             token: call.token,
@@ -133,6 +145,8 @@ impl Reservations {
             expires_at: call.expiresAt,
             captured: U96::ZERO,
             refunded: U96::ZERO,
+            key_id: spend.map_or(Address::ZERO, |spend| spend.key_id),
+            limit_period_end: spend.map_or(0, |spend| spend.period_end),
         })?;
         self.emit_event(ReservationsEvent::hold_placed(
             owner,
@@ -146,9 +160,11 @@ impl Reservations {
 
     fn adjust(&mut self, owner: Address, call: IReservations::adjustCall) -> Result<()> {
         let auth = self.live_hold(owner, call.id)?;
+        ensure_key_may_act(owner, &auth)?;
         let held = amount_u96(call.amount)?;
         let previous = auth.held.to::<u128>();
         let mut position = self.positions[owner][auth.token].read()?;
+        let decrease = previous.saturating_sub(call.amount);
         if call.amount > previous {
             let increase = call.amount - previous;
             let token = TIP20Token::from_address(auth.token)?;
@@ -159,14 +175,16 @@ impl Reservations {
                 .reserved
                 .checked_add(increase)
                 .ok_or_else(TempoPrecompileError::under_overflow)?;
+            AccountKeychain::new().spend_limit(owner, auth.token, U256::from(increase))?;
         } else {
             position.reserved = position
                 .reserved
-                .checked_sub(previous - call.amount)
+                .checked_sub(decrease)
                 .ok_or_else(TempoPrecompileError::under_overflow)?;
         }
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][call.id].held.write(held)?;
+        restore_limit(owner, &auth, decrease)?;
         self.emit_event(ReservationsEvent::hold_adjusted(
             owner,
             call.id,
@@ -176,15 +194,26 @@ impl Reservations {
 
     fn capture(&mut self, owner: Address, call: IReservations::captureCall) -> Result<()> {
         let mut auth = self.live_hold(owner, call.id)?;
+        ensure_key_may_act(owner, &auth)?;
         let captured = amount_u96(call.amount)?;
+        let held = auth.held.to::<u128>();
         let mut position = self.positions[owner][auth.token].read()?;
         // Releasing the hold first lets the payment spend the reservation it consumes.
         position.reserved = position
             .reserved
-            .checked_sub(auth.held.to::<u128>())
+            .checked_sub(held)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         let mut token = TIP20Token::from_address(auth.token)?;
-        let debt = self.pay(&mut token, owner, auth.payee, call.amount, position)?;
+        // The hold already counted against the key's limit; only an excess is new spend.
+        let (debt, _) = self.pay(
+            &mut token,
+            owner,
+            auth.payee,
+            call.amount,
+            call.amount.saturating_sub(held),
+            position,
+        )?;
+        restore_limit(owner, &auth, held.saturating_sub(call.amount))?;
 
         auth.held = U96::ZERO;
         auth.expires_at = 0;
@@ -208,10 +237,18 @@ impl Reservations {
         if auth.is_held() || (auth.exists() && (auth.token != call.token || auth.payee != payee)) {
             return Err(ReservationsError::hold_exists().into());
         }
+        ensure_key_may_act(owner, &auth)?;
 
         let position = self.positions[owner][call.token].read()?;
-        let debt = self.pay(&mut token, owner, payee, call.amount, position)?;
+        let (debt, spend) =
+            self.pay(&mut token, owner, payee, call.amount, call.amount, position)?;
 
+        if !auth.exists()
+            && let Some(spend) = spend
+        {
+            auth.key_id = spend.key_id;
+            auth.limit_period_end = spend.period_end;
+        }
         auth.token = call.token;
         auth.payee = payee;
         auth.captured = auth
@@ -231,6 +268,7 @@ impl Reservations {
 
     fn release(&mut self, owner: Address, id: B256) -> Result<()> {
         let auth = self.live_hold(owner, id)?;
+        ensure_key_may_act(owner, &auth)?;
         self.end_hold(owner, id, auth)
     }
 
@@ -275,6 +313,7 @@ impl Reservations {
             self.reduce_debt(call.owner, auth.token, position, payee, offset)?;
         }
         token.reservation_transfer(payee, call.owner, U256::from(moved))?;
+        restore_limit(call.owner, &auth, call.amount)?;
 
         self.authorizations[call.owner][call.id]
             .refunded
@@ -288,7 +327,7 @@ impl Reservations {
 
     fn set_debt_cap(&mut self, owner: Address, call: IReservations::setDebtCapCall) -> Result<()> {
         // Card access keys must never raise the debt they can create.
-        if AccountKeychain::new().is_access_key_call(owner)? {
+        if AccountKeychain::new().signing_access_key(owner)?.is_some() {
             return Err(ReservationsError::unauthorized().into());
         }
         if call.creditor.is_zero() || call.creditor == owner {
@@ -338,17 +377,19 @@ impl Reservations {
     }
 
     /// Pays `amount` from `owner`'s available balance to `payee` and records the shortfall as
-    /// debt towards `payee`, within the owner's cap. Writes `position` and returns the new debt.
+    /// debt towards `payee`, within the owner's cap. Writes `position`.
     ///
-    /// The full amount, debt included, counts against the access key signing the transaction.
+    /// Counts `spend`, debt included, against the access key signing for `owner`. Returns the
+    /// new debt and the limit charge, if any.
     fn pay(
         &mut self,
         token: &mut TIP20Token,
         owner: Address,
         payee: Address,
         amount: u128,
+        spend: u128,
         mut position: Position,
-    ) -> Result<u128> {
+    ) -> Result<(u128, Option<LimitSpend>)> {
         let token_address = token.address();
         let paid = amount.min(available(token, owner, &position)?);
         let debt = amount - paid;
@@ -365,14 +406,18 @@ impl Reservations {
                 return Err(ReservationsError::debt_cap_exceeded().into());
             }
         }
-        AccountKeychain::new().authorize_transfer(owner, token_address, U256::from(amount))?;
+        let spend = if spend == 0 {
+            None
+        } else {
+            AccountKeychain::new().spend_limit(owner, token_address, U256::from(spend))?
+        };
         if debt != 0 && new_creditor {
             self.creditors[owner][token_address].write(payee)?;
         }
         // TIP-20 reads the position during the transfer, so it must be written first.
         self.positions[owner][token_address].write(position)?;
         token.reservation_transfer(owner, payee, U256::from(paid))?;
-        Ok(debt)
+        Ok((debt, spend))
     }
 
     /// Lowers `owner`'s debt in `token` by `amount` and emits `DebtRepaid`.
@@ -405,6 +450,7 @@ impl Reservations {
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         self.positions[owner][auth.token].write(position)?;
         self.authorizations[owner][id].delete()?;
+        restore_limit(owner, &auth, auth.held.to())?;
         self.emit_event(ReservationsEvent::hold_released(owner, id))
     }
 
@@ -419,6 +465,29 @@ impl Reservations {
     fn now(&self) -> u64 {
         self.storage.timestamp().saturating_to()
     }
+}
+
+/// Rejects an access key of `owner` other than the one that placed `auth`; the root key and
+/// authorizations the root key placed accept any signer.
+fn ensure_key_may_act(owner: Address, auth: &Authorization) -> Result<()> {
+    match AccountKeychain::new().signing_access_key(owner)? {
+        Some(key_id) if !auth.key_id.is_zero() && key_id != auth.key_id => {
+            Err(ReservationsError::unauthorized().into())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Gives `amount` back to the limit of the access key that placed `auth`, within the period
+/// it was counted in.
+fn restore_limit(owner: Address, auth: &Authorization, amount: u128) -> Result<()> {
+    AccountKeychain::new().restore_limit(
+        owner,
+        auth.key_id,
+        auth.token,
+        U256::from(amount),
+        auth.limit_period_end,
+    )
 }
 
 /// Converts a non-zero ABI amount to its stored width.
@@ -466,6 +535,8 @@ mod tests {
 
     const NOW: u64 = 1_000;
     const EXPIRY: u64 = NOW + 600;
+    /// Renewal period of the card key limits in these tests.
+    const CARD_LIMIT_PERIOD: u64 = 86_400;
 
     struct Fixture {
         admin: Address,
@@ -1173,39 +1244,183 @@ mod tests {
     }
 
     #[test]
-    fn test_access_key_limit_counts_captures_and_charges() -> eyre::Result<()> {
+    fn test_holds_count_against_the_mandate_limit() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 100)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+
+            let first = B256::random();
+            f.hold(first, 80)?;
+            assert_eq!(remaining()?, U256::from(20));
+            assert_eq!(
+                f.hold(B256::random(), 30).unwrap_err(),
+                AccountKeychainError::spending_limit_exceeded().into()
+            );
+
+            // Releasing a hold gives its headroom back.
+            f.reservations.release(f.owner, first)?;
+            assert_eq!(remaining()?, U256::from(100));
+            let second = B256::random();
+            f.hold(second, 30)?;
+            assert_eq!(remaining()?, U256::from(70));
+
+            // Adjusting up spends the increase; adjusting down gives the decrease back.
+            f.adjust(second, 90)?;
+            assert_eq!(remaining()?, U256::from(10));
+            assert_eq!(
+                f.adjust(second, 101).unwrap_err(),
+                AccountKeychainError::spending_limit_exceeded().into()
+            );
+            f.adjust(second, 40)?;
+            assert_eq!(remaining()?, U256::from(60));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_capture_counts_only_the_excess_over_the_hold() -> eyre::Result<()> {
         at_t15(|| {
             let mut f = Fixture::new(1_000)?;
             f.set_debt_cap(f.payee, 1_000)?;
             let key = Address::random();
-            let (owner, token) = (f.owner, f.token.address());
-            let keychain = authorize_card_key(owner, key, token, 500)?;
-            let remaining = || {
-                keychain.get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
-                    account: owner,
-                    keyId: key,
-                    token,
-                })
-            };
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 500)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
 
-            // Holds reserve without spending the limit.
-            let id = B256::random();
-            f.hold(id, 900)?;
-            assert_eq!(remaining()?, U256::from(500));
+            let tipped = B256::random();
+            f.hold(tipped, 300)?;
+            f.capture(tipped, 350)?;
+            assert_eq!(remaining()?, U256::from(150));
+
+            // A capture below the hold gives the rest back.
+            let partial = B256::random();
+            f.hold(partial, 100)?;
+            f.capture(partial, 40)?;
+            assert_eq!(remaining()?, U256::from(110));
+
+            let over = B256::random();
+            f.hold(over, 110)?;
             assert_eq!(
-                f.capture(id, 501).unwrap_err(),
+                f.capture(over, 111).unwrap_err(),
                 AccountKeychainError::spending_limit_exceeded().into()
             );
-            f.capture(id, 400)?;
-            assert_eq!(remaining()?, U256::from(100));
+            f.capture(over, 110)?;
+            assert_eq!(remaining()?, U256::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_charge_counts_the_full_amount() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            f.set_debt_cap(f.payee, 1_000)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 500)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
 
             // Debt counts too: the limit bounds what the key commits, not what the balance pays.
             assert_eq!(
-                f.charge(B256::random(), 101, f.payee).unwrap_err(),
+                f.charge(B256::random(), 501, f.payee).unwrap_err(),
                 AccountKeychainError::spending_limit_exceeded().into()
             );
-            f.charge(B256::random(), 100, f.payee)?;
+            let id = B256::random();
+            f.charge(id, 300, f.payee)?;
+            assert_eq!(remaining()?, U256::from(200));
+            assert_eq!(f.debt()?.amount, 200);
+            f.charge(id, 200, f.payee)?;
             assert_eq!(remaining()?, U256::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_restores_the_mandate_limit() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 500)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+
+            let id = B256::random();
+            f.hold(id, 300)?;
+            f.capture(id, 300)?;
+            assert_eq!(remaining()?, U256::from(200));
+            f.refund(f.payee, id, 100)?;
+            assert_eq!(remaining()?, U256::from(300));
+
+            // A charge's refund goes back to the key that charged.
+            let charged = B256::random();
+            f.charge(charged, 50, f.payee)?;
+            assert_eq!(remaining()?, U256::from(250));
+            f.refund(f.payee, charged, 50)?;
+            assert_eq!(remaining()?, U256::from(300));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_expired_hold_restores_within_its_period_only() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 100)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+
+            let expiring = B256::random();
+            f.hold(expiring, 40)?;
+            StorageCtx.set_timestamp(U256::from(EXPIRY));
+            f.reservations.release_expired(f.owner, expiring)?;
+            assert_eq!(remaining()?, U256::from(100));
+
+            // A hold counted in one period is not given back after a spend rolled the period.
+            let old = B256::random();
+            f.hold_until(old, 60, NOW + 2 * CARD_LIMIT_PERIOD)?;
+            StorageCtx.set_timestamp(U256::from(NOW + CARD_LIMIT_PERIOD));
+            f.hold_until(B256::random(), 70, NOW + 2 * CARD_LIMIT_PERIOD)?;
+            assert_eq!(remaining()?, U256::from(30));
+            f.reservations.release(f.owner, old)?;
+            assert_eq!(remaining()?, U256::from(30));
+            assert_eq!(
+                f.hold_until(B256::random(), 31, NOW + 2 * CARD_LIMIT_PERIOD)
+                    .unwrap_err(),
+                AccountKeychainError::spending_limit_exceeded().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_other_access_keys_cannot_act_on_a_hold() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let mut keychain = authorize_card_key(f.owner, key, f.token.address(), 100)?;
+            let id = B256::random();
+            f.hold(id, 80)?;
+
+            let other = Address::random();
+            keychain.set_transaction_key(Address::ZERO)?;
+            authorize_card_key(f.owner, other, f.token.address(), 100)?;
+            for result in [
+                f.adjust(id, 10),
+                f.capture(id, 10),
+                f.reservations.release(f.owner, id),
+            ] {
+                assert_eq!(
+                    result.unwrap_err(),
+                    ReservationsError::unauthorized().into()
+                );
+            }
+
+            // The root key may release it, which gives the placing key its headroom back.
+            keychain.set_transaction_key(Address::ZERO)?;
+            f.reservations.release(f.owner, id)?;
+            assert_eq!(
+                remaining_limit(&keychain, f.owner, key, f.token.address())()?,
+                U256::from(100)
+            );
             Ok(())
         })
     }
@@ -1278,6 +1493,22 @@ mod tests {
         })
     }
 
+    /// Returns a reader of @@key@@'s remaining @@token@@ limit on @@owner@@.
+    fn remaining_limit(
+        keychain: &AccountKeychain,
+        owner: Address,
+        key: Address,
+        token: Address,
+    ) -> impl Fn() -> Result<U256> + '_ {
+        move || {
+            keychain.get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
+                account: owner,
+                keyId: key,
+                token,
+            })
+        }
+    }
+
     /// Authorizes an issuer access key on `account`, scoped to the reservations precompile with
     /// a `limit` on `token`, and makes it sign the current transaction.
     fn authorize_card_key(
@@ -1306,7 +1537,7 @@ mod tests {
                 limits: vec![IAccountKeychain::TokenLimit {
                     token,
                     amount: U256::from(limit),
-                    period: 86_400,
+                    period: CARD_LIMIT_PERIOD,
                 }],
                 allowAnyCalls: false,
                 allowedCalls: vec![IAccountKeychain::CallScope {
