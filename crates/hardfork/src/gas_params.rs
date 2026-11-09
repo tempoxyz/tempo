@@ -78,8 +78,7 @@ pub fn version(spec_id: SpecId, spec: TempoHardfork, amsterdam_eip8037_enabled: 
     configure_version(Version::new(spec_id), spec, amsterdam_eip8037_enabled)
 }
 
-/// Applies a zone's changes to `spec`'s gas schedule (TIP-1154). Applied once, to the EVM env a
-/// zone's config returns.
+/// Applies a zone's changes to `spec`'s gas schedule (TIP-1154).
 ///
 /// From T14, a zone reads the Tempo commitment of every account it loads from its database, so a
 /// cold account access also pays [`L1_COMMITMENT_READ_GAS`]. Access-list addresses, which skip the cold access,
