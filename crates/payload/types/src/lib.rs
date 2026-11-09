@@ -13,9 +13,8 @@ pub use attrs::TempoPayloadAttributes;
 pub(crate) use budget::ValidationLatencyEstimator;
 pub use budget::{ValidationLatencyEstimate, ValidationLatencyWorkload};
 pub use estimator::{
-    BuildPlan, DEFAULT_NETWORK_BUDGET_MAX, DEFAULT_NETWORK_RESERVE_PERCENTILE,
-    DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE, Estimator, PayloadBudgetDecision, ProposalBudget,
-    ProposalKey, ProposalTiming,
+    BuildPlan, DEFAULT_NETWORK_RESERVE_PERCENTILE, Estimator, PayloadBudgetDecision,
+    ProposalBudget, ProposalKey, ProposalTiming,
     config::{ConfigError, EstimatorConfig, NetworkReservation},
 };
 use std::{

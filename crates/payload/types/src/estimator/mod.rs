@@ -7,8 +7,7 @@ mod network;
 mod proposal;
 
 pub use config::{
-    DEFAULT_NETWORK_BUDGET, DEFAULT_NETWORK_BUDGET_MAX, DEFAULT_NETWORK_RESERVE_PERCENTILE,
-    DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE, DEFAULT_TARGET_BLOCK_TIME,
+    DEFAULT_NETWORK_BUDGET, DEFAULT_NETWORK_RESERVE_PERCENTILE, DEFAULT_TARGET_BLOCK_TIME,
 };
 use config::{EstimatorConfig, NetworkReservation};
 pub use proposal::ProposalBudget;
@@ -26,9 +25,6 @@ use std::{
 use crate::{ValidationLatencyEstimator, ValidationLatencyWorkload};
 use build_time::BuildTimeTracker;
 use network::NetworkTracker;
-
-/// Percentile followed by both build and network estimates.
-const RESERVE_PERCENTILE: usize = 75;
 
 /// Identifies a proposal by its own epoch and view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
