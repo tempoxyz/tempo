@@ -835,8 +835,6 @@ mod tests {
 
     #[test]
     fn semantic_sinc_sdec_conflict_when_replay_crosses_zero() {
-        use crate::test_utils::{TestExecutorBuilder, test_chainspec};
-
         let token = Address::repeat_byte(0x42);
         let slot = U256::from(7);
         let chainspec = test_chainspec();
@@ -868,8 +866,7 @@ mod tests {
                 true,
             ),
         ] {
-            let mut db = state_with_storage(token, slot, U256::from(current));
-            let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+            let mut executor = executor_with_storage(&chainspec, token, slot, U256::from(current));
             let result = executor.replay_actions([action], None);
             if conflicts {
                 assert_eq!(
