@@ -55,11 +55,7 @@ impl TempoAaTx {
     // configurable account approvals or recovered their keychain access key: warm both here,
     // off the serial execution path. Failures are left for execution to report.
     fn warm_signatures(&self) {
-        for role in self.configurable_roles().into_iter().flatten() {
-            let _ = role
-                .signature
-                .verify_approvals(role.signed.inner_digest(self));
-        }
+        self.warm_configurable_approvals();
         if let Some(keychain) = self.signature().as_keychain()
             && keychain.signature.as_configurable_account().is_none()
         {
