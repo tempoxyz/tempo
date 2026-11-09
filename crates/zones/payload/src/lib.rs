@@ -7,11 +7,13 @@ pub mod abi {
     pub use tempo_contracts::zones::*;
 }
 
+mod allowlist;
 mod attrs;
 mod builder;
 mod prewarming;
 mod withdrawal_reveal;
 
+pub use allowlist::{Allowlist, TransferScreenError, validate_transfer_calls};
 pub use attrs::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
 pub use builder::{
     DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, ZonePayloadBuilder, ZonePayloadFactory,

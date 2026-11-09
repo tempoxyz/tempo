@@ -3328,7 +3328,7 @@ impl ZoneAccount {
         Ok((block_number, balance))
     }
 
-    async fn submit_deposit_with_memo(
+    pub(crate) async fn submit_deposit_with_memo(
         &mut self,
         amount: u128,
         recipient: Address,

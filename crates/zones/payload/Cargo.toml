@@ -51,4 +51,9 @@ evm2.workspace = true
 # misc
 eyre.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
+thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+reth-provider = { workspace = true, features = ["test-utils"] }
+zone-precompiles = { workspace = true, features = ["test-utils"] }

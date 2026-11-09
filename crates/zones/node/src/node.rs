@@ -28,6 +28,7 @@ use alloy_provider::{DynProvider, Provider as _};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolEvent as _;
 use evm2::registry::HandlerError;
+use futures::StreamExt as _;
 use k256::SecretKey;
 use reth_chainspec::EthChainSpec;
 use reth_eth_wire_types::primitives::BasicNetworkPrimitives;
@@ -47,7 +48,7 @@ use reth_node_builder::{
     },
 };
 use reth_primitives_traits::SealedHeader;
-use reth_provider::ChainSpecProvider;
+use reth_provider::{CanonStateSubscriptions, ChainSpecProvider};
 use reth_rpc_api::Web3ApiServer as _;
 use reth_rpc_builder::Identity;
 use reth_storage_api::{
@@ -56,8 +57,8 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    Pool, PoolTransaction, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
-    error::InvalidPoolTransactionError,
+    Pool, PoolTransaction, TransactionPool, TransactionValidationTaskExecutor,
+    blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::{
     num::NonZeroU32,
@@ -99,8 +100,9 @@ use zone_p2p::{
     P2pNetworkId, P2pPeerId, ZoneManifest, spawn_p2p,
 };
 use zone_payload::{
-    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, WithdrawalRevealEncryptor, ZonePayloadAttributes,
-    ZonePayloadFactory, ZonePayloadTypes,
+    Allowlist, DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, TransferScreenError,
+    WithdrawalRevealEncryptor, ZonePayloadAttributes, ZonePayloadFactory, ZonePayloadTypes,
+    validate_transfer_calls,
 };
 use zone_precompiles::{ZONE_ALLOWLIST_ADDRESS, allowlist};
 use zone_primitives::constants::{decode_l1_chain_id, zone_chain_id};
@@ -787,6 +789,10 @@ where
         let provider = ctx.node.provider().clone();
         let zone_provider = provider.clone();
         let pool = ctx.node.pool().clone();
+        task_executor.spawn_critical_task(
+            "zone-allowlist-pool-eviction",
+            evict_unlisted_transfers_on_allowlist_change(provider.clone(), pool.clone()),
+        );
         let engine_handle = ctx.beacon_engine_handle.clone();
         let payload_builder = ctx.node.payload_builder_handle().clone();
         let operator_rpc_slot = sequencer_rpc_slot.clone();
@@ -1922,13 +1928,99 @@ fn is_allowlist_admin_update(
         .and_then(|state| state.storage(ZONE_ALLOWLIST_ADDRESS, allowlist::slots::ADMIN.into()))
         .map_err(|err| {
             warn!(%err, "Failed to read the zone allowlist admin during pool admission");
-            InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                HandlerError::External("could not read the zone allowlist admin".into()),
-            ))
+            pool_admission_error("could not read the zone allowlist admin")
         })?
         .unwrap_or_default();
     let admin = Address::from_word(B256::from(admin));
     Ok(!admin.is_zero() && admin == tx.signer())
+}
+
+/// Reject `tx` when the allowlist in the latest state does not allow every party of its
+/// transfers; see [`validate_transfer_calls`].
+fn validate_pool_transfer_calls(
+    provider: &impl StateProviderFactory,
+    tx: &TempoPooledTransaction,
+) -> Result<(), InvalidPoolTransactionError> {
+    let could_not_read = |err: &dyn std::fmt::Display| {
+        warn!(%err, "Failed to read the zone allowlist during pool admission");
+        pool_admission_error("could not read the zone allowlist")
+    };
+    let state = provider.latest().map_err(|err| could_not_read(&err))?;
+    let allowlist = Allowlist::read(state.as_ref()).map_err(|err| could_not_read(&err))?;
+    validate_transfer_calls(&allowlist, tx).map_err(|err| match err {
+        TransferScreenError::Rejected(error) => error,
+        TransferScreenError::State(err) => could_not_read(&err),
+    })
+}
+
+/// Drops pooled transactions the allowlist no longer admits whenever a canonical block changes
+/// the list, so this node stops forwarding transfers the leader would leave out.
+async fn evict_unlisted_transfers_on_allowlist_change<TProvider, TPool>(
+    provider: TProvider,
+    pool: TPool,
+) where
+    TProvider: CanonStateSubscriptions<Primitives = TempoPrimitives> + StateProviderFactory,
+    TPool: TransactionPool<Transaction = TempoPooledTransaction>,
+{
+    let mut blocks = provider.canonical_state_stream();
+    while let Some(notification) = blocks.next().await {
+        let list_changed = notification
+            .committed()
+            .block_receipts_iter()
+            .flatten()
+            .any(|receipt| {
+                receipt
+                    .logs()
+                    .iter()
+                    .any(|log| log.address == ZONE_ALLOWLIST_ADDRESS)
+            });
+        if !list_changed {
+            continue;
+        }
+        match evict_unlisted_transfers(&provider, &pool) {
+            Ok(0) => {}
+            Ok(evicted) => info!(
+                target: "zone::pool",
+                evicted,
+                "Dropped pooled transfers the allowlist no longer admits"
+            ),
+            Err(err) => warn!(
+                target: "zone::pool",
+                %err,
+                "Failed to re-check pooled transfers against the allowlist"
+            ),
+        }
+    }
+}
+
+/// Remove pooled transactions the allowlist in the latest state no longer admits. Returns how
+/// many were removed.
+///
+/// This scans pending and queued transactions whether or not they propagate, since the forwarder
+/// resends local transactions either way.
+fn evict_unlisted_transfers<TProvider, TPool>(
+    provider: &TProvider,
+    pool: &TPool,
+) -> eyre::Result<usize>
+where
+    TProvider: StateProviderFactory,
+    TPool: TransactionPool<Transaction = TempoPooledTransaction>,
+{
+    let state = provider.latest()?;
+    let allowlist = Allowlist::read(state.as_ref())?;
+    let mut unlisted = Vec::new();
+    for tx in pool.all_transactions().iter() {
+        match validate_transfer_calls(&allowlist, &tx.transaction) {
+            Ok(()) => {}
+            Err(TransferScreenError::Rejected(_)) => unlisted.push(*tx.hash()),
+            Err(TransferScreenError::State(err)) => return Err(err.into()),
+        }
+    }
+    let count = unlisted.len();
+    if count > 0 {
+        pool.remove_transactions(unlisted);
+    }
+    Ok(count)
 }
 
 fn validate_has_enabled_token_balance(
@@ -1938,29 +2030,30 @@ fn validate_has_enabled_token_balance(
 ) -> Result<(), InvalidPoolTransactionError> {
     let state = provider.latest().map_err(|err| {
         warn!(%err, "Failed to read latest state for zone token-balance admission check");
-        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(HandlerError::External(
-            "could not verify balance of an enabled zone token".into(),
-        )))
+        pool_admission_error("could not verify balance of an enabled zone token")
     })?;
 
     for token in enabled_tokens.read().iter().copied() {
         let slot = TIP20Token::from_address_unchecked(token).balances[sender].slot();
         let balance = state.storage(token, slot.into()).map_err(|err| {
             warn!(%err, %sender, "Failed to read zone token balance during pool admission");
-            InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                HandlerError::External("could not verify balance of an enabled zone token".into()),
-            ))
+            pool_admission_error("could not verify balance of an enabled zone token")
         })?;
         if balance.is_some_and(|balance| !balance.is_zero()) {
             return Ok(());
         }
     }
 
-    Err(InvalidPoolTransactionError::other(
-        TempoPoolTransactionError::Evm(HandlerError::External(
-            "sender must hold a nonzero balance of an enabled zone token".into(),
-        )),
+    Err(pool_admission_error(
+        "sender must hold a nonzero balance of an enabled zone token",
     ))
+}
+
+/// Pool error for a transaction the zone's admission checks reject with `reason`.
+fn pool_admission_error(reason: &'static str) -> InvalidPoolTransactionError {
+    InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(HandlerError::External(
+        reason.into(),
+    )))
 }
 
 impl<Node> PoolBuilder<Node, ZoneEvmConfig> for ZonePoolBuilder
@@ -2001,6 +2094,7 @@ where
             if is_allowlist_admin_update(&provider, tx.inner())? {
                 return Ok(());
             }
+            validate_pool_transfer_calls(&provider, tx)?;
             validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
         });
 
@@ -2106,7 +2200,9 @@ mod tests {
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::Recovered;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_primitives::transaction::{Call, TempoTransaction};
+    use tempo_primitives::transaction::{
+        Call, KeyAuthorization, SignatureType, TempoTransaction, tt_signature::PrimitiveSignature,
+    };
     use zone_chainspec::tempo_chain_spec_for_l1;
 
     fn pooled_transaction(envelope: TempoTxEnvelope, sender: Address) -> TempoPooledTransaction {
@@ -2342,6 +2438,88 @@ mod tests {
                 aa_transaction(admin, vec![call(ZONE_ALLOWLIST_ADDRESS)]).inner()
             )
             .unwrap()
+        );
+        // A key authorization is not a call, so it does not ride along for free.
+        let with_key = pooled_transaction(
+            TempoTransaction {
+                calls: vec![call(ZONE_ALLOWLIST_ADDRESS)],
+                key_authorization: Some(
+                    KeyAuthorization::unrestricted(
+                        1,
+                        SignatureType::Secp256k1,
+                        Address::repeat_byte(0x33),
+                    )
+                    .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+                ),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature().into())
+            .into(),
+            admin,
+        );
+        assert!(!is_allowlist_admin_update(&provider, with_key.inner()).unwrap());
+    }
+
+    #[tokio::test]
+    async fn eviction_covers_local_transactions_that_do_not_propagate() {
+        use alloy_sol_types::SolCall as _;
+        use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+        use reth_transaction_pool::{
+            PoolConfig, TransactionOrigin, noop::MockTransactionValidator,
+        };
+        use tempo_contracts::precompiles::ITIP20;
+        use tempo_primitives::TempoAddressExt as _;
+        use tempo_transaction_pool::ordering::TempoTipOrdering;
+
+        let (alice, bob) = (Address::repeat_byte(0xa1), Address::repeat_byte(0xb0));
+        let pool = Pool::new(
+            MockTransactionValidator::no_propagate_local(),
+            TempoTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let transfer = |to| {
+            TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTransaction {
+                    gas_limit: 100_000,
+                    max_fee_per_gas: 2_000_000_000,
+                    calls: vec![Call {
+                        to: TxKind::Call(Address::new_tip20(0)),
+                        value: U256::ZERO,
+                        input: ITIP20::transferCall {
+                            to,
+                            amount: U256::ONE,
+                        }
+                        .abi_encode()
+                        .into(),
+                    }],
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature().into())
+                .into(),
+                alice,
+            ))
+        };
+        pool.add_transaction(TransactionOrigin::Local, transfer(bob))
+            .await
+            .unwrap();
+        // The forwarder resends it although it is not offered for propagation.
+        assert!(pool.pooled_transactions().is_empty());
+
+        // Only Alice is listed, so her transfer to Bob is evicted.
+        let provider = MockEthProvider::<TempoPrimitives>::new();
+        provider.add_account(
+            ZONE_ALLOWLIST_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage(
+                allowlist::storage_entries(true, &[alice])
+                    .into_iter()
+                    .map(|(slot, value)| (B256::from(slot), value)),
+            ),
+        );
+        assert_eq!(evict_unlisted_transfers(&provider, &pool).unwrap(), 1);
+        assert!(
+            pool.get_transactions_by_origin(TransactionOrigin::Local)
+                .is_empty()
         );
     }
 }

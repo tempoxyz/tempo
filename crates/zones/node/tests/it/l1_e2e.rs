@@ -16,7 +16,7 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_consensus::Transaction;
-use eyre::WrapErr as _;
+use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use std::{collections::HashMap, time::Duration};
@@ -2500,8 +2500,9 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
 
 /// The leader enforces the on-chain deposit allowlist. A ZonePortal sequencer bootstraps its admin,
 /// the admin lists a sender and enables enforcement through ordinary zone transactions, and the
-/// leader then credits listed senders, bounces unlisted ones back to their Tempo refund recipient,
-/// and applies later list updates from the next block.
+/// leader then credits deposits between listed accounts, bounces those from an unlisted sender or
+/// to an unlisted zone recipient back to their Tempo refund recipient, and applies later list
+/// updates from the next block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -2519,7 +2520,7 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
     let admin = admin_signer.address();
     let mut listed = ZoneAccount::with_signer(l1.signer_at(3), &l1, &zone, portal_address);
     let mut unlisted = ZoneAccount::with_signer(l1.signer_at(4), &l1, &zone, portal_address);
-    l1.fund_user(listed.address(), 3 * AMOUNT).await?;
+    l1.fund_user(listed.address(), 4 * AMOUNT).await?;
     l1.fund_user(unlisted.address(), 3 * AMOUNT).await?;
     // Start the sequencer only after L1 setup so its shared signer cannot race the funding.
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
@@ -2575,36 +2576,20 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
         U256::from(AMOUNT)
     );
 
-    let bounce_from = unlisted.submit_deposit(AMOUNT).await?;
+    // An unlisted sender bounces, and so does a listed sender depositing to an unlisted zone
+    // recipient.
     let portal = ZonePortal::new(portal_address, l1.provider());
-    poll_until(
-        Duration::from_secs(60),
-        Duration::from_millis(250),
-        "unlisted deposit bounce-back on L1",
-        || {
-            let portal = &portal;
-            let refund_recipient = unlisted.address();
-            async move {
-                let bounced = portal
-                    .DepositBounceBack_filter()
-                    .from_block(bounce_from)
-                    .query()
-                    .await?
-                    .into_iter()
-                    .any(|(event, _)| {
-                        event.tempoRefundRecipient == refund_recipient
-                            && event.amount + event.bouncebackFee == AMOUNT
-                    });
-                Ok(bounced.then_some(()))
-            }
-        },
-    )
-    .await?;
+    let bounce_from = unlisted.submit_deposit(AMOUNT).await?;
+    wait_for_deposit_bounce(&portal, bounce_from, unlisted.address(), AMOUNT).await?;
+    let bounce_from = listed
+        .submit_deposit_with_memo(AMOUNT, unlisted.address(), B256::ZERO)
+        .await?;
+    wait_for_deposit_bounce(&portal, bounce_from, listed.address(), AMOUNT).await?;
     assert_eq!(
         zone.balance_of(ZONE_TOKEN_ADDRESS, unlisted.address())
             .await?,
         U256::from(AMOUNT),
-        "unlisted depositor was credited"
+        "unlisted account was credited"
     );
 
     ensure_zone_tx_succeeds(
@@ -2619,6 +2604,191 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
         unlisted.deposit(AMOUNT, L1_TIMEOUT, &zone).await?,
         U256::from(2 * AMOUNT)
     );
+
+    Ok(())
+}
+
+/// Wait until the portal has bounced a deposit of `amount` (less the bounce-back fee) submitted
+/// at or after `from_block` back to `refund_recipient`.
+async fn wait_for_deposit_bounce(
+    portal: &ZonePortal::ZonePortalInstance<alloy::providers::DynProvider>,
+    from_block: u64,
+    refund_recipient: Address,
+    amount: u128,
+) -> eyre::Result<()> {
+    poll_until(
+        Duration::from_secs(60),
+        Duration::from_millis(250),
+        "deposit bounce-back on L1",
+        || async move {
+            let bounced = portal
+                .DepositBounceBack_filter()
+                .from_block(from_block)
+                .query()
+                .await?
+                .into_iter()
+                .any(|(event, _)| {
+                    event.tempoRefundRecipient == refund_recipient
+                        && event.amount + event.bouncebackFee == amount
+                });
+            Ok(bounced.then_some(()))
+        },
+    )
+    .await
+}
+
+/// The leader enforces the allowlist on zone transfers: a transfer to an unlisted recipient is
+/// rejected on submission, and one admitted before its recipient was removed is dropped from the
+/// pool instead of being included.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    const AMOUNT: u128 = 1_000_000;
+    const TRANSFER_GAS: u64 = 500_000;
+
+    let l1 = L1TestNode::start().await?;
+    let portal_address = l1.deploy_zone().await?;
+    l1.set_access_mode_on_portal(portal_address, false).await?;
+
+    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+
+    let admin_signer = l1.signer_at(5);
+    let admin = admin_signer.address();
+    let alice_signer = l1.signer_at(3);
+    let mut alice = ZoneAccount::with_signer(alice_signer.clone(), &l1, &zone, portal_address);
+    let (bob, carol) = (l1.signer_at(4).address(), l1.signer_at(6).address());
+    l1.fund_user(alice.address(), 3 * AMOUNT).await?;
+    let opt_in_block = l1
+        .set_transfers_enabled_on_portal(portal_address, true)
+        .await?;
+    // Start the sequencer only after L1 setup so its shared signer cannot race the funding.
+    let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+
+    // Alice funds herself, the sequencer and the admin so their zone transactions pass admission.
+    alice.deposit(AMOUNT, L1_TIMEOUT, &zone).await?;
+    alice
+        .deposit_to(l1.dev_address(), AMOUNT, L1_TIMEOUT, &zone)
+        .await?;
+    alice.deposit_to(admin, AMOUNT, L1_TIMEOUT, &zone).await?;
+    zone.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
+        .await?;
+
+    let zone_allowlist = |signer: alloy::signers::local::PrivateKeySigner| {
+        IZoneAllowlist::new(
+            ZONE_ALLOWLIST_ADDRESS,
+            ProviderBuilder::new()
+                .wallet(signer)
+                .connect_http(zone.http_url().clone()),
+        )
+    };
+    let as_admin = zone_allowlist(admin_signer);
+    ensure_zone_tx_succeeds(
+        zone_allowlist(l1.dev_signer())
+            .setAdmin(admin)
+            .send()
+            .await?,
+        "setAdmin from the portal sequencer",
+    )
+    .await?;
+    ensure_zone_tx_succeeds(
+        as_admin
+            .setAllowed(vec![alice.address(), bob], true)
+            .send()
+            .await?,
+        "setAllowed",
+    )
+    .await?;
+    ensure_zone_tx_succeeds(as_admin.setEnabled(true).send().await?, "setEnabled").await?;
+
+    let token = ITIP20::new(
+        ZONE_TOKEN_ADDRESS,
+        ProviderBuilder::new()
+            .wallet(alice_signer)
+            .connect_http(zone.http_url().clone()),
+    );
+    // Nonces are explicit from here on: the provider's nonce cache advances even when the node
+    // rejects a transaction.
+    let nonce = zone
+        .provider()
+        .get_transaction_count(alice.address())
+        .await?;
+    let error = token
+        .transfer(carol, U256::ONE)
+        .nonce(nonce)
+        .gas(TRANSFER_GAS)
+        .send()
+        .await
+        .expect_err("a transfer to an unlisted recipient must be rejected on submission")
+        .to_string();
+    assert!(
+        error.contains("transfer sender or recipient is not allowlisted"),
+        "{error}"
+    );
+    ensure_zone_tx_succeeds(
+        token
+            .transfer(bob, U256::ONE)
+            .nonce(nonce)
+            .gas(TRANSFER_GAS)
+            .send()
+            .await?,
+        "transfer between listed accounts",
+    )
+    .await?;
+
+    // Queue a transfer to Bob behind a nonce gap so no block can include it before Bob is
+    // removed, then fill the gap with a call that moves no funds.
+    let dropped = *token
+        .transfer(bob, U256::ONE)
+        .nonce(nonce + 2)
+        .gas(TRANSFER_GAS)
+        .send()
+        .await?
+        .tx_hash();
+    ensure_zone_tx_succeeds(
+        as_admin.setAllowed(vec![bob], false).send().await?,
+        "setAllowed",
+    )
+    .await?;
+    let fill = token
+        .approve(bob, U256::ONE)
+        .nonce(nonce + 1)
+        .gas(TRANSFER_GAS)
+        .send()
+        .await?;
+    let fill_block = tokio::time::timeout(L1_TIMEOUT, fill.get_receipt())
+        .await
+        .wrap_err("approve receipt timed out")??
+        .block_number
+        .ok_or_eyre("approve receipt has no block number")?;
+
+    // The list change evicts the queued transfer from the pool, and the builder leaves it out of
+    // every block either way.
+    poll_until(
+        L1_TIMEOUT,
+        Duration::from_millis(250),
+        "the transfer to the removed recipient is dropped from the pool",
+        || async {
+            Ok(zone
+                .provider()
+                .get_transaction_by_hash(dropped)
+                .await?
+                .is_none()
+                .then_some(()))
+        },
+    )
+    .await?;
+    zone.wait_for_block_number(fill_block + 2, L1_TIMEOUT)
+        .await?;
+    assert!(
+        zone.provider()
+            .get_transaction_receipt(dropped)
+            .await?
+            .is_none(),
+        "a transfer to a removed recipient was included"
+    );
+    assert_eq!(zone.balance_of(ZONE_TOKEN_ADDRESS, bob).await?, U256::ONE);
 
     Ok(())
 }

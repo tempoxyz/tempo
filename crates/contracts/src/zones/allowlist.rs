@@ -25,12 +25,13 @@ crate::sol! {
 
         /// Returns the account allowed to change the list and toggle enforcement.
         function admin() external view returns (address);
-        /// Returns whether deposits are restricted to listed senders.
+        /// Returns whether deposits and transfers are restricted to listed accounts.
         function enabled() external view returns (bool);
         /// Returns the number of listed accounts. Readable by the admin and portal sequencers.
         function count() external view returns (uint256);
-        /// Returns whether `account` may deposit: true when enforcement is disabled or the account
-        /// is listed. Readable by `account` itself, the admin and portal sequencers.
+        /// Returns whether `account` may deposit, receive deposits and transfer: true when
+        /// enforcement is disabled or the account is listed. Readable by `account` itself, the
+        /// admin and portal sequencers.
         function isAllowed(address account) external view returns (bool);
         /// Returns up to `limit` listed accounts starting at `offset`. Readable by the admin and
         /// portal sequencers.

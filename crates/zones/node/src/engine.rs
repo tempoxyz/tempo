@@ -53,8 +53,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tempo_chainspec::spec::TempoHardforks as _;
-use tempo_evm::TempoStateAccess as _;
-use tempo_precompiles::storage::StorageActions;
 use tempo_primitives::TempoHeader;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -65,7 +63,7 @@ use zone_l1::{
     DepositQueue, EncryptionKeyRing, FinalizedTarget, L1BlockDeposits, L1BlockTracker, L1Deposit,
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
-use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
+use zone_payload::{Allowlist, TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
 use zone_sequencer::ProofCollectorHandle;
 
 /// Local block production permit backed by the effective leadership schedule.
@@ -396,14 +394,17 @@ impl<TProvider: StateProviderFactory> ZoneEngine<TProvider> {
             if !senders.is_empty() {
                 // The block applies the list as of its parent, so an update takes effect for
                 // deposits from the next block on.
-                let mut state = self
+                let state = self
                     .provider
                     .state_by_block_hash(self.last_header.hash())
                     .wrap_err("open parent state to read the deposit allowlist")?;
-                let rejected = state.with_read_only_storage_ctx(
-                    self.chain_spec.tempo_hardfork_at(timestamp_secs),
-                    StorageActions::disabled(),
-                    || allowlist::reject_unlisted(&senders, &mut prepared.decryptions),
+                let allowlist = Allowlist::read(state.as_ref())
+                    .wrap_err("read deposit allowlist enforcement")?;
+                let rejected = allowlist::reject_unlisted(
+                    &allowlist,
+                    &senders,
+                    &prepared.recipients,
+                    &mut prepared.decryptions,
                 )?;
                 if rejected > 0 {
                     info!(target: "zone::engine", rejected, "Bouncing deposits from senders not on the allowlist");

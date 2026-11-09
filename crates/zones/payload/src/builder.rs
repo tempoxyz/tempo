@@ -4,12 +4,13 @@
 //! followed by pool transactions and a withdrawal batch finalization.
 
 use crate::{
-    WithdrawalRevealEncryptor,
+    Allowlist, TransferScreenError, WithdrawalRevealEncryptor,
     abi::{self, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
+    validate_transfer_calls,
 };
 use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{Bytes, TxHash, U256};
 use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -143,7 +144,8 @@ pub struct ZonePayloadBuilder<Provider> {
     provider: Provider,
     /// Zone-specific EVM configuration (precompiles, hardfork spec, gas params).
     evm_config: ZoneEvmConfig,
-    /// Runs disposable simulations on Reth's dedicated prewarming pool.
+    /// Runs disposable simulations on Reth's dedicated prewarming pool, and allowlist pool
+    /// evictions off the build path.
     task_executor: TaskExecutor,
     /// Number of zone blocks between withdrawal batch boundaries.
     withdrawal_batch_interval_blocks: u64,
@@ -300,7 +302,10 @@ where
                 .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
             // Zones resolve fee tokens without a fallback list.
             let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
-            if execute_pool_transactions(
+            // The block applies the allowlist as of its parent, like the deposits it imports.
+            let allowlist = Allowlist::read(state_provider.as_ref())?;
+            let mut unlisted = Vec::new();
+            let outcome = execute_pool_transactions(
                 |tx, best_txs| {
                     builder
                         .execute_transaction_with_result_closure(tx, |result| {
@@ -311,8 +316,24 @@ where
                 &mut best_txs,
                 &cancel,
                 pool_tx_size_budget,
-            )? == PoolExecutionOutcome::Cancelled
-            {
+                &allowlist,
+                &mut unlisted,
+            );
+            if !unlisted.is_empty() {
+                // Otherwise every later build would check and skip them again. Removal locks the
+                // pool, so it runs off the build path; a build that starts first skips them again.
+                info!(
+                    target: "zone::payload",
+                    count = unlisted.len(),
+                    "Dropping pool transactions that move funds outside the allowlist"
+                );
+                let pool = self.pool.clone();
+                self.task_executor
+                    .spawn_blocking_named("zone-allowlist-evict", move || {
+                        pool.remove_transactions(unlisted);
+                    });
+            }
+            if outcome? == PoolExecutionOutcome::Cancelled {
                 return Ok(BuildOutcome::Cancelled);
             }
 
@@ -496,11 +517,16 @@ enum PoolExecutionOutcome {
 
 /// Execute the best pool transactions, skipping any whose RLP size would push the packed pool
 /// transaction bytes past `pool_tx_size_budget`.
+///
+/// Transactions that `allowlist` rejects are skipped without executing them, and their hashes are
+/// pushed to `unlisted`. This catches list changes after pool admission.
 fn execute_pool_transactions<T, F>(
     mut execute_tx: F,
     best_txs: &mut T,
     cancel: &CancelOnDrop,
     pool_tx_size_budget: usize,
+    allowlist: &Allowlist<'_>,
+    unlisted: &mut Vec<TxHash>,
 ) -> Result<PoolExecutionOutcome, PayloadBuilderError>
 where
     T: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -513,6 +539,16 @@ where
     while let Some(pool_tx) = best_txs.next() {
         if cancel.is_cancelled() {
             return Ok(PoolExecutionOutcome::Cancelled);
+        }
+
+        match validate_transfer_calls(allowlist, &pool_tx.transaction) {
+            Ok(()) => {}
+            Err(TransferScreenError::Rejected(error)) => {
+                best_txs.mark_invalid(&pool_tx, error);
+                unlisted.push(*pool_tx.hash());
+                continue;
+            }
+            Err(TransferScreenError::State(error)) => return Err(error.into()),
         }
 
         let packed_bytes_with_tx =
@@ -868,6 +904,7 @@ mod tests {
     use alloy_primitives::{Address, B256, U256, address};
     use alloy_sol_types::SolCall;
     use reth_primitives_traits::{Recovered, SealedHeader};
+    use reth_storage_api::StateProviderFactory as _;
     use reth_tasks::cancel::CancelOnDrop;
     use reth_transaction_pool::{
         BestTransactions, TransactionOrigin, ValidPoolTransaction,
@@ -875,13 +912,18 @@ mod tests {
         identifier::{SenderId, TransactionId},
     };
     use std::{collections::VecDeque, sync::Arc, time::Instant};
+    use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::{
-        TempoHeader, TempoTxEnvelope,
+        TempoAddressExt as _, TempoHeader, TempoTxEnvelope,
         transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
     };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
-    use crate::abi::{self, DepositType, IZoneInbox};
+    use crate::{
+        Allowlist,
+        abi::{self, DepositType, IZoneInbox},
+        allowlist::tests::state as allowlist_state,
+    };
     use zone_l1::PreparedL1Block;
 
     #[test]
@@ -1024,6 +1066,9 @@ mod tests {
         };
         let mut executed = 0usize;
         let cancel = CancelOnDrop::default();
+        let provider = allowlist_state(false, &[]);
+        let state = provider.latest().unwrap();
+        let mut unlisted = Vec::new();
 
         let outcome = super::execute_pool_transactions(
             |_tx, _best_txs| -> Result<(), reth_evm::BlockExecutionError> {
@@ -1033,6 +1078,8 @@ mod tests {
             &mut best_txs,
             &cancel,
             budget,
+            &Allowlist::read(state.as_ref()).unwrap(),
+            &mut unlisted,
         )
         .expect("pool execution should not error");
 
@@ -1041,6 +1088,71 @@ mod tests {
         // Only the transactions that fit were executed; the rest were rejected for size.
         assert_eq!(executed, expected_fit);
         assert_eq!(best_txs.oversized_marked, total - expected_fit);
+        assert!(unlisted.is_empty());
+    }
+
+    /// Transactions the allowlist rejects are skipped without executing, marked invalid, reported
+    /// for pool removal, and take no block space, so a later transaction still fits.
+    #[test]
+    fn unlisted_pool_transactions_are_skipped_without_using_block_space() {
+        let per_tx = pool_tx_with_calldata(1_000_000, 0).encoded_length();
+        let transfer = TxLegacy {
+            to: Address::new_tip20(0).into(),
+            input: ITIP20::transferCall {
+                to: address!("0x0000000000000000000000000000000000000b0b"),
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into(),
+            ..Default::default()
+        };
+        let transfer = Arc::new(ValidPoolTransaction {
+            transaction: TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::Legacy(transfer.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
+                address!("0x00000000000000000000000000000000000a11ce"),
+            )),
+            transaction_id: TransactionId::new(SenderId::from(1u64), 0),
+            propagate: false,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        });
+        let left_out = *transfer.hash();
+        let queue = [
+            transfer,
+            pool_tx_with_calldata(1_000_000, 0),
+            pool_tx_with_calldata(1_000_000, 1),
+        ]
+        .into_iter()
+        .collect::<VecDeque<_>>();
+        let mut best_txs = MockBestTransactions {
+            queue,
+            oversized_marked: 0,
+        };
+        let mut executed = 0usize;
+        // Enabled with no members, so every transfer between accounts is rejected.
+        let provider = allowlist_state(true, &[]);
+        let state = provider.latest().unwrap();
+        let mut unlisted = Vec::new();
+
+        // The budget fits two transactions; the transfer is skipped, so both others are included.
+        let outcome = super::execute_pool_transactions(
+            |_tx, _best_txs| -> Result<(), reth_evm::BlockExecutionError> {
+                executed += 1;
+                Ok(())
+            },
+            &mut best_txs,
+            &CancelOnDrop::default(),
+            2 * per_tx,
+            &Allowlist::read(state.as_ref()).unwrap(),
+            &mut unlisted,
+        )
+        .expect("pool execution should not error");
+
+        assert_eq!(outcome, super::PoolExecutionOutcome::Complete);
+        assert_eq!(executed, 2);
+        assert_eq!(best_txs.oversized_marked, 0);
+        assert_eq!(unlisted, vec![left_out]);
     }
 
     /// Verify calldata for an internal withdrawal bounce-back followed by an
@@ -1102,6 +1214,7 @@ mod tests {
                     c: B256::ZERO,
                 },
             }],
+            recipients: vec![None],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };

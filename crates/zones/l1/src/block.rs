@@ -33,6 +33,7 @@ impl L1BlockDeposits {
             prepared.header = next.header;
             prepared.queued_deposits.extend(next.queued_deposits);
             prepared.decryptions.extend(next.decryptions);
+            prepared.recipients.extend(next.recipients);
             prepared.enabled_tokens.extend(next.enabled_tokens);
         }
         eyre::ensure!(
@@ -92,9 +93,13 @@ impl L1BlockDeposits {
 
         let mut queued_deposits: Vec<abi::QueuedDeposit> = Vec::with_capacity(prepared.len());
         let mut decryptions: Vec<abi::DecryptionData> = Vec::with_capacity(encrypted_deposits);
-        for (queued, decryption) in prepared {
+        let mut recipients: Vec<Option<Address>> = Vec::with_capacity(encrypted_deposits);
+        for (queued, prepared) in prepared {
             queued_deposits.push(queued);
-            decryptions.extend(decryption);
+            if let Some((decryption, recipient)) = prepared {
+                decryptions.push(decryption);
+                recipients.push(recipient);
+            }
         }
 
         let enabled_tokens: Vec<_> = self
@@ -119,6 +124,7 @@ impl L1BlockDeposits {
             header: self.header,
             queued_deposits,
             decryptions,
+            recipients,
             enabled_tokens,
             follows_checkpoint_blocks: false,
         })
@@ -139,6 +145,10 @@ pub struct PreparedL1Block {
     /// Decryption data for every user deposit submitted for on-chain verification, in order.
     #[serde(skip)]
     pub decryptions: Vec<abi::DecryptionData>,
+    /// Zone recipient of each user deposit, parallel to `decryptions`. `None` when the leader could
+    /// not decrypt the payload, in which case its decryption data already bounces the deposit.
+    #[serde(skip)]
+    pub recipients: Vec<Option<Address>>,
     /// Tokens newly enabled for bridging in this block.
     #[serde(skip)]
     pub enabled_tokens: Vec<abi::EnabledToken>,
@@ -149,13 +159,16 @@ pub struct PreparedL1Block {
 }
 
 /// ABI-encode a single queue entry and, for user deposits, derive the decryption data the on-chain
-/// verification expects.
+/// verification expects along with the zone recipient when the payload decrypts.
 fn prepare_deposit(
     deposit: &L1Deposit,
     keys: &BTreeMap<U256, k256::SecretKey>,
     portal_address: Address,
     l1_block_number: u64,
-) -> (abi::QueuedDeposit, Option<abi::DecryptionData>) {
+) -> (
+    abi::QueuedDeposit,
+    Option<(abi::DecryptionData, Option<Address>)>,
+) {
     let queued = deposit.to_abi_queued_deposit();
     let L1Deposit::Deposit(d) = deposit else {
         return (queued, None);
@@ -190,11 +203,14 @@ fn prepare_deposit(
 
         return (
             queued,
-            Some(abi::DecryptionData {
-                sharedSecret: dec.proof.shared_secret,
-                sharedSecretYParity: dec.proof.shared_secret_y_parity,
-                cpProof: dec.proof.cp_proof,
-            }),
+            Some((
+                abi::DecryptionData {
+                    sharedSecret: dec.proof.shared_secret,
+                    sharedSecretYParity: dec.proof.shared_secret_y_parity,
+                    cpProof: dec.proof.cp_proof,
+                },
+                Some(dec.to),
+            )),
         );
     }
 
@@ -214,11 +230,14 @@ fn prepare_deposit(
         );
         return (
             queued,
-            Some(abi::DecryptionData {
-                sharedSecret: proof.shared_secret,
-                sharedSecretYParity: proof.shared_secret_y_parity,
-                cpProof: proof.cp_proof,
-            }),
+            Some((
+                abi::DecryptionData {
+                    sharedSecret: proof.shared_secret,
+                    sharedSecretYParity: proof.shared_secret_y_parity,
+                    cpProof: proof.cp_proof,
+                },
+                None,
+            )),
         );
     }
 
@@ -228,7 +247,7 @@ fn prepare_deposit(
         amount = %d.amount,
         "Encrypted deposit has invalid ephemeral pubkey, using zeroed DecryptionData"
     );
-    (queued, Some(FAILED_DECRYPTION))
+    (queued, Some((FAILED_DECRYPTION, None)))
 }
 
 /// Decryption data whose shared secret is not a curve point, so the inbox's Chaum-Pedersen check

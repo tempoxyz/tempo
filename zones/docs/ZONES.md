@@ -320,23 +320,58 @@ and reads the resulting mode or role back from the portal. Safe proposal mode st
 simulation and file creation, so verify the resulting role or mode after the Safe executes
 the imported transaction.
 
-### Deposit allowlist
+### Account allowlist
 
-With portal access mode off, anyone can deposit on L1. From T15, the zone can restrict which L1
-senders it credits with the `ZoneAllowlist` precompile at
+With portal access mode off, anyone can deposit on L1. From T15, the zone can restrict which
+accounts take part in deposits and transfers with the `ZoneAllowlist` precompile at
 `0x1c00000000000000000000000000000000000003`. While enforcement is enabled, the leader bounces
-deposits whose L1 sender is not listed: the deposit fails decryption and refunds to its
-`tempoRefundRecipient`, minus the bounce-back fee. The list lives in zone state, so every
-sequencer has the same copy and needs no flag, file, or backup. Only the leader checks it when it
-builds a block; followers and the prover do not.
+deposits whose L1 sender or zone recipient is not listed: the deposit fails decryption and refunds
+to its `tempoRefundRecipient`, minus the bounce-back fee. It also leaves out zone transfers unless
+every party is listed; see [Transfers between listed accounts](#transfers-between-listed-accounts).
+The list lives in zone state, so every sequencer has the same copy and needs no flag, file, or
+backup. Only the leader checks it when it builds a block; followers and the prover do not.
 
-| State | Deposits |
-|-------|----------|
-| Disabled (default) | Every sender is credited. Membership is kept but not enforced. |
-| Enabled | Only listed senders are credited. An empty list bounces every deposit. |
+| State | Deposits and transfers |
+|-------|------------------------|
+| Disabled (default) | Every deposit is credited and every transfer admitted. Membership is kept but not enforced. |
+| Enabled | Only deposits between listed accounts are credited, and only transfers between listed accounts are included. An empty list bounces every deposit. |
 
-A block applies the list as of its parent, so a change takes effect for deposits from the next
-zone block on.
+A block applies the list as of its parent, so a change takes effect for deposits and transfers
+from the next zone block on.
+
+#### Transfers between listed accounts
+
+Users keep the same address on Tempo and the zone, so the list also restricts zone TIP-20
+transfers once [transfers are enabled](#enabling-zone-transfers). Every node rejects a transaction
+on submission when one of its calls (including the calls of an AA batch) is a `transfer`,
+`transferFrom`, or memo variant whose `from` or `to` is not listed. The leader checks each pool
+transaction again against
+the list as of the parent block before executing it, and leaves out and drops from its pool any
+that the list now rejects. Every node also drops pooled transactions the list no longer admits
+whenever a block changes it, so it stops forwarding them to the leader. Submission also rejects a
+`transferFrom` from an unlisted caller, whatever parties it names, so an unlisted account cannot
+learn whether an address is listed from whether its transaction is accepted. A screened call whose
+arguments do not decode is rejected with `malformed transfer calldata`, since the precompile would
+revert it. `ReceivePolicyGuard` claims are not checked: from T15 a transfer or mint that a receive
+policy blocks reverts on a zone instead of moving funds into the guard.
+
+Checking calls is enough because zones disable contract creation and authorization lists, and
+T15, which enables transfers, removes the Multicall3 and Permit2 predeploys. No contract can move
+funds on a user's behalf through calls the check does not see.
+
+Removing an account from the list does not trap its funds. Transfers to the outbox are exempt, so
+it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if the
+withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback
+recipient must both be listed. The fallback is checked when the withdrawal is requested, so it is
+still credited if it is removed from the list before the bounce. The withdrawal's Tempo recipient
+is not checked, since Tempo transfers are open anyway.
+
+Limits:
+
+- Only the leader enforces the list; followers and the prover accept any block.
+- The submission error tells a listed sender that a counterparty is not listed, so a listed
+  account can check addresses one at a time.
+- Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
 
 | Method | Caller | Description |
 |--------|--------|-------------|
@@ -345,7 +380,7 @@ zone block on.
 | `setEnabled(bool)` | Admin | Switch enforcement on or off |
 | `admin()`, `enabled()` | Anyone | Read the admin and the enforcement flag |
 | `count()`, `accounts(offset, limit)` | Admin or a sequencer | Read the list size, or a page of members |
-| `isAllowed(address)` | The account itself, the admin, or a sequencer | Whether the account may deposit; true while disabled |
+| `isAllowed(address)` | The account itself, the admin, or a sequencer | Whether the account may deposit, receive deposits and transfer; true while disabled |
 
 Writes are ordinary zone transactions. The list holds at most 1,000,000 accounts, and
 `AllowlistChanged` events carry only the resulting count, never addresses.
@@ -361,7 +396,7 @@ Writes are ordinary zone transactions. The list holds at most 1,000,000 accounts
 4. Confirm the list with `count()` and `accounts(offset, limit)`, called from the admin.
 5. Send `setEnabled(true)` from the admin.
 6. Turn access mode off with `just set-access-mode false`. From here on, the allowlist alone
-   decides who can deposit.
+   decides who can deposit, receive deposits and transfer.
 
 Sequencers added, replaced, or restored need no allowlist step: they read the list from zone
 state.
@@ -386,7 +421,9 @@ T15 adds `setTransfersEnabled` to the portal, and the zone checks T15 against it
 fork schedule (`t15Time`). A zone whose genesis does not schedule T15 rejects transfers even
 after the opt-in. Zone transactions see the change once the zone has
 finalized the Tempo block that recorded it. Abdicating `AccessPolicy` freezes the current
-setting once the 30-day abdication delay has passed.
+setting once the 30-day abdication delay has passed. While the account allowlist is enabled,
+only transfers between listed accounts are included; see
+[Transfers between listed accounts](#transfers-between-listed-accounts).
 
 ### 5. Start the Zone Node
 

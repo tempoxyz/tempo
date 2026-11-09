@@ -1,8 +1,10 @@
 //! Native `ZoneAllowlist` precompile.
 //!
-//! Stores the zone's deposit allowlist on chain so every node replicates it. The precompile only
+//! Stores the zone's account allowlist on chain so every node replicates it. The precompile only
 //! stores the list and authorizes writes: the sequencer enforces it when it builds blocks, by
-//! bouncing deposits from unlisted Tempo senders. Followers and the prover never consult it.
+//! bouncing deposits whose Tempo sender or zone recipient is unlisted and by leaving out TIP-20
+//! transfers that involve an unlisted account. Followers and the prover never consult it. Node
+//! code reads the list by raw slot through [`slots`].
 //!
 //! Enforcement starts disabled, in which state every account is allowed. The admin starts unset;
 //! any ZonePortal sequencer on finalized Tempo can set it, so the operator can bootstrap or recover
@@ -33,14 +35,15 @@ use alloc::vec::Vec;
 
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolCall;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{
     IZoneAllowlist, MAX_ZONE_ALLOWLIST_BATCH, MAX_ZONE_ALLOWLIST_LEN, ZoneAllowlistError,
     ZoneAllowlistEvent, ZonePortal::Role,
 };
 use tempo_precompiles::{
-    dispatch::selector_from_calldata,
+    dispatch::{abi_decoder_config_for_spec, selector_from_calldata},
     error::TempoPrecompileError,
-    storage::{ContractStorage, Handler, Mapping},
+    storage::{ContractStorage, Handler, Mapping, StorageKey as _},
 };
 use tempo_precompiles_macros::contract;
 pub use zone_primitives::constants::ZONE_ALLOWLIST_ADDRESS;
@@ -60,7 +63,7 @@ pub(crate) const SET_ADMIN_GAS: u64 = 10_000;
 /// Fixed charge for a `setEnabled` call.
 pub(crate) const SET_ENABLED_GAS: u64 = 5_000;
 
-/// On-chain zone deposit allowlist.
+/// On-chain zone account allowlist.
 #[contract(addr = ZONE_ALLOWLIST_ADDRESS)]
 pub struct ZoneAllowlist {
     /// Account allowed to change the list and toggle enforcement; zero when unset. Kept first and
@@ -68,34 +71,22 @@ pub struct ZoneAllowlist {
     admin: Address,
     /// Listed accounts in insertion order, compacted by swap-and-pop on removal.
     members: Vec<Address>,
-    /// One-based index of each listed account in `members`; zero when unlisted.
+    /// One-based index of each listed account in `members`; zero when unlisted. Node code reads
+    /// it by raw slot.
     member_index: Mapping<Address, u64>,
-    /// Whether deposits are restricted to listed accounts.
+    /// Whether deposits and transfers are restricted to listed accounts. Node code reads it by
+    /// raw slot.
     enabled: bool,
 }
 
 impl ZoneAllowlist {
-    /// Returns whether deposits are restricted to listed accounts.
-    pub fn is_enabled(&self) -> tempo_precompiles::Result<bool> {
+    fn is_enabled(&self) -> tempo_precompiles::Result<bool> {
         self.enabled.read()
     }
 
-    /// Returns whether `account` may deposit: true when enforcement is disabled or it is listed.
-    pub fn allows(&self, account: Address) -> tempo_precompiles::Result<bool> {
+    /// Returns whether `account` is allowed: true when enforcement is disabled or it is listed.
+    fn allows(&self, account: Address) -> tempo_precompiles::Result<bool> {
         Ok(!self.enabled.read()? || self.is_member(account)?)
-    }
-
-    /// Returns whether every account in `accounts` may deposit, reading enforcement once.
-    pub fn allows_all(&self, accounts: &[Address]) -> tempo_precompiles::Result<bool> {
-        if !self.enabled.read()? {
-            return Ok(true);
-        }
-        for account in accounts {
-            if !self.is_member(*account)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     fn is_member(&self, account: Address) -> tempo_precompiles::Result<bool> {
@@ -184,6 +175,7 @@ impl ZoneAllowlist {
         caller: Address,
         new_admin: Address,
     ) -> ZoneResult<()> {
+        // Inlines `is_admin` so the event below reuses the one admin read.
         let previous_admin = self.admin.read()?;
         let is_admin = !previous_admin.is_zero() && caller == previous_admin;
         if !is_admin && !l1.has_portal_role(caller, Role::Sequencer)? {
@@ -260,19 +252,46 @@ impl ZoneAllowlist {
     }
 }
 
+/// Storage slot holding the one-based index of `account` in the member list; zero when unlisted.
+/// For node code that reads the list by raw slot, alongside [`slots::ENABLED`].
+pub fn member_index_slot(account: Address) -> U256 {
+    account.mapping_slot(slots::MEMBER_INDEX)
+}
+
+/// Storage of an allowlist with enforcement `enabled` that lists `members`, as `(slot, value)`
+/// pairs for seeding test state. Covers the slots node code reads, not the member array.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn storage_entries(enabled: bool, members: &[Address]) -> Vec<(U256, U256)> {
+    core::iter::once((slots::ENABLED, U256::from(enabled)))
+        .chain(
+            members
+                .iter()
+                .enumerate()
+                .map(|(index, member)| (member_index_slot(*member), U256::from(index + 1))),
+        )
+        .collect()
+}
+
 /// Fixed gas for allowlist mutations; see the module docs.
-pub(crate) struct AllowlistRules;
+pub(crate) struct AllowlistRules {
+    /// Active hardfork, which selects the same ABI decoder settings dispatch uses.
+    pub(crate) spec: TempoHardfork,
+}
 
 impl CallRules for AllowlistRules {
     fn fixed_gas_for_call(&self, data: &[u8]) -> Option<u64> {
         match selector_from_calldata(data)? {
             IZoneAllowlist::setAllowedCall::SELECTOR => {
+                // Decoded like dispatch, so a batch is charged exactly when it is processed.
                 // Malformed or oversized batches revert in dispatch and pay only the base.
-                let accounts = IZoneAllowlist::setAllowedCall::abi_decode(data)
-                    .ok()
-                    .map(|call| call.accounts.len())
-                    .filter(|len| *len <= MAX_ZONE_ALLOWLIST_BATCH)
-                    .unwrap_or_default();
+                let accounts = IZoneAllowlist::setAllowedCall::abi_decode_with_config(
+                    data,
+                    abi_decoder_config_for_spec(self.spec),
+                )
+                .ok()
+                .map(|call| call.accounts.len())
+                .filter(|len| *len <= MAX_ZONE_ALLOWLIST_BATCH)
+                .unwrap_or_default();
                 Some(SET_ALLOWED_BASE_GAS + accounts as u64 * SET_ALLOWED_ACCOUNT_GAS)
             }
             IZoneAllowlist::setAdminCall::SELECTOR => Some(SET_ADMIN_GAS),

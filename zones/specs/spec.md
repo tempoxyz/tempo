@@ -45,6 +45,7 @@
     - [Privacy Modifications](#privacy-modifications)
   - [Tempo State Reads](#tempo-state-reads)
     - [TempoState Predeploy](#tempostate-predeploy)
+    - [ZoneAllowlist Precompile](#zoneallowlist-precompile)
     - [Tempo Follower Mode](#tempo-follower-mode)
     - [Header Finalization](#header-finalization)
     - [L1 Storage Reads](#l1-storage-reads)
@@ -91,6 +92,7 @@
     - [ITempoState](#itempostate)
     - [IZoneInbox](#izoneinbox)
     - [IZoneOutbox](#izoneoutbox)
+    - [IZoneAllowlist](#izoneallowlist)
     - [TIP-403 Registry](#tip-403-registry)
   - [Network Upgrades and Hard Fork Activation](#network-upgrades-and-hard-fork-activation)
 
@@ -942,6 +944,14 @@ The zone reads all of its configuration from Tempo: the sequencer address, the t
 The durable onchain checkpoint is `tempoBlockHash` and `tempoBlockNumber`. Before the first Tempo import both are zero. Once initialized, `tempoBlockHash` is always `keccak256(RLP(TempoHeader))`, committing to the complete header contents without persisting every decoded header field.
 
 Tempo headers are RLP-encoded as `rlp([general_gas_limit, shared_gas_limit, timestamp_millis_part, inner])`, where `inner` is a standard Ethereum header.
+
+### ZoneAllowlist Precompile
+
+From T15, `ZoneAllowlist` at `0x1c00000000000000000000000000000000000003` stores the zone's account allowlist: an admin, an enforcement flag and the listed accounts. It only stores the list and authorizes writes. The leader enforces it when it builds blocks; followers and the prover do not consult it. While enforcement is enabled, the leader bounces deposits whose Tempo sender or zone recipient is unlisted through the failed-decryption refund path, and leaves out TIP-20 transfers that involve an unlisted account. The address holds no code until its first write, which deploys the account marker.
+
+The admin starts unset. Any account holding the ZonePortal `Sequencer` role at the finalized Tempo anchor MAY set it, and the admin MAY replace itself. `setAllowed` changes at most 5,000 accounts per call and the list holds at most 1,000,000; exceeding either reverts with `BatchTooLarge` or `AllowlistFull`. Mutations charge fixed gas instead of storage pricing: `setAllowed` costs 10,000 plus 2,500 per account in the batch, `setAdmin` 10,000 and `setEnabled` 5,000. A `setAllowed` whose arguments do not decode or whose batch is too large pays the base charge and reverts. Fixed-price calls neither mint nor consume storage credits.
+
+The member list, its size and per-account membership are readable only by the admin, accounts with the portal `Sequencer` role and `address(0)`, except that an account may query its own membership. `AllowlistChanged` carries only the resulting count. From T15, a transaction from the admin whose calls all target the precompile and that carries no key authorization executes against a zero block base fee, so it pays only its priority fee.
 
 ### Tempo Follower Mode
 
@@ -2272,6 +2282,40 @@ interface IZoneOutbox {
 
     function finalizeWithdrawalBatch(uint256 count, uint64 blockNumber, bytes[] calldata encryptedSenders)
         external returns (bytes32 withdrawalQueueHash);
+}
+```
+
+### IZoneAllowlist
+
+Address: `0x1c00000000000000000000000000000000000003`, from T15
+
+```solidity
+interface IZoneAllowlist {
+    event AdminChanged(address indexed previousAdmin, address indexed newAdmin);
+    event EnabledChanged(bool enabled);
+    /// @notice Emitted after every `setAllowed` with the resulting member count.
+    event AllowlistChanged(uint256 count);
+
+    error Unauthorized();
+    error BatchTooLarge(uint256 length, uint256 max);
+    error AllowlistFull(uint256 max);
+
+    function admin() external view returns (address);
+    function enabled() external view returns (bool);
+    /// @notice Readable by the admin and portal sequencers.
+    function count() external view returns (uint256);
+    /// @notice True while enforcement is disabled or `account` is listed. Readable by
+    ///         `account`, the admin and portal sequencers.
+    function isAllowed(address account) external view returns (bool);
+    /// @notice Up to `limit` members from `offset`, clamped to the list. Readable by the
+    ///         admin and portal sequencers.
+    function accounts(uint256 offset, uint256 limit) external view returns (address[] memory);
+    /// @notice Callable by the current admin or an account with the portal `Sequencer` role.
+    function setAdmin(address newAdmin) external;
+    /// @notice Admin only.
+    function setEnabled(bool enabled) external;
+    /// @notice Adds or removes up to 5,000 accounts. Admin only; idempotent per account.
+    function setAllowed(address[] calldata accounts, bool allowed) external;
 }
 ```
 

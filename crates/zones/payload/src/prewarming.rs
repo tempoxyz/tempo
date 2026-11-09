@@ -45,20 +45,21 @@ where
 
         let context = Arc::new(self);
         let pool = task_executor.prewarming_pool();
-        let mut decryptions = prepared.decryptions.iter();
+        let mut decryptions = prepared.decryptions.iter().zip(&prepared.recipients);
 
         // The pool bounds concurrency; cancelled queued jobs skip EVM initialization.
         for deposit in &prepared.queued_deposits {
-            let decryptions = (deposit.depositType == DepositType::Deposit)
-                .then(|| decryptions.next().cloned())
+            let (decryptions, recipients) = (deposit.depositType == DepositType::Deposit)
+                .then(|| decryptions.next())
                 .flatten()
-                .into_iter()
-                .collect();
+                .map(|(decryption, recipient)| (vec![decryption.clone()], vec![*recipient]))
+                .unwrap_or_default();
             let partial = PreparedL1Block {
                 header: prepared.header.clone(),
                 enabled_tokens: prepared.enabled_tokens.clone(),
                 queued_deposits: vec![deposit.clone()],
                 decryptions,
+                recipients,
                 follows_checkpoint_blocks: false,
             };
             let context = context.clone();

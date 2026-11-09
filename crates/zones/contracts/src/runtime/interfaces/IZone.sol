@@ -242,6 +242,9 @@ address constant ZONE_INBOX = 0x1c00000000000000000000000000000000000001;
 // ZoneOutbox system contract address (0x1c00...0002)
 address constant ZONE_OUTBOX = 0x1c00000000000000000000000000000000000002;
 
+// ZoneAllowlist precompile address (0x1c00...0003), active from T15
+address constant ZONE_ALLOWLIST = 0x1c00000000000000000000000000000000000003;
+
 /*//////////////////////////////////////////////////////////////
                 ZONE PORTAL STORAGE SLOT CONSTANTS
 //////////////////////////////////////////////////////////////*/

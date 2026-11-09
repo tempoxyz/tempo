@@ -212,7 +212,6 @@ fn allows_follows_enforcement_and_membership() -> eyre::Result<()> {
     // Disabled by default: everyone is allowed.
     assert!(!harness.read(|allowlist| allowlist.is_enabled())?);
     assert!(harness.read(|allowlist| allowlist.allows(BOB))?);
-    assert!(harness.read(|allowlist| allowlist.allows_all(&[ALICE, BOB]))?);
 
     // Enabled with an empty list: nobody is allowed.
     harness.ensure_success(ADMIN, IZoneAllowlist::setEnabledCall { enabled: true })?;
@@ -222,14 +221,26 @@ fn allows_follows_enforcement_and_membership() -> eyre::Result<()> {
     harness.set_allowed(&[ALICE], true)?;
     assert!(harness.read(|allowlist| allowlist.allows(ALICE))?);
     assert!(!harness.read(|allowlist| allowlist.allows(BOB))?);
-    assert!(harness.read(|allowlist| allowlist.allows_all(&[ALICE]))?);
-    assert!(!harness.read(|allowlist| allowlist.allows_all(&[ALICE, BOB]))?);
-    assert!(harness.read(|allowlist| allowlist.allows_all(&[]))?);
     assert!(!harness.ensure_success(BOB, IZoneAllowlist::isAllowedCall { account: BOB })?);
 
     harness.ensure_success(ADMIN, IZoneAllowlist::setEnabledCall { enabled: false })?;
-    assert!(harness.read(|allowlist| allowlist.allows_all(&[ALICE, BOB]))?);
+    assert!(harness.read(|allowlist| allowlist.allows(BOB))?);
     assert!(harness.ensure_success(BOB, IZoneAllowlist::isAllowedCall { account: BOB })?);
+
+    // The raw slots node code reads match what the precompile wrote.
+    harness.set_allowed(&[BOB], true)?;
+    harness.set_allowed(&[ALICE], false)?;
+    let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, true);
+    for (slot, value) in storage_entries(false, &[BOB]) {
+        assert_eq!(storage.sload(ZONE_ALLOWLIST_ADDRESS, slot)?, value);
+    }
+    assert_eq!(
+        storage.sload(
+            ZONE_ALLOWLIST_ADDRESS,
+            storage_entries(false, &[ALICE])[1].0
+        )?,
+        U256::ZERO
+    );
     Ok(())
 }
 
@@ -437,12 +448,31 @@ fn mutations_charge_fixed_gas() -> eyre::Result<()> {
     assert!(output.is_revert());
     assert_eq!(output.gas_used, SET_ALLOWED_BASE_GAS);
 
+    // Trailing bytes decode from T12 in dispatch and in the charge alike, so the batch is paid
+    // for and processed.
+    let mut trailing = IZoneAllowlist::setAllowedCall {
+        accounts: vec![ALICE, BOB],
+        allowed: true,
+    }
+    .abi_encode();
+    trailing.extend_from_slice(&[0; 32]);
+    let output = harness.call_raw(ADMIN, &trailing, false)?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(
+        output.gas_used,
+        SET_ALLOWED_BASE_GAS + 2 * SET_ALLOWED_ACCOUNT_GAS
+    );
+    assert_eq!(harness.accounts(0, U256::MAX)?, vec![ALICE, BOB]);
+
+    let rules = AllowlistRules {
+        spec: TempoHardfork::T15,
+    };
     for data in [
         IZoneAllowlist::adminCall {}.abi_encode(),
         IZoneAllowlist::countCall {}.abi_encode(),
         Vec::new(),
     ] {
-        assert_eq!(AllowlistRules.fixed_gas_for_call(&data), None);
+        assert_eq!(rules.fixed_gas_for_call(&data), None);
     }
     Ok(())
 }

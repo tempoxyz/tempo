@@ -209,7 +209,9 @@ pub(crate) mod tests {
     use super::*;
     use crate::{ZoneBlockExecutor, ZoneDbError, ZoneEvm, ZoneEvmConfig};
     use alloy_consensus::{SignableTransaction, TxEip7702, TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Signature, U256, address};
+    use alloy_primitives::{Address, Bytes, Signature, U256, address};
+    use alloy_signer::SignerSync as _;
+    use alloy_signer_local::PrivateKeySigner;
     use evm2::{
         PendingState, TxResult,
         evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
@@ -230,8 +232,10 @@ pub(crate) mod tests {
     use tempo_primitives::{
         TempoEvmKind, TempoTxEnvelope,
         transaction::{
-            Authorization, TempoSignature, TempoSignedAuthorization, TempoTransaction,
+            Authorization, Call, KeyAuthorization, SignatureType, SignedKeyAuthorization,
+            TempoSignature, TempoSignedAuthorization, TempoTransaction,
             envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+            tt_signature::PrimitiveSignature,
         },
     };
     use zone_chainspec::ZoneChainSpec;
@@ -366,7 +370,31 @@ pub(crate) mod tests {
         )
     }
 
+    /// A zero-priced AA transaction from `caller` with `calls`, on the test environment's chain
+    /// id.
+    fn zero_priced_batch(
+        caller: Address,
+        calls: Vec<Call>,
+        key_authorization: Option<SignedKeyAuthorization>,
+    ) -> Recovered<TempoTxEnv> {
+        transaction(
+            caller,
+            TempoTxEnvelope::AA(
+                TempoTransaction {
+                    chain_id: TEST_CHAIN_ID,
+                    gas_limit: 1_000_000,
+                    calls,
+                    key_authorization,
+                    ..Default::default()
+                }
+                .into_signed(TempoSignature::default()),
+            ),
+        )
+    }
+
     const ADMIN: Address = Address::repeat_byte(0xad);
+    /// Chain id of a default `TempoEvmEnv`, which `allowlist_evm` uses.
+    const TEST_CHAIN_ID: u64 = 1;
     const FEE_TOKEN: Address = address!("0x20c00000000000000000000000000000000000d1");
     const BASE_FEE: U256 = U256::from_limbs([1_000_000_000, 0, 0, 0]);
 
@@ -380,6 +408,68 @@ pub(crate) mod tests {
 
         let validator_fee = evm.transact(&tx).unwrap().result().ext.validator_fee;
         assert_eq!(validator_fee, U256::ZERO);
+        assert_eq!(evm.block().basefee, BASE_FEE);
+    }
+
+    #[test]
+    fn admin_batches_skip_the_base_fee_unless_they_authorize_a_key() {
+        // The key authorization must recover to the sender, so the admin needs a real key.
+        let admin_signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0xad)).unwrap();
+        let admin = admin_signer.address();
+        let mut evm = allowlist_evm(TempoHardfork::T15, admin);
+        let call = Call {
+            to: TxKind::Call(ZONE_ALLOWLIST_ADDRESS),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        evm.validate_tx(&zero_priced_batch(
+            admin,
+            vec![call.clone(), call.clone()],
+            None,
+        ))
+        .unwrap();
+
+        // A key authorization is not a call, so it does not ride along for free.
+        let authorization = KeyAuthorization::unrestricted(
+            TEST_CHAIN_ID,
+            SignatureType::Secp256k1,
+            Address::repeat_byte(0x33),
+        );
+        let signature = admin_signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let key_authorization = authorization.into_signed(PrimitiveSignature::Secp256k1(signature));
+        let error = evm
+            .validate_tx(&zero_priced_batch(
+                admin,
+                vec![call],
+                Some(key_authorization),
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(error, HandlerError::FeeCapLessThanBaseFee { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn base_fee_is_restored_after_a_free_update_fails() {
+        let mut evm = allowlist_evm(TempoHardfork::T15, ADMIN);
+        // The admin's nonce is zero, so this fails validation after the base fee was waived.
+        let tx = transaction(
+            ADMIN,
+            TxLegacy {
+                to: ZONE_ALLOWLIST_ADDRESS.into(),
+                gas_limit: 1_000_000,
+                nonce: 7,
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+
+        evm.validate_tx(&tx).unwrap_err();
+        assert_eq!(evm.block().basefee, BASE_FEE);
+        evm.transact(&tx).unwrap_err();
         assert_eq!(evm.block().basefee, BASE_FEE);
     }
 

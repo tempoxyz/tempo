@@ -257,7 +257,9 @@ where
                 message,
                 gas,
                 &self.env,
-                allowlist::AllowlistRules,
+                allowlist::AllowlistRules {
+                    spec: self.env.spec,
+                },
                 |data, caller| ZoneAllowlist::new().call(&self.l1, data, caller),
             )
         } else if address == ZONE_FEE_MANAGER_ADDRESS {
