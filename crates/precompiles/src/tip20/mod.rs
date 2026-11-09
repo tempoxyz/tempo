@@ -1658,8 +1658,9 @@ impl TIP20Token {
             })
         );
         refund_debit?;
-        self.increment_balance(to, refund)?;
-        self.repay_debt(to, refund)
+        // Fee refunds never repay reservation debt: this runs outside storage-credit metering,
+        // and a repayment would write the creditor's balance slot there.
+        self.increment_balance(to, refund)
     }
 }
 

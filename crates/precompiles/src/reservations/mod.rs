@@ -1398,7 +1398,7 @@ mod tests {
             f.blacklist(vec![f.payee])?;
             assert!(f.transfer(sender, f.owner, 10)?);
             assert_unrepaid(&f, 20, 190)?;
-            // ... or the owner as sender; fee refunds credit without a policy check.
+            // ... or the owner as sender; fee refunds never repay.
             f.blacklist(vec![f.owner])?;
             f.token.transfer_fee_pre_tx(sender, U256::from(100))?;
             f.token
@@ -1408,7 +1408,7 @@ mod tests {
             assert!(f.transfer(sender, f.owner, 10)?);
             assert_unrepaid(&f, 30, 180)?;
 
-            // A fee refund while the token is paused credits without repaying.
+            // A fee refund credits without repaying, paused or not.
             f.token.transfer_fee_pre_tx(sender, U256::from(100))?;
             f.token.grant_role_internal(f.admin, PAUSE_ROLE)?;
             f.token.pause(f.admin, ITIP20::pauseCall {})?;
