@@ -102,12 +102,10 @@ impl Context {
         let prefix_key = trie_key(base, first);
         for _ in 0..random_below(MAX_NEIGHBORS + 1) {
             let neighbor_depth = random_between(1, u128::from(depth.min(MAX_NEIGHBOR_DEPTH)));
-            members.push(neighbor(
-                base,
-                get_random(),
-                prefix_key,
-                neighbor_depth as u64,
-            ));
+            let member = neighbor(base, get_random(), prefix_key, neighbor_depth as u64);
+            if !members.contains(&member) {
+                members.push(member);
+            }
         }
         let writes: Vec<(Address, U256)> = members
             .iter()
@@ -115,7 +113,7 @@ impl Context {
             .collect();
         let shared = shared_nibbles(trie_key(base, first), trie_key(base, second));
         let Some(block) = self
-            .write_group(node, &owner, balance, kind, &writes)
+            .write_group(node, &owner, balance, kind, &writes, &members)
             .await?
         else {
             return Ok(());
@@ -150,7 +148,9 @@ impl Context {
             &details
         );
         assert_sometimes!(
-            members.len() > 2,
+            members[2..]
+                .iter()
+                .any(|member| shared_nibbles(prefix_key, trie_key(base, *member)) < shared),
             "A collision group nests neighbors around its pair",
             &details
         );
@@ -214,8 +214,12 @@ impl Context {
                     let anchor = random_choice(members.clone()).unwrap_or(owner);
                     let depth = random_between(1, u128::from(MAX_NEIGHBOR_DEPTH)) as u64;
                     let member = neighbor(base, get_random(), trie_key(base, anchor), depth);
-                    grown.push(member);
-                    vec![(member, random_value(kind, balance, 1))]
+                    if members.contains(&member) {
+                        Vec::new()
+                    } else {
+                        grown.push(member);
+                        vec![(member, random_value(kind, balance, 1))]
+                    }
                 }
                 // Clear every allowance, so the whole subtree goes.
                 1 if kind == CollisionKind::Allowance => {
@@ -250,7 +254,7 @@ impl Context {
                 Err(_) => false,
             };
             let Some(block) = self
-                .write_group(node, account, balance, kind, &writes)
+                .write_group(node, account, balance, kind, &writes, &grown)
                 .await?
             else {
                 return Ok(true);
@@ -307,9 +311,10 @@ impl Context {
     }
 
     /// Sends `writes` as the calls of one Tempo transaction from `owner`: approvals for an
-    /// allowance group, transfers (adding to each holder's balance) for a balance group. Checks
-    /// every key reads back at the block it landed in, and returns that block, or `None` when
-    /// the transaction did not fit half the balance, reverted or was not confirmed.
+    /// allowance group, transfers (adding to each holder's balance, recorded as transfers for the
+    /// finality checks) for a balance group. Checks every key reads back at the block it landed
+    /// in, and returns that block, or `None` when the transaction did not fit half the balance,
+    /// reverted or was not confirmed. `group` is every key of the group after these writes.
     async fn write_group(
         &self,
         node: usize,
@@ -317,6 +322,7 @@ impl Context {
         balance: u128,
         kind: CollisionKind,
         writes: &[(Address, U256)],
+        group: &[Address],
     ) -> eyre::Result<Option<u64>> {
         if writes.is_empty() {
             return Ok(None);
@@ -369,6 +375,17 @@ impl Context {
             println!("collide: {hash} reverted");
             return Ok(None);
         }
+        if kind == CollisionKind::Balance {
+            for (member, value) in &writes {
+                self.ledger.append(&Record::Transfer {
+                    zone_tx: hash,
+                    zone_block: block,
+                    from: owner.address(),
+                    to: *member,
+                    amount: (*value).try_into()?,
+                })?;
+            }
+        }
         // Sends an earlier command gave up on can still land later in the same block and
         // overwrite these keys: then the block's end state is theirs.
         let nonce_after = zone
@@ -389,29 +406,31 @@ impl Context {
                 return Ok(Some(block));
             }
         }
-        let base = kind.base(owner.address());
-        let members: Vec<Address> = writes.iter().map(|(member, _)| *member).collect();
-        for (member, value) in &writes {
-            let (expected, read) = match kind {
+        let read_at = async |member: Address, height: u64| -> eyre::Result<U256> {
+            let at = BlockId::number(height);
+            Ok(match kind {
                 CollisionKind::Allowance => {
-                    let read = token
-                        .allowance(owner.address(), *member)
-                        .block(BlockId::number(block))
+                    token
+                        .allowance(owner.address(), member)
+                        .block(at)
                         .call()
-                        .await?;
-                    (*value, read)
+                        .await?
                 }
                 CollisionKind::Balance => {
-                    let read_at = |height: u64| {
-                        token
-                            .balanceOf(*member)
-                            .from(*member)
-                            .block(BlockId::number(height))
-                    };
-                    let before = read_at(block.saturating_sub(1)).call().await?;
-                    let after = read_at(block).call().await?;
-                    (before + *value, after)
+                    token
+                        .balanceOf(member)
+                        .from(member)
+                        .block(at)
+                        .call()
+                        .await?
                 }
+            })
+        };
+        for (member, value) in &writes {
+            let read = read_at(*member, block).await?;
+            let expected = match kind {
+                CollisionKind::Allowance => *value,
+                CollisionKind::Balance => read_at(*member, block.saturating_sub(1)).await? + *value,
             };
             assert_always!(
                 read == expected,
@@ -425,10 +444,27 @@ impl Context {
                     "block": block,
                 })
             );
+        }
+        // Embedding depends on the keys still present after the block, cleared ones gone and
+        // members this transaction left alone included.
+        let mut present = Vec::new();
+        let mut values = Vec::new();
+        for member in group {
+            let value = read_at(*member, block).await?;
+            if !value.is_zero() {
+                present.push(*member);
+                values.push(value);
+            }
+        }
+        let base = kind.base(owner.address());
+        for (member, value) in present.iter().zip(&values) {
+            if !writes.iter().any(|(written, _)| written == member) {
+                continue;
+            }
             assert_sometimes!(
-                !read.is_zero() && embedded(leaf_depth(base, *member, &members), read),
+                embedded(leaf_depth(base, *member, &present), *value),
                 "A colliding leaf is small enough to embed in its branch",
-                &json!({ "kind": kind, "member": member, "value": read, "block": block })
+                &json!({ "kind": kind, "member": member, "value": value, "block": block })
             );
         }
         Ok(Some(block))
