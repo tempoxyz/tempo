@@ -14,7 +14,10 @@
 //! To avoid this waste, commonware either needs to change the assert! into a
 //! graceful rejection (so that the token can be reclaimed), or allow performing
 //! the size check before.
-use std::{num::NonZeroU32, time::SystemTime};
+use std::{
+    num::{NonZeroU32, TryFromIntError},
+    time::SystemTime,
+};
 
 use commonware_actor::{Feedback, Unreliable};
 use commonware_consensus::{
@@ -38,16 +41,17 @@ use crate::{
 /// most `max_participants`.
 ///
 /// Finalized and notarized backfill responses carry a certificate with a full block, so the limit
-/// exceeds the largest block.
-pub(crate) fn max_message_size(max_participants: NonZeroU32) -> u32 {
-    commonware_p2p::max_message_size(&[
-        simplex::max_payload_size::<Scheme<PublicKey, MinSig>, Digest>(max_participants.get()),
-        marshal::max_payload_size::<Standard<Block>, Scheme<PublicKey, MinSig>>(
-            max_participants.get(),
-            &(),
-        ),
-        dkg::max_message_size(max_participants),
-    ])
+/// exceeds the largest block. Fails if the limit does not fit in a `u32`, which happens once DKG
+/// messages for `max_participants` exceed 4 GiB.
+pub(crate) fn max_message_size(max_participants: NonZeroU32) -> Result<u32, TryFromIntError> {
+    let largest =
+        simplex::max_payload_size::<Scheme<PublicKey, MinSig>, Digest>(max_participants.get())
+            .max(marshal::max_payload_size::<
+                Standard<Block>,
+                Scheme<PublicKey, MinSig>,
+            >(max_participants.get(), &()))
+            .max(dkg::max_message_size(max_participants));
+    u32::try_from(largest)
 }
 
 /// A p2p sender that rejects messages larger than the configured network limit.
@@ -242,6 +246,14 @@ mod tests {
     /// reviewed: all peers must agree on it.
     #[test]
     fn max_message_size_for_20_validators_is_pinned() {
-        assert_eq!(max_message_size(commonware_utils::NZU32!(20)), 8_388_780);
+        assert_eq!(
+            max_message_size(commonware_utils::NZU32!(20)),
+            Ok(8_388_780)
+        );
+    }
+
+    #[test]
+    fn max_message_size_rejects_participants_whose_dkg_messages_exceed_u32() {
+        assert!(max_message_size(commonware_utils::NZU32!(44_739_243)).is_err());
     }
 }

@@ -117,7 +117,8 @@ pub async fn run_consensus_stack(
             .max_peers_per_set
             .try_into()
             .wrap_err("consensus.max-peers-per-set must fit in u32")?,
-    );
+    )
+    .wrap_err("consensus.max-peers-per-set is too large: consensus messages would exceed 4 GiB")?;
 
     let (mut network, oracle) = instantiate_network(
         &context,
