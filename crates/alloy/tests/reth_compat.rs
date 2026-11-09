@@ -309,3 +309,24 @@ fn simulated_batch_ignores_the_filled_create_kind() {
     };
     assert_eq!(tx.tx().calls, [call.clone(), call]);
 }
+
+/// `eth_simulateV1` must not turn a legacy request into a system transaction, which blocks
+/// only admit for system calls.
+#[test]
+fn simulated_legacy_request_is_not_a_system_transaction() {
+    let request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(Address::repeat_byte(0xaa)),
+            to: Some(TxKind::Call(Address::repeat_byte(1))),
+            nonce: Some(0),
+            gas: Some(100_000),
+            gas_price: Some(1_000_000_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let tx = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request)
+        .expect("a legacy request converts");
+    assert!(matches!(tx, TempoTxEnvelope::Legacy(_)));
+    assert!(!tx.is_system_tx());
+}
