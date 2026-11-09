@@ -3662,6 +3662,36 @@ mod tests {
     }
 
     #[test]
+    fn aa_2d_promoted_then_evicted_transaction_ends_discarded_for_its_listener() {
+        let pool = create_test_pool(create_provider_with_tip());
+        *pool.aa_2d_pool.write() = AA2dPool::new(AA2dPoolConfig {
+            pending_limit: SubPoolLimit {
+                max_txs: 1,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        });
+        let sender = Address::random();
+        let lane_tx = |nonce, priority_fee| {
+            TxBuilder::aa(sender)
+                .nonce_key(U256::ONE)
+                .nonce(nonce)
+                .max_priority_fee(priority_fee)
+                .build()
+        };
+
+        let (promoted, result) = add_aa_2d(&pool, lane_tx(1, 1_000_000_000));
+        assert!(result.is_ok());
+        let mut events = pool.transaction_event_listener(promoted).unwrap();
+        let (_, result) = add_aa_2d(&pool, lane_tx(0, 3_000_000_000));
+        assert!(result.is_ok());
+        assert!(!pool.contains(&promoted));
+
+        let last_event = std::iter::from_fn(|| events.next().now_or_never().flatten()).last();
+        assert!(matches!(last_event, Some(TransactionEvent::Discarded)));
+    }
+
+    #[test]
     fn aa_2d_self_evicted_replacement_discards_replaced_transaction() {
         let sender = Address::random();
         let lane_tx = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(1);
