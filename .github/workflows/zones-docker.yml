@@ -385,13 +385,14 @@ jobs:
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
           # On main and tags, reuse a cached digest only if a main or tag run of this
-          # workflow signed it; otherwise rebuild it from the trusted recipe, so these
-          # runs never sign a digest someone else pushed under the predictable tag.
+          # workflow signed it for this recipe_sha; otherwise rebuild it from the trusted
+          # recipe, so these runs never sign a digest someone else pushed under the tag.
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
             [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]] &&
             ! cosign verify "$TOOLCHAIN_REPOSITORY@$digest" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               --certificate-identity-regexp '^https://github\.com/tempoxyz/tempo/\.github/workflows/zones-docker\.yml@refs/(heads/main|tags/.+)$' \
+              -a "eif-toolchain-recipe=$recipe_sha" \
               > /dev/null 2>&1; then
             echo "Cached $image_ref has no trusted signature; rebuilding it" >&2
             digest=""
@@ -407,19 +408,21 @@ jobs:
             echo "pushed=true" >> "$GITHUB_OUTPUT"
           fi
           echo "image=$TOOLCHAIN_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+          echo "recipe_sha=$recipe_sha" >> "$GITHUB_OUTPUT"
           echo "EIF toolchain: \`$TOOLCHAIN_REPOSITORY@$digest\` (main recipe $(git rev-parse HEAD), inputs-$recipe_sha)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Sign the published toolchain image
         if: steps.toolchain.outputs.pushed == 'true'
         env:
           IMAGES: ${{ steps.toolchain.outputs.image }}
+          RECIPE_SHA: ${{ steps.toolchain.outputs.recipe_sha }}
         run: |
           set -euo pipefail
           # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
           while IFS= read -r ref; do
             [ -n "$ref" ] || continue
             for attempt in 1 2 3; do
-              if cosign sign --yes --recursive "$ref"; then
+              if cosign sign --yes --recursive -a "eif-toolchain-recipe=$RECIPE_SHA" "$ref"; then
                 break
               fi
               if [ "$attempt" -eq 3 ]; then
