@@ -12,7 +12,7 @@ use tempo_evm::TempoEvmEnv;
 use tempo_primitives::{
     SignatureType, TempoSignature, TempoTxEnvelope,
     transaction::{
-        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        Call, ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         KeyAuthorization, PrimitiveSignature,
     },
 };
@@ -290,4 +290,22 @@ fn simulation_rejects_invalid_roles(configure: fn(&mut TempoTransactionRequest),
         .try_into_tx_env(&TempoEvmEnv::default())
         .expect_err("eth_call rejects the role");
     assert!(matches!(error, EthApiError::InvalidParams(actual) if actual == message));
+}
+
+/// `eth_simulateV1` fills a missing `to` with `Create`; a batch keeps exactly its own calls.
+#[test]
+fn simulated_batch_ignores_the_filled_create_kind() {
+    let call = Call {
+        to: TxKind::Call(Address::repeat_byte(1)),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    };
+    let mut request = aa_request(SignatureType::Secp256k1);
+    request.inner.to = Some(TxKind::Create);
+    request.calls = vec![call.clone(), call.clone()];
+    let tx = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request).expect("a batch converts");
+    let TempoTxEnvelope::AA(tx) = tx else {
+        panic!("AA expected")
+    };
+    assert_eq!(tx.tx().calls, [call.clone(), call]);
 }
