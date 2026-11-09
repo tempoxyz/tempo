@@ -58,7 +58,8 @@ use tempo_precompiles::{
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
-    Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
+    Block as TempoBlock, MAX_WEBAUTHN_SIGNATURE_LENGTH, SignatureType, TempoHeader,
+    TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
         AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CallScope,
@@ -3338,9 +3339,9 @@ fn retired_root_signatures_still_recover_and_keychain_format_is_unchanged() {
         .into(),
     };
     assert!(bool_query(&mut f, verify, None, "verify").0);
-    // A V2 keychain signature whose inner signature is a configurable account one is not a
+    // A V2 keychain signature whose inner signature is a configurable account one is not an admin
     // keychain one, retired key or not, whether the configurable account names the parent account
-    // or another.
+    // or another. As a delegate signature it is rejected: the parent account grants neither.
     let signing_hash = KeychainSignature::signing_hash(hash, account);
     let other_owner = signer(3);
     let other_config = ConfigurableAccountConfig {
@@ -3354,15 +3355,12 @@ fn retired_root_signatures_still_recover_and_keychain_format_is_unchanged() {
         let approval =
             configurable_account_approval(named, &other_config, &other_owner, signing_hash);
         let signature = TempoSignature::Keychain(KeychainSignature::new(account, approval));
-        for function in [Verifier::Keychain, Verifier::KeychainAdmin] {
-            let call = function.call(account, hash, signature.to_bytes());
-            let result = send(&mut f, signer(9).address(), vec![call]);
-            assert_reverts_with(
-                &result,
-                ISignatureVerifier::InvalidFormat {},
-                &format!("{function:?} naming {named}"),
-            );
-        }
+        let label = format!("naming {named}");
+        let call = Verifier::Keychain.call(account, hash, signature.to_bytes());
+        assert!(!bool_query(&mut f, call, None, &label).0, "{label}");
+        let call = Verifier::KeychainAdmin.call(account, hash, signature.to_bytes());
+        let result = send(&mut f, signer(9).address(), vec![call]);
+        assert_reverts_with(&result, ISignatureVerifier::InvalidFormat {}, &label);
     }
 }
 
@@ -3473,6 +3471,83 @@ fn retired_root_keychain_verifiers_check_in_order() {
     assert!(accepted);
     assert!(!rejected);
     assert_eq!(after + lookup, before + read);
+}
+
+#[test]
+fn verify_keychain_accepts_large_configurable_delegate_signatures() {
+    let hash = B256::repeat_byte(0x42);
+    let mut f = Fixture::with_spec(false, TempoHardfork::T14);
+    let account = f.account;
+    // A delegate whose eight WebAuthn owners must all approve.
+    let seeds = 1..=8;
+    let owners = seeds
+        .clone()
+        .map(|seed| p256_primitive(SigKind::WebAuthn, seed, hash).0)
+        .collect();
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(7),
+        version: 0,
+        threshold: 8,
+        owners: owner_set(owners),
+    };
+    let delegate = config.derive_account().unwrap();
+    let digest = configurable_account_digest(
+        KeychainSignature::signing_hash(hash, account),
+        delegate,
+        config.version,
+    );
+    let mut approvals: Vec<_> = seeds
+        .map(|seed| p256_primitive(SigKind::WebAuthn, seed, digest))
+        .collect();
+    approvals.sort_by_key(|(owner, _)| *owner);
+    let approvals = approvals
+        .into_iter()
+        .map(|(_, approval)| approval)
+        .collect();
+    let inner = ConfigurableAccountSignature::try_new(delegate, config, approvals).unwrap();
+    let signature = TempoSignature::Keychain(KeychainSignature::new(account, inner)).to_bytes();
+    // Larger than the one WebAuthn signature a `verify` call carries at most.
+    assert!(signature.len() > (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32));
+    let result = f.run(&grant_tx(
+        &f,
+        3,
+        SignatureType::ConfigurableAccount,
+        delegate,
+    ));
+    assert!(result.status, "{result:?}");
+    let call = Verifier::Keychain.call(account, hash, signature);
+    assert!(bool_query(&mut f, call, None, "granted delegate").0);
+}
+
+#[test]
+fn verify_keychain_rejects_another_accounts_delegate_before_reading_it() {
+    let hash = B256::repeat_byte(0x42);
+    let mut f = Fixture::with_spec(false, TempoHardfork::T14);
+    seed_relayer(&mut f);
+    let account = f.account;
+    let owner = signer(2);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(2),
+        version: 0,
+        threshold: 1,
+        owners: owner_set(vec![owner.address()]),
+    };
+    let delegate = config.derive_account().unwrap();
+    let signing_hash = KeychainSignature::signing_hash(hash, account);
+    let approval = configurable_account_approval(delegate, &config, &owner, signing_hash);
+    let signature = TempoSignature::Keychain(KeychainSignature::new(account, approval)).to_bytes();
+    // Checked against another account than it names, the signature is rejected before the
+    // delegate's commitment is read: listing the delegate costs its 2400 intrinsic gas and saves
+    // nothing. The spent gas is compared before the calldata floor, which would hide the read.
+    let other = signer(5).address();
+    let [cold, warm] = [None, Some(delegate)].map(|warm| {
+        let call = Verifier::Keychain.call(other, hash, signature.clone());
+        let result = relayed(&mut f, call, AA_GAS_LIMIT, warm);
+        assert!(result.status, "warm {warm:?}: {result:?}");
+        assert!(!bool::abi_decode(&result.output).unwrap(), "warm {warm:?}");
+        result.total_gas_spent
+    });
+    assert_eq!(cold + 2400, warm);
 }
 
 #[test]

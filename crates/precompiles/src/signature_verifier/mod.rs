@@ -52,10 +52,11 @@ impl SignatureVerifier {
             && let Some(keychain_sig) = sig.as_keychain()
             && let Some(delegate) = keychain_sig.signature.as_configurable_account()
         {
-            let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-            if !self.verify_configurable_signature(delegate.account(), signing_hash, delegate)?
-                || keychain_sig.user_address != account
-            {
+            if keychain_sig.user_address != account {
+                return Ok(false);
+            }
+            let signing_hash = KeychainSignature::signing_hash(hash, account);
+            if !self.verify_configurable_signature(delegate.account(), signing_hash, delegate)? {
                 return Ok(false);
             }
             return Ok(self
