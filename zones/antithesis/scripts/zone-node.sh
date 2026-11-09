@@ -19,7 +19,8 @@
 # of revealed parents, and batch many targets per multiproof: 128 (zone-0), 32 (zone-2) and 64
 # (zone-rpc), so one proof spans several children of the same parent.
 # Proof workers sleep a random time up to --engine.proof-jitter (trie-debug builds) before each
-# proof, so multiproof results reach the sparse trie in varied orders.
+# proof, so multiproof results reach the sparse trie in varied orders. zone-0 and zone-rpc run
+# only 1-2 proof workers, so storage and account proofs queue behind each other.
 set -eu
 
 S=/shared
@@ -29,7 +30,7 @@ L1_WS=ws://10.20.0.10:8546
 case "$NODE" in
     0)
         ROLE_ARGS="--secp256k1.key $S/seq-0.key --sequencer-key-file $S/seq-0.key"
-        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.multiproof-chunk-size 128 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2 --engine.proof-jitter 20ms"
+        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.multiproof-chunk-size 128 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2 --engine.proof-jitter 20ms --engine.storage-worker-count 2 --engine.account-worker-count 1"
         P2P_KEY=$S/p2p-0.key
         ;;
     1 | 2)
@@ -43,7 +44,7 @@ case "$NODE" in
         ;;
     rpc)
         # Without --sequencer.prover-address the shadow prover runs the native prover in-process.
-        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --cpu-cores 8 --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates --engine.proof-jitter 5ms"
+        ROLE_ARGS="--sequencer.enable-prover --checker.mode observe --cpu-cores 8 --engine.multiproof-chunk-size 64 --engine.state-root-task-compare-updates --engine.proof-jitter 5ms --engine.storage-worker-count 1 --engine.account-worker-count 1"
         P2P_KEY=$S/p2p-rpc.key
         ;;
     *)
