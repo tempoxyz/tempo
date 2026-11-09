@@ -62,10 +62,14 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     let signer = PrivateKeySigner::random();
     let mut authorization = configurable_authorization(account, &signer);
     if scoped {
-        authorization.authorization.allowed_calls = Some(vec![CallScope {
-            target: Address::repeat_byte(4),
-            selector_rules: Vec::new(),
-        }]);
+        authorization = KeyAuthorization {
+            allowed_calls: Some(vec![CallScope {
+                target: Address::repeat_byte(4),
+                selector_rules: Vec::new(),
+            }]),
+            ..authorization.authorization().clone()
+        }
+        .into_signed(authorization.signature().clone());
     }
     let directory = unique_test_directory();
     let path = directory.join("store.json");
@@ -81,7 +85,7 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     fs::remove_dir_all(directory).unwrap();
 
     // Stored like every other authorization signature: an object tagged by `type`.
-    let signature = authorization.signature.as_configurable_account().unwrap();
+    let signature = authorization.signature().as_configurable_account().unwrap();
     assert_eq!(
         stored["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"]["signature"],
         serde_json::json!({ "type": "configurableAccount", "signature": signature }),
@@ -106,8 +110,11 @@ async fn configurable_account_authorization_for_another_account_is_rejected() {
 
     // Naming the account does not let another configurable account sign its grant, and a
     // configurable account's grant cannot name another account.
-    let mut named = authorization.clone();
-    named.authorization.account = Some(account);
+    let named = authorization
+        .authorization()
+        .clone()
+        .with_account(account)
+        .into_signed(authorization.signature().clone());
     for (expected, authorization) in [
         (account, &authorization),
         (account, &named),

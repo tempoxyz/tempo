@@ -212,7 +212,7 @@ fn validate_authorization(
     account: Address,
     signed: &SignedKeyAuthorization,
 ) -> Result<(), KeyAuthorizationError> {
-    let authorization = &signed.authorization;
+    let authorization = signed.authorization();
     if let Some(chain_id) = request.chain_id()
         && authorization.chain_id != chain_id
     {

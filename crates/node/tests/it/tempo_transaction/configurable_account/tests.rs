@@ -1178,13 +1178,13 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
         .key_authorization
         .as_ref()
         .ok_or_eyre("the fill keeps the grant")?;
-    assert_eq!(simulated.authorization, grant.authorization);
+    assert_eq!(simulated.authorization(), grant.authorization());
     assert_ne!(
         simulated, &grant,
         "the mock approvals replace the signed ones"
     );
     let quorum = simulated
-        .signature
+        .signature()
         .as_configurable_account()
         .ok_or_eyre("the grant carries the mock quorum")?;
     assert_eq!(quorum.account(), account.address);
