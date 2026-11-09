@@ -317,7 +317,9 @@ where
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.inner.evm_env(header)
+        let mut env = self.inner.evm_env(header)?;
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, env.spec);
+        Ok(env)
     }
 
     fn next_evm_env(
@@ -333,6 +335,7 @@ where
             .next_block_base_fee(parent, attributes.timestamp)
             .unwrap_or_default();
         env.block.basefee = alloy_primitives::U256::from_limbs([basefee, 0, 0, 0]);
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, env.spec);
         Ok(env)
     }
 
@@ -380,7 +383,7 @@ where
         &self,
         payload: &TempoExecutionData,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.inner.evm_env_for_payload(payload)
+        self.evm_env(payload.block.header())
     }
 
     fn context_for_payload<'a>(
@@ -805,6 +808,41 @@ mod tests {
             let evm = BlockExecutorFactory::evm_with_env(&config, InMemoryDB::default(), env);
             assert_eq!(evm.config_spec_id(), expected);
         }
+    }
+
+    #[test]
+    fn zone_envs_carry_the_zone_gas_schedule() {
+        let mut genesis = tempo_chainspec::spec::DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(tempo_chainspec::spec::DEV.chain_id(), 1).unwrap();
+        let config = ZoneEvmConfig::new(
+            Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap()),
+            MockL1Reader::default(),
+            Address::ZERO,
+        );
+        let header = TempoHeader::default();
+        let zone = config.evm_env(&header).unwrap();
+        let tempo = config.inner.evm_env(&header).unwrap();
+        assert!(zone.spec.is_t14());
+        let payload = tempo_payload_types::TempoExecutionData {
+            block: reth_primitives_traits::SealedBlock::seal_slow(Block {
+                header,
+                body: Default::default(),
+            })
+            .into(),
+        };
+        assert_eq!(
+            config
+                .evm_env_for_payload(&payload)
+                .unwrap()
+                .version
+                .gas_params,
+            zone.version.gas_params
+        );
+        assert_eq!(
+            zone.version.gas_params.cold_account_additional_cost(),
+            tempo.version.gas_params.cold_account_additional_cost()
+                + tempo_chainspec::constants::gas::L1_COMMITMENT_READ_GAS
+        );
     }
 
     #[tokio::test]

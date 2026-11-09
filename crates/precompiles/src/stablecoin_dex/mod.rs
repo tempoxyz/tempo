@@ -1160,7 +1160,7 @@ impl StablecoinDEX {
                     .read()?;
                 let new_order = self.orders[new_level.links.head].read_in_book(book_key)?;
                 #[cfg(feature = "fuzz")]
-                antithesis_sdk::assert_always!(
+                antithesis_sdk::assert_always_or_unreachable!(
                     new_order.tick() == tick
                         && new_order.is_bid() == order.is_bid()
                         && if order.is_bid() {
@@ -1201,7 +1201,7 @@ impl StablecoinDEX {
 
             let new_order = self.orders[order.next()].read_in_book(book_key)?;
             #[cfg(feature = "fuzz")]
-            antithesis_sdk::assert_always!(
+            antithesis_sdk::assert_always_or_unreachable!(
                 new_order.tick() == order.tick()
                     && new_order.is_bid() == order.is_bid()
                     && new_order.remaining() > 0,

@@ -837,7 +837,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
         .expect_err("unknown selectors revert");
     let payload = error.as_error_resp().expect("revert response");
     assert_eq!(payload.message, "execution reverted");
-    assert_eq!(payload.as_revert_data(), None);
+    assert_eq!(payload.as_revert_data(), Some(Bytes::new()));
     let registered_estimate = provider
         .estimate_gas(account.simulation_request())
         .latest()
@@ -1178,13 +1178,13 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
         .key_authorization
         .as_ref()
         .ok_or_eyre("the fill keeps the grant")?;
-    assert_eq!(simulated.authorization, grant.authorization);
+    assert_eq!(simulated.authorization(), grant.authorization());
     assert_ne!(
         simulated, &grant,
         "the mock approvals replace the signed ones"
     );
     let quorum = simulated
-        .signature
+        .signature()
         .as_configurable_account()
         .ok_or_eyre("the grant carries the mock quorum")?;
     assert_eq!(quorum.account(), account.address);

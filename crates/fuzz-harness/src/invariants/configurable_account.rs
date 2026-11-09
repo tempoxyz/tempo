@@ -58,7 +58,7 @@ pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address, active: bool) -> 
             key_type: grant.key_type.into(),
             key_id: grant.key_id,
         });
-        match &grant.signature {
+        match grant.signature() {
             AccountSignature::ConfigurableAccount(signature) => {
                 let digest = grant.signature_hash();
                 authority

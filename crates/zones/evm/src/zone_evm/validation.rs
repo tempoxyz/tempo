@@ -16,7 +16,7 @@ pub fn validate_transaction(
 ) -> Result<(), TempoInvalidTransaction> {
     let has_eip7702_authorizations = tx
         .as_eip7702()
-        .is_some_and(|tx| !tx.authorization_list.is_empty());
+        .is_some_and(|tx| tx.authorizations().len() != 0);
     let has_tempo_authorizations = tx
         .as_aa()
         .is_some_and(|tx| !tx.inner().tx().tempo_authorization_list.is_empty());
@@ -37,13 +37,7 @@ pub fn validate_transaction(
     // Configurable accounts stay blocked until zones sync configurations (TIP-1114 Zones).
     if spec.is_t14()
         && (tx.as_aa().is_some_and(|aa| {
-            aa.signature().is_or_wraps_configurable_account()
-                || aa.granted_configurable_account().is_some()
-                || aa
-                    .tx()
-                    .key_authorization
-                    .as_ref()
-                    .is_some_and(|auth| auth.signature.is_configurable_account())
+            aa.has_configurable_approvals() || aa.granted_configurable_account().is_some()
         }) || tx.calls().any(|(kind, input)| {
             kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
                 && matches!(
