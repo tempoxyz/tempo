@@ -758,7 +758,8 @@ pub enum TempoPoolTransactionError {
     /// The access key used by a keychain transaction expires too soon.
     ///
     /// Thrown after EVM validation when the effective access-key expiry is less
-    /// than or equal to the latest tip timestamp plus the pool's propagation buffer.
+    /// than or equal to the latest tip timestamp plus the pool's propagation buffer,
+    /// or to the transaction's `valid_after`.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
     AccessKeyExpired {
         /// The effective access-key expiry timestamp returned by EVM validation.
