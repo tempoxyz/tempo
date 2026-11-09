@@ -422,28 +422,28 @@ smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gi
 
 [patch.crates-io]
 # Partitioned ordered index: skip empty partitions in navigation; bounded grafted-tree reads on open; prefetch for merkleization; phase spans; batch node lookups without Weak upgrades; inlined FixedBytes compare; floor-candidate prefetch and graft-node warm-up on the ordered staged path; in-memory graft nodes of committed chunks; parallel ordered merkleize resolve, lookups and op build; ordered staging of ancestor-resolved reads; ancestor-diff scans limited to changed keys' neighbors; current-layer phase spans; staged floor-candidate reads; batched grafted leaf updates; staged predecessor reads (klkvr/monorepo, on v2026.9.0).
-commonware-actor = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-broadcast = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-codec = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-codec-macros = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-coding = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-conformance = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-conformance-macros = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-consensus = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-cryptography = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-formatting = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-invariants = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-macros = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-macros-impl = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-math = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-p2p = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-parallel = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-resolver = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-runtime = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-runtime-macros = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-storage = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-stream = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
-commonware-utils = { git = "https://github.com/klkvr/monorepo", rev = "a827f87b095d35bbc696bcdf4bcbf8a5e8726397" }
+commonware-actor = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-broadcast = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-codec = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-codec-macros = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-coding = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-conformance = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-conformance-macros = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-consensus = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-cryptography = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-formatting = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-invariants = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-macros = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-macros-impl = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-math = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-p2p = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-parallel = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-resolver = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-runtime = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-runtime-macros = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-storage = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-stream = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
+commonware-utils = { git = "https://github.com/klkvr/monorepo", rev = "d02193417ed8877f4300a27d741aed824d0f4d88" }
 
 # LLVM 23 support is not released yet.
 inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff" }
