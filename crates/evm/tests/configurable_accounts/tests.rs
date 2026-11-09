@@ -16,10 +16,7 @@ use evm2::{
 use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_primitives::Block as EthereumBlock;
-use reth_evm::{
-    BlockExecutor, ConfigureEngineEvm, ConfigureEvm, ConvertTx, ExecutableTxTuple, RecoveredTx,
-    SenderRecoveryCache,
-};
+use reth_evm::{BlockExecutor, ConfigureEvm};
 use reth_execution_types::{BundleSource, ExecutionOutcome};
 use reth_primitives_traits::{Block as _, SignedTransaction};
 use reth_provider::{
@@ -51,7 +48,6 @@ use tempo_evm::{
     TempoEvmConfig, TempoInvalidTransaction,
     transaction_error::{ConfigurableAccountError, FeePaymentError, RootKeyRole},
 };
-use tempo_payload_types::TempoExecutionData;
 use tempo_precompiles::{
     Precompile,
     configurable_account::{CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, shim},
@@ -64,7 +60,7 @@ use tempo_precompiles::{
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
-    Block as TempoBlock, BlockBody, SignatureType, TempoEvmKind, TempoHeader, TempoTxEnvelope,
+    Block as TempoBlock, SignatureType, TempoEvmKind, TempoHeader, TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
         AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CallScope,
@@ -5714,57 +5710,4 @@ fn granted_configurable_account_access_ignores_beneficiary_warmth() {
         result.total_gas_spent
     };
     assert_eq!(gas(delegate), gas(Address::repeat_byte(0x77)));
-}
-
-// Converts the only transaction of a block holding `tx`, the parallel step before ordered
-// execution, returning its sender.
-fn convert_block_tx(config: &TempoEvmConfig, tx: TempoTxEnvelope) -> Option<Address> {
-    let block = TempoBlock {
-        header: TempoHeader {
-            inner: Header {
-                number: 1,
-                gas_limit: 30_000_000,
-                parent_beacon_block_root: Some(B256::ZERO),
-                ..Default::default()
-            },
-            general_gas_limit: 30_000_000,
-            ..Default::default()
-        },
-        body: BlockBody {
-            transactions: vec![tx],
-            ommers: Vec::new(),
-            withdrawals: None,
-        },
-    };
-    let payload = TempoExecutionData {
-        block: Arc::new(block.seal_slow()).into(),
-    };
-    let (txs, convert) = config
-        .tx_iterator_for_payload(&payload)
-        .unwrap()
-        .into_parts();
-    let tx = txs.into_iter().next().unwrap();
-    convert.convert(tx).ok().map(|tx| *tx.signer())
-}
-
-#[test]
-fn block_conversion_verifies_approvals_of_cached_senders() {
-    let f = Fixture::new();
-    let cache = SenderRecoveryCache::new(4);
-    let cached = TempoEvmConfig::moderato().with_sender_recovery_cache(cache.clone());
-    let uncached = TempoEvmConfig::moderato();
-
-    let approved: TempoTxEnvelope = f.signed(0, vec![f.getter()]).into();
-    assert_eq!(cache.recover(&approved).unwrap(), f.account);
-    assert_eq!(convert_block_tx(&cached, approved.clone()), Some(f.account));
-    assert_eq!(convert_block_tx(&uncached, approved), Some(f.account));
-
-    // Stands in for a warm entry: the cache holds a sender the approvals do not support.
-    let other_approval = f.signed(1, vec![f.getter()]).signature().clone();
-    let unapproved: TempoTxEnvelope = aa_tx(0, vec![f.getter()])
-        .into_signed(other_approval)
-        .into();
-    cache.recover_with(&unapproved, |_| Ok(f.account)).unwrap();
-    assert_eq!(convert_block_tx(&cached, unapproved.clone()), None);
-    assert_eq!(convert_block_tx(&uncached, unapproved), None);
 }

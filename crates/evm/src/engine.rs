@@ -10,7 +10,7 @@ use reth_evm::{
 };
 use reth_primitives_traits::{SealedOrRecoveredBlock, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
-use tempo_primitives::{AASigned, Block, TempoTxEnvelope};
+use tempo_primitives::{Block, TempoTxEnvelope};
 
 impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     fn evm_env_for_payload(
@@ -83,11 +83,7 @@ impl RecoveredInBlock {
             sender
         } else if tx.is_system_tx() {
             tx.try_recover()?
-        } else if let Some(cache) = sender_recovery_cache
-            // Decoded transactions have not verified their configurable account approvals, and
-            // a cached sender would leave that to serial execution: recover to verify them here.
-            && !tx.as_aa().is_some_and(AASigned::has_configurable_approvals)
-        {
+        } else if let Some(cache) = sender_recovery_cache {
             cache.recover(tx)?
         } else {
             tx.try_recover()?

@@ -110,6 +110,16 @@ impl TempoAaTx {
             .filter(|auth| auth.key_type == SignatureType::ConfigurableAccount)
             .map(|auth| auth.key_id)
     }
+
+    // Verifies the owner approvals of each role ahead of execution, caching the digests `verify`
+    // checks; failures are left for `verify` to report.
+    pub(crate) fn warm_configurable_approvals(&self) {
+        for role in self.configurable_roles().into_iter().flatten() {
+            let _ = role
+                .signature
+                .verify_approvals(role.signed.inner_digest(self));
+        }
+    }
 }
 
 impl TempoTxEnv {

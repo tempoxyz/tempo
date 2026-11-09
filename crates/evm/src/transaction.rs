@@ -41,12 +41,16 @@ impl TempoAaTx {
             .tx()
             .recover_fee_payer(transaction.signer())
             .ok();
-        Self {
+        let tx = Self {
             transaction: Arc::new(transaction),
             fee_payer,
             expiring_nonce_idx: None,
             override_key_id: None,
-        }
+        };
+        // Decoded transactions whose sender came from the recovery cache have not verified their
+        // configurable account approvals: warm them here, off the serial execution path.
+        tx.warm_configurable_approvals();
+        tx
     }
 
     /// Returns the transaction's index among expiring-nonce transactions in the block.
