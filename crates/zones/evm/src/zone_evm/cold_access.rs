@@ -1,18 +1,18 @@
 //! Tests that a zone prices Tempo commitment reads into its cold account access (TIP-1154).
 
-use crate::zone_evm::tests::{config, transaction};
+use crate::zone_evm::tests::{config, fee_free_env, sender_db, transaction};
 use alloy_consensus::{SignableTransaction, TxLegacy};
-use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+use alloy_primitives::{Address, Bytes, Signature, TxKind};
 use evm2::{
-    EvmFeatures, TxResult,
+    TxResult,
     bytecode::Bytecode,
-    evm::{AccountInfo, InMemoryDB},
+    evm::AccountInfo,
     interpreter::{InstrStop, op},
 };
 use reth_evm::BlockExecutorFactory;
 use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
-use tempo_evm::{TempoEvmEnv, TempoEvmTypes};
-use zone_precompiles::{ZONE_FEE_MANAGER_ADDRESS, zone_fee_manager};
+use tempo_evm::TempoEvmTypes;
+use zone_precompiles::test_utils::MockL1Reader;
 
 const SENDER: Address = Address::repeat_byte(0x01);
 const PROBE: Address = Address::repeat_byte(0x02);
@@ -40,14 +40,7 @@ fn probe(opcode: u8, targets: &[Address]) -> Bytes {
 
 /// Calls [`PROBE`] holding `code` from [`SENDER`] at `spec`, without fees.
 fn run(spec: TempoHardfork, code: Bytes, gas_limit: u64) -> TxResult<TempoEvmTypes> {
-    let mut db = InMemoryDB::default();
-    db.insert_account_info(&ZONE_FEE_MANAGER_ADDRESS, AccountInfo::default());
-    db.insert_account_storage(
-        &ZONE_FEE_MANAGER_ADDRESS,
-        &zone_fee_manager::slots::DEFAULT_FEE_TOKEN,
-        &U256::from_be_slice(tempo_precompiles::DEFAULT_FEE_TOKEN.as_slice()),
-    );
-    db.insert_account_info(&SENDER, AccountInfo::default().with_nonce(1));
+    let mut db = sender_db(SENDER);
     db.insert_account_info(
         &PROBE,
         AccountInfo::default().with_code(Bytecode::new_raw(code)),
@@ -56,16 +49,9 @@ fn run(spec: TempoHardfork, code: Bytes, gas_limit: u64) -> TxResult<TempoEvmTyp
         &CONTRACT,
         AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[op::STOP]))),
     );
-    let mut env = TempoEvmEnv {
-        spec,
-        ..Default::default()
-    };
-    env.version = tempo_chainspec::gas_params::version(evm2::SpecId::from(spec), spec, false);
-    tempo_chainspec::gas_params::apply_zone(&mut env.version, spec);
-    env.version.features.remove(EvmFeatures::FEE_CHARGE);
-    env.block.gas_limit = U256::from(30_000_000);
+    let mut env = fee_free_env(spec);
     env.block.beneficiary = BENEFICIARY;
-    let mut evm = BlockExecutorFactory::evm_with_env(&config(), db, env);
+    let mut evm = BlockExecutorFactory::evm_with_env(&config(MockL1Reader::default()), db, env);
     let tx = TxLegacy {
         nonce: 1,
         gas_limit,
