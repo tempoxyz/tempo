@@ -54,7 +54,7 @@ images it is given, so they must be in the image rather than copied in when a co
 | `parallel_driver_collide` | Grinds pairs of allowance keys sharing 1–10 leading trie nibbles (embedded leaves from 8 with small amounts) and sets them, or updates and clears recorded pairs after they may have settled |
 | `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, and settled workload transactions stay final |
 | `anytime_forks` | While faults move leadership, zone nodes hold the same block at every height they share, never replace a block they imported, and blocks come from more than one sequencer |
-| `anytime_proofs` | `eth_getProof` answers for present and absent accounts and slots verify against the block's state root on every zone node and on L1, and zone nodes on the same block serve the same proof |
+| `anytime_proofs` | `eth_getMultiProof` answers for present and absent accounts and slots verify against the block's state root on every zone node and on L1, and zone nodes on the same block serve the same proof |
 | `eventually_settled` | After faults stop, every confirmed deposit is credited and every confirmed withdrawal is paid, and all nodes converge |
 | `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
 
