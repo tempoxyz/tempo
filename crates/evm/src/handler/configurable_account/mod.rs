@@ -5,6 +5,7 @@ use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx as _, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
+use alloy_consensus::Transaction as _;
 use alloy_primitives::{Address, B256, IntoLogData as _, map::AddressSet};
 use evm2::{
     Evm,
@@ -261,10 +262,10 @@ pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
 
 /// Intrinsic gas for the Tempo commitment reads (TIP-1154) of the accounts a zone transaction
 /// accesses without a cold load: a full cold access for the sender, and [`L1_COMMITMENT_READ_GAS`]
-/// once for each distinct call target unless it is the sender, a precompile or an address that
-/// can't be an account. Like every cold load, an address with zone code pays too, so none is loaded
-/// here. A zone's gas schedule charges every other read through the cold access (see
-/// [`tempo_chainspec::gas_params::apply_zone`]). Zero on Tempo L1.
+/// once for each distinct call target or access-list address unless it is the sender, a precompile
+/// or an address that can't be an account. Like every cold load, an address with zone code pays
+/// too, so none is loaded here. A zone's gas schedule charges every other read through the cold
+/// access (see [`tempo_chainspec::gas_params::apply_zone`]). Zero on Tempo L1.
 fn zone_commitment_reads_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     envelope: &TempoTxEnv,
@@ -277,6 +278,12 @@ fn zone_commitment_reads_gas(
         .evm_tx()
         .calls()
         .filter_map(|(kind, _)| kind.to().copied())
+        .chain(
+            envelope
+                .access_list()
+                .into_iter()
+                .flat_map(|list| list.iter().map(|item| item.address)),
+        )
         .filter(|&to| {
             to != envelope.caller() && valid_account(to, spec) && !host.precompiles().contains(&to)
         })

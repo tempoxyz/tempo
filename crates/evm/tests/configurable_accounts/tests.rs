@@ -4464,7 +4464,7 @@ fn zones_charge_the_sender_read_instead_of_registering() {
 
 /// On a zone, each distinct call target pays its Tempo read in intrinsic gas once, whatever its
 /// code, unless it is a precompile, and later calls cost what they cost on Tempo L1. Access-list
-/// entries pay it through the zone's access-list cost, whatever the address.
+/// addresses pay it the same way, and entries cost what they cost on Tempo L1.
 #[test]
 fn zone_commitment_reads_are_charged_once_per_read_account() {
     let contract = Address::repeat_byte(0x55);
@@ -4506,18 +4506,18 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
     assert_eq!(
         access_list_entry,
         tempo_gas_params(TempoHardfork::T14).get(GasId::TxAccessListAddressCost)
-            + L1_COMMITMENT_READ_GAS
     );
 
     let base = run(vec![], vec![contract]);
     // A contract target pays the read like an eligible one.
     assert_eq!(run(vec![], vec![eligible]), base);
+    // The precompile pays no read, and the contract already paid as the call target.
     assert_eq!(
         run(
             vec![CONFIGURABLE_ACCOUNT_ADDRESS, contract, other],
             vec![contract]
         ) - base,
-        3 * access_list_entry
+        3 * access_list_entry + L1_COMMITMENT_READ_GAS
     );
     // A later call pays a read only for an account that hasn't paid one.
     for (targets, extra) in [

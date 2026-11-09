@@ -81,17 +81,15 @@ pub fn version(spec_id: SpecId, spec: TempoHardfork, amsterdam_eip8037_enabled: 
 /// Applies a zone's changes to `spec`'s gas schedule (TIP-1154).
 ///
 /// From T14, a zone reads the Tempo commitment of every account it loads from its database, so a
-/// cold account access also pays [`L1_COMMITMENT_READ_GAS`]. Access-list addresses, which skip the cold access,
-/// pay it up front. The transaction handler charges the sender and call targets, which a
-/// transaction accesses without a cold load. The beneficiary stays warm (EIP-3651): its read is
-/// unpaid, but it is one account per block.
+/// cold account access also pays [`L1_COMMITMENT_READ_GAS`]. The transaction handler charges the
+/// sender, call targets and access-list addresses, which a transaction accesses without a cold
+/// load. The beneficiary stays warm (EIP-3651): its read is unpaid, but it is one account per
+/// block.
 pub fn apply_zone(version: &mut Version, spec: TempoHardfork) {
     if !spec.is_t14() {
         return;
     }
-    let read_gas = L1_COMMITMENT_READ_GAS as u32;
-    version.gas_params[GasId::ColdAccountAdditionalCost] += read_gas;
-    version.gas_params[GasId::TxAccessListAddressCost] += read_gas;
+    version.gas_params[GasId::ColdAccountAdditionalCost] += L1_COMMITMENT_READ_GAS as u32;
 }
 
 /// Applies the T1+ TIP-1000 costs, with no state gas split.
