@@ -271,6 +271,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         );
     }
 
+    if let Commands::Node(node_cmd) = &cli.command {
+        ensure_enough_cpu_cores(&node_cmd.engine)?;
+    }
+
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
     if let Commands::Node(node_cmd) = &cli.command
@@ -772,6 +776,22 @@ pub(crate) fn tmpfs_tempdir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
+/// Refuses to start a node whose engine would compute state roots serially.
+///
+/// Reth only runs the sparse trie state root task with at least 5 CPU cores (or
+/// `--cpu-cores` set to 5 or more) and otherwise falls back to the serial legacy
+/// state root, which Tempo must never use to build or validate blocks.
+fn ensure_enough_cpu_cores(
+    engine: &reth_ethereum::node::core::args::EngineArgs,
+) -> eyre::Result<()> {
+    if !engine.tree_config().has_enough_parallelism() {
+        eyre::bail!(
+            "tempo requires at least 5 CPU cores so the sparse trie computes every state root"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -786,7 +806,7 @@ mod tests {
 
     use super::{
         TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
-        follow::FollowMode, snapshot_download,
+        ensure_enough_cpu_cores, follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::precompiles::{
@@ -1254,6 +1274,31 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn refuses_fewer_than_five_cpu_cores() {
+        init_defaults_once();
+
+        for (cores, expected) in [
+            (
+                "4",
+                Some(
+                    "tempo requires at least 5 CPU cores so the sparse trie computes every state root",
+                ),
+            ),
+            ("5", None),
+        ] {
+            let cli =
+                TempoCli::try_parse_from(["tempo", "node", "--dev", "--cpu-cores", cores]).unwrap();
+            let Commands::Node(node_cmd) = cli.command else {
+                panic!("expected node command");
+            };
+            let err = ensure_enough_cpu_cores(&node_cmd.engine)
+                .err()
+                .map(|err| err.to_string());
+            assert_eq!(err.as_deref(), expected, "{cores} cores");
+        }
     }
 
     #[test]
