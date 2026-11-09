@@ -73,7 +73,7 @@ impl EstimatorConfig {
     /// Call before constructing an estimator to handle invalid inputs without panicking.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.network_budget >= self.target_block_time {
-            return Err(ConfigError(ConfigErrorKind::NetworkBudget {
+            return Err(ConfigError(ConfigErrorKind::Budget {
                 network_budget: self.network_budget,
                 target_block_time: self.target_block_time,
             }));
@@ -84,14 +84,14 @@ impl EstimatorConfig {
         ) && (self.network_budget_max < self.network_budget
             || self.network_budget_max >= self.target_block_time)
         {
-            return Err(ConfigError(ConfigErrorKind::NetworkBudgetMax {
+            return Err(ConfigError(ConfigErrorKind::BudgetMax {
                 network_budget_max: self.network_budget_max,
                 network_budget: self.network_budget,
                 target_block_time: self.target_block_time,
             }));
         }
         if !(50..=100).contains(&self.network_reserve_percentile) {
-            return Err(ConfigError(ConfigErrorKind::NetworkPercentile {
+            return Err(ConfigError(ConfigErrorKind::Percentile {
                 percentile: self.network_reserve_percentile,
             }));
         }
@@ -116,7 +116,7 @@ enum ConfigErrorKind {
     #[error(
         "network budget ({network_budget:?}) must be smaller than the target block time ({target_block_time:?})"
     )]
-    NetworkBudget {
+    Budget {
         /// Configured floor.
         network_budget: Duration,
         /// Configured target.
@@ -126,7 +126,7 @@ enum ConfigErrorKind {
     #[error(
         "maximum network budget ({network_budget_max:?}) must be at least the network budget ({network_budget:?}) and smaller than the target block time ({target_block_time:?})"
     )]
-    NetworkBudgetMax {
+    BudgetMax {
         /// Configured cap.
         network_budget_max: Duration,
         /// Configured floor.
@@ -136,7 +136,7 @@ enum ConfigErrorKind {
     },
     /// The percentile falls outside the supported range.
     #[error("network reserve percentile ({percentile}) must be between 50 and 100, inclusive")]
-    NetworkPercentile {
+    Percentile {
         /// Configured percentile.
         percentile: u8,
     },
