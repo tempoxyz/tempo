@@ -4462,9 +4462,9 @@ fn zones_charge_the_sender_read_instead_of_registering() {
     );
 }
 
-/// On a zone, the first call target pays its Tempo read in intrinsic gas, whatever its code.
-/// Later call targets and access-list entries pay it through the zone's cold access and access-list
-/// costs, whatever the address.
+/// On a zone, each distinct call target pays its Tempo read in intrinsic gas once, whatever its
+/// code, unless it is a precompile, and later calls cost what they cost on Tempo L1. Access-list
+/// entries pay it through the zone's access-list cost, whatever the address.
 #[test]
 fn zone_commitment_reads_are_charged_once_per_read_account() {
     let contract = Address::repeat_byte(0x55);
@@ -4500,7 +4500,9 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
     };
     let gas = zone_gas_params();
     let access_list_entry = gas.get(GasId::TxAccessListAddressCost);
-    let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
+    // Later calls pay Tempo L1's cold access, without the zone's Tempo read.
+    let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost()
+        - L1_COMMITMENT_READ_GAS;
     assert_eq!(
         access_list_entry,
         tempo_gas_params(TempoHardfork::T14).get(GasId::TxAccessListAddressCost)
@@ -4517,8 +4519,14 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
         ) - base,
         3 * access_list_entry
     );
-    // A second call pays the zone's cold access, whatever its target.
-    assert_eq!(run(vec![], vec![eligible, eligible]) - base, cold_access);
+    // A later call pays a read only for an account that hasn't paid one.
+    for (targets, extra) in [
+        ([eligible, eligible], 0),
+        ([contract, other], L1_COMMITMENT_READ_GAS),
+        ([contract, Address::with_last_byte(4)], 15), // identity precompile execution costs 15 gas.
+    ] {
+        assert_eq!(run(vec![], targets.to_vec()) - base, cold_access + extra);
+    }
 }
 
 /// A threshold above eight is met by eight approvals whose weights reach it.

@@ -82,9 +82,9 @@ pub fn version(spec_id: SpecId, spec: TempoHardfork, amsterdam_eip8037_enabled: 
 ///
 /// From T14, a zone reads the Tempo commitment of every account it loads from its database, so a
 /// cold account access also pays [`L1_COMMITMENT_READ_GAS`]. Access-list addresses, which skip the cold access,
-/// pay it up front. The transaction handler charges the sender and first call target, which a
-/// transaction warms for free. The beneficiary stays warm (EIP-3651): its read is unpaid, but it
-/// is one account per block.
+/// pay it up front. The transaction handler charges the sender and call targets, which a
+/// transaction accesses without a cold load. The beneficiary stays warm (EIP-3651): its read is
+/// unpaid, but it is one account per block.
 pub fn apply_zone(version: &mut Version, spec: TempoHardfork) {
     if !spec.is_t14() {
         return;

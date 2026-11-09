@@ -35,7 +35,10 @@ use evm2::{
     version::{GasId, GasParams},
 };
 use std::cmp::Ordering;
-use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
+use tempo_chainspec::{
+    constants::gas::{L1_COMMITMENT_READ_GAS, STORAGE_CREDIT_VALUE},
+    hardfork::TempoHardfork,
+};
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, NonceError,
 };
@@ -49,8 +52,11 @@ use tempo_precompiles::{
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{Handler as _, StorageCtx, account_config_commitment},
 };
-use tempo_primitives::transaction::{
-    SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, validate_calls,
+use tempo_primitives::{
+    TempoEvmKind,
+    transaction::{
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, validate_calls,
+    },
 };
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
@@ -316,8 +322,13 @@ fn intrinsic_gas(
 
     // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
     // already covers the first call's target access.
-    let cold_account =
+    let mut cold_account =
         params.get(GasId::WarmStorageReadCost) + params.get(GasId::ColdAccountAdditionalCost);
+    // A zone's cold access includes a Tempo read (`apply_zone`), which later calls don't pay here:
+    // `zone_commitment_reads_gas` charges it once per target that can hold a commitment.
+    if host.ext().kind == TempoEvmKind::Zone && spec.is_t14() {
+        cold_account = cold_account.saturating_sub(L1_COMMITMENT_READ_GAS);
+    }
     regular = regular
         .saturating_add(cold_account.saturating_mul(tx.calls.len().saturating_sub(1) as u64));
 
