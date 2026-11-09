@@ -52,6 +52,8 @@ jobs:
               - 'Cargo.lock'
               - '*.toml'
               - '.cargo/**'
+              # crates/chainspec/build.rs embeds these.
+              - '*-network-identity.json'
               - '.github/workflows/fuzz.yml'
 
   smoke:
