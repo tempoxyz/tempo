@@ -47,7 +47,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -56,8 +56,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxResult,
+    StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
+    TempoStateAccess, TempoTxResult,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -211,8 +211,8 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(args, |attributes| {
-            self.pool.best_transactions_with_attributes(attributes)
+        self.build_payload(args, |attributes, timestamp| {
+            self.pool.best_transactions_for_block(attributes, timestamp)
         })
     }
 
@@ -236,7 +236,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
-            |_| core::iter::empty(),
+            |_, _| core::iter::empty(),
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -260,7 +260,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        best_txs: impl FnOnce(BestTransactionsAttributes, u64) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
@@ -292,6 +292,8 @@ where
         check_cancel!();
 
         let start = Instant::now();
+        // Snapshot before setup: the stop decision already charges start.elapsed().
+        let payload_build_budget = attributes.payload_build_budget();
 
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
@@ -420,10 +422,13 @@ where
         }
 
         let pool_fetch_start = Instant::now();
-        let raw_best_txs = best_txs(BestTransactionsAttributes::new(
-            executor.evm().block().basefee.to(),
-            Some(executor.evm().block().blob_basefee.to()),
-        ));
+        let raw_best_txs = best_txs(
+            BestTransactionsAttributes::new(
+                executor.evm().block().basefee.to(),
+                Some(executor.evm().block().blob_basefee.to()),
+            ),
+            executor.evm().block().timestamp.to(),
+        );
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
@@ -463,7 +468,6 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
@@ -540,8 +544,10 @@ where
                 continue;
             }
 
-            let is_payment = if hardfork.is_t5() {
-                tx.transaction.is_payment()
+            let is_payment = if hardfork.is_t15() {
+                tx.transaction.is_payment_v3()
+            } else if hardfork.is_t5() {
+                tx.transaction.is_payment_v2()
             } else {
                 tx.transaction.inner().is_payment_v1()
             };
@@ -549,6 +555,11 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Payload builder defers a non-payment transaction at the general gas limit",
+                    &serde_json::json!({ "general_gas_used": non_payment_gas_used, "general_gas_limit": general_gas_limit })
+                );
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::Other(Box::new(
@@ -630,9 +641,27 @@ where
                             // if the nonce is too low, we can skip this transaction
                             trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                             self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        } else if matches!(
+                            TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+                            Some(TempoInvalidTransaction::ExpiringNonceReplay)
+                        ) {
+                            // This exact transaction is already included, typically in the parent
+                            // block before pool maintenance evicted it. Skip it without marking it
+                            // invalid.
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "Payload builder skips an expiring nonce transaction already included"
+                            );
+                            trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
+                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
                         } else {
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "Payload builder evicts a pool transaction that fails execution",
+                                &serde_json::json!({ "error": error.to_string() })
+                            );
                             trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                             best_txs.mark_invalid(
                                 &pool_tx,
@@ -758,35 +787,36 @@ where
                     "skipping payload state-root computation"
                 );
                 None
-            } else if let Some(mut handle) = state_root_handle {
-                let state_root_wait_start = Instant::now();
-                let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
-                        let elapsed = state_root_wait_start.elapsed();
-                        self.metrics
-                            .sparse_trie_state_root_wait_duration_seconds
-                            .record(elapsed);
-                        debug!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
-                        );
-                        Some((outcome, elapsed))
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            %err,
-                            "sparse trie failed, falling back to sync state root"
-                        );
-                        None
-                    }
-                }
             } else {
-                None
+                state_root_handle.and_then(|mut handle| {
+                    let state_root_wait_start = Instant::now();
+                    let _span =
+                        debug_span!(target: "payload_builder", "await_state_root").entered();
+                    match handle.state_root() {
+                        Ok(outcome) => {
+                            let elapsed = state_root_wait_start.elapsed();
+                            self.metrics
+                                .sparse_trie_state_root_wait_duration_seconds
+                                .record(elapsed);
+                            debug!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                state_root = ?outcome.state_root,
+                                "received state root from sparse trie"
+                            );
+                            Some((outcome, elapsed))
+                        }
+                        Err(err) => {
+                            warn!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                %err,
+                                "sparse trie failed, falling back to sync state root"
+                            );
+                            None
+                        }
+                    }
+                })
             }
             .unzip();
 
@@ -974,6 +1004,60 @@ where
             ?builder_finish_elapsed,
             "Built payload"
         );
+
+        #[cfg(feature = "fuzz")]
+        {
+            let consensus = tempo_evm::consensus::TempoConsensus::new(chain_spec);
+            let sealed_block = block.sealed_block();
+            antithesis_sdk::assert_always_less_than_or_equal_to!(
+                block.gas_used(),
+                block.gas_limit(),
+                "Payload builder keeps block gas used within the gas limit"
+            );
+            antithesis_sdk::assert_always!(
+                execution_result.receipts.len() == total_transactions,
+                "Payload builder produces one receipt per included transaction",
+                &serde_json::json!({ "receipts": execution_result.receipts.len(), "transactions": total_transactions })
+            );
+            let header = reth_consensus::HeaderValidator::validate_header(
+                &consensus,
+                sealed_block.sealed_header(),
+            );
+            antithesis_sdk::assert_always!(
+                header.is_ok(),
+                "Payload builder block header passes consensus header validation",
+                &serde_json::json!({ "block_number": block.number(), "error": header.err().map(|err| err.to_string()) })
+            );
+            let against_parent = reth_consensus::HeaderValidator::validate_header_against_parent(
+                &consensus,
+                sealed_block.sealed_header(),
+                &parent_header,
+            );
+            antithesis_sdk::assert_always!(
+                against_parent.is_ok(),
+                "Payload builder block header is a valid child of its parent",
+                &serde_json::json!({ "block_number": block.number(), "error": against_parent.err().map(|err| err.to_string()) })
+            );
+            let pre_execution =
+                reth_consensus::Consensus::validate_block_pre_execution(&consensus, sealed_block);
+            antithesis_sdk::assert_always!(
+                pre_execution.is_ok(),
+                "Payload builder block body passes consensus pre-execution validation",
+                &serde_json::json!({ "block_number": block.number(), "error": pre_execution.err().map(|err| err.to_string()) })
+            );
+            let post_execution = reth_consensus::FullConsensus::<tempo_primitives::TempoPrimitives>::validate_block_post_execution(
+                &consensus,
+                &block,
+                execution_result,
+                None,
+                None,
+            );
+            antithesis_sdk::assert_always!(
+                post_execution.is_ok(),
+                "Payload builder execution outputs pass consensus post-execution validation",
+                &serde_json::json!({ "block_number": block.number(), "error": post_execution.err().map(|err| err.to_string()) })
+            );
+        }
 
         let block = Arc::new(block);
         let execution_block_encoder = ExecutionBlockEncoder::new(

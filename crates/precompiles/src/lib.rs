@@ -37,12 +37,17 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
+    configurable_account::ConfigurableAccount,
     current_committee::CurrentCommittee,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{StorageCtx, actions::StorageActions, evm::EvmPrecompileStorageProvider},
+    storage::{
+        StorageCtx,
+        actions::StorageActions,
+        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
+    },
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
@@ -71,13 +76,13 @@ use evm2::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS,
+    CURRENT_COMMITTEE_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -210,6 +215,8 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             StablecoinDEX::new().call(calldata, caller)
         } else if address == NONCE_PRECOMPILE_ADDRESS {
             NonceManager::new().call(calldata, caller)
+        } else if address == CONFIGURABLE_ACCOUNT_ADDRESS {
+            ConfigurableAccount::new().call(calldata, caller)
         } else if address == VALIDATOR_CONFIG_ADDRESS {
             ValidatorConfig::new().call(calldata, caller)
         } else if address == ACCOUNT_KEYCHAIN_ADDRESS {
@@ -237,6 +244,7 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
 impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     fn move_precompiles(
         &mut self,
@@ -417,7 +425,7 @@ mod tests {
             destination,
             call_target: code_address,
             code_address,
-            input: calldata,
+            input: calldata.into(),
             caller,
             ..Default::default()
         };
@@ -441,7 +449,7 @@ mod tests {
             call_target: PATH_USD_ADDRESS,
             code_address: delegate,
             code: Bytecode::new_eip7702(delegate),
-            input: Bytes::new(),
+            input: Bytes::new().into(),
             ..Default::default()
         };
         assert!(precompiles.contains(&message.call_target));

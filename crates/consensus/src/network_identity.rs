@@ -20,8 +20,8 @@ impl FromStr for NetworkIdentity {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = s.parse::<FixedBytes<96>>()?;
 
-        let mut bytes = bytes.as_slice();
-        let key = <MinSig as Variant>::Public::read(&mut bytes)?;
+        let bytes = bytes.as_slice();
+        let key = <MinSig as Variant>::Public::read(&mut commonware_codec::Copying(bytes))?;
 
         Ok(Self(key))
     }

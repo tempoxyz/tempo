@@ -44,7 +44,9 @@ use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageCtx},
+    storage::{
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx, account_config_commitment,
+    },
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_primitives::{TempoBlockEnv, TempoPrimitives};
@@ -605,6 +607,29 @@ where
     fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
         // DbStorageOverlay does not run TIP-1060 accounting.
     }
+
+    fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
+        let account = self.read_db_account_info(address)?;
+        account_config_commitment(&account, self.spec())
+    }
+
+    fn set_config_commitment(
+        &mut self,
+        _address: Address,
+        _commitment: B256,
+        _gas: ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        // The overlay only persists storage slots; it cannot write account extensions.
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+    }
+
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        self.with_account_info(address, f)
+    }
 }
 
 fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgOutcome> {
@@ -625,7 +650,7 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
 fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcome> {
     let bytes = const_hex::decode(hex.trim_start_matches("0x"))
         .wrap_err("failed decoding shadow_dkg_outcome hex")?;
-    OnchainDkgOutcome::read(&mut bytes.as_slice())
+    OnchainDkgOutcome::read(&mut commonware_codec::Copying(bytes.as_slice()))
         .wrap_err("failed decoding shadow_dkg_outcome payload")
 }
 
@@ -997,8 +1022,10 @@ where
         "patched boundary block `{block_number}` has canonical hash `{canonical_hash}`, expected `{expected_hash}`",
     );
 
-    let decoded = OnchainDkgOutcome::read(&mut header.inner.extra_data.as_ref())
-        .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
+    let decoded = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+        header.inner.extra_data.as_ref(),
+    ))
+    .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
     ensure!(
         decoded.players() == expected_outcome.players()
             && decoded.next_players() == expected_outcome.next_players()
@@ -1186,7 +1213,7 @@ impl Read for BootstrapShareState {
     type Cfg = ();
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(buf)?;
@@ -1241,7 +1268,7 @@ impl Read for BootstrapDkgState {
     type Cfg = NonZeroU32;
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let epoch = ReadExt::read(buf)?;

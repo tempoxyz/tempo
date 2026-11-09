@@ -10,7 +10,8 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
+    map::{AddressMap, AddressSet},
 };
 use evm2::registry::HandlerError;
 use reth_evm::execute::WithTxEnv;
@@ -47,8 +48,11 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
-    /// Cached T5+ payment classification for efficient block building.
-    is_payment: bool,
+    /// Cached T5-T14 payment classification for efficient block building.
+    // TODO: remove after T15 is active.
+    is_payment_v2: bool,
+    /// Cached T15+ payment classification for efficient block building.
+    is_payment_v3: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
@@ -102,7 +106,9 @@ impl TempoPooledTransaction {
         expiring_nonce_hash: Option<B256>,
         encoded_length: usize,
     ) -> Self {
-        let is_payment = transaction.is_payment_v2();
+        // V2 is strictly narrower than V3, so it only needs checking for V3 payments.
+        let is_payment_v3 = transaction.is_payment_v3();
+        let is_payment_v2 = is_payment_v3 && transaction.is_payment_v2();
         let value = transaction.value();
         let cost =
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
@@ -119,7 +125,8 @@ impl TempoPooledTransaction {
                 blob_cell_availability: None,
             },
             fee_token_cost,
-            is_payment,
+            is_payment_v2,
+            is_payment_v3,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
@@ -180,9 +187,14 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction according to the T5+ builder criteria.
-    pub fn is_payment(&self) -> bool {
-        self.is_payment
+    /// Returns whether this is a payment transaction according to the T5-T14 builder criteria.
+    pub fn is_payment_v2(&self) -> bool {
+        self.is_payment_v2
+    }
+
+    /// Returns whether this is a payment transaction according to the T15+ builder criteria.
+    pub fn is_payment_v3(&self) -> bool {
+        self.is_payment_v3
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
@@ -385,6 +397,16 @@ impl TempoPooledTransaction {
             .is_some_and(|expiry| expiry <= cutoff)
     }
 
+    /// Returns whether the transaction can be included in a block with `timestamp`: its
+    /// `valid_after` has been reached and neither its `valid_before` nor its signing key has
+    /// expired.
+    ///
+    /// Unlike [`Self::is_expired_by`], this also rejects transactions that are not valid yet, so
+    /// it must not drive eviction.
+    pub(crate) fn is_includable_at(&self, timestamp: u64) -> bool {
+        self.inner().ensure_valid_after(timestamp).is_ok() && !self.is_expired_by(timestamp)
+    }
+
     /// Caches the effective fee token determined during transaction validation.
     ///
     /// The validator sets this after EVM validation resolves the token from the
@@ -402,7 +424,8 @@ impl TempoPooledTransaction {
         Self {
             inner: self.inner.clone(),
             fee_token_cost: self.fee_token_cost,
-            is_payment: self.is_payment,
+            is_payment_v2: self.is_payment_v2,
+            is_payment_v3: self.is_payment_v3,
             expiring_nonce_hash: self.expiring_nonce_hash,
             nonce_key_slot: self.nonce_key_slot.clone(),
             expiring_nonce_slot: self.expiring_nonce_slot.clone(),
@@ -508,7 +531,7 @@ impl TempoPooledTransaction {
     ///
     /// See `warm_payment_keccak_slots` for the exact set of slots this warms.
     pub fn precalculate_keccak_slots(&self) {
-        if !self.is_payment {
+        if !self.is_payment_v3 {
             return;
         }
 
@@ -519,6 +542,31 @@ impl TempoPooledTransaction {
             self.fee_payer().unwrap_or(sender),
             |_slot| {},
         );
+    }
+
+    /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
+    /// an access key signs for it), the key authorization signer, a separate fee payer or the
+    /// access key.
+    pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let Some(tx) = self.inner().as_aa() else {
+            return accounts.contains(self.sender_ref());
+        };
+        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
+        // Recovery fails only for a transaction that validation already rejects.
+        let grant_signer = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.authorizing_account().ok());
+        let fee_payer = tx
+            .tx()
+            .fee_payer_signature
+            .and_then(|_| self.fee_payer().ok());
+        let access_key = self.keychain_subject().map(|subject| subject.key_id);
+        [sender, grant_signer, fee_payer, access_key]
+            .into_iter()
+            .flatten()
+            .any(|authority| accounts.contains(&authority))
     }
 }
 
@@ -559,7 +607,7 @@ fn warm_payment_keccak_slots<'a>(
         if let Some(addr) = payment.to() {
             let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             warmed(slot);
-            warmed(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
+            warmed(keccak256(slot.to_be_bytes::<32>()).into());
         }
 
         // Allowance slots for transferFrom variants: allowances[from][sender]
@@ -720,7 +768,8 @@ pub enum TempoPoolTransactionError {
     /// The access key used by a keychain transaction expires too soon.
     ///
     /// Thrown after EVM validation when the effective access-key expiry is less
-    /// than or equal to the latest tip timestamp plus the pool's propagation buffer.
+    /// than or equal to the latest tip timestamp plus the pool's propagation buffer,
+    /// or to the transaction's `valid_after`.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
     AccessKeyExpired {
         /// The effective access-key expiry timestamp returned by EVM validation.
@@ -743,8 +792,9 @@ pub enum TempoPoolTransactionError {
 
     /// A transaction matched a configured address check.
     ///
-    /// Thrown during pool admission when the recovered sender or a direct call target
-    /// appears in the node's configured address filter.
+    /// Thrown during pool admission when an address of the transaction (sender, fee payer, call
+    /// target, authorization delegate or authority, or access list entry) appears in the node's
+    /// configured address filter.
     #[error("Transaction address check failed for {address}")]
     AddressCheck {
         /// The address that matched the configured filter.
@@ -1198,11 +1248,13 @@ mod tests {
     }
 
     fn raw_pooled_transaction(
-        tx: TempoTransaction,
+        mut tx: TempoTransaction,
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
+        // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
+        tx.key_authorization
+            .take_if(|auth| auth.signature.is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
-        let mut raw = Vec::with_capacity(envelope.encode_2718_len());
-        envelope.encode_2718(&mut raw);
+        let raw = envelope.encoded_2718();
         let encoded_length = raw.len();
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");
@@ -1252,7 +1304,7 @@ mod tests {
         let recovered = Recovered::new_unchecked(envelope, Address::with_last_byte(1));
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(pooled_tx.is_payment());
+        assert!(pooled_tx.is_payment_v2());
     }
 
     #[test]
@@ -1274,7 +1326,7 @@ mod tests {
         let recovered = Recovered::new_unchecked(envelope, Address::with_last_byte(1));
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(!pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment_v2());
     }
 
     #[test]
@@ -1284,7 +1336,7 @@ mod tests {
         let pooled_tx = TxBuilder::eip1559(non_payment_addr)
             .gas_limit(21000)
             .build_eip1559();
-        assert!(!pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment_v2());
     }
 
     #[test]
@@ -1516,8 +1568,6 @@ mod tests {
 
     #[test]
     fn test_validate_blob_returns_not_blob_transaction() {
-        use alloy_eips::eip7594::BlobTransactionSidecarVariant;
-
         let tx = TxBuilder::eip1559(Address::random())
             .gas_limit(21000)
             .build_eip1559();

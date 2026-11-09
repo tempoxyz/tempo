@@ -12,7 +12,7 @@ use evm2::{
 use scoped_tls::scoped_thread_local;
 use std::cell::RefCell;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
@@ -117,6 +117,22 @@ impl StorageCtx {
             })
         })?;
         result.unwrap()
+    }
+
+    /// Reads the already-warm execution caller without charging account access twice.
+    pub(crate) fn with_warm_caller_info<T>(
+        address: Address,
+        mut f: impl FnMut(&AccountInfo) -> Result<T>,
+    ) -> Result<T> {
+        let mut result = None;
+        Self::try_with_storage(|s| {
+            s.with_warm_caller_info(address, &mut |info| result = Some(f(info)))
+        })?;
+        result.ok_or_else(|| {
+            TempoPrecompileError::Fatal(
+                "storage provider did not invoke the account callback".to_string(),
+            )
+        })?
     }
 
     /// Returns the chain ID.
@@ -254,6 +270,12 @@ impl StorageCtx {
     /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
     pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
+    }
+
+    /// Returns the kind of EVM this context executes over. See
+    /// [`PrecompileStorageProvider::kind`].
+    pub fn kind(&self) -> TempoEvmKind {
+        Self::with_storage(|s| s.kind())
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.

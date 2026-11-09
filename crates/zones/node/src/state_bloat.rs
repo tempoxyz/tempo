@@ -244,7 +244,7 @@ pub fn apply_dump(
             storage.get(&slot).is_none_or(|value| value.is_zero()),
             "dump conflicts with genesis slot {slot} for token {address}"
         );
-        storage.insert(slot, B256::from(value.to_be_bytes::<32>()));
+        storage.insert(slot, B256::from(value));
         *tokens.entry(address).or_default() += 1;
         Ok(())
     })?;
@@ -269,7 +269,7 @@ fn directory_bytes(path: &Path) -> eyre::Result<u64> {
 mod tests {
     use super::*;
     use alloy_genesis::GenesisAccount;
-    use alloy_primitives::{Bytes, U256, address};
+    use alloy_primitives::{Bytes, address};
     use clap::Parser;
     use tempo_state_bloat::GenerateStateBloat;
 
@@ -292,7 +292,7 @@ mod tests {
             dump.extend_from_slice(&(entries.len() as u64).to_be_bytes());
             for (slot, value) in *entries {
                 dump.extend_from_slice(B256::with_last_byte(*slot).as_slice());
-                dump.extend_from_slice(&U256::from(*value).to_be_bytes::<32>());
+                dump.extend_from_slice(B256::with_last_byte(*value).as_slice());
             }
         }
         dump

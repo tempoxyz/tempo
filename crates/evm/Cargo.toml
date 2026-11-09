@@ -53,6 +53,7 @@ alloy-genesis = { workspace = true, features = ["std"], optional = true }
 eyre = { workspace = true, optional = true }
 
 derive_more.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
@@ -77,9 +78,13 @@ p256 = { workspace = true, features = ["ecdsa"] }
 proptest.workspace = true
 rand_08.workspace = true
 reth-execution-cache.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }
 reth-storage-api.workspace = true
+reth-stages.workspace = true
 reth-trie.workspace = true
 reth-trie-common.workspace = true
+reth-trie-db.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }

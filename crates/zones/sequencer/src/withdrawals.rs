@@ -747,16 +747,17 @@ impl WithdrawalProcessor {
                     .gas(batch.gas_limit);
 
                 in_flight.push(async move {
-                    let receipt =
-                        tokio::time::timeout(PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT, call.send_sync())
-                            .await
-                            .map_err(|_| {
-                                eyre::eyre!(
-                                    "processWithdrawals sync submission timed out after {} seconds",
-                                    PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT.as_secs()
-                                )
-                            })
-                            .and_then(|result| result.map_err(Into::into));
+                    let receipt = call
+                        .send_sync()
+                        .timeout(PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT)
+                        .await
+                        .map_err(|_| {
+                            eyre::eyre!(
+                                "processWithdrawals sync submission timed out after {} seconds",
+                                PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT.as_secs()
+                            )
+                        })
+                        .and_then(|result| result.map_err(Into::into));
                     (batch, nonce, remaining_queue, receipt)
                 });
                 submitted += 1;

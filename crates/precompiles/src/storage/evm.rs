@@ -1,14 +1,18 @@
 use crate::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
+    storage::{
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        account_config_commitment, actions::StorageAction,
+    },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Bytes, Log, LogData, U256};
+use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
 use bitflags::bitflags;
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, SLoad, SStore, StateCheckpoint},
+    evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
     interpreter::{GasTracker, gas},
     version::{GasId, GasParams},
 };
@@ -18,7 +22,9 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+use tempo_primitives::{
+    TempoBlockEnv, TempoBlockExt, TempoEvmKind, account::encode_config_commitment,
+};
 
 /// Production [`PrecompileStorageProvider`] backed by EVM2's live transaction state.
 ///
@@ -39,6 +45,7 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
 impl<'evm, 'gas, 'db, T> EvmPrecompileStorageProvider<'evm, 'gas, 'db, T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     /// Creates a storage provider over EVM2's live state and gas tracker.
     pub fn new(
@@ -311,6 +318,7 @@ where
 impl<T> StorageCreditsBackend for EvmPrecompileStorageProvider<'_, '_, '_, T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     type Error = TempoPrecompileError;
 
@@ -383,6 +391,7 @@ where
 impl<T> PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_, T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     fn chain_id(&self) -> u64 {
         self.version.chain_id
@@ -436,6 +445,26 @@ where
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
         self.with_loaded_account(address, |info| f(info))
+    }
+
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        // The provider has no transaction origin; the caller check is the call site's.
+        let account = self
+            .evm
+            .state_mut()
+            .account_with_skip(&address, true)
+            .map_err(|error| {
+                TempoPrecompileError::Fatal(format!(
+                    "caller account must already be warm: {error:?}"
+                ))
+            })?;
+        let default = AccountInfo::default();
+        f(account.get().unwrap_or(&default));
+        Ok(())
     }
 
     #[inline]
@@ -635,6 +664,62 @@ where
     fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         self.tip1060_storage_credit_minting_enabled = enabled;
     }
+
+    #[inline]
+    fn kind(&self) -> TempoEvmKind {
+        self.evm.ext().kind()
+    }
+
+    #[inline]
+    fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
+        let spec = self.spec;
+        let commitment =
+            self.with_loaded_account(address, |info| account_config_commitment(info, spec))??;
+        self.actions.record(StorageAction::ConfigCommitment(
+            address, commitment, commitment,
+        ));
+        Ok(commitment)
+    }
+
+    fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        // Reject before any read or gas charge, so a rejected write is never charged.
+        if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
+            return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
+        }
+        self.deduct_gas(gas.static_cost())?;
+        // The authorization read already charged account access (or was intrinsic).
+        let spec = self.spec;
+        let (previous, creates_account) = {
+            let account = self.evm.state_mut().account(&address)?;
+            match account.get() {
+                Some(info) => (account_config_commitment(info, spec)?, info.is_empty()),
+                None => (B256::ZERO, true),
+            }
+        };
+        self.deduct_gas(gas.dynamic_cost(previous, &self.version.gas_params)?)?;
+        self.deduct_state_gas(gas.state_cost(previous, &self.version.gas_params))?;
+        // The write makes an empty account permanent; an intrinsic write was priced with the
+        // transaction, creation included.
+        if creates_account && gas == ConfigCommitmentWriteGas::Precompile {
+            self.deduct_gas(self.version.gas_params.get(GasId::NewAccountCost))?;
+            self.deduct_state_gas(self.version.gas_params.new_account_state_gas())?;
+        }
+        let mut account = self.evm.state_mut().account(&address)?;
+        if previous.is_zero() {
+            // Registration and migration pay for the commitment write, including this marker.
+            account.set_code_slow(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+        }
+        account.set_extension(AccountExtension::from(encode_config_commitment(commitment)));
+        self.actions.record_always(StorageAction::ConfigCommitment(
+            address, previous, commitment,
+        ));
+        Ok(())
+    }
 }
 
 /// Extension state required by an EVM-backed precompile storage context.
@@ -644,6 +729,9 @@ pub trait EvmStorageExt {
 
     /// Returns the transaction-local non-creditable slots.
     fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>>;
+
+    /// Returns the kind of the EVM, whose rules every storage context over it follows.
+    fn kind(&self) -> TempoEvmKind;
 }
 
 bitflags! {
@@ -799,12 +887,12 @@ impl DerefMut for GasTrackerStorage<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EvmPrecompileStorageProvider, GasTrackerStorage};
+    use super::{EvmPrecompileStorageProvider, EvmStorageExt, GasTrackerStorage};
     use crate::{
         STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
         storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
-        storage_credits::StorageCredits,
+        storage_credits::{NonCreditableSlots, StorageCredits},
     };
     use alloy::primitives::{
         Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256, bytes, keccak256,
@@ -818,10 +906,26 @@ mod tests {
         registry::TxRegistry,
         version::{GasId, GasParams},
     };
+    use std::{cell::RefCell, rc::Rc};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+    use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
     struct TestTypes;
+
+    /// Unit-test EVMs without extension state record no storage actions and execute Tempo L1.
+    impl EvmStorageExt for () {
+        fn storage_actions(&self) -> StorageActions {
+            StorageActions::disabled()
+        }
+
+        fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+            Rc::new(RefCell::new(NonCreditableSlots::empty()))
+        }
+
+        fn kind(&self) -> TempoEvmKind {
+            TempoEvmKind::L1
+        }
+    }
 
     impl EvmTypesHost for TestTypes {
         type ConfigSelector = BaseEvmConfigSelector;

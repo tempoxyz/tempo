@@ -29,7 +29,7 @@ pub use action_replay::{
     StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
-pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
@@ -39,8 +39,8 @@ pub use fee_manager::{
 };
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
-    TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
-    tempo_tx_registry,
+    TempoTxResultExt, build_tempo_evm, configurable_account::account_access_gas,
+    tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};
@@ -254,10 +254,6 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
-                configurable_account_recovery_factory: self
-                    .chain_spec()
-                    .info
-                    .configurable_account_recovery_factory(),
             },
             _non_exhaustive: (),
         };
@@ -301,10 +297,6 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
-                configurable_account_recovery_factory: self
-                    .chain_spec()
-                    .info
-                    .configurable_account_recovery_factory(),
             },
             _non_exhaustive: (),
         };
@@ -368,11 +360,11 @@ impl ConfigureEvm for TempoEvmConfig {
 mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
-    use alloy_consensus::{BlockHeader, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoConsensusContext, TempoTxEnvelope, ed25519::PublicKey,
         subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -441,8 +433,6 @@ mod tests {
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_t1_gas_cap() {
-        use tempo_chainspec::spec::DEV;
-
         // DEV chainspec has T1 activated at timestamp 0
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
@@ -564,18 +554,18 @@ mod tests {
         metadata.encode(&mut input);
         input.extend_from_slice(&U256::from(block_number).to_be_bytes::<32>());
 
-        let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        let system_tx = TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
-                to: TxKind::Call(alloy_primitives::Address::ZERO),
+                to: TxKind::Call(Address::ZERO),
                 value: U256::ZERO,
                 input: input.freeze().into(),
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ));
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        );
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -612,8 +602,6 @@ mod tests {
 
     #[test]
     fn test_context_for_block_t4_without_metadata() {
-        use tempo_chainspec::spec::DEV;
-
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec);
 

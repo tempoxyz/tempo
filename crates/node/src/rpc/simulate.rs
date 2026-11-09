@@ -158,7 +158,7 @@ where
                 .flat_map(|call| &call.logs)
                 .filter(|log| {
                     log.address().is_tip20()
-                        && log.topics().first() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
+                        && log.topic0() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
                 })
                 .map(|log| log.address()),
         );

@@ -15,10 +15,12 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
+use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
-    buffer::paged::CacheRef, spawn_cell,
+    Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
+    spawn_cell,
 };
+use commonware_utils::NZDuration;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
@@ -79,12 +81,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Local proposal return budget after reserving network propagation time.
-    ///
-    /// The leader uses this window for proposal preparation, payload building,
-    /// and pacing after commonware has fetched the parent.
-    pub proposal_return_budget: Duration,
-    /// Proposal budget estimator that records local validation feedback.
+    /// Proposal pacing with learned network reservations and shared execution feedback.
+    /// Allowances pace returns, not time out required payload work.
     pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
@@ -119,8 +117,7 @@ where
             + Spawner
             + Storage
             + Metrics
-            + Network
-            + BufferPooler,
+            + Network,
     {
         let execution_node = self
             .execution_node
@@ -145,8 +142,7 @@ where
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
-        let page_cache_ref = CacheRef::from_pooler(
-            &context,
+        let page_cache_ref = CacheRef::new(
             storage::BUFFER_POOL_PAGE_SIZE,
             storage::BUFFER_POOL_CAPACITY,
         );
@@ -172,13 +168,16 @@ where
             .and_then(NonZeroUsize::new)
             .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")?;
 
+        // Boxed because marshal's init future is deeply nested: inlining it into
+        // callers such as tempo-e2e's `TestingNode::start_inner` makes computing
+        // their layout exceed rustc's default query depth (recursion limit 128).
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
             finalized_floor,
             finalized_tip,
             finalized_tip_certificate,
-        } = alias::marshal::init(
+        } = Box::pin(alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
             execution_node.clone(),
@@ -194,7 +193,7 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
-        )
+        ))
         .await
         .wrap_err("failed to initialize marshal")?;
 
@@ -231,6 +230,7 @@ where
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
                 codec_config: (),
+                strategy: Sequential,
             },
         );
 
@@ -242,8 +242,8 @@ where
             peer_provider: peer_manager_mailbox.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
-            timeout: Duration::from_secs(2),
-            fetch_retry_timeout: Duration::from_millis(100),
+            fetch_timeout: NZDuration!(Duration::from_secs(2)),
+            fetch_retry_delay: Duration::from_millis(100),
             priority_requests: false,
             priority_responses: false,
         };
@@ -287,10 +287,10 @@ where
                 network_identity: self.network_identity,
                 scheme_provider: scheme_provider.clone(),
                 last_finalized_height: finalized_floor,
-                mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
+                blocker: self.blocker.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
             },
         )
@@ -306,7 +306,6 @@ where
                 node: execution_node.clone(),
                 executed_state: self.executed_state.clone(),
             },
-            proposal_return_budget: self.proposal_return_budget,
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
@@ -368,15 +367,8 @@ where
 
 pub struct Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: BufferPooler
-        + Clock
-        + governor::clock::Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Network
-        + Spawner
-        + Storage,
+    TContext:
+        Clock + governor::clock::Clock + Rng + CryptoRng + Metrics + Network + Spawner + Storage,
     TBlocker: Blocker<PublicKey = PublicKey>,
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
@@ -385,10 +377,10 @@ where
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
+    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, Sequential>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager: dkg::manager::Actor<TContext, TBlocker>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
@@ -424,15 +416,8 @@ where
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: BufferPooler
-        + Clock
-        + governor::clock::Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Network
-        + Spawner
-        + Storage,
+    TContext:
+        Clock + governor::clock::Clock + Rng + CryptoRng + Metrics + Network + Spawner + Storage,
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
     TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
@@ -557,7 +542,7 @@ where
                 self.dkg_manager_mailbox,
                 Reporters::from((
                     self.peer_manager_mailbox,
-                    Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                    Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
                         self.feed_mailbox,
                         self.gossip_mailbox,
                     )),
@@ -570,6 +555,7 @@ where
             self.broadcast_mailbox,
             resolver,
         );
+
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             self.context.child("epoch_manager"),
             self.epoch_manager_config,

@@ -4,6 +4,7 @@ use crate::utils::{
     build_signed_token_blob, now_secs, sign_keychain_signature, sign_p256_signature,
     sign_webauthn_signature,
 };
+use alloy::signers::{Signer, local::PrivateKeySigner};
 use alloy_primitives::Address;
 use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
 use tempo_primitives::transaction::tt_signature::TempoSignature;
@@ -157,8 +158,6 @@ fn validate_rejects_issued_at_far_future() {
 
 #[tokio::test]
 async fn tempo_signature_roundtrip_secp256k1_from_token_bytes() {
-    use alloy::signers::{Signer, local::PrivateKeySigner};
-
     let signer = PrivateKeySigner::random();
     let now = now_secs();
     let (fields, digest) = build_token_fields(1, 2, now, now + 600);
@@ -235,7 +234,9 @@ fn tempo_signature_roundtrip_keychain_v1_from_token_bytes() {
         TempoSignature::Keychain(keychain) => {
             assert_eq!(keychain.key_id(&token.digest).unwrap(), expected_key_id);
         }
-        TempoSignature::Primitive(_) => panic!("expected keychain signature"),
+        TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
+            panic!("expected keychain signature")
+        }
     }
 }
 
@@ -257,7 +258,9 @@ fn tempo_signature_roundtrip_keychain_v2_from_token_bytes() {
         TempoSignature::Keychain(keychain) => {
             assert_eq!(keychain.key_id(&token.digest).unwrap(), expected_key_id);
         }
-        TempoSignature::Primitive(_) => panic!("expected keychain signature"),
+        TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
+            panic!("expected keychain signature")
+        }
     }
 }
 

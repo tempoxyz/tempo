@@ -66,6 +66,7 @@ where
         provider,
         store: store.clone(),
         requests: requests_rx,
+        optional_attempted_through: 0,
     };
     let handle = ProofCollectorHandle {
         store,
@@ -173,7 +174,7 @@ impl ProofCollectorHandle {
 
     /// Fill any restart or upgrade gaps before allowing a proving node to advance.
     ///
-    /// Pre-T15 blocks are left to background collection, since they may lack a witness.
+    /// Pre-T15 blocks are skipped: they may lack a witness and then settle with NoProof.
     pub async fn collect_canonical_tail<P: ZoneSequencerProvider>(
         &self,
         provider: &P,
@@ -218,9 +219,15 @@ struct ProofCollector<P> {
     provider: P,
     store: Arc<ProofStore>,
     requests: mpsc::Receiver<ProofRequest>,
+    /// Highest pre-T15 block background collection has already tried once.
+    // TODO: remove after T15
+    optional_attempted_through: u64,
 }
 
-impl<P: ZoneSequencerProvider> ProofCollector<P> {
+impl<P> ProofCollector<P>
+where
+    P: ZoneSequencerProvider + ChainSpecProvider<ChainSpec = ZoneChainSpec>,
+{
     async fn run(mut self) {
         info!(
             target: "zone::sequencer::proofs",
@@ -262,7 +269,7 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
         }
     }
 
-    async fn prune_and_collect(&self) -> Result<()> {
+    async fn prune_and_collect(&mut self) -> Result<()> {
         let finalized_zone_height = self.config.finalized_zone_height().await?;
         let store = self.store.clone();
         let provider = self.provider.clone();
@@ -275,14 +282,37 @@ impl<P: ZoneSequencerProvider> ProofCollector<P> {
         .await
         .expect("proof pruning task panicked")?;
 
+        let chain_spec = self.provider.chain_spec();
         let start = self.store.state.read().pruned_through.saturating_add(1);
         for number in start..=head {
-            let block_hash = self
+            let header = self
                 .provider
-                .block_hash(number)?
-                .ok_or_eyre(format!("canonical Zone block {number} has no hash"))?;
-            if !self.store.contains(number, block_hash) {
-                self.collect_and_persist(number, block_hash).await?;
+                .sealed_header(number)?
+                .ok_or_eyre(format!("canonical Zone block {number} has no header"))?;
+            if self.store.contains(number, header.hash()) {
+                continue;
+            }
+            if chain_spec.is_t15_active_at_timestamp(header.timestamp()) {
+                self.collect_and_persist(number, header.hash()).await?;
+                continue;
+            }
+            // A pre-T15 block without a witness settles with NoProof, so try it once: nodes that
+            // do not collect at import (shadow provers) still get witnesses, while an L1 RPC that
+            // cannot serve the proofs is not retried forever. A failure ends the pass so queued
+            // import requests are served before the next block is tried.
+            if number <= self.optional_attempted_through {
+                continue;
+            }
+            self.optional_attempted_through = number;
+            if let Err(error) = self.collect_and_persist(number, header.hash()).await {
+                metrics::counter!("zone_witness_collection_skipped_total").increment(1);
+                warn!(
+                    target: "zone::sequencer::proofs",
+                    number,
+                    error = ?error,
+                    "Skipping pre-T15 Zone block witness after one background attempt"
+                );
+                return Ok(());
             }
         }
         Ok(())
@@ -626,7 +656,12 @@ fn sync_directory(directory: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
 
-    use alloy_primitives::Bytes;
+    use alloy_consensus::{Header, Sealable as _};
+    use alloy_primitives::{Bytes, U256};
+    use alloy_provider::{Provider as _, ProviderBuilder};
+    use alloy_transport::mock::Asserter;
+    use reth_provider::test_utils::MockEthProvider;
+    use tempo_primitives::{TempoHeader, TempoPrimitives};
 
     use super::*;
 
@@ -662,11 +697,6 @@ mod tests {
 
     #[tokio::test]
     async fn collection_returns_durable_witness_and_skips_settled_backfill() {
-        use alloy_provider::{Provider as _, ProviderBuilder};
-        use alloy_transport::mock::Asserter;
-        use reth_provider::test_utils::MockEthProvider;
-        use tempo_primitives::TempoPrimitives;
-
         let directory = tempfile::tempdir().unwrap();
         let expected = proof(2, B256::repeat_byte(2));
         let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 1).unwrap());
@@ -681,9 +711,11 @@ mod tests {
                     .erased(),
                 retain_for_shadow_proving: false,
             },
-            provider: MockEthProvider::<TempoPrimitives>::new(),
+            provider: MockEthProvider::<TempoPrimitives>::new()
+                .with_chain_spec((*t15_chain_spec(0)).clone()),
             store: store.clone(),
             requests,
+            optional_attempted_through: 0,
         };
         // Historical state for settled backfill is deliberately unavailable from the stub.
         assert!(
@@ -996,5 +1028,100 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "proof collector stopped");
+    }
+
+    /// Fails every witness except the one it serves, counting failed requests.
+    struct FlakyDebugApi {
+        served: ZoneExecutionWitness,
+        failures: std::sync::atomic::AtomicUsize,
+    }
+
+    #[jsonrpsee::core::async_trait]
+    impl ZoneDebugApi for FlakyDebugApi {
+        async fn zone_execution_witness(
+            &self,
+            block: alloy_eips::BlockId,
+        ) -> jsonrpsee::core::RpcResult<ZoneExecutionWitness> {
+            if block == self.served.block_hash.into() {
+                return Ok(self.served.clone());
+            }
+            self.failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(jsonrpsee::types::ErrorObject::owned(
+                -32000,
+                "proof window exceeded",
+                None::<()>,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn background_collection_tries_pre_t15_blocks_once() {
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec((*t15_chain_spec(1_000)).clone());
+        let mut hashes = Vec::new();
+        for (number, timestamp) in [(1, 998), (2, 999), (3, 1_000)] {
+            let header = TempoHeader {
+                inner: Header {
+                    number,
+                    timestamp,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let hash = header.hash_slow();
+            provider.add_header(hash, header);
+            hashes.push(hash);
+        }
+        // Finalized Zone height 0 for every pass: every block stays unsettled.
+        let asserter = Asserter::new();
+        for _ in 0..3 {
+            asserter.push_success(&Bytes::from(U256::ZERO.to_be_bytes::<32>()));
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(ProofStore::open(directory.path().to_path_buf(), 0).unwrap());
+        let debug_api = Arc::new(FlakyDebugApi {
+            served: proof(2, hashes[1]).witness,
+            failures: Default::default(),
+        });
+        let (_, requests) = mpsc::channel(1);
+        let mut collector = ProofCollector {
+            config: ProofCollectorConfig {
+                directory: directory.path().to_path_buf(),
+                debug_api: debug_api.clone(),
+                portal_address: Address::ZERO,
+                l1_provider: ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect_mocked_client(asserter)
+                    .erased(),
+                retain_for_shadow_proving: false,
+            },
+            provider,
+            store: store.clone(),
+            requests,
+            optional_attempted_through: 0,
+        };
+
+        let failures = || {
+            debug_api
+                .failures
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        // Pre-T15 block 1 fails, which ends the pass.
+        collector.prune_and_collect().await.unwrap();
+        assert!(!store.contains(1, hashes[0]));
+        assert!(!store.contains(2, hashes[1]));
+        assert_eq!(failures(), 1);
+
+        // Block 1 is not retried, pre-T15 block 2 is collected, and T15 block 3 fails the pass.
+        assert!(collector.prune_and_collect().await.is_err());
+        assert!(!store.contains(1, hashes[0]));
+        assert!(store.contains(2, hashes[1]));
+        assert_eq!(failures(), 2);
+
+        // The next pass retries only the mandatory T15 block.
+        assert!(collector.prune_and_collect().await.is_err());
+        assert_eq!(failures(), 3);
     }
 }

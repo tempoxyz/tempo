@@ -11,7 +11,10 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx},
+    storage::{
+        ConfigCommitmentWriteGas, Handler, PrecompileStorageProvider, StorageAction,
+        StorageActions, StorageCtx, account_config_commitment,
+    },
     tip20::{ITIP20, TIP20Token},
     validator_config_v2::{ValidatorConfigV2, ValidatorConfigV2Error},
 };
@@ -399,6 +402,15 @@ where
         Ok(())
     }
 
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> TempoResult<()> {
+        // Read-only context charges no gas and tracks no warm set, so every read is already free.
+        self.with_account_info(address, f)
+    }
+
     // No-op methods are unimplemented in read-only context.
     fn chain_id(&self) -> u64 {
         unreachable!("'chain_id' not implemented in read-only context yet")
@@ -472,13 +484,28 @@ where
     fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
         // Read-only storage never runs TIP-1060 accounting.
     }
+
+    fn config_commitment(&mut self, address: Address) -> TempoResult<B256> {
+        let info = self.state.basic(address)?;
+        account_config_commitment(&info, self.spec)
+    }
+
+    fn set_config_commitment(
+        &mut self,
+        _: Address,
+        _: B256,
+        _: ConfigCommitmentWriteGas,
+    ) -> TempoResult<()> {
+        // Read-only context rejects every write; the caller sees a revert, not a panic.
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{FeeTokenResolver, TempoBlockEnv, TempoEvmExt, TempoFeeManager, build_tempo_evm};
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_primitives::{Signature, address, uint};
     use evm2::{
         evm::{Bal, BalContext, InMemoryDB, bal::BalError, precompile::NoPrecompiles},
@@ -499,16 +526,16 @@ mod tests {
 
     fn legacy_env(caller: Address, to: TxKind, input: Bytes) -> TempoTxEnv {
         Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     chain_id: Some(1),
                     gas_limit: 21_000,
                     to,
                     input,
                     ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
             caller,
         )
         .into()

@@ -39,6 +39,7 @@ use tempo_evm::{
     TempoStateAccess,
 };
 use tempo_precompiles::{
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE_HASH,
     nonce::{INonce, NonceManager},
     storage::StorageActions,
 };
@@ -101,7 +102,7 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) disable_fee_amm_check: bool,
     /// Minimum fee cap accepted by this chain's pool.
     minimum_fee_cap: u128,
-    /// Addresses checked against transaction senders and direct call targets.
+    /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<TempoEvmEnv>,
@@ -170,7 +171,7 @@ where
         self
     }
 
-    /// Configures transaction sender and direct call target checks.
+    /// Configures the [`AddressFilter`] checked during pool admission.
     pub fn with_address_filter(mut self, address_filter: AddressFilter) -> Self {
         self.address_filter = address_filter;
         self
@@ -555,14 +556,16 @@ where
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
 
-        // Pool-only key-expiry propagation buffer: reject keychain txs whose key
-        // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
+        // Pool-only key-expiry checks: reject keychain txs whose key expires too soon
+        // (within AA_VALID_BEFORE_MIN_SECS of tip timestamp) or at or before `valid_after`,
+        // since such a transaction can never execute.
         if let Some(key_expiry) = key_expiry {
             let min_allowed = self
                 .inner
                 .fork_tracker()
                 .tip_timestamp()
-                .saturating_add(AA_VALID_BEFORE_MIN_SECS);
+                .saturating_add(AA_VALID_BEFORE_MIN_SECS)
+                .max(transaction.inner().valid_after().unwrap_or_default());
             if key_expiry <= min_allowed {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
@@ -590,6 +593,10 @@ where
             ) {
                 Ok(true) => {}
                 Ok(false) => {
+                    #[cfg(feature = "fuzz")]
+                    antithesis_sdk::assert_reachable!(
+                        "Pool rejects a transaction for insufficient fee AMM liquidity"
+                    );
                     return TransactionValidationOutcome::Invalid(
                         transaction,
                         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
@@ -612,8 +619,27 @@ where
         // Delegate to the inner ETH validator for remaining checks
         // (chain_id, EIP-3607 code check, protocol nonce, etc.) and to produce
         // the Valid outcome with state_nonce and balance for pool ordering.
+        // The Tempo pipeline has already checked the commitment, marker and signature authority.
+        // Exempt that sender from the inner validator's Ethereum-only EIP-3607 rule.
+        let configurable_sender = if evm.config_spec_id().is_t14() {
+            match evm.read_account_info(transaction.sender_ref()) {
+                Ok(Some(info)) if info.code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH => {
+                    Some(*transaction.sender_ref())
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    return TransactionValidationOutcome::Error(
+                        *transaction.hash(),
+                        Box::new(error),
+                    );
+                }
+            }
+        } else {
+            None
+        };
         let inner_validation = {
-            let cached_state_provider = CachedAccountInfoReader::new(evm.overlay_db_mut());
+            let cached_state_provider =
+                CachedAccountInfoReader::new(evm.overlay_db_mut(), configurable_sender);
             self.inner
                 .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
         };
@@ -627,6 +653,9 @@ where
                 propagate,
                 authorities,
             } => {
+                let bytecode_hash = configurable_sender
+                    .map(|_| CONFIGURABLE_ACCOUNT_CODE_HASH)
+                    .or(bytecode_hash);
                 let mut authorities = authorities;
                 if let Some(aa_tx) = transaction.transaction().inner().as_aa() {
                     let mut recovered_aa_authorities = aa_tx
@@ -644,6 +673,16 @@ where
                             None => authorities = Some(recovered_aa_authorities),
                         }
                     }
+                }
+
+                if let Err(err) = self.address_filter.check_recovered(
+                    transaction.transaction(),
+                    authorities.as_deref().unwrap_or_default(),
+                ) {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction.into_transaction(),
+                        InvalidPoolTransactionError::other(err),
+                    );
                 }
 
                 // Additional nonce validations for non-protocol nonce keys
@@ -817,12 +856,14 @@ where
 /// expected by the inner ETH transaction validator.
 struct CachedAccountInfoReader<DB> {
     db: RefCell<DB>,
+    configurable_sender: Option<Address>,
 }
 
 impl<DB> CachedAccountInfoReader<DB> {
-    const fn new(db: DB) -> Self {
+    const fn new(db: DB, configurable_sender: Option<Address>) -> Self {
         Self {
             db: RefCell::new(db),
+            configurable_sender,
         }
     }
 }
@@ -837,7 +878,15 @@ where
             .borrow_mut()
             .get_account(address)
             .map_err(ProviderError::other)?
-            .map(Account::from))
+            .map(|info| {
+                let exempt = self.configurable_sender == Some(*address)
+                    && info.code_hash == CONFIGURABLE_ACCOUNT_CODE_HASH;
+                let mut account = Account::from(info);
+                if exempt {
+                    account.bytecode_hash = None;
+                }
+                account
+            }))
     }
 }
 
@@ -887,9 +936,14 @@ impl<T> ConfigureTempoPoolEvm for T where
 mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
+    use alloy_consensus::{Header, SignableTransaction, Transaction, TxLegacy};
+    use alloy_eips::{
+        eip2930::{AccessList, AccessListItem},
+        eip7702::Authorization,
+    };
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
-    use alloy_signer::Signature;
+    use alloy_signer::{Signature, SignerSync};
+    use alloy_signer_local::PrivateKeySigner;
     use evm2::{
         DatabaseError, TxResult,
         bytecode::Bytecode as EvmBytecode,
@@ -919,7 +973,8 @@ mod tests {
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
-            TempoTransaction, envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call,
+            KeyAuthorization, SignatureType, TempoSignedAuthorization, TempoTransaction,
+            envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call,
             tt_signature::PrimitiveSignature,
         },
     };
@@ -989,7 +1044,8 @@ mod tests {
             bytecode_reads: bytecode_reads.clone(),
         };
         let cache = StateCache::default();
-        let cached = CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)));
+        let cached =
+            CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)), None);
 
         assert_eq!(
             cached.basic_account(&address).unwrap(),
@@ -1208,6 +1264,49 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn address_filter_checks_recovered_authorization_authority() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let authority_signer = PrivateKeySigner::random();
+        let authority = authority_signer.address();
+        let authorization = Authorization {
+            chain_id: U256::ONE,
+            nonce: 0,
+            address: Address::random(),
+        };
+        let signature = authority_signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .expect("authorization signing should succeed");
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .authorization_list(vec![TempoSignedAuthorization::new_unchecked(
+                authorization,
+                signature.into(),
+            )])
+            .build();
+        let validator = setup_validator(&transaction, current_time)
+            .with_address_filter(AddressFilter::new([authority]));
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::AddressCheck { address })
+                        if *address == authority
+                ));
+            }
+            _ => panic!("Expected Invalid outcome with address check error, got: {outcome:?}"),
+        }
+    }
+
     #[test]
     fn latest_state_provider_uses_shared_cache_for_current_tip() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
@@ -1280,11 +1379,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_authorization_list_authorities_tracked() {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        use tempo_primitives::transaction::TempoSignedAuthorization;
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1364,7 +1458,7 @@ mod tests {
             value: U256::ZERO,
             input: Default::default(),
         };
-        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
         let transaction = TempoPooledTransaction::new(
             reth_primitives_traits::Recovered::new_unchecked(envelope, Address::ZERO),
         );
@@ -1435,9 +1529,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_self_sponsored_fee_payer_rejected() {
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-
         let signer = PrivateKeySigner::random();
         let sender = signer.address();
 
@@ -1612,9 +1703,6 @@ mod tests {
     /// This is the fix for the audit finding about mempool DoS via gas calculation mismatch.
     #[tokio::test]
     async fn test_aa_intrinsic_gas_validation() {
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1694,7 +1782,6 @@ mod tests {
     /// - Account nonce is 0
     #[tokio::test]
     async fn test_aa_create_tx_with_2d_nonce_intrinsic_gas() {
-        use alloy_primitives::Signature;
         use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call as TxCall};
 
         let current_time = std::time::SystemTime::now()
@@ -1831,9 +1918,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_expiring_nonce_intrinsic_gas_uses_lower_cost() {
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1898,9 +1982,6 @@ mod tests {
     /// pass pool validation but fail at execution time.
     #[tokio::test]
     async fn test_existing_2d_nonce_key_intrinsic_gas() {
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -2150,6 +2231,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_access_key_expiring_by_valid_after_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid_after = current_time + 60;
+        let root = PrivateKeySigner::random();
+        let access_key = PrivateKeySigner::random();
+
+        for (expiry, admitted) in [(valid_after, false), (valid_after + 1, true)] {
+            let authorization = KeyAuthorization::unrestricted(
+                MODERATO.chain_id(),
+                SignatureType::Secp256k1,
+                access_key.address(),
+            )
+            .with_expiry(expiry);
+            let signature = root
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            let transaction = TxBuilder::aa(root.address())
+                .fee_token(PATH_USD_ADDRESS)
+                .valid_after(valid_after)
+                .key_authorization(
+                    authorization.into_signed(PrimitiveSignature::Secp256k1(signature)),
+                )
+                .build_keychain(root.address(), &access_key);
+            let validator = setup_validator(&transaction, current_time);
+
+            let outcome = validator
+                .validate_transaction(TransactionOrigin::External, transaction)
+                .await;
+
+            if admitted {
+                assert!(
+                    outcome.is_valid(),
+                    "key outliving valid_after should be admitted: {outcome:?}"
+                );
+            } else {
+                let TransactionValidationOutcome::Invalid(_, ref err) = outcome else {
+                    panic!("key expiring by valid_after should be rejected: {outcome:?}");
+                };
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::AccessKeyExpired {
+                            expiry: rejected_expiry,
+                            min_allowed,
+                        }) if *rejected_expiry == expiry && *min_allowed == valid_after
+                    ),
+                    "Expected AccessKeyExpired bounded by valid_after, got: {err:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_fee_cap_below_floor_rejected() {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2300,12 +2437,6 @@ mod tests {
     fn create_aa_transaction_with_authorizations(
         authorization_count: usize,
     ) -> TempoPooledTransaction {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_primitives::{Signature, TxKind};
-        use tempo_primitives::transaction::{
-            TempoSignedAuthorization, TempoTransaction, tempo_transaction::Call,
-        };
-
         // Create dummy authorizations
         let authorizations: Vec<TempoSignedAuthorization> = (0..authorization_count)
             .map(|i| {
@@ -2593,10 +2724,6 @@ mod tests {
     /// CREATE calls must not have any entries in the authorization list.
     #[tokio::test]
     async fn test_aa_create_call_with_authorization_list_rejected() {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_primitives::Signature;
-        use tempo_primitives::transaction::TempoSignedAuthorization;
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -2982,8 +3109,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_exactly_max_access_list_accounts_accepted() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3020,8 +3145,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_too_many_access_list_accounts_rejected() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3063,8 +3186,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_exactly_max_storage_keys_per_account_accepted() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3101,8 +3222,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_too_many_storage_keys_per_account_rejected() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3144,8 +3263,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_exactly_max_total_storage_keys_accepted() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3188,8 +3305,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_aa_too_many_total_storage_keys_rejected() {
-        use alloy_eips::eip2930::{AccessList, AccessListItem};
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3241,10 +3356,6 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_inline_key_authorization_does_not_poison_next_root_aa_transaction() {
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
-
         const TIP_TIMESTAMP: u64 = 1_788_393_600;
 
         let root = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
