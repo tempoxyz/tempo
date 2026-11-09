@@ -6,7 +6,7 @@ use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, TxEip4844, error::ValueError, transaction::Recovered,
 };
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
-use alloy_primitives::{Address, B256, Bytes, Signature, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
     FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
@@ -63,6 +63,12 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     Ok(None) => TempoSignature::default(),
                     Err(error) => return Err(ValueError::new(self, error)),
                 };
+                // eth_simulateV1 fills a missing `to` with `Create`, which `build_aa` would append
+                // after a batch's calls. A CREATE must be the first call, so a `Create` here can
+                // only be that filled default.
+                if !self.calls.is_empty() && self.inner.to == Some(TxKind::Create) {
+                    self.inner.to = None;
+                }
                 let tx = self.build_aa()?;
 
                 Ok(tx.into_signed(signature).into())
