@@ -178,17 +178,47 @@ pub(crate) mod tests {
         },
     };
     use zone_chainspec::ZoneChainSpec;
-    use zone_precompiles::{ADVANCE_TEMPO_SELECTOR, test_utils::MockL1Reader};
+    use zone_precompiles::{
+        ADVANCE_TEMPO_SELECTOR, ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader,
+        zone_fee_manager,
+    };
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
 
-    pub(crate) fn config() -> ZoneEvmConfig<MockL1Reader> {
+    /// A dev Zone EVM config that reads Tempo through `l1`.
+    pub(crate) fn config(l1: MockL1Reader) -> ZoneEvmConfig<MockL1Reader> {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 1).unwrap();
         ZoneEvmConfig::new(
             std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap()),
-            MockL1Reader::default(),
+            l1,
             Address::ZERO,
         )
+    }
+
+    /// A zone environment at `spec` that charges no fees, with a 30M block gas limit.
+    pub(crate) fn fee_free_env(spec: TempoHardfork) -> TempoEvmEnv {
+        let mut env = TempoEvmEnv {
+            spec,
+            ..Default::default()
+        };
+        env.version = tempo_chainspec::gas_params::version(evm2::SpecId::from(spec), spec, false);
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, spec);
+        env.version.features.remove(evm2::EvmFeatures::FEE_CHARGE);
+        env.block.gas_limit = U256::from(30_000_000);
+        env
+    }
+
+    /// A zone database whose fee manager defaults to pathUSD, holding `sender` at nonce 1.
+    pub(crate) fn sender_db(sender: Address) -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&ZONE_FEE_MANAGER_ADDRESS, AccountInfo::default());
+        db.insert_account_storage(
+            &ZONE_FEE_MANAGER_ADDRESS,
+            &zone_fee_manager::slots::DEFAULT_FEE_TOKEN,
+            &U256::from_be_slice(tempo_precompiles::DEFAULT_FEE_TOKEN.as_slice()),
+        );
+        db.insert_account_info(&sender, AccountInfo::default().with_nonce(1));
+        db
     }
 
     pub(super) fn test_evm(db: InMemoryDB) -> ZoneEvm<'static> {
@@ -199,7 +229,7 @@ pub(crate) mod tests {
         };
         env.version = tempo_chainspec::gas_params::version(evm2::SpecId::OSAKA, spec, false);
         env.block.gas_limit = U256::from(30_000_000);
-        BlockExecutorFactory::evm_with_env(&config(), db, env)
+        BlockExecutorFactory::evm_with_env(&config(MockL1Reader::default()), db, env)
     }
 
     pub(super) fn transaction(
@@ -261,7 +291,7 @@ pub(crate) mod tests {
     #[test]
     fn handler_storage_contexts_follow_zone_rules() {
         let mut evm = BlockExecutorFactory::evm_with_env(
-            &config(),
+            &config(MockL1Reader::default()),
             InMemoryDB::default(),
             TempoEvmEnv::default(),
         );
@@ -329,7 +359,7 @@ pub(crate) mod tests {
                 registry,
                 NoPrecompiles::default(),
             );
-            let config = config();
+            let config = config(MockL1Reader::default());
             let block = Default::default();
             let ctx = config.context_for_block(&block).unwrap();
             let mut executor = ZoneBlockExecutor::new(evm, ctx, config.chain_spec());
