@@ -378,6 +378,17 @@ impl Context {
         if nonce_after > nonce + 1 {
             return Ok(Some(block));
         }
+        // Transfers add up, so for a balance group one the owner gave up on that landed earlier
+        // in the same block also counts between the two reads: then skip the check too.
+        if kind == CollisionKind::Balance {
+            let nonce_before = zone
+                .get_transaction_count(owner.address())
+                .block_id(BlockId::number(block.saturating_sub(1)))
+                .await?;
+            if nonce_before < nonce {
+                return Ok(Some(block));
+            }
+        }
         let base = kind.base(owner.address());
         let members: Vec<Address> = writes.iter().map(|(member, _)| *member).collect();
         for (member, value) in &writes {
