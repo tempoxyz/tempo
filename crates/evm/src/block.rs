@@ -10,18 +10,17 @@ use alloy_sol_types::SolCall;
 use commonware_codec::ReadExt;
 use evm2::{
     EvmTypes, TxResult, TxResultWithState, TxStateChanges,
+    block::{
+        BlockExecutionError, BlockTransactionResult, BlockValidationError, BundleState,
+        CommitChanges, GasOutput, ReceiptBuilderCtx, StateUpdate, map_database_error,
+        map_handler_error,
+    },
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
 use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
-use reth_evm::{
-    BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
-    BlockValidationError, CommitChanges, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx,
-    RecoveredTx,
-    execute::{map_database_error, map_handler_error},
-};
+use reth_evm::{BlockExecutionOutput, BlockExecutor, ExecutorTx, ReceiptBuilder, RecoveredTx};
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
-use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_chainspec::{
     TempoChainSpec,
@@ -959,7 +958,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
             let mut inner = self.inner.inner;
             let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
-            let result = reth_execution_types::BlockExecutionResult {
+            let result = evm2::block::BlockExecutionResult {
                 receipts: inner.receipts,
                 requests: Default::default(),
                 gas_used: inner.cumulative_gas_used,
@@ -987,7 +986,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         Ok((output, block_access_list))
     }
 
-    fn into_state(self) -> reth_evm::BundleState {
+    fn into_state(self) -> BundleState {
         self.inner.into_state()
     }
 
@@ -1159,7 +1158,7 @@ mod tests {
             executor.set_state_hook(move |state| hook_states.lock().unwrap().push(state));
             executor.apply_pre_execution_changes().unwrap();
             let output = executor.finish().unwrap();
-            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            db.commit_source(&evm2::block::BundleSource(&output.state));
             let result = output.result;
             assert!(result.requests.is_empty());
             assert!(
@@ -1210,7 +1209,7 @@ mod tests {
                 // No beacon root or builder code is required, even with Amsterdam active.
                 executor.apply_pre_execution_changes().unwrap();
                 let output = executor.finish().unwrap();
-                db.commit_source(&reth_execution_types::BundleSource(&output.state));
+                db.commit_source(&evm2::block::BundleSource(&output.state));
                 let result = output.result;
                 assert!(result.requests.is_empty());
                 assert_eq!(
@@ -1249,7 +1248,7 @@ mod tests {
 
         executor.apply_pre_execution_changes().unwrap();
         let output = executor.finish().unwrap();
-        db.commit_source(&reth_execution_types::BundleSource(&output.state));
+        db.commit_source(&evm2::block::BundleSource(&output.state));
         assert_eq!(
             db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
                 .unwrap(),
@@ -1277,7 +1276,7 @@ mod tests {
 
             executor.apply_pre_execution_changes().unwrap();
             let output = executor.finish().unwrap();
-            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            db.commit_source(&evm2::block::BundleSource(&output.state));
             let result = output.result;
             assert!(result.receipts.is_empty());
             assert!(result.requests.is_empty());
@@ -1334,7 +1333,7 @@ mod tests {
             executor.inner.commit_transaction(detached).unwrap();
             executor.block_gas_used = 20_000;
             let output = executor.finish().unwrap();
-            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            db.commit_source(&evm2::block::BundleSource(&output.state));
             let result = output.result;
             assert_eq!(result.receipts, vec![receipt]);
             assert_eq!(result.gas_used, if enabled { 20_000 } else { 30_000 });
@@ -1368,7 +1367,7 @@ mod tests {
             assert_eq!(committee.publicKeys, previous_keys);
 
             let output = executor.finish().unwrap();
-            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            db.commit_source(&evm2::block::BundleSource(&output.state));
             let result = output.result;
             assert!(result.receipts.is_empty());
             assert!(result.requests.is_empty());
@@ -1383,7 +1382,7 @@ mod tests {
             assert_eq!(committee.epoch, outcome.epoch);
             assert_eq!(committee.publicKeys, expected_keys);
             let output = reader.finish().unwrap();
-            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            db.commit_source(&evm2::block::BundleSource(&output.state));
             previous_keys = expected_keys;
         }
     }
@@ -1422,7 +1421,7 @@ mod tests {
 
             executor.apply_pre_execution_changes().unwrap();
             let output = executor.finish().unwrap();
-            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            db.commit_source(&evm2::block::BundleSource(&output.state));
             assert_eq!(
                 db.get_account(&drained)
                     .unwrap()
@@ -1604,7 +1603,7 @@ mod tests {
                 ));
             } else {
                 let output = executor.finish().unwrap();
-                db.commit_source(&reth_execution_types::BundleSource(&output.state));
+                db.commit_source(&evm2::block::BundleSource(&output.state));
                 let result = output.result;
                 assert!(result.requests.is_empty());
                 assert_eq!(result.receipts, vec![receipt]);

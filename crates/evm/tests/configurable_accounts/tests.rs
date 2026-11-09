@@ -9,6 +9,7 @@ use alloy_sol_types::{SolError, SolEvent, SolValue};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use evm2::{
     EvmFeatures,
+    block::BundleSource,
     evm::{DynDatabase, registry::HandlerError},
     interpreter::InstrStop,
     version::{GasId, GasParams},
@@ -17,7 +18,7 @@ use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_primitives::Block as EthereumBlock;
 use reth_evm::{BlockExecutor, ConfigureEvm};
-use reth_execution_types::{BundleSource, ExecutionOutcome};
+use reth_execution_types::ExecutionOutcome;
 use reth_primitives_traits::{Block as _, SignedTransaction};
 use reth_provider::{
     BlockExecutionWriter, BlockWriter, OriginalValuesKnown, StateWriter, TrieWriter,

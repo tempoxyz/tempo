@@ -222,7 +222,7 @@ impl StateProofProvider for InMemoryStateProvider {
 impl HashedPostStateProvider for InMemoryStateProvider {
     fn hashed_post_state(
         &self,
-        _bundle_state: &reth_evm::BundleState,
+        _bundle_state: &evm2::block::BundleState,
     ) -> ProviderResult<HashedPostState> {
         Ok(HashedPostState::default())
     }
