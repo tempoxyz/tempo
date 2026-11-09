@@ -395,18 +395,25 @@ jobs:
           echo "EIF toolchain: \`$TOOLCHAIN_REPOSITORY@$digest\` (main recipe $(git rev-parse HEAD), inputs-$recipe_sha)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install cosign
-        if: steps.toolchain.outputs.pushed == 'true'
         uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      - name: Sign the published toolchain image
-        if: steps.toolchain.outputs.pushed == 'true'
+      - name: Sign the toolchain image
         env:
           IMAGES: ${{ steps.toolchain.outputs.image }}
         run: |
           set -euo pipefail
+          # Sign reused digests too, so a rerun after a failed sign still signs the image.
+          # Skip digests that already carry a main or tag signature from this workflow.
+          trusted_identity='^https://github\.com/tempoxyz/tempo/\.github/workflows/zones-docker\.yml@refs/(heads/main|tags/.+)$'
           # Retry transient Fulcio, Rekor or registry errors, like docker.yml's sign_image.
           while IFS= read -r ref; do
             [ -n "$ref" ] || continue
+            if cosign verify "$ref" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "$trusted_identity" > /dev/null 2>&1; then
+              echo "$ref is already signed; skipping"
+              continue
+            fi
             for attempt in 1 2 3; do
               if cosign sign --yes --recursive "$ref"; then
                 break
