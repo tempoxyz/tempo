@@ -20,7 +20,8 @@
 # (zone-rpc), so one proof spans several children of the same parent.
 # Proof workers sleep a random time up to --engine.proof-jitter (trie-debug builds) before each
 # proof, so multiproof results reach the sparse trie in varied orders. zone-0 and zone-rpc run
-# only 1-2 proof workers, so storage and account proofs queue behind each other.
+# only 1-2 proof workers, so storage and account proofs queue behind each other. zone-0 starts
+# a serial fallback after 40ms, so it often races, and sometimes discards, the sparse-trie result.
 set -eu
 
 S=/shared
@@ -30,7 +31,7 @@ L1_WS=ws://10.20.0.10:8546
 case "$NODE" in
     0)
         ROLE_ARGS="--secp256k1.key $S/seq-0.key --sequencer-key-file $S/seq-0.key"
-        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.multiproof-chunk-size 128 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2 --engine.proof-jitter 20ms --engine.storage-worker-count 2 --engine.account-worker-count 1"
+        ROLE_ARGS="$ROLE_ARGS --cpu-cores 8 --engine.share-sparse-trie-with-payload-builder --engine.multiproof-chunk-size 128 --engine.state-root-task-compare-updates --engine.persistence-threshold 8 --engine.num-state-masking-blocks 2 --engine.memory-block-buffer-target 2 --engine.proof-jitter 20ms --engine.storage-worker-count 2 --engine.account-worker-count 1 --engine.state-root-task-timeout 40ms"
         P2P_KEY=$S/p2p-0.key
         ;;
     1 | 2)
