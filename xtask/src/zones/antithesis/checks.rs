@@ -312,7 +312,7 @@ impl Context {
     }
 
     /// The zone height and block hash the portal last settled, read at one L1 block.
-    async fn settled_block(&self) -> eyre::Result<(u64, B256)> {
+    pub(super) async fn settled_block(&self) -> eyre::Result<(u64, B256)> {
         let at = BlockId::number(self.l1.get_block_number().await?);
         let portal = ZonePortal::new(self.portal, &self.l1);
         let height = portal.zoneHeight().block(at).call().await?;
@@ -430,7 +430,7 @@ impl Context {
                         unpaid_withdrawals.push(record);
                     }
                 }
-                Record::Account { .. } | Record::Transfer { .. } => {}
+                Record::Account { .. } | Record::Transfer { .. } | Record::Collision { .. } => {}
             }
         }
         Ok(Settlement {

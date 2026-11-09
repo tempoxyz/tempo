@@ -24,14 +24,16 @@ use tempo_contracts::{
 use tempo_precompiles::PATH_USD_ADDRESS;
 
 use super::{
-    APPROVAL_SPENDERS, Context, approval_spender, is_rpc_error, random_below, random_spender,
-    shuffled,
+    APPROVAL_SPENDERS, Context, Record, approval_spender, collide::allowance_slot, is_rpc_error,
+    random_below, random_spender, shuffled,
 };
 
 /// Workload accounts whose pathUSD balance slot each run proves.
 const PROOF_ACCOUNTS: usize = 12;
 /// Workload accounts whose allowance to one of their approval spenders each run proves.
 const PROOF_OWNERS: usize = 6;
+/// Colliding allowance pairs whose keys each run proves.
+const COLLISION_PAIRS: usize = 2;
 /// Random keys and addresses each run proves, which are almost always absent.
 const RANDOM_KEYS: usize = 4;
 /// Highest slot index `check-proofs` tries when looking for the TIP-20 balances mapping.
@@ -80,6 +82,26 @@ impl Context {
                     nested_mapping_key(*owner, approval_spender(*owner, spender), index + 1)
                 }));
             }
+        }
+        // Allowances of a few colliding pairs, whose keys share long prefixes and whose leaves
+        // may be embedded in their parent branch.
+        let collisions = self
+            .ledger
+            .records()?
+            .into_iter()
+            .filter_map(|record| match record {
+                Record::Collision {
+                    owner, spenders, ..
+                } => Some((owner, spenders)),
+                _ => None,
+            })
+            .collect();
+        for (owner, spenders) in shuffled(collisions).into_iter().take(COLLISION_PAIRS) {
+            zone_slots.extend(
+                spenders
+                    .into_iter()
+                    .map(|spender| allowance_slot(owner, spender)),
+            );
         }
         let mut addresses: Vec<Address> =
             vec![PATH_USD_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS];

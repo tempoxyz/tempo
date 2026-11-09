@@ -62,6 +62,14 @@ pub(super) enum Record {
         to: Address,
         amount: u128,
     },
+    /// Two allowances of `owner` whose storage-trie keys share `depth` leading nibbles were set
+    /// in `zone_block`.
+    Collision {
+        owner: Address,
+        spenders: Vec<Address>,
+        depth: u64,
+        zone_block: u64,
+    },
 }
 
 /// The workload ledger and per-account leases under one state directory.
@@ -309,6 +317,12 @@ mod tests {
                 from: Address::repeat_byte(11),
                 to: Address::repeat_byte(12),
                 amount: u128::MAX,
+            },
+            Record::Collision {
+                owner: Address::repeat_byte(13),
+                spenders: vec![Address::repeat_byte(14), Address::repeat_byte(15)],
+                depth: 8,
+                zone_block: 16,
             },
         ];
         for record in &records {

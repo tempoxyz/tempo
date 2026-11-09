@@ -51,6 +51,7 @@ images it is given, so they must be in the image rather than copied in when a co
 | `parallel_driver_sweep` | Sends a sender's whole balance to another account, deleting its balance slot |
 | `parallel_driver_approve` | Sets, changes and clears a batch of allowances to a fixed set of spenders, then checks they read back |
 | `parallel_driver_burst` | Up to 16 senders each send up to 4 transfers at once, so many independent transactions land in the same blocks |
+| `parallel_driver_collide` | Grinds pairs of allowance keys sharing 1–10 leading trie nibbles (embedded leaves from 8 with small amounts) and sets them, or updates and clears recorded pairs after they may have settled |
 | `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, and settled workload transactions stay final |
 | `anytime_forks` | While faults move leadership, zone nodes hold the same block at every height they share, never replace a block they imported, and blocks come from more than one sequencer |
 | `anytime_proofs` | `eth_getProof` answers for present and absent accounts and slots verify against the block's state root on every zone node and on L1, and zone nodes on the same block serve the same proof |

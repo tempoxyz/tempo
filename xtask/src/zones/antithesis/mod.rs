@@ -39,6 +39,7 @@ use zone_precompiles::ecies::encrypt_deposit;
 use ledger::{Account, Lease, Ledger, Record};
 
 mod checks;
+mod collide;
 mod ledger;
 mod proofs;
 
@@ -134,6 +135,8 @@ enum Command {
     Approve,
     /// Sends transfers from many senders at once, so they land in the same blocks.
     Burst,
+    /// Sets allowances whose storage-trie keys share a long prefix, or rewrites earlier ones.
+    Collide,
     /// Checks that state proofs verify against the block's state root and that nodes agree.
     CheckProofs,
     /// Checks that zone nodes agree with L1 settlement while faults run.
@@ -165,6 +168,7 @@ impl Antithesis {
             Command::Sweep => ctx.sweep().await,
             Command::Approve => ctx.approve().await,
             Command::Burst => ctx.burst().await,
+            Command::Collide => ctx.collide().await,
         };
         // Under faults, or on a node that lags the sequencer, a send can be rejected (nonce too
         // low) or never confirm. Drivers record only confirmed operations, so such an RPC error
