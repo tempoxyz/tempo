@@ -1209,10 +1209,15 @@ mod tests {
     use tempo_evm::consensus::TEMPO_MAXIMUM_EXTRA_DATA_SIZE;
     use tempo_primitives::{Block, Header, TempoConsensusContext, ed25519::PublicKey};
 
-    /// Every field is listed so that a new header field fails to compile here until it is
-    /// accounted for.
+    /// The largest possible header must not exceed [`NON_TRANSACTION_SIZE_ESTIMATE`].
+    ///
+    /// The builder counts transactions, withdrawals and extra data exactly and relies on the
+    /// constant for the rest of the block: the header and the block and transaction list prefixes.
+    /// The header is built at its maximum encoded size, with every optional field set and every
+    /// number at its maximum. Every field is listed so that a new header field fails to compile
+    /// here until it is accounted for.
     #[test]
-    fn non_transaction_size_estimate_covers_largest_header() {
+    fn largest_header_does_not_exceed_non_transaction_size_estimate() {
         let header = TempoHeader {
             general_gas_limit: u64::MAX,
             shared_gas_limit: u64::MAX,
