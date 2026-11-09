@@ -3,8 +3,8 @@
 //! Blocks are produced like in the reth-trie workload: the sparse-trie state root task computes
 //! each root, blocks are inserted into the `OverlayManager`, and a background writer persists them
 //! with state masking. Meanwhile proof threads serve `eth_getMultiProof` requests at random
-//! produced blocks through the provider the RPC uses, and check every proof against a trie rebuilt
-//! from the reference model.
+//! produced blocks through the provider the RPC uses, and verify every proof against the block's
+//! state root.
 
 #[expect(dead_code, reason = "Shared with reth-trie, whose input generator is unused here.")]
 #[path = "../../reth-trie/src/model.rs"]
@@ -150,7 +150,7 @@ fn request_proof(factory: &ProviderFactory<Node>, shared: &Shared) -> Result<()>
     .database_provider_ro()
     .map_err(eyre::Report::from)
     .and_then(|provider| proof::get_multi_proof(&provider, &targets))
-    .and_then(|proofs| proof::check(&snapshot.state, snapshot.root, &targets, &proofs));
+    .and_then(|proofs| proof::check(snapshot.root, &targets, &proofs));
     let error = result.err().map(|error| format!("{error:#}"));
     invariant!(
         error.is_none(),
