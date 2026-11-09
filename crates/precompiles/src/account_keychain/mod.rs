@@ -778,6 +778,12 @@ impl AccountKeychain {
         self.tx_origin.t_write(origin)
     }
 
+    /// Returns whether a call from `account` is authorized by one of its access keys rather than
+    /// its root key: `account` is the transaction origin and an access key signed the transaction.
+    pub(crate) fn is_access_key_call(&self, account: Address) -> Result<bool> {
+        Ok(!self.transaction_key.t_read()?.is_zero() && self.tx_origin.t_read()? == account)
+    }
+
     /// Persists the authorization-time restrictions for a freshly created key.
     ///
     /// T0-T2 only store raw spending limits. T3 additionally seeds periodic metadata and replaces

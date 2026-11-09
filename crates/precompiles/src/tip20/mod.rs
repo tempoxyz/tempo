@@ -26,6 +26,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
+    reservations::Reservations,
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
@@ -579,7 +580,8 @@ impl TIP20Token {
         self.set_total_supply(new_supply)?;
         self.increment_balance(to.target, amount)?;
 
-        self.emit_event(to.build_transfer_event(Address::ZERO, amount))
+        self.emit_event(to.build_transfer_event(Address::ZERO, amount))?;
+        self.repay_debt(to.target, amount)
     }
 
     /// Burns `amount` from the caller's balance and reduces total supply.
@@ -1019,6 +1021,31 @@ impl TIP20Token {
         Ok(())
     }
 
+    /// Moves `amount` for a [`Reservations`] capture, charge or refund.
+    ///
+    /// This is an internal integration, not an ABI entrypoint. The reservations precompile checks
+    /// TIP-403 and the access key limit itself, and releases the hold being captured before
+    /// calling, so the debit only spends available balance. Reverts when `to`'s TIP-1028 receive
+    /// policy rejects `from`, since a capture cannot represent a guarded payment.
+    pub(crate) fn reservation_transfer(
+        &mut self,
+        from: Address,
+        to: Address,
+        amount: U256,
+    ) -> Result<()> {
+        self.check_not_paused()?;
+        let to = Recipient::direct(to);
+        to.validate()?;
+        if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+            return Err(ReceivePolicyGuardError::address_reserved().into());
+        }
+        self.ensure_receive_policy_authorized(from, to.target)?;
+        if amount.is_zero() {
+            return Ok(());
+        }
+        self._transfer(from, &to, amount)
+    }
+
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
@@ -1330,6 +1357,7 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     pub fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
+        self.ensure_available(from, amount)?;
         let from_balance = if !self.storage.spec().is_t8() {
             let from_balance = self.get_balance(from)?;
             if amount > from_balance {
@@ -1364,7 +1392,58 @@ impl TIP20Token {
             self.increment_balance(to.target, amount)?;
         }
 
-        self.emit_event(to.build_transfer_event(from, amount))
+        self.emit_event(to.build_transfer_event(from, amount))?;
+        if !to.target.is_zero() {
+            self.repay_debt(to.target, amount)?;
+        }
+        Ok(())
+    }
+
+    /// Whether debits and credits consult the [`Reservations`] precompile: from T15, on L1 only.
+    fn reservations_active(&self) -> bool {
+        self.storage.spec().is_t15() && matches!(self.storage.kind(), TempoEvmKind::L1)
+    }
+
+    /// (+T15) Ensures `amount` fits in `from`'s balance minus the amount it has reserved.
+    ///
+    /// Costs one extra SLOAD per debit, plus a balance read for accounts with reservations. A
+    /// reservation flag packed into the balance slot would remove the extra read.
+    ///
+    /// # Errors
+    /// - `InsufficientBalance` — carrying the available balance, not the full balance
+    fn ensure_available(&self, from: Address, amount: U256) -> Result<()> {
+        if !self.reservations_active() {
+            return Ok(());
+        }
+        let reserved = Reservations::new().reserved_of(from, self.address)?;
+        if reserved == 0 {
+            return Ok(());
+        }
+        let available = self.get_balance(from)?.saturating_sub(U256::from(reserved));
+        if amount > available {
+            return Err(TIP20Error::insufficient_balance(available, amount, self.address).into());
+        }
+        Ok(())
+    }
+
+    /// (+T15) Moves up to `received` of `owner`'s balance to the creditor of its debt in this
+    /// token, emitting `DebtRepaid` and a `Transfer` to the creditor.
+    ///
+    /// Called after every credit. Costs one extra SLOAD per credit; the repayment itself does not
+    /// repay the creditor's own debt.
+    fn repay_debt(&mut self, owner: Address, received: U256) -> Result<()> {
+        if !self.reservations_active() {
+            return Ok(());
+        }
+        let Some((creditor, repaid)) =
+            Reservations::new().take_repayment(owner, self.address, received)?
+        else {
+            return Ok(());
+        };
+        self.handle_rewards_on_transfer(owner, creditor, repaid)?;
+        self.decrement_balance(owner, repaid)?;
+        self.increment_balance(creditor, repaid)?;
+        self.emit_event(TIP20Event::transfer(owner, creditor, repaid))
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
@@ -1471,6 +1550,7 @@ impl TIP20Token {
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
         self.check_and_update_spending_limit(from, amount)?;
+        self.ensure_available(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
         let from_reward_recipient = self.update_rewards(from)?;
@@ -1546,8 +1626,7 @@ impl TIP20Token {
         );
         refund_debit?;
         self.increment_balance(to, refund)?;
-
-        Ok(())
+        self.repay_debt(to, refund)
     }
 }
 
