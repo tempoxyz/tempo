@@ -4,7 +4,7 @@ use commonware_consensus::{
     simplex::types::Activity,
     types::{Epoch, Epocher as _, Height, Round},
 };
-use commonware_cryptography::{Digested, certificate::Provider as _};
+use commonware_cryptography::Digested;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{OptionExt as _, Report, WrapErr as _};
@@ -380,18 +380,7 @@ where
         Ok(())
     }
 
-    async fn hint_current_epoch_boundary(&mut self) {
-        // A boundary is only needed for the next epoch's scheme. Skip it when that scheme is
-        // already pinned, as for a chain recovery whose boundary has no certificate to fetch.
-        while self
-            .config
-            .scheme_provider
-            .scoped(self.current_epoch.next())
-            .is_some()
-        {
-            self.current_epoch = self.current_epoch.next();
-        }
-
+    async fn hint_current_epoch_boundary(&self) {
         // A failed built-in identity may mean it has rotated. Ask marshal for
         // the local epoch boundary, which contains the next scheme. Do not take
         // the height from the certificate because an unauthenticated peer could
