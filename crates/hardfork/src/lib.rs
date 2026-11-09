@@ -251,6 +251,8 @@ tempo_hardfork!(
         T14,
         /// T15 hardfork.
         ///
+        /// Includes TIP-1124: EIP-7976 calldata floor increase.
+        ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t15>.
         T15,
     }

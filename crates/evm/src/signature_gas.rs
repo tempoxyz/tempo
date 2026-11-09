@@ -27,10 +27,3 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
         }
     }
 }
-
-pub(crate) fn calldata_tokens(input: &[u8]) -> u64 {
-    input
-        .iter()
-        .map(|byte| if *byte == 0 { 1 } else { 4 })
-        .sum()
-}

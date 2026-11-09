@@ -87,6 +87,41 @@ fn intrinsic_with_amsterdam(
     ))
 }
 
+#[test]
+fn tip1124_floor_prices_all_aa_calldata_once() {
+    for spec in [TempoHardfork::T14, TempoHardfork::T15] {
+        for byte in [0, 1] {
+            let input = Bytes::from(vec![byte; 1_000]);
+            let calls = [400..1_000, 0..400]
+                .map(|range| Call {
+                    to: TxKind::Call(Address::repeat_byte(2)),
+                    value: U256::ZERO,
+                    input: input.slice(range),
+                })
+                .into();
+            let (_, _, floor) = intrinsic(
+                spec,
+                TempoTransaction {
+                    calls,
+                    ..Default::default()
+                },
+                secp256k1_signature(),
+            )
+            .unwrap();
+            let expected = 21_000
+                + 1_000
+                    * if spec.is_t15() {
+                        64
+                    } else if byte == 0 {
+                        10
+                    } else {
+                        40
+                    };
+            assert_eq!(floor, expected, "{spec:?}, byte={byte}");
+        }
+    }
+}
+
 use alloy_consensus::TxLegacy;
 use evm2::evm::AccountInfo;
 use std::sync::Arc;
