@@ -8,14 +8,17 @@
 //!
 //! Checking calldata is enough on Zones: contract creation and authorization lists are disabled,
 //! and T15, which enables transfers, removes the Multicall3 and Permit2 predeploys. Funds can only
-//! move through the TIP-20 and `ReceivePolicyGuard` calls screened here, the outbox, and fees.
+//! move through the TIP-20 calls screened here, the outbox, and fees. `ReceivePolicyGuard` claims
+//! need no screen: from T15 zone precompiles revert blocked inbounds instead of diverting them to
+//! the guard, and earlier the inbox reverts a mint the receive policy blocks, so the guard never
+//! holds funds on a zone.
 
 use alloy_primitives::{Address, TxKind};
 use alloy_sol_types::SolCall as _;
 use evm2::registry::HandlerError;
 use reth_transaction_pool::{PoolTransaction as _, error::InvalidPoolTransactionError};
 use std::fmt;
-use tempo_contracts::precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS};
+use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::TempoAddressExt as _;
 use tempo_transaction_pool::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 
@@ -29,9 +32,9 @@ pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
     fn allows_all(&self, addresses: &[Address]) -> bool;
 }
 
-/// Reject a transaction whose calls move TIP-20 funds (including `ReceivePolicyGuard` claims) or
-/// name a withdrawal fallback recipient outside `allowlist`, or call `transferFrom` from an
-/// unlisted account. Every party of the transaction is checked against one version of the list.
+/// Reject a transaction whose calls move TIP-20 funds or name a withdrawal fallback recipient
+/// outside `allowlist`, or call `transferFrom` from an unlisted account. Every party of the
+/// transaction is checked against one version of the list.
 ///
 /// Pool admission calls this on submission, and the leader's builder calls it again before
 /// executing each pool transaction.
@@ -93,13 +96,6 @@ fn push_parties(
         if from != ZONE_OUTBOX_ADDRESS && to != ZONE_OUTBOX_ADDRESS {
             parties.extend([from, to]);
         }
-    } else if target == RECEIVE_POLICY_GUARD_ADDRESS
-        && selector == IReceivePolicyGuard::claimCall::SELECTOR
-    {
-        // Only the receipt's recovery authority can claim, and it picks where funds go. Unlike
-        // `transfer`, a claim to the outbox is not exempt, since it requests no withdrawal.
-        let call = IReceivePolicyGuard::claimCall::abi_decode(input).map_err(malformed)?;
-        parties.extend([sender, call.to]);
     } else if target == ZONE_OUTBOX_ADDRESS
         && selector == IZoneOutbox::requestWithdrawalCall::SELECTOR
     {
@@ -196,17 +192,6 @@ mod tests {
         )
     }
 
-    fn claim(to: Address) -> Call {
-        call(
-            RECEIVE_POLICY_GUARD_ADDRESS,
-            IReceivePolicyGuard::claimCall {
-                to,
-                receipt: Bytes::new(),
-            }
-            .abi_encode(),
-        )
-    }
-
     fn pooled_transaction(envelope: TempoTxEnvelope, sender: Address) -> TempoPooledTransaction {
         TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender))
     }
@@ -298,16 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn receipt_claims_need_the_claimer_and_destination_listed() {
-        assert!(admits_calls(ALICE, vec![claim(BOB)]));
-        assert!(admits_calls(ALICE, vec![claim(ALICE)]));
-        assert!(!admits_calls(ALICE, vec![claim(CAROL)]));
-        assert!(!admits_calls(CAROL, vec![claim(ALICE)]));
-        assert!(!admits_calls(CAROL, vec![claim(CAROL)]));
-        assert!(!admits_calls(CAROL, vec![claim(ZONE_OUTBOX_ADDRESS)]));
-    }
-
-    #[test]
     fn malformed_screened_calls_are_rejected() {
         let truncated = |call: Call| {
             let mut input = call.input.to_vec();
@@ -320,7 +295,6 @@ mod tests {
         let screened = [
             token_transfer(BOB),
             token_transfer_from(ALICE, BOB),
-            claim(BOB),
             request_withdrawal(BOB),
         ];
         for call in screened {

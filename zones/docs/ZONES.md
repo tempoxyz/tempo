@@ -350,12 +350,13 @@ Users keep the same address on Tempo and the zone, so the list also restricts zo
 transfers once [transfers are enabled](#enabling-zone-transfers). A sequencer with
 `--deposits.allowlist` rejects a transaction on submission when one of its calls (including the
 calls of an AA batch) is a `transfer`, `transferFrom`, or memo variant whose `from` or `to` is not
-listed, or a `ReceivePolicyGuard` `claim` whose caller or `to` is not listed. While it leads, it
-checks each pool transaction again against its current list before executing it, and leaves out
-and drops from its pool any that the list now rejects. Submission also rejects a `transferFrom`
-from an unlisted caller, whatever parties it names, so an unlisted account cannot learn whether
-an address is listed from whether its transaction is accepted. A screened call whose arguments do
-not decode is rejected with `malformed transfer calldata`, since the precompile would revert it.
+listed. While it leads, it checks each pool transaction again against its current list before
+executing it, and leaves out and drops from its pool any that the list now rejects. Submission
+also rejects a `transferFrom` from an unlisted caller, whatever parties it names, so an unlisted
+account cannot learn whether an address is listed from whether its transaction is accepted. A
+screened call whose arguments do not decode is rejected with `malformed transfer calldata`, since
+the precompile would revert it. `ReceivePolicyGuard` claims are not checked: from T15 a transfer
+or mint that a receive policy blocks reverts on a zone instead of moving funds into the guard.
 
 Checking calls is enough because zones disable contract creation and authorization lists, and
 T15, which enables transfers, removes the Multicall3 and Permit2 predeploys. No contract can move
@@ -377,8 +378,7 @@ exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is cred
 the withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback
 recipient must both be listed. The fallback is checked when the withdrawal is requested, so it is
 still credited if it is removed from the list before the bounce. The withdrawal's Tempo recipient
-is not checked, since Tempo transfers are open anyway. Funds that a receive policy held in the `ReceivePolicyGuard` can be
-claimed only while the claimer and the destination are both listed.
+is not checked, since Tempo transfers are open anyway.
 
 Limits:
 
