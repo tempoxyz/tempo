@@ -87,8 +87,53 @@ pub(crate) async fn fetch_bootnodes(
         .await
         .wrap_err("failed to parse response as JSON")?;
 
+    // Skip malformed entries instead of panicking, so one bad record does not drop the rest.
     Ok(resp
         .get(&chain_id.to_string())
-        .map(reth_network_peers::parse_nodes)
-        .unwrap_or_default())
+        .into_iter()
+        .flatten()
+        .filter_map(|node| match node.parse() {
+            Ok(node) => Some(node),
+            Err(err) => {
+                tracing::warn!(node, %err, "skipping malformed bootnode");
+                None
+            }
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    const VALID_ENODE: &str = "enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@10.3.58.6:30303";
+
+    /// Serves `body` as a JSON response to a single HTTP request.
+    async fn serve_once(body: String) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn fetch_bootnodes_skips_malformed_entries() {
+        let body = format!(r#"{{"4217": ["{VALID_ENODE}", "enode://not-a-node"]}}"#);
+        let endpoint = serve_once(body).await;
+        let nodes = tokio::spawn(async move { fetch_bootnodes(&endpoint, 4217).await })
+            .await
+            .expect("fetching bootnodes must not panic on a malformed entry")
+            .unwrap();
+        assert_eq!(nodes, vec![VALID_ENODE.parse().unwrap()]);
+    }
 }
