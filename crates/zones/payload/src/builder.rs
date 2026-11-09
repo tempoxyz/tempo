@@ -154,7 +154,8 @@ pub struct ZonePayloadBuilder<Provider> {
     provider: Provider,
     /// Zone-specific EVM configuration (precompiles, hardfork spec, gas params).
     evm_config: ZoneEvmConfig,
-    /// Runs disposable simulations on Reth's dedicated prewarming pool.
+    /// Runs disposable simulations on Reth's dedicated prewarming pool, and transfer allowlist
+    /// pool evictions off the build path.
     task_executor: TaskExecutor,
     /// Number of zone blocks between withdrawal batch boundaries.
     withdrawal_batch_interval_blocks: u64,
@@ -329,13 +330,18 @@ where
                 &mut unlisted,
             );
             if !unlisted.is_empty() {
-                // Otherwise every later build would check and skip them again.
+                // Otherwise every later build would check and skip them again. Removal locks the
+                // pool, so it runs off the build path; a build that starts first skips them again.
                 info!(
                     target: "zone::payload",
                     count = unlisted.len(),
                     "Dropping pool transactions that move funds outside the transfer allowlist"
                 );
-                self.pool.remove_transactions(unlisted);
+                let pool = self.pool.clone();
+                self.task_executor
+                    .spawn_blocking_named("zone-allowlist-evict", move || {
+                        pool.remove_transactions(unlisted);
+                    });
             }
             if outcome? == PoolExecutionOutcome::Cancelled {
                 return Ok(BuildOutcome::Cancelled);
