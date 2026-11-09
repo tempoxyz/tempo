@@ -185,6 +185,19 @@ impl Context {
                 _ => None,
             })
             .collect();
+        // A grown group is recorded again with its new key: only its largest record is live.
+        let groups: Vec<_> = groups
+            .iter()
+            .filter(|(kind, owner, members, _)| {
+                !groups.iter().any(|(other_kind, other_owner, others, _)| {
+                    other_kind == kind
+                        && other_owner == owner
+                        && others.len() > members.len()
+                        && members.iter().all(|member| others.contains(member))
+                })
+            })
+            .cloned()
+            .collect();
         let accounts = self.ledger.sender_accounts()?;
         for (kind, owner, members, zone_block) in
             shuffled(groups).into_iter().take(REVISIT_CANDIDATES)
