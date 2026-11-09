@@ -95,7 +95,7 @@ impl TempoAaTx {
             },
             self.tx().key_authorization.as_ref().and_then(|auth| {
                 Some(ConfigurableRole {
-                    signature: auth.signature.as_configurable_account()?,
+                    signature: auth.signature().as_configurable_account()?,
                     signed: ConfigurableRoleSigned::Grant(auth),
                 })
             }),
@@ -447,7 +447,7 @@ fn validate_root_keys(
         return Ok(extra_gas);
     };
     if let Some(auth) = &aa.tx().key_authorization
-        && !auth.signature.is_configurable_account()
+        && !auth.signature().is_configurable_account()
     {
         let signer = auth
             .recover_signer()
