@@ -112,7 +112,7 @@ impl Context {
             .map(|member| (*member, random_value(kind, balance, members.len())))
             .collect();
         let shared = shared_nibbles(trie_key(base, first), trie_key(base, second));
-        let Some(block) = self
+        let Some((block, _)) = self
             .write_group(node, &owner, balance, kind, &writes, &members)
             .await?
         else {
@@ -266,7 +266,7 @@ impl Context {
                 Ok((height, _)) => height >= zone_block,
                 Err(_) => false,
             };
-            let Some(block) = self
+            let Some((block, after)) = self
                 .write_group(node, account, balance, kind, &writes, &grown)
                 .await?
             else {
@@ -281,13 +281,15 @@ impl Context {
                     zone_block: block,
                 })?;
             }
-            let cleared = writes.iter().filter(|(_, value)| value.is_zero()).count();
+            // Keys this block took from set to zero, and keys of the group left set, when known.
+            let (cleared, present) = after.unzip();
             let details = json!({
                 "kind": kind,
                 "owner": owner,
                 "members": grown,
                 "writes": writes.len(),
                 "cleared": cleared,
+                "present": present,
                 "settled": settled,
                 "set_in": zone_block,
                 "block": block,
@@ -303,17 +305,17 @@ impl Context {
                 &details
             );
             assert_sometimes!(
-                cleared > 0 && cleared < members.len(),
+                cleared > Some(0) && present > Some(0),
                 "A colliding key is cleared while a sibling keeps its value",
                 &details
             );
             assert_sometimes!(
-                cleared == members.len(),
+                cleared > Some(0) && present == Some(0),
                 "Every key of a collision group is cleared",
                 &details
             );
             println!(
-                "collide: revisited {kind:?} group of {owner}: {} writes, {cleared} cleared, {} keys (settled: {settled}), block {block}",
+                "collide: revisited {kind:?} group of {owner}: {} writes, {cleared:?} cleared, {} keys (settled: {settled}), block {block}",
                 writes.len(),
                 grown.len()
             );
@@ -328,6 +330,8 @@ impl Context {
     /// finality checks) for a balance group. Checks every key reads back at the block it landed
     /// in, and returns that block, or `None` when the transaction did not fit half the balance,
     /// reverted or was not confirmed. `group` is every key of the group after these writes.
+    /// With the block, when no other send of the owner's shared it: how many keys it took from
+    /// set to zero, and how many keys of the group are set after it.
     async fn write_group(
         &self,
         node: usize,
@@ -336,7 +340,7 @@ impl Context {
         kind: CollisionKind,
         writes: &[(Address, U256)],
         group: &[Address],
-    ) -> eyre::Result<Option<u64>> {
+    ) -> eyre::Result<Option<(u64, Option<(usize, usize)>)>> {
         if writes.is_empty() {
             return Ok(None);
         }
@@ -406,7 +410,7 @@ impl Context {
             .block_id(BlockId::number(block))
             .await?;
         if nonce_after > nonce + 1 {
-            return Ok(Some(block));
+            return Ok(Some((block, None)));
         }
         // Transfers add up, so for a balance group one the owner gave up on that landed earlier
         // in the same block also counts between the two reads: then skip the check too.
@@ -416,7 +420,7 @@ impl Context {
                 .block_id(BlockId::number(block.saturating_sub(1)))
                 .await?;
             if nonce_before < nonce {
-                return Ok(Some(block));
+                return Ok(Some((block, None)));
             }
         }
         let read_at = async |member: Address, height: u64| -> eyre::Result<U256> {
@@ -480,7 +484,13 @@ impl Context {
                 &json!({ "kind": kind, "member": member, "value": value, "block": block })
             );
         }
-        Ok(Some(block))
+        let mut cleared = 0;
+        for (member, value) in &writes {
+            if value.is_zero() && !read_at(*member, block.saturating_sub(1)).await?.is_zero() {
+                cleared += 1;
+            }
+        }
+        Ok(Some((block, Some((cleared, present.len())))))
     }
 }
 
