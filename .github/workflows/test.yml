@@ -329,7 +329,7 @@ jobs:
     name: CLI smoke tests
     needs: changes
     if: needs.changes.outputs.node == 'true'
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest-8
     timeout-minutes: 30
     permissions:
       id-token: write
