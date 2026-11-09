@@ -118,13 +118,7 @@ where
     ) -> impl BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
     + use<Client, EvmConfig> {
         self.best_transactions_with_attributes(attributes)
-            .filter_transactions(move |tx| {
-                tx.transaction.inner().is_valid_at(timestamp)
-                    && tx
-                        .transaction
-                        .key_expiry()
-                        .is_none_or(|expiry| timestamp < expiry)
-            })
+            .filter_transactions(move |tx| tx.transaction.is_includable_at(timestamp))
     }
 
     /// Returns the configured client
