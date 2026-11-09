@@ -92,7 +92,9 @@ pub(crate) fn store_config(qmdb_dir: &Path) -> Config {
     Config {
         directory: qmdb_dir.join("db"),
         threads: std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
-        page_cache_pages: NonZeroUsize::new(1 << 16).expect("non-zero"),
+        // 1 GiB of 4 KiB pages: merkleize reads predecessor and floor-raise ops by location,
+        // and every miss is a blob read on the finish path.
+        page_cache_pages: NonZeroUsize::new(1 << 18).expect("non-zero"),
         max_pending: NonZeroUsize::new(1024).expect("non-zero"),
     }
 }
