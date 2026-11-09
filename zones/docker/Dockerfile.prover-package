@@ -2,17 +2,27 @@
 # CI packages the exact early-compiled binary; this Dockerfile has no Rust stage.
 FROM scratch AS prover-binary
 FROM scratch AS tempo-genesis
-FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
-WORKDIR /data
-COPY --from=prover-binary /tempo-zone-prover-enclave /usr/local/bin/tempo-zone-prover-enclave
+
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 ARG SOURCE_DATE_EPOCH
 ARG PROVER_BINARY_SHA256
-RUN if [ -n "$PROVER_BINARY_SHA256" ]; then \
+# Add everything in one RUN, whose cache key includes SOURCE_DATE_EPOCH, and give every
+# entry it creates or changes, directories included, that time. A COPY or WORKDIR layer
+# could be reused from another commit (their cache keys ignore times), and BuildKit's
+# rewrite-timestamp only clamps newer times, so Depot and a clean rebuild measured
+# different PCRs.
+RUN --mount=from=prover-binary,target=/mnt/prover-binary \
+    --mount=from=tempo-genesis,target=/mnt/tempo-genesis \
+    case "$SOURCE_DATE_EPOCH" in ''|*[!0-9]*) echo "SOURCE_DATE_EPOCH must be numeric" >&2; exit 1;; esac && \
+    cp /mnt/prover-binary/tempo-zone-prover-enclave /usr/local/bin/tempo-zone-prover-enclave && \
+    if [ -n "$PROVER_BINARY_SHA256" ]; then \
         echo "${PROVER_BINARY_SHA256}  /usr/local/bin/tempo-zone-prover-enclave" | sha256sum --check --strict; \
-    fi
-COPY --from=tempo-genesis / /etc/tempo/genesis/
-# Normalize copied paths even when COPY reuses a layer with older timestamps.
-RUN find /etc/tempo /data /usr/local/bin/tempo-zone-prover-enclave \
-        -exec touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" {} +
+    fi && \
+    mkdir -p /data /etc/tempo/genesis && \
+    cp -R /mnt/tempo-genesis/. /etc/tempo/genesis/ && \
+    find /etc/tempo /data -exec touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" {} + && \
+    touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" \
+        /etc /usr/local/bin /usr/local/bin/tempo-zone-prover-enclave
+WORKDIR /data
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/tempo-zone-prover-enclave", "--tempo-genesis", "/etc/tempo/genesis"]

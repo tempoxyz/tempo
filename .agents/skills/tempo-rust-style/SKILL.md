@@ -100,7 +100,8 @@ These are the comments reviewers leave most often. Follow them so they don't hav
 - Use names already imported (`b256!`, `B256`) instead of fully qualified paths.
 - Test-only helpers and imports live in `mod tests`, which starts with `use super::*`.
 - Keep items `pub(crate)` or private unless another crate uses them. Re-export types that appear in public signatures from the facade crate.
-- Order each file as: main type, its `impl`, trait impls, helper types, private functions, `mod tests`.
+- Module-level `const` and `static` items go at the top of the file, right after imports, never between functions or impls. This holds even when only one function uses them.
+- Order each file as: imports, constants and statics, main type, its `impl`, trait impls, helper types, private functions, `mod tests`.
 - Use a type alias instead of `#[allow(clippy::type_complexity)]`, and `#[expect(lint, reason = "...")]` instead of `#[allow]`.
 
 ## Performance

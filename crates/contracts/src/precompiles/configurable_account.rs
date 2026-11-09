@@ -47,7 +47,7 @@ sol! {
             ConfigurableAccountOwner[] calldata owners
         ) external;
         /// Migrates `msg.sender` using `threshold` and sorted `owners`, returning the stored hash.
-        /// Only a direct primitive-root transaction with this call as its sole call may invoke it.
+        /// Only a top-level call in a direct primitive-root transaction may invoke it.
         function upgradeAccount(uint8 threshold, ConfigurableAccountOwner[] calldata owners)
             external
             returns (bytes32 commitment);
@@ -62,8 +62,20 @@ sol! {
         error InvalidOwnerOrder();
         error UnauthorizedConfigurableAccountCaller();
         error PrimitiveRootRequired();
-        error UpgradeMustBeOnlyCall();
+        error UpgradeMustBeDirectCall();
         error AccountAlreadyConfigurable();
         error AccountHasCode();
+    }
+}
+
+sol! {
+    /// Read-only methods executed at every registered configurable account address.
+    interface IConfigurableAccountShim {
+        /// Returns the ERC-1271 magic value for a valid current-owner witness.
+        function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4);
+
+        /// Accepts ERC-721 safe transfers and safe mints.
+        function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
+            external view returns (bytes4);
     }
 }

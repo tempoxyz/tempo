@@ -1,26 +1,69 @@
-use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
+use crate::rpc::{
+    ConfigurableAccountSimulationSpec, PrimitiveSignatureType, TempoHeaderResponse,
+    TempoTransactionRequest,
+};
+use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError, transaction::Recovered};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
-use alloy_primitives::Signature;
-use reth_evm::EvmEnv;
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
     FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
 };
 use reth_rpc_eth_types::EthApiError;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType};
-use tempo_revm::TempoTxEnv;
+use tempo_evm::{RecoveredTxEnvelope, TempoEvmEnv, TempoTxEnv};
+use tempo_primitives::{
+    SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
+    transaction::{
+        ConfigurableAccountQuorumError, ConfigurableAccountSignature,
+        ConfigurableAccountWeightAccumulator, KeychainSignature,
+        MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, PrimitiveSignature,
+        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
+    },
+};
+
+/// Non-zero transaction identifier used only for RPC simulations.
+///
+/// RPC requests are not final signed transactions, so gas filling and other request normalization
+/// can make a simulated signing payload differ from the eventual submitted transaction. Use a
+/// fixed sentinel instead of deriving a misleading future channel id from the simulated payload.
+const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: B256 = B256::new(*b"TEMPO_RPC_SIMULATION_MPP_CONTEXT");
+
+/// Largest `WebAuthn` data modeled for a configurable account owner approval: the signature
+/// without its r, s and public key coordinates.
+const MAX_OWNER_WEBAUTHN_DATA_LEN: usize = MAX_WEBAUTHN_SIGNATURE_LENGTH - 4 * size_of::<B256>();
+
+/// Largest `WebAuthn` data modeled for a transaction's own signature.
+const MAX_MOCK_WEBAUTHN_DATA_LEN: usize = 8192;
+
+/// Error text for a configurable account simulation without the sender it needs.
+const MISSING_FROM: &str = "configurable account simulation requires `from`";
+
+/// Error text for a configurable account call simulated without its configuration witness.
+const MISSING_CONFIGURATION_WITNESS: &str =
+    "configurable account simulation requires a configuration witness";
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
-    fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
+    fn try_into_sim_tx(mut self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
             TempoTxType::AA => {
+                let signature = match self.simulated_block_signature() {
+                    Ok(Some(signature)) => signature,
+                    Ok(None) if self.key_type == Some(SignatureType::ConfigurableAccount) => {
+                        return Err(ValueError::new(
+                            self,
+                            EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()),
+                        ));
+                    }
+                    Ok(None) => TempoSignature::default(),
+                    Err(error) => return Err(ValueError::new(self, error)),
+                };
+                // eth_simulateV1 fills a missing `to` with `Create`, which `build_aa` would append
+                // after a batch's calls. A CREATE must be the first call, so a `Create` here can
+                // only be that filled default.
+                if !self.calls.is_empty() && self.inner.to == Some(TxKind::Create) {
+                    self.inner.to = None;
+                }
                 let tx = self.build_aa()?;
-
-                // Create an empty signature for the transaction.
-                let signature = TempoSignature::default();
 
                 Ok(tx.into_signed(signature).into())
             }
@@ -28,76 +71,265 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
             | TempoTxType::Eip7702 => {
-                let Self {
-                    inner,
-                    fee_token,
-                    nonce_key,
-                    calls,
-                    key_type,
-                    key_data,
-                    key_id,
-                    tempo_authorization_list,
-                    key_authorization,
-                    valid_before,
-                    valid_after,
-                    fee_payer_signature,
-                } = self;
-                let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
-                    inner.clone(),
+                match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
+                    self.inner.clone(),
                 ) {
-                    Ok(inner) => inner,
-                    Err(e) => {
-                        return Err(e.map(|inner| Self {
-                            inner,
-                            fee_token,
-                            nonce_key,
-                            calls,
-                            key_type,
-                            key_data,
-                            key_id,
-                            tempo_authorization_list,
-                            key_authorization,
-                            valid_before,
-                            valid_after,
-                            fee_payer_signature,
-                        }));
-                    }
-                };
-
-                Ok(envelope.try_into().map_err(
-                    |e: ValueError<EthereumTxEnvelope<TxEip4844>>| {
-                        e.map(|_inner| Self {
-                            inner,
-                            fee_token,
-                            nonce_key,
-                            calls,
-                            key_type,
-                            key_data,
-                            key_id,
-                            tempo_authorization_list,
-                            key_authorization,
-                            valid_before,
-                            valid_after,
-                            fee_payer_signature,
-                        })
-                    },
-                )?)
+                    Err(e) => Err(e.map(|inner| Self { inner, ..self })),
+                    Ok(envelope) => envelope
+                        .try_into()
+                        .map_err(|e: ValueError<EthereumTxEnvelope<TxEip4844>>| e.map(|_| self)),
+                }
             }
         }
     }
 }
 
-impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransactionRequest {
+impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionRequest {
     type Err = EthApiError;
 
     fn try_into_tx_env(
-        self,
-        evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
-    ) -> Result<TempoTxEnv, Self::Err> {
-        let inner = self.inner.clone().try_into_tx_env(evm_env)?;
-        self.try_into_tempo_tx_env(TempoTxEnv::from(inner), evm_env.spec_id().is_t1c())
-            .map_err(|err| EthApiError::InvalidParams(err.to_string()))
+        mut self,
+        evm_env: &TempoEvmEnv,
+    ) -> Result<Recovered<TempoTxEnv>, Self::Err> {
+        let caller_addr = self.inner.from.unwrap_or_default();
+        let is_aa = self.output_tx_type() == TempoTxType::AA;
+        if !is_aa {
+            let transaction = TryIntoTxEnv::<RecoveredTxEnvelope, TempoEvmEnv>::try_into_tx_env(
+                self.inner, evm_env,
+            )?;
+            return TempoTxEnv::from_recovered_eth(transaction)
+                .ok_or(EthApiError::Unsupported("EIP-4844 transactions"))
+                .map(|env| {
+                    env.with_simulation_overrides(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, None, None)
+                })
+                .map(|env| Recovered::new_unchecked(env, caller_addr));
+        }
+
+        // Before normalization, which defaults a missing `from`.
+        let key_type = self.key_type.unwrap_or(SignatureType::Secp256k1);
+        let key_data = self.key_data.clone();
+        let key_id = self.key_id;
+        let signature = match self.simulated_block_signature()? {
+            Some(signature) => signature,
+            None => create_mock_tempo_sig(
+                &key_type,
+                key_data.as_ref(),
+                key_id,
+                caller_addr,
+                evm_env.spec.is_t1c(),
+            )
+            .ok_or_else(|| EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()))?,
+        };
+        reth_rpc_convert::normalize_transaction_request(&mut self.inner, evm_env)?;
+        if let Some(gas_price) = self.inner.gas_price.take() {
+            // AA only supports EIP-1559 fees. Equal caps preserve a flat gas price.
+            self.inner.max_fee_per_gas = Some(gas_price);
+            self.inner.max_priority_fee_per_gas = Some(gas_price);
+        }
+
+        let has_fee_payer_signature = self.fee_payer_signature.is_some();
+        let tx = self
+            .build_aa()
+            .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
+        let fee_payer = has_fee_payer_signature
+            .then(|| tx.recover_fee_payer(caller_addr).ok())
+            .flatten();
+
+        let env = TempoTxEnv::from(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(tx.into_signed(signature)),
+            caller_addr,
+        ))
+        .with_simulation_overrides(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, fee_payer, key_id);
+        Ok(Recovered::new_unchecked(env, caller_addr))
     }
+}
+
+impl TempoTransactionRequest {
+    /// Configurable account signatures for a simulated call.
+    ///
+    /// Installs the mock grant described by `keyAuthorizationSimulation` when a grant is attached,
+    /// and returns the mock outer signature described by `configurableAccountSimulation`, or
+    /// `None` when the request has no `configurableAccountSimulation`. Stateful configurable
+    /// account checks run when the call executes at its position, so only the stateless ones are
+    /// done here.
+    fn simulated_block_signature(&mut self) -> Result<Option<TempoSignature>, EthApiError> {
+        let invalid = |message: &str| EthApiError::InvalidParams(message.into());
+        // `eth_simulateV1` defaults a missing `from` to the zero address before conversion.
+        let from = self.inner.from.filter(|from| !from.is_zero());
+        let parent = || from.ok_or_else(|| invalid(MISSING_FROM));
+        if let Some(spec) = &self.key_authorization_simulation
+            && let Some(grant) = &self.key_authorization
+        {
+            let parent = parent()?;
+            let grant = grant
+                .authorization
+                .clone()
+                .into_signed(spec.mock_signature(spec.signer.unwrap_or(parent))?);
+            self.set_key_authorization(grant);
+        } else if let Some(grant) = &self.key_authorization
+            && let Some(signature) = grant.signature.as_configurable_account()
+        {
+            signature
+                .verify_approvals(grant.signature_hash())
+                .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
+        }
+        let Some(spec) = self.configurable_account_simulation.as_ref() else {
+            return Ok(None);
+        };
+        let parent = parent()?;
+        if self.key_id == Some(parent) {
+            return Err(invalid("a configurable delegate cannot be its own parent"));
+        }
+        let account = self.key_id.unwrap_or(parent);
+        if spec.signer.is_some_and(|signer| signer != account) {
+            return Err(invalid(
+                "configurable account simulation signer does not match the role account",
+            ));
+        }
+        let signature = spec.mock_signature(account)?;
+        Ok(Some(if self.key_id.is_some() {
+            TempoSignature::Keychain(KeychainSignature::new(parent, signature))
+        } else {
+            TempoSignature::ConfigurableAccount(signature)
+        }))
+    }
+}
+
+impl ConfigurableAccountSimulationSpec {
+    /// Builds dummy owner approvals for `account` after checking the claimed quorum, which
+    /// simulation does not recover.
+    fn mock_signature(
+        &self,
+        account: Address,
+    ) -> Result<ConfigurableAccountSignature, EthApiError> {
+        let quorum_error =
+            |error: ConfigurableAccountQuorumError| EthApiError::InvalidParams(error.to_string());
+        let mut weight = ConfigurableAccountWeightAccumulator::new(self.config.threshold)
+            .map_err(quorum_error)?;
+        let mut signatures = Vec::with_capacity(
+            self.approvals
+                .len()
+                .min(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES),
+        );
+        for approval in &self.approvals {
+            let owner_weight = self
+                .config
+                .owner_weight(approval.owner)
+                .ok_or_else(|| quorum_error(ConfigurableAccountQuorumError::SignerNotOwner))?;
+            weight
+                .record_owner(approval.owner, owner_weight)
+                .map_err(quorum_error)?;
+            signatures.push(match approval.key_type {
+                None => mock_webauthn_signature(MAX_OWNER_WEBAUTHN_DATA_LEN),
+                Some(key_type) => create_mock_primitive_signature(
+                    key_type,
+                    approval.key_data.as_ref(),
+                    MAX_OWNER_WEBAUTHN_DATA_LEN,
+                ),
+            });
+        }
+        weight.finish().map_err(quorum_error)?;
+        ConfigurableAccountSignature::try_new(account, self.config.clone(), signatures)
+            .map_err(|error| EthApiError::InvalidParams(error.to_string()))
+    }
+}
+
+/// Creates a mock AA signature for gas estimation based on key type hints.
+///
+/// Returns `None` for a configurable-account key type: a primitive placeholder cannot stand in for
+/// its configuration witness.
+fn create_mock_tempo_sig(
+    key_type: &SignatureType,
+    key_data: Option<&Bytes>,
+    key_id: Option<Address>,
+    caller_addr: Address,
+    is_t1c: bool,
+) -> Option<TempoSignature> {
+    let key_type = match key_type {
+        SignatureType::ConfigurableAccount => return None,
+        SignatureType::Secp256k1 => PrimitiveSignatureType::Secp256k1,
+        SignatureType::P256 => PrimitiveSignatureType::P256,
+        SignatureType::WebAuthn => PrimitiveSignatureType::WebAuthn,
+    };
+    let inner_sig = create_mock_primitive_signature(key_type, key_data, MAX_MOCK_WEBAUTHN_DATA_LEN);
+
+    if key_id.is_some() {
+        let keychain_sig = if is_t1c {
+            KeychainSignature::new(caller_addr, inner_sig)
+        } else {
+            KeychainSignature::new_v1(caller_addr, inner_sig)
+        };
+        Some(TempoSignature::Keychain(keychain_sig))
+    } else {
+        Some(TempoSignature::Primitive(inner_sig))
+    }
+}
+
+/// Creates a mock primitive signature for gas estimation, clamping a `WebAuthn` data-length hint
+/// to `max_webauthn_data_len`.
+fn create_mock_primitive_signature(
+    sig_type: PrimitiveSignatureType,
+    key_data: Option<&Bytes>,
+    max_webauthn_data_len: usize,
+) -> PrimitiveSignature {
+    match sig_type {
+        PrimitiveSignatureType::Secp256k1 => {
+            PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false))
+        }
+        PrimitiveSignatureType::P256 => PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x: B256::ZERO,
+            pub_key_y: B256::ZERO,
+            pre_hash: false,
+        }),
+        PrimitiveSignatureType::WebAuthn => {
+            const DEFAULT_WEBAUTHN_SIZE: usize = 800;
+
+            let size = if let Some(data) = key_data {
+                match data.len() {
+                    1 => data[0] as usize,
+                    2 => u16::from_be_bytes([data[0], data[1]]) as usize,
+                    4 => u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize,
+                    _ => DEFAULT_WEBAUTHN_SIZE,
+                }
+            } else {
+                DEFAULT_WEBAUTHN_SIZE
+            };
+            mock_webauthn_signature(size.min(max_webauthn_data_len))
+        }
+    }
+}
+
+/// Creates a mock `WebAuthn` signature with `size` bytes of data, at least the base template's.
+fn mock_webauthn_signature(size: usize) -> PrimitiveSignature {
+    // Base clientDataJSON template (50 bytes) plus 37 bytes of authenticator data.
+    const BASE_CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
+    const AUTH_DATA_SIZE: usize = 37;
+    const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len();
+
+    let size = size.max(MIN_WEBAUTHN_SIZE);
+
+    // Price every authenticator byte as nonzero; real RP-ID hashes and counters vary.
+    let mut webauthn_data = vec![0xff; AUTH_DATA_SIZE];
+    webauthn_data[32] = 0x01;
+
+    let additional_bytes = size - MIN_WEBAUTHN_SIZE;
+    let client_json = if additional_bytes > 0 {
+        let padding = "x".repeat(additional_bytes);
+        format!(r#"{{"type":"webauthn.get","challenge":"","origin":"{padding}"}}"#,)
+    } else {
+        BASE_CLIENT_JSON.to_string()
+    };
+
+    webauthn_data.extend_from_slice(client_json.as_bytes());
+    PrimitiveSignature::WebAuthn(WebAuthnSignature {
+        webauthn_data: Bytes::from(webauthn_data),
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: B256::ZERO,
+        pub_key_y: B256::ZERO,
+    })
 }
 
 impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
@@ -105,6 +337,12 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
         self,
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
+        if self.configurable_account_simulation.is_some()
+            || self.key_authorization_simulation.is_some()
+            || self.key_type == Some(SignatureType::ConfigurableAccount)
+        {
+            return Err(SignTxRequestError::InvalidTransactionRequest);
+        }
         if self.output_tx_type() == TempoTxType::AA {
             let mut tx = self
                 .build_aa()
@@ -129,16 +367,14 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rpc::revm_compat::{
-        RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, create_mock_primitive_signature,
-    };
-    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address};
+    use alloy_consensus::Transaction;
+    use alloy_primitives::{Address, TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth_rpc_convert::TryIntoTxEnv;
     use tempo_primitives::{
-        SignatureType, TempoTransaction,
+        TempoTransaction,
         transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, tt_signature::PrimitiveSignature},
     };
 
@@ -153,6 +389,136 @@ mod tests {
             chain_id: Some(4217),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn access_key_request_populates_typed_simulation_env() {
+        let root = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let key_id = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let target = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(root),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            key_type: Some(SignatureType::Secp256k1),
+            key_id: Some(key_id),
+            ..Default::default()
+        };
+
+        let env = request
+            .try_into_tx_env(&TempoEvmEnv::default())
+            .expect("valid simulation request");
+        let aa = env.as_aa().expect("AA simulation env");
+
+        assert_eq!(aa.override_key_id(), Some(key_id));
+        assert_eq!(aa.inner().tx().calls.len(), 1);
+        assert_eq!(aa.inner().tx().calls[0].to, TxKind::Call(target));
+        assert!(matches!(
+            aa.inner().signature(),
+            TempoSignature::Keychain(_)
+        ));
+        assert_eq!(
+            env.execution_context(),
+            tempo_evm::ExecutionContext::Simulation
+        );
+        assert_eq!(
+            env.channel_open_context_hash(),
+            RPC_SIMULATION_UNIQUE_TX_IDENTIFIER
+        );
+    }
+
+    #[test]
+    fn aa_request_uses_simulation_defaults() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0xcccccccccccccccccccccccccccccccccccccccc"
+                ))),
+                ..Default::default()
+            },
+            fee_token: Some(address!("0x20c0000000000000000000000000000000000000")),
+            ..Default::default()
+        };
+        let mut evm_env = TempoEvmEnv::default();
+        evm_env.version.chain_id = 42;
+        evm_env.block.gas_limit = U256::from(123_456);
+
+        let env = request
+            .try_into_tx_env(&evm_env)
+            .expect("valid simulation request");
+        let tx = env.as_aa().expect("AA simulation env").inner().tx();
+
+        assert_eq!(tx.chain_id, 42);
+        assert_eq!(tx.nonce, 0);
+        assert_eq!(tx.gas_limit, 123_456);
+        assert_eq!(tx.max_fee_per_gas, 0);
+        assert_eq!(tx.max_priority_fee_per_gas, 0);
+    }
+
+    #[test]
+    fn aa_request_converts_gas_price() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                to: Some(TxKind::Call(address!(
+                    "0xcccccccccccccccccccccccccccccccccccccccc"
+                ))),
+                gas_price: Some(7),
+                nonce: Some(0),
+                gas: Some(100_000),
+                ..Default::default()
+            },
+            fee_token: Some(address!("0x20c0000000000000000000000000000000000000")),
+            ..Default::default()
+        };
+
+        let env = request
+            .try_into_tx_env(&TempoEvmEnv::default())
+            .expect("valid simulation request");
+        let tx = env.as_aa().expect("AA simulation env").inner().tx();
+
+        assert_eq!(tx.max_fee_per_gas, 7);
+        assert_eq!(tx.max_priority_fee_per_gas, 7);
+        assert_eq!(tx.effective_gas_price(Some(0)), 7);
+        assert_eq!(tx.effective_gas_price(Some(3)), 7);
+    }
+
+    #[test]
+    fn aa_request_preserves_fee_caps() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                max_fee_per_gas: Some(100),
+                max_priority_fee_per_gas: Some(2),
+                ..Default::default()
+            },
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x22)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let expected_calls = request.calls.clone();
+        let mut evm_env = TempoEvmEnv::default();
+        evm_env.block.basefee = U256::from(10);
+        let env = request.try_into_tx_env(&evm_env).unwrap();
+        let tx = env.as_aa().unwrap().inner().tx();
+
+        assert_eq!(tx.max_fee_per_gas, 100);
+        assert_eq!(tx.max_priority_fee_per_gas, 2);
+        assert_eq!(tx.effective_gas_price(Some(10)), 12);
+        assert_eq!(
+            tx.calls, expected_calls,
+            "normalization must not append a CREATE call"
+        );
     }
 
     #[test]
@@ -181,9 +547,15 @@ mod tests {
 
         let built_calls = req.clone().build_aa().expect("build_aa").calls;
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
-        let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+        let estimated_calls = tx_env
+            .as_aa()
+            .expect("AA transaction")
+            .inner()
+            .tx()
+            .calls
+            .clone();
 
         assert_eq!(estimated_calls, built_calls);
     }
@@ -198,9 +570,9 @@ mod tests {
         };
 
         let tx_env = req
-            .try_into_tx_env(&EvmEnv::default())
+            .try_into_tx_env(&TempoEvmEnv::default())
             .expect("try_into_tx_env");
-        let signature = tx_env.tempo_tx_env.expect("tempo_tx_env").signature;
+        let signature = tx_env.as_aa().expect("AA transaction").inner().signature();
         assert!(matches!(
             signature,
             TempoSignature::Primitive(PrimitiveSignature::WebAuthn(_))
@@ -212,10 +584,10 @@ mod tests {
             ..Default::default()
         };
         let tx_env = req
-            .try_into_tx_env(&EvmEnv::default())
+            .try_into_tx_env(&TempoEvmEnv::default())
             .expect("try_into_tx_env");
         assert!(
-            tx_env.tempo_tx_env.is_some(),
+            tx_env.as_aa().is_some(),
             "key_data alone must produce an AA tx env"
         );
     }
@@ -229,10 +601,10 @@ mod tests {
         };
 
         let tx_env = req
-            .try_into_tx_env(&EvmEnv::default())
+            .try_into_tx_env(&TempoEvmEnv::default())
             .expect("try_into_tx_env");
         assert!(
-            tx_env.tempo_tx_env.is_some(),
+            tx_env.as_aa().is_some(),
             "fee_token alone must produce an AA tx env"
         );
     }
@@ -256,20 +628,20 @@ mod tests {
             ..Default::default()
         };
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert_eq!(
             tx_env.execution_context(),
-            tempo_revm::ExecutionContext::Simulation
+            tempo_evm::ExecutionContext::Simulation
         );
         assert_eq!(
             tx_env.channel_open_context_hash(),
-            Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
+            RPC_SIMULATION_UNIQUE_TX_IDENTIFIER
         );
         assert_ne!(
             tx_env.channel_open_context_hash(),
-            Some(B256::ZERO),
+            B256::ZERO,
             "RPC simulations must seed a non-zero context hash so TIP20ChannelReserve.open() does not treat it as unset"
         );
     }
@@ -278,8 +650,11 @@ mod tests {
     fn test_webauthn_size_clamped_to_max() {
         // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
         let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes());
-        let sig =
-            create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data));
+        let sig = create_mock_primitive_signature(
+            PrimitiveSignatureType::WebAuthn,
+            Some(&malicious_key_data),
+            MAX_MOCK_WEBAUTHN_DATA_LEN,
+        );
 
         // Extract webauthn_data and verify it's clamped to MAX_WEBAUTHN_SIZE (8192)
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
@@ -298,7 +673,11 @@ mod tests {
     fn test_webauthn_size_respects_minimum() {
         // Attempt to create a signature with size 0
         let key_data = Bytes::from(vec![0u8]);
-        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, Some(key_data));
+        let sig = create_mock_primitive_signature(
+            PrimitiveSignatureType::WebAuthn,
+            Some(&key_data),
+            MAX_MOCK_WEBAUTHN_DATA_LEN,
+        );
 
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
             panic!("Expected WebAuthn signature");
@@ -315,7 +694,11 @@ mod tests {
     #[test]
     fn test_webauthn_default_size() {
         // No key_data should use default size (800)
-        let sig = create_mock_primitive_signature(&SignatureType::WebAuthn, None);
+        let sig = create_mock_primitive_signature(
+            PrimitiveSignatureType::WebAuthn,
+            None,
+            MAX_MOCK_WEBAUTHN_DATA_LEN,
+        );
 
         let PrimitiveSignature::WebAuthn(webauthn_sig) = sig else {
             panic!("Expected WebAuthn signature");
@@ -371,24 +754,22 @@ mod tests {
             ..Default::default()
         };
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert!(
-            tx_env.tempo_tx_env.is_some(),
+            tx_env.as_aa().is_some(),
             "fee_payer_signature alone must produce an AA tx env"
         );
         assert_eq!(
-            tx_env.fee_payer,
-            Some(Some(sponsor.address())),
+            tx_env.fee_payer().expect("fee payer"),
+            sponsor.address(),
             "fee_payer should recover sponsor address"
         );
     }
 
     #[test]
     fn test_aa_roundtrip_via_tx_env() {
-        use alloy_primitives::U256;
-
         let calls = vec![
             Call {
                 to: Address::repeat_byte(0x11).into(),
@@ -414,9 +795,15 @@ mod tests {
 
         let req: TempoTransactionRequest = tx.into();
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
-        let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+        let aa_calls = tx_env
+            .as_aa()
+            .expect("AA transaction")
+            .inner()
+            .tx()
+            .calls
+            .clone();
 
         assert_eq!(
             aa_calls, calls,
@@ -444,16 +831,15 @@ mod tests {
             ..Default::default()
         };
 
-        let evm_env = EvmEnv::default();
+        let evm_env = TempoEvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
         assert!(
-            tx_env.tempo_tx_env.is_some(),
+            tx_env.as_aa().is_some(),
             "fee_payer_signature alone must produce an AA tx env"
         );
-        assert_eq!(
-            tx_env.fee_payer,
-            Some(None),
+        assert!(
+            tx_env.fee_payer().is_err(),
             "invalid fee_payer_signature should remain unresolved"
         );
     }

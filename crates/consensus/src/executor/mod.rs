@@ -10,22 +10,26 @@ use commonware_consensus::{
     marshal::{Identifier, core::DigestFallback},
     types::{Height, Round},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digested, ed25519::PublicKey};
 use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
-use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
+use reth_provider::{
+    BlockHashReader as _, BlockReader as _, BlockSource, DatabaseProviderFactory as _,
+    StageCheckpointReader as _,
+};
+use reth_stages_types::StageId;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tracing::warn;
 
 mod actor;
 mod ingress;
 
 pub(crate) use actor::Actor;
-use eyre::WrapErr as _;
+use eyre::{OptionExt as _, WrapErr as _};
 use futures::channel::mpsc;
 pub(crate) use ingress::{DeferredExtraData, Mailbox};
 
@@ -88,6 +92,19 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// Looks up a full block by its digest in the execution layer's stores.
     fn block_by_digest(&self, digest: Digest) -> eyre::Result<Option<Block>>;
 
+    /// The block the execution layer durably persisted at
+    /// `min(durable frontier, height)`, where the durable frontier is the
+    /// highest block a crash never rolls back. The block is read from
+    /// persisted storage, so it can lie on a branch that the execution layer
+    /// has since reorged away from, until its next persistence run unwinds it.
+    fn durable_block_at_or_below(&self, height: u64) -> eyre::Result<BlockNumHash>;
+
+    /// Subscribes to the execution layer's persistence runs. The receiver is
+    /// marked changed after every run, after which
+    /// [`Self::durable_block_at_or_below`] may return a higher block. The
+    /// carried value is not the durable frontier and must be ignored.
+    fn subscribe_persisted_block(&self) -> watch::Receiver<Option<BlockNumHash>>;
+
     /// Submits a block to the execution layer via a new-payload request.
     fn new_payload(
         &self,
@@ -122,7 +139,7 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send;
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send;
 
     /// Retrieves `(height, digest)` finalization info for `height` from
     /// marshal's local storage.
@@ -137,7 +154,7 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> oneshot::Receiver<Arc<Block>>;
+    ) -> oneshot::Receiver<Digested<Block>>;
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
@@ -182,6 +199,40 @@ impl ExecutionLayer for Arc<TempoFullNode> {
             .provider
             .find_sealed_or_recovered_block(digest.0, BlockSource::Any)?
             .map(Block::from_execution_block_unchecked))
+    }
+
+    fn durable_block_at_or_below(&self, height: u64) -> eyre::Result<BlockNumHash> {
+        // Reth's persisted-block notification carries the database tip, but
+        // the hashed state and trie of its newest `num_state_masking_blocks`
+        // are kept in memory only, and after a crash reth unwinds the
+        // database to the partial state-trie frontier.
+        let database = self
+            .provider
+            .database_provider_ro()
+            .wrap_err("failed opening a read-only database provider")?;
+        let frontier = database
+            .get_stage_checkpoint(StageId::Finish)
+            .wrap_err("failed reading the finish stage checkpoint")?
+            .map_or(0, |checkpoint| {
+                checkpoint
+                    .finish_stage_checkpoint()
+                    .and_then(|finish| finish.partial_state_trie())
+                    .unwrap_or(checkpoint.block_number)
+            });
+        let height = frontier.min(height);
+        let hash = database
+            .block_hash(height)
+            .wrap_err_with(|| {
+                format!("failed reading the database block hash at height `{height}`")
+            })?
+            .ok_or_eyre("the database has no block below the partial state-trie frontier")?;
+        Ok(BlockNumHash::new(height, hash))
+    }
+
+    fn subscribe_persisted_block(&self) -> watch::Receiver<Option<BlockNumHash>> {
+        self.provider
+            .canonical_in_memory_state()
+            .subscribe_persisted_block()
     }
 
     fn new_payload(
@@ -240,7 +291,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send {
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let mailbox = self.clone();
         let identifier = identifier.into();
         async move { mailbox.get_block(identifier).await }
@@ -255,7 +306,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         Self::subscribe_by_digest(
             self,
             digest,

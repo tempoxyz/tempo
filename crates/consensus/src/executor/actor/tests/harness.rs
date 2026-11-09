@@ -11,6 +11,7 @@
 //! scripting. Fault injection (scripted payload statuses, FCU rejections,
 //! call gating) is layered on top.
 
+use commonware_cryptography::{Digested, Digestible as _};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     future::Future,
@@ -33,7 +34,7 @@ use commonware_consensus::{
 };
 use commonware_runtime::{Clock, Handle, Metrics, Spawner, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _};
 use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
@@ -41,7 +42,7 @@ use reth_node_core::primitives::{RecoveredBlock, SealedBlock};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -267,6 +268,11 @@ struct FakeExecutionInner {
     scripted_builds: Mutex<VecDeque<TempoBuiltPayload>>,
     /// Blocks servable through `block_by_digest`.
     bodies: Mutex<HashMap<B256, Block>>,
+    /// The durable tip. Follows the head of every accepted FCU and seeded
+    /// block unless persistence is manual.
+    durable: watch::Sender<Option<BlockNumHash>>,
+    /// Only [`FakeExecution::persist`] moves the durable tip while set.
+    manual_persistence: AtomicBool,
 }
 
 /// Records cancellation when an unresolved fake payload future is dropped.
@@ -331,6 +337,8 @@ impl FakeExecution {
                         genesis,
                     )),
                 )])),
+                durable: watch::Sender::new(Some(BlockNumHash::new(0, genesis))),
+                manual_persistence: AtomicBool::new(false),
             }),
         }
     }
@@ -349,6 +357,31 @@ impl FakeExecution {
         state.blocks.insert(digest, (height, parent));
         state.canonical.insert(height, digest);
         state.head = digest;
+        self.persist_head(&state);
+    }
+
+    /// Stops the durable tip from following the head; only
+    /// [`Self::persist`] moves it afterwards.
+    pub(super) fn persist_manually(&self) {
+        self.inner.manual_persistence.store(true, Ordering::SeqCst);
+    }
+
+    /// Moves the durable tip to `digest` at `height` and notifies the
+    /// executor, like a completed persistence run.
+    pub(super) fn persist(&self, height: u64, digest: Digest) {
+        self.inner
+            .durable
+            .send_replace(Some(BlockNumHash::new(height, digest.0)));
+    }
+
+    fn persist_head(&self, state: &ElState) {
+        if self.inner.manual_persistence.load(Ordering::SeqCst) {
+            return;
+        }
+        let height = state.blocks[&state.head].0;
+        self.inner
+            .durable
+            .send_replace(Some(BlockNumHash::new(height, state.head)));
     }
 
     pub(super) fn set_finalized(&self, height: u64, digest: Digest) {
@@ -581,6 +614,7 @@ impl FakeExecution {
             height -= 1;
         }
         state.head = fcu.head_block_hash;
+        self.persist_head(&state);
 
         if let Some(&(finalized_height, _)) = state.blocks.get(&fcu.finalized_block_hash) {
             state.finalized = Some(BlockNumHash::new(
@@ -626,6 +660,27 @@ impl ExecutionLayer for FakeExecution {
             });
         }
         Ok(self.inner.state.lock().canonical.get(&height).copied())
+    }
+
+    fn durable_block_at_or_below(&self, height: u64) -> eyre::Result<BlockNumHash> {
+        let mut durable = self
+            .inner
+            .durable
+            .borrow()
+            .expect("the fake always has a durable tip");
+        let state = self.inner.state.lock();
+        while durable.number > height {
+            let &(_, parent) = state
+                .blocks
+                .get(&durable.hash)
+                .ok_or_eyre("the fake's durable chain has an unknown block")?;
+            durable = BlockNumHash::new(durable.number - 1, parent);
+        }
+        Ok(durable)
+    }
+
+    fn subscribe_persisted_block(&self) -> watch::Receiver<Option<BlockNumHash>> {
+        self.inner.durable.subscribe()
     }
 
     fn block_by_digest(&self, digest: Digest) -> eyre::Result<Option<Block>> {
@@ -828,7 +883,7 @@ impl ExecutionLayer for FakeExecution {
 struct MarshalSubscription {
     digest: Digest,
     notarized_in: Round,
-    senders: Vec<oneshot::Sender<Arc<Block>>>,
+    senders: Vec<oneshot::Sender<Digested<Block>>>,
 }
 
 struct MarshalSubscriptions(Mutex<Vec<MarshalSubscription>>);
@@ -844,7 +899,7 @@ impl MarshalSubscriptions {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> (oneshot::Receiver<Arc<Block>>, bool) {
+    ) -> (oneshot::Receiver<Digested<Block>>, bool) {
         let (sender, receiver) = oneshot::channel();
         let mut subscriptions = self.0.lock();
         Self::prune(&mut subscriptions);
@@ -892,7 +947,7 @@ impl MarshalSubscriptions {
 
     /// Delivers `block` to every waiter for `digest`. Every waiter is
     /// served, not only the first; returns whether any received it.
-    fn fulfill(&self, digest: Digest, block: Arc<Block>) -> bool {
+    fn fulfill(&self, digest: Digest, block: Digested<Block>) -> bool {
         let Some(subscription) = self.take(digest) else {
             return false;
         };
@@ -991,7 +1046,11 @@ impl FakeMarshal {
         digest: Digest,
         block: impl Into<Arc<Block>>,
     ) -> bool {
-        self.inner.subscriptions.fulfill(digest, block.into())
+        let block: Arc<Block> = block.into();
+        let block_digest = block.digest();
+        self.inner
+            .subscriptions
+            .fulfill(digest, Digested::precomputed(block, block_digest))
     }
 
     /// Drops the open subscription for `digest`, simulating marshal giving
@@ -1005,7 +1064,7 @@ impl Marshal for FakeMarshal {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send {
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let block = match identifier.into() {
             Identifier::Height(height) => {
                 self.inner.get_block_log.lock().push(height.get());
@@ -1026,6 +1085,7 @@ impl Marshal for FakeMarshal {
                 .max_by_key(|block| block.height())
                 .cloned(),
         };
+        let block = block.map(Digested::from);
         async move { block }
     }
 
@@ -1043,7 +1103,7 @@ impl Marshal for FakeMarshal {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         let (receiver, opened) = self.inner.subscriptions.subscribe(digest, notarized_in);
         if opened {
             self.inner.subscribe_log.lock().push((digest, notarized_in));
@@ -1234,7 +1294,7 @@ where
         let mailbox = self.mailbox.clone();
         let mut context = block.context();
         context.round = round;
-        async move { mailbox.verify_block(context, block).await }
+        async move { mailbox.verify_block(context, Digested::from(block)).await }
     }
 
     /// Requests a proposal build on top of `parent`, returning the payload

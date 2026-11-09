@@ -9,11 +9,12 @@ pub use alloy_consensus::Header;
 mod address;
 pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
 pub mod ed25519;
+pub mod gas;
 
 #[cfg(feature = "evm")]
 mod block;
 #[cfg(feature = "evm")]
-pub use block::TempoBlockEnv;
+pub use block::{TempoBlockEnv, TempoBlockExt};
 
 pub mod transaction;
 pub use transaction::{
@@ -33,6 +34,9 @@ extern crate alloc;
 pub mod account;
 
 use once_cell as _;
+// TODO: Remove this import and feature-only dependency after updating Reth's feature forwarding.
+#[cfg(feature = "rpc")]
+use reth_evm as _;
 
 /// Tempo block.
 pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;
@@ -55,3 +59,13 @@ pub type TempoReceipt<L = alloy_primitives::Log> = alloy_consensus::EthereumRece
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct TempoPrimitives;
+
+/// Kind of Tempo EVM, which fixes the protocol rules that differ between Tempo L1 and its zones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TempoEvmKind {
+    /// Tempo L1, including its mainnet, testnets, and devnets.
+    #[default]
+    L1,
+    /// A Tempo zone.
+    Zone,
+}

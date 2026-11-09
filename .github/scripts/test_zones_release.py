@@ -203,10 +203,16 @@ class ZonesReleaseTagTests(unittest.TestCase):
                          ['type=raw,value=profiling', 'type=sha,prefix=profiling-sha-'])
 
     def parse_tag(self, tag, dispatch=True, on_main=True, commit=False, requested_sha=None, ancestor=False,
-                  use_head=False):
+                  use_head=False, release_prep=None):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / 'output'
             subprocess.run(['git', 'init', '-q', tmp], check=True)
+            if release_prep:
+                # Files on main, then their contents in a release commit off main.
+                for path, (before, _) in release_prep.items():
+                    (Path(tmp) / path).parent.mkdir(parents=True, exist_ok=True)
+                    (Path(tmp) / path).write_text(before)
+                subprocess.run(['git', '-C', tmp, 'add', '.'], check=True)
             subprocess.run(['git', '-C', tmp, '-c', 'user.name=Test',
                             '-c', 'user.email=test@example.invalid', 'commit',
                             '--allow-empty', '-qm', 'test: release fixture'], check=True)
@@ -219,6 +225,9 @@ class ZonesReleaseTagTests(unittest.TestCase):
                 subprocess.run(['git', '-C', tmp, 'update-ref', 'refs/remotes/origin/main', 'HEAD'], check=True)
                 subprocess.run(['git', '-C', tmp, 'checkout', '-q', original], check=True)
             if not on_main:
+                for path, (_, after) in (release_prep or {}).items():
+                    (Path(tmp) / path).write_text(after)
+                subprocess.run(['git', '-C', tmp, 'add', '.'], check=True)
                 subprocess.run(['git', '-C', tmp, '-c', 'user.name=Test',
                                 '-c', 'user.email=test@example.invalid', 'commit',
                                 '--allow-empty', '-qm', 'test: unmerged release'], check=True)
@@ -259,24 +268,59 @@ class ZonesReleaseTagTests(unittest.TestCase):
                 self.assertNotEqual(code, 0)
                 self.assertEqual(output, '')
 
+    def test_accepts_zones_version_bump_on_main(self):
+        manifest = '[package]\nname = "tempo-zone"\nversion = "{}"\n'
+        release_prep = {
+            'bin/tempo-zone/Cargo.toml': (manifest.format('0.3.7'), manifest.format('0.3.8')),
+            'Cargo.lock': ('[[package]]\nname = "tempo-zone"\nversion = "0.3.7"\n',
+                           '[[package]]\nname = "tempo-zone"\nversion = "0.3.8"\n'),
+        }
+        for dispatch in (True, False):
+            with self.subTest(dispatch=dispatch):
+                code, output = self.parse_tag('zones/v0.3.8', dispatch, on_main=False, release_prep=release_prep)
+                self.assertEqual(code, 0)
+                self.assertIn('tag=zones/v0.3.8', output)
+
+    def test_rejects_version_bump_with_other_changes_outside_main(self):
+        manifest = '[package]\nname = "tempo-zone"\nversion = "{}"\n'
+        for name, release_prep in {
+            'other file': {
+                'bin/tempo-zone/Cargo.toml': (manifest.format('0.3.7'), manifest.format('0.3.8')),
+                'build.rs': ('', 'fn main() {}\n'),
+            },
+            'other line': {
+                'bin/tempo-zone/Cargo.toml': (manifest.format('0.3.7'),
+                                              manifest.format('0.3.8') + 'build = "build.rs"\n'),
+            },
+        }.items():
+            with self.subTest(name=name):
+                code, output = self.parse_tag('zones/v0.3.8', on_main=False, release_prep=release_prep)
+                self.assertNotEqual(code, 0)
+                self.assertEqual(output, '')
+
     def test_commit_dry_run_input_validation(self):
+        main = "refs/heads/main"
         cases = [
-            ("", "a" * 40, "true", True),
-            ("zones/v0.3.5", "", "true", True),
-            ("zones/v0.3.5", "", "false", True),
-            ("", "a" * 40, "false", False),
-            ("zones/v0.3.5", "a" * 40, "true", False),
-            ("", "main", "true", False),
-            ("", "a" * 7, "true", False),
-            ("", "A" * 40, "true", False),
-            ("", "", "true", True),
-            ("", "", "false", False),
+            ("", "a" * 40, "true", main, True),
+            ("zones/v0.3.5", "", "true", main, True),
+            # A publishing dispatch must run from the tag it releases, since
+            # VK picks the approving code owners from the dispatched ref.
+            ("zones/v0.3.5", "", "false", "refs/tags/zones/v0.3.5", True),
+            ("zones/v0.3.5", "", "false", "refs/tags/prover/v0.4.0", False),
+            ("zones/v0.3.5", "", "false", main, False),
+            ("", "a" * 40, "false", main, False),
+            ("zones/v0.3.5", "a" * 40, "true", main, False),
+            ("", "main", "true", main, False),
+            ("", "a" * 7, "true", main, False),
+            ("", "A" * 40, "true", main, False),
+            ("", "", "true", main, True),
+            ("", "", "false", main, False),
         ]
-        for tag, sha, dry_run, accepted in cases:
-            with self.subTest(tag=tag, sha=sha, dry_run=dry_run):
+        for tag, sha, dry_run, ref, accepted in cases:
+            with self.subTest(tag=tag, sha=sha, dry_run=dry_run, ref=ref):
                 result = subprocess.run(
                     ['bash', '-eu', '-c', script('resolve-release', 'Validate commit dry-run inputs')],
-                    env=dict(os.environ, INPUT_TAG=tag, INPUT_SHA=sha, DRY_RUN=dry_run),
+                    env=dict(os.environ, INPUT_TAG=tag, INPUT_SHA=sha, DRY_RUN=dry_run, GITHUB_REF=ref),
                     text=True, capture_output=True,
                 )
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)

@@ -668,7 +668,7 @@ mod tests {
         let signature = signer
             .sign_hash_sync(&signed.signing_hash(&domain))
             .unwrap();
-        signed.signature = Bytes::copy_from_slice(&signature.as_bytes());
+        signed.signature = Bytes::from(signature.as_bytes());
         signed
     }
 

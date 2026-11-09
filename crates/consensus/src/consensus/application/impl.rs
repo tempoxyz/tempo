@@ -1,9 +1,6 @@
 //! Tempo's block building and verification.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
@@ -16,6 +13,7 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
+    Digested, Digestible as _,
     bls12381::{dkg::feldman_desmedt::Output, primitives::variant::MinSig},
     ed25519::PublicKey,
 };
@@ -29,7 +27,9 @@ use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_payload_types::{Estimator, TempoPayloadAttributes, ValidationLatencyWorkload};
+use tempo_payload_types::{
+    Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
+};
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
@@ -56,10 +56,7 @@ pub(in crate::consensus) struct Config<TContext> {
     /// post-state of its parent.
     pub(in crate::consensus) parent_state: TempoParentState,
 
-    /// Shared proposal budget estimator. Provides the proposal return budget (the
-    /// target block time minus the learned network reservation); this application
-    /// feeds it validation times, each own proposal's window and the header
-    /// timestamp of the block built on top of it.
+    /// Proposal pacing and execution feedback shared with the payload builder.
     pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
@@ -71,9 +68,7 @@ pub(in crate::consensus) struct Config<TContext> {
 pub(crate) struct Inner {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    /// Shared proposal budget estimator: provides the proposal window and
-    /// learns from this node's validations and from how long the chain took
-    /// to build on its proposals.
+    /// Shared proposal pacing and execution feedback.
     estimator: Estimator,
 
     executor: crate::executor::Mailbox,
@@ -114,7 +109,7 @@ impl Inner {
         &self,
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
-        parent: &Arc<Block>,
+        parent: &Digested<Block>,
         propose_start: Instant,
     ) -> eyre::Result<Block> {
         self.executor
@@ -134,7 +129,7 @@ impl Inner {
             //
             // The DKG actor reads no chain state, so it starts on the
             // ceremony output now, while the executor works on the parent.
-            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(parent));
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
             (
                 Bytes::default(),
                 Some(self.boundary_dkg_outcome(round.epoch(), parent.digest(), ceremony)),
@@ -167,15 +162,16 @@ impl Inner {
         // earlier instant would charge the preparation above twice, here and in the
         // previous proposer's network sample.
         let window_opened = Instant::now();
-        let window_opened_unix_ms = runtime.current().epoch_millis();
+        let mut epoch_millis = runtime.current().epoch_millis();
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        let mut epoch_millis = window_opened_unix_ms;
-        if epoch_millis <= parent.timestamp_millis() {
+        if epoch_millis <= parent.inner().timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
-            epoch_millis = parent.timestamp_millis() + 1
+            epoch_millis = parent.inner().timestamp_millis() + 1
         };
 
+        // Match the stamped header so a lagging local clock does not inflate network samples.
+        let window_opened_millis = epoch_millis;
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
         let consensus_context = Some(TempoConsensusContext {
@@ -186,19 +182,14 @@ impl Inner {
         });
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
-        // The window is the target block time minus the learned network reservation.
-        // Starting the proposal is the one estimator call per own proposal that moves
-        // the reservation, by at most one bounded step; a build that fails after this
-        // point has still stepped it. A long preparation shortens the window, since
-        // the peers' proposal timeout started before it. The builder gets what remains
-        // of the window when payload construction is requested.
-        let proposal_budget = self
-            .estimator
-            .start_proposal(window_opened)
-            .after_preparation(window_opened.saturating_duration_since(propose_start));
-        let build_budget = proposal_budget
-            .return_budget
-            .saturating_sub(window_opened.elapsed());
+        // Charge preparation only through the peer-timeout cap, not twice to
+        // adjacent proposers' windows.
+        let proposal_budget = self.estimator.start_proposal(
+            window_opened,
+            window_opened.saturating_duration_since(propose_start),
+        );
+        let return_budget = proposal_budget.return_budget();
+        let build_budget = return_budget.saturating_sub(window_opened.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -239,19 +230,15 @@ impl Inner {
             execution_block_encoded,
         );
         let proposal_elapsed = window_opened.elapsed();
-        // Pace proposal return from the window's opening. Validators still
-        // need to repeat replayable build work, so leave room for it before
-        // returning the proposal.
-        let return_delay = proposal_budget
-            .return_budget
-            .saturating_sub(proposal_elapsed)
-            .saturating_sub(validation_latency_elapsed);
-        // Decide before the sleep whether the proposal met its return budget, from
-        // what the build spent: the sleep's timer overshoot must not decide it, and in
-        // the deterministic e2e runtime the sleep runs on simulated time while
-        // `window_opened` is a real `Instant`.
-        let spent = proposal_elapsed + return_delay;
-        let overran = proposal_budget.overran(spent);
+        // Reserve the full validation estimate when pacing an early-finished proposal.
+        let return_after = return_budget.saturating_sub(validation_latency_elapsed);
+        let return_delay = return_after.saturating_sub(proposal_elapsed);
+        // Sample eligibility follows the builder's capped replay reserve, so builds that
+        // return on its schedule are not mistaken for overruns when validators are slower.
+        let sampling_replay_reserve =
+            validation_latency_elapsed.min(payload_validation_work_elapsed);
+        // Add replay before comparing budgets so a saturated target cannot hide excess work.
+        let spent = return_budget.max(proposal_elapsed.saturating_add(sampling_replay_reserve));
         debug!(
             proposal.digest = %proposal.digest(),
             proposal_elapsed = %display_duration(proposal_elapsed),
@@ -261,32 +248,42 @@ impl Inner {
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
-        runtime.sleep_until(runtime.current() + return_delay).await;
+        runtime
+            .sleep(return_after.saturating_sub(window_opened.elapsed()))
+            .await;
 
-        // The proposal leaves this node now; the wait after its window closes is the
-        // network sample the block built on top of it completes, so record the window
-        // on the clock header timestamps use. A proposal that overran its budget by
-        // more than the tolerance takes no sample: its overrun is the build time
-        // multiplier's to absorb. Overruns within the tolerance are dry builds
-        // returning a millisecond or two late and still count, or nearly every sample
-        // taken while the pool is dry would be dropped.
-        let returned_at = Instant::now();
-        let returned_unix_ms = runtime.current().epoch_millis();
-        if overran {
+        // Record both clocks at return; the estimator owns sampling eligibility.
+        let recorded = self.estimator.on_proposal_returned(
+            Instant::now(),
+            proposal_budget,
+            ProposalTiming {
+                key: ProposalKey {
+                    epoch: round.epoch().get(),
+                    view: round.view().get(),
+                },
+                window_opened_millis,
+                returned_millis: runtime.current().epoch_millis(),
+                elapsed: spent,
+            },
+        );
+        if !recorded {
             debug!(
                 proposal.digest = %proposal.digest(),
-                overrun = %display_duration(spent.saturating_sub(proposal_budget.return_budget)),
+                overrun = %display_duration(spent.saturating_sub(return_budget)),
                 "proposal overran its return budget; taking no network sample"
             );
-        } else {
-            self.estimator.on_proposal_returned(
-                returned_at,
-                window_opened_unix_ms,
-                returned_unix_ms,
-                (round.epoch().get(), round.view().get()),
-                proposal_budget.return_budget,
-            );
         }
+
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_sometimes!(
+            round.view().get().saturating_sub(parent_view.get()) > 1,
+            "Proposal builds on a parent from before a nullified view",
+            &serde_json::json!({
+                "epoch": round.epoch().get(),
+                "view": round.view().get(),
+                "parent_view": parent_view.get(),
+            })
+        );
 
         Ok(proposal)
     }
@@ -316,7 +313,8 @@ impl Inner {
                 let output = ceremony
                     .await
                     .wrap_err("failed getting public dkg ceremony outcome")?;
-                let outcome = parent_state.boundary_outcome(&epoch_strategy, &parent, output)?;
+                let outcome =
+                    parent_state.boundary_outcome(&epoch_strategy, parent.inner(), output)?;
                 ensure!(
                     epoch.next() == outcome.epoch(),
                     "outcome is for epoch `{}`, but we are trying to include the \
@@ -383,11 +381,13 @@ impl Inner {
         );
 
         if self.is_boundary(block.height()) {
-            let proposed_outcome =
-                OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref()).wrap_err(
-                    "failed decoding extra data header as DKG ceremony \
+            let proposed_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+                block.header().extra_data().as_ref(),
+            ))
+            .wrap_err(
+                "failed decoding extra data header as DKG ceremony \
                     outcome; cannot verify end of epoch block",
-                )?;
+            )?;
             return Ok(Some(proposed_outcome));
         }
 
@@ -494,13 +494,14 @@ where
         (runtime, context): (TContext, Self::Context),
         mut ancestry: impl Ancestry<Block>,
         (): (),
-    ) -> Option<Block> {
+    ) -> Option<Digested<Block>> {
         let propose_start = Instant::now();
         let parent = ancestry.next().await?;
         match self.build(&runtime, context, &parent, propose_start).await {
             Ok(block) => {
-                info!(proposal.digest = %block.digest(), "constructed proposal");
-                Some(block)
+                let digest = block.digest();
+                info!(proposal.digest = %digest, "constructed proposal");
+                Some(Digested::precomputed(block, digest))
             }
             Err(_logged) => None,
         }
@@ -551,13 +552,13 @@ where
                 warn!("ancestry ended before yielding the parent; abstaining");
                 return std::future::pending().await;
             };
-            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(Arc::clone(&parent));
+            let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
             Some((parent, ceremony))
         } else {
             None
         };
 
-        let proposed_outcome = match self.verify_header(&block, &context).await {
+        let proposed_outcome = match self.verify_header(block.inner(), &context).await {
             Ok(proposed_outcome) => proposed_outcome,
             Err(reason) => {
                 warn!(%reason, "header could not be verified; failing block");
@@ -565,20 +566,20 @@ where
             }
         };
 
-        match self.executor.verify_block(context, (*block).clone()).await {
+        match self.executor.verify_block(context, block.clone()).await {
             Ok(Some(duration)) => {
                 self.estimator.on_block_verified(
                     block.height().get(),
                     ValidationLatencyWorkload::new(
-                        block.block().gas_used(),
-                        block.block().body().transaction_count(),
+                        block.inner().block().gas_used(),
+                        block.inner().block().body().transaction_count(),
                     ),
                     duration,
                 );
                 // The EL has checked timestamp encoding and parent ordering.
                 // Only the local clock gates voting: in deferred mode this
                 // delays certification, while notarization may happen earlier.
-                wait_until_timestamp(&runtime, block.timestamp_millis()).await;
+                wait_until_timestamp(&runtime, block.inner().timestamp_millis()).await;
             }
             Ok(None) => return false,
             Err(error) => {
@@ -595,7 +596,7 @@ where
             Some(outcome) => {
                 let (parent, ceremony) =
                     boundary.expect("`verify_header` decodes an outcome only for a boundary block");
-                self.verify_boundary_outcome(&parent, ceremony, &outcome)
+                self.verify_boundary_outcome(parent.inner(), ceremony, &outcome)
                     .await
                     .is_ok()
             }
@@ -608,18 +609,29 @@ impl Reporter for Inner {
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
         if let Update::Block(block, ack) = update {
-            // A finalized child's timestamp completes its parent's network sample if this
-            // node proposed the parent; the estimator ignores other parents. Finalized
-            // blocks make the child that counts the canonical one and cover this node's
-            // own children as well as other leaders'.
-            if let Some(ctx) = block.header().consensus_context {
-                let now = Instant::now();
-                self.estimator.on_child_block_built(
-                    now,
-                    (ctx.epoch, ctx.parent_view),
-                    ctx.view,
-                    block.timestamp_millis(),
-                );
+            // Only finalized children supply canonical sampling observations.
+            // Derive the parent's epoch from its height, not the child's epoch.
+            if let Some(ctx) = block.inner().header().consensus_context
+                && let Some(parent_height) = block.height().previous()
+            {
+                let parent_epoch = self
+                    .epoch_strategy
+                    .containing(parent_height)
+                    .expect("epoch strategy is for all heights");
+                if self.estimator.on_child_block_finalized(
+                    Instant::now(),
+                    ProposalKey {
+                        epoch: parent_epoch.epoch().get(),
+                        view: ctx.parent_view,
+                    },
+                    ProposalKey {
+                        epoch: ctx.epoch,
+                        view: ctx.view,
+                    },
+                    block.inner().timestamp_millis(),
+                ) {
+                    self.metrics.network_samples.metric().inc();
+                }
             }
             ack.acknowledge();
         }
@@ -639,6 +651,7 @@ async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    network_samples: Counter,
 }
 
 impl Metrics {
@@ -648,8 +661,13 @@ impl Metrics {
             "number of times the parent block timestamp was ahead of local time when proposing",
         );
 
+        let network_samples = context.counter(
+            "network_samples",
+            "number of network samples recorded from finalized successors of own proposals",
+        );
         Self {
             parent_ahead_of_local_time,
+            network_samples,
         }
     }
 }

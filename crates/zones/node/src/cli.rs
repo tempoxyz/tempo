@@ -714,11 +714,12 @@ pub struct ZoneArgs {
         env = "SEQUENCER_PROVER_ADDRESS",
         value_name = "HARDFORK=HOST:PORT",
         value_delimiter = ',',
-        requires_all = ["enable_prover", "prover_attestation_policy"]
+        requires = "enable_prover"
     )]
     pub prover_addresses: Vec<HardforkProverAddress>,
 
-    /// JSON PCR allowlist required to authenticate remote provers.
+    /// JSON PCR allowlist that overrides the compiled-in verifier PCRs used to authenticate
+    /// remote provers.
     #[arg(
         long = "sequencer.prover-attestation-policy",
         env = "SEQUENCER_PROVER_ATTESTATION_POLICY",
@@ -802,7 +803,9 @@ fn validate_deprecated_zone_id(configured: Option<u32>, derived: u32) -> eyre::R
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
+    use alloy_primitives::address;
     use clap::Parser as _;
+    use reth_evm::ConfigureEvm as _;
 
     use super::*;
     use zone_sequencer::MAX_WITHDRAWAL_BATCH_GAS;
@@ -815,8 +818,6 @@ mod tests {
 
     #[test]
     fn re_execute_parses_without_portal_address() {
-        use reth_chainspec::EthChainSpec as _;
-
         let parent = tempo_chainspec::spec::MODERATO.clone();
         let mut genesis = parent.genesis().clone();
         genesis.config.chain_id =
@@ -913,10 +914,6 @@ mod tests {
 
     #[tokio::test]
     async fn cli_evm_derives_portal_from_chain_spec() {
-        use alloy_evm::EvmFactory as _;
-        use reth_chainspec::EthChainSpec as _;
-        use reth_evm::ConfigureEvm as _;
-
         let parent = tempo_chainspec::spec::MODERATO.clone();
         for (zone_id, expected) in [
             (
@@ -935,11 +932,18 @@ mod tests {
                 std::sync::Arc::new(zone_chainspec::ZoneChainSpec::from_genesis(genesis).unwrap());
             let config =
                 super::cli_evm_config(spec, Some("http://localhost:8545".parse().unwrap()));
-            let evm = config
-                .evm_factory()
-                .create_evm(revm::database::EmptyDB::default(), Default::default());
+            let evm = config.evm_with_env(
+                evm2::evm::InMemoryDB::default(),
+                tempo_evm::TempoEvmEnv::default(),
+            );
             assert_eq!(
-                evm.ctx().journaled_state.database.l1_state().portal(),
+                evm.database_as::<zone_evm::L1OverlayDB<
+                    evm2::evm::Db<evm2::evm::InMemoryDB>,
+                    zone_l1::state::L1StateProvider,
+                >>()
+                .expect("zone database")
+                .l1_state()
+                .portal(),
                 expected
             );
         }
@@ -1020,18 +1024,16 @@ mod tests {
         assert!(local_prover.enable_prover);
         assert!(local_prover.prover_addresses.is_empty());
         assert!(local_prover.prover_attestation_policy.is_none());
-        let missing_policy = ZoneArgsParser::try_parse_from(
+        let compiled_pcrs = ZoneArgsParser::try_parse_from(
             common[..common.len() - 2]
                 .iter()
                 .copied()
-                .chain(["--sequencer.prover-address", "T12=old:5000"]),
+                .chain(["--sequencer.prover-address", "T13=new:5000"]),
         )
-        .unwrap_err();
-        assert!(
-            missing_policy
-                .to_string()
-                .contains("--sequencer.prover-attestation-policy")
-        );
+        .unwrap()
+        .zone;
+        assert_eq!(compiled_pcrs.prover_addresses.len(), 1);
+        assert!(compiled_pcrs.prover_attestation_policy.is_none());
         let error = ZoneArgsParser::try_parse_from(
             common
                 .into_iter()
@@ -1322,9 +1324,7 @@ mod tests {
     #[test]
     fn deposit_allowlist_is_enforced_only_when_enabled() {
         let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
-        let admin: Address = "0x00000000000000000000000000000000000000ad"
-            .parse()
-            .unwrap();
+        let admin = address!("0x00000000000000000000000000000000000000ad");
         let admin_arg = admin.to_string();
         let parse = |extra: &[&str]| {
             ZoneArgsParser::try_parse_from(common.iter().chain(extra))

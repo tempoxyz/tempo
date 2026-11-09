@@ -1,13 +1,6 @@
-//! The consensus application feeds the proposal budget estimator.
-//!
-//! The harness pins every node's network reservation
-//! (`EstimatorConfig::fixed`), but completed own proposals are still pushed
-//! into the window as network samples, so counting them shows that the hooks
-//! ran: `build()` records each own proposal's return, and the finalized child
-//! completes the sample, whether the node built that child itself or another
-//! leader did.
+//! Finalized successors of own proposals produce network sampling metrics.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use commonware_macros::test_traced;
 use commonware_runtime::{
@@ -16,7 +9,11 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{Setup, metrics::wait_for_height, setup_validators};
+use crate::{
+    Setup,
+    metrics::{Metrics, wait_for_height},
+    setup_validators,
+};
 
 /// Runs four validators until every one of them has seen height 20, then
 /// checks that each completed at least one network sample. With four signers
@@ -36,12 +33,16 @@ fn signers_sample_the_children_other_leaders_build() {
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
         join_all(nodes.iter().map(|node| wait_for_height(&context, node, 20))).await;
 
+        let metrics = Metrics::from_context(&context);
         for node in &nodes {
-            let snapshot = node.estimator.snapshot(Instant::now());
+            let samples = metrics
+                .for_scope(node)
+                .value::<u64>("application_network_samples_total")
+                .expect("consensus application registers the network sample counter");
             assert!(
-                snapshot.network_samples >= 1,
-                "node {} completed no network sample: {snapshot:?}",
-                node.uid(),
+                samples >= 1,
+                "node {} completed no network sample",
+                node.uid()
             );
         }
     });
