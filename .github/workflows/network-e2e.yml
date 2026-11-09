@@ -113,6 +113,7 @@ jobs:
       pull-requests: read
       packages: write
       id-token: write
+      attestations: write
     # Pinned CI actionlint 1.7.12 does not support the newer $/ syntax yet.
     uses: ./.github/workflows/docker.yml # zizmor: ignore[self-repository]
     secrets: inherit # zizmor: ignore[secrets-inherit]

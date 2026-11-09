@@ -59,6 +59,7 @@ jobs:
       pull-requests: read
       packages: write
       id-token: write
+      attestations: write
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -402,6 +403,81 @@ jobs:
             echo "Failed to sign $sign_failures image digest(s)" >&2
             exit 1
           fi
+
+      # Kyverno admits tempoxyz images only with registry-attached build provenance;
+      # cosign signatures above stay for consumers that verify with cosign. PR-head
+      # builds would attest unreviewed code as the dispatching ref, so they are skipped.
+      - name: Attest the ghcr.io tempo image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/tempo
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo']['containerimage.digest'] }}
+          push-to-registry: true
+
+      - name: Attest the Docker Hub tempo image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/tempoxyz/tempo
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo']['containerimage.digest'] }}
+          push-to-registry: true
+
+      - name: Attest the ghcr.io tempo-devnet image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/tempo-devnet
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-devnet']['containerimage.digest'] }}
+          push-to-registry: true
+
+      - name: Attest the Docker Hub tempo-devnet image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/tempoxyz/tempo-devnet
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-devnet']['containerimage.digest'] }}
+          push-to-registry: true
+
+      - name: Attest the ghcr.io tempo-localnet image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/tempo-localnet
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-localnet']['containerimage.digest'] }}
+          push-to-registry: true
+
+      - name: Attest the Docker Hub tempo-localnet image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/tempoxyz/tempo-localnet
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-localnet']['containerimage.digest'] }}
+          push-to-registry: true
+
+      - name: Attest the ghcr.io tempo-xtask image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/tempo-xtask
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-xtask']['containerimage.digest'] }}
+          push-to-registry: true
+
+      - name: Attest the Docker Hub tempo-xtask image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/tempoxyz/tempo-xtask
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-xtask']['containerimage.digest'] }}
+          push-to-registry: true
+
+      - name: Attest the ghcr.io tempo-fuzz image
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && inputs.pr_number == '' && fromJSON(steps.build-and-push.outputs.metadata)['tempo-fuzz']['containerimage.digest'] != null
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/tempo
+          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-fuzz']['containerimage.digest'] }}
+          push-to-registry: true
 
       # Network E2E dispatches its own suite; the generic event starts three others.
       - name: Publish event (sha tag)
