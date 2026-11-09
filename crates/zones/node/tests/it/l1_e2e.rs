@@ -2503,8 +2503,9 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
 }
 
 /// With portal access open, an uninitialized sequencer deposit allowlist credits every sender.
-/// Once written, it credits listed senders, bounces unlisted senders back to their Tempo refund
-/// recipient, and applies list updates without a restart.
+/// Once written, it credits listed senders, bounces deposits from unlisted senders or to unlisted
+/// zone recipients back to their Tempo refund recipient, and applies list updates without a
+/// restart.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -2538,7 +2539,7 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
 
     let mut listed = ZoneAccount::with_signer(listed_signer, &l1, &zone, portal_address);
     let mut unlisted = ZoneAccount::with_signer(unlisted_signer, &l1, &zone, portal_address);
-    l1.fund_user(listed.address(), AMOUNT).await?;
+    l1.fund_user(listed.address(), 2 * AMOUNT).await?;
     l1.fund_user(unlisted.address(), 3 * AMOUNT).await?;
     // Start the sequencer only after L1 setup so its shared signer cannot race the funding.
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
@@ -2552,36 +2553,19 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
 
     listed.deposit(AMOUNT, L1_TIMEOUT, &zone).await?;
 
-    let bounce_from = unlisted.submit_deposit(AMOUNT).await?;
     let portal = ZonePortal::new(portal_address, l1.provider());
-    poll_until(
-        Duration::from_secs(60),
-        Duration::from_millis(250),
-        "unlisted deposit bounce-back on L1",
-        || {
-            let portal = &portal;
-            let refund_recipient = unlisted.address();
-            async move {
-                let bounced = portal
-                    .DepositBounceBack_filter()
-                    .from_block(bounce_from)
-                    .query()
-                    .await?
-                    .into_iter()
-                    .any(|(event, _)| {
-                        event.tempoRefundRecipient == refund_recipient
-                            && event.amount + event.bouncebackFee == AMOUNT
-                    });
-                Ok(bounced.then_some(()))
-            }
-        },
-    )
-    .await?;
+    // A listed sender cannot credit an unlisted zone recipient.
+    let bounce_from = listed
+        .submit_deposit_with_memo(AMOUNT, unlisted.address(), B256::ZERO)
+        .await?;
+    wait_for_deposit_bounce(&portal, bounce_from, listed.address(), AMOUNT).await?;
+    let bounce_from = unlisted.submit_deposit(AMOUNT).await?;
+    wait_for_deposit_bounce(&portal, bounce_from, unlisted.address(), AMOUNT).await?;
     assert_eq!(
         zone.balance_of(ZONE_TOKEN_ADDRESS, unlisted.address())
             .await?,
         U256::from(AMOUNT),
-        "unlisted depositor was credited"
+        "unlisted account was credited"
     );
 
     allowlist.set(&[unlisted.address()], true)?;
@@ -2589,6 +2573,35 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
     assert_eq!(balance, U256::from(2 * AMOUNT));
 
     Ok(())
+}
+
+/// Wait for the portal to bounce an `amount` deposit made at or after L1 block `from` back to
+/// `refund_recipient`.
+async fn wait_for_deposit_bounce<P: Provider>(
+    portal: &ZonePortal::ZonePortalInstance<P>,
+    from: u64,
+    refund_recipient: Address,
+    amount: u128,
+) -> eyre::Result<()> {
+    poll_until(
+        Duration::from_secs(60),
+        Duration::from_millis(250),
+        "deposit bounce-back on L1",
+        || async move {
+            let bounced = portal
+                .DepositBounceBack_filter()
+                .from_block(from)
+                .query()
+                .await?
+                .into_iter()
+                .any(|(event, _)| {
+                    event.tempoRefundRecipient == refund_recipient
+                        && event.amount + event.bouncebackFee == amount
+                });
+            Ok(bounced.then_some(()))
+        },
+    )
+    .await
 }
 
 async fn get_deposit_allowlist(node: &ZoneTestNode) -> eyre::Result<Vec<Address>> {

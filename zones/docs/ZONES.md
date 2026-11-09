@@ -323,9 +323,10 @@ the imported transaction.
 ### Sequencer deposit allowlist
 
 With portal access mode off, anyone can deposit on L1. A sequencer started with
-`--deposits.allowlist` bounces deposits whose L1 sender is not on its local allowlist while it
-leads: the deposit fails decryption and refunds to its `tempoRefundRecipient`, minus the bounce-back
-fee. The check runs only on the leader, so each sequencer enforces its own copy of the list.
+`--deposits.allowlist` bounces deposits whose L1 sender or decrypted zone recipient is not on its
+local allowlist while it leads: the deposit fails decryption and refunds to its
+`tempoRefundRecipient`, minus the bounce-back fee. The check runs only on the leader, so each
+sequencer enforces its own copy of the list.
 
 Each sequencer stores its list in `<datadir>/deposit-allowlist.json`. The file is the whole
 state, and consensus does not replicate it. Manage it as carefully as the sequencer key: a
@@ -385,8 +386,6 @@ Limits:
 - The submission error tells a listed sender that a counterparty is not listed, so a listed
   account can check addresses one at a time.
 - Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
-- Deposit recipients are not checked, so a listed depositor can still credit an unlisted zone
-  address. That address can only withdraw.
 
 #### Flags and methods
 
@@ -956,7 +955,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
 | `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
-| `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json`, and reject zone transfers unless both parties are listed; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
+| `--deposits.allowlist` | false | Bounce deposits whose L1 sender or zone recipient is missing from `<datadir>/deposit-allowlist.json`, and reject zone transfers unless both parties are listed; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
 | `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers |
 | `--deposit-decryption-keys-file` | (optional) | File containing additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `--zone.batch-interval-blocks` | 120 | Zone blocks between empty withdrawal batch boundaries / L1 submissions (~1 minute at Tempo's 500 ms block time) |

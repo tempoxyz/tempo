@@ -424,21 +424,24 @@ impl DepositAllowlist {
             .map_err(|err| DepositAllowlistError::Internal(err.to_string()))?
     }
 
-    /// Replace the decryption data of every deposit whose sender is not allowed. An
-    /// uninitialized list allows every sender.
+    /// Replace the decryption data of every deposit whose sender or decrypted zone recipient is
+    /// not allowed. An uninitialized list allows every deposit.
     ///
     /// `senders` holds the L1 sender of each user deposit in queue order; `prepare_many` emits
-    /// exactly one entry in `decryptions` per user deposit in the same order. Returns the number
-    /// of rejected deposits.
+    /// exactly one entry in `recipients` and `decryptions` per user deposit in the same order.
+    /// A `None` recipient failed decryption and is refunded anyway. Returns the number of rejected
+    /// deposits.
     pub fn reject_unlisted(
         &self,
         senders: &[Address],
+        recipients: &[Option<Address>],
         decryptions: &mut [DecryptionData],
     ) -> eyre::Result<usize> {
         ensure!(
-            senders.len() == decryptions.len(),
-            "{} deposit senders but {} decryptions",
+            senders.len() == decryptions.len() && recipients.len() == decryptions.len(),
+            "{} deposit senders and {} recipients but {} decryptions",
             senders.len(),
+            recipients.len(),
             decryptions.len()
         );
         let state = self.inner.state.read();
@@ -446,8 +449,10 @@ impl DepositAllowlist {
             return Ok(0);
         };
         let mut rejected = 0;
-        for (sender, decryption) in senders.iter().zip(decryptions) {
-            if !state.addresses.contains(sender) {
+        for ((sender, recipient), decryption) in senders.iter().zip(recipients).zip(decryptions) {
+            if !state.addresses.contains(sender)
+                || recipient.is_some_and(|recipient| !state.addresses.contains(&recipient))
+            {
                 *decryption = FAILED_DECRYPTION;
                 rejected += 1;
             }
@@ -837,7 +842,9 @@ mod tests {
         // An uninitialized list credits every sender.
         let mut decryptions = vec![valid_decryption()];
         assert_eq!(
-            allowlist.reject_unlisted(&[BOB], &mut decryptions).unwrap(),
+            allowlist
+                .reject_unlisted(&[BOB], &[Some(BOB)], &mut decryptions)
+                .unwrap(),
             0
         );
         assert_eq!(decryptions, vec![valid_decryption()]);
@@ -913,7 +920,7 @@ mod tests {
             let mut decryptions = vec![valid_decryption()];
             assert_eq!(
                 allowlist
-                    .reject_unlisted(&[ALICE], &mut decryptions)
+                    .reject_unlisted(&[ALICE], &[Some(ALICE)], &mut decryptions)
                     .unwrap(),
                 1
             );
@@ -1120,29 +1127,51 @@ mod tests {
     }
 
     #[test]
-    fn reject_unlisted_zeroes_only_unlisted_senders() {
+    fn reject_unlisted_zeroes_only_unlisted_senders_and_recipients() {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = alice_only(dir.path());
         let valid = valid_decryption();
-        let mut decryptions = vec![valid.clone(), valid.clone(), valid.clone()];
+        let mut decryptions = vec![valid.clone(); 5];
 
         let rejected = allowlist
-            .reject_unlisted(&[ALICE, BOB, ALICE], &mut decryptions)
+            .reject_unlisted(
+                &[ALICE, BOB, ALICE, BOB, ALICE],
+                &[Some(ALICE), Some(ALICE), Some(BOB), None, None],
+                &mut decryptions,
+            )
             .unwrap();
 
-        assert_eq!(rejected, 1);
-        assert_eq!(decryptions[0], valid);
-        assert_eq!(decryptions[1], FAILED_DECRYPTION);
-        assert_eq!(decryptions[2], valid);
+        assert_eq!(rejected, 3);
+        assert_eq!(
+            decryptions,
+            vec![
+                valid.clone(),
+                FAILED_DECRYPTION,
+                FAILED_DECRYPTION,
+                FAILED_DECRYPTION,
+                valid,
+            ]
+        );
     }
 
     #[test]
-    fn reject_unlisted_requires_one_decryption_per_sender() {
+    fn reject_unlisted_requires_one_decryption_per_deposit() {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = alice_only(dir.path());
 
-        let err = allowlist.reject_unlisted(&[ALICE], &mut []).unwrap_err();
-        assert_eq!(err.to_string(), "1 deposit senders but 0 decryptions");
+        for (senders, recipients) in [(&[ALICE][..], &[][..]), (&[][..], &[Some(ALICE)][..])] {
+            let err = allowlist
+                .reject_unlisted(senders, recipients, &mut [])
+                .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "{} deposit senders and {} recipients but 0 decryptions",
+                    senders.len(),
+                    recipients.len()
+                )
+            );
+        }
     }
 
     #[tokio::test]

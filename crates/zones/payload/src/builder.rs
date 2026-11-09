@@ -1221,6 +1221,7 @@ mod tests {
                     c: B256::ZERO,
                 },
             }],
+            recipients: vec![None],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };
