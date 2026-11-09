@@ -222,9 +222,10 @@ should surface sponsor errors to users and avoid assuming every valid Tempo AA t
 eligible for sponsorship.
 
 The local preflight is stateless signature and shape validation, not account authentication. It
-never reads chain state, so for configurable accounts it only proves that the owners of the embedded
-configuration signed, not that this configuration is the claimed account's current commitment. A
-stale or unrelated configuration can still reach the sponsor. Sponsor services must treat the
-recovered sender as an unauthenticated hint and compare the claimed account configuration with
-current chain state before applying identity-based policy, quotas, accounting, or signing. The node
-enforces the live commitment before fee collection or execution.
+never reads chain state. For keychain signatures it only proves that some access key signed, not
+that the key is authorized for the claimed account. For configurable accounts it only proves that
+the owners of the embedded configuration signed, not that this configuration is the claimed
+account's current commitment. Either way, a transaction naming any account can still reach the
+sponsor. Sponsor services must treat the recovered sender as an unauthenticated hint and verify the
+claimed account against current chain state before applying identity-based policy, quotas,
+accounting, or signing. The node enforces access-key authorization and the live commitment before fee collection or execution.

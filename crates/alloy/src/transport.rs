@@ -17,11 +17,12 @@
 //! them to sponsor signing and preserves them only for the final default-transport broadcast.
 //!
 //! The local preflight is stateless: it checks the transaction's shape and that its signature
-//! recovers, but never reads chain state. For configurable accounts it only proves that the
-//! embedded configuration's owners signed, not that the configuration matches the claimed
-//! account's current commitment, so the recovered sender is an unauthenticated hint. Sponsor
-//! services must check the claim against chain state before applying identity-based policy,
-//! quotas, accounting, or signing; the node enforces the commitment before execution.
+//! recovers, but never reads chain state. For keychain signatures it only proves that some access
+//! key signed, not that the key is authorized for the claimed account; for configurable accounts
+//! it only proves that the embedded configuration's owners signed, not that the configuration
+//! matches the claimed account's current commitment. In both cases the recovered sender is an
+//! unauthenticated hint. Sponsor services must check the claim against chain state before applying
+//! identity-based policy, quotas, accounting, or signing; the node enforces it before execution.
 
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_eips::Decodable2718;
@@ -63,7 +64,7 @@ pub enum SponsorshipMode {
 /// auth, middleware, retry policy, proxies, or dynamic headers.
 ///
 /// The local preflight is stateless signature and shape validation, not account authentication:
-/// a configurable-account sender recovered here may name a stale or unrelated configuration.
+/// a keychain or configurable-account sender recovered here may be any account the caller names.
 /// Sponsors must verify the claimed account against chain state before identity-dependent work.
 ///
 /// The relay transport MUST point to a sponsor service.
@@ -448,7 +449,8 @@ fn decode_tempo_aa(raw_tx: &str, non_aa_error: &'static str) -> Result<AASigned,
     }
 }
 
-/// Stateless check only: configurable-account commitments are verified by the node, not here.
+/// Stateless check only: keychain access keys and configurable-account commitments are verified by
+/// the node, not here.
 fn recover_tempo_aa_signer(tx: AASigned) -> Result<AASigned, TransportError> {
     tx.recover_signer()
         .map_err(TransportErrorKind::non_retryable)?;
