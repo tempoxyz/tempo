@@ -212,10 +212,10 @@ fn calculate_key_authorization_gas(
 ) -> (u64, u64) {
     // The base 21k includes one ecrecover, for the transaction's own signature. The key
     // authorization's signature is verified on top of that, so it pays the full verification gas.
-    let sig_gas = key_auth.signature.verification_gas().unwrap_or(u64::MAX);
+    let sig_gas = key_auth.signature().verification_gas().unwrap_or(u64::MAX);
 
     let num_limits = key_auth
-        .authorization
+        .authorization()
         .limits
         .as_ref()
         .map(|limits| limits.len() as u64)
@@ -242,7 +242,7 @@ fn calculate_key_authorization_gas(
         let mut num_sstores = 1 + limit_slots;
 
         if spec.is_t3() {
-            num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
+            num_sstores += call_scope_storage_slots(key_auth.authorization(), spec);
         }
 
         let mut sstore_cost = gas_params.get(GasId::SstoreSetWithoutLoadCost);
@@ -263,7 +263,7 @@ fn calculate_key_authorization_gas(
 
         // T4+: include extra gas for call scopes configuration
         if spec.is_t4() {
-            regular_gas += call_scope_extra_gas(&key_auth.authorization);
+            regular_gas += call_scope_extra_gas(key_auth.authorization());
         }
 
         // TIP-1016: each storage-creating SSTORE also incurs state gas.
@@ -590,7 +590,8 @@ fn validate_key_authorization(
                         .into(),
                 });
             }
-            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type()
+            if key_auth.signature().signature_type()
+                != keychain_signature.signature.signature_type()
             {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
@@ -753,7 +754,7 @@ fn prepare_keychain(
             .authorizing_account()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
-            let signature_type: u8 = key_authorization.signature.signature_type().into();
+            let signature_type: u8 = key_authorization.signature().signature_type().into();
             let signer_is_admin = state.loaded_key.as_ref().is_some_and(|loaded| {
                 loaded.key_id == signer
                     && loaded.key.signature_type as u8 == signature_type

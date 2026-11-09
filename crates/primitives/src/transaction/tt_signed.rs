@@ -119,7 +119,7 @@ impl AASigned {
                 .tx
                 .key_authorization
                 .as_ref()
-                .is_some_and(|auth| auth.signature.is_configurable_account())
+                .is_some_and(|auth| auth.signature().is_configurable_account())
     }
 
     /// Recovers the sender and verifies any configurable account owner quorum signing an inline key
@@ -130,7 +130,7 @@ impl AASigned {
     ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         let signer = self.signature.recover_signer(sig_hash)?;
         if let Some(auth) = &self.tx.key_authorization
-            && let Some(signature) = auth.signature.as_configurable_account()
+            && let Some(signature) = auth.signature().as_configurable_account()
         {
             signature
                 .verify_approvals(auth.signature_hash())

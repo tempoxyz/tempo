@@ -241,7 +241,7 @@ impl TempoPooledTransaction {
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let key_id = key_authorization.recover_signer().ok()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             let fee_token = self.effective_fee_token();
@@ -262,12 +262,12 @@ impl TempoPooledTransaction {
             let aa_tx = self.inner().as_aa()?;
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             Some(KeyAuthorizationTargetSubject {
                 account,
-                key_id: key_authorization.authorization.key_id,
+                key_id: key_authorization.authorization().key_id,
             })
         })
     }
@@ -279,7 +279,7 @@ impl TempoPooledTransaction {
             .tx()
             .key_authorization
             .as_ref()?
-            .authorization
+            .authorization()
             .witness()?;
         Some(KeyAuthorizationWitnessSubject {
             account: *self.sender_ref(),
@@ -1252,7 +1252,7 @@ mod tests {
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
         // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
         tx.key_authorization
-            .take_if(|auth| auth.signature.is_configurable_account());
+            .take_if(|auth| auth.signature().is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
         let raw = envelope.encoded_2718();
         let encoded_length = raw.len();

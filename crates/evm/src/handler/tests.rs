@@ -1193,10 +1193,12 @@ fn test_key_authorization_gas_with_limits() {
     let t5_sload = t5_gas_params.get(GasId::WarmStorageReadCost)
         + t5_gas_params.get(GasId::ColdStorageAdditionalCost);
     let base_t5_key_auth = create_key_auth(0);
-    let mut witness_t5_key_auth = create_key_auth(0);
-    witness_t5_key_auth.authorization = witness_t5_key_auth
-        .authorization
-        .with_witness(B256::repeat_byte(0x53));
+    let witness_t5_key_auth = create_key_auth(0);
+    let witness_t5_key_auth = witness_t5_key_auth
+        .authorization()
+        .clone()
+        .with_witness(B256::repeat_byte(0x53))
+        .into_signed(witness_t5_key_auth.signature().clone());
 
     let (base_t5_gas, base_t5_state_gas) =
         calculate_key_authorization_gas(&base_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
@@ -1216,16 +1218,24 @@ fn test_key_authorization_gas_with_limits() {
 
     let t6_gas_params = tempo_gas_params(TempoHardfork::T6);
     let base_t6_key_auth = create_key_auth(0);
-    let mut account_bound_t6_key_auth = create_key_auth(0);
-    account_bound_t6_key_auth.authorization = account_bound_t6_key_auth
-        .authorization
-        .with_account(Address::random());
-    let mut admin_t6_key_auth = create_key_auth(0);
-    admin_t6_key_auth.authorization = admin_t6_key_auth
-        .authorization
-        .into_admin(Address::random());
-    let mut unbound_admin_t6_key_auth = create_key_auth(0);
-    unbound_admin_t6_key_auth.authorization.is_admin = true;
+    let account_bound_t6_key_auth = create_key_auth(0);
+    let account_bound_t6_key_auth = account_bound_t6_key_auth
+        .authorization()
+        .clone()
+        .with_account(Address::random())
+        .into_signed(account_bound_t6_key_auth.signature().clone());
+    let admin_t6_key_auth = create_key_auth(0);
+    let admin_t6_key_auth = admin_t6_key_auth
+        .authorization()
+        .clone()
+        .into_admin(Address::random())
+        .into_signed(admin_t6_key_auth.signature().clone());
+    let unbound_admin_t6_key_auth = create_key_auth(0);
+    let unbound_admin_t6_key_auth = KeyAuthorization {
+        is_admin: true,
+        ..unbound_admin_t6_key_auth.authorization().clone()
+    }
+    .into_signed(unbound_admin_t6_key_auth.signature().clone());
 
     let (base_t6_gas, base_t6_state_gas) =
         calculate_key_authorization_gas(&base_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
@@ -1372,7 +1382,11 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
         TempoHardfork::T4,
     );
     assert_eq!(
-        regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
+        regular
+            - ECRECOVER_GAS
+            - load
+            - 2_000
+            - call_scope_extra_gas(authorization.authorization()),
         20_000
     );
     assert_eq!(state, 230_000);
@@ -1392,7 +1406,11 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
     );
     assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 5_000);
     assert_eq!(
-        regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
+        regular
+            - ECRECOVER_GAS
+            - load
+            - 2_000
+            - call_scope_extra_gas(authorization.authorization()),
         tempo_chainspec::constants::gas::SSTORE_CREATE_COST
     );
     assert_eq!(state, 0);
