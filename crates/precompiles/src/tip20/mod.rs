@@ -391,7 +391,7 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
     /// - `LogoURITooLong` — `bytes(newLogoURI).length > 256`
     /// - `InvalidLogoURI` — `newLogoURI` is non-empty and either has no
-    ///   parseable scheme (RFC 3986 `3.1) or its scheme is not in
+    ///   parseable scheme (RFC 3986 §3.1) or its scheme is not in
     ///   [`Self::ALLOWED_LOGO_URI_SCHEMES`]
     pub fn set_logo_uri(
         &mut self,

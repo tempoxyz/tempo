@@ -669,5 +669,5 @@ TIP-1026 adds a `logoURI` field to TIP-20 tokens — mutable by the token admin 
 
 These verify correct behavior when the specific function is called:
 
-- **TEMPO-1026-1**: `setLogoURI` reverts with `LogoURITooLong` when `bytes(newLogoURI).length > 256`; reverts with `InvalidLogoURI` when the URI is non-empty and either has no parseable scheme (RFC 3986 `3.1) or its scheme is not in the allowlist; reverts with `Unauthorized` for non-admin callers; on success, persists the URI with length ≤ 256 bytes.
+- **TEMPO-1026-1**: `setLogoURI` reverts with `LogoURITooLong` when `bytes(newLogoURI).length > 256`; reverts with `InvalidLogoURI` when the URI is non-empty and either has no parseable scheme (RFC 3986 §3.1) or its scheme is not in the allowlist; reverts with `Unauthorized` for non-admin callers; on success, persists the URI with length ≤ 256 bytes.
 - **TEMPO-1026 factory**: the 7-arg `createToken` overload validates `logoURI` atomically — a rejected URI must revert and leave the predicted address undeployed. On success, the new token is deployed at the address returned by `getTokenAddress` and `logoURI()` returns the supplied value.

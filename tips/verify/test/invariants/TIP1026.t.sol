@@ -250,7 +250,7 @@ contract TIP1026InvariantTest is InvariantBaseTest {
     ///      scheme is allowlisted — so e.g. `"https:"`, `"https:/"`, `"http:"`,
     ///      `"ipfs:"`, `"data:"` are all accepted (`split_once(':')` yields
     ///      the allowlisted scheme name and an empty / partial path is fine
-    ///      per RFC 3986 `3.1). `len == 0` returns `("", false)` — callers
+    ///      per RFC 3986 §3.1). `len == 0` returns `("", false)` — callers
     ///      handle empty as a separate accepted case.
     function _buildUri(
         uint256 schemeSeed,
@@ -284,7 +284,7 @@ contract TIP1026InvariantTest is InvariantBaseTest {
 
         // Accepted iff the slice contains the scheme's `:` AND the scheme is
         // allowlisted. The protocol parses the scheme as everything before
-        // the first `:` (RFC 3986 `3.1), so e.g. `"https:"` is acceptable
+        // the first `:` (RFC 3986 §3.1), so e.g. `"https:"` is acceptable
         // even though the trailing `//` was truncated.
         wellFormedAllowed = (idx < 4) && (len > colonPos[idx]);
         return (string(out), wellFormedAllowed);
