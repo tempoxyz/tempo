@@ -82,11 +82,11 @@ impl TempoAaTx {
                     signed: ConfigurableRoleSigned::Transaction,
                 }),
                 TempoSignature::Keychain(keychain) => keychain
-                    .signature
+                    .signature()
                     .as_configurable_account()
                     .map(|signature| ConfigurableRole {
                         signature,
-                        signed: ConfigurableRoleSigned::Keychain(keychain.user_address),
+                        signed: ConfigurableRoleSigned::Keychain(keychain.user_address()),
                     }),
                 TempoSignature::Primitive(_) => None,
             },
@@ -426,7 +426,7 @@ fn validate_root_keys(
         check(host, fee_payer, RootKeyRole::FeePayer)?;
     }
     if let Some(keychain) = aa.signature().as_keychain()
-        && !keychain.signature.is_configurable_account()
+        && !keychain.signature().is_configurable_account()
         && let Some(key_id) = access_key_id(aa, envelope.execution_context())?
     {
         check(host, key_id, RootKeyRole::AccessKey)?;

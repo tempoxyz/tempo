@@ -463,13 +463,14 @@ pub enum KeychainVersionError {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
-    pub user_address: Address,
+    user_address: Address,
     /// Direct primitive approval or configurable account owner quorum from the access key.
-    pub signature: AccountSignature,
+    signature: AccountSignature,
     /// Keychain signature version (V1 = legacy, V2 = includes user_address in sig hash)
     #[cfg_attr(feature = "serde", serde(default))]
-    pub version: KeychainVersion,
-    /// Cached access key ID recovered from the inner signature.
+    version: KeychainVersion,
+    /// Cached access key ID recovered from the inner signature, keyed by the digest it was
+    /// recovered for.
     /// This is an implementation detail - use `key_id()` to access.
     /// Uses OnceLock for thread-safe interior mutability.
     /// Note: Excluded from PartialEq, Eq, Hash, and Compact as it's a cache.
@@ -481,7 +482,7 @@ pub struct KeychainSignature {
             skip_deserializing,
         )
     )]
-    cached_key_id: OnceLock<Address>,
+    cached_key_id: OnceLock<(B256, Address)>,
 }
 
 impl KeychainSignature {
@@ -510,6 +511,17 @@ impl KeychainSignature {
         }
     }
 
+    /// Returns the root account address that this transaction is being executed for.
+    pub const fn user_address(&self) -> Address {
+        self.user_address
+    }
+
+    /// Returns the direct primitive approval or configurable account owner quorum from the
+    /// access key.
+    pub const fn signature(&self) -> &AccountSignature {
+        &self.signature
+    }
+
     /// Compute the effective signature hash for key recovery.
     ///
     /// - V1: returns `sig_hash` directly (legacy, deprecated)
@@ -535,16 +547,17 @@ impl KeychainSignature {
         if self.is_legacy() && self.signature.is_configurable_account() {
             return Err(RecoveryError::new());
         }
-        // Check if already cached
-        if let Some(cached) = self.cached_key_id.get() {
-            return Ok(*cached);
+        if let Some((cached_sig_hash, cached_key_id)) = self.cached_key_id.get()
+            && cached_sig_hash == sig_hash
+        {
+            return Ok(*cached_key_id);
         }
 
-        // Not cached - recover and cache
         let effective_hash = self.effective_sig_hash(sig_hash);
         let key_id = self.signature.recover_account(&effective_hash)?;
+        // Only the first recovered digest is cached; other digests are recovered on every call.
         #[allow(clippy::useless_conversion)]
-        let _ = self.cached_key_id.set(key_id.into());
+        let _ = self.cached_key_id.set((*sig_hash, key_id).into());
         Ok(key_id)
     }
 
@@ -1301,12 +1314,15 @@ fn verify_webauthn_data_internal(
 }
 
 #[cfg(feature = "serde")]
-/// Helper function to serialize a [`OnceLock`] as an [`Option`] if it's initialized.
-fn serialize_once_lock<S>(value: &OnceLock<Address>, serializer: S) -> Result<S::Ok, S::Error>
+/// Helper function to serialize a cached key ID as an [`Option`] if it's initialized.
+fn serialize_once_lock<S>(
+    value: &OnceLock<(B256, Address)>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    serde::Serialize::serialize(&value.get(), serializer)
+    serde::Serialize::serialize(&value.get().map(|(_, key_id)| key_id), serializer)
 }
 
 #[cfg(test)]

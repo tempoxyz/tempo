@@ -356,7 +356,7 @@ async fn validate_keychain_signature(
     digest: &alloy_primitives::B256,
 ) -> Result<alloy_primitives::Address, AuthenticateError> {
     let expected_signature_type: KeyInfoSignatureType = keychain_signature
-        .signature
+        .signature()
         .primitive_signature_type()
         .ok_or(AuthError::InvalidSignature)?
         .into();

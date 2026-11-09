@@ -225,7 +225,7 @@ impl TempoPooledTransaction {
         let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
         let fee_token = self.effective_fee_token();
         Some(KeychainSubject {
-            account: keychain_sig.user_address,
+            account: keychain_sig.user_address(),
             key_id,
             fee_token,
         })

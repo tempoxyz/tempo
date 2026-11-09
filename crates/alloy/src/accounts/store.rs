@@ -4242,7 +4242,7 @@ mod tests {
         let TempoSignature::Keychain(signature) = signed.signature() else {
             panic!("expected keychain signature");
         };
-        assert_eq!(signature.user_address, ROOT.parse::<Address>().unwrap());
+        assert_eq!(signature.user_address(), ROOT.parse::<Address>().unwrap());
         assert!(!signature.is_legacy());
         assert_eq!(
             signature.key_id(&signed.signature_hash()).unwrap(),
@@ -4277,7 +4277,7 @@ mod tests {
         let TempoSignature::Keychain(signature) = signed.signature() else {
             panic!("expected keychain signature");
         };
-        assert_eq!(signature.user_address, account);
+        assert_eq!(signature.user_address(), account);
         assert!(!signature.is_legacy());
         assert_eq!(signature.key_id(&signed.signature_hash()).unwrap(), key_id);
     }

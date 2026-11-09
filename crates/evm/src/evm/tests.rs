@@ -990,11 +990,11 @@ fn test_tempo_tx() -> eyre::Result<()> {
 
     // Validate KeychainSignature properties
     // KeychainSignature user_address should match the caller
-    assert_eq!(keychain_sig.user_address, caller,);
+    assert_eq!(keychain_sig.user_address(), caller,);
 
     // Verify the inner signature is WebAuthn
     assert!(matches!(
-        keychain_sig.signature,
+        keychain_sig.signature(),
         AccountSignature::Primitive(PrimitiveSignature::WebAuthn(_))
     ));
 

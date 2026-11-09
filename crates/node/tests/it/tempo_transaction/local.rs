@@ -2430,7 +2430,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
         vec![create_balance_of_call(bob_addr)],
         2_000_000,
     );
-    let inner = alice_sig.as_keychain().unwrap().signature.clone();
+    let inner = alice_sig.as_keychain().unwrap().signature().clone();
     let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
     let replay_tx: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
@@ -2465,7 +2465,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
         vec![create_balance_of_call(bob_addr)],
         2_000_000,
     );
-    let inner = alice_sig.as_keychain().unwrap().signature.clone();
+    let inner = alice_sig.as_keychain().unwrap().signature().clone();
     let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
     let replay_env: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup

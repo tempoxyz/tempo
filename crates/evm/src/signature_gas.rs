@@ -13,7 +13,7 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
     match signature {
         TempoSignature::Primitive(primitive_sig) => primitive_sig.intrinsic_verification_gas(),
         TempoSignature::Keychain(keychain_sig) => {
-            match &keychain_sig.signature {
+            match keychain_sig.signature() {
                 AccountSignature::Primitive(signature) => signature.intrinsic_verification_gas(),
                 // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
                 AccountSignature::ConfigurableAccount(signature) => {

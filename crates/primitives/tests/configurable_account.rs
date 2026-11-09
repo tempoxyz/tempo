@@ -1291,12 +1291,14 @@ fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
         envelope.as_keychain().unwrap().key_id(&B256::ZERO).unwrap(),
         configurable_account.account()
     );
-    // Changing the version must reject the envelope even with a cached key ID.
-    let mut keychain = envelope.as_keychain().unwrap().clone();
-    keychain.version = KeychainVersion::V1;
+    // Serde accepts a V1 envelope around a configurable account approval; `key_id` rejects it.
+    let mut keychain = serde_json::to_value(envelope.as_keychain().unwrap()).unwrap();
+    keychain["version"] = "v1".into();
+    let keychain: KeychainSignature = serde_json::from_value(keychain).unwrap();
+    assert!(keychain.is_legacy());
     assert!(keychain.key_id(&B256::ZERO).is_err());
     assert!(matches!(
-        envelope.as_keychain().unwrap().signature,
+        envelope.as_keychain().unwrap().signature(),
         AccountSignature::ConfigurableAccount(_)
     ));
     let mut legacy = encoded.to_vec();

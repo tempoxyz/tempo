@@ -120,14 +120,14 @@ impl SignatureVerifier {
         if keychain_sig.is_legacy() {
             return Err(SignatureVerifierError::invalid_format().into());
         }
-        let AccountSignature::Primitive(signature) = &keychain_sig.signature else {
+        let AccountSignature::Primitive(signature) = keychain_sig.signature() else {
             return Err(SignatureVerifierError::invalid_format().into());
         };
 
-        let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
+        let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address());
         let key_id = self.recover_primitive(signing_hash, signature)?;
         Ok(RecoveredKeychainKey {
-            account: keychain_sig.user_address,
+            account: keychain_sig.user_address(),
             key_id,
             signature_type: signature.signature_type(),
         })
