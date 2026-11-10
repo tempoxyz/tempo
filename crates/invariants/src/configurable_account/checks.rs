@@ -441,7 +441,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             (!unknown).then_some(Verdict::Holds)
         },
     },
-    // A key-type-3 grant is used only by its delegate's quorum, never by an ordinary access key.
+    // An access key using a grant made in the same transaction signs as the grant's key type.
     // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L177>
     check! {
         id: "TEMPO-ACCOUNT-GRANT-TYPE",
@@ -449,17 +449,23 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             step.tx
                 .iter()
                 .filter(|tx| tx.authority.active)
-                .filter_map(|tx| tx.authority.grant)
-                .filter(|g| g.key_type == CONFIGURABLE_KEY_TYPE)
-                .map(|g| g.key_id)
+                .filter_map(|tx| {
+                    let grant = tx.authority.grant?;
+                    tx.authority
+                        .access_keys()
+                        .any(|(key, _)| key == grant.key_id)
+                        .then_some(grant.key_id)
+                })
         },
-        judge: |s, key_id| {
+        judge: |s, _| {
             let tx = s.tx.as_ref()?;
-            let ordinary = tx.authority.keys.contains(&Key {
-                role: Role::AccessKey,
-                account: *key_id,
-            });
-            ensure!(!ordinary, "a key-type-3 grant used by an ordinary access-key signature")
+            let grant = tx.authority.grant?;
+            ensure!(
+                tx.authority.access_key_type == Some(grant.key_type),
+                "signs as key type {:?} under its same-transaction grant of key type {}",
+                tx.authority.access_key_type,
+                grant.key_type
+            )
         },
     },
     // An access key signs as the key type its grant stores, except that a configurable
@@ -526,8 +532,17 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             }
             let by_access_key = tx.authority.keys.iter().any(|k| k.role == Role::AccessKey)
                 || tx.authority.quorums.iter().any(|q| q.role == Role::AccessKey);
+            // Only the one event recording the inline grant itself is exempt.
+            let events = grant_changes(s)
+                .into_iter()
+                .filter(|c| c.kind == GrantKind::Authorized && c.key == change.key)
+                .count();
             let inline = change.kind == GrantKind::Authorized
-                && tx.authority.grant.is_some_and(|g| g.key_id == change.key);
+                && events == 1
+                && tx
+                    .authority
+                    .grant
+                    .is_some_and(|g| g.key_id == change.key && change.key_type == Some(g.key_type));
             ensure!(
                 !by_access_key || inline,
                 "changed in a transaction an access key signed"
@@ -665,6 +680,8 @@ struct GrantChange {
     kind: GrantKind,
     account: Address,
     key: Address,
+    /// The key type an authorization stored.
+    key_type: Option<u8>,
 }
 
 impl std::fmt::Display for GrantChange {
@@ -680,11 +697,19 @@ impl std::fmt::Display for GrantChange {
 /// The grants the step's keychain events changed.
 fn grant_changes(step: &AccountStep) -> Vec<GrantChange> {
     let keychain = ACCOUNT_KEYCHAIN_ADDRESS;
-    let change = |kind, account, key| GrantChange { kind, account, key };
+    let change = |kind, account, key| GrantChange {
+        kind,
+        account,
+        key,
+        key_type: None,
+    };
     let mut changes: Vec<GrantChange> = step
         .events::<KeyAuthorized>(keychain)
         .into_iter()
-        .map(|e| change(GrantKind::Authorized, e.account, e.publicKey))
+        .map(|e| GrantChange {
+            key_type: Some(e.signatureType),
+            ..change(GrantKind::Authorized, e.account, e.publicKey)
+        })
         .collect();
     changes.extend(
         step.events::<AdminKeyAuthorized>(keychain)
