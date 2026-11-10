@@ -10,7 +10,7 @@ use crate::{
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
-use alloy_consensus::{BlockHeader, Transaction};
+use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, AddressSet, Entry, HashMap},
@@ -134,14 +134,23 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
-    /// Updates the 2d nonce pool with the given state changes.
+    /// Updates the 2d nonce pool with the given state changes and the new tip's timestamp.
+    ///
+    /// Pool maintenance calls this for every committed chain, including commits too deep for
+    /// [`TransactionPool::on_canonical_state_change`], so the time-locked eviction order never
+    /// runs on a stale tip timestamp.
     ///
     /// Returns mined AA transactions.
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
         state: &AddressMap<BundleAccount>,
+        tip_timestamp: u64,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
+        let (promoted, mined, discarded) = {
+            let mut aa_2d_pool = self.aa_2d_pool.write();
+            aa_2d_pool.set_tip_timestamp(tip_timestamp);
+            aa_2d_pool.on_state_updates(state)
+        };
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
@@ -1351,11 +1360,8 @@ where
         // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
         // keep ordering its eviction sets against a stale base fee once the fee starts moving.
         let pending_basefee = update.pending_block_base_fee;
-        let tip_timestamp = update.new_tip.timestamp();
         self.protocol_pool.on_canonical_state_change(update);
-        let mut aa_2d_pool = self.aa_2d_pool.write();
-        aa_2d_pool.set_base_fee(pending_basefee);
-        aa_2d_pool.set_tip_timestamp(tip_timestamp);
+        self.aa_2d_pool.write().set_base_fee(pending_basefee);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
@@ -2070,6 +2076,13 @@ mod tests {
             pool.protocol_pool.block_info().pending_basefee,
             pending_block_base_fee
         );
+    }
+
+    #[test]
+    fn aa_pool_state_updates_refresh_tip_timestamp() {
+        let pool = create_test_pool(create_provider_with_tip());
+        pool.notify_aa_pool_on_state_updates(&AddressMap::default(), 1_234);
+        assert_eq!(pool.aa_2d_pool.read().tip_timestamp(), 1_234);
     }
 
     #[test]

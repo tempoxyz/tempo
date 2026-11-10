@@ -114,13 +114,12 @@ pub struct AA2dPool {
     base_fee: u64,
     /// Timestamp of the latest canonical block.
     tip_timestamp: u64,
-    /// Every pooled transaction (regular 2D and expiring nonce) that carries `valid_after`,
-    /// keyed by `(valid_after, submission_id)`.
+    /// Pending transactions (regular 2D and expiring nonce) that carry `valid_after`.
     ///
     /// Transactions without `valid_after` are never inserted, so the index costs nothing for
-    /// them. The last entry is the transaction that becomes includable the latest, newest
-    /// submission first on ties.
-    time_locked: BTreeMap<(u64, u64), TxHash>,
+    /// them. Queued transactions are left out because evicting them doesn't relieve the pending
+    /// limit, so regular 2D entries follow pending promotions and demotions.
+    time_locked: TimeLockedTransactions,
     /// Tracks the number of transactions per sender for DoS protection.
     ///
     /// Bounded by pool size (max unique senders = pending_limit + queued_limit).
@@ -197,6 +196,12 @@ impl AA2dPool {
         self.base_fee
     }
 
+    /// Returns the tip timestamp time-locked transactions are compared against.
+    #[cfg(test)]
+    pub(crate) const fn tip_timestamp(&self) -> u64 {
+        self.tip_timestamp
+    }
+
     pub(crate) fn set_base_fee(&mut self, base_fee: u64) {
         if self.base_fee == base_fee {
             return;
@@ -211,21 +216,6 @@ impl AA2dPool {
     /// are still time-locked.
     pub(crate) fn set_tip_timestamp(&mut self, timestamp: u64) {
         self.tip_timestamp = timestamp;
-    }
-
-    /// Adds the transaction to the [`Self::time_locked`] index if it carries `valid_after`.
-    fn index_time_locked(&mut self, tx: &AA2dStoredTransaction) {
-        if let Some(valid_after) = tx.transaction.transaction.inner().valid_after() {
-            self.time_locked
-                .insert((valid_after, tx.submission_id), *tx.transaction.hash());
-        }
-    }
-
-    /// Removes the transaction from the [`Self::time_locked`] index.
-    fn unindex_time_locked(&mut self, tx: &AA2dStoredTransaction) {
-        if let Some(valid_after) = tx.transaction.transaction.inner().valid_after() {
-            self.time_locked.remove(&(valid_after, tx.submission_id));
-        }
     }
 
     fn rebuild_eviction_order(&mut self) {
@@ -378,7 +368,6 @@ impl AA2dPool {
             }
         };
         self.queued_size += transaction.transaction.size();
-        self.index_time_locked(&tx.inner);
 
         // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
         // This must happen after successful by_id insertion to avoid leaking slot entries
@@ -394,7 +383,6 @@ impl AA2dPool {
             self.by_hash.remove(replaced.inner.transaction.hash());
             // Remove from eviction set
             self.remove_eviction_key(replaced);
-            self.unindex_time_locked(&replaced.inner);
         }
 
         // insert transaction by hash
@@ -465,11 +453,13 @@ impl AA2dPool {
             let key = EvictionKey::with_base_fee(promoted_tx, promoted_id, self.base_fee);
             self.queued_eviction_order.remove(&key);
             self.pending_eviction_order.insert(key);
+            self.time_locked.insert(promoted_tx);
         }
 
         let key = EvictionKey::with_base_fee(&tx.inner, tx_id, self.base_fee);
         if inserted_as_pending {
             self.pending_eviction_order.insert(key);
+            self.time_locked.insert(&tx.inner);
         } else {
             self.queued_eviction_order.insert(key);
         }
@@ -566,10 +556,7 @@ impl AA2dPool {
         };
 
         // Insert into expiring nonce map and by_hash
-        if let Some(valid_after) = transaction.transaction.inner().valid_after() {
-            self.time_locked
-                .insert((valid_after, pending_tx.submission_id), tx_hash);
-        }
+        self.time_locked.insert(&pending_tx);
         expiring_nonce_entry.insert(pending_tx);
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
@@ -939,7 +926,6 @@ impl AA2dPool {
 
         // Remove from eviction set
         self.remove_eviction_key(&tx);
-        self.unindex_time_locked(&tx.inner);
 
         // Clean up cached nonce key slots if this was the last transaction of the sequence
         if self.by_id.range(id.seq_id.range()).next().is_none()
@@ -975,6 +961,7 @@ impl AA2dPool {
         let order = tx.inner.eviction_key(self.base_fee);
         if tx.is_pending() {
             self.pending_eviction_order.remove(&order);
+            self.time_locked.remove(&tx.inner);
         } else {
             self.queued_eviction_order.remove(&order);
         }
@@ -1092,6 +1079,7 @@ impl AA2dPool {
                 let key = EvictionKey::with_base_fee(&tx.inner, *id, self.base_fee);
                 self.pending_eviction_order.remove(&key);
                 self.queued_eviction_order.insert(key);
+                self.time_locked.remove(&tx.inner);
             }
         }
     }
@@ -1236,6 +1224,7 @@ impl AA2dPool {
                         );
                         self.queued_eviction_order.remove(&key);
                         self.pending_eviction_order.insert(key);
+                        self.time_locked.insert(&existing_tx.inner);
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -1262,6 +1251,7 @@ impl AA2dPool {
                         );
                         self.pending_eviction_order.remove(&key);
                         self.queued_eviction_order.insert(key);
+                        self.time_locked.remove(&existing_tx.inner);
                     }
                 }
             }
@@ -1384,15 +1374,13 @@ impl AA2dPool {
 
     /// Evicts one pending transaction, considering both regular 2D and expiring nonce txs.
     ///
-    /// A transaction whose `valid_after` is still in the future can't be included yet and so
-    /// never pays a fee in the meantime. It must not displace an executable transaction, so the
-    /// one that unlocks the latest (newest submission on ties) is evicted first. Otherwise the
-    /// transaction with lowest priority is evicted; ties broken by submission order (newer first).
+    /// A pending transaction whose `valid_after` is still in the future can't be included yet and
+    /// so never pays a fee in the meantime. It must not displace an executable transaction, so
+    /// the one that unlocks the latest (newest submission on ties) is evicted first. Otherwise
+    /// the transaction with lowest priority is evicted; ties broken by submission order (newer
+    /// first).
     fn evict_one_pending(&mut self) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        // The last entry unlocks the latest, so if it is not locked, none are.
-        if let Some((&(valid_after, _), &hash)) = self.time_locked.last_key_value()
-            && valid_after > self.tip_timestamp
-        {
+        if let Some(hash) = self.time_locked.latest_locked(self.tip_timestamp) {
             return self.remove_transaction_by_hash(&hash);
         }
 
@@ -1476,7 +1464,7 @@ impl AA2dPool {
         pending_tx: AA2dStoredTransaction,
     ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         self.by_hash.remove(pending_tx.transaction.hash());
-        self.unindex_time_locked(&pending_tx);
+        self.time_locked.remove(&pending_tx);
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
             let expiring_hash = pending_tx
                 .transaction
@@ -1689,29 +1677,21 @@ impl AA2dPool {
             self.expiring_nonce_txs.len(),
             self.expiring_nonce_eviction_order.len()
         );
-        let time_locked_txs = self
-            .by_hash
+        let pending_with_valid_after: BTreeMap<_, _> = self
+            .by_id
             .values()
-            .filter(|tx| tx.transaction.inner().valid_after().is_some())
-            .count();
+            .filter(|tx| tx.is_pending())
+            .map(|tx| &tx.inner)
+            .chain(self.expiring_nonce_txs.values())
+            .filter_map(|tx| {
+                let valid_after = tx.transaction.transaction.inner().valid_after()?;
+                Some(((valid_after, tx.submission_id), *tx.transaction.hash()))
+            })
+            .collect();
         assert_eq!(
-            self.time_locked.len(),
-            time_locked_txs,
-            "time_locked.len() ({}) != pooled txs with valid_after ({})",
-            self.time_locked.len(),
-            time_locked_txs
+            self.time_locked.0, pending_with_valid_after,
+            "time_locked must index exactly the pending txs with valid_after"
         );
-        for ((valid_after, _), hash) in &self.time_locked {
-            let tx = self
-                .by_hash
-                .get(hash)
-                .expect("time_locked entry must point at a pooled tx");
-            assert_eq!(
-                tx.transaction.inner().valid_after(),
-                Some(*valid_after),
-                "time_locked entry valid_after mismatch"
-            );
-        }
         assert_eq!(
             self.by_id.len(),
             self.pending_eviction_order.len() + self.queued_eviction_order.len(),
@@ -2102,6 +2082,36 @@ impl IndependentTransactions {
                 )
             })
             .collect()
+    }
+}
+
+/// Pending transactions that carry `valid_after`, keyed by `(valid_after, submission_id)`.
+///
+/// The last entry becomes includable the latest, newest submission first on ties.
+#[derive(Debug, Default)]
+struct TimeLockedTransactions(BTreeMap<(u64, u64), TxHash>);
+
+impl TimeLockedTransactions {
+    fn insert(&mut self, tx: &AA2dStoredTransaction) {
+        if let Some(valid_after) = tx.transaction.transaction.inner().valid_after() {
+            self.0
+                .insert((valid_after, tx.submission_id), *tx.transaction.hash());
+        }
+    }
+
+    fn remove(&mut self, tx: &AA2dStoredTransaction) {
+        if let Some(valid_after) = tx.transaction.transaction.inner().valid_after() {
+            self.0.remove(&(valid_after, tx.submission_id));
+        }
+    }
+
+    /// Returns the transaction that unlocks the latest if it can't be included at `timestamp`.
+    /// If that one isn't locked, none are.
+    fn latest_locked(&self, timestamp: u64) -> Option<TxHash> {
+        self.0
+            .last_key_value()
+            .filter(|((valid_after, _), _)| *valid_after > timestamp)
+            .map(|(_, hash)| *hash)
     }
 }
 
@@ -8302,7 +8312,7 @@ mod tests {
 
         assert!(add_and_collect_discarded(&mut pool, &executable).is_empty());
         assert!(add_and_collect_discarded(&mut pool, &locked_a).is_empty());
-        assert_eq!(pool.time_locked.len(), 1);
+        assert_eq!(pool.time_locked.0.len(), 1);
 
         // Same `valid_after`: the newest submission is evicted first.
         assert_eq!(
@@ -8316,7 +8326,7 @@ mod tests {
         );
         assert!(pool.contains(executable.hash()));
         assert!(pool.contains(locked_c.hash()));
-        assert_eq!(pool.time_locked.len(), 1);
+        assert_eq!(pool.time_locked.0.len(), 1);
 
         // Once the tip reaches `valid_after` nothing is locked and the tip-0 tx loses on priority.
         pool.set_tip_timestamp(140);
@@ -8331,7 +8341,7 @@ mod tests {
 
         // Removing the unlocked tx cleans the index.
         pool.remove_transactions([locked_c.hash()].into_iter());
-        assert!(pool.time_locked.is_empty());
+        assert!(pool.time_locked.0.is_empty());
         pool.assert_invariants();
     }
 
@@ -8354,14 +8364,14 @@ mod tests {
 
         assert!(add_and_collect_discarded(&mut pool, &locked_expiring).is_empty());
         assert!(add_and_collect_discarded(&mut pool, &executable).is_empty());
-        assert_eq!(pool.time_locked.len(), 1);
+        assert_eq!(pool.time_locked.0.len(), 1);
 
         assert_eq!(
             add_and_collect_discarded(&mut pool, &paying),
             vec![*locked_expiring.hash()]
         );
         assert!(pool.contains(executable.hash()));
-        assert!(pool.time_locked.is_empty());
+        assert!(pool.time_locked.0.is_empty());
         assert_expiring_eviction_index_len(&pool, 0);
 
         // Direct removal of a time-locked expiring tx cleans the index too.
@@ -8371,9 +8381,9 @@ mod tests {
             .valid_after(150)
             .build();
         add_and_collect_discarded(&mut pool, &locked_expiring);
-        assert_eq!(pool.time_locked.len(), 1);
+        assert_eq!(pool.time_locked.0.len(), 1);
         pool.remove_transactions([locked_expiring.hash()].into_iter());
-        assert!(pool.time_locked.is_empty());
+        assert!(pool.time_locked.0.is_empty());
         pool.assert_invariants();
     }
 
@@ -8405,7 +8415,53 @@ mod tests {
         assert!(pool.contains(child.hash()));
         assert!(pool.contains(executable.hash()));
         assert_eq!(pool.pending_and_queued_txn_count(), (1, 1));
-        assert!(pool.time_locked.is_empty());
+        assert!(pool.time_locked.0.is_empty());
+    }
+
+    #[test]
+    fn pending_eviction_keeps_queued_time_locked_txs() {
+        let mut pool = eviction_test_pool();
+        pool.set_tip_timestamp(100);
+
+        let sender = Address::random();
+        let lane = |nonce: u64| TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(nonce);
+        let executable = |tip: u128| {
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::from(2))
+                .max_priority_fee(tip)
+                .build()
+        };
+
+        // Queued behind a nonce gap, so it isn't indexed and doesn't relieve the pending limit.
+        let gapped = lane(1).valid_after(150).build();
+        add_and_collect_discarded(&mut pool, &gapped);
+        assert!(pool.time_locked.0.is_empty());
+
+        let (low, high) = (executable(1), executable(3));
+        add_and_collect_discarded(&mut pool, &high);
+        add_and_collect_discarded(&mut pool, &low);
+        assert_eq!(
+            add_and_collect_discarded(&mut pool, &executable(2)),
+            vec![*low.hash()]
+        );
+        assert!(pool.contains(gapped.hash()));
+
+        // Filling the gap promotes it to pending, where it is evicted first.
+        let head = lane(0).max_priority_fee(4).build();
+        let discarded = add_and_collect_discarded(&mut pool, &head);
+        assert_eq!(discarded.first(), Some(gapped.hash()));
+        assert!(pool.contains(head.hash()));
+        assert!(pool.time_locked.0.is_empty());
+
+        // A pending locked tx demoted behind a new gap leaves the index.
+        pool.remove_transactions([high.hash()].into_iter());
+        let locked_child = lane(1).valid_after(150).build();
+        assert!(add_and_collect_discarded(&mut pool, &locked_child).is_empty());
+        assert_eq!(pool.time_locked.0.len(), 1);
+        pool.remove_transactions([head.hash()].into_iter());
+        assert!(pool.contains(locked_child.hash()));
+        assert!(pool.time_locked.0.is_empty());
+        pool.assert_invariants();
     }
 
     #[test]
@@ -8425,24 +8481,25 @@ mod tests {
 
         let original = tx(Some(150), 1_000_000_000);
         add_and_collect_discarded(&mut pool, &original);
-        assert_eq!(pool.time_locked.len(), 1);
+        assert_eq!(pool.time_locked.0.len(), 1);
 
         let relocked = tx(Some(200), 2_000_000_000);
         add_and_collect_discarded(&mut pool, &relocked);
         assert!(!pool.contains(original.hash()));
         assert_eq!(
-            pool.time_locked.values().copied().collect::<Vec<_>>(),
+            pool.time_locked.0.values().copied().collect::<Vec<_>>(),
             vec![*relocked.hash()]
         );
         assert!(
             pool.time_locked
+                .0
                 .keys()
                 .all(|(valid_after, _)| *valid_after == 200)
         );
 
         let unlocked = tx(None, 4_000_000_000);
         add_and_collect_discarded(&mut pool, &unlocked);
-        assert!(pool.time_locked.is_empty());
+        assert!(pool.time_locked.0.is_empty());
 
         pool.remove_transactions([unlocked.hash()].into_iter());
         pool.assert_invariants();
