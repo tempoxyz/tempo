@@ -118,8 +118,10 @@ authenticated while importing that Tempo block; a proof that does not verify is
 retried like an unavailable response. When the RPC refuses a proof as outside its proof window (code
 `4444`), the checker skips the custody check for that block and increments
 `unproven_custody_blocks_total` if the anchor is more than 7,200 blocks
-(`MAX_L1_LOOKAHEAD_BLOCKS`) behind the latest Tempo block the node authenticated, as during replay after a
-rebuild. A refusal for a more recent anchor disables the checker.
+(`MAX_L1_LOOKAHEAD_BLOCKS`) behind the subscriber's Tempo tip (its latest
+authenticated block or announced finalized height), as during replay after a
+rebuild. A refusal for a more recent anchor is retried, and disables the checker
+once the Tempo retry budget is exhausted.
 
 A deterministic mismatch records one durable finding, freezes the verified tip,
 and continues acknowledging subsequent notifications while recording how far the

@@ -264,10 +264,9 @@ async fn fetch_l1_block_at(
 /// `state_root` with one `eth_getMultiProof` request.
 ///
 /// Returns [`PortalCustody::OutsideProofWindow`] only for anchors more than
-/// [`MAX_L1_LOOKAHEAD_BLOCKS`] behind the latest Tempo block `tracker` authenticated, such
-/// as during replay after a rebuild.
-/// A refused proof for a more recent anchor disables the checker because the RPC does not meet
-/// observe mode's proof-window requirement.
+/// [`MAX_L1_LOOKAHEAD_BLOCKS`] behind the Tempo tip `tracker` follows, such as during
+/// replay after a rebuild. A refused proof for a more recent anchor is unavailable: retried, and
+/// disabling the checker only once the retry budget runs out.
 pub(crate) async fn portal_balances(
     provider: &DynProvider<TempoNetwork>,
     tracker: &L1BlockTracker,
@@ -305,24 +304,31 @@ pub(crate) async fn portal_balances(
         Err(RpcError::ErrorResp(error))
             if error.code == i64::from(EthRpcErrorCode::PrunedHistory.code()) =>
         {
-            // Measure the distance from the authenticated tip, never one the RPC reports, so
-            // the RPC cannot make a recent anchor look old enough to skip.
-            let tip = tracker
-                .latest()
-                .ok_or_else(|| unavailable(eyre::eyre!("no authenticated Tempo tip yet")))?
-                .number;
+            // Measure from the subscriber's Tempo tip (its latest authenticated block or the
+            // finalized height it is ingesting toward), never from a number read for this request.
+            let tip = [
+                tracker.latest().map(|block| block.number),
+                tracker.finalized_target().map(|target| target.number),
+            ]
+            .into_iter()
+            .flatten()
+            .max()
+            .ok_or_else(|| unavailable(eyre::eyre!("no Tempo tip observed yet")))?;
             let distance = tip.checked_sub(anchor.number).ok_or_else(|| {
                 unavailable(eyre::eyre!(
-                    "authenticated Tempo tip {tip} is behind anchor {}",
+                    "Tempo tip {tip} is behind anchor {}",
                     anchor.number
                 ))
             })?;
             if distance > MAX_L1_LOOKAHEAD_BLOCKS {
                 return Ok(PortalCustody::OutsideProofWindow);
             }
-            return Err(disable(eyre::eyre!(
-                "Tempo RPC refused eth_getMultiProof for block {} at tip {tip}; observe mode \
-                 requires --rpc.eth-proof-window >= {MAX_L1_LOOKAHEAD_BLOCKS}",
+            // The RPC's own tip can run ahead of the subscriber's, so retry; the retry budget
+            // disables the checker when the RPC's proof window is really too small.
+            return Err(unavailable(eyre::eyre!(
+                "Tempo RPC refused eth_getMultiProof for block {} within {MAX_L1_LOOKAHEAD_BLOCKS} \
+                 blocks of Tempo tip {tip}; observe mode requires \
+                 --rpc.eth-proof-window >= {MAX_L1_LOOKAHEAD_BLOCKS}",
                 anchor.number
             )));
         }
@@ -912,14 +918,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refused_proofs_skip_only_anchors_outside_the_authenticated_window() {
+    async fn refused_proofs_skip_only_anchors_outside_the_subscriber_window() {
         let token = address!("20c0000000000000000000000000000000000001");
         let portal = Address::repeat_byte(0x20);
-        for tip in [
-            Some(BLOCK + MAX_L1_LOOKAHEAD_BLOCKS + 1),
-            Some(BLOCK + MAX_L1_LOOKAHEAD_BLOCKS),
-            Some(BLOCK - 1),
-            None,
+        let outside = BLOCK + MAX_L1_LOOKAHEAD_BLOCKS + 1;
+        let edge = BLOCK + MAX_L1_LOOKAHEAD_BLOCKS;
+        // (latest authenticated block, announced finalized target, skips)
+        for (latest, finalized, skips) in [
+            (Some(outside), None, true),
+            // Catching up: the finalized target is far ahead of what was ingested.
+            (Some(BLOCK), Some(outside), true),
+            (Some(edge), None, false),
+            (Some(BLOCK - 1), None, false),
+            (None, None, false),
         ] {
             let asserter = alloy_transport::mock::Asserter::new();
             let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -934,10 +945,13 @@ mod tests {
                 .unwrap(),
             );
             let tracker = L1BlockTracker::default();
-            if let Some(tip) = tip {
+            if let Some(latest) = latest {
                 tracker
-                    .record(BlockNumHash::new(tip, B256::repeat_byte(0x77)))
+                    .record(BlockNumHash::new(latest, B256::repeat_byte(0x77)))
                     .unwrap();
+            }
+            if let Some(finalized) = finalized {
+                tracker.record_finalized_target(finalized);
             }
 
             let result = portal_balances(
@@ -949,18 +963,13 @@ mod tests {
                 B256::repeat_byte(1),
             )
             .await;
-            match tip {
-                Some(tip) if tip > BLOCK + MAX_L1_LOOKAHEAD_BLOCKS => {
-                    assert_eq!(result.unwrap(), PortalCustody::OutsideProofWindow);
-                }
-                Some(tip) if tip >= BLOCK => assert!(
-                    matches!(&result, Err(L1ReadError::Disable(error)) if error.to_string().contains("--rpc.eth-proof-window")),
-                    "{result:?}"
-                ),
-                _ => assert!(
+            if skips {
+                assert_eq!(result.unwrap(), PortalCustody::OutsideProofWindow);
+            } else {
+                assert!(
                     matches!(&result, Err(L1ReadError::Unavailable(_))),
                     "{result:?}"
-                ),
+                );
             }
         }
     }
