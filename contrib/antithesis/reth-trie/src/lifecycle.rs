@@ -47,7 +47,19 @@ impl Campaign {
             !legacy.db().exists(),
             "legacy active-round database layout; resume with the old workload or use a fresh datadir"
         );
-        Ok(self.root.join("db"))
+        let database = self.root.join("db");
+        let ownership = self.root.join("database-owner.json");
+        if ownership.exists() {
+            let saved: String = serde_json::from_slice(&fs::read(&ownership)?)?;
+            ensure!(saved == "reth-trie-antithesis", "unrecognized campaign database owner");
+        } else {
+            ensure!(
+                !database.exists(),
+                "refusing to adopt an existing database without campaign ownership"
+            );
+            persist_json(&ownership, &"reth-trie-antithesis")?;
+        }
+        Ok(database)
     }
 
     /// Resume the active round or durably create it, rejecting changed restart configuration.
@@ -94,4 +106,45 @@ pub(crate) fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::rename(temporary, path)?;
     fs::File::open(path.parent().expect("campaign file has a parent"))?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn database_requires_campaign_ownership() {
+        let root = std::env::temp_dir().join(format!(
+            "reth-trie-owner-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let campaign =
+            Campaign::new(&Config { datadir: Some(root.clone()), ..Default::default() }).unwrap();
+        let database = root.join("db");
+        let ownership = root.join("database-owner.json");
+        fs::create_dir(&database).unwrap();
+        let sentinel = database.join("existing-data");
+        fs::write(&sentinel, b"preserve").unwrap();
+        assert_eq!(
+            campaign.database_path().unwrap_err().to_string(),
+            "refusing to adopt an existing database without campaign ownership"
+        );
+        assert_eq!(fs::read(&sentinel).unwrap(), b"preserve");
+        assert!(!ownership.exists());
+        fs::remove_dir_all(&database).unwrap();
+
+        assert_eq!(campaign.database_path().unwrap(), database);
+        fs::create_dir(&database).unwrap();
+        let restarted =
+            Campaign::new(&Config { datadir: Some(root.clone()), ..Default::default() }).unwrap();
+        assert_eq!(restarted.database_path().unwrap(), database);
+        persist_json(&ownership, &"another-workload").unwrap();
+        assert_eq!(
+            restarted.database_path().unwrap_err().to_string(),
+            "unrecognized campaign database owner"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 }
