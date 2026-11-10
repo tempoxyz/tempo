@@ -1541,15 +1541,16 @@ contract ZonePortal is IZonePortal {
     }
 
     /// @dev True when `signer` has a TIP-1108 configuration commitment, meaning `upgradeAccount`
-    ///      retired its primitive root key. Fails closed if the precompile read reverts.
+    ///      retired its primitive root key. Before T14 the precompile is absent and the call
+    ///      returns nothing, so no root is retired. Fails closed on a revert or malformed result.
     function _isRetiredRoot(address signer) internal view returns (bool) {
-        try IConfigurableAccount(CONFIGURABLE_ACCOUNT_ADDRESS).getConfigCommitment(signer) returns (
-            bytes32 commitment
-        ) {
-            return commitment != bytes32(0);
-        } catch {
-            return true;
-        }
+        (bool success, bytes memory output) = CONFIGURABLE_ACCOUNT_ADDRESS.staticcall(
+            abi.encodeCall(IConfigurableAccount.getConfigCommitment, (signer))
+        );
+        if (!success) return true;
+        if (output.length == 0) return false;
+        if (output.length != 32) return true;
+        return abi.decode(output, (bytes32)) != bytes32(0);
     }
 
     function _domainSeparator() internal view returns (bytes32) {

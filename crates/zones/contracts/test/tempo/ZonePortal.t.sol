@@ -1612,6 +1612,24 @@ contract ZonePortalTest is BaseTest {
         );
     }
 
+    /// @notice Before T14 the configurable-account precompile is absent and returns no data, so
+    /// no sequencer root key counts as retired.
+    function test_submitBatch_settlesWhenConfigurableAccountsAreAbsent() public {
+        address[] memory signers = _activateSequencerSet(2);
+        QuorumBatch memory batch = _quorumBatch();
+        bytes32 digest = _attestationDigestFor(portal, block.chainid, _attestationFor(batch));
+
+        vm.mockCall(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            abi.encodeWithSelector(IConfigurableAccount.getConfigCommitment.selector),
+            ""
+        );
+        _submitQuorumBatch(
+            portal, signers[0], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_B_KEY)
+        );
+        assertEq(portal.zoneHeight(), batch.nextZoneHeight);
+    }
+
     function test_adminCanPauseAndResumeDeposits() public {
         vm.prank(admin);
         portal.pauseDeposits(address(pathUSD));

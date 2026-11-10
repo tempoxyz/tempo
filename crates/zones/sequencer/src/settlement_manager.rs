@@ -4,14 +4,18 @@ use std::{
     time::Duration,
 };
 
+use alloy_network::TransactionBuilder as _;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_signer_local::PrivateKeySigner;
-use alloy_sol_types::SolValue as _;
+use alloy_sol_types::{SolCall as _, SolValue as _};
 use eyre::OptionExt as _;
 use parking_lot::Mutex;
-use tempo_alloy::TempoNetwork;
-use tempo_contracts::zones::ZonePortal;
+use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
+use tempo_contracts::{
+    precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount},
+    zones::ZonePortal,
+};
 use tokio::sync::mpsc;
 use tracing::info;
 use zone_chainspec::ZoneChainSpec;
@@ -94,7 +98,14 @@ impl SettlementManager {
         let signed =
             SignedSettlementAttestation::sign(attestation.clone(), self.domain, &self.signer)?;
         let digest = self.domain.settlement_digest(&attestation);
-        let mut signatures = BTreeMap::from([(self.signer.address(), signed.signature)]);
+        // The portal rejects a certificate carrying a root key that `upgradeAccount` retired
+        // (TIP-1112), so only signatures from unretired sequencers are collected.
+        let mut signatures = BTreeMap::new();
+        if self.is_retired_root(self.signer.address()).await? {
+            tracing::warn!(target: "zone::p2p", signer = %self.signer.address(), "Own sequencer root key is retired; settling with follower signatures only");
+        } else {
+            signatures.insert(self.signer.address(), signed.signature);
+        }
         let mut pending = self.pending.subscribe(digest)?;
 
         self.broadcast(&attestation, digest)?;
@@ -113,7 +124,14 @@ impl SettlementManager {
                         continue;
                     }
                     match signature.recover_signer(self.domain) {
-                        Ok(signer) => { signatures.entry(signer).or_insert(signature.signature); }
+                        Ok(signer) if signatures.contains_key(&signer) => {}
+                        Ok(signer) => {
+                            if self.is_retired_root(signer).await? {
+                                tracing::warn!(target: "zone::p2p", %signer, "Rejected settlement signature from retired root key");
+                            } else {
+                                signatures.insert(signer, signature.signature);
+                            }
+                        }
                         Err(error) => tracing::warn!(target: "zone::p2p", %error, "Rejected settlement signature"),
                     }
                 }
@@ -141,6 +159,22 @@ impl SettlementManager {
             attestation,
             signatures: signatures.into_values().collect(),
         })
+    }
+
+    /// Whether `signer`'s primitive root key was retired by `upgradeAccount`, as the portal checks
+    /// before counting its settlement signature.
+    async fn is_retired_root(&self, signer: Address) -> Result<bool, BatchSubmitError> {
+        let request = TempoTransactionRequest::default()
+            .with_to(CONFIGURABLE_ACCOUNT_ADDRESS)
+            .with_input(
+                IConfigurableAccount::getConfigCommitmentCall { account: signer }.abi_encode(),
+            );
+        let output = self
+            .l1_provider
+            .call(request)
+            .await
+            .map_err(|error| eyre::eyre!(error))?;
+        Ok(retired_from_commitment_output(&output)?)
     }
 
     async fn settlement_status(&self) -> Result<SettlementStatus, BatchSubmitError> {
@@ -240,6 +274,18 @@ impl SettlementManager {
             )));
         }
         Ok(())
+    }
+}
+
+/// Interprets a `getConfigCommitment` call result the way the portal does: before T14 the
+/// precompile is absent and returns nothing, so no root key is retired.
+fn retired_from_commitment_output(output: &[u8]) -> eyre::Result<bool> {
+    match output.len() {
+        0 => Ok(false),
+        32 => Ok(B256::from_slice(output) != B256::ZERO),
+        len => Err(eyre::eyre!(
+            "malformed configuration commitment of {len} bytes"
+        )),
     }
 }
 
@@ -368,6 +414,14 @@ mod tests {
             &PrivateKeySigner::random(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn retired_root_follows_commitment_output() {
+        assert!(!retired_from_commitment_output(&[]).unwrap());
+        assert!(!retired_from_commitment_output(&[0; 32]).unwrap());
+        assert!(retired_from_commitment_output(B256::repeat_byte(1).as_slice()).unwrap());
+        assert!(retired_from_commitment_output(&[1; 31]).is_err());
     }
 
     #[test]
