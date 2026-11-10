@@ -56,16 +56,19 @@ impl SignatureVerifier {
                 return Ok(false);
             }
             let signing_hash = KeychainSignature::signing_hash(hash, account);
-            if !self.verify_configurable_signature(delegate.account(), signing_hash, delegate)? {
+            let Some(commitment) =
+                self.verify_configurable_signature(delegate.account(), signing_hash, delegate)?
+            else {
                 return Ok(false);
-            }
-            return Ok(self
-                .active_key(
-                    account,
-                    delegate.account(),
-                    SignatureType::ConfigurableAccount,
-                )?
-                .is_some());
+            };
+            let Some(key) = self.active_key(account, delegate.account(), None)? else {
+                return Ok(false);
+            };
+            return AccountKeychain::accepts_signature_type(
+                &key,
+                SignatureType::ConfigurableAccount.into(),
+                || Ok(!commitment.is_zero()),
+            );
         }
         let recovered = self.recover_keychain_key(hash, &sig)?;
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
@@ -73,7 +76,7 @@ impl SignatureVerifier {
         }
 
         Ok(self
-            .active_key(account, recovered.key_id, recovered.signature_type)?
+            .active_key(account, recovered.key_id, Some(recovered.signature_type))?
             .is_some())
     }
 
@@ -101,7 +104,7 @@ impl SignatureVerifier {
             return Ok(true);
         }
         Ok(self
-            .active_key(account, recovered.key_id, recovered.signature_type)?
+            .active_key(account, recovered.key_id, Some(recovered.signature_type))?
             .is_some_and(|key| key.is_admin))
     }
 
@@ -110,14 +113,12 @@ impl SignatureVerifier {
         &self,
         account: Address,
         key_id: Address,
-        signature_type: SignatureType,
+        signature_type: Option<SignatureType>,
     ) -> Result<Option<AuthorizedKey>> {
         let timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let expected_type = self
-            .storage
-            .spec()
-            .is_t14()
-            .then_some(signature_type.into());
+        let expected_type = signature_type
+            .filter(|_| self.storage.spec().is_t14())
+            .map(Into::into);
         match AccountKeychain::new().validate_keychain_authorization(
             account,
             key_id,
@@ -171,7 +172,9 @@ impl SignatureVerifier {
         let Some(signature) = signature.as_configurable_account() else {
             return Err(SignatureVerifierError::invalid_format().into());
         };
-        self.verify_configurable_signature(account, hash, signature)
+        Ok(self
+            .verify_configurable_signature(account, hash, signature)?
+            .is_some())
     }
 
     fn verify_configurable_signature(
@@ -179,7 +182,7 @@ impl SignatureVerifier {
         account: Address,
         hash: B256,
         signature: &ConfigurableAccountSignature,
-    ) -> Result<bool> {
+    ) -> Result<Option<B256>> {
         let spec = self.storage.spec();
         let (commitment, code_hash) = self.storage.with_account_info(account, |info| {
             Ok((account_config_commitment(info, spec)?, info.code_hash))
@@ -203,14 +206,14 @@ impl SignatureVerifier {
             || !valid_account_code(code_hash, commitment)
             || signature.validate_account_commitment(commitment).is_err()
         {
-            return Ok(false);
+            return Ok(None);
         }
 
         signature.verify_approvals(hash).map_err(|error| {
             trace!(%error, "invalid configurable account approvals");
             SignatureVerifierError::invalid_signature()
         })?;
-        Ok(true)
+        Ok(Some(commitment))
     }
 }
 

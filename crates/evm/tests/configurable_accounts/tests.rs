@@ -3522,6 +3522,33 @@ fn verify_keychain_accepts_large_configurable_delegate_signatures() {
 }
 
 #[test]
+fn verify_keychain_reads_a_migrated_primitive_delegate_once() {
+    let hash = B256::repeat_byte(0x42);
+    let (key, owner) = (signer(6), signer(8));
+    // The same signature of a migrated delegate, granted as its primitive or configurable type.
+    let [primitive, configurable] = [SignatureType::Secp256k1, SignatureType::ConfigurableAccount]
+        .map(|key_type| {
+            let mut f = Fixture::with_spec(false, TempoHardfork::T14);
+            let account = f.account;
+            let result = f.run(&grant_tx(&f, 3, key_type, key.address()));
+            assert!(result.status, "{key_type:?}: {result:?}");
+            seed_eoa(&mut f, key.address(), 0);
+            let config = migrate_key(&mut f, &key, 0, &owner);
+            let digest = KeychainSignature::signing_hash(hash, account);
+            let inner = configurable_account_approval(key.address(), &config, &owner, digest);
+            let signature =
+                TempoSignature::Keychain(KeychainSignature::new(account, inner)).to_bytes();
+            let call = Verifier::Keychain.call(account, hash, signature);
+            let (granted, gas) = bool_query(&mut f, call, None, &format!("{key_type:?}"));
+            assert!(granted, "{key_type:?}");
+            gas
+        });
+    // The primitive grant reuses the delegate's loaded commitment: no second account read.
+    assert_eq!(primitive, configurable);
+    assert_eq!(primitive, 284_530);
+}
+
+#[test]
 fn verify_keychain_rejects_another_accounts_delegate_before_reading_it() {
     let mut f = Fixture::with_spec(false, TempoHardfork::T14);
     seed_relayer(&mut f);
