@@ -706,7 +706,8 @@ where
     /// Validates again, against the latest state, every pooled transaction with an authority in
     /// `accounts` (its sender unless an access key signs, key authorization signer, separate fee
     /// payer or access key), or every pooled transaction when `accounts` is `None`. Transactions
-    /// that stay valid are re-added; the others leave the pool.
+    /// that stay valid are re-added; invalid ones leave the pool. A transaction whose validation
+    /// fails, such as on a state read error, stays pooled unchanged.
     ///
     /// For chains whose configuration commitments mirror another chain's, where a block's own
     /// state changes do not show which commitments changed.
@@ -714,25 +715,43 @@ where
         if accounts.is_some_and(AddressSet::is_empty) {
             return;
         }
-        let hashes: Vec<TxHash> = self
+        let transactions: Vec<_> = self
             .all_transactions()
             .iter()
             .filter(|tx| accounts.is_none_or(|accounts| tx.transaction.has_authority_in(accounts)))
-            .map(|tx| *tx.hash())
-            .collect();
-        if hashes.is_empty() {
-            return;
-        }
-        let transactions = self
-            .remove_transactions(hashes)
-            .into_iter()
             .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
             .collect();
-        let results = self.add_transactions_with_origins(transactions).await;
+        if transactions.is_empty() {
+            return;
+        }
+        let total = transactions.len();
+        let origins: Vec<_> = transactions.iter().map(|(origin, _)| *origin).collect();
+        // Validate before removing anything, so a transaction keeps its slot when its validation
+        // fails rather than resolves.
+        let validated: Vec<_> = self
+            .protocol_pool
+            .validator()
+            .validate_transactions(transactions)
+            .await
+            .into_iter()
+            .zip(origins)
+            .filter(|(outcome, _)| !matches!(outcome, TransactionValidationOutcome::Error(..)))
+            .collect();
+        self.remove_transactions(
+            validated
+                .iter()
+                .map(|(outcome, _)| outcome.tx_hash())
+                .collect(),
+        );
+        let valid = validated
+            .into_iter()
+            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
+            .filter(Result::is_ok)
+            .count();
         tracing::debug!(
             target: "txpool",
-            total = results.len(),
-            success = results.iter().filter(|result| result.is_ok()).count(),
+            total,
+            valid,
             "Revalidated transactions of changed authorities"
         );
     }
@@ -1713,7 +1732,11 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, task) = TransactionValidationTaskExecutor::new(validator);
+        // Async tests validate through the pool; synchronous ones only insert validated outcomes.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(task.run());
+        }
         let protocol_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
@@ -2286,6 +2309,25 @@ mod tests {
         assert!(pool.get(other_pooled.hash()).is_some());
         pool.revalidate_authorities(None).await;
         assert!(pool.get(other_pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn revalidate_authorities_keeps_transactions_whose_validation_fails() {
+        let sender = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        let provider = create_provider_with_tip();
+        let pool = create_test_pool(provider.clone());
+        add_validated(&pool, pooled.clone());
+        // A completed validation would reject the transaction, but without a best block the
+        // validator cannot open the latest state.
+        provider.add_account(
+            sender,
+            ExtendedAccount::new(pooled.nonce() + 1, *pooled.cost()),
+        );
+        provider.headers.lock().clear();
+
+        pool.revalidate_authorities(None).await;
+        assert!(pool.get(pooled.hash()).is_some());
     }
 
     #[tokio::test]
