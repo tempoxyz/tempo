@@ -1,0 +1,13 @@
+[package]
+name = "affected-crates"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Prints the workspace packages a change affects, so CI tests only those"
+
+# Not part of the tempo workspace: CI builds it on its own before the tests.
+[workspace]
+
+[dependencies]
+determinator = "0.13"
+guppy = "0.19"

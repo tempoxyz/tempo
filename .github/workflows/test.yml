@@ -56,7 +56,7 @@ jobs:
               - 'Cargo.lock'
               - '*-network-identity.json'
               - '*.toml'
-              - '{.cargo,.config,.github/actions}/**'
+              - '{.cargo,.config,.github/actions,.github/affected-crates}/**'
               - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
               - '.github/workflows/{test,lint,bench}.yml'
             # Rust changes that can reach the node, xtask or e2e binaries. The fuzzer and corpus crates can't.
@@ -207,6 +207,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          # A pull request's merge commit and its base parent, to find the packages it affects.
+          fetch-depth: 2
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -223,10 +225,39 @@ jobs:
         with:
           name: zones-test-artifacts
           path: crates/zones/contracts/out
+      - name: Select affected packages
+        id: affected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # Pull requests test only the packages their change affects; main and the merge queue test all.
+          affected=all
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git worktree add --detach "$RUNNER_TEMP/base" HEAD^1
+            affected="$(git diff --name-only HEAD^1 HEAD | cargo run --quiet --locked --manifest-path .github/affected-crates/Cargo.toml -- "$RUNNER_TEMP/base" . .github/affected-crates/rules.toml)"
+          fi
+          echo "Affected packages: $affected"
+          if [ "$affected" = all ]; then
+            packages="--workspace --exclude tempo-nitro-attestation-fuzz"
+          else
+            # The e2e job tests tempo-e2e, and the fuzz crate is never tested here.
+            packages="$(echo "$affected" | grep -vxE 'tempo-e2e|tempo-nitro-attestation-fuzz' | sed 's/^/-p /' | tr '\n' ' ' || true)"
+          fi
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
       - name: Build and compile tests
-        run: cargo nextest run --profile ci --workspace --exclude tempo-nitro-attestation-fuzz --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+        if: steps.affected.outputs.packages != ''
+        env:
+          PACKAGES: ${{ steps.affected.outputs.packages }}
+        run: |
+          # shellcheck disable=SC2086 # PACKAGES is a list of arguments
+          cargo nextest run --profile ci $PACKAGES --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests
-        run: cargo nextest run --profile ci --workspace --exclude tempo-nitro-attestation-fuzz --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
+        if: steps.affected.outputs.packages != ''
+        env:
+          PACKAGES: ${{ steps.affected.outputs.packages }}
+        run: |
+          # shellcheck disable=SC2086 # PACKAGES is a list of arguments
+          cargo nextest run --profile ci $PACKAGES --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
 
   e2e:
     name: e2e (${{ matrix.partition }}/4)

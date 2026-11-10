@@ -1,0 +1,29 @@
+# Path rules for the determinator, applied before its defaults. The first matching rule wins.
+# A changed path that no rule matches and no package owns marks every package changed.
+
+# CI configuration that changes how every test builds or runs.
+[[path-rule]]
+globs = [".config/**", ".github/actions/**", ".github/affected-crates/**", ".github/workflows/test.yml"]
+mark-changed = "all"
+
+# Files no Rust test reads.
+[[path-rule]]
+globs = [
+  ".github/**",
+  "*.md",
+  "docs/**",
+  "tempoup/**",
+  "tips/*.md",
+  "Dockerfile*",
+  "*.hcl",
+  "*.nu",
+  "Justfile",
+  "flake.nix",
+  "flake.lock",
+  "deny.toml",
+  "osv-scanner.toml",
+  "typos.toml",
+  "review.yml",
+  "CNAME",
+]
+mark-changed = []
