@@ -1,0 +1,128 @@
+name: vempo proofs
+
+# Checks tempoxyz/vempo's Verus proofs against this commit: dispatches vempo's verify-tempo.yml
+# (vempo merges the commit into its copy of tempo and runs its proofs and tests), then waits for
+# that run and fails if it fails. vempo is private, so the job prints only the result and a link
+# to the run, which only vempo's readers can open; it never copies vempo's logs here.
+#
+# Not a required check: it stays advisory until its results are trusted. A failure can come from
+# drift vempo has not caught up with yet, not only from this change.
+#
+# The vempo token comes from GitHub STS under the trust policy tempoxyz/vempo keeps in
+# .github/sts/tempo-verify.sts.yaml (actions: write on vempo, for this workflow only). It lasts at
+# most an hour, so each wait mints a fresh one. Fork PRs get no OIDC token and are skipped.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  vempo:
+    name: vempo proofs
+    if: >-
+      github.repository == 'tempoxyz/tempo' &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      id-token: write # secure-runner and the STS token exchange
+    env:
+      VEMPO: tempoxyz/vempo
+      SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR: ${{ github.event.pull_request.number }}
+      # Each attempt dispatches its own run and finds it by this ID in the run name.
+      REQUEST_ID: tempo-${{ github.run_id }}-${{ github.run_attempt }}
+      # Polls the vempo run for up to 50 minutes; writes conclusion= (empty if still running).
+      WAIT: |
+        set -euo pipefail
+        deadline=$((SECONDS + 3000))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          state=$(gh run view "$RUN_ID" -R "$VEMPO" --json status,conclusion --jq '.status + " " + .conclusion')
+          if [ "${state%% *}" = completed ]; then
+            echo "conclusion=${state#* }" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sleep 60
+        done
+        echo "conclusion=" >>"$GITHUB_OUTPUT"
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Fetch a vempo token via STS
+        id: sts1
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          scope: tempoxyz/vempo
+          policy: tempo-verify
+          ttl: 1h
+      - name: Start vempo's Verify tempo run
+        id: start
+        env:
+          GH_TOKEN: ${{ steps.sts1.outputs.token }}
+        run: |
+          gh workflow run verify-tempo.yml -R "$VEMPO" --ref main \
+            -f tempo_ref="$SHA" -f tempo_pr="$PR" -f request_id="$REQUEST_ID"
+          id=""
+          for _ in $(seq 30); do
+            sleep 10
+            id=$(gh run list -R "$VEMPO" --workflow verify-tempo.yml --event workflow_dispatch --limit 50 \
+              --json databaseId,displayTitle \
+              --jq 'map(select(.displayTitle | endswith("[" + env.REQUEST_ID + "]"))) | .[0].databaseId // empty')
+            [ -z "$id" ] || break
+          done
+          [ -n "$id" ] || { echo "::error::vempo's Verify tempo run for $REQUEST_ID did not appear"; exit 1; }
+          echo "id=$id" >>"$GITHUB_OUTPUT"
+          echo "url=https://github.com/$VEMPO/actions/runs/$id" >>"$GITHUB_OUTPUT"
+          echo "vempo run: https://github.com/$VEMPO/actions/runs/$id"
+      - name: Wait for the vempo run
+        id: wait1
+        env:
+          GH_TOKEN: ${{ steps.sts1.outputs.token }}
+          RUN_ID: ${{ steps.start.outputs.id }}
+        run: bash -c "$WAIT"
+      - name: Fetch a fresh vempo token
+        id: sts2
+        if: steps.wait1.outputs.conclusion == ''
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          scope: tempoxyz/vempo
+          policy: tempo-verify
+          ttl: 1h
+      - name: Keep waiting for the vempo run
+        id: wait2
+        if: steps.wait1.outputs.conclusion == ''
+        env:
+          GH_TOKEN: ${{ steps.sts2.outputs.token }}
+          RUN_ID: ${{ steps.start.outputs.id }}
+        run: bash -c "$WAIT"
+      - name: Fetch a fresh vempo token
+        id: sts3
+        if: steps.wait1.outputs.conclusion == '' && steps.wait2.outputs.conclusion == ''
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          scope: tempoxyz/vempo
+          policy: tempo-verify
+          ttl: 1h
+      - name: Keep waiting for the vempo run
+        id: wait3
+        if: steps.wait1.outputs.conclusion == '' && steps.wait2.outputs.conclusion == ''
+        env:
+          GH_TOKEN: ${{ steps.sts3.outputs.token }}
+          RUN_ID: ${{ steps.start.outputs.id }}
+        run: bash -c "$WAIT"
+      - name: Report the result
+        if: always() && steps.start.outputs.id != ''
+        env:
+          CONCLUSION: ${{ steps.wait1.outputs.conclusion || steps.wait2.outputs.conclusion || steps.wait3.outputs.conclusion }}
+          URL: ${{ steps.start.outputs.url }}
+        run: |
+          echo "vempo proofs on ${SHA:0:7}: ${CONCLUSION:-still running} ($URL, vempo readers only)" >>"$GITHUB_STEP_SUMMARY"
+          [ "$CONCLUSION" = success ] || { echo "::error::vempo's proofs: ${CONCLUSION:-timed out}: $URL"; exit 1; }
