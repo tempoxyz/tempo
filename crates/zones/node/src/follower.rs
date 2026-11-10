@@ -1287,7 +1287,7 @@ mod tests {
         input.extend_from_slice(&word(tail_len));
         input.resize(input.len() + tail_len, 0);
         let tx = TxLegacy {
-            to: zone_payload::abi::ZONE_INBOX_ADDRESS.into(),
+            to: ZONE_INBOX_ADDRESS.into(),
             value: U256::ZERO,
             input: input.into(),
             ..Default::default()
