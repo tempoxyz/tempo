@@ -18,9 +18,17 @@ impl Precompile for Reservations {
                 IReservations::IReservationsCalls {
                     hold(call) => mutate(call, msg_sender, |sender, c| self.hold(sender, c)),
                     adjust(call) => mutate(call, msg_sender, |sender, c| self.adjust(sender, c)),
-                    capture(call) => mutate(call, msg_sender, |sender, c| self.capture(sender, c)),
+                    capture(call) => mutate(call, msg_sender, |sender, c| {
+                        self.capture_part(sender, c.id, c.amount, true)
+                    }),
                     captureFor(call) => mutate(call, msg_sender, |sender, c| {
-                        self.capture_for(sender, c)
+                        self.capture_for_part(sender, c.owner, c.id, c.amount, true)
+                    }),
+                    capturePart(call) => mutate(call, msg_sender, |sender, c| {
+                        self.capture_part(sender, c.id, c.amount, c.isFinal)
+                    }),
+                    captureForPart(call) => mutate(call, msg_sender, |sender, c| {
+                        self.capture_for_part(sender, c.owner, c.id, c.amount, c.isFinal)
                     }),
                     charge(call) => mutate(call, msg_sender, |sender, c| self.charge(sender, c)),
                     release(call) => mutate(call, msg_sender, |sender, c| self.release(sender, c.id)),

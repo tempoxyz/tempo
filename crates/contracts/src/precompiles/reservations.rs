@@ -22,13 +22,20 @@ crate::sol! {
 
         /// Reserves `amount` of the caller's `token` balance for `payee` until `expiresAt`.
         function hold(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee) external;
-        /// Sets the hold's reserved total to `amount`; an increase needs available balance.
+        /// Sets what the hold still reserves, after any non-final captures, to `amount`; an increase
+        /// needs available balance.
         function adjust(bytes32 id, uint128 amount) external;
         /// Pays `amount` to the hold's payee and releases the rest of the hold.
         function capture(bytes32 id, uint128 amount) external;
         /// Pays `amount`, at most the held amount, of `owner`'s live hold to its payee (the caller)
         /// and releases the rest. Settles holds whose placing key was revoked or rotated.
         function captureFor(address owner, bytes32 id, uint128 amount) external;
+        /// Pays `amount` of the caller's live hold to its payee. A non-final capture takes at most
+        /// the held amount and keeps the rest held; a final one settles the hold as `capture`.
+        function capturePart(bytes32 id, uint128 amount, bool isFinal) external;
+        /// Pays `amount`, at most the held amount, of `owner`'s live hold to its payee (the caller).
+        /// A non-final capture keeps the rest held; a final one settles the hold as `captureFor`.
+        function captureForPart(address owner, bytes32 id, uint128 amount, bool isFinal) external;
         /// Pays `amount` to `payee` without a hold, from available balance and then capped debt.
         function charge(address token, bytes32 id, uint128 amount, address payee) external;
         /// Releases the caller's hold.
@@ -51,6 +58,7 @@ crate::sol! {
         event HoldAdjusted(address indexed owner, bytes32 indexed id, address indexed token, uint128 amount);
         event HoldReleased(address indexed owner, bytes32 indexed id, address indexed token);
         event HoldCaptured(address indexed owner, bytes32 indexed id, address indexed token, uint128 amount, uint128 debt);
+        event HoldPartCaptured(address indexed owner, bytes32 indexed id, address indexed token, uint128 amount, uint128 debt);
         event Charged(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint128 debt);
         event Refunded(address indexed owner, bytes32 indexed id, uint128 amount);
         event DebtRepaid(address indexed owner, address indexed token, address indexed creditor, uint128 amount);

@@ -4,8 +4,9 @@
 //! Held funds stay the owner's: a hold moves them from the owner's spendable TIP-20 balance into
 //! its reserved amount, and TIP-20 `balanceOf` reports both, so debits need no reservation check.
 //! From T15, every TIP-20 credit to an owner with debt in that token pays the creditor first when
-//! the token's and the creditor's policies admit that payment. A capture or charge releases the
-//! hold back to the spendable balance before paying, so it spends the reservation it consumes.
+//! the token's and the creditor's policies admit that payment. A capture releases the part of the
+//! hold it takes (a final capture, the whole hold) back to the spendable balance before paying, so
+//! it spends the reservation it consumes. Non-final captures keep the rest of the hold live.
 //!
 //! Open holds count as spend of the access key that placed them (TIP-1011 limits), and every
 //! amount a hold stops committing, or a payee refunds, is given back to that key's limit.
@@ -58,12 +59,13 @@ struct Shortfall {
 /// One authorization of an owner, from its hold to its refunds, in five slots.
 ///
 /// The record exists while `token` is non-zero and the hold is live while `expires_at` is
-/// non-zero. A live hold has nothing captured yet, since capturing ends the hold. The captured
-/// slot is written on settlement and the key slot only for authorizations an access key placed.
+/// non-zero. A live hold's captured total is the sum of its non-final captures; a final capture or
+/// a release ends the hold. The captured slot is written on capture and the key slot only for
+/// authorizations an access key placed.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct Authorization {
     token: Address,
-    /// Amount the live hold reserves.
+    /// Amount the live hold still reserves, after any non-final captures.
     held: U96,
     /// Resolved payee, the only account allowed to refund or to capture for the owner.
     payee: Address,
@@ -92,6 +94,12 @@ impl Authorization {
 
     fn is_held(&self) -> bool {
         self.expires_at != 0
+    }
+
+    /// Amount the authorization still commits: its live hold plus what was captured and not
+    /// refunded. `refund` keeps `refunded <= captured`.
+    fn committed(&self) -> u128 {
+        self.held.to::<u128>() + (self.captured - self.refunded).to::<u128>()
     }
 }
 
@@ -265,8 +273,8 @@ impl Reservations {
             return_to_balance(auth.token, owner, returned)?;
         }
         self.positions[owner][auth.token].write(position)?;
-        settle_limit(owner, &mut auth, call.amount)?;
         auth.held = held;
+        settle_limit(owner, &mut auth)?;
         self.authorizations[owner][call.id].write(auth)?;
         self.emit_event(ReservationsEvent::hold_adjusted(
             owner,
@@ -276,26 +284,50 @@ impl Reservations {
         ))
     }
 
-    fn capture(&mut self, owner: Address, call: IReservations::captureCall) -> Result<()> {
-        let auth = self.live_hold(owner, call.id)?;
+    /// Captures `amount` of the owner's live hold `id` for its payee: `capture` when `is_final`,
+    /// otherwise `capturePart`, which takes at most the held amount and keeps the rest held.
+    fn capture_part(
+        &mut self,
+        owner: Address,
+        id: B256,
+        amount: u128,
+        is_final: bool,
+    ) -> Result<()> {
+        let auth = self.live_hold(owner, id)?;
         ensure_key_may_act(owner, &auth)?;
-        self.settle_hold(owner, call.id, auth, call.amount)
+        if is_final {
+            self.settle_hold(owner, id, auth, amount)
+        } else {
+            self.capture_hold_part(owner, id, auth, amount)
+        }
     }
 
-    /// Captures the owner's live hold for its payee (the caller), so an approved hold still
-    /// settles after the owner revoked or rotated the key that placed it.
-    fn capture_for(&mut self, payee: Address, call: IReservations::captureForCall) -> Result<()> {
-        let auth = self.live_hold(call.owner, call.id)?;
+    /// Captures `amount`, at most the held amount, of the owner's live hold for its payee (the
+    /// caller), so an approved hold still settles after the owner revoked or rotated the key that
+    /// placed it. Called for `captureFor` (always final) and `captureForPart`.
+    fn capture_for_part(
+        &mut self,
+        payee: Address,
+        owner: Address,
+        id: B256,
+        amount: u128,
+        is_final: bool,
+    ) -> Result<()> {
+        let auth = self.live_hold(owner, id)?;
         if auth.payee != payee {
             return Err(ReservationsError::unauthorized().into());
         }
         // The owner may be its own payee; another of its access keys still may not settle the hold.
-        ensure_key_may_act(call.owner, &auth)?;
+        ensure_key_may_act(owner, &auth)?;
         // The hold is the owner's consent; capturing more would spend beyond it.
-        if call.amount > auth.held.to::<u128>() {
+        if amount > auth.held.to::<u128>() {
             return Err(ReservationsError::invalid_amount().into());
         }
-        self.settle_hold(call.owner, call.id, auth, call.amount)
+        if is_final {
+            self.settle_hold(owner, id, auth, amount)
+        } else {
+            self.capture_hold_part(owner, id, auth, amount)
+        }
     }
 
     fn charge(&mut self, owner: Address, call: IReservations::chargeCall) -> Result<()> {
@@ -396,10 +428,9 @@ impl Reservations {
             self.reduce_debt(call.owner, auth.token, position, payee, offset)?;
         }
         token.reservation_transfer(payee, call.owner, U256::from(moved))?;
-        let outstanding = (auth.captured - refunded).to();
-        settle_limit(call.owner, &mut auth, outstanding)?;
-
+        // Refunds of non-final captures leave a live hold's amount committed.
         auth.refunded = refunded;
+        settle_limit(call.owner, &mut auth)?;
         self.authorizations[call.owner][call.id].write(auth)?;
         self.emit_event(ReservationsEvent::refunded(
             call.owner,
@@ -460,8 +491,9 @@ impl Reservations {
         })
     }
 
-    /// Pays `amount` of `owner`'s live hold `auth` to its payee, ends the hold and records `amount`
-    /// as captured. Only the excess over the hold counts against the signing access key's limit.
+    /// Pays `amount` of `owner`'s live hold `auth` to its payee, ends the hold and adds `amount` to
+    /// the captured total of its non-final captures. Only the excess over what is still held
+    /// counts against the signing access key's limit.
     fn settle_hold(
         &mut self,
         owner: Address,
@@ -469,7 +501,10 @@ impl Reservations {
         mut auth: Authorization,
         amount: u128,
     ) -> Result<()> {
-        let captured = amount_u96(amount)?;
+        let captured = auth
+            .captured
+            .checked_add(amount_u96(amount)?)
+            .ok_or_else(ReservationsError::invalid_amount)?;
         let held = auth.held.to::<u128>();
         let mut token = TIP20Token::from_address(auth.token)?;
         // The payee may have become forbidden since the hold was placed.
@@ -491,13 +526,58 @@ impl Reservations {
             position,
         )?;
         record_spend(&mut auth, spend, excess);
-        settle_limit(owner, &mut auth, amount)?;
-
         auth.held = U96::ZERO;
         auth.expires_at = 0;
         auth.captured = captured;
+        settle_limit(owner, &mut auth)?;
         self.authorizations[owner][id].write(auth)?;
         self.emit_event(ReservationsEvent::hold_captured(
+            owner, id, auth.token, amount, debt,
+        ))
+    }
+
+    /// Pays `amount`, at most what `owner`'s live hold `auth` still holds, to its payee, lowers the
+    /// hold by `amount` and adds it to the captured total, keeping the hold live with its expiry.
+    /// The hold already counted `amount` against the key's limit, so nothing is spent or given back.
+    fn capture_hold_part(
+        &mut self,
+        owner: Address,
+        id: B256,
+        mut auth: Authorization,
+        amount: u128,
+    ) -> Result<()> {
+        let part = amount_u96(amount)?;
+        // A non-final capture never pays beyond the hold; only a final one may take more.
+        let held = auth
+            .held
+            .checked_sub(part)
+            .ok_or_else(ReservationsError::invalid_amount)?;
+        let captured = auth
+            .captured
+            .checked_add(part)
+            .ok_or_else(ReservationsError::invalid_amount)?;
+        let mut token = TIP20Token::from_address(auth.token)?;
+        // The payee may have become forbidden since the hold was placed.
+        token.ensure_transfer_authorized(owner, auth.payee)?;
+        let mut position = self.positions[owner][auth.token].read()?;
+        let released = self.unreserve(owner, &auth, &mut position, amount)?;
+        // A compliance burn can leave less than `amount` reserved; the rest is paid as in a capture.
+        let (debt, _) = self.pay(
+            &mut token,
+            owner,
+            auth.payee,
+            Payment {
+                amount,
+                released,
+                spend: 0,
+            },
+            position,
+        )?;
+
+        auth.held = held;
+        auth.captured = captured;
+        self.authorizations[owner][id].write(auth)?;
+        self.emit_event(ReservationsEvent::hold_part_captured(
             owner, id, auth.token, amount, debt,
         ))
     }
@@ -575,13 +655,21 @@ impl Reservations {
         ))
     }
 
+    /// Releases what `auth` still holds. An authorization with non-final captures stays as a
+    /// settled record of them, for refunds; one without is deleted, so its id can be held again.
     fn end_hold(&mut self, owner: Address, id: B256, mut auth: Authorization) -> Result<()> {
         let mut position = self.positions[owner][auth.token].read()?;
         let returned = self.unreserve(owner, &auth, &mut position, auth.held.to())?;
         return_to_balance(auth.token, owner, returned)?;
         self.positions[owner][auth.token].write(position)?;
-        self.authorizations[owner][id].delete()?;
-        settle_limit(owner, &mut auth, 0)?;
+        auth.held = U96::ZERO;
+        auth.expires_at = 0;
+        settle_limit(owner, &mut auth)?;
+        if auth.captured.is_zero() {
+            self.authorizations[owner][id].delete()?;
+        } else {
+            self.authorizations[owner][id].write(auth)?;
+        }
         self.emit_event(ReservationsEvent::hold_released(owner, id, auth.token))
     }
 
@@ -647,12 +735,13 @@ fn record_spend(auth: &mut Authorization, spend: Option<LimitSpend>, amount: u12
     auth.counted = U96::try_from(counted).unwrap_or(U96::MAX);
 }
 
-/// Lowers `auth.counted` to at most `committed`, what the authorization still holds or paid, and
-/// gives the difference back to the placing key within the period it was counted in. Amounts
-/// the root key added are released first, so they never turn into key limit.
-fn settle_limit(owner: Address, auth: &mut Authorization, committed: u128) -> Result<()> {
+/// Lowers `auth.counted` to at most what the authorization still commits (`Authorization::committed`),
+/// after the caller updated it, and gives the difference back to the placing key within the period
+/// it was counted in. Amounts the root key added are released first, so they never turn into key
+/// limit.
+fn settle_limit(owner: Address, auth: &mut Authorization) -> Result<()> {
     let counted = auth.counted.to::<u128>();
-    let amount = counted.saturating_sub(committed);
+    let amount = counted.saturating_sub(auth.committed());
     if amount == 0 {
         return Ok(());
     }
@@ -698,7 +787,7 @@ fn return_to_balance(token: Address, owner: Address, amount: u128) -> Result<()>
 struct Payment {
     /// Amount owed to the payee, debt included.
     amount: u128,
-    /// Reservation the settled hold frees, spendable by this payment.
+    /// Reservation the captured part of the hold frees, spendable by this payment.
     released: u128,
     /// Amount to count against the signing access key's limit.
     spend: u128,
@@ -782,19 +871,32 @@ mod tests {
         }
 
         fn capture(&mut self, id: B256, amount: u128) -> Result<()> {
+            self.capture_part(id, amount, true)
+        }
+
+        fn capture_part(&mut self, id: B256, amount: u128, is_final: bool) -> Result<()> {
             self.reservations
-                .capture(self.owner, IReservations::captureCall { id, amount })
+                .capture_part(self.owner, id, amount, is_final)
         }
 
         fn capture_for(&mut self, caller: Address, id: B256, amount: u128) -> Result<()> {
-            self.reservations.capture_for(
-                caller,
-                IReservations::captureForCall {
-                    owner: self.owner,
-                    id,
-                    amount,
-                },
-            )
+            self.capture_for_part(caller, id, amount, true)
+        }
+
+        fn capture_for_part(
+            &mut self,
+            caller: Address,
+            id: B256,
+            amount: u128,
+            is_final: bool,
+        ) -> Result<()> {
+            self.reservations
+                .capture_for_part(caller, self.owner, id, amount, is_final)
+        }
+
+        fn captured(&self, id: B256) -> Result<(u128, u128)> {
+            let totals = self.reservations.captured(self.owner, id)?;
+            Ok((totals.captured, totals.refunded))
         }
 
         fn charge(&mut self, id: B256, amount: u128, payee: Address) -> Result<()> {
@@ -1197,6 +1299,319 @@ mod tests {
             f.capture_for(f.payee, id, 300)?;
             assert_eq!(f.balance(f.payee)?, U256::from(300));
             assert_eq!(f.debt()?.amount, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_part_captures_keep_the_hold_until_the_final_one() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let id = B256::random();
+            f.hold(id, 600)?;
+            f.reservations.clear_emitted_events();
+            f.capture_part(id, 200, false)?;
+
+            assert_eq!(f.balance(f.payee)?, U256::from(200));
+            assert_eq!(f.balance(f.owner)?, U256::from(800));
+            assert_eq!((f.reserved()?, f.available()?), (400, 400));
+            let hold = f.reservations.get_hold(f.owner, id)?;
+            assert_eq!((hold.amount, hold.expiresAt), (400, EXPIRY));
+            assert_eq!(f.captured(id)?, (200, 0));
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::hold_part_captured(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    200,
+                    0,
+                )]);
+
+            // The payee takes the next part itself.
+            f.capture_for_part(f.payee, id, 150, false)?;
+            assert_eq!((f.reserved()?, f.available()?), (250, 400));
+            assert_eq!(f.captured(id)?, (350, 0));
+
+            // The final part may exceed what is left of the hold, like a capture.
+            f.reservations.clear_emitted_events();
+            f.capture_part(id, 300, true)?;
+            assert_eq!(f.balance(f.payee)?, U256::from(650));
+            assert_eq!(f.balance(f.owner)?, U256::from(350));
+            assert_eq!((f.reserved()?, f.available()?), (0, 350));
+            assert_eq!(f.captured(id)?, (650, 0));
+            let hold = f.reservations.get_hold(f.owner, id)?;
+            assert_eq!((hold.amount, hold.expiresAt), (0, 0));
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::hold_captured(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    300,
+                    0,
+                )]);
+            for result in [
+                f.capture_part(id, 1, false),
+                f.capture_for_part(f.payee, id, 1, false),
+            ] {
+                assert_eq!(
+                    result.unwrap_err(),
+                    ReservationsError::hold_not_found().into()
+                );
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_part_capture_stays_within_the_hold() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            // Debt room does not let a non-final capture exceed the hold.
+            f.set_debt_cap(f.payee, 1_000)?;
+            let id = B256::random();
+            f.hold(id, 300)?;
+            for amount in [0, 301] {
+                assert_eq!(
+                    f.capture_part(id, amount, false).unwrap_err(),
+                    ReservationsError::invalid_amount().into()
+                );
+                assert_eq!(
+                    f.capture_for_part(f.payee, id, amount, false).unwrap_err(),
+                    ReservationsError::invalid_amount().into()
+                );
+            }
+            for caller in [f.owner, Address::random()] {
+                assert_eq!(
+                    f.capture_for_part(caller, id, 100, false).unwrap_err(),
+                    ReservationsError::unauthorized().into()
+                );
+            }
+
+            // A part may take the whole hold, leaving it live with nothing reserved.
+            f.capture_part(id, 300, false)?;
+            let hold = f.reservations.get_hold(f.owner, id)?;
+            assert_eq!((hold.amount, hold.expiresAt), (0, EXPIRY));
+            assert_eq!(
+                f.capture_part(id, 1, false).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            f.capture(id, 20)?;
+            assert_eq!(f.balance(f.payee)?, U256::from(320));
+            assert_eq!(f.captured(id)?, (320, 0));
+            assert_eq!(f.debt()?.amount, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_part_capture_rechecks_the_policy() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let id = B256::random();
+            f.hold(id, 300)?;
+            f.capture_part(id, 100, false)?;
+            f.blacklist(vec![f.payee])?;
+            assert_eq!(
+                f.capture_part(id, 100, false).unwrap_err(),
+                TIP20Error::policy_forbids().into()
+            );
+            assert_eq!(
+                f.capture_for_part(f.payee, id, 100, false).unwrap_err(),
+                TIP20Error::policy_forbids().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_release_after_part_captures_keeps_the_record() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 1_000)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+            let id = B256::random();
+            f.hold(id, 500)?;
+            f.capture_part(id, 200, false)?;
+            // A non-final capture spends what the hold already counted.
+            assert_eq!(remaining()?, U256::from(500));
+
+            f.reservations.clear_emitted_events();
+            f.reservations.release(f.owner, id)?;
+            assert_eq!(remaining()?, U256::from(800));
+            assert_eq!((f.reserved()?, f.available()?), (0, 800));
+            assert_eq!(f.captured(id)?, (200, 0));
+            assert_eq!(
+                f.reservations.get_hold(f.owner, id)?,
+                IReservations::Hold {
+                    token: f.token.address(),
+                    payee: f.payee,
+                    amount: 0,
+                    expiresAt: 0,
+                }
+            );
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::hold_released(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                )]);
+
+            // The settled id cannot be held again, and takes refunds of its parts.
+            assert_eq!(
+                f.hold(id, 1).unwrap_err(),
+                ReservationsError::hold_exists().into()
+            );
+            assert_eq!(
+                f.reservations.release(f.owner, id).unwrap_err(),
+                ReservationsError::hold_not_found().into()
+            );
+            f.refund(f.payee, id, 200)?;
+            assert_eq!(remaining()?, U256::from(1_000));
+            assert_eq!(f.balance(f.owner)?, U256::from(1_000));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_release_expired_after_part_captures() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let id = B256::random();
+            f.hold(id, 500)?;
+            f.capture_part(id, 200, false)?;
+
+            StorageCtx.set_timestamp(U256::from(EXPIRY));
+            // An expired hold still takes parts until it is released.
+            f.capture_for_part(f.payee, id, 100, false)?;
+            f.reservations.release_expired(f.owner, id)?;
+            assert_eq!((f.reserved()?, f.available()?), (0, 700));
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
+            assert_eq!(f.captured(id)?, (300, 0));
+            assert_eq!(
+                f.reservations.release_expired(f.owner, id).unwrap_err(),
+                ReservationsError::hold_not_found().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refunds_are_capped_at_the_parts_captured() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 1_000)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+            let id = B256::random();
+            f.hold(id, 500)?;
+            f.capture_part(id, 100, false)?;
+            f.capture_part(id, 150, false)?;
+            assert_eq!(
+                f.refund(f.payee, id, 251).unwrap_err(),
+                ReservationsError::refund_exceeds_capture().into()
+            );
+
+            // A refund while the hold is live gives back only the refund; the hold stays counted.
+            f.refund(f.payee, id, 100)?;
+            assert_eq!(remaining()?, U256::from(600));
+            assert_eq!((f.reserved()?, f.available()?), (250, 600));
+            assert_eq!(f.captured(id)?, (250, 100));
+
+            f.capture_part(id, 250, true)?;
+            assert_eq!(remaining()?, U256::from(600));
+            assert_eq!(
+                f.refund(f.payee, id, 401).unwrap_err(),
+                ReservationsError::refund_exceeds_capture().into()
+            );
+            f.refund(f.payee, id, 400)?;
+            assert_eq!(f.captured(id)?, (500, 500));
+            assert_eq!(remaining()?, U256::from(1_000));
+            assert_eq!(f.balance(f.owner)?, U256::from(1_000));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_adjust_after_part_captures_sets_what_is_left() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 1_000)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+            let id = B256::random();
+            f.hold(id, 500)?;
+            f.capture_part(id, 200, false)?;
+
+            // The captured part stays committed; only the hold's remainder changes.
+            f.adjust(id, 100)?;
+            assert_eq!(remaining()?, U256::from(700));
+            assert_eq!((f.reserved()?, f.available()?), (100, 700));
+            f.adjust(id, 400)?;
+            assert_eq!(remaining()?, U256::from(400));
+            assert_eq!(f.reservations.get_hold(f.owner, id)?.amount, 400);
+
+            f.capture_part(id, 300, true)?;
+            assert_eq!(remaining()?, U256::from(500));
+            assert_eq!(f.captured(id)?, (500, 0));
+            assert_eq!(f.balance(f.payee)?, U256::from(500));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_payee_captures_parts_after_the_key_is_revoked() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let mut keychain = authorize_card_key(f.owner, key, f.token.address(), 500)?;
+            let id = B256::random();
+            f.hold(id, 300)?;
+
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.revoke_key(f.owner, IAccountKeychain::revokeKeyCall { keyId: key })?;
+            keychain.set_tx_origin(f.payee)?;
+            f.capture_for_part(f.payee, id, 100, false)?;
+            f.capture_for_part(f.payee, id, 150, true)?;
+
+            assert_eq!(f.balance(f.payee)?, U256::from(250));
+            assert_eq!(f.balance(f.owner)?, U256::from(750));
+            assert_eq!((f.reserved()?, f.available()?), (0, 750));
+            assert_eq!(f.captured(id)?, (250, 0));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_part_capture_of_a_burned_hold_becomes_debt() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(500)?;
+            let id = B256::random();
+            f.hold(id, 500)?;
+            f.token.grant_role_internal(f.admin, BURN_AT_ROLE)?;
+            f.token.burn_at(
+                f.admin,
+                ITIP20::burnAtCall {
+                    from: f.owner,
+                    amount: U256::from(300),
+                },
+            )?;
+            f.set_debt_cap(f.payee, 300)?;
+            // The burned part is consumed first, as when a capture ends a burned hold.
+            f.reservations.clear_emitted_events();
+            f.capture_part(id, 250, false)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::hold_part_captured(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    250,
+                    250,
+                )]);
+            assert_eq!(f.reserved()?, 200);
+            f.capture_part(id, 250, true)?;
+            assert_eq!(f.balance(f.payee)?, U256::from(200));
+            assert_eq!(f.debt()?.amount, 300);
             Ok(())
         })
     }
@@ -2042,6 +2457,7 @@ mod tests {
             for result in [
                 f.adjust(id, 10),
                 f.capture(id, 10),
+                f.capture_part(id, 10, false),
                 f.reservations.release(f.owner, id),
             ] {
                 assert_eq!(
@@ -2237,6 +2653,7 @@ mod tests {
             IReservations::holdCall::SELECTOR,
             IReservations::adjustCall::SELECTOR,
             IReservations::captureCall::SELECTOR,
+            IReservations::capturePartCall::SELECTOR,
             IReservations::chargeCall::SELECTOR,
             IReservations::releaseCall::SELECTOR,
         ];

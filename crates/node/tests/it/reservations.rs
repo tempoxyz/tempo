@@ -5,12 +5,14 @@ use alloy::{
 };
 use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{IReservations, ITIP20, RESERVATIONS_ADDRESS, TIP20Error};
+use tempo_contracts::precompiles::{
+    IReservations, ITIP20, RESERVATIONS_ADDRESS, ReservationsError, TIP20Error,
+};
 
 use crate::utils::{TestNodeBuilder, setup_test_token};
 
 /// A card authorization held, captured above the hold and partly refunded through transactions,
-/// then a second one captured by its payee.
+/// a second one captured by its payee, and a third captured in parts by both.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_hold_capture_refund() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -152,6 +154,77 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
     assert_eq!(token.balanceOf(payee).call().await?, U256::from(700));
     assert_eq!(token.balanceOf(owner).call().await?, U256::from(300));
     assert_eq!(reservations.reserved(owner, token_address).call().await?, 0);
+
+    // Split shipments: non-final parts keep the hold live; the final part ends it.
+    let third = B256::random();
+    let receipt = reservations
+        .hold(token_address, third, 250, now + 3_600, payee)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(3_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let receipt = reservations
+        .capturePart(third, 100, false)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(3_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let part = receipt
+        .logs()
+        .iter()
+        .find_map(|log| IReservations::HoldPartCaptured::decode_log(&log.inner).ok())
+        .expect("a non-final capture emits HoldPartCaptured");
+    assert_eq!((part.id, part.amount, part.debt), (third, 100, 0));
+    let receipt = payee_reservations
+        .captureForPart(owner, third, 50, false)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(3_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let hold = reservations.getHold(owner, third).call().await?;
+    assert_eq!((hold.amount, hold.expiresAt), (100, now + 3_600));
+    assert_eq!(
+        reservations.reserved(owner, token_address).call().await?,
+        100
+    );
+
+    let receipt = reservations
+        .capturePart(third, 150, true)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(3_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let captured = receipt
+        .logs()
+        .iter()
+        .find_map(|log| IReservations::HoldCaptured::decode_log(&log.inner).ok())
+        .expect("a final capture emits HoldCaptured");
+    assert_eq!((captured.id, captured.amount), (third, 150));
+    assert_eq!(token.balanceOf(payee).call().await?, U256::from(1_000));
+    assert_eq!(token.balanceOf(owner).call().await?, U256::ZERO);
+    assert_eq!(reservations.reserved(owner, token_address).call().await?, 0);
+    let totals = reservations.captured(owner, third).call().await?;
+    assert_eq!((totals.captured, totals.refunded), (300, 0));
+
+    let Err(err) = payee_reservations.refund(owner, third, 301).call().await else {
+        panic!("a refund above the parts captured must revert");
+    };
+    assert_eq!(
+        err.as_decoded_interface_error::<ReservationsError>(),
+        Some(ReservationsError::refund_exceeds_capture())
+    );
 
     Ok(())
 }
