@@ -682,6 +682,7 @@ mod tests {
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: None,
+            block_hash: None,
         };
         let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
         executor.phase = ZoneBlockPhase::Executing;
@@ -735,6 +736,7 @@ mod tests {
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: None,
+            block_hash: None,
         };
         let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
         executor.phase = ZoneBlockPhase::Executing;
@@ -833,6 +835,7 @@ mod tests {
                 general_gas_limit: 0,
                 shared_gas_limit: 0,
                 consensus_context: None,
+                block_hash: None,
             };
             let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
             executor.phase = phase;
@@ -1076,6 +1079,7 @@ mod tests {
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: None,
+            block_hash: None,
         };
         let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
 
@@ -1147,6 +1151,7 @@ mod tests {
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: None,
+            block_hash: None,
         };
         let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
         executor.phase = ZoneBlockPhase::Executing;
@@ -1473,6 +1478,7 @@ mod tests {
                     general_gas_limit: 0,
                     shared_gas_limit: 0,
                     consensus_context: None,
+                    block_hash: None,
                 };
                 let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
                 executor.apply_pre_execution_changes().unwrap();
@@ -1565,6 +1571,7 @@ mod tests {
                 general_gas_limit: 0,
                 shared_gas_limit: 0,
                 consensus_context: None,
+                block_hash: None,
             };
             let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
             executor.apply_pre_execution_changes().unwrap();

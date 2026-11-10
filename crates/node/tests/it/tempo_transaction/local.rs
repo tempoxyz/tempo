@@ -36,7 +36,9 @@ use tempo_contracts::precompiles::{
         revokeKeyCall,
     },
 };
-use tempo_node::rpc::TempoTransactionRequest;
+use tempo_node::{
+    ExpiringNonceTracker, evm::expiring_nonces::ExpiringNonce, rpc::TempoTransactionRequest,
+};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     account_keychain::updateSpendingLimitCall,
@@ -2051,6 +2053,65 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     );
     println!("✓ Replay rejected at transaction pool level");
 
+    Ok(())
+}
+
+/// The expiring nonce set follows the canonical chain and holds included expiring nonce hashes
+/// until they expire.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_expiring_nonce_set_tracks_canonical_chain() -> eyre::Result<()> {
+    let Localnet {
+        mut setup,
+        provider,
+        chain_id,
+        funder_signer: alice_signer,
+        ..
+    } = Localnet::new().await?;
+
+    let sets = setup.node.inner.evm_config.expiring_nonce_sets().clone();
+    ExpiringNonceTracker::new(setup.node.inner.provider.clone(), sets.clone())
+        .spawn(setup.node.inner.task_executor.clone());
+    setup.node.advance_blocks(3).await?;
+
+    let parent = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .ok_or_eyre("missing latest block")?;
+    let valid_before = parent.header.timestamp() + setup.hardfork.expiring_nonce_max_expiry_secs();
+    let tx = create_expiring_nonce_tx(chain_id, valid_before, Address::random());
+    let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let entry = ExpiringNonce {
+        hash: envelope.unique_tx_identifier(alice_signer.address()),
+        valid_before,
+    };
+    setup
+        .node
+        .mine([envelope.encoded_2718().into()])
+        .await?
+        .ensure_success()?;
+
+    let tip = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .ok_or_eyre("missing latest block")?;
+    let tip_hash = tip.header.hash;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !sets.contains(tip_hash) {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .wrap_err("expiring nonce set of the tip was never stored")?;
+
+    let at_tip = sets
+        .derive(tip_hash, tip.header.timestamp(), &[])
+        .ok_or_eyre("tip set is known")?;
+    assert!(at_tip.contains(&entry));
+    let expired = sets
+        .derive(tip_hash, valid_before, &[])
+        .ok_or_eyre("tip set is known")?;
+    assert!(!expired.contains(&entry));
     Ok(())
 }
 

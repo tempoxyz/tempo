@@ -36,6 +36,8 @@ reth-evm-ethereum.workspace = true
 reth-primitives-traits.workspace = true
 reth-rpc-eth-api = { workspace = true, optional = true }
 reth-storage-api.workspace = true
+reth-trie-common.workspace = true
+reth-trie-sparse.workspace = true
 
 rayon = { workspace = true, optional = true }
 alloy-consensus.workspace = true
@@ -53,6 +55,9 @@ alloy-genesis = { workspace = true, features = ["std"], optional = true }
 eyre = { workspace = true, optional = true }
 
 derive_more.workspace = true
+metrics.workspace = true
+parking_lot.workspace = true
+schnellru.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

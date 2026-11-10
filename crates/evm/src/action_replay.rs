@@ -1,4 +1,6 @@
-use crate::{TempoBlockExecutor, TempoEvmTypes, TempoHardfork, TempoTxResult};
+use crate::{
+    TempoBlockExecutor, TempoEvmTypes, TempoHardfork, TempoTxResult, expiring_nonces::ExpiringNonce,
+};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, U256,
@@ -77,6 +79,7 @@ impl TempoBlockExecutor<'_> {
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
+            ExpiringNonce::from_tx(original, *recovered.signer(), self.evm().config_spec_id()),
         );
         result_closure(&result);
 

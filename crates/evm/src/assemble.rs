@@ -1,6 +1,10 @@
 use crate::{
-    TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
+    TempoEvmConfig, TempoEvmFactory,
+    block::TempoReceiptBuilder,
+    context::TempoBlockExecutionCtx,
+    expiring_nonces::{ExpiringNonceSets, staged_key},
 };
+use alloy_consensus::{Sealable, transaction::TxHashRef};
 use alloy_primitives::{B256, Bloom};
 use reth_evm::{
     BlockExecutionError, EvmEnv,
@@ -16,12 +20,15 @@ use tempo_primitives::TempoHeader;
 #[derive(Debug, Clone)]
 pub struct TempoBlockAssembler {
     pub(crate) inner: EthBlockAssembler<TempoChainSpec>,
+    /// Snapshots each assembled block's expiring nonce set is stored in.
+    pub(crate) expiring_nonce_sets: ExpiringNonceSets,
 }
 
 impl TempoBlockAssembler {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
             inner: EthBlockAssembler::new(chain_spec),
+            expiring_nonce_sets: ExpiringNonceSets::default(),
         }
     }
 
@@ -40,6 +47,7 @@ impl TempoBlockAssembler {
                     general_gas_limit,
                     shared_gas_limit,
                     consensus_context,
+                    block_hash: _,
                 },
             parent,
             transactions,
@@ -50,6 +58,23 @@ impl TempoBlockAssembler {
             block_access_list_hash,
             ..
         } = input;
+
+        // The executor stages a built payload's expiring nonce set, keyed by the payload's
+        // expiring nonce transactions, until its hash is known here.
+        let expiring_nonce_tx_hashes: Vec<_> = if evm_env.spec.is_t1() {
+            transactions
+                .iter()
+                .filter(|tx| tx.is_expiring_nonce())
+                .map(|tx| *tx.tx_hash())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let staged_key = staged_key(
+            parent.hash(),
+            evm_env.block_env().timestamp.saturating_to(),
+            &expiring_nonce_tx_hashes,
+        );
 
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
 
@@ -79,13 +104,16 @@ impl TempoBlockAssembler {
             receipts_bloom,
         )?;
 
-        Ok(block.map_header(|inner| TempoHeader {
+        let block = block.map_header(|inner| TempoHeader {
             inner,
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
             consensus_context,
-        }))
+        });
+        self.expiring_nonce_sets
+            .promote(staged_key, || block.header.hash_slow());
+        Ok(block)
     }
 }
 
@@ -196,6 +224,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             consensus_context: None,
+            block_hash: None,
         };
 
         let tx = create_legacy_tx();
@@ -301,6 +330,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             consensus_context: Some(ctx),
+            block_hash: None,
         };
 
         let transactions = vec![create_legacy_tx()];
@@ -377,6 +407,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             consensus_context: None,
+            block_hash: None,
         };
 
         let transactions = vec![create_legacy_tx()];

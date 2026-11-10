@@ -86,7 +86,7 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    EstimatorConfig, ShadowReplayer, TempoFullNode,
+    EstimatorConfig, ExpiringNonceTracker, ShadowReplayer, TempoFullNode,
     rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
@@ -663,6 +663,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }))
             .await
             .wrap_err("failed launching execution node")?;
+
+        ExpiringNonceTracker::new(
+            node.provider.clone(),
+            node.evm_config.expiring_nonce_sets().clone(),
+        )
+        .spawn(node.tasks().clone());
 
         if let Some(hardfork) = args.node_args.shadow_replay {
             let hardfork = hardfork.unwrap_or_else(|| *TempoHardfork::VARIANTS.last().unwrap());
