@@ -392,9 +392,9 @@ async fn test_invalid_non_secp_auth_tokens_are_rejected() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Authorized P256 keychain tokens authenticate as the root account in both V1 and V2 encodings.
+/// Authorized P256 keychain tokens authenticate as the root account in the V2 encoding only.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_keychain_auth_tokens_v1_and_v2() -> eyre::Result<()> {
+async fn test_keychain_auth_tokens_require_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut ctx = start_zone_with_redacted_rpc().await?;
@@ -418,28 +418,32 @@ async fn test_keychain_auth_tokens_v1_and_v2() -> eyre::Result<()> {
     )
     .await?;
 
-    for version in [0x03, 0x04] {
-        let (token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, version);
-        let resp = ctx
-            .call(
-                "eth_call",
-                serde_json::json!([
-                    {
-                        "from": format!("{:#x}", root_signer.address()),
-                        "to": format!("{:#x}", root_signer.address()),
-                        "input": "0x"
-                    },
-                    "latest"
-                ]),
-                &token,
-            )
-            .await?;
-        assert_eq!(
-            resp["result"].as_str().unwrap(),
-            "0x",
-            "keychain auth should allow calls from the root account",
-        );
-    }
+    let (v1_token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, 0x03);
+    let (status, _) = ctx
+        .call_raw("eth_blockNumber", serde_json::json!([]), &v1_token)
+        .await?;
+    assert_eq!(status.as_u16(), 403, "V1 keychain token should return 403");
+
+    let (token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, 0x04);
+    let resp = ctx
+        .call(
+            "eth_call",
+            serde_json::json!([
+                {
+                    "from": format!("{:#x}", root_signer.address()),
+                    "to": format!("{:#x}", root_signer.address()),
+                    "input": "0x"
+                },
+                "latest"
+            ]),
+            &token,
+        )
+        .await?;
+    assert_eq!(
+        resp["result"].as_str().unwrap(),
+        "0x",
+        "keychain auth should allow calls from the root account",
+    );
 
     Ok(())
 }
