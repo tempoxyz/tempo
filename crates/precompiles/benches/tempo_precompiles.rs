@@ -48,7 +48,7 @@ fn signature_verification(c: &mut Criterion) {
             b.iter(|| {
                 black_box(
                     verifier
-                        .recover(black_box(hash), black_box(p256_signature.clone()))
+                        .recover(black_box(hash), black_box(&p256_signature))
                         .expect("P256 fixture verifies"),
                 );
             });

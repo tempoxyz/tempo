@@ -112,15 +112,22 @@ impl Corpus {
     }
 
     /// Each of `blocks`, in block order and once each, with its stored input size and harness
-    /// input, in windows of up to `window` blocks, each read and decoded on the corpus's runtime
-    /// while the caller works on the one before. Iteration stops after the first error.
+    /// input, in windows of up to `window` blocks and about [WINDOW_BYTES] stored bytes, each read
+    /// and decoded on the corpus's runtime while the caller works on the one before. Iteration
+    /// stops after the first error.
     pub fn windows(&self, mut blocks: Vec<u64>, window: usize) -> Windows<'_> {
         blocks.sort_unstable();
         blocks.dedup();
         let (sender, receiver) = mpsc::channel(1);
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
         let task = AbortOnDropHandle::new(self.runtime.spawn(async move {
-            for blocks in blocks.chunks(window.max(1)) {
+            let window = window.max(1);
+            // Each window is sized from the stored bytes per block of the one before, so heavy
+            // blocks come in fewer at a time. The first is small until that is known.
+            let (mut rest, mut size) = (&blocks[..], window.min(FIRST_WINDOW));
+            while !rest.is_empty() {
+                let (blocks, tail) = rest.split_at(size.min(rest.len()));
+                rest = tail;
                 let read = async {
                     let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
                         return Ok(Vec::new());
@@ -169,6 +176,12 @@ impl Corpus {
                         .await
                 }
                 .await;
+                if let Ok(inputs) = &read
+                    && let Some(next) = (WINDOW_BYTES * inputs.len())
+                        .checked_div(inputs.iter().map(|input| input.size).sum())
+                {
+                    size = next.clamp(1, window);
+                }
                 let failed = read.is_err();
                 if sender.send(read).await.is_err() || failed {
                     break;
@@ -182,6 +195,13 @@ impl Corpus {
         }
     }
 }
+
+/// Stored block bytes [Corpus::windows] aims to read per window. Each reader holds a few windows
+/// decoded, which take several times their stored size.
+const WINDOW_BYTES: usize = 32 << 20;
+
+/// Blocks in [Corpus::windows]' first window, read before their sizes are known.
+const FIRST_WINDOW: usize = 256;
 
 /// A window spanning at least this many corpus blocks per block it lists is read with point reads.
 const SPARSE_SPAN: u64 = 4;

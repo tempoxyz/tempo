@@ -25,6 +25,10 @@ use tracy_client as _;
 #[cfg(feature = "otlp")]
 use opentelemetry_otlp as _;
 
+// Links Antithesis's coverage runtime shim into binaries built with its sancov flags.
+#[cfg(all(target_os = "linux", feature = "antithesis-coverage"))]
+use antithesis_instrumentation as _;
+
 pub mod cli;
 #[cfg(feature = "corpus")]
 pub mod corpus;
@@ -82,7 +86,7 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    EstimatorConfig, ShadowReplayer, TempoFullNode,
+    ShadowReplayer, TempoFullNode,
     rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
@@ -125,6 +129,25 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Rejects reth's debug consensus clients (`--debug.rpc-consensus-url`, `--debug.etherscan`)
+/// when the Tempo consensus engine is active.
+///
+/// Reth's debug launcher drives the same beacon engine handle with new payloads and forkchoice
+/// updates without any certificate checks, so it must not run next to the Tempo consensus or
+/// certified follow stack.
+fn ensure_no_debug_forkchoice_driver(cli: &TempoCli) -> eyre::Result<()> {
+    if let Commands::Node(node_cmd) = &cli.command
+        && node_cmd.ext.has_consensus_engine(node_cmd.dev.dev)
+        && (node_cmd.debug.rpc_consensus_url.is_some() || node_cmd.debug.etherscan.is_some())
+    {
+        eyre::bail!(
+            "--debug.rpc-consensus-url and --debug.etherscan drive forkchoice outside the Tempo consensus engine and are only allowed with --dev or --follow.nocertify"
+        );
+    }
+
+    Ok(())
+}
+
 fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
     let factory = genesis
         .alloc
@@ -154,6 +177,9 @@ pub fn tempo_main() -> eyre::Result<()> {
 /// launched. See [`TempoOverrides`] for the currently supported hooks and an
 /// example that injects additional transaction pool validation.
 pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
+    #[cfg(feature = "fuzz-execution")]
+    antithesis_sdk::antithesis_init();
+
     // A JIT backend launches this binary as its out-of-process compiler.
     #[cfg(feature = "jit")]
     if tempo_evm::jit::maybe_run_jit_helper()?.is_break() {
@@ -253,6 +279,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     };
 
     apply_tempo_cli_overrides(&mut cli)?;
+    ensure_no_debug_forkchoice_driver(&cli)?;
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -577,11 +604,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         });
         let estimator = tempo_node
             .payload_builder_builder()
-            .resolve_estimator(EstimatorConfig::new(
-                args.consensus.target_block_time.into_duration(),
-                args.consensus.network_budget.into_duration(),
-            ))
-            .wrap_err("invalid --consensus.network-budget or --consensus.target-block-time")?;
+            .resolve_estimator(args.consensus.estimator_config())
+            .wrap_err("invalid proposal budget flags")?;
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
@@ -779,7 +803,7 @@ mod tests {
 
     use super::{
         TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
-        follow::FollowMode, snapshot_download,
+        ensure_no_debug_forkchoice_driver, follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::precompiles::{
@@ -1053,6 +1077,69 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn debug_consensus_clients_rejected_with_consensus_engine() {
+        init_defaults_once();
+
+        let rejected = [
+            // certified follow
+            &[
+                "tempo",
+                "node",
+                "--follow",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ][..],
+            &["tempo", "node", "--follow", "--debug.etherscan"],
+            // validator mode
+            &[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ],
+        ];
+        for args in rejected {
+            let cli = TempoCli::try_parse_from(args).unwrap();
+            let err = ensure_no_debug_forkchoice_driver(&cli).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("only allowed with --dev or --follow.nocertify"),
+                "{args:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_consensus_clients_allowed_without_consensus_engine() {
+        init_defaults_once();
+
+        let allowed = [
+            &[
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ][..],
+            &[
+                "tempo",
+                "node",
+                "--dev",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ],
+            &["tempo", "node", "--follow"],
+        ];
+        for args in allowed {
+            let cli = TempoCli::try_parse_from(args).unwrap();
+            ensure_no_debug_forkchoice_driver(&cli).unwrap();
+        }
     }
 
     #[test]

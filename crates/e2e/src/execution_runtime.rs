@@ -70,6 +70,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     t12_time: Option<u64>,
     t14_time: Option<u64>,
+    t15_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -80,6 +81,7 @@ impl Builder {
         Self {
             t12_time: None,
             t14_time: None,
+            t15_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
@@ -116,10 +118,15 @@ impl Builder {
         Self { t14_time, ..self }
     }
 
+    pub fn with_t15_time(self, t15_time: Option<u64>) -> Self {
+        Self { t15_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             t12_time,
             t14_time,
+            t15_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -169,6 +176,14 @@ impl Builder {
                 .config
                 .extra_fields
                 .insert_value("t14Time".to_string(), t14_time)
+                .unwrap();
+        }
+
+        if let Some(t15_time) = t15_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t15Time".to_string(), t15_time)
                 .unwrap();
         }
 

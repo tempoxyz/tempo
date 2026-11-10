@@ -802,44 +802,48 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
             | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
     }
     let groups = if ($groups | is-empty) { [{users: [0 $accounts], zones: [0 $zones]}] } else { $groups }
-    mut templates = {}
-    mut mix = []
-    mut pair = 0
-    for group in $groups {
+    let pair_counts = ($groups | each { |group| [($group.users.1 - $group.users.0) ($group.zones.1 - $group.zones.0)] | math max })
+    # Build each user's rows in one pass: appending to a list or record per user copies it,
+    # which made rendering quadratic in accounts.
+    let rows = ($groups | enumerate | each { |item|
+        let group = $item.item
+        let first_pair = ($pair_counts | take $item.index | append 0 | math sum)
         let group_users = $group.users.1 - $group.users.0
         let group_zones = $group.zones.1 - $group.zones.0
-        let pairs = ([$group_users $group_zones] | math max)
+        let pairs = ($pair_counts | get $item.index)
         let minimum_per_zone = ($pairs // $group_zones)
-        for offset in 0..<$pairs {
+        0..<$pairs | each { |offset|
+            let pair = $first_pair + $offset
             let user = $group.users.0 + ($offset mod $group_users)
             let zone_offset = $offset mod $group_zones
             let zone = $group.zones.0 + $zone_offset
             let portal = {var: $"setup.portal_($zone).address"}
             let account = {pool: users, select: {index: $user}}
             let recipient = {pool: $account}
-            if $mode != withdraw {
-                $steps = ($steps | append ($spec.setup.steps.2 | update id $"approve_($pair)"
+            let approve = if $mode != withdraw {
+                $spec.setup.steps.2 | update id $"approve_($pair)"
                     | update tx.from $account
                     | update tx.calls [{to: $token, abi: ERC20, function: approve,
-                        args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]))
-            }
+                        args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]
+            } else { null }
             let per_zone = $minimum_per_zone + (if $zone_offset < ($pairs mod $group_zones) { 1 } else { 0 })
             let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
-            for kind in (if $mode == mixed { [deposit withdraw] } else { [$mode] }) {
-                let name = $"zone_($kind)_($pair)"
+            let entries = ((if $mode == mixed { [deposit withdraw] } else { [$mode] }) | each { |kind|
                 mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
                 if $kind == deposit {
                     $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
                 }
                 let settlement_index = if $kind == deposit { 1 } else { 0 }
                 let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
-                $template = ($template | update calls ($template.calls | update $settlement_index $call))
-                $templates = ($templates | insert $name $template)
-                $mix = ($mix | append {template: $name, weight: $weight})
-            }
-            $pair = $pair + 1
+                {name: $"zone_($kind)_($pair)", template: ($template | update calls ($template.calls | update $settlement_index $call)), weight: $weight}
+            })
+            {approve: $approve, entries: $entries}
         }
-    }
+    } | flatten)
+    let steps = ($steps | append ($rows | get approve | compact))
+    let entries = ($rows | get entries | flatten)
+    let templates = ($entries | select name template | transpose -r -d)
+    let mix = ($entries | each { |entry| {template: $entry.name, weight: $entry.weight} })
     let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
     mkdir $output_dir
     let output = ($output_dir | path join zones.yml)
@@ -1298,11 +1302,25 @@ def txgen-after-vault [steps: list<any>, vault_setup: list<any>] {
     }
 }
 
+# A deployment-shapes file passed inline in TXGEN_NEOBANK_SHAPES_GZ_B64 (gzip, then base64), such as
+# one compiled outside this repository and sent through bench-env, written to output_dir. Null when
+# unset.
+def txgen-neobank-inline-shapes [output_dir: string] {
+    let encoded = ($env.TXGEN_NEOBANK_SHAPES_GZ_B64? | default "" | str trim)
+    if $encoded == "" { return null }
+    mkdir $output_dir
+    let path = ($output_dir | path join neobank-inline-shapes.yml)
+    let result = ($encoded | decode base64 | ^gzip -dc | complete)
+    if $result.exit_code != 0 { error make {msg: $"TXGEN_NEOBANK_SHAPES_GZ_B64 is not gzip, then base64: ($result.stderr | str trim)"} }
+    $result.stdout | save --force $path
+    $path
+}
+
 def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, output_dir: string] {
     let presets = ($spec_path | path dirname)
-    # A relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
+    # Inline shapes win; a relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
-    let config = ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | get $preset_name)))
+    let config = (txgen-neobank-inline-shapes $output_dir | default ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | get $preset_name))))
     let config = if ($config | path exists) { $config } else { [ (txgen-repo-root) $config ] | path join }
     if not ($config | path exists) { error make {msg: $"neobank instances file not found: ($config)"} }
     let instances = (txgen-neobank-instances $config --presets-dir $presets)
