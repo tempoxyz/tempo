@@ -1673,7 +1673,7 @@ mod tests {
     use crate::{
         Precompile,
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
@@ -2059,7 +2059,7 @@ mod tests {
             StorageCtx.set_config_commitment(
                 delegate,
                 B256::repeat_byte(1),
-                crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+                ConfigCommitmentWriteGas::Intrinsic,
             )?;
 
             let err = authorize_key(
