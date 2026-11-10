@@ -21,9 +21,11 @@ RUN apt-get update \
     mold \
     && rm -rf /var/lib/apt/lists/*
 
-# Release optimizations with debug assertions and symbols, without LTO and with one codegen
-# unit per crate so Antithesis can symbolize the coverage instrumentation.
+# Release optimizations with debug assertions and symbols, without LTO (including the crate-local
+# ThinLTO pass) so Antithesis can symbolize the coverage instrumentation.
 ARG RUST_PROFILE=antithesis
+# Full DWARF (the profile inherits line tables only), so gdb can print locals, arguments and types.
+ARG CARGO_PROFILE_ANTITHESIS_DEBUG=2
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
 ARG VERGEN_GIT_SHA_SHORT=00000000
@@ -37,13 +39,16 @@ COPY . .
 # sancov trace-pc-guard edges that the antithesis-coverage feature's shim forwards to the
 # platform's libvoidstar (a no-op outside Antithesis), which also lets Antithesis pause threads.
 # --target keeps build scripts and proc macros uninstrumented.
-ARG COVERAGE_RUSTFLAGS="-Ccodegen-units=1 -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=3 -Cllvm-args=-sanitizer-coverage-trace-pc-guard -Cllvm-args=-sanitizer-coverage-pc-table -Clink-args=-Wl,--build-id"
+ARG COVERAGE_RUSTFLAGS="-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=3 -Cllvm-args=-sanitizer-coverage-trace-pc-guard -Cllvm-args=-sanitizer-coverage-pc-table -Clink-args=-Wl,--build-id"
 # The build platform's architecture (BuildKit sets it), so local arm64 builds stay native.
 ARG TARGETARCH
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/app/target,sharing=locked \
+# Private caches per workload: a concurrent or cancelled build (a cancelled workflow does not
+# stop its remote build) never holds them, and Cargo's package-cache lock lives outside the
+# registry mount, so concurrent builds must not share it.
+RUN --mount=type=cache,id=antithesis-zones-cargo-registry,target=/usr/local/cargo/registry,sharing=private \
+    --mount=type=cache,id=antithesis-zones-cargo-git,target=/usr/local/cargo/git,sharing=private \
+    --mount=type=cache,id=antithesis-zones-target,target=/app/target,sharing=private \
     case "${TARGETARCH}" in arm64) target=aarch64-unknown-linux-gnu ;; *) target=x86_64-unknown-linux-gnu ;; esac \
     && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${COVERAGE_RUSTFLAGS}" \
     cargo build --locked --profile ${RUST_PROFILE} --target "$target" \
@@ -78,8 +83,9 @@ RUN /out/tempo-xtask generate-genesis --output /genesis --accounts 20 --no-dkg-i
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 
+# gdb lets debugging sessions attach to the nodes (gdb -p) or open their core dumps.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates jq \
+    ca-certificates jq gdb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/ /usr/local/bin/

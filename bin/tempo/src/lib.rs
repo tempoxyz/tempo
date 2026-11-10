@@ -86,7 +86,7 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    EstimatorConfig, ExpiringNonceTracker, ShadowReplayer, TempoFullNode,
+    ExpiringNonceTracker, ShadowReplayer, TempoFullNode,
     rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
@@ -584,11 +584,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         });
         let estimator = tempo_node
             .payload_builder_builder()
-            .resolve_estimator(EstimatorConfig::new(
-                args.consensus.target_block_time.into_duration(),
-                args.consensus.network_budget.into_duration(),
-            ))
-            .wrap_err("invalid --consensus.network-budget or --consensus.target-block-time")?;
+            .resolve_estimator(args.consensus.estimator_config())
+            .wrap_err("invalid proposal budget flags")?;
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
