@@ -89,17 +89,15 @@ use crate::{follower::PeerTipRegistry, role::SharedRoleStatus};
 
 /// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
 ///
-/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds each request's wait to 175 ms, under the pre-T15
-/// witness collection timeout.
+/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
+/// collection timeout.
 const MULTI_PROOF_RETRIES: usize = 7;
 /// Delay before each `eth_getMultiProof` retry.
 const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
-/// Smallest request worth splitting off. Below it the L1 node builds the proofs in a few ms, so
-/// another request costs more than it saves.
+/// Smallest request worth splitting off.
 const MULTI_PROOF_MIN_CHUNK: usize = 128;
-/// Most `eth_getMultiProof` requests in flight for one witness. Each holds one of the L1 node's
-/// tracing permits (cores - 2 by default), which other zones and RPC users share, and proof time
-/// stopped improving past 8 requests in benchmarks against mainnet.
+/// Most `eth_getMultiProof` requests in flight per witness. Each holds one of the L1 node's shared
+/// tracing permits.
 const MULTI_PROOF_MAX_PARALLEL: usize = 8;
 
 /// Multi-sequencer handles for the sequencer RPC methods.
@@ -450,8 +448,7 @@ async fn collect_tempo_witness(
             })
         })
         .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
-        // Merge each response as it arrives, so hashing overlaps the requests still in flight
-        // and a response is freed once its nodes are deduplicated.
+        // Merge responses as they arrive.
         .try_fold(BTreeMap::new(), |mut nodes, proofs| {
             for proof in proofs {
                 for node in proof.account_proof.into_iter().chain(
@@ -470,12 +467,8 @@ async fn collect_tempo_witness(
     Ok((initial_header, nodes.into_values().collect()))
 }
 
-/// Split proof targets into `eth_getMultiProof` requests that run in parallel.
-///
-/// Requests stay within reth's per-request limit of [`DEFAULT_MAX_PROOF_SLOTS`] targets and
-/// slots. Up to [`MULTI_PROOF_MAX_PARALLEL`] requests share the work evenly, none smaller than
-/// [`MULTI_PROOF_MIN_CHUNK`] unless it is the only one. An account with more slots than a request
-/// holds is split across requests, each carrying its account proof.
+/// Split proof targets into even parallel `eth_getMultiProof` requests, each within reth's
+/// [`DEFAULT_MAX_PROOF_SLOTS`] limit on targets and slots.
 fn multi_proof_chunks(
     targets: BTreeMap<Address, BTreeSet<B256>>,
 ) -> Vec<Vec<(Address, Vec<B256>)>> {
@@ -490,7 +483,7 @@ fn multi_proof_chunks(
     let mut chunk_slots = 0;
     for (account, slots) in targets {
         let mut slots = slots.into_iter().peekable();
-        // Runs at least once, so an account-only target still takes one entry with no slots.
+        // Runs once for an account-only target.
         loop {
             let piece = slots.by_ref().take(size).collect::<Vec<_>>();
             if chunk.len() == size || chunk_slots + piece.len() > size {
@@ -1876,7 +1869,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("checkpoint hash mismatch"));
 
-        // Reads past one request's worth are fetched in parallel requests and merged.
+        // Large reads fan out into parallel requests.
         fail.store(false, Ordering::Relaxed);
         requests.lock().unwrap().clear();
         let many_reads = (0..300u16)
@@ -1935,8 +1928,7 @@ mod tests {
         );
         assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), 20_000);
 
-        // An account with more slots than one request holds is split, each piece carrying the
-        // account, and no request exceeds the slot limit.
+        // An account with too many slots is split across requests.
         let account = Address::repeat_byte(0xaa);
         let slots = (0..3000u32)
             .map(|i| B256::left_padding_from(&i.to_be_bytes()))
