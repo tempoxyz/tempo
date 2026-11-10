@@ -160,6 +160,9 @@ impl AmmLiquidityCache {
                                 if let Some(hop) = intermediate {
                                     inner.quote_token_cache.entry(user_token).or_insert(hop);
                                 }
+                            } else {
+                                // Uncached pools miss later reserve writes, so recheck instead.
+                                inner.pending_rechecks.insert(user_token);
                             }
                         }
                         // If there is enough liquidity, short circuit and return `true`
@@ -176,11 +179,18 @@ impl AmmLiquidityCache {
 
     /// Clears all cached state. Used on reorg to invalidate stale entries
     /// from orphaned blocks.
+    ///
+    /// User tokens with cached pools are reported by the next [`Self::on_new_state`], since the
+    /// new chain may have lowered their liquidity.
     pub fn clear(&self) {
         let mut inner = self.inner.write();
         let generation = inner.generation + 1;
+        let mut pending_rechecks = std::mem::take(&mut inner.pending_rechecks);
+        pending_rechecks.extend(inner.pool_cache.keys().map(|(user_token, _)| *user_token));
+        pending_rechecks.extend(inner.quote_token_cache.keys().copied());
         *inner = AmmLiquidityCacheInner {
             generation,
+            pending_rechecks,
             ..Default::default()
         };
     }
@@ -209,11 +219,12 @@ impl AmmLiquidityCache {
     /// tokens whose `quoteToken` storage slot was written.
     ///
     /// Returns the user tokens whose cached liquidity decreased, directly or through a cached
-    /// two-hop intermediate, so pooled transactions paying fees in them can be rechecked.
+    /// two-hop intermediate, plus those whose pools were cleared or left uncached since the last
+    /// call, so pooled transactions paying fees in them can be rechecked.
     pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) -> AddressSet {
         let mut inner = self.inner.write();
         inner.generation += 1;
-        let mut decreased = AddressSet::default();
+        let mut decreased = std::mem::take(&mut inner.pending_rechecks);
 
         // Process FeeManager slot changes: update pool reserves and validator preferences.
         if let Some(storage) = execution_outcome
@@ -389,6 +400,10 @@ struct AmmLiquidityCacheInner {
     /// Bumped whenever canonical state is applied or the cache is cleared, so a slow-path lookup
     /// can tell that the state it read may be older than the cache.
     generation: u64,
+
+    /// User tokens whose pools were cleared or left uncached because their state was outdated.
+    /// Drained by the next `on_new_state`, which reports them for a liquidity recheck.
+    pending_rechecks: AddressSet,
 }
 
 impl AmmLiquidityCache {
@@ -778,6 +793,36 @@ mod tests {
                 .unwrap(),
             "a reserve read from state pinned before the update must not be cached",
         );
+        assert_eq!(
+            cache.on_new_state(&ExecutionOutcome::default()),
+            AddressSet::from_iter([user_token]),
+            "a lookup that couldn't cache its pools must queue a recheck",
+        );
+    }
+
+    #[test]
+    fn test_clear_queues_rechecks_for_cached_tokens() {
+        let (direct_user, routed_user, hop, validator_token) = (
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            Address::repeat_byte(0x33),
+            Address::repeat_byte(0x44),
+        );
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                pool_cache: HashMap::from_iter([((direct_user, validator_token), U256::ONE)]),
+                quote_token_cache: AddressMap::from_iter([(routed_user, hop)]),
+                ..Default::default()
+            })),
+        };
+
+        cache.clear();
+
+        assert_eq!(
+            cache.on_new_state(&ExecutionOutcome::default()),
+            AddressSet::from_iter([direct_user, routed_user])
+        );
+        assert!(cache.on_new_state(&ExecutionOutcome::default()).is_empty());
     }
 
     // ============================================
