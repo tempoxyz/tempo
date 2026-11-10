@@ -1374,16 +1374,13 @@ impl AA2dPool {
 
     /// Evicts one pending transaction, considering both regular 2D and expiring nonce txs.
     ///
-    /// A pending transaction whose `valid_after` is still in the future can't be included yet and
+    /// Transactions that can't pay the current base fee rank lowest and go first. After them, a
+    /// pending transaction whose `valid_after` is still in the future can't be included yet and
     /// so never pays a fee in the meantime. It must not displace an executable transaction, so
-    /// the one that unlocks the latest (newest submission on ties) is evicted first. Otherwise
+    /// the one that unlocks the latest (newest submission on ties) is evicted next. Otherwise
     /// the transaction with lowest priority is evicted; ties broken by submission order (newer
     /// first).
     fn evict_one_pending(&mut self) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        if let Some(hash) = self.time_locked.latest_locked(self.tip_timestamp) {
-            return self.remove_transaction_by_hash(&hash);
-        }
-
         let worst_2d = self
             .pending_eviction_order
             .first()
@@ -1393,6 +1390,12 @@ impl AA2dPool {
             .expiring_nonce_eviction_order
             .first()
             .map(|key| (key.priority().clone(), key.submission_id()));
+
+        let has_underpriced = matches!(worst_2d, Some((_, Priority::None, _)))
+            || matches!(worst_expiring, Some((Priority::None, _)));
+        if !has_underpriced && let Some(hash) = self.time_locked.latest_locked(self.tip_timestamp) {
+            return self.remove_transaction_by_hash(&hash);
+        }
 
         match (worst_2d, worst_expiring) {
             (Some((id, pri_2d, sid_2d)), Some((pri_exp, sid_exp))) => {
@@ -8462,6 +8465,41 @@ mod tests {
         assert!(pool.contains(locked_child.hash()));
         assert!(pool.time_locked.0.is_empty());
         pool.assert_invariants();
+    }
+
+    #[test]
+    fn evicts_underpriced_before_time_locked() {
+        let mut pool = eviction_test_pool();
+        pool.set_tip_timestamp(100);
+        pool.set_base_fee(30_000_000_000);
+
+        let paying = |key: u64| {
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::from(key))
+                .max_fee(100_000_000_000)
+        };
+        let locked = paying(1)
+            .max_priority_fee(10_000_000_000)
+            .valid_after(150)
+            .build();
+        // Fee cap below the base fee, so it can't be included either.
+        let underpriced = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(2))
+            .max_fee(20_000_000_000)
+            .build();
+
+        add_and_collect_discarded(&mut pool, &locked);
+        add_and_collect_discarded(&mut pool, &underpriced);
+        assert_eq!(
+            add_and_collect_discarded(&mut pool, &paying(3).build()),
+            vec![*underpriced.hash()]
+        );
+
+        // With no underpriced tx left, the time-locked one goes before executable ones.
+        assert_eq!(
+            add_and_collect_discarded(&mut pool, &paying(4).build()),
+            vec![*locked.hash()]
+        );
     }
 
     #[test]
