@@ -428,44 +428,45 @@ async fn collect_tempo_witness(
     // The L1 RPC may balance connections across nodes whose heads differ by a few
     // milliseconds, so the node serving this request can lack a block the subscriber already
     // saw finalized. Retry only that answer (`block not found`); return every other error.
-    let fetch = |chunk: Vec<(Address, Vec<B256>)>| {
-        (move || {
-            provider
-                .client()
-                .request::<_, Vec<EIP1186AccountProofResponse>>(
-                    "eth_getMultiProof",
-                    (chunk.clone(), BlockId::number(tempo_block_number)),
-                )
-        })
-        .retry(
-            ConstantBuilder::default()
-                .with_delay(MULTI_PROOF_RETRY_DELAY)
-                .with_max_times(MULTI_PROOF_RETRIES),
-        )
-        .when(|error| {
-            error.as_error_resp().is_some_and(|response| {
-                response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+    let nodes = futures::stream::iter(multi_proof_chunks(targets))
+        .map(|chunk| {
+            (move || {
+                provider
+                    .client()
+                    .request::<_, Vec<EIP1186AccountProofResponse>>(
+                        "eth_getMultiProof",
+                        (chunk.clone(), BlockId::number(tempo_block_number)),
+                    )
+            })
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(MULTI_PROOF_RETRY_DELAY)
+                    .with_max_times(MULTI_PROOF_RETRIES),
+            )
+            .when(|error| {
+                error.as_error_resp().is_some_and(|response| {
+                    response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+                })
             })
         })
-    };
-    let proofs = futures::stream::iter(multi_proof_chunks(targets))
-        .map(fetch)
         .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
-        .try_concat()
+        // Merge each response as it arrives, so hashing overlaps the requests still in flight
+        // and a response is freed once its nodes are deduplicated.
+        .try_fold(BTreeMap::new(), |mut nodes, proofs| {
+            for proof in proofs {
+                for node in proof.account_proof.into_iter().chain(
+                    proof
+                        .storage_proof
+                        .into_iter()
+                        .flat_map(|proof| proof.proof),
+                ) {
+                    nodes.entry(keccak256(&node)).or_insert(node);
+                }
+            }
+            futures::future::ready(Ok(nodes))
+        })
         .await
         .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
-
-    let mut nodes = BTreeMap::new();
-    for proof in proofs {
-        for node in proof.account_proof.into_iter().chain(
-            proof
-                .storage_proof
-                .into_iter()
-                .flat_map(|proof| proof.proof),
-        ) {
-            nodes.entry(keccak256(&node)).or_insert(node);
-        }
-    }
     Ok((initial_header, nodes.into_values().collect()))
 }
 
@@ -478,8 +479,7 @@ async fn collect_tempo_witness(
 fn multi_proof_chunks(
     targets: BTreeMap<Address, BTreeSet<B256>>,
 ) -> Vec<Vec<(Address, Vec<B256>)>> {
-    let total_slots = targets.values().map(BTreeSet::len).sum::<usize>();
-    let total = targets.len().max(total_slots);
+    let total = targets.len().max(targets.values().map(BTreeSet::len).sum());
     let parallel = total
         .div_ceil(MULTI_PROOF_MIN_CHUNK)
         .clamp(1, MULTI_PROOF_MAX_PARALLEL);
@@ -489,20 +489,19 @@ fn multi_proof_chunks(
     let mut chunk = Vec::new();
     let mut chunk_slots = 0;
     for (account, slots) in targets {
-        let slots = slots.into_iter().collect::<Vec<_>>();
-        // An account-only target still takes one entry with no slots.
-        let pieces = if slots.is_empty() {
-            vec![Vec::new()]
-        } else {
-            slots.chunks(size).map(<[B256]>::to_vec).collect()
-        };
-        for piece in pieces {
+        let mut slots = slots.into_iter().peekable();
+        // Runs at least once, so an account-only target still takes one entry with no slots.
+        loop {
+            let piece = slots.by_ref().take(size).collect::<Vec<_>>();
             if chunk.len() == size || chunk_slots + piece.len() > size {
                 chunks.push(std::mem::take(&mut chunk));
                 chunk_slots = 0;
             }
             chunk_slots += piece.len();
             chunk.push((account, piece));
+            if slots.peek().is_none() {
+                break;
+            }
         }
     }
     if !chunk.is_empty() {
