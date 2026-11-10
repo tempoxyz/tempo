@@ -568,9 +568,24 @@ jobs:
               echo "::error::CI fix loop gave up after $((ci_fix_attempt - 1)) attempts / $((SECONDS / 60))m"
               exit 1
             fi
-            echo "Polling CI checks..."
+            # Checks must belong to the commit just pushed: right after a push, the PR can still
+            # report the previous head's checks, whose stale failures would send Amp a problem it
+            # already fixed (and then give up when Amp finds nothing to change).
+            EXPECTED_SHA=$(git rev-parse HEAD)
+            echo "Polling CI checks for $EXPECTED_SHA..."
             WAIT_START=$SECONDS
             while true; do
+              PR_HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+              if [ "$PR_HEAD_SHA" != "$EXPECTED_SHA" ]; then
+                if [ $(( SECONDS - WAIT_START )) -ge 600 ]; then
+                  echo "::error::PR head is still ${PR_HEAD_SHA:-unknown}, expected $EXPECTED_SHA after 10m"
+                  exit 1
+                fi
+                echo "Waiting for the PR head to become $EXPECTED_SHA (now ${PR_HEAD_SHA:-unknown})..."
+                sleep 15
+                continue
+              fi
+
               STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
               # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
               if ! echo "$STATUS" | jq empty 2>/dev/null; then
@@ -657,6 +672,9 @@ jobs:
                 elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
                   echo "Amp made no changes for stuck jobs — giving up"
                   exit 1
+                else
+                  # Amp committed itself; make sure the commit CI is polled for is pushed
+                  git push origin "HEAD:$PR_BRANCH"
                 fi
                 # Restart the outer loop to wait for new CI run
                 continue 2
@@ -706,6 +724,9 @@ jobs:
             elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
               echo "Amp made no changes but CI is still failing — giving up"
               exit 1
+            else
+              # Amp committed itself; make sure the commit CI is polled for is pushed
+              git push origin "HEAD:$PR_BRANCH"
             fi
           done
 
