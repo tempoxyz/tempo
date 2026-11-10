@@ -138,17 +138,18 @@ jobs:
         run: |
           echo "vempo proofs on ${SHA:0:7}: ${CONCLUSION:-still running} ($URL, vempo readers only)" >>"$GITHUB_STEP_SUMMARY"
           [ "$CONCLUSION" = success ] || { echo "::error::vempo's proofs: ${CONCLUSION:-timed out}: $URL"; exit 1; }
-      # A newer push supersedes this job (concurrency above): stop the vempo run it started too.
+      # A newer push supersedes this job (concurrency above), a step fails or the waits run out: stop
+      # the vempo run it started too (a no-op once that run completed).
       - name: Fetch a vempo token to cancel
         id: sts-cancel
-        if: cancelled() && steps.sts1.outcome == 'success'
+        if: (cancelled() || failure()) && steps.sts1.outcome == 'success'
         uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/vempo
           policy: tempo-verify
           ttl: 1h
       - name: Cancel the superseded vempo run
-        if: cancelled() && steps.sts1.outcome == 'success'
+        if: (cancelled() || failure()) && steps.sts1.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.sts-cancel.outputs.token }}
           RUN_ID: ${{ steps.start.outputs.id }}
