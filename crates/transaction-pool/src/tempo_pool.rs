@@ -5,6 +5,7 @@
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
+    maintain::StateChanges,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
@@ -32,7 +33,7 @@ use reth_transaction_pool::{
     pool::AddedTransaction,
 };
 use reth_trie_common::bundle_state::BundleAccount;
-use std::{sync::Arc, time::Instant};
+use std::{collections::VecDeque, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
@@ -44,6 +45,16 @@ use tempo_precompiles::{
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::{Block, TempoHeader};
+
+/// Validation attempts before admission gives up on a transaction that state changes keep
+/// invalidating while it is validated.
+const ADMISSION_ATTEMPTS: usize = 3;
+/// Canonical updates whose state changes admission can still attribute; outcomes validated before
+/// older ones are revalidated.
+const RETAINED_STATE_CHANGES: usize = 64;
+
+/// Result index and origin of each transaction in an admission batch.
+type AdmissionSlots = Vec<(usize, TransactionOrigin)>;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -65,6 +76,12 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Recorded by maintenance before it scans for transactions its state changes invalidate.
+    ///
+    /// Admission reads the epoch before acquiring a state snapshot and inserts under the read
+    /// lock, revalidating outcomes that changes since affect, so a stale outcome is either seen
+    /// by the scan or validated again.
+    recent_changes: Arc<RwLock<RecentStateChanges>>,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -86,6 +103,7 @@ where
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            recent_changes: Default::default(),
         }
     }
 }
@@ -183,12 +201,17 @@ where
             return Vec::new();
         }
 
+        // Sampled before the state provider is pinned, see `AmmLiquidityCache::generation`.
+        let amm_cache = self.amm_liquidity_cache();
+        let amm_generation = amm_cache.generation();
+
         // Fetch state provider if any check needs on-chain reads:
-        // - validator token changes (liquidity check)
+        // - validator token changes or decreased liquidity (liquidity check)
         // - blacklist/whitelist (policy check)
         // - fee payer balance changes (balance check)
         // - spending limit spends (remaining limit check)
         let mut state_provider = if !updates.validator_token_changes.is_empty()
+            || !updates.liquidity_decreased_tokens.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
             || !updates.fee_balance_changes.is_empty()
@@ -241,7 +264,6 @@ where
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
         // enough liquidity, matching admission and preventing mass-eviction of valid txs.
-        let amm_cache = self.amm_liquidity_cache();
         let has_active_validator_token_changes = !updates.validator_token_changes.is_empty() && {
             let active_new_tokens: Vec<_> = updates
                 .validator_token_changes
@@ -377,15 +399,22 @@ where
                 continue;
             }
 
-            // Check 3: Validator token changes (re-check liquidity for all transactions)
+            // Check 3: Liquidity re-check, for all transactions on validator token changes and
+            // for transactions paying in a token whose cached liquidity decreased.
             // Prevents mass eviction because it only:
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
-            if has_active_validator_token_changes && let Some(ref provider) = state_provider {
+            if (has_active_validator_token_changes
+                || (!updates.liquidity_decreased_tokens.is_empty()
+                    && updates
+                        .liquidity_decreased_tokens
+                        .contains(&tx.transaction.effective_fee_token())))
+                && let Some(ref provider) = state_provider
+            {
                 let user_token = tx.transaction.effective_fee_token();
                 let cost = tx.transaction.fee_token_cost();
 
-                match amm_cache.has_enough_liquidity(user_token, cost, provider) {
+                match amm_cache.has_enough_liquidity(user_token, cost, provider, amm_generation) {
                     Ok(true) => {}
                     Ok(false) => {
                         to_remove.push(*tx.hash());
@@ -562,6 +591,118 @@ where
         self.remove_transactions(to_remove)
     }
 
+    /// Records a canonical update's state changes, invalidating in-flight validation outcomes
+    /// they affect.
+    ///
+    /// Call before taking the pool snapshot that rechecks the affected transactions. Waits for
+    /// in-progress insertions, so the snapshot includes them.
+    pub(crate) fn record_state_changes(&self, changes: Arc<StateChanges>) {
+        let mut recent = self.recent_changes.write();
+        if recent.changes.len() == RETAINED_STATE_CHANGES {
+            recent.changes.pop_front();
+        }
+        recent.changes.push_back(changes);
+        recent.epoch += 1;
+    }
+
+    /// Validates and inserts transactions, revalidating valid outcomes that state changes
+    /// affected during validation, at most `max_attempts` times.
+    pub(crate) async fn validate_and_add_transactions(
+        &self,
+        transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
+        max_attempts: usize,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        let mut results: Vec<_> = transactions.iter().map(|_| None).collect();
+        let mut slots: Vec<_> = transactions
+            .iter()
+            .map(|(origin, _)| *origin)
+            .enumerate()
+            .collect();
+        let mut batch = transactions;
+        for _ in 0..max_attempts {
+            if batch.is_empty() {
+                break;
+            }
+            // Read before the validator acquires its state provider.
+            let epoch = self.recent_changes.read().epoch;
+            let outcomes = self
+                .protocol_pool
+                .validator()
+                .validate_transactions(batch)
+                .await;
+            (slots, batch) = self.add_validated_at_epoch(epoch, slots, outcomes, &mut results);
+        }
+        for ((index, _), (_, tx)) in slots.into_iter().zip(batch) {
+            results[index] = Some(Err(PoolError::other(
+                *tx.hash(),
+                "state changed during validation; retry transaction",
+            )));
+        }
+        results
+            .into_iter()
+            .map(|result| result.expect("every transaction has a result"))
+            .collect()
+    }
+
+    /// Inserts outcomes validated at state change epoch `epoch` into `results`, at the indices
+    /// `slots` gives with their origins.
+    ///
+    /// Returns the slots and transactions of valid outcomes that changes since affect, for
+    /// revalidation; every other outcome is final.
+    fn add_validated_at_epoch(
+        &self,
+        epoch: usize,
+        slots: AdmissionSlots,
+        outcomes: Vec<TransactionValidationOutcome<TempoPooledTransaction>>,
+        results: &mut [Option<PoolResult<AddedTransactionOutcome>>],
+    ) -> (
+        AdmissionSlots,
+        Vec<(TransactionOrigin, TempoPooledTransaction)>,
+    ) {
+        // Reth inserts protocol-only batches under one pool lock.
+        let has_aa_2d = outcomes.iter().any(|outcome| {
+            matches!(outcome, TransactionValidationOutcome::Valid { transaction, .. }
+                if transaction.transaction().is_aa_2d())
+        });
+        // Holding the read lock across insertion makes a concurrent maintenance scan see them.
+        let changes = self.recent_changes.read();
+        let (mut stale_slots, mut stale) = (Vec::new(), Vec::new());
+        let fresh = slots
+            .into_iter()
+            .zip(outcomes)
+            .filter_map(|(slot, outcome)| match outcome {
+                TransactionValidationOutcome::Valid { transaction, .. }
+                    if changes.affects(epoch, transaction.transaction()) =>
+                {
+                    stale_slots.push(slot);
+                    stale.push((
+                        slot.1,
+                        transaction.into_transaction().with_discarded_caches(),
+                    ));
+                    None
+                }
+                outcome => Some((slot, outcome)),
+            });
+        if has_aa_2d {
+            for ((index, origin), outcome) in fresh {
+                results[index] = Some(self.add_validated_transaction(origin, outcome));
+            }
+        } else {
+            let mut indices = Vec::new();
+            let added = self
+                .protocol_pool
+                .inner()
+                .add_transactions_with_origins(fresh.map(|((index, origin), outcome)| {
+                    indices.push(index);
+                    (origin, outcome)
+                }));
+            for (index, result) in indices.into_iter().zip(added) {
+                results[index] = Some(result);
+            }
+        }
+        (stale_slots, stale)
+    }
+
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
     ///
     /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
@@ -681,6 +822,7 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            recent_changes: Arc::clone(&self.recent_changes),
         }
     }
 }
@@ -759,31 +901,8 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.is_empty() {
-            return Vec::new();
-        }
-
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions_with_origins(transactions)
-                .await;
-        }
-
-        let origins = transactions
-            .iter()
-            .map(|(origin, _)| *origin)
-            .collect::<Vec<_>>();
-
-        self.protocol_pool
-            .validator()
-            .validate_transactions(transactions)
+        self.validate_and_add_transactions(transactions, ADMISSION_ATTEMPTS)
             .await
-            .into_iter()
-            .zip(origins)
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -1482,6 +1601,28 @@ fn get_recipient_policy_ids(
     })
 }
 
+/// State changes of recent canonical updates.
+#[derive(Debug, Default)]
+struct RecentStateChanges {
+    /// Number of canonical updates recorded so far.
+    epoch: usize,
+    /// Changes of the latest recorded updates, oldest first.
+    changes: VecDeque<Arc<StateChanges>>,
+}
+
+impl RecentStateChanges {
+    /// Whether changes after `epoch` affect `tx`, or the changes since are no longer retained.
+    fn affects(&self, epoch: usize, tx: &TempoPooledTransaction) -> bool {
+        let since = self.epoch - epoch;
+        since != 0
+            && self.changes.len().checked_sub(since).is_none_or(|start| {
+                self.changes
+                    .range(start..)
+                    .any(|changes| changes.affects(tx))
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1507,6 +1648,7 @@ mod tests {
         AllTransactionsEvents, FullTransactionEvent, PoolConfig, PoolUpdateKind, SubPoolLimit,
         TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
+        error::InvalidPoolTransactionError,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
     use tempo_chainspec::{
@@ -1517,7 +1659,7 @@ mod tests {
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_evm::{ResolvedFeeToken, TempoEvmConfig};
     use tempo_precompiles::{
-        PATH_USD_ADDRESS,
+        DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS,
         account_keychain::{
             AccountKeychain, AuthorizedKey, SpendingLimitState, StoredSignatureType,
         },
@@ -1680,20 +1822,31 @@ mod tests {
         TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()))
     }
 
-    fn add_validated(
-        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+    /// A valid outcome for `pooled` whose sender has on-chain nonce `state_nonce`.
+    fn valid_outcome(
         pooled: TempoPooledTransaction,
-    ) {
-        let validated = TransactionValidationOutcome::Valid {
+        state_nonce: u64,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        TransactionValidationOutcome::Valid {
             balance: *pooled.cost(),
-            state_nonce: pooled.nonce(),
+            state_nonce,
             bytecode_hash: None,
             transaction: ValidTransaction::new(pooled, None),
             propagate: true,
             authorities: None,
-        };
-        pool.add_validated_transaction(TransactionOrigin::External, validated)
-            .expect("transaction should be admitted");
+        }
+    }
+
+    fn add_validated(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        pooled: TempoPooledTransaction,
+    ) {
+        let state_nonce = pooled.nonce();
+        pool.add_validated_transaction(
+            TransactionOrigin::External,
+            valid_outcome(pooled, state_nonce),
+        )
+        .expect("transaction should be admitted");
     }
 
     fn create_provider_with_tip() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
@@ -2077,6 +2230,75 @@ mod tests {
         assert_eq!(size.queued, 0);
         assert_eq!(size.queued_size, 0);
         assert_eq!(size.total, 1);
+    }
+
+    #[test]
+    fn outcomes_are_revalidated_only_when_their_authorities_changed() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let changed = Address::random();
+        let aa_2d = TxBuilder::aa(changed).nonce_key(U256::ONE).build();
+        let protocol = TxBuilder::aa(Address::random()).build();
+        let invalid = TxBuilder::aa(changed).build();
+        let slots = |count| {
+            (0..count)
+                .map(|index| (index, TransactionOrigin::External))
+                .collect()
+        };
+        let mut results = vec![None, None, None];
+
+        // Only the valid outcome of the changed authority is revalidated.
+        pool.record_state_changes(Arc::new(StateChanges {
+            commitments: AddressSet::from_iter([changed]),
+            ..Default::default()
+        }));
+        let (stale_slots, stale) = pool.add_validated_at_epoch(
+            0,
+            slots(3),
+            vec![
+                valid_outcome(aa_2d.clone(), 0),
+                valid_outcome(protocol.clone(), 0),
+                TransactionValidationOutcome::Invalid(
+                    invalid,
+                    InvalidPoolTransactionError::Underpriced,
+                ),
+            ],
+            &mut results,
+        );
+        assert_eq!(stale_slots, [(0, TransactionOrigin::External)]);
+        assert_eq!(
+            stale.iter().map(|(_, tx)| *tx.hash()).collect::<Vec<_>>(),
+            [*aa_2d.hash()]
+        );
+        assert!(results[0].is_none());
+        assert!(!pool.contains(aa_2d.hash()));
+        assert_eq!(
+            results[1].as_ref().unwrap().as_ref().unwrap().hash,
+            *protocol.hash()
+        );
+        assert!(results[2].as_ref().is_some_and(Result::is_err));
+
+        // A current outcome is inserted.
+        let (stale_slots, _) = pool.add_validated_at_epoch(
+            1,
+            slots(1),
+            vec![valid_outcome(aa_2d.clone(), 0)],
+            &mut results,
+        );
+        assert!(stale_slots.is_empty());
+        assert!(pool.contains(aa_2d.hash()));
+
+        // Once its changes are pruned, any valid outcome is revalidated.
+        for _ in 0..RETAINED_STATE_CHANGES {
+            pool.record_state_changes(Default::default());
+        }
+        let unrelated = TxBuilder::aa(Address::random()).build();
+        let (stale_slots, _) = pool.add_validated_at_epoch(
+            0,
+            slots(1),
+            vec![valid_outcome(unrelated, 0)],
+            &mut results,
+        );
+        assert_eq!(stale_slots.len(), 1);
     }
 
     #[test]
@@ -3380,17 +3602,9 @@ mod tests {
         tx: TempoPooledTransaction,
     ) -> (TxHash, PoolResult<AddedTransactionOutcome>) {
         let hash = *tx.hash();
-        let outcome = TransactionValidationOutcome::Valid {
-            balance: *tx.cost(),
-            state_nonce: 0,
-            bytecode_hash: None,
-            transaction: ValidTransaction::new(tx, None),
-            propagate: true,
-            authorities: None,
-        };
         (
             hash,
-            pool.add_validated_transaction(TransactionOrigin::External, outcome),
+            pool.add_validated_transaction(TransactionOrigin::External, valid_outcome(tx, 0)),
         )
     }
 
@@ -3402,5 +3616,94 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn evicts_transactions_after_their_fee_pool_is_drained() {
+        let sender = Address::random();
+        let user_token = address!("20C0000000000000000000000000000000000005");
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(user_token));
+
+        let manager = tempo_precompiles::tip_fee_manager::TipFeeManager::new();
+        let slot = manager.pools[manager.pool_id(user_token, DEFAULT_FEE_TOKEN)].base_slot();
+        let pool_word = |reserve_validator_token| {
+            tempo_precompiles::tip_fee_manager::amm::Pool {
+                reserve_user_token: 0,
+                reserve_validator_token,
+            }
+            .encode_to_slot()
+            .unwrap()
+        };
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        provider.add_account(
+            TIP_FEE_MANAGER_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO)
+                .extend_storage([(B256::from(slot), pool_word(u64::MAX.into()))]),
+        );
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let pool = create_test_pool(provider.clone());
+        let amm_cache = pool.amm_liquidity_cache();
+        let cost = pooled.fee_token_cost();
+        let state = provider.latest().unwrap();
+        assert!(
+            amm_cache
+                .has_enough_liquidity(user_token, cost, &state, amm_cache.generation())
+                .unwrap()
+        );
+        add_validated(&pool, pooled.clone());
+
+        // A committed fee swap drains the pool without any FeeManager event.
+        let mut storage = HashMap::default();
+        storage.insert(
+            slot,
+            reth_trie_common::bundle_state::StorageSlot::new_changed(
+                pool_word(u64::MAX.into()),
+                pool_word(0),
+            ),
+        );
+        let mut bundle_state = AddressMap::default();
+        bundle_state.insert(
+            TIP_FEE_MANAGER_ADDRESS,
+            BundleAccount::new(
+                None,
+                None,
+                storage,
+                reth_trie_common::bundle_state::AccountStatus::Changed,
+            ),
+        );
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.liquidity_decreased_tokens =
+            amm_cache.on_new_state(&reth_provider::ExecutionOutcome {
+                bundle: reth_trie_common::bundle_state::BundleState {
+                    state: bundle_state,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        assert_eq!(
+            updates.liquidity_decreased_tokens,
+            AddressSet::from_iter([user_token])
+        );
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
     }
 }

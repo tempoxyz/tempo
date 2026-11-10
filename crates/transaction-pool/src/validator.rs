@@ -357,6 +357,7 @@ where
         &self,
         state_provider: P,
         cached_state: Arc<StateCache>,
+        amm_generation: u64,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
@@ -379,19 +380,24 @@ where
 
         transactions
             .into_iter()
-            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
+            .map(|(origin, transaction)| {
+                self.validate_one_with_evm(origin, transaction, &mut evm, amm_generation)
+            })
             .collect()
     }
 
-    /// Returns the current tip's state provider and matching read cache.
+    /// Returns the current tip's state provider, matching read cache and the AMM cache generation
+    /// sampled before the tip was resolved.
     ///
     /// Using one tip hash prevents a concurrent head update from pairing old state with a new cache.
     fn latest_state_provider_and_cache(
         &self,
-    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>, u64)> {
+        let amm_generation = self.amm_liquidity_cache.generation();
         let tip = self.inner.client().chain_info()?.best_hash;
         let tip_provider = self.inner.client().state_by_block_hash(tip);
-        self.provider_and_cache_for_tip(tip, tip_provider)
+        let (provider, cache) = self.provider_and_cache_for_tip(tip, tip_provider)?;
+        Ok((provider, cache, amm_generation))
     }
 
     /// Returns the shared cache if its tip matches `tip_hash`, otherwise a fresh cache.
@@ -437,6 +443,7 @@ where
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
         evm: &mut TempoEvm<'_>,
+        amm_generation: u64,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Get the hardfork active at the current tip
         let spec = self.active_hardfork();
@@ -590,6 +597,7 @@ where
                 fee_token.address(),
                 fee,
                 evm.overlay_db_mut(),
+                amm_generation,
             ) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -774,16 +782,18 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
+        let (state_provider, cached_state, amm_generation) =
+            match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
 
         self.validate_batch(
             state_provider,
             cached_state,
+            amm_generation,
             core::iter::once((origin, transaction)),
         )
         .pop()
@@ -795,19 +805,20 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|(_, tx)| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
+        let (state_provider, cached_state, amm_generation) =
+            match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return transactions
+                        .into_iter()
+                        .map(|(_, tx)| {
+                            TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                        })
+                        .collect();
+                }
+            };
 
-        self.validate_batch(state_provider, cached_state, transactions)
+        self.validate_batch(state_provider, cached_state, amm_generation, transactions)
     }
 
     async fn validate_transactions_with_origin(
@@ -815,21 +826,23 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
+        let (state_provider, cached_state, amm_generation) =
+            match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return transactions
+                        .into_iter()
+                        .map(|tx| {
+                            TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                        })
+                        .collect();
+                }
+            };
 
         self.validate_batch(
             state_provider,
             cached_state,
+            amm_generation,
             transactions.into_iter().map(|tx| (origin, tx)),
         )
     }
@@ -1315,7 +1328,7 @@ mod tests {
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (latest_hash, shared_cache.clone());
 
-        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+        let (_, validation_cache, _) = validator.latest_state_provider_and_cache().unwrap();
 
         assert!(Arc::ptr_eq(&validation_cache, &shared_cache));
     }
@@ -1333,7 +1346,7 @@ mod tests {
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
 
-        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+        let (_, validation_cache, _) = validator.latest_state_provider_and_cache().unwrap();
 
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
     }
@@ -2938,8 +2951,12 @@ mod tests {
 
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
-        let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
+        let liquidity_result = amm_cache.has_enough_liquidity(
+            paused_validator_token,
+            U256::from(1000),
+            &mut state,
+            amm_cache.generation(),
+        );
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"
@@ -3490,7 +3507,12 @@ mod tests {
                 registry,
                 NoPrecompiles::default(),
             );
-            let result = validator.validate_one_with_evm(TransactionOrigin::External, tx, &mut evm);
+            let result = validator.validate_one_with_evm(
+                TransactionOrigin::External,
+                tx,
+                &mut evm,
+                validator.amm_liquidity_cache.generation(),
+            );
             match result {
                 TransactionValidationOutcome::Error(_, error) if fatal => match expected {
                     HandlerError::Fatal(expected) => {

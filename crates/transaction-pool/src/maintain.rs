@@ -5,7 +5,7 @@ use crate::{
     transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
-    Address, B256, Log, TxHash,
+    Address, B256, KECCAK256_EMPTY, Log, TxHash,
     map::{AddressMap, AddressSet, B256Set},
 };
 use alloy_sol_types::SolEvent;
@@ -16,7 +16,8 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
-use std::time::Instant;
+use reth_trie_common::bundle_state::BundleAccount;
+use std::{iter, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -52,6 +53,9 @@ pub struct TempoPoolUpdates {
     /// Uses `AddressMap` to deduplicate by validator, preventing resource amplification
     /// when a validator emits multiple `ValidatorTokenSet` events in the same block.
     pub validator_token_changes: AddressMap<Address>,
+    /// User fee tokens whose cached FeeAMM liquidity decreased in this block.
+    /// Pooled transactions paying fees in them are rechecked for liquidity.
+    pub liquidity_decreased_tokens: AddressSet,
     /// User token preference changes.
     /// When a user changes their fee token preference via `setUserToken()`, pending
     /// transactions from that user that don't have an explicit fee_token set may now
@@ -105,6 +109,7 @@ impl TempoPoolUpdates {
             && self.key_authorization_target_changes.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
+            && self.liquidity_decreased_tokens.is_empty()
             && self.user_token_changes.is_empty()
             && self.blacklist_additions.is_empty()
             && self.whitelist_removals.is_empty()
@@ -243,6 +248,7 @@ impl TempoPoolUpdates {
         self.has_keychain_subject_updates()
             || !self.key_authorization_target_changes.is_empty()
             || !self.validator_token_changes.is_empty()
+            || !self.liquidity_decreased_tokens.is_empty()
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
@@ -381,6 +387,70 @@ impl Tip20PoolEvent {
     }
 }
 
+/// Changes of a canonical update that invalidate pooled transactions validated before them
+/// without an event the pool tracks.
+#[derive(Debug, Default)]
+pub(crate) struct StateChanges {
+    /// Accounts whose configuration commitment changed, including eventless first registration
+    /// (TIP-1107).
+    pub(crate) commitments: AddressSet,
+    /// Accounts whose code changed.
+    pub(crate) code: AddressSet,
+    /// Fee tokens whose cached FeeAMM liquidity decreased.
+    pub(crate) fee_tokens: AddressSet,
+}
+
+impl StateChanges {
+    /// Collects the accounts whose configuration commitment or code differs between their
+    /// original and present info in `states`.
+    fn new<'a>(
+        states: impl IntoIterator<Item = &'a AddressMap<BundleAccount>>,
+        fee_tokens: AddressSet,
+    ) -> Self {
+        let mut changes = Self {
+            fee_tokens,
+            ..Default::default()
+        };
+        for (address, account) in states.into_iter().flatten() {
+            let original = account.original_info.as_ref();
+            let present = account.info.as_ref();
+            if original
+                .map(|info| info.extension.as_ref())
+                .unwrap_or_default()
+                != present
+                    .map(|info| info.extension.as_ref())
+                    .unwrap_or_default()
+            {
+                changes.commitments.insert(*address);
+            }
+            if original.map_or(KECCAK256_EMPTY, |info| info.code_hash)
+                != present.map_or(KECCAK256_EMPTY, |info| info.code_hash)
+            {
+                changes.code.insert(*address);
+            }
+        }
+        changes
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.commitments.is_empty() && self.code.is_empty() && self.fee_tokens.is_empty()
+    }
+
+    /// Whether `tx` needs full revalidation: an authority's commitment changed, or the
+    /// configurable-account delegate its inline grant names changed commitment or code.
+    fn invalidates_authorization(&self, tx: &TempoPooledTransaction) -> bool {
+        tx.has_authority_in(&self.commitments)
+            || tx.configurable_grant_target().is_some_and(|key_id| {
+                self.commitments.contains(&key_id) || self.code.contains(&key_id)
+            })
+    }
+
+    /// Whether `tx`, validated before these changes, may no longer be valid.
+    pub(crate) fn affects(&self, tx: &TempoPooledTransaction) -> bool {
+        self.invalidates_authorization(tx) || self.fee_tokens.contains(&tx.effective_fee_token())
+    }
+}
+
 fn first_topic(log: &Log) -> Option<B256> {
     log.topics().first().copied()
 }
@@ -492,17 +562,17 @@ where
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
-        let new = match event {
-            CanonStateNotification::Reorg { old: _, new } => {
+        let (new, orphaned) = match event {
+            CanonStateNotification::Reorg { old, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
                     error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                 }
 
-                new
+                (new, Some(old))
             }
-            CanonStateNotification::Commit { new } => new,
+            CanonStateNotification::Commit { new } => (new, None),
         };
 
         let block_update_start = Instant::now();
@@ -529,7 +599,7 @@ where
 
         // 2. Update AMM liquidity cache before revalidation/invalidation scans.
         let amm_start = Instant::now();
-        amm_cache.on_new_state(tip.execution_outcome());
+        let liquidity_decreased_tokens = amm_cache.on_new_state(tip.execution_outcome());
         if let Err(err) = amm_cache.on_new_blocks(
             tip.blocks_iter().map(|block| block.sealed_header()),
             pool.client(),
@@ -541,7 +611,24 @@ where
             .record(amm_start.elapsed());
 
         // 3. Collect all block-level invalidation events
-        let updates = TempoPoolUpdates::from_chain(tip);
+        let mut updates = TempoPoolUpdates::from_chain(tip);
+        updates.liquidity_decreased_tokens = liquidity_decreased_tokens;
+
+        // Record changes that invalidate pooled transactions without an event before any pool
+        // snapshot, so admission either inserted a transaction validated before them, which the
+        // scans below find, or validates it again. On a reorg, the orphaned blocks' changes count
+        // too: undoing them changes the state pooled transactions were validated against.
+        let state_changes = Arc::new(StateChanges::new(
+            iter::once(bundle_state).chain(
+                orphaned
+                    .as_ref()
+                    .map(|old| old.execution_outcome().state().state()),
+            ),
+            updates.liquidity_decreased_tokens.clone(),
+        ));
+        if !state_changes.is_empty() {
+            pool.record_state_changes(Arc::clone(&state_changes));
+        }
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
         // Reth's canonical-update handling may not have pruned mined transactions yet.
@@ -596,31 +683,15 @@ where
             revalidate_txs.extend(transactions);
         }
 
-        // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1107).
-        let changed_commitments: AddressSet = bundle_state
-            .iter()
-            .filter(|(_, account)| {
-                account
-                    .original_info
-                    .as_ref()
-                    .map(|info| info.extension.as_ref())
-                    .unwrap_or_default()
-                    != account
-                        .info
-                        .as_ref()
-                        .map(|info| info.extension.as_ref())
-                        .unwrap_or_default()
-            })
-            .map(|(address, _)| *address)
-            .collect();
-        if !changed_commitments.is_empty() {
+        // Revalidate transactions whose authorization the changes invalidated. The eviction scan
+        // rechecks liquidity drops.
+        if !state_changes.commitments.is_empty() || !state_changes.code.is_empty() {
             let hashes: Vec<TxHash> = {
                 let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                 all_txs
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| tx.transaction.has_authority_in(&changed_commitments))
+                    .filter(|tx| state_changes.invalidates_authorization(&tx.transaction))
                     .map(|tx| *tx.hash())
                     .collect()
             };
@@ -688,7 +759,8 @@ where
                     .into_iter()
                     .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
                     .collect();
-                let results = pool.add_transactions_with_origins(txs).await;
+                // Removed from the pool already, so never give up on them.
+                let results = pool.validate_and_add_transactions(txs, usize::MAX).await;
                 debug!(target: "txpool", total = results.len(),
                     success = results.iter().filter(|result| result.is_ok()).count(),
                     "Revalidated transactions");
