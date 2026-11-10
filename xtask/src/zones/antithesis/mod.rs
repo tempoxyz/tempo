@@ -25,8 +25,8 @@ use std::{path::PathBuf, time::Duration};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{
-        DepositPayload, IZoneInbox, IZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
-        ZonePortal,
+        DepositPayload, IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState,
+        ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal,
     },
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
@@ -612,7 +612,17 @@ impl Context {
                 .get_block_by_number(BlockNumberOrTag::Latest)
                 .await?
                 .ok_or_eyre("no latest zone block")?;
-            if block.header.beneficiary == target {
+            if block.header.beneficiary != target {
+                return Ok(false);
+            }
+            // The target may have led before: only a block anchored at or after the activation
+            // block is from this term.
+            let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
+                .tempoBlockNumber()
+                .block(BlockId::hash(block.header.hash))
+                .call()
+                .await?;
+            if anchor >= update.activationTempoBlock {
                 produced = Some(block.header.number);
             }
             Ok(produced.is_some())

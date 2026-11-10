@@ -32,47 +32,54 @@ impl Context {
     pub(super) async fn check_consistency(&self) -> eyre::Result<()> {
         // A zone block must come from the sequencer the portal names leader at the Tempo block
         // the zone block anchors to: a handoff takes effect at its activation block. Checked at
-        // each node's tip, where a handoff shows first, and at one earlier block. Reads that fail
-        // under faults skip the block.
+        // each node's tip, where a handoff shows first, and at one earlier block. A node that
+        // faults make unreachable is skipped.
         let portal = ZonePortal::new(self.portal, &self.l1);
         for (url, zone) in self.zone_urls.iter().zip(&self.zones) {
-            let Ok(tip) = zone.get_block_number().await else {
-                continue;
-            };
-            // Genesis has no producer.
-            if tip == 0 {
-                continue;
+            let checked: eyre::Result<()> = async {
+                let tip = zone.get_block_number().await?;
+                // Genesis has no producer.
+                if tip == 0 {
+                    return Ok(());
+                }
+                for number in [tip, random_below(tip) + 1] {
+                    let Some(block) = zone
+                        .get_block_by_number(BlockNumberOrTag::Number(number))
+                        .await?
+                    else {
+                        continue;
+                    };
+                    let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
+                        .tempoBlockNumber()
+                        .block(BlockId::hash(block.header.hash))
+                        .call()
+                        .await?;
+                    let leader = portal
+                        .leader()
+                        .block(BlockId::number(anchor))
+                        .call()
+                        .await?;
+                    assert_always!(
+                        block.header.beneficiary == leader,
+                        "Zone blocks come from the leader of their Tempo anchor",
+                        &json!({
+                            "node": url.as_str(),
+                            "height": number,
+                            "hash": block.header.hash,
+                            "producer": block.header.beneficiary,
+                            "tempo_anchor": anchor,
+                            "leader": leader,
+                        })
+                    );
+                }
+                Ok(())
             }
-            for number in [tip, random_below(tip) + 1] {
-                let Ok(Some(block)) = zone
-                    .get_block_by_number(BlockNumberOrTag::Number(number))
-                    .await
-                else {
-                    continue;
-                };
-                let Ok(anchor) = TempoState::new(TEMPO_STATE_ADDRESS, zone)
-                    .tempoBlockNumber()
-                    .block(BlockId::hash(block.header.hash))
-                    .call()
-                    .await
-                else {
-                    continue;
-                };
-                let Ok(leader) = portal.leader().block(BlockId::number(anchor)).call().await else {
-                    continue;
-                };
-                assert_always!(
-                    block.header.beneficiary == leader,
-                    "Zone blocks come from the leader of their Tempo anchor",
-                    &json!({
-                        "node": url.as_str(),
-                        "height": number,
-                        "hash": block.header.hash,
-                        "producer": block.header.beneficiary,
-                        "tempo_anchor": anchor,
-                        "leader": leader,
-                    })
-                );
+            .await;
+            match checked {
+                Err(error) if is_rpc_error(&error) => {
+                    println!("check-consistency: producer check skipped {url}: {error:#}");
+                }
+                result => result?,
             }
         }
 
