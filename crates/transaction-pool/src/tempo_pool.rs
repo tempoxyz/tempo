@@ -585,7 +585,7 @@ where
     ///
     /// Call before taking the pool snapshot that revalidates the affected transactions. Waits
     /// for in-progress insertions, so the snapshot includes them.
-    pub(crate) fn record_config_commitment_changes(&self, accounts: AddressSet) {
+    pub fn record_config_commitment_changes(&self, accounts: AddressSet) {
         let mut changes = self.config_commitment_changes.write();
         if changes.recent.len() == RETAINED_CONFIG_COMMITMENT_CHANGES {
             changes.recent.pop_front();
@@ -596,7 +596,7 @@ where
 
     /// Validates and inserts transactions, revalidating valid outcomes whose authorities' config
     /// commitments changed during validation, at most `max_attempts` times.
-    pub(crate) async fn validate_and_add_transactions(
+    pub async fn validate_and_add_transactions(
         &self,
         transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
         max_attempts: usize,
