@@ -1,6 +1,6 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
 use crate::gas::{SECP256K1_VERIFY_GAS, keccak_gas};
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Keccak256, keccak256};
@@ -258,11 +258,18 @@ pub struct ConfigurableAccountSignature {
     ///
     /// Each approval is a primitive signature; recursive authorization is not supported.
     signatures: Vec<PrimitiveSignature>,
-    /// Inner digest whose owner quorum last verified.
+    /// First inner digest whose owner quorum verified, with its approving owners.
     ///
     /// Excluded from encoding, equality and hashing.
     #[rlp(skip)]
-    verified_digest: OnceLock<B256>,
+    verified: OnceLock<VerifiedApprovals>,
+}
+
+/// An inner digest whose owner quorum verified, and the owners that approved it.
+#[derive(Clone, Debug)]
+struct VerifiedApprovals {
+    digest: B256,
+    owners: Vec<Address>,
 }
 
 // Equality and hashing exclude the verification cache.
@@ -298,7 +305,7 @@ impl ConfigurableAccountSignature {
             account,
             config,
             signatures,
-            verified_digest: OnceLock::new(),
+            verified: OnceLock::new(),
         };
         signature.validate_shape()?;
         Ok(signature)
@@ -355,11 +362,26 @@ impl ConfigurableAccountSignature {
         &self,
         inner_digest: B256,
     ) -> Result<(), ConfigurableAccountQuorumError> {
-        if self.verified_digest.get() == Some(&inner_digest) {
-            return Ok(());
+        self.approving_owners(inner_digest).map(drop)
+    }
+
+    /// Verifies the owner approvals like [`Self::verify_approvals`] and returns the recovered
+    /// approving owners, in approval order.
+    ///
+    /// Borrows the owners cached by the first successful verification of `inner_digest`, so no
+    /// approval is recovered twice.
+    pub fn approving_owners(
+        &self,
+        inner_digest: B256,
+    ) -> Result<Cow<'_, [Address]>, ConfigurableAccountQuorumError> {
+        if let Some(verified) = self.verified.get()
+            && verified.digest == inner_digest
+        {
+            return Ok(Cow::Borrowed(&verified.owners));
         }
         let digest = self.digest(inner_digest);
         let mut weight = ConfigurableAccountWeightAccumulator::new(self.config.threshold)?;
+        let mut owners = Vec::with_capacity(self.signatures.len());
         for (approval_index, approval) in self.signatures.iter().enumerate() {
             let owner = approval.recover_signer(&digest).map_err(|_| {
                 ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed { approval_index }
@@ -372,11 +394,23 @@ impl ConfigurableAccountSignature {
             if weight.has_quorum() && approval_index + 1 != self.signatures.len() {
                 return Err(ConfigurableAccountQuorumError::ExcessSignatures);
             }
+            owners.push(owner);
         }
         weight.finish()?;
         #[allow(clippy::useless_conversion)]
-        self.verified_digest.get_or_init(|| inner_digest.into());
-        Ok(())
+        let verified = self.verified.get_or_init(|| {
+            VerifiedApprovals {
+                digest: inner_digest,
+                owners: owners.clone(),
+            }
+            .into()
+        });
+        // Only the first verified digest is cached.
+        Ok(if verified.digest == inner_digest {
+            Cow::Borrowed(&verified.owners)
+        } else {
+            Cow::Owned(owners)
+        })
     }
 
     /// Checks the stored commitment or, on first use, derives the named account.

@@ -3,13 +3,15 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, map::AddressSet};
+use evm2::registry::HandlerError;
 use reth_transaction_pool::PoolTransaction;
 use std::{iter, str::FromStr};
 
 /// Addresses checked against every address a transaction names.
 ///
 /// These are the recovered sender, the fee payer, every direct call target, the delegate and
-/// recovered authority of every EIP-7702 or Tempo authorization, and every access list entry.
+/// recovered authority of every EIP-7702 or Tempo authorization, every access list entry, and
+/// every recovered owner approving a configurable account role.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressFilter {
     addresses: AddressSet,
@@ -41,8 +43,9 @@ impl AddressFilter {
     /// Checks the addresses the transaction names without signature recovery.
     ///
     /// These are the recovered sender, every direct call target, every EIP-7702 or Tempo
-    /// authorization delegate, and every access list entry. Fee payer and authorization
-    /// authorities need signature recovery and are checked by [`Self::check_recovered`].
+    /// authorization delegate, and every access list entry. Fee payer, authorization authorities
+    /// and configurable approval owners need signature recovery and are checked by
+    /// [`Self::check_recovered`].
     pub fn check(
         &self,
         transaction: &TempoPooledTransaction,
@@ -77,11 +80,12 @@ impl AddressFilter {
         )
     }
 
-    /// Checks the fee payer and the recovered authorization authorities.
+    /// Checks the fee payer, the recovered authorization authorities and the owners approving
+    /// each configurable account role, directly, as a keychain access key or as an inline grant.
     ///
-    /// Called once validation has cached the transaction environment and recovered the
-    /// authorities, so neither signature is recovered again. A fee payer that fails to recover
-    /// was already rejected by validation.
+    /// Called once validation has cached the transaction environment, recovered the authorities
+    /// and verified every owner quorum, so no signature is recovered again. A fee payer that fails
+    /// to recover was already rejected by validation.
     pub fn check_recovered(
         &self,
         transaction: &TempoPooledTransaction,
@@ -91,12 +95,20 @@ impl AddressFilter {
             return Ok(());
         }
 
+        let approving_owners = match transaction.tx_env().as_aa() {
+            Some(aa) => aa
+                .configurable_approving_owners()
+                .map_err(|err| TempoPoolTransactionError::Evm(HandlerError::external(err)))?,
+            None => Vec::new(),
+        };
+
         self.find_match(
             transaction
                 .fee_payer()
                 .ok()
                 .into_iter()
-                .chain(authorities.iter().copied()),
+                .chain(authorities.iter().copied())
+                .chain(approving_owners),
         )
     }
 
@@ -162,14 +174,20 @@ mod tests {
         eip2930::{AccessList, AccessListItem},
         eip7702::Authorization,
     };
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
+    use tempo_evm::{TempoInvalidTransaction, transaction_error::ConfigurableAccountError};
     use tempo_primitives::{
         TempoTxEnvelope,
-        transaction::{TempoSignedAuthorization, tempo_transaction::Call},
+        transaction::{
+            ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountQuorumError,
+            ConfigurableAccountSignature, KeyAuthorization, KeychainSignature, PrimitiveSignature,
+            SignatureType, TempoSignature, TempoSignedAuthorization, TempoTransaction,
+            configurable_account_digest, tempo_transaction::Call,
+        },
     };
 
     fn authorization(delegate: Address) -> Authorization {
@@ -178,6 +196,43 @@ mod tests {
             nonce: 0,
             address: delegate,
         }
+    }
+
+    /// An initial one-owner configurable account approval of `inner_digest` by `owner`.
+    fn configurable_approval(
+        owner: &PrivateKeySigner,
+        inner_digest: B256,
+    ) -> ConfigurableAccountSignature {
+        let config = ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: owner.address(),
+                weight: 1,
+            }],
+        };
+        let account = config.derive_account().expect("config should be valid");
+        let approval = owner
+            .sign_hash_sync(&configurable_account_digest(inner_digest, account, 0))
+            .expect("owner signing should succeed");
+        ConfigurableAccountSignature::try_new(
+            account,
+            config,
+            vec![PrimitiveSignature::Secp256k1(approval)],
+        )
+        .expect("approval should be well formed")
+    }
+
+    fn pooled_aa(
+        tx: TempoTransaction,
+        signature: TempoSignature,
+        sender: Address,
+    ) -> TempoPooledTransaction {
+        TempoPooledTransaction::new(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(tx.into_signed(signature)),
+            sender,
+        ))
     }
 
     fn assert_address_check(result: Result<(), TempoPoolTransactionError>, expected: Address) {
@@ -273,6 +328,75 @@ mod tests {
         assert_address_check(
             filter.check_recovered(&transaction, &[Address::with_last_byte(15), authority]),
             authority,
+        );
+    }
+
+    #[test]
+    fn checks_configurable_approval_owners_only_after_recovery() {
+        let owner = PrivateKeySigner::random();
+        let TempoTxEnvelope::AA(signed) = TxBuilder::aa(Address::with_last_byte(23))
+            .build()
+            .inner()
+            .clone()
+            .into_inner()
+        else {
+            panic!("expected AA transaction");
+        };
+        let tx = signed.tx().clone();
+        let sig_hash = tx.signature_hash();
+
+        let direct = configurable_approval(&owner, sig_hash);
+        let direct_sender = direct.account();
+        let direct = pooled_aa(
+            tx.clone(),
+            TempoSignature::ConfigurableAccount(direct),
+            direct_sender,
+        );
+
+        let user = Address::with_last_byte(24);
+        let access_key =
+            configurable_approval(&owner, KeychainSignature::signing_hash(sig_hash, user));
+        let keychain = pooled_aa(
+            tx.clone(),
+            TempoSignature::Keychain(KeychainSignature::new(user, access_key)),
+            user,
+        );
+
+        let authorization = KeyAuthorization::unrestricted(
+            1,
+            SignatureType::Secp256k1,
+            Address::with_last_byte(25),
+        );
+        let grant = configurable_approval(&owner, authorization.signature_hash());
+        let mut granting_tx = tx.clone();
+        granting_tx.key_authorization = Some(authorization.into_signed(grant));
+        let granting = pooled_aa(
+            granting_tx,
+            Signature::test_signature().into(),
+            Address::with_last_byte(26),
+        );
+
+        let filter = AddressFilter::new([owner.address()]);
+        let unrelated = AddressFilter::new([Address::with_last_byte(27)]);
+        for transaction in [direct, keychain, granting] {
+            assert!(filter.check(&transaction).is_ok());
+            assert_address_check(filter.check_recovered(&transaction, &[]), owner.address());
+            assert!(unrelated.check_recovered(&transaction, &[]).is_ok());
+        }
+
+        // An approval of another digest fails quorum verification as validation would.
+        let stale = configurable_approval(&owner, B256::ZERO);
+        let stale_sender = stale.account();
+        let stale = pooled_aa(tx, TempoSignature::ConfigurableAccount(stale), stale_sender);
+        let Err(TempoPoolTransactionError::Evm(err)) = unrelated.check_recovered(&stale, &[])
+        else {
+            panic!("expected quorum error");
+        };
+        assert_eq!(
+            err.external_ref::<TempoInvalidTransaction>(),
+            Some(&TempoInvalidTransaction::ConfigurableAccount(
+                ConfigurableAccountError::Quorum(ConfigurableAccountQuorumError::SignerNotOwner)
+            ))
         );
     }
 

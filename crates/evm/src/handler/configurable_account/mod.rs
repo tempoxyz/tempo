@@ -110,6 +110,23 @@ impl TempoAaTx {
             .filter(|auth| auth.key_type == SignatureType::ConfigurableAccount)
             .map(|auth| auth.key_id)
     }
+
+    /// Returns the recovered owners approving each configurable role, outer role first.
+    ///
+    /// Reuses the owners cached when sender recovery or validation verified each quorum, and
+    /// recovers them only for a quorum not yet verified, failing as validation would.
+    pub fn configurable_approving_owners(&self) -> Result<Vec<Address>, TempoInvalidTransaction> {
+        let mut owners = Vec::new();
+        for role in self.configurable_roles().into_iter().flatten() {
+            owners.extend_from_slice(
+                &role
+                    .signature
+                    .approving_owners(role.signed.inner_digest(self))
+                    .map_err(ConfigurableAccountError::Quorum)?,
+            );
+        }
+        Ok(owners)
+    }
 }
 
 impl TempoTxEnv {
