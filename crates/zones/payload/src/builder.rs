@@ -274,11 +274,45 @@ where
                     evm_config: self.evm_config.clone(),
                     parent_hash: parent_header.hash(),
                     parent_header: (*parent_header).clone(),
-                    next_block_env_attributes,
+                    next_block_env_attributes: next_block_env_attributes.clone(),
                     chain_id,
                 }
                 .start(&self.task_executor, prepared),
             ),
+            TempoImport::CheckpointOnly(_) => None,
+        };
+        let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
+        // Simulate the pool transactions that fit the block, so the Tempo commitments they read
+        // are fetched in parallel instead of one by one during canonical execution.
+        let _pool_prewarming = match tempo_import {
+            TempoImport::Full(prepared) => {
+                let mut size = 0usize;
+                let transactions = self
+                    .pool
+                    .best_transactions_with_attributes(BestTransactionsAttributes::new(
+                        base_fee, None,
+                    ))
+                    .map_while(|tx| {
+                        size = size.saturating_add(tx.transaction.encoded_length());
+                        (size <= pool_tx_size_budget).then(|| tx.to_consensus())
+                    })
+                    .collect();
+                Some(
+                    PrewarmingExecutionContext {
+                        provider: self.provider.clone(),
+                        evm_config: self.evm_config.clone(),
+                        parent_hash: parent_header.hash(),
+                        parent_header: (*parent_header).clone(),
+                        next_block_env_attributes,
+                        chain_id,
+                    }
+                    .start_pool(
+                        &self.task_executor,
+                        transactions,
+                        prepared.header.number(),
+                    ),
+                )
+            }
             TempoImport::CheckpointOnly(_) => None,
         };
 
@@ -308,7 +342,6 @@ where
             // Execute pool transactions until either all of them fit or their packed RLP bytes reach
             // the size budget
             // The block executor owns gas-capacity accounting.
-            let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
             let raw_best_txs = self
                 .pool
                 .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));

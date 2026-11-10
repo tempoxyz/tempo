@@ -1,27 +1,37 @@
-//! Builder-local `advanceTempo` cache prewarming.
+//! Builder-local L1 cache prewarming.
 //!
-//! Each queued deposit is executed in an independent throwaway Zone builder. Execution output is
-//! discarded; only exact-L1 reads populate the cache shared with canonical execution.
+//! Deposits and pool transactions are executed in independent throwaway Zone builders. Execution
+//! output is discarded; only L1 reads populate the cache shared with canonical execution.
 
 use crate::builder::build_advance_tempo_tx_owned;
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256, map::HashSet};
+use futures::{StreamExt as _, channel::mpsc};
 use reth_evm::{
     BlockExecutor as _, ConfigureEvm, database::StateProviderDatabase, execute::BlockBuilder,
 };
-use reth_primitives_traits::SealedHeader;
+use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, cancel::ManualCancel};
-use std::{error::Error, sync::Arc};
+use std::{
+    error::Error,
+    future::Future,
+    sync::{Arc, Mutex},
+};
 use tempo_contracts::zones::DepositType;
 use tempo_evm::TempoNextBlockEnvAttributes;
-use tempo_primitives::TempoHeader;
+use tempo_primitives::{TempoHeader, TempoTxEnvelope};
+use tracing::debug;
 use zone_evm::ZoneEvmConfig;
-use zone_l1::PreparedL1Block;
+use zone_l1::{PreparedL1Block, state::L1StateProvider};
+use zone_precompiles::{L1StateError, L1StorageReader};
+
+/// Most Tempo commitment fetches in flight while prewarming one Zone block.
+const MAX_COMMITMENT_FETCHES: usize = 64;
 
 /// Immutable canonical inputs used to construct isolated prewarming workers.
-pub(crate) struct PrewarmingExecutionContext<Provider> {
+pub(crate) struct PrewarmingExecutionContext<Provider, L1 = L1StateProvider> {
     pub(crate) provider: Provider,
-    pub(crate) evm_config: ZoneEvmConfig,
+    pub(crate) evm_config: ZoneEvmConfig<L1>,
     pub(crate) parent_hash: B256,
     pub(crate) parent_header: SealedHeader<TempoHeader>,
     pub(crate) next_block_env_attributes: TempoNextBlockEnvAttributes,
@@ -37,8 +47,8 @@ where
         self,
         task_executor: &TaskExecutor,
         prepared: &PreparedL1Block,
-    ) -> AdvanceTempoPrewarming {
-        let handle = AdvanceTempoPrewarming::default();
+    ) -> Prewarming {
+        let handle = Prewarming::default();
         if prepared.queued_deposits.is_empty() {
             return handle;
         }
@@ -66,7 +76,10 @@ where
             let cancel = handle.cancel.clone();
             pool.spawn(move || {
                 if !cancel.is_cancelled() {
-                    let _ = context.prewarm_deposit(partial);
+                    // Queue-hash validation may fail, but preceding reads have already warmed the
+                    // shared cache.
+                    let _ =
+                        context.execute(build_advance_tempo_tx_owned(partial, context.chain_id));
                 }
             });
         }
@@ -74,9 +87,66 @@ where
         handle
     }
 
-    fn prewarm_deposit(
+    /// Enqueue one disposable simulation per pool transaction, reading commitments through a
+    /// [`CommitmentPrewarmReader`].
+    ///
+    /// Commitments the simulations miss are fetched in parallel at `tempo_block_number`, the
+    /// Tempo block the next Zone block's transactions read at.
+    pub(crate) fn start_pool(
+        self,
+        task_executor: &TaskExecutor,
+        transactions: Vec<Recovered<TempoTxEnvelope>>,
+        tempo_block_number: u64,
+    ) -> Prewarming {
+        let handle = Prewarming::default();
+        if transactions.is_empty() {
+            return handle;
+        }
+
+        let evm_config = self.evm_config.map_l1_reader(|provider| {
+            let (fetches, fetch_task) = commitment_fetches(provider.clone(), tempo_block_number);
+            task_executor.spawn_task(fetch_task);
+            CommitmentPrewarmReader {
+                provider: provider.clone(),
+                tempo_block_number,
+                queued: Arc::default(),
+                fetches,
+            }
+        });
+        let context = Arc::new(PrewarmingExecutionContext {
+            provider: self.provider,
+            evm_config,
+            parent_hash: self.parent_hash,
+            parent_header: self.parent_header,
+            next_block_env_attributes: self.next_block_env_attributes,
+            chain_id: self.chain_id,
+        });
+        let pool = task_executor.prewarming_pool();
+        for transaction in transactions {
+            let context = context.clone();
+            let cancel = handle.cancel.clone();
+            pool.spawn(move || {
+                if !cancel.is_cancelled() {
+                    // Pool transactions may be invalid on the parent state; the reads before the
+                    // failure still count.
+                    let _ = context.execute(transaction);
+                }
+            });
+        }
+
+        handle
+    }
+}
+
+impl<Provider, L1> PrewarmingExecutionContext<Provider, L1>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+    L1: L1StorageReader + Unpin,
+{
+    /// Executes `transaction` alone on the parent state and discards the result.
+    fn execute(
         &self,
-        partial: PreparedL1Block,
+        transaction: Recovered<TempoTxEnvelope>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let state = StateProviderDatabase::new(
             self.provider
@@ -90,26 +160,201 @@ where
             self.next_block_env_attributes.clone(),
         )?;
         worker.apply_pre_execution_changes()?;
-
-        // Queue-hash validation may fail, but preceding reads have already warmed the shared cache.
-        _ = worker
+        worker
             .executor_mut()
-            .execute_transaction_without_commit(build_advance_tempo_tx_owned(
-                partial,
-                self.chain_id,
-            ));
+            .execute_transaction_without_commit(transaction)?;
         Ok(())
     }
 }
 
 /// Cancels queued work that has not started when dropped.
 #[derive(Debug, Default)]
-pub(crate) struct AdvanceTempoPrewarming {
+pub(crate) struct Prewarming {
     cancel: ManualCancel,
 }
 
-impl Drop for AdvanceTempoPrewarming {
+impl Drop for Prewarming {
     fn drop(&mut self) {
         self.cancel.clone().cancel();
+    }
+}
+
+/// An [`L1StorageReader`] for prewarming simulations that never blocks on a Tempo commitment.
+///
+/// A cached commitment is returned as is. On a miss the account is queued for a parallel fetch and
+/// the read returns zero, which is exact for accounts never configured on Tempo, such as fresh
+/// addresses. Storage reads go to the cache-backed provider unchanged.
+#[derive(Clone)]
+struct CommitmentPrewarmReader {
+    provider: L1StateProvider,
+    /// Tempo block the next Zone block's transactions read commitments at.
+    tempo_block_number: u64,
+    /// Accounts already queued, so each is fetched once per Zone block.
+    queued: Arc<Mutex<HashSet<Address>>>,
+    fetches: mpsc::UnboundedSender<Address>,
+}
+
+impl L1StorageReader for CommitmentPrewarmReader {
+    fn read_l1_storage(
+        &self,
+        account: Address,
+        slot: B256,
+        block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        self.provider.read_l1_storage(account, slot, block_number)
+    }
+
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        _block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        if let Some(commitment) = self
+            .provider
+            .cache()
+            .lock()
+            .get_commitment(account, self.tempo_block_number)
+        {
+            return Ok(commitment);
+        }
+        if self
+            .queued
+            .lock()
+            .expect("prewarm queue lock poisoned")
+            .insert(account)
+            && let Err(error) = self.fetches.unbounded_send(account)
+        {
+            debug!(target: "zone::payload", %account, %error, "Commitment prewarm fetch task stopped");
+        }
+        Ok(B256::ZERO)
+    }
+}
+
+/// Returns a sender for accounts whose commitments to cache at `tempo_block_number`, and the
+/// task that fetches them, up to [`MAX_COMMITMENT_FETCHES`] at a time.
+///
+/// The task ends once every sender is dropped and its fetches finish.
+fn commitment_fetches(
+    provider: L1StateProvider,
+    tempo_block_number: u64,
+) -> (
+    mpsc::UnboundedSender<Address>,
+    impl Future<Output = ()> + Send + 'static,
+) {
+    let (sender, accounts) = mpsc::unbounded();
+    let task = accounts
+        .map(move |account| {
+            let provider = provider.clone();
+            async move {
+                // A failed fetch is retried by canonical execution on its own cache miss.
+                if let Err(error) = provider
+                    .read_l1_commitment_async(account, tempo_block_number)
+                    .await
+                {
+                    debug!(target: "zone::payload", %account, %error, "Commitment prewarm fetch failed");
+                }
+            }
+        })
+        .buffer_unordered(MAX_COMMITMENT_FETCHES)
+        .collect::<()>();
+    (sender, task)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_provider::{Provider as _, ProviderBuilder, mock::Asserter};
+    use alloy_rpc_types_eth::AccountInfo;
+    use tempo_alloy::TempoNetwork;
+    use tempo_primitives::account::encode_config_commitment;
+    use zone_l1::{
+        L1StateCache,
+        state::{L1StateProvider, L1StateProviderConfig},
+    };
+
+    const TEMPO_BLOCK: u64 = 10;
+
+    fn provider(asserter: Asserter) -> L1StateProvider {
+        L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            L1StateCache::default(),
+            ProviderBuilder::new_with_network::<TempoNetwork>()
+                .connect_mocked_client(asserter)
+                .erased(),
+            tokio::runtime::Handle::current(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prewarm_reader_serves_cache_and_queues_each_miss_once() {
+        // The mock has no answers, so any RPC would fail the reads below.
+        let provider = provider(Asserter::new());
+        let (cached, fresh) = (Address::repeat_byte(1), Address::repeat_byte(2));
+        let (slot, value, commitment) = (
+            B256::repeat_byte(3),
+            B256::repeat_byte(4),
+            B256::repeat_byte(5),
+        );
+        {
+            let mut cache = provider.cache().lock();
+            cache.set_commitment(cached, TEMPO_BLOCK, commitment);
+            cache.set(cached, slot, TEMPO_BLOCK - 1, value);
+        }
+        let (fetches, queued) = mpsc::unbounded();
+        let reader = CommitmentPrewarmReader {
+            provider,
+            tempo_block_number: TEMPO_BLOCK,
+            queued: Arc::default(),
+            fetches,
+        };
+
+        let reads = tokio::task::spawn_blocking(move || {
+            (
+                // Commitments resolve at the next Zone block's Tempo block, whatever the anchor.
+                reader.read_l1_commitment(cached, TEMPO_BLOCK - 1),
+                reader.read_l1_commitment(fresh, TEMPO_BLOCK - 1),
+                reader.read_l1_commitment(fresh, TEMPO_BLOCK - 1),
+                reader.read_l1_storage(cached, slot, TEMPO_BLOCK - 1),
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            reads,
+            (Ok(commitment), Ok(B256::ZERO), Ok(B256::ZERO), Ok(value))
+        );
+        // The reader, and with it the sender, is dropped, so the queue ends.
+        assert_eq!(queued.collect::<Vec<_>>().await, vec![fresh]);
+    }
+
+    #[tokio::test]
+    async fn commitment_fetches_cache_every_queued_account() {
+        let asserter = Asserter::new();
+        let commitment = B256::repeat_byte(5);
+        let accounts = [Address::repeat_byte(1), Address::repeat_byte(2)];
+        for _ in accounts {
+            asserter.push_success(&AccountInfo {
+                extension: encode_config_commitment(commitment).into(),
+                ..Default::default()
+            });
+        }
+        let provider = provider(asserter);
+        let (sender, task) = commitment_fetches(provider.clone(), TEMPO_BLOCK);
+        for account in accounts {
+            sender.unbounded_send(account).unwrap();
+        }
+        drop(sender);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap();
+
+        for account in accounts {
+            assert_eq!(
+                provider.cache().lock().get_commitment(account, TEMPO_BLOCK),
+                Some(commitment)
+            );
+        }
     }
 }
