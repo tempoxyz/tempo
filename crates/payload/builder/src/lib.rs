@@ -1059,6 +1059,13 @@ where
             );
         }
 
+        debug_assert!(
+            block.sealed_block().length() <= estimated_rlp_block_size,
+            "block RLP length {} exceeds the builder's size estimate {estimated_rlp_block_size}; \
+             NON_TRANSACTION_SIZE_ESTIMATE does not cover the header and list prefixes",
+            block.sealed_block().length(),
+        );
+
         let block = Arc::new(block);
         let execution_block_encoder = ExecutionBlockEncoder::new(
             block.clone(),
@@ -1198,7 +1205,75 @@ pub(crate) struct RootsTaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Bytes;
+    use alloy_primitives::{Address, B64, B256, Bloom, Bytes, b256};
+    use tempo_evm::consensus::TEMPO_MAXIMUM_EXTRA_DATA_SIZE;
+    use tempo_primitives::{Block, Header, TempoConsensusContext, ed25519::PublicKey};
+
+    /// The largest possible header must not exceed [`NON_TRANSACTION_SIZE_ESTIMATE`].
+    ///
+    /// The builder counts transactions, withdrawals and extra data exactly and relies on the
+    /// constant for the rest of the block: the header and the block and transaction list prefixes.
+    /// The header is built at its maximum encoded size, with every optional field set and every
+    /// number at its maximum. Every field is listed so that a new header field fails to compile
+    /// here until it is accounted for.
+    #[test]
+    fn largest_header_does_not_exceed_non_transaction_size_estimate() {
+        let header = TempoHeader {
+            general_gas_limit: u64::MAX,
+            shared_gas_limit: u64::MAX,
+            timestamp_millis_part: u64::MAX,
+            inner: Header {
+                parent_hash: B256::repeat_byte(0xff),
+                ommers_hash: B256::repeat_byte(0xff),
+                beneficiary: Address::repeat_byte(0xff),
+                state_root: B256::repeat_byte(0xff),
+                transactions_root: B256::repeat_byte(0xff),
+                receipts_root: B256::repeat_byte(0xff),
+                logs_bloom: Bloom::repeat_byte(0xff),
+                difficulty: U256::MAX,
+                number: u64::MAX,
+                gas_limit: u64::MAX,
+                gas_used: u64::MAX,
+                timestamp: u64::MAX,
+                extra_data: Bytes::from(vec![0xff; TEMPO_MAXIMUM_EXTRA_DATA_SIZE]),
+                mix_hash: B256::repeat_byte(0xff),
+                nonce: B64::repeat_byte(0xff),
+                base_fee_per_gas: Some(u64::MAX),
+                withdrawals_root: Some(B256::repeat_byte(0xff)),
+                blob_gas_used: Some(u64::MAX),
+                excess_blob_gas: Some(u64::MAX),
+                parent_beacon_block_root: Some(B256::repeat_byte(0xff)),
+                requests_hash: Some(B256::repeat_byte(0xff)),
+                block_access_list_hash: Some(B256::repeat_byte(0xff)),
+                slot_number: Some(u64::MAX),
+            },
+            consensus_context: Some(TempoConsensusContext {
+                epoch: u64::MAX,
+                view: u64::MAX,
+                parent_view: u64::MAX,
+                // Ed25519 base point; every proposer key encodes to 32 bytes.
+                proposer: PublicKey::try_from(b256!(
+                    "5866666666666666666666666666666666666666666666666666666666666666"
+                ))
+                .unwrap(),
+            }),
+        };
+        // The builder adds the extra data's encoded length separately.
+        let extra_data_length = header.inner.extra_data.length();
+        // Withdrawals are counted separately; leave them out.
+        let block = Block {
+            header,
+            body: Default::default(),
+        };
+        // With transactions, the block and transaction list prefixes grow to the length needed
+        // for a block of up to MAX_RLP_BLOCK_SIZE bytes.
+        let list_prefix_growth = 2 * alloy_rlp::length_of_length(MAX_RLP_BLOCK_SIZE);
+        let non_transaction_length = block.length() - extra_data_length + list_prefix_growth;
+        assert!(
+            non_transaction_length <= NON_TRANSACTION_SIZE_ESTIMATE,
+            "{non_transaction_length} > {NON_TRANSACTION_SIZE_ESTIMATE}",
+        );
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
