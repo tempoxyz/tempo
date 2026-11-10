@@ -68,8 +68,10 @@ pub(crate) fn current_transaction() -> Option<(B256, Address)> {
 
 /// Returns why the EVM is executing a transaction on this thread.
 ///
-/// [`ExecutionOrigin::Canonical`] outside EVM execution and for system transactions, so a reader
-/// on any other thread gets the canonical behavior.
+/// [`ExecutionOrigin::Canonical`] when no transaction handler has published a context, such as
+/// outside EVM execution or during a block-level system call, so a reader on any other thread gets
+/// the canonical behavior. System transactions such as `advanceTempo` do run through the handler
+/// and report the origin of the EVM executing them.
 pub fn execution_origin() -> ExecutionOrigin {
     CURRENT_TRANSACTION.with(|slot| {
         slot.borrow()

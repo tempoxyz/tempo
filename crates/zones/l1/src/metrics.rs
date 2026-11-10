@@ -47,11 +47,12 @@ pub(crate) struct L1SubscriberMetrics {
     pub finalized_batch_submissions_dropped: Counter,
 }
 
-/// Metrics for Tempo L1 storage reads made during Zone execution, labelled by `origin`.
+/// Metrics for Tempo L1 reads made during Zone execution, labelled by `origin`.
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_l1_state")]
 pub(crate) struct L1StateMetrics {
-    /// Number of L1 storage reads that missed the cache and were fetched over RPC.
+    /// Number of L1 storage and account-commitment reads that missed the cache and were fetched
+    /// over RPC.
     pub cache_misses: Counter,
 }
 

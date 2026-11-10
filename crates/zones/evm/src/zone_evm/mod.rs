@@ -79,8 +79,8 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             ),
             // Prewarming (the zone builder's and reth's engine prewarming) disables both checks, so
             // a transaction funded or sequenced by an earlier one still executes. Tempo envs never
-            // enable the balance check, so pool validation, which disables only the nonce check,
-            // lands here too and its L1 misses are bounded like prewarming's.
+            // enable the balance check, so pool validation, which disables the nonce and base fee
+            // checks, lands here too and its L1 misses are bounded like prewarming's.
             ExecutionContext::Transaction { tx_hash }
                 if !request.host.feature(EvmFeatures::NONCE_CHECK)
                     && !request.host.feature(EvmFeatures::BALANCE_CHECK) =>
@@ -602,5 +602,56 @@ pub(crate) mod tests {
                 IConfigurableAccount::UnsupportedOnZone {}.abi_encode()
             );
         }
+    }
+
+    /// Pool prewarming simulates transactions on a fresh EVM whose accepted state is the builder's
+    /// after `advanceTempo`, with nonce and balance checks off. Its L1 reads must resolve at the
+    /// Tempo block that `advanceTempo` accepted, not the parent's, or the canonical reads they
+    /// prewarm would still miss.
+    #[test]
+    fn prewarming_reads_l1_at_the_accepted_tempo_block() {
+        let (sender, account) = (Address::repeat_byte(0x01), Address::repeat_byte(0x04));
+        let (parent_block, accepted_block) = (5, 6);
+        let l1 = MockL1Reader::default();
+        l1.insert_commitment(account, accepted_block, B256::repeat_byte(7));
+        let mut db = sender_db(sender);
+        db.insert_account_storage(
+            &TEMPO_STATE_ADDRESS,
+            &TEMPO_BLOCK_NUMBER_SLOT,
+            &U256::from(parent_block),
+        );
+        let mut env = fee_free_env(TempoHardfork::T14);
+        env.version
+            .features
+            .remove(EvmFeatures::NONCE_CHECK | EvmFeatures::BALANCE_CHECK);
+        let mut evm = BlockExecutorFactory::evm_with_env(&config(l1.clone()), db, env);
+        evm.overlay_db_mut().insert_account_storage(
+            &TEMPO_STATE_ADDRESS,
+            &TEMPO_BLOCK_NUMBER_SLOT,
+            &U256::from(accepted_block),
+        );
+
+        let tx = TxLegacy {
+            nonce: 1,
+            gas_limit: 1_000_000,
+            to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
+            input: IConfigurableAccount::getConfigCommitmentCall { account }
+                .abi_encode()
+                .into(),
+            ..Default::default()
+        };
+        let result = evm
+            .transact(&transaction(
+                sender,
+                tx.into_signed(Signature::test_signature()),
+            ))
+            .unwrap()
+            .discard();
+        assert!(result.status, "{result:?}");
+        // The sender's own commitment is read too, before the call.
+        assert_eq!(
+            l1.commitment_requests(),
+            vec![(sender, accepted_block), (account, accepted_block)]
+        );
     }
 }

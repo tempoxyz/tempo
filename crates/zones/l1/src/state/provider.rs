@@ -11,8 +11,8 @@
 //! call indefinitely with exponential backoff to avoid bricking the chain on transient outages.
 //! RPC simulations, cache prewarming and transaction-pool validation instead make one time-limited
 //! attempt, so an outage fails them rather than holding RPC permits, prewarming threads or
-//! submissions. A WebSocket transport keeps a
-//! request until L1 answers it, so the number of those attempts still awaiting L1 is capped.
+//! submissions. A WebSocket transport keeps a request until L1 answers it, so the number of those
+//! attempts still awaiting L1 is capped.
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder};
@@ -33,16 +33,14 @@ use zone_precompiles::{
 use super::cache::L1StateCache;
 use crate::{metrics::L1StateMetricsByOrigin, rpc::rpc_connection_config};
 
-/// Synchronous RPC attempts per cache miss during an RPC simulation or cache prewarming.
-const NON_CANONICAL_SYNC_ATTEMPTS: NonZeroU32 = NonZeroU32::MIN;
-
-/// Time limit on one cache-miss fetch during an RPC simulation or cache prewarming, so an L1
-/// endpoint that stops responding fails the execution.
+/// Time limit on the single cache-miss fetch made outside canonical execution, so an L1 endpoint
+/// that stops responding fails the execution.
 const NON_CANONICAL_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Cap on RPC simulation and cache prewarming fetches still awaiting L1, including ones whose
-/// caller timed out. Past it, those cache misses fail without sending a request, which bounds the
-/// requests a silent WebSocket retains and lets its keepalive detect the dead connection.
+/// Cap on cache-miss fetches made outside canonical execution that are still awaiting L1,
+/// including ones whose caller timed out. Past it, those cache misses fail without sending a
+/// request, which bounds the requests a silent WebSocket retains and lets its keepalive detect the
+/// dead connection.
 const MAX_OUTSTANDING_NON_CANONICAL_FETCHES: usize = 256;
 
 /// Configuration for the [`L1StateProvider`].
@@ -64,7 +62,8 @@ pub struct L1StateProviderConfig {
     /// Defaults to 100ms.
     pub retry_connection_interval: std::time::Duration,
     /// Maximum number of synchronous RPC attempts per cache miss. `None` retries indefinitely.
-    /// RPC simulations and cache prewarming always make a single attempt.
+    /// RPC simulations, cache prewarming and transaction-pool validation always make a single
+    /// attempt.
     pub max_sync_attempts: Option<NonZeroU32>,
 }
 
@@ -110,9 +109,9 @@ pub struct L1StateProvider {
     /// Handle to the tokio runtime, used by [`get_storage`](Self::get_storage) to
     /// dispatch async RPC calls from a blocking (non-async) context.
     runtime_handle: tokio::runtime::Handle,
-    /// Optional finite attempt limit for synchronous cache-miss fallback outside RPC simulations and prewarming.
+    /// Optional finite attempt limit for synchronous cache-miss fallback in canonical execution.
     max_sync_attempts: Option<NonZeroU32>,
-    /// Permits for RPC simulation and cache prewarming fetches, each held until L1 answers.
+    /// Permits for cache-miss fetches outside canonical execution, each held until L1 answers.
     non_canonical_fetches: Arc<Semaphore>,
     metrics: L1StateMetricsByOrigin,
 }
@@ -201,8 +200,8 @@ impl L1StateProvider {
     /// During an RPC simulation, cache prewarming or transaction-pool validation (any origin but
     /// [`ExecutionOrigin::Canonical`]) it makes one attempt limited to 5s and returns an error if
     /// that fails, since retrying would only hold an RPC permit, a prewarming thread or a
-    /// submission. It also fails without a request while 256 such
-    /// fetches, including timed-out ones, are still awaiting L1.
+    /// submission. It also fails without a request while 256 such fetches, including timed-out
+    /// ones, are still awaiting L1.
     ///
     /// # Panics
     ///
@@ -216,9 +215,6 @@ impl L1StateProvider {
             }
         }
 
-        self.metrics
-            .record_cache_miss(tx_context::execution_origin());
-
         let value = self.fetch_blocking(
             format_args!("storage address={address} slot={slot} block={block_number}"),
             move |this| async move { this.fetch_slot(address, slot, block_number).await },
@@ -227,12 +223,12 @@ impl L1StateProvider {
         Ok(value)
     }
 
-    /// Runs `fetch` on the runtime from a blocking thread, retrying until it succeeds or
-    /// [`L1StateProviderConfig::max_sync_attempts`] is reached. `read` names the value in logs
-    /// and errors.
+    /// Fetches a value that missed the cache by running `fetch` on the runtime from a blocking
+    /// thread, and records the miss. `read` names the value in logs and errors.
     ///
-    /// During an RPC simulation or cache prewarming, `fetch` gets one attempt under
-    /// [`NON_CANONICAL_FETCH_TIMEOUT`], and fails without a request once
+    /// Canonical execution retries until `fetch` succeeds or
+    /// [`L1StateProviderConfig::max_sync_attempts`] is reached. Any other [`ExecutionOrigin`] gets
+    /// one attempt under [`NON_CANONICAL_FETCH_TIMEOUT`], and fails without a request once
     /// [`MAX_OUTSTANDING_NON_CANONICAL_FETCHES`] are still awaiting L1.
     fn fetch_blocking<T, Fut>(
         &self,
@@ -245,21 +241,12 @@ impl L1StateProvider {
     {
         // Published by the Zone EVM's transaction handler on the EVM thread. Any other caller reads
         // `Canonical` and keeps the unbounded retry.
-        let canonical = tx_context::execution_origin() == ExecutionOrigin::Canonical;
-        let max_sync_attempts = if !canonical {
-            Some(NON_CANONICAL_SYNC_ATTEMPTS)
-        } else {
-            self.max_sync_attempts
-        };
-        let mut attempt = 0u32;
-        loop {
-            attempt += 1;
-            let start = std::time::Instant::now();
+        let origin = tx_context::execution_origin();
+        self.metrics.record_cache_miss(origin);
+
+        if origin != ExecutionOrigin::Canonical {
             let result = tokio::task::block_in_place(|| {
                 self.runtime_handle.block_on(async {
-                    if canonical {
-                        return fetch(self.clone()).await;
-                    }
                     // The transport keeps the request after a timeout, so the fetch holds the permit.
                     let permit = self
                         .non_canonical_fetches
@@ -283,6 +270,15 @@ impl L1StateProvider {
                     }
                 })
             });
+            return result.map_err(|err| eyre::eyre!("L1 RPC fetch failed for {read}: {err:#}"));
+        }
+
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let start = std::time::Instant::now();
+            let result =
+                tokio::task::block_in_place(|| self.runtime_handle.block_on(fetch(self.clone())));
             let elapsed = start.elapsed();
 
             match result {
@@ -295,7 +291,10 @@ impl L1StateProvider {
                     return Ok(value);
                 }
                 Err(rpc_err) => {
-                    if max_sync_attempts.is_some_and(|max_attempts| attempt >= max_attempts.get()) {
+                    if self
+                        .max_sync_attempts
+                        .is_some_and(|max_attempts| attempt >= max_attempts.get())
+                    {
                         return Err(eyre::eyre!(
                             "L1 RPC fetch failed after {attempt} attempts for {read}: {rpc_err}"
                         ));
@@ -467,14 +466,20 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn non_canonical_read_fails_after_one_attempt() {
+    async fn non_canonical_read_fails_without_retrying() {
         for origin in [ExecutionOrigin::Simulation, ExecutionOrigin::Prewarming] {
-            let message = non_canonical_read("http://127.0.0.1:1", origin)
-                .await
-                .expect_err("dead endpoint must fail a non-canonical read")
-                .to_string();
+            // A canonical read of a dead endpoint would retry past this timeout.
+            let message = tokio::time::timeout(
+                NON_CANONICAL_FETCH_TIMEOUT,
+                non_canonical_read("http://127.0.0.1:1", origin),
+            )
+            .await
+            .expect("non-canonical read must not retry")
+            .expect_err("dead endpoint must fail a non-canonical read")
+            .to_string();
             assert!(
-                message.contains("after 1 attempts"),
+                message.contains("L1 RPC fetch failed for storage")
+                    && message.contains("eth_getStorageAt failed"),
                 "{origin:?}: {message}"
             );
         }
