@@ -626,7 +626,7 @@ where
 
         // Revalidate transactions whose authorities' configuration commitment changed,
         // including eventless first registration (TIP-1107), and transactions whose inline
-        // configurable-account grant names an account whose commitment or code changed. On a
+        // configurable-account grant names an account whose code changed. On a
         // reorg, changes the orphaned blocks made count too: undoing them changes the state
         // pooled transactions were validated against.
         let mut changed_commitments = AddressSet::default();
@@ -649,10 +649,7 @@ where
                             || tx
                                 .transaction
                                 .configurable_grant_target()
-                                .is_some_and(|key_id| {
-                                    changed_commitments.contains(&key_id)
-                                        || changed_code.contains(&key_id)
-                                })
+                                .is_some_and(|key_id| changed_code.contains(&key_id))
                     })
                     .map(|tx| *tx.hash())
                     .collect()
