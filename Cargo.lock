@@ -12411,7 +12411,6 @@ dependencies = [
  "reth-trie",
  "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]
