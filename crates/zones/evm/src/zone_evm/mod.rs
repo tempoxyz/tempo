@@ -41,7 +41,6 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
             ZoneTxHandler {
                 inner: handler,
                 l1: l1.clone(),
-                spec,
             },
         );
     }
@@ -53,7 +52,6 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
 struct ZoneTxHandler<L1> {
     inner: AnyTxHandler<TempoEvmTypes, TxResult<TempoEvmTypes>>,
     l1: L1State<L1>,
-    spec: TempoHardfork,
 }
 
 impl<L1: L1StorageReader> ZoneTxHandler<L1> {
@@ -62,7 +60,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<ZoneTxContext<L1>> {
         self.l1.reset_transaction_state();
-        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST, self.spec)?;
+        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
 
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
@@ -130,7 +128,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::{ZoneBlockExecutor, ZoneDbError, ZoneEvm, ZoneEvmConfig};
     use alloy_consensus::{SignableTransaction, TxEip7702, TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Signature, U256};
+    use alloy_primitives::{Address, B256, Signature, TxKind, U256};
+    use alloy_sol_types::{SolCall, SolError};
     use evm2::{
         PendingState, TxResult,
         evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
@@ -144,6 +143,7 @@ pub(crate) mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
     };
@@ -408,7 +408,6 @@ pub(crate) mod tests {
             ZoneTxHandler {
                 inner: inner.get_by_type(0).unwrap(),
                 l1: l1.clone(),
-                spec,
             },
         );
         evm.set_execution_config(
@@ -432,5 +431,63 @@ pub(crate) mod tests {
             assert_eq!(l1.get_anchor(), None);
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn configurable_account_precompile_reads_tempo_and_rejects_writes() {
+        let (sender, account) = (Address::repeat_byte(0x01), Address::repeat_byte(0x04));
+        let commitment = B256::repeat_byte(7);
+        let l1 = MockL1Reader::default();
+        l1.insert_commitment(account, 0, commitment);
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &config(l1),
+            sender_db(sender),
+            fee_free_env(TempoHardfork::T14),
+        );
+        let mut call = |input: Vec<u8>| {
+            let tx = TxLegacy {
+                nonce: 1,
+                gas_limit: 1_000_000,
+                to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
+                input: input.into(),
+                ..Default::default()
+            };
+            evm.transact(&transaction(
+                sender,
+                tx.into_signed(Signature::test_signature()),
+            ))
+            .unwrap()
+            .discard()
+        };
+
+        let read = call(IConfigurableAccount::getConfigCommitmentCall { account }.abi_encode());
+        assert!(read.status, "{read:?}");
+        assert_eq!(read.output[..], commitment[..]);
+
+        for input in [
+            IConfigurableAccount::updateConfigCall {
+                current: IConfigurableAccount::ConfigurableAccountConfig {
+                    salt: B256::ZERO,
+                    version: 0,
+                    threshold: 1,
+                    owners: vec![],
+                },
+                threshold: 1,
+                owners: vec![],
+            }
+            .abi_encode(),
+            IConfigurableAccount::upgradeAccountCall {
+                threshold: 1,
+                owners: vec![],
+            }
+            .abi_encode(),
+        ] {
+            let rejected = call(input);
+            assert_eq!(rejected.stop, InstrStop::Revert);
+            assert_eq!(
+                rejected.output,
+                IConfigurableAccount::UnsupportedOnZone {}.abi_encode()
+            );
+        }
     }
 }

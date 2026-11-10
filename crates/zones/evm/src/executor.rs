@@ -32,7 +32,12 @@ use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
-use crate::{ZoneEvm, database::validate_pending_state};
+use crate::{
+    ZoneEvm,
+    database::{
+        strip_bundle_commitment_overlays, strip_update_commitment_overlays, validate_pending_state,
+    },
+};
 
 /// Predeploys whose code T15 removes from zones, since zone transfers would make them reachable.
 ///
@@ -352,7 +357,9 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             self.inner.set_spec_id(SpecId::SHANGHAI);
         }
 
-        self.inner.finish_with_block_access_list()
+        let (mut output, block_access_list) = self.inner.finish_with_block_access_list()?;
+        strip_bundle_commitment_overlays(&mut output.state);
+        Ok((output, block_access_list))
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
@@ -367,12 +374,17 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         self.inner.receipts()
     }
 
-    fn set_state_hook(&mut self, hook: impl FnMut(StateUpdate) + Send + 'static) -> bool {
-        self.inner.set_state_hook(hook)
+    fn set_state_hook(&mut self, mut hook: impl FnMut(StateUpdate) + Send + 'static) -> bool {
+        self.inner.set_state_hook(move |mut update| {
+            strip_update_commitment_overlays(&mut update);
+            hook(update);
+        })
     }
 
     fn into_state(self) -> reth_evm::BundleState {
-        self.inner.into_state()
+        let mut state = self.inner.into_state();
+        strip_bundle_commitment_overlays(&mut state);
+        state
     }
 
     fn validate_transaction_gas_limit(
@@ -465,7 +477,14 @@ mod tests {
     };
     use zone_primitives::constants::{TEMPO_STATE_ADDRESS, zone_chain_id};
 
-    use crate::{ZoneDbError, ZoneEvmConfig};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use tempo_primitives::transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        PrimitiveSignature, configurable_account_digest,
+    };
+
+    use crate::{ZoneDbError, ZoneEvmConfig, zone_evm::tests::fee_free_env};
 
     fn system_tx(to: Address, input: Bytes) -> TempoTxEnvelope {
         TempoTxEnvelope::Legacy(
@@ -1176,6 +1195,73 @@ mod tests {
         };
         let block = error.downcast_ref::<HandlerError>();
         assert!(block.is_some_and(is_registry_write), "{block:?}");
+    }
+
+    /// A Tempo-registered account executes as the account marker, so its owners sign for it, and
+    /// the streamed state and the block output keep its zone-local view.
+    #[test]
+    fn registered_account_signs_and_keeps_its_local_view() {
+        let owner = PrivateKeySigner::random();
+        let config = ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: owner.address(),
+                weight: 1,
+            }],
+        };
+        let account = config.derive_account().unwrap();
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
+        db.insert_account_info(&account, AccountInfo::default().with_nonce(1));
+        let l1 = MockL1Reader::default();
+        l1.insert_commitment(account, 0, config.commitment().unwrap());
+        let zone_config = crate::zone_evm::tests::config(l1);
+        let block = Default::default();
+        let mut executor = ZoneBlockExecutor::new(
+            zone_config.evm_with_env(db, fee_free_env(TempoHardfork::T14)),
+            reth_evm::ConfigureEvm::context_for_block(&zone_config, &block).unwrap(),
+            zone_config.chain_spec(),
+        );
+        executor.phase = ZoneBlockPhase::Executing;
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hook_updates = updates.clone();
+        executor.set_state_hook(move |update| hook_updates.lock().unwrap().push(update));
+
+        let tx = TempoTransaction {
+            calls: vec![Call {
+                to: Address::repeat_byte(0x33).into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            chain_id: executor.evm().version().chain_id,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            gas_limit: 1_000_000,
+            nonce: 1,
+            ..Default::default()
+        };
+        let digest = configurable_account_digest(tx.signature_hash(), account, 0);
+        let approval = PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap());
+        let signature = TempoSignature::ConfigurableAccount(
+            ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap(),
+        );
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(signature));
+        executor
+            .execute_transaction(Recovered::new_unchecked(envelope, account))
+            .unwrap();
+
+        let local = AccountInfo::default().with_nonce(2);
+        let streamed = updates
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|update| &update.accounts)
+            .find(|update| update.address == account)
+            .and_then(|update| update.current.clone());
+        assert_eq!(streamed, Some(local.clone()));
+        let state = executor.into_state();
+        assert_eq!(state.state[&account].info, Some(local));
     }
 
     #[test]
