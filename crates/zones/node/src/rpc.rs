@@ -41,6 +41,7 @@ use reth_rpc_eth_api::{
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
 use reth_rpc_eth_types::{EthApiError, logs_utils};
+use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
 use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
@@ -88,15 +89,11 @@ use crate::{follower::PeerTipRegistry, role::SharedRoleStatus};
 
 /// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
 ///
-/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
-/// collection timeout.
+/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds each request's wait to 175 ms, under the pre-T15
+/// witness collection timeout.
 const MULTI_PROOF_RETRIES: usize = 7;
 /// Delay before each `eth_getMultiProof` retry.
 const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
-/// Most targets, and most storage slots in total, one `eth_getMultiProof` request may carry.
-///
-/// Reth rejects larger requests (`DEFAULT_MAX_PROOF_SLOTS`).
-const MULTI_PROOF_MAX_ITEMS: usize = 1024;
 /// Smallest request worth splitting off. Below it the L1 node builds the proofs in a few ms, so
 /// another request costs more than it saves.
 const MULTI_PROOF_MIN_CHUNK: usize = 128;
@@ -474,19 +471,19 @@ async fn collect_tempo_witness(
 
 /// Split proof targets into `eth_getMultiProof` requests that run in parallel.
 ///
-/// Requests stay within [`MULTI_PROOF_MAX_ITEMS`] targets and slots. Up to
-/// [`MULTI_PROOF_MAX_PARALLEL`] requests share the work evenly, none smaller than
+/// Requests stay within reth's per-request limit of [`DEFAULT_MAX_PROOF_SLOTS`] targets and
+/// slots. Up to [`MULTI_PROOF_MAX_PARALLEL`] requests share the work evenly, none smaller than
 /// [`MULTI_PROOF_MIN_CHUNK`] unless it is the only one. An account with more slots than a request
 /// holds is split across requests, each carrying its account proof.
 fn multi_proof_chunks(
     targets: BTreeMap<Address, BTreeSet<B256>>,
 ) -> Vec<Vec<(Address, Vec<B256>)>> {
-    let slots = targets.values().map(BTreeSet::len).sum::<usize>();
-    let total = targets.len().max(slots);
+    let total_slots = targets.values().map(BTreeSet::len).sum::<usize>();
+    let total = targets.len().max(total_slots);
     let parallel = total
         .div_ceil(MULTI_PROOF_MIN_CHUNK)
         .clamp(1, MULTI_PROOF_MAX_PARALLEL);
-    let size = total.div_ceil(parallel).min(MULTI_PROOF_MAX_ITEMS);
+    let size = total.div_ceil(parallel).min(DEFAULT_MAX_PROOF_SLOTS);
 
     let mut chunks = Vec::new();
     let mut chunk = Vec::new();
@@ -1883,25 +1880,25 @@ mod tests {
         // Reads past one request's worth are fetched in parallel requests and merged.
         fail.store(false, Ordering::Relaxed);
         requests.lock().unwrap().clear();
-        let many = (0..300u16)
+        let many_reads = (0..300u16)
             .map(|i| zone_evm::TempoStorageRead {
                 account: Address::left_padding_from(&i.to_be_bytes()),
                 slot: None,
             })
             .collect::<HashSet<_>>();
         let (_, nodes) =
-            collect_tempo_witness(&provider, initial, Some(&first_tx_input), &many).await?;
+            collect_tempo_witness(&provider, initial, Some(&first_tx_input), &many_reads).await?;
         assert_eq!(nodes, vec![Bytes::from(vec![1])]);
-        let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 3);
-        let mut requested = requests
-            .iter()
-            .flat_map(|request| request[0].as_array().unwrap().clone())
-            .collect::<Vec<_>>();
-        requested.sort_by_key(|target| target[0].as_str().unwrap().to_owned());
-        requested.dedup();
-        assert_eq!(requested.len(), 300);
-        drop(requests);
+        {
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            let requested = requests
+                .iter()
+                .flat_map(|request| request[0].as_array().unwrap().clone())
+                .map(|target| target[0].as_str().unwrap().to_owned())
+                .collect::<HashSet<_>>();
+            assert_eq!(requested.len(), many_reads.len());
+        }
         handle.stop()?;
         Ok(())
     }
@@ -1931,11 +1928,11 @@ mod tests {
         );
         // Past the parallel budget, requests are capped at reth's limit and queue.
         let chunks = multi_proof_chunks(accounts(20_000));
-        assert_eq!(chunks.len(), 20);
+        assert_eq!(chunks.len(), 20_000usize.div_ceil(DEFAULT_MAX_PROOF_SLOTS));
         assert!(
             chunks
                 .iter()
-                .all(|chunk| chunk.len() <= MULTI_PROOF_MAX_ITEMS)
+                .all(|chunk| chunk.len() <= DEFAULT_MAX_PROOF_SLOTS)
         );
         assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), 20_000);
 
@@ -1949,7 +1946,7 @@ mod tests {
         targets.insert(account, slots.clone());
         let chunks = multi_proof_chunks(targets);
         assert!(chunks.iter().all(|chunk| {
-            chunk.iter().map(|(_, slots)| slots.len()).sum::<usize>() <= MULTI_PROOF_MAX_ITEMS
+            chunk.iter().map(|(_, slots)| slots.len()).sum::<usize>() <= DEFAULT_MAX_PROOF_SLOTS
         }));
         let requested = chunks
             .iter()
@@ -1962,7 +1959,7 @@ mod tests {
             chunks
                 .iter()
                 .flatten()
-                .filter(|(_, s)| s.is_empty())
+                .filter(|(_, slots)| slots.is_empty())
                 .count(),
             10
         );
