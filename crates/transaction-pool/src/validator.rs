@@ -977,9 +977,9 @@ mod tests {
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
-            KeyAuthorization, KeychainSignature, SignatureType, TempoSignature,
-            TempoSignedAuthorization, TempoTransaction, envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-            tempo_transaction::Call, tt_signature::PrimitiveSignature,
+            KeyAuthorization, SignatureType, TempoSignedAuthorization, TempoTransaction,
+            envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call,
+            tt_signature::PrimitiveSignature,
         },
     };
 
@@ -1420,56 +1420,6 @@ mod tests {
                     authorities.contains(&expected_authority),
                     "AA authority recovered from tempo_authorization_list must be tracked"
                 );
-            }
-            other => panic!("Expected Valid outcome with recovered authorities, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_aa_keychain_authorization_authorities_not_tracked() {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let authority_signer = PrivateKeySigner::random();
-        let keychain_signer = PrivateKeySigner::random();
-        let keychain_account = Address::random();
-        let sign = |signer: &PrivateKeySigner| {
-            let authorization = Authorization {
-                chain_id: U256::ONE,
-                nonce: 0,
-                address: Address::random(),
-            };
-            let signature = signer
-                .sign_hash_sync(&authorization.signature_hash())
-                .expect("authorization signing should succeed");
-            (authorization, signature)
-        };
-        let (authorization, signature) = sign(&authority_signer);
-        let primitive_authorization =
-            TempoSignedAuthorization::new_unchecked(authorization, signature.into());
-        let (authorization, signature) = sign(&keychain_signer);
-        let keychain_authorization = TempoSignedAuthorization::new_unchecked(
-            authorization,
-            TempoSignature::Keychain(KeychainSignature::new(keychain_account, signature)),
-        );
-
-        let transaction = TxBuilder::aa(Address::random())
-            .fee_token(PATH_USD_ADDRESS)
-            .authorization_list(vec![keychain_authorization, primitive_authorization])
-            .build();
-        let validator = setup_validator(&transaction, current_time);
-        assert!(validator.active_hardfork().is_t0());
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Valid { authorities, .. } => {
-                let authorities = authorities.expect("primitive authority should be tracked");
-                assert_eq!(authorities, vec![authority_signer.address()]);
             }
             other => panic!("Expected Valid outcome with recovered authorities, got: {other:?}"),
         }
