@@ -2,7 +2,7 @@
 FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS builder
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y clang libclang-dev pkg-config libssl-dev mold \
+    && apt-get install --no-install-recommends -y clang libclang-dev pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /work
 # The Dockerfile-specific allowlist includes every workspace member manifest.
@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
     && cargo build --locked --timings --profile antithesis -p reth-proofs-antithesis \
       --features reth-proofs-antithesis/fuzz --bin reth-proofs-antithesis \
       --target x86_64-unknown-linux-gnu \
-      --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Clink-arg=-fuse-ld=mold","-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
+      --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
     && mkdir /out /timings \
     && cp target/cargo-timings/cargo-timing.html /timings/ \
     && cp target/x86_64-unknown-linux-gnu/antithesis/reth-proofs-antithesis /out/ \
