@@ -66,11 +66,7 @@ impl Campaign {
     pub(crate) fn start(&self, db: &DatabaseEnv) -> Result<PathBuf> {
         // The durable retirement marker authorizes an idempotent reset, including after a crash.
         if self.retired.exists() {
-            let tx = db.tx_mut()?;
-            for table in Tables::ALL {
-                tables_to_generic!(table, |T| tx.clear::<T>())?;
-            }
-            tx.commit()?;
+            clear_tables(db)?;
             fs::remove_dir_all(&self.retired)?;
             fs::File::open(&self.root)?.sync_all()?;
         }
@@ -95,6 +91,16 @@ impl Campaign {
         fs::File::open(&self.root)?.sync_all()?;
         Ok(())
     }
+}
+
+/// Empties every table of the campaign database in one transaction.
+pub(crate) fn clear_tables(db: &DatabaseEnv) -> Result<()> {
+    let tx = db.tx_mut()?;
+    for table in Tables::ALL {
+        tables_to_generic!(table, |T| tx.clear::<T>())?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Atomically replace a campaign file, syncing its contents before its directory entry.

@@ -8,6 +8,8 @@ contrib/
 !contrib/antithesis/reth-proofs/src/**
 !contrib/antithesis/reth-state-root/Cargo.toml
 !contrib/antithesis/reth-state-root/src/**
+!contrib/antithesis/trie-shapes/Cargo.toml
+!contrib/antithesis/trie-shapes/src/**
 docs/
 localnet/
 scripts/

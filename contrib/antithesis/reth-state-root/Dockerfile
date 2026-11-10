@@ -15,7 +15,7 @@ ENV CARGO_PROFILE_ANTITHESIS_DEBUG=line-tables-only \
     CARGO_PROFILE_ANTITHESIS_OVERFLOW_CHECKS=true \
     CARGO_PROFILE_ANTITHESIS_STRIP=false \
     CARGO_PROFILE_ANTITHESIS_LTO=off
-# COPY preserves timestamps. Force the local crate fresh when this layer reruns:
+# COPY preserves timestamps. Force the local crates fresh when this layer reruns:
 # its source may have changed while an earlier cached-target build was running.
 # Private caches per workload: a concurrent or cancelled build (a cancelled workflow does not
 # stop its remote build) never holds them, and Cargo's package-cache lock lives outside the
@@ -23,7 +23,7 @@ ENV CARGO_PROFILE_ANTITHESIS_DEBUG=line-tables-only \
 RUN --mount=type=cache,id=antithesis-reth-state-root-cargo-registry,target=/usr/local/cargo/registry,sharing=private \
     --mount=type=cache,id=antithesis-reth-state-root-cargo-git,target=/usr/local/cargo/git,sharing=private \
     --mount=type=cache,id=antithesis-reth-state-root-target,target=/work/target,sharing=private \
-    touch contrib/antithesis/reth-state-root/src/main.rs \
+    touch contrib/antithesis/reth-state-root/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
     && cargo build --locked --profile antithesis -p reth-state-root-antithesis \
       --features reth-state-root-antithesis/fuzz --bin reth-state-root-antithesis \
       --target x86_64-unknown-linux-gnu \
@@ -45,6 +45,8 @@ COPY --from=builder /out/reth-state-root-antithesis /usr/local/bin/reth-state-ro
 # The instrumentation shim loads Antithesis's injected runtime when available, and
 # falls back locally. No separately downloaded libvoidstar is needed with this SDK.
 RUN mkdir /symbols && ln -s /usr/local/bin/reth-state-root-antithesis /symbols/reth-state-root-antithesis
+# The test template's commands run in this container, next to the server.
+COPY --chmod=755 contrib/antithesis/reth-state-root/test/ /opt/antithesis/test/
 ENV RUST_BACKTRACE=full
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/reth-state-root-antithesis"]

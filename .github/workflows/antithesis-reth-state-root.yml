@@ -16,6 +16,7 @@ on:
       - "mainnet-network-identity.json"
       - "testnet-network-identity.json"
       - "contrib/antithesis/reth-state-root/**"
+      - "contrib/antithesis/trie-shapes/**"
       - ".github/workflows/antithesis-reth-state-root.yml"
   workflow_dispatch:
 

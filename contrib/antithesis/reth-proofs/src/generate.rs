@@ -1,28 +1,36 @@
 //! Random writes and `eth_getMultiProof` targets, biased towards shared hashed-key prefixes.
 //!
-//! Uniform keys rarely share more than a few leading nibbles, so the tries stay shallow. Grinding
-//! neighbours of existing keys builds deeper branches and extensions, and requests exclusion
-//! proofs that diverge inside them.
+//! Uniform keys rarely share more than a few leading nibbles, so the tries stay shallow. Collision
+//! groups from `antithesis-trie-shapes`, shared with reth-state-root, build deep branches and
+//! extensions and later grow, collapse and rewrite them; grinding neighbours of existing keys
+//! requests exclusion proofs that diverge inside them.
 
-use crate::model::{random_address, random_slot, Model, Update};
-use alloy_primitives::{keccak256, Address, B256, U256};
-use alloy_trie::Nibbles;
+use crate::model::{collide, collide_next, random_address, random_slot, Model, Update};
+use alloy_primitives::{Address, B256, U256};
+use antithesis_trie_shapes::{
+    harness::{AccountSample, ProofTarget},
+    near_address, near_slot, Collider,
+};
 use rand_09::Rng;
 
-/// Longest hashed-key prefix to grind; each nibble multiplies the expected hashing work by 16.
-const MAX_SHARED_NIBBLES: usize = 4;
-
-/// Generates one block's writes, keeping at most `accounts` accounts.
+/// Generates one block's writes. New random accounts stop at `accounts`; collision groups add
+/// a bounded number on top.
 #[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
 pub(crate) fn writes(
     rng: &mut impl Rng,
     state: &Model,
+    collider: &mut Collider,
     accounts: usize,
     updates: usize,
 ) -> Vec<Update> {
     let mut state = state.clone();
-    (0..updates)
-        .map(|_| {
+    let mut generated = Vec::with_capacity(updates);
+    while generated.len() < updates {
+        if collide_next(rng, generated.len(), updates) {
+            generated.extend(collide(rng, &mut state, collider, updates - generated.len()));
+            continue;
+        }
+        generated.push({
             let addresses = state.keys().copied().collect::<Vec<_>>();
             let address = if !addresses.is_empty() &&
                 (addresses.len() >= accounts || rng.random_ratio(3, 4))
@@ -54,28 +62,31 @@ pub(crate) fn writes(
             };
             update.apply_to_model(&mut state);
             update
-        })
-        .collect()
+        });
+    }
+    generated
 }
 
-/// Generates one request's `(address, slots)` targets: existing, deleted and absent keys,
-/// absent neighbours of existing keys, and repeated addresses.
-pub(crate) fn targets(rng: &mut impl Rng, state: &Model) -> Vec<(Address, Vec<B256>)> {
-    let addresses = state.keys().copied().collect::<Vec<_>>();
-    let mut targets = Vec::<(Address, Vec<B256>)>::new();
+/// Generates one request's targets from a sample of the tip state: existing, deleted and absent
+/// keys, absent neighbours of existing keys, and repeated addresses. At older blocks, keys of the
+/// tip state may not exist yet.
+pub(crate) fn targets(rng: &mut impl Rng, accounts: &[AccountSample]) -> Vec<ProofTarget> {
+    let addresses = accounts.iter().map(|account| account.address).collect::<Vec<_>>();
+    let mut targets = Vec::<ProofTarget>::new();
     for _ in 0..rng.random_range(1..=8) {
         let roll = rng.random_range(0..8);
         let address = if roll == 0 && !targets.is_empty() {
-            targets[rng.random_range(0..targets.len())].0
+            targets[rng.random_range(0..targets.len())].address
         } else if roll < 5 && !addresses.is_empty() {
             addresses[rng.random_range(0..addresses.len())]
         } else {
             new_address(rng, &addresses)
         };
         // Touched slots include deleted ones, whose exclusion proofs end at collapsed nodes.
-        let slots = state
-            .get(&address)
-            .map(|entry| entry.touched_slots.iter().copied().collect::<Vec<_>>())
+        let slots = accounts
+            .iter()
+            .find(|account| account.address == address)
+            .map(|account| account.slots.clone())
             .unwrap_or_default();
         let requested = (0..rng.random_range(0..=6))
             .map(|_| {
@@ -86,7 +97,7 @@ pub(crate) fn targets(rng: &mut impl Rng, state: &Model) -> Vec<(Address, Vec<B2
                 })
             })
             .collect();
-        targets.push((address, requested));
+        targets.push(ProofTarget { address, slots: requested });
     }
     targets
 }
@@ -96,8 +107,8 @@ fn new_address(rng: &mut impl Rng, addresses: &[Address]) -> Address {
     if addresses.is_empty() || rng.random_bool(0.5) {
         return random_address(rng);
     }
-    let neighbour = keccak256(addresses[rng.random_range(0..addresses.len())]);
-    grind(rng, neighbour, Address::from_word, |address| keccak256(address))
+    let of = addresses[rng.random_range(0..addresses.len())];
+    near_address(rng, of)
 }
 
 /// Draws a fresh slot, half the time one whose hash shares a prefix with an existing one.
@@ -105,35 +116,6 @@ fn new_slot(rng: &mut impl Rng, slots: &[U256]) -> U256 {
     if slots.is_empty() || rng.random_bool(0.5) {
         return random_slot(rng);
     }
-    let neighbour = keccak256(B256::from(slots[rng.random_range(0..slots.len())]));
-    grind(rng, neighbour, |word| U256::from_be_bytes(word.0), |slot| keccak256(B256::from(*slot)))
-}
-
-/// Returns the first preimage derived from one random seed whose hash shares
-/// `1..=MAX_SHARED_NIBBLES` leading nibbles with `neighbour`, without being equal to it.
-///
-/// Deriving candidates locally keeps the search to one Antithesis random draw.
-fn grind<T>(
-    rng: &mut impl Rng,
-    neighbour: B256,
-    preimage: impl Fn(B256) -> T,
-    hash: impl Fn(&T) -> B256,
-) -> T {
-    let shared = rng.random_range(1..=MAX_SHARED_NIBBLES);
-    let seed = rng.random::<u64>();
-    let neighbour_nibbles = Nibbles::unpack(neighbour);
-    let mut counter = 0u64;
-    loop {
-        let mut input = [0; 16];
-        input[..8].copy_from_slice(&seed.to_be_bytes());
-        input[8..].copy_from_slice(&counter.to_be_bytes());
-        let candidate = preimage(keccak256(input));
-        let hashed = hash(&candidate);
-        if hashed != neighbour &&
-            Nibbles::unpack(hashed).common_prefix_length(&neighbour_nibbles) >= shared
-        {
-            return candidate;
-        }
-        counter += 1;
-    }
+    let of = slots[rng.random_range(0..slots.len())];
+    near_slot(rng, of)
 }

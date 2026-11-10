@@ -1,11 +1,29 @@
 //! Antithesis workload for `eth_getMultiProof` over in-memory, masked and persisted trie state.
 //!
-//! Blocks are produced like in the reth-state-root workload: the sparse-trie state root task
-//! computes each root, blocks are inserted into the `OverlayManager`, and a background writer
-//! persists them with state masking. Meanwhile proof threads serve `eth_getMultiProof` requests at
-//! random produced blocks through the provider the RPC uses, and verify every proof against the
-//! block's state root.
+//! `serve` runs the server. It produces blocks like the reth-state-root workload when a test
+//! command asks: the sparse-trie state root task computes each root, blocks are inserted into the
+//! `OverlayManager`, and a background writer persists them with state masking. Proof commands ask
+//! for `eth_getMultiProof` at any block of the round, served through the provider the RPC uses
+//! concurrently with block production, and verify every proof against the model's state root.
+//! Every round starts on a fresh database; restart recovery is reth-state-root's subject.
 
+macro_rules! invariant {
+    ($condition:expr, $message:literal $(, $argument:expr)* $(,)?) => {{
+        let holds = $condition;
+        antithesis_sdk::assert_always!(
+            holds,
+            $message,
+            &serde_json::json!({"context": format!($message $(, $argument)*)})
+        );
+        eyre::ensure!(holds, $message $(, $argument)*);
+    }};
+}
+
+#[expect(dead_code, reason = "Shared with reth-state-root, which checks the overlay root.")]
+#[path = "../../reth-state-root/src/engine.rs"]
+mod engine;
+#[path = "../../reth-state-root/src/input.rs"]
+mod input;
 #[expect(dead_code, reason = "Shared with reth-state-root, whose input generator is unused here.")]
 #[path = "../../reth-state-root/src/model.rs"]
 mod model;
@@ -15,59 +33,36 @@ mod persistence;
 mod generate;
 mod proof;
 
-use alloy_consensus::Header;
 use alloy_primitives::B256;
 use antithesis_instrumentation as _;
 use antithesis_sdk::{
     assert_always, assert_always_or_unreachable, assert_sometimes, assert_unreachable,
-    lifecycle::setup_complete, random::AntithesisRng,
+    random::AntithesisRng,
 };
-use eyre::{ensure, eyre, Context, Result};
-use model::{apply, root, Model};
-use persistence::{Persistence, Phase};
+use antithesis_trie_shapes::{
+    harness::{self, BlockRoot, Client, ProofTarget, Request, Response, Summary},
+    Collider, ShapeTracker, Write,
+};
+use engine::{Engine, Settings};
+use eyre::{bail, ensure, eyre, Context, Result};
+use model::{apply, root, write_updates, Model};
 use rand_09::Rng;
-use reth_chain_state::ExecutedBlock;
-use reth_chainspec::ChainSpec;
 use reth_db::{init_db, DatabaseEnv};
-use reth_engine_primitives::MIN_PERSISTENCE_BACKPRESSURE_THRESHOLD;
-use reth_engine_tree::tree::{
-    state_root_strategy::{publish_sparse_trie, DefaultStateRootStrategy, StateRootTaskOptions},
-    TreeConfig, CHANGESET_CACHE_RETENTION_BLOCKS,
-};
-use reth_ethereum_primitives::{Block, EthPrimitives};
-use reth_evm_ethereum::EthEvmConfig;
-use reth_execution_types::{BlockExecutionOutput, BlockExecutionResult};
-use reth_node_builder::common::{LaunchContext, WithConfigs};
-use reth_node_core::{
-    dirs::{ChainPath, DataDirPath},
-    node_config::NodeConfig,
-};
-use reth_primitives_traits::{AlloyBlockHeader, RecoveredBlock, SealedHeader};
-use reth_provider::{
-    test_utils::MockNodeTypesWithDB, DatabaseProviderROFactory, HeaderProvider, ProviderFactory,
-    SaveBlocksInput,
-};
-use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
-use reth_tasks::{RayonConfig, RuntimeBuilder, RuntimeConfig, TokioConfig};
-use reth_trie::{HashedPostState, SortedTrieData};
+use reth_engine_tree::tree::TreeConfig;
+use reth_primitives_traits::AlloyBlockHeader;
+use reth_provider::{test_utils::MockNodeTypesWithDB, DatabaseProviderROFactory, ProviderFactory};
+use reth_storage_overlay::OverlayStateProviderFactory;
+use reth_trie::AccountProof;
 use serde::Deserialize;
 use serde_json::json;
-use std::{
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc, Arc, Mutex, Once, RwLock,
-    },
-    thread,
-    time::Duration,
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex, RwLock,
 };
+use tempfile::TempDir;
 
-macro_rules! invariant {
-    ($condition:expr, $message:literal $(, $argument:expr)* $(,)?) => {{
-        let holds = $condition;
-        assert_always!(holds, $message, &json!({"context": format!($message $(, $argument)*)}));
-        ensure!(holds, $message $(, $argument)*);
-    }};
-}
+/// Most driver writes queued at once; submissions past it are rejected.
+const MAX_PENDING: usize = 4096;
 
 type Node = MockNodeTypesWithDB<Arc<DatabaseEnv>>;
 
@@ -76,13 +71,12 @@ type Node = MockNodeTypesWithDB<Arc<DatabaseEnv>>;
 struct Config {
     /// A finite local smoke run; absent means run indefinitely.
     rounds: Option<u64>,
+    /// Blocks in a round. The block after the last starts a new round on a fresh database.
     blocks: u64,
+    /// Updates in a block: queued driver writes first, padded with random ones.
     updates: usize,
-    /// Most accounts the generated state holds.
+    /// Most accounts the random padding creates.
     accounts: usize,
-    /// `eth_getMultiProof` requests queued after each block and after the final flush.
-    requests: usize,
-    request_threads: usize,
     proof_workers: usize,
     timeout_secs: u64,
     persistence_threshold: u64,
@@ -98,8 +92,6 @@ impl Default for Config {
             blocks: 64,
             updates: 32,
             accounts: 256,
-            requests: 8,
-            request_threads: 2,
             proof_workers: 2,
             timeout_secs: 60,
             persistence_threshold: tree.persistence_threshold(),
@@ -109,371 +101,298 @@ impl Default for Config {
     }
 }
 
-/// A produced block's post-state, retained so proofs at any block of the round can be checked.
-struct Snapshot {
-    number: u64,
-    hash: B256,
-    root: B256,
-    state: Model,
-}
-
-/// State shared between block production and the proof request threads.
-struct Shared {
-    blocks: RwLock<Vec<Arc<Snapshot>>>,
+/// What proof requests read, without waiting for block production.
+struct View {
+    round: u64,
+    factory: ProviderFactory<Node>,
+    /// Hash and model state root of every block of the round, by number.
+    blocks: RwLock<Vec<(B256, B256)>>,
     /// Highest block whose block data is persisted.
     db_tip: AtomicU64,
     /// Highest block whose state and trie are persisted; masked blocks lie between the tips.
     state_tip: AtomicU64,
+    /// Deleted once the last proof request of the round lets go of the view.
+    _datadir: TempDir,
 }
 
-/// Serves one `eth_getMultiProof` request at a random produced block and checks the response.
-fn request_proof(factory: &ProviderFactory<Node>, shared: &Shared) -> Result<()> {
-    let mut rng = AntithesisRng;
+struct Server {
+    config: Config,
+    /// None only while one round closes and the next opens.
+    round: Mutex<Option<Round>>,
+    view: RwLock<Arc<View>>,
+}
+
+impl Server {
+    fn handle(&self, request: Request) -> Result<Response> {
+        if let Request::GetProof { round, block, targets } = request {
+            let view = Arc::clone(&*self.view.read().map_err(|_| eyre!("view lock poisoned"))?);
+            return prove(&view, round, block, &targets);
+        }
+        let mut guard = self.round.lock().map_err(|_| eyre!("round lock poisoned"))?;
+        let round = guard.as_mut().ok_or_else(|| eyre!("no active round"))?;
+        match request {
+            Request::StateSummary => round.summary(),
+            Request::SubmitWrites { round: id, writes, collider } => {
+                if id != round.view.round {
+                    return Ok(Response::Rejected { reason: format!("round {id} is over") });
+                }
+                if round.pending.len() + writes.len() > MAX_PENDING {
+                    return Ok(Response::Rejected { reason: "too many queued writes".into() });
+                }
+                round.collider.merge(collider);
+                round.pending.extend(writes);
+                Ok(Response::Queued { pending: round.pending.len() })
+            }
+            Request::BuildBlock => {
+                if round.engine.head() == self.config.blocks {
+                    let finished = guard.take().expect("active round");
+                    let number = finished.number + 1;
+                    finished.finish()?;
+                    assert_sometimes!(true, "Proof workload completes a round");
+                    if self.config.rounds.is_some_and(|rounds| number >= rounds) {
+                        std::process::exit(0);
+                    }
+                    let next = Round::open(&self.config, number)?;
+                    *self.view.write().map_err(|_| eyre!("view lock poisoned"))? =
+                        Arc::clone(&next.view);
+                    *guard = Some(next);
+                }
+                guard.as_mut().expect("active round").build_block(&self.config)
+            }
+            Request::Flush => {
+                round.persist(true)?;
+                Ok(Response::Flushed { round: round.view.round, head: round.engine.head() })
+            }
+            Request::CheckRoot => {
+                Ok(Response::Rejected { reason: "reth-proofs checks proofs, not roots".into() })
+            }
+            Request::GetProof { .. } => unreachable!("served above"),
+        }
+    }
+}
+
+/// One fresh database, from genesis to the flush that closes it.
+struct Round {
+    /// Rounds this process completed before this one.
+    number: u64,
+    engine: Engine,
+    state: Model,
+    collider: Collider,
+    shapes: ShapeTracker,
+    pending: Vec<Write>,
+    view: Arc<View>,
+}
+
+impl Round {
+    fn open(config: &Config, number: u64) -> Result<Self> {
+        let datadir = tempfile::tempdir()?;
+        let settings = Settings {
+            proof_workers: config.proof_workers,
+            timeout_secs: config.timeout_secs,
+            persistence_threshold: config.persistence_threshold,
+            num_state_masking_blocks: config.num_state_masking_blocks,
+            memory_block_buffer_target: config.memory_block_buffer_target,
+        };
+        let db = Arc::new(init_db(datadir.path().join("db"), Default::default())?);
+        let engine = Engine::open(&settings, engine::runtime(&settings)?, db, datadir.path())?;
+        let state = Model::default();
+        let genesis = engine.parent();
+        invariant!(root(&state) == genesis.state_root(), "genesis root");
+        let view = Arc::new(View {
+            round: AntithesisRng.random(),
+            factory: engine.factory().clone(),
+            blocks: RwLock::new(vec![(genesis.hash(), genesis.state_root())]),
+            db_tip: AtomicU64::new(0),
+            state_tip: AtomicU64::new(0),
+            _datadir: datadir,
+        });
+        Ok(Self {
+            number,
+            engine,
+            state,
+            collider: Collider::default(),
+            shapes: ShapeTracker::default(),
+            pending: Vec::new(),
+            view,
+        })
+    }
+
+    fn summary(&self) -> Result<Response> {
+        let (db_tip, state_tip) = self.engine.tips();
+        let roots = self
+            .view
+            .blocks
+            .read()
+            .map_err(|_| eyre!("block list poisoned"))?
+            .iter()
+            .enumerate()
+            .map(|(number, (_, root))| BlockRoot { number: number as u64, root: *root })
+            .collect();
+        Ok(Response::Summary(Summary {
+            round: self.view.round,
+            head: self.engine.head(),
+            db_tip,
+            state_tip,
+            roots,
+            accounts: model::sample(&mut AntithesisRng, &self.state),
+            collider: self.collider.clone(),
+        }))
+    }
+
+    fn persist(&mut self, flush: bool) -> Result<()> {
+        let view = &self.view;
+        self.engine.persist(flush, |_, _, db_tip, state_tip| {
+            view.db_tip.store(db_tip, Ordering::Release);
+            view.state_tip.store(state_tip, Ordering::Release);
+            Ok(())
+        })
+    }
+
+    fn build_block(&mut self, config: &Config) -> Result<Response> {
+        self.persist(false)?;
+        let number = self.engine.head() + 1;
+        let mut rng = AntithesisRng;
+        let queued = self.pending.len().min(config.updates);
+        let mut scratch = self.state.clone();
+        let mut writes = self
+            .pending
+            .drain(..queued)
+            .flat_map(|write| write_updates(&mut scratch, write))
+            .collect::<Vec<_>>();
+        assert_sometimes!(!writes.is_empty(), "A block includes driver writes");
+        let padding = config.updates.saturating_sub(writes.len());
+        writes.extend(generate::writes(
+            &mut rng,
+            &scratch,
+            &mut self.collider,
+            config.accounts,
+            padding,
+        ));
+        let (bundle, updates) = apply(&mut self.state, number, &writes);
+        self.shapes.observe(model::tries(&self.state));
+        let operations = input::operations(&mut rng, writes);
+        let expected_root = root(&self.state);
+        let hash = self.engine.produce(&operations, bundle, updates, expected_root)?;
+        // Publish the block only once the overlay manager can serve it.
+        self.view
+            .blocks
+            .write()
+            .map_err(|_| eyre!("block list poisoned"))?
+            .push((hash, expected_root));
+        Ok(Response::Block { round: self.view.round, number, root: expected_root })
+    }
+
+    fn finish(mut self) -> Result<()> {
+        self.persist(true)?;
+        let (round, blocks, partial_commits) =
+            (self.view.round, self.engine.head(), self.engine.partial_commits);
+        self.engine.close()?;
+        assert_sometimes!(partial_commits > 0, "Persistence commits with masked state");
+        println!(
+            "{}",
+            json!({"completed": true, "round": round, "blocks": blocks,
+            "partial_commits": partial_commits})
+        );
+        Ok(())
+    }
+}
+
+/// Serves one `eth_getMultiProof` request at a block of the view's round.
+fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Result<Response> {
+    if round != view.round {
+        return Ok(Response::Rejected { reason: format!("round {round} is over") });
+    }
     // Persistence may advance during the request; the tips only classify coverage.
-    let db_tip = shared.db_tip.load(Ordering::Acquire);
-    let state_tip = shared.state_tip.load(Ordering::Acquire);
-    let snapshot = {
-        let blocks = shared.blocks.read().map_err(|_| eyre!("block snapshots poisoned"))?;
-        Arc::clone(&blocks[rng.random_range(0..blocks.len())])
+    let db_tip = view.db_tip.load(Ordering::Acquire);
+    let state_tip = view.state_tip.load(Ordering::Acquire);
+    let Some((hash, _)) =
+        view.blocks.read().map_err(|_| eyre!("block list poisoned"))?.get(number as usize).copied()
+    else {
+        return Ok(Response::Rejected { reason: format!("no block {number}") });
     };
-    let number = snapshot.number;
     assert_sometimes!(number > db_tip, "Proof served from in-memory blocks");
     assert_sometimes!(number > state_tip && number <= db_tip, "Proof served from masked blocks");
     assert_sometimes!(number == state_tip && number > 0, "Proof served at the persisted state tip");
     assert_sometimes!(number < state_tip, "Proof served from reverted historical state");
-    let targets = generate::targets(&mut rng, &snapshot.state);
     // The provider BlockchainProvider resolves for a block hash, in memory or persisted.
     let result = OverlayStateProviderFactory::new(
-        factory.clone(),
-        factory.overlay_manager().overlay_builder(snapshot.hash),
+        view.factory.clone(),
+        view.factory.overlay_manager().overlay_builder(hash),
     )
     .database_provider_ro()
     .map_err(eyre::Report::from)
-    .and_then(|provider| proof::get_multi_proof(&provider, &targets))
-    .and_then(|proofs| proof::check(snapshot.root, &targets, &proofs));
-    let error = result.err().map(|error| format!("{error:#}"));
+    .and_then(|provider| proof::get_multi_proof(&provider, targets));
+    let error = result.as_ref().err().map(|error| format!("{error:#}"));
     invariant!(
         error.is_none(),
         "eth_getMultiProof at block {number} (db tip {db_tip}, state tip {state_tip}) for \
          {targets:?}: {}",
         error.as_deref().unwrap_or_default()
     );
-    Ok(())
+    Ok(Response::Proofs { proofs: serde_json::to_value(result?)? })
 }
 
-fn run(config: &Config, round: u64) -> Result<()> {
+fn serve(config: Option<String>) -> Result<()> {
+    let config: Config = serde_json::from_str(config.as_deref().unwrap_or("{}"))
+        .wrap_err("invalid workload configuration")?;
+    ensure!(config.rounds != Some(0), "rounds must be positive");
     ensure!((1..=1024).contains(&config.blocks), "blocks must be 1..=1024");
     ensure!((1..=4096).contains(&config.updates), "updates must be 1..=4096");
     ensure!((1..=4096).contains(&config.accounts), "accounts must be 1..=4096");
-    ensure!(config.requests <= 1024, "requests must be at most 1024");
-    ensure!((1..=16).contains(&config.request_threads), "request_threads must be 1..=16");
-    ensure!((1..=16).contains(&config.proof_workers), "proof_workers must be 1..=16");
-    ensure!((1..=3600).contains(&config.timeout_secs), "timeout_secs must be 1..=3600");
-    let buffer = config.memory_block_buffer_target.unwrap_or_else(|| {
-        TreeConfig::default().memory_block_buffer_target().min(config.persistence_threshold)
-    });
-    let masking =
-        if config.persistence_threshold == 0 { 0 } else { config.num_state_masking_blocks };
-    let backpressure =
-        config.persistence_threshold.saturating_mul(2).max(MIN_PERSISTENCE_BACKPRESSURE_THRESHOLD);
-    ensure!(backpressure > config.persistence_threshold, "persistence threshold is too large");
-    ensure!(buffer <= config.persistence_threshold, "buffer must not exceed persistence threshold");
-    ensure!(
-        masking == 0 ||
-            matches!(masking.checked_add(buffer), Some(window) if window < config.persistence_threshold),
-        "masking blocks + buffer must be less than persistence threshold"
-    );
-    // Clear the default window before applying smaller thresholds: TreeConfig checks each setter.
-    let tree_config = TreeConfig::default()
-        .with_num_state_masking_blocks(0)
-        .with_memory_block_buffer_target(0)
-        .with_persistence_backpressure_threshold(u64::MAX)
-        .with_persistence_threshold(config.persistence_threshold)
-        .with_num_state_masking_blocks(masking)
-        .with_memory_block_buffer_target(buffer)
-        .with_persistence_backpressure_threshold(backpressure);
-    let runtime = RuntimeBuilder::new(RuntimeConfig {
-        tokio: TokioConfig::with_worker_threads(2),
-        rayon: RayonConfig {
-            cpu_threads: Some(2),
-            rpc_threads: Some(1),
-            storage_threads: Some(2),
-            proof_storage_worker_threads: Some(config.proof_workers),
-            proof_account_worker_threads: Some(config.proof_workers),
-            prewarming_threads: Some(1),
-            bal_streaming_threads: Some(1),
-            state_trie_overlay_worker_threads: Some(1),
-            ..Default::default()
-        },
-    })
-    .build()?;
-    // Each round starts from an empty database; restart recovery is reth-state-root's subject.
-    let datadir = tempfile::tempdir()?;
-    let chain = Arc::new(ChainSpec::default());
-    let data_dir = ChainPath::<DataDirPath>::new(
-        datadir.path().to_string_lossy().parse()?,
-        chain.chain,
-        Default::default(),
-    );
-    let db = Arc::new(init_db(data_dir.db(), Default::default())?);
-    let context = LaunchContext::new(runtime.clone(), data_dir)
-        .with(WithConfigs { config: NodeConfig::new(chain), toml_config: Default::default() })
-        .attach(db);
-    let factory = runtime.handle().block_on(
-        context.create_provider_factory_with_recovery::<Node, EthEvmConfig>(
-            OverlayManager::new(runtime.state_trie_overlay_worker_pool()),
-            None,
-            &[],
-            |_| Ok(()),
-        ),
-    )?;
-    reth_db_common::init::init_genesis(&factory)?;
-    static SETUP: Once = Once::new();
-    SETUP.call_once(|| {
-        setup_complete(&json!({"workload": "reth-proofs", "database_initialized": true}))
-    });
-
-    let manager = factory.overlay_manager();
-    let mut parent =
-        factory.provider()?.sealed_header(0)?.ok_or_else(|| eyre!("missing genesis header"))?;
-    let base_hash = parent.hash();
-    let mut state = Model::default();
-    invariant!(root(&state) == parent.state_root(), "genesis root");
-    let shared = Arc::new(Shared {
-        blocks: RwLock::new(vec![Arc::new(Snapshot {
-            number: 0,
-            hash: base_hash,
-            root: parent.state_root(),
-            state: state.clone(),
-        })]),
-        db_tip: AtomicU64::new(0),
-        state_tip: AtomicU64::new(0),
-    });
-    let (requests, request_rx) = mpsc::channel::<()>();
-    let request_rx = Arc::new(Mutex::new(request_rx));
-    let request_threads = (0..config.request_threads)
-        .map(|_| {
-            let (factory, shared, request_rx) =
-                (factory.clone(), Arc::clone(&shared), Arc::clone(&request_rx));
-            thread::spawn(move || -> Result<u64> {
-                let mut served = 0;
-                // The channel closes after the round's last request is queued.
-                while request_rx.lock().map_err(|_| eyre!("request queue poisoned"))?.recv().is_ok()
-                {
-                    request_proof(&factory, &shared)?;
-                    served += 1;
-                }
-                Ok(served)
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let strategy = DefaultStateRootStrategy::default();
-    let mut rng = AntithesisRng;
-    let mut blocks = Vec::<ExecutedBlock<EthPrimitives>>::new();
-    let timeout = Duration::from_secs(config.timeout_secs);
-    let mut persistence = Persistence::new(factory.clone());
-    // db_tip includes saved blocks; state_tip is the potentially older unmasked trie frontier.
-    let mut db_tip = 0;
-    let mut state_tip = 0;
-    let mut partial_commits = 0;
-    let mut prune_requested = false;
-    let mut phase = Phase::Running;
-    loop {
-        let head = blocks.len() as u64;
-        // Only an acknowledgement advances the durable frontiers; submission is asynchronous.
-        let must_wait = phase == Phase::Flushing ||
-            head.saturating_sub(state_tip).saturating_sub(buffer) >= backpressure;
-        if let Some((next_db, next_state)) = persistence.acknowledge(must_wait, timeout)? {
-            db_tip = next_db;
-            state_tip = next_state;
-            partial_commits += u64::from(db_tip != state_tip);
-            shared.db_tip.store(db_tip, Ordering::Release);
-            shared.state_tip.store(state_tip, Ordering::Release);
-            manager
-                .evict_cached_changesets(db_tip.saturating_sub(CHANGESET_CACHE_RETENTION_BLOCKS));
-            manager.remove_blocks(
-                blocks
-                    .iter()
-                    .filter(|block| block.recovered_block().number() <= state_tip)
-                    .map(|block| block.recovered_block().hash()),
-            );
-            let anchor = if state_tip == 0 {
-                base_hash
-            } else {
-                blocks[state_tip as usize - 1].recovered_block().hash()
-            };
-            manager.precompute_execution_overlay(parent.hash(), anchor);
-            prune_requested = true;
-            println!(
-                "{}",
-                json!({"persistence": "complete", "head": head,
-                    "db_tip": db_tip, "state_tip": state_tip})
-            );
-            continue;
-        }
-        if persistence.is_idle() {
-            // Match EngineApiTreeHandler::get_save_blocks_input's Threshold and Head targets.
-            let next_db = if phase == Phase::Flushing { head } else { head.saturating_sub(buffer) };
-            if phase == Phase::Flushing ||
-                (head.saturating_sub(state_tip) > config.persistence_threshold &&
-                    next_db > db_tip)
-            {
-                let next_state = if phase == Phase::Flushing {
-                    head
-                } else {
-                    next_db.saturating_sub(masking).max(state_tip)
-                };
-                if next_db != db_tip || next_state != state_tip {
-                    persistence.save(
-                        SaveBlocksInput::new(
-                            blocks[state_tip as usize..next_db as usize].to_vec(),
-                            db_tip,
-                            state_tip,
-                            next_db,
-                            next_state,
-                        ),
-                        next_db,
-                        next_state,
-                    )?;
-                    continue;
-                }
-            }
-        }
-        if head == config.blocks {
-            if phase == Phase::Flushing {
-                break;
-            }
-            phase = Phase::Flushing;
-            continue;
-        }
-        let number = head + 1;
-        let writes = generate::writes(&mut rng, &state, config.accounts, config.updates);
-        let (bundle, updates) = apply(&mut state, number, &writes);
-        let retained = std::mem::take(&mut prune_requested).then(|| {
-            blocks
-                .iter()
-                .filter(|block| block.recovered_block().number() > state_tip)
-                .rev()
-                .cloned()
-                .collect()
-        });
-        let (mut handle, pending) = strategy.spawn_state_root(
-            &runtime,
-            OverlayStateProviderFactory::new(
-                factory.clone(),
-                manager.overlay_builder(parent.hash()),
-            ),
-            StateRootTaskOptions {
-                parent_header: parent.clone(),
-                preserved_sparse_trie: manager.take_sparse_trie(),
-                transaction_count: None,
-                gas_used: None,
-                config: &tree_config,
-                pending_sparse_trie_prune_blocks: retained,
-            },
-        );
-        let stream = handle.take_hashed_update_stream();
-        drop(handle.take_hint_stream());
-        let mut updates = updates.into_iter().peekable();
-        while updates.peek().is_some() {
-            let mut batch = HashedPostState::default();
-            for update in updates.by_ref().take(rng.random_range(1..=16)) {
-                batch.extend(update);
-            }
-            stream.on_hashed_state_update(batch);
-        }
-        stream.finish();
-        let outcome = handle.take_state_root_rx().recv_timeout(timeout)??;
-        drop(handle);
-        let expected_root = root(&state);
-        invariant!(
-            outcome.state_root == expected_root,
-            "round {round} block {number}: expected {expected_root}, actual {}",
-            outcome.state_root
-        );
-        let block = RecoveredBlock::new_unhashed(
-            Block {
-                header: Header {
-                    parent_hash: parent.hash(),
-                    number,
-                    state_root: outcome.state_root,
-                    timestamp: number,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            Vec::new(),
-        );
-        parent = SealedHeader::new_unhashed(block.header().clone());
-        let executed = ExecutedBlock::new(
-            Arc::new(block),
-            Arc::new(BlockExecutionOutput {
-                state: bundle,
-                result: BlockExecutionResult {
-                    receipts: Vec::new(),
-                    requests: Default::default(),
-                    gas_used: 0,
-                    blob_gas_used: 0,
-                },
-            }),
-            SortedTrieData {
-                hashed_state: Arc::new(match Arc::try_unwrap(outcome.hashed_state) {
-                    Ok(state) => state.into_sorted(),
-                    Err(state) => state.clone_into_sorted(),
-                }),
-                trie_updates: Arc::new(match Arc::try_unwrap(outcome.trie_updates) {
-                    Ok(updates) => updates.into_sorted(),
-                    Err(updates) => updates.clone_into_sorted(),
-                }),
-            },
-        );
-        manager.insert_block(executed.clone());
-        publish_sparse_trie(&pending, manager, parent.hash(), outcome.state_root);
-        blocks.push(executed);
-        // Publish the block only once the overlay manager can serve it.
-        shared.blocks.write().map_err(|_| eyre!("block snapshots poisoned"))?.push(Arc::new(
-            Snapshot { number, hash: parent.hash(), root: expected_root, state: state.clone() },
-        ));
-        for _ in 0..config.requests {
-            requests.send(())?;
-        }
-    }
-    persistence.finish()?;
-    // Requests after the flush see every block persisted, most of them reverted from the tip.
-    for _ in 0..config.requests {
-        requests.send(())?;
-    }
-    drop(requests);
-    let mut served = 0;
-    for thread in request_threads {
-        served += thread.join().map_err(|_| eyre!("proof request thread panicked"))??;
-    }
-    // Drain the worker pools so the last database handle closes before the runtime drops.
-    for name in ["sparse-trie", "trie-hashing", "storage-workers", "account-workers", "drop"] {
-        runtime.spawn_blocking_named(name, || {}).get();
-    }
-    assert_sometimes!(partial_commits > 0, "Persistence commits with masked state");
-    println!(
-        "{}",
-        json!({"completed": true, "round": round, "blocks": config.blocks,
-        "partial_commits": partial_commits, "proofs_served": served})
-    );
-    Ok(())
+    let round = Round::open(&config, 0)?;
+    let view = RwLock::new(Arc::clone(&round.view));
+    let server = Server { config, round: Mutex::new(Some(round)), view };
+    harness::serve(
+        &json!({"workload": "reth-proofs", "database_initialized": true}),
+        move |request| server.handle(request),
+    )
 }
 
-fn workload() -> Result<()> {
-    let text = std::env::args().nth(1).unwrap_or_else(|| "{}".into());
-    let config: Config = serde_json::from_str(&text).wrap_err("invalid workload configuration")?;
-    ensure!(config.rounds != Some(0), "rounds must be positive");
-    let mut round = 0;
-    loop {
-        run(&config, round).wrap_err_with(|| format!("reth-proofs-antithesis round={round}"))?;
-        assert_sometimes!(true, "Proof workload completes a round");
-        round += 1;
-        if config.rounds.is_some_and(|rounds| round >= rounds) {
-            return Ok(());
-        }
+/// Requests proofs at count random blocks of the summary's round, for targets drawn from its
+/// accounts, and verifies each against the model's state root at that block. Returns false when
+/// the server went away or the round ended before every proof was checked.
+fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
+    let Some(summary) = client.summary()? else { return harness::unavailable().map(|()| false) };
+    let mut rng = AntithesisRng;
+    for _ in 0..count {
+        let BlockRoot { number, root } = summary.roots[rng.random_range(0..summary.roots.len())];
+        let targets = generate::targets(&mut rng, &summary.accounts);
+        let request =
+            Request::GetProof { round: summary.round, block: number, targets: targets.clone() };
+        let proofs = match client.call(&request)? {
+            None => return harness::unavailable().map(|()| false),
+            Some(Response::Proofs { proofs }) => {
+                serde_json::from_value::<Vec<AccountProof>>(proofs)?
+            }
+            Some(Response::Rejected { reason }) => {
+                return harness::rejected(&reason).map(|()| false)
+            }
+            Some(other) => bail!("unexpected answer to get_proof: {other:?}"),
+        };
+        let result = proof::check(root, &targets, &proofs);
+        assert_always!(
+            result.is_ok(),
+            "eth_getMultiProof proofs verify against the model's state root",
+            &json!({"block": number, "targets": targets,
+                "error": result.as_ref().err().map(|error| format!("{error:#}"))})
+        );
+        result.wrap_err_with(|| format!("proofs at block {number}"))?;
+    }
+    Ok(true)
+}
+
+/// parallel_driver_proofs: one to four proof requests.
+fn parallel_driver_proofs() -> Result<()> {
+    let Some(mut client) = Client::connect()? else { return harness::unavailable() };
+    request_proofs(&mut client, AntithesisRng.random_range(1..=4)).map(drop)
+}
+
+/// eventually_persisted and finally_recovered: proofs once every block is persisted, most of them
+/// reverted from the tip. Returns false when the server went away before they were checked.
+fn persisted_proofs() -> Result<bool> {
+    match harness::persisted()? {
+        Some(mut client) => request_proofs(&mut client, 8),
+        None => Ok(false),
     }
 }
 
@@ -487,11 +406,23 @@ fn main() -> Result<()> {
         );
         previous_hook(information);
     }));
-    let result = workload();
+    let mut arguments = std::env::args().skip(1);
+    let command = arguments.next().unwrap_or_default();
+    let result = match command.as_str() {
+        "serve" => serve(arguments.next()),
+        "first_genesis" => harness::first_genesis(),
+        "parallel_driver_writes" => harness::parallel_driver_writes(),
+        "parallel_driver_blocks" => harness::parallel_driver_blocks(),
+        "parallel_driver_proofs" => parallel_driver_proofs(),
+        "eventually_persisted" => persisted_proofs().map(drop),
+        "finally_recovered" => harness::finally(persisted_proofs),
+        other => Err(eyre!("unknown command {other:?}")),
+    };
     assert_always_or_unreachable!(
         result.is_ok(),
         "Proof workload completes without errors",
         &json!({
+            "command": command,
             "error": result.as_ref().err().map(|error| format!("{error:#}"))
         })
     );

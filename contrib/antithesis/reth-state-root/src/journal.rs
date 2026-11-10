@@ -43,25 +43,23 @@ impl RoundJournal {
         Ok(Self { blocks, file, directory: directory.to_path_buf() })
     }
 
-    /// Return a recorded block or durably append its input before the caller executes it.
-    pub(crate) fn operations(
-        &mut self,
-        number: u64,
-        input: &[Operation],
-    ) -> Result<Vec<Operation>> {
-        if let Some(block) = self.blocks.get(&number) {
-            return Ok(block.operations.clone());
-        }
-        let block = JournalBlock { number, operations: input.to_vec() };
+    /// A block recorded before a restart, which must be produced again exactly.
+    pub(crate) fn recorded(&self, number: u64) -> Option<Vec<Operation>> {
+        self.blocks.get(&number).map(|block| block.operations.clone())
+    }
+
+    /// Durably append a block's operations before the caller executes them.
+    pub(crate) fn record(&mut self, number: u64, operations: &[Operation]) -> Result<()> {
+        ensure!(!self.blocks.contains_key(&number), "journal block {number} already recorded");
+        let block = JournalBlock { number, operations: operations.to_vec() };
         let record = serde_json::to_vec(&block)?;
         self.file.write_all(b"\n")?;
         self.file.write_all(&record)?;
         self.file.write_all(b"\n")?;
         self.file.sync_all()?;
         File::open(&self.directory)?.sync_all()?;
-        let operations = block.operations.clone();
         self.blocks.insert(number, block);
-        Ok(operations)
+        Ok(())
     }
 
     /// Apply only model updates for a contiguous inclusive range; missing records are errors.

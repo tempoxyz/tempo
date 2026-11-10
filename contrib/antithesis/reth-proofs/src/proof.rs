@@ -1,7 +1,8 @@
 //! The `eth_getMultiProof` proof path, and the check of its proofs against the state root.
 
-use alloy_primitives::{keccak256, Address, B256};
+use alloy_primitives::{keccak256, B256};
 use antithesis_sdk::assert_sometimes;
+use antithesis_trie_shapes::harness::ProofTarget;
 use eyre::{ensure, eyre, Result};
 use reth_provider::StateProofProvider;
 use reth_trie::{AccountProof, MultiProofTargetsV2, ProofV2Target};
@@ -10,10 +11,10 @@ use reth_trie::{AccountProof, MultiProofTargetsV2, ProofV2Target};
 /// multiproof for all targets, then an account proof for each requested `(address, slots)`.
 pub(crate) fn get_multi_proof(
     state: &impl StateProofProvider,
-    targets: &[(Address, Vec<B256>)],
+    targets: &[ProofTarget],
 ) -> Result<Vec<AccountProof>> {
     let mut proof_targets = MultiProofTargetsV2::default();
-    for (address, slots) in targets {
+    for ProofTarget { address, slots } in targets {
         let hashed_address = keccak256(address);
         proof_targets.account_targets.push(ProofV2Target::new(hashed_address));
         if !slots.is_empty() {
@@ -27,18 +28,14 @@ pub(crate) fn get_multi_proof(
     let multiproof = state.multiproof_v2(proof_targets, false)?;
     Ok(targets
         .iter()
-        .map(|(address, slots)| multiproof.account_proof(*address, slots))
+        .map(|target| multiproof.account_proof(target.address, &target.slots))
         .collect::<Result<_, _>>()?)
 }
 
 /// Checks that every proof answers its target and verifies against the block's state `root`.
-pub(crate) fn check(
-    root: B256,
-    targets: &[(Address, Vec<B256>)],
-    proofs: &[AccountProof],
-) -> Result<()> {
+pub(crate) fn check(root: B256, targets: &[ProofTarget], proofs: &[AccountProof]) -> Result<()> {
     ensure!(proofs.len() == targets.len(), "{} proofs for {} targets", proofs.len(), targets.len());
-    for ((address, slots), proof) in targets.iter().zip(proofs) {
+    for (ProofTarget { address, slots }, proof) in targets.iter().zip(proofs) {
         ensure!(proof.address == *address, "proof for {} answers {address}", proof.address);
         ensure!(proof.storage_proofs.len() == slots.len(), "{address}: storage proof count");
         for (slot, storage_proof) in slots.iter().zip(&proof.storage_proofs) {

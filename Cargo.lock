@@ -1254,6 +1254,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "antithesis-trie-shapes"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "antithesis_sdk",
+ "eyre",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "antithesis_sdk"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11797,6 +11811,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-trie",
  "antithesis-instrumentation",
+ "antithesis-trie-shapes",
  "antithesis_sdk",
  "evm2",
  "eyre",
@@ -11815,9 +11830,11 @@ dependencies = [
  "reth-node-core",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-stages-types",
  "reth-storage-overlay",
  "reth-tasks",
  "reth-trie",
+ "reth-trie-common",
  "serde",
  "serde_json",
  "tempfile",
@@ -12385,6 +12402,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-trie",
  "antithesis-instrumentation",
+ "antithesis-trie-shapes",
  "antithesis_sdk",
  "evm2",
  "eyre",
@@ -12409,6 +12427,7 @@ dependencies = [
  "reth-storage-overlay",
  "reth-tasks",
  "reth-trie",
+ "reth-trie-db",
  "serde",
  "serde_json",
 ]
