@@ -688,7 +688,13 @@ def txgen-wait-for-txpool-drain [rpc_url: string, timeout_secs: int = $TXGEN_HEL
     print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
 }
 
-def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
+# Faucet addresses per batch: the faucet mints every token to each address from one sender,
+# so a batch stays within the txpool's 16 transactions per sender.
+const TXGEN_HELPER_FUND_BATCH = 3
+
+# Funds the spec's accounts through the faucet, skipping the first funded_below mnemonic
+# accounts, which genesis (and state bloat's signable accounts) already fund.
+def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string, funded_below: int = 0] {
     let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
     if $result.exit_code != 0 {
         error make { msg: $"failed to list txgen addresses for ($spec_path): ($result.stderr | str trim)" }
@@ -699,14 +705,43 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     if ($addresses | is-empty) {
         error make { msg: $"txgen spec produced no addresses: ($spec_path)" }
     }
+    let funded = if $funded_below > 0 {
+        let funded_spec = ($spec_path | path dirname | path join $"funded-accounts-(random uuid).yml")
+        {chain_id: 1337, accounts: {funded: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 $funded_below]}}} | to yaml | save -f $funded_spec
+        let listed = (^$txgen_bin addresses -s $funded_spec -f shell | complete)
+        rm -f $funded_spec
+        if $listed.exit_code != 0 {
+            error make { msg: $"failed to list funded accounts: ($listed.stderr | str trim)" }
+        }
+        $listed.stdout | str trim | split row " " | where { |addr| $addr != "" } | str downcase
+    } else { [] }
+    let addresses = ($addresses | where { |addr| ($addr | str downcase) not-in $funded })
+    if ($addresses | is-empty) {
+        print "  All txgen accounts are funded at genesis"
+        return
+    }
 
     print $"  Funding (($addresses | length)) txgen account\(s\)..."
-    $addresses | par-each { |address|
-        txgen-rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
-    } | ignore
+    for batch in ($addresses | chunks $TXGEN_HELPER_FUND_BATCH) {
+        $batch | par-each { |address|
+            txgen-rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
+        } | ignore
+        txgen-wait-for-txpool-empty $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
+    }
 
     print "  Waiting for faucet transactions to drain..."
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
+}
+
+# Waits until the txpool has no pending transactions, polling quickly.
+def txgen-wait-for-txpool-empty [rpc_url: string, timeout_secs: int] {
+    let deadline = ((date now) + ($timeout_secs * 1sec))
+    while (date now) < $deadline {
+        let response = (txgen-rpc-call $rpc_url '{"jsonrpc":"2.0","method":"txpool_status","params":[],"id":1}')
+        if ($response.result.pending | into int) == 0 { return }
+        sleep 100ms
+    }
+    error make { msg: $"txpool did not drain within ($timeout_secs)s while funding accounts" }
 }
 
 # Portal count: TXGEN_ZONE_COUNT, else the preset's pinned count, else the TPS-sized default.
@@ -1805,7 +1840,9 @@ def txgen-run-preset-pipeline [
         $spec_path = (txgen-prepare-tip20-policy $spec_path $generate_rpc_url $tx_token_count $accounts)
     }
     if not $skip_faucet_funding {
-        txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
+        # Genesis funds users[0..accounts]; state bloat funds its signable accounts.
+        let funded_below = if $bloat_mib > 0 { [($accounts + 1) $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS] | math max } else { $accounts + 1 }
+        txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url $funded_below
     }
 
     let txgen_duration = $"($duration)s"
