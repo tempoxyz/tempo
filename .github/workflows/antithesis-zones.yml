@@ -83,6 +83,26 @@ jobs:
             VERGEN_GIT_SHA=${{ github.sha }}
             VERGEN_GIT_SHA_SHORT=${{ steps.tags.outputs.short_sha }}
 
+      # The cargo --timings report of the build above, from its cached builder stage.
+      - name: Export cargo timings
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: .
+          file: contrib/antithesis/zones/Dockerfile
+          platforms: linux/amd64
+          target: timings
+          outputs: type=local,dest=${{ runner.temp }}/cargo-timings
+          build-args: |
+            VERGEN_GIT_SHA=${{ github.sha }}
+            VERGEN_GIT_SHA_SHORT=${{ steps.tags.outputs.short_sha }}
+
+      - name: Upload cargo timings
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: antithesis-zones-cargo-timings
+          path: ${{ runner.temp }}/cargo-timings/cargo-timing.html
+
       # Extend the exact node image instead of running the instrumented Rust build again.
       - name: Build and push the workload image
         id: workload

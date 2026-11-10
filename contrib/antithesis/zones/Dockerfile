@@ -21,8 +21,8 @@ RUN apt-get update \
     mold \
     && rm -rf /var/lib/apt/lists/*
 
-# Release optimizations with debug assertions and symbols, without LTO and with one codegen
-# unit per crate so Antithesis can symbolize the coverage instrumentation.
+# Release optimizations with debug assertions and symbols, without LTO (including the crate-local
+# ThinLTO pass) so Antithesis can symbolize the coverage instrumentation.
 ARG RUST_PROFILE=antithesis
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
@@ -37,22 +37,29 @@ COPY . .
 # sancov trace-pc-guard edges that the antithesis-coverage feature's shim forwards to the
 # platform's libvoidstar (a no-op outside Antithesis), which also lets Antithesis pause threads.
 # --target keeps build scripts and proc macros uninstrumented.
-ARG COVERAGE_RUSTFLAGS="-Ccodegen-units=1 -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=3 -Cllvm-args=-sanitizer-coverage-trace-pc-guard -Cllvm-args=-sanitizer-coverage-pc-table -Clink-args=-Wl,--build-id"
+ARG COVERAGE_RUSTFLAGS="-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=3 -Cllvm-args=-sanitizer-coverage-trace-pc-guard -Cllvm-args=-sanitizer-coverage-pc-table -Clink-args=-Wl,--build-id"
 # The build platform's architecture (BuildKit sets it), so local arm64 builds stay native.
 ARG TARGETARCH
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/app/target,sharing=locked \
+# Cargo locks its own registry; a private target cache never waits on a concurrent or cancelled
+# build (a cancelled workflow does not stop its remote build).
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=shared \
+    --mount=type=cache,id=antithesis-zones-target,target=/app/target,sharing=private \
     case "${TARGETARCH}" in arm64) target=aarch64-unknown-linux-gnu ;; *) target=x86_64-unknown-linux-gnu ;; esac \
     && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${COVERAGE_RUSTFLAGS}" \
-    cargo build --locked --profile ${RUST_PROFILE} --target "$target" \
+    cargo build --locked --timings --profile ${RUST_PROFILE} --target "$target" \
         -p tempo -p tempo-zone -p tempo-xtask \
         --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask \
         --features tempo/fuzz-execution,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
-    && mkdir -p /out \
+    && mkdir -p /out /timings \
+    && cp target/cargo-timings/cargo-timing.html /timings/ \
     && cd "target/$target/${RUST_PROFILE}" \
     && cp tempo tempo-zone tempo-xtask tempo-zone-xtask /out/
+
+# The cargo --timings report, exported by CI with --target timings.
+FROM scratch AS timings
+COPY --from=builder /timings/ /
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \

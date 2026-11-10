@@ -77,6 +77,23 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.image_tags }}
 
+      # The cargo --timings report of the build above, from its cached builder stage.
+      - name: Export cargo timings
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: .
+          file: contrib/antithesis/reth-state-root/Dockerfile
+          platforms: linux/amd64
+          target: timings
+          outputs: type=local,dest=${{ runner.temp }}/cargo-timings
+
+      - name: Upload cargo timings
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: antithesis-reth-state-root-cargo-timings
+          path: ${{ runner.temp }}/cargo-timings/cargo-timing.html
+
       - name: Prepare digest-paired configuration
         env:
           TAG: ${{ steps.tags.outputs.tag }}
