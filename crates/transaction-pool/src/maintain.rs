@@ -5,7 +5,7 @@ use crate::{
     transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
-    Address, B256, Log, TxHash,
+    Address, B256, KECCAK256_EMPTY, Log, TxHash,
     map::{AddressMap, AddressSet, B256Set},
 };
 use alloy_sol_types::SolEvent;
@@ -597,30 +597,44 @@ where
         }
 
         // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112).
-        let changed_commitments: AddressSet = bundle_state
-            .iter()
-            .filter(|(_, account)| {
-                account
-                    .original_info
-                    .as_ref()
+        // including eventless first registration (TIP-1112), and transactions whose inline
+        // configurable-account grant names an account whose commitment or code changed.
+        let mut changed_commitments = AddressSet::default();
+        let mut changed_code = AddressSet::default();
+        for (address, account) in bundle_state {
+            let original = account.original_info.as_ref();
+            let present = account.info.as_ref();
+            if original
+                .map(|info| info.extension.as_ref())
+                .unwrap_or_default()
+                != present
                     .map(|info| info.extension.as_ref())
                     .unwrap_or_default()
-                    != account
-                        .info
-                        .as_ref()
-                        .map(|info| info.extension.as_ref())
-                        .unwrap_or_default()
-            })
-            .map(|(address, _)| *address)
-            .collect();
-        if !changed_commitments.is_empty() {
+            {
+                changed_commitments.insert(*address);
+            }
+            if original.map_or(KECCAK256_EMPTY, |info| info.code_hash)
+                != present.map_or(KECCAK256_EMPTY, |info| info.code_hash)
+            {
+                changed_code.insert(*address);
+            }
+        }
+        if !changed_commitments.is_empty() || !changed_code.is_empty() {
             let hashes: Vec<TxHash> = {
                 let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                 all_txs
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| tx.transaction.has_authority_in(&changed_commitments))
+                    .filter(|tx| {
+                        tx.transaction.has_authority_in(&changed_commitments)
+                            || tx
+                                .transaction
+                                .configurable_grant_target()
+                                .is_some_and(|key_id| {
+                                    changed_commitments.contains(&key_id)
+                                        || changed_code.contains(&key_id)
+                                })
+                    })
                     .map(|tx| *tx.hash())
                     .collect()
             };

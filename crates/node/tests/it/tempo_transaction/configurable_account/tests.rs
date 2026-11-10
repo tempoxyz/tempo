@@ -517,6 +517,59 @@ async fn retired_root_reorg_evicts_pending_transactions() -> eyre::Result<()> {
     Ok(())
 }
 
+/// A pending transaction whose inline grant names a code-free account as a configurable-account
+/// delegate leaves the pool once EIP-7702 code is installed at that account, which makes the grant
+/// invalid. Installing the code emits no event and changes no configuration commitment, so only
+/// the pool's revalidation of the delegate's changed code removes the transaction.
+#[tokio::test(flavor = "multi_thread")]
+async fn delegate_code_installation_evicts_pending_grants() -> eyre::Result<()> {
+    let mut env = environment().await?;
+    let chain_id = env.chain_id();
+    let provider = tempo_provider(&env);
+    let parent = signer(0x60);
+    let delegate = signer(0x61);
+    let sponsor = signer(0x62);
+    for address in [parent.address(), sponsor.address()] {
+        env.fund_account(address).await?;
+    }
+
+    let grant = KeyAuthorization::unrestricted(
+        chain_id,
+        SignatureType::ConfigurableAccount,
+        delegate.address(),
+    );
+    let signature = PrimitiveSignature::Secp256k1(parent.sign_hash_sync(&grant.signature_hash())?);
+    // Nothing sends the parent's first nonce, so no block includes this transaction.
+    let mut tx = create_basic_aa_tx(chain_id, 1, vec![noop()], GAS_LIMIT);
+    tx.key_authorization = Some(grant.into_signed(signature));
+    let pending = pend(&env, &[&root_signed(tx, &parent)?]).await?;
+
+    // The sponsor relays the delegate's authorization entry, which installs delegation code.
+    let delegation = Authorization {
+        chain_id: U256::from(chain_id),
+        address: Address::repeat_byte(0x7d),
+        nonce: 0,
+    };
+    let signature = delegate.sign_hash_sync(&delegation.signature_hash())?;
+    let mut install = create_basic_aa_tx(chain_id, 0, vec![noop()], GAS_LIMIT);
+    install.tempo_authorization_list = vec![TempoSignedAuthorization::new_unchecked(
+        delegation,
+        signature.into(),
+    )];
+    let install = pend(&env, &[&root_signed(install, &sponsor)?]).await?[0];
+    env.setup.node.advance_block().await?;
+    let receipt = provider
+        .get_transaction_receipt(install)
+        .await?
+        .ok_or_eyre("delegation not included")?;
+    assert!(receipt.status(), "{receipt:?}");
+    assert!(!provider.get_code_at(delegate.address()).await?.is_empty());
+    assert_eq!(commitment(&env, delegate.address()).await?, B256::ZERO);
+
+    env.setup.node.wait_for_pool_removal(pending).await?;
+    Ok(())
+}
+
 /// Reads the revert data of a failed `eth_call` and requires it to be exactly `expected`.
 fn assert_call_reverts(result: Result<Bytes, TransportError>, expected: Vec<u8>) {
     let error = result.expect_err("call must revert");
