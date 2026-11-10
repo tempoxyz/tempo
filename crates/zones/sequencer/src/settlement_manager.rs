@@ -93,7 +93,7 @@ impl SettlementManager {
         }
         let config = status.config;
         let mut threshold = status.threshold;
-        let retires_roots = status.retires_roots;
+        let mut retires_roots = status.retires_roots;
 
         self.validate_anchor(prepared).await?;
         let attestation = settlement_attestation(self.domain, &config, prepared, verifier_mode);
@@ -118,41 +118,64 @@ impl SettlementManager {
         );
         rebroadcast.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        while signatures.len() < threshold {
-            tokio::select! {
-                signature = pending.receiver.recv() => {
-                    let signature = signature.ok_or_eyre("settlement signature route closed")?;
-                    if signature.attestation != attestation {
-                        tracing::warn!(target: "zone::p2p", %digest, "Rejected mismatched settlement signature");
-                        continue;
-                    }
-                    match signature.recover_signer(self.domain) {
-                        Ok(signer) if signatures.contains_key(&signer) => {}
-                        Ok(signer) => {
-                            if retires_roots && self.is_retired_root(signer).await? {
-                                tracing::warn!(target: "zone::p2p", %signer, "Rejected settlement signature from retired root key");
-                            } else {
-                                signatures.insert(signer, signature.signature);
-                            }
+        loop {
+            while signatures.len() < threshold {
+                tokio::select! {
+                    signature = pending.receiver.recv() => {
+                        let signature = signature.ok_or_eyre("settlement signature route closed")?;
+                        if signature.attestation != attestation {
+                            tracing::warn!(target: "zone::p2p", %digest, "Rejected mismatched settlement signature");
+                            continue;
                         }
-                        Err(error) => tracing::warn!(target: "zone::p2p", %error, "Rejected settlement signature"),
+                        match signature.recover_signer(self.domain) {
+                            Ok(signer) if signatures.contains_key(&signer) => {}
+                            Ok(signer) => {
+                                if retires_roots && self.is_retired_root(signer).await? {
+                                    tracing::warn!(target: "zone::p2p", %signer, "Rejected settlement signature from retired root key");
+                                } else {
+                                    signatures.insert(signer, signature.signature);
+                                }
+                            }
+                            Err(error) => tracing::warn!(target: "zone::p2p", %error, "Rejected settlement signature"),
+                        }
+                    }
+                    _ = rebroadcast.tick() => {
+                        self.validate_anchor(prepared).await?;
+                        let live = self.settlement_status().await?;
+                        if live.portal_zone_height >= U256::from(prepared.batch.zone_height) {
+                            return Err(BatchSubmitError::PortalAdvanced);
+                        }
+                        if live.config != config {
+                            return Err(eyre::eyre!(
+                                "portal settlement configuration changed while collecting signatures"
+                            )
+                            .into());
+                        }
+                        threshold = live.threshold;
+                        retires_roots = live.retires_roots;
+                        self.broadcast(&attestation, digest)?;
                     }
                 }
-                _ = rebroadcast.tick() => {
-                    self.validate_anchor(prepared).await?;
-                    let live = self.settlement_status().await?;
-                    if live.portal_zone_height >= U256::from(prepared.batch.zone_height) {
-                        return Err(BatchSubmitError::PortalAdvanced);
-                    }
-                    if live.config != config {
-                        return Err(eyre::eyre!(
-                            "portal settlement configuration changed while collecting signatures"
-                        )
-                        .into());
-                    }
-                    threshold = live.threshold;
-                    self.broadcast(&attestation, digest)?;
+            }
+
+            // A signer can migrate, or T15 can activate, after its signature was collected; the
+            // portal would then reject the whole certificate, so recheck before handing it over.
+            retires_roots = self.settlement_status().await?.retires_roots;
+            if !retires_roots {
+                break;
+            }
+            let mut retired = Vec::new();
+            for signer in signatures.keys() {
+                if self.is_retired_root(*signer).await? {
+                    retired.push(*signer);
                 }
+            }
+            if retired.is_empty() {
+                break;
+            }
+            for signer in retired {
+                tracing::warn!(target: "zone::p2p", %signer, "Dropped settlement signature from root key retired during collection");
+                signatures.remove(&signer);
             }
         }
 
