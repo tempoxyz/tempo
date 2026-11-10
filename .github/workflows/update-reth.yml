@@ -620,6 +620,10 @@ jobs:
               PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | length')
               MISSING=$(echo "$STATUS" | jq -r --argjson expected "$EXPECTED_CHECKS" '$expected - map(.name) | join(", ")')
               if [ "$PENDING" = "0" ] 2>/dev/null && [ -n "$MISSING" ]; then
+                if [ $(( (SECONDS - WAIT_START) / 60 )) -ge "$CI_TIMEOUT_MINUTES" ]; then
+                  echo "::error::Gate checks never reported after ${CI_TIMEOUT_MINUTES}m: $MISSING"
+                  exit 1
+                fi
                 echo "Waiting for gate checks to report: $MISSING"
                 sleep 60
                 continue
