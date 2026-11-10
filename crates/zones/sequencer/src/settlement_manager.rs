@@ -28,6 +28,7 @@ use crate::{
         AttestationDomain, SettlementAttestation, SettlementCertificate,
         SignedSettlementAttestation,
     },
+    prover_config::active_l1_hardfork,
     settlement::{BatchSubmitError, wait_for_l1_block},
 };
 
@@ -92,16 +93,18 @@ impl SettlementManager {
         }
         let config = status.config;
         let mut threshold = status.threshold;
+        let retires_roots = status.retires_roots;
 
         self.validate_anchor(prepared).await?;
         let attestation = settlement_attestation(self.domain, &config, prepared, verifier_mode);
         let signed =
             SignedSettlementAttestation::sign(attestation.clone(), self.domain, &self.signer)?;
         let digest = self.domain.settlement_digest(&attestation);
-        // The portal rejects a certificate carrying a root key that `upgradeAccount` retired
-        // (TIP-1112), so only signatures from unretired sequencers are collected.
+        // From T15 the portal rejects a certificate carrying a root key that `upgradeAccount`
+        // retired (TIP-1112), so only signatures from unretired sequencers are collected. The
+        // earlier portal runtime still counts them.
         let mut signatures = BTreeMap::new();
-        if self.is_retired_root(self.signer.address()).await? {
+        if retires_roots && self.is_retired_root(self.signer.address()).await? {
             tracing::warn!(target: "zone::p2p", signer = %self.signer.address(), "Own sequencer root key is retired; settling with follower signatures only");
         } else {
             signatures.insert(self.signer.address(), signed.signature);
@@ -126,7 +129,7 @@ impl SettlementManager {
                     match signature.recover_signer(self.domain) {
                         Ok(signer) if signatures.contains_key(&signer) => {}
                         Ok(signer) => {
-                            if self.is_retired_root(signer).await? {
+                            if retires_roots && self.is_retired_root(signer).await? {
                                 tracing::warn!(target: "zone::p2p", %signer, "Rejected settlement signature from retired root key");
                             } else {
                                 signatures.insert(signer, signature.signature);
@@ -179,7 +182,8 @@ impl SettlementManager {
 
     async fn settlement_status(&self) -> Result<SettlementStatus, BatchSubmitError> {
         let portal = ZonePortal::new(self.domain.portal_address, self.l1_provider.clone());
-        let settlement_abi = SettlementAbi::from_l1(&self.l1_provider, &self.chain_spec).await?;
+        let hardfork = active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?;
+        let settlement_abi = SettlementAbi::from_hardfork(hardfork);
         let (sequencer_set_version, threshold, verifier, portal_zone_height) = self
             .l1_provider
             .multicall()
@@ -211,6 +215,7 @@ impl SettlementManager {
             },
             threshold,
             portal_zone_height,
+            retires_roots: hardfork.is_t15(),
         })
     }
 
@@ -301,6 +306,8 @@ struct SettlementStatus {
     config: SettlementConfig,
     threshold: usize,
     portal_zone_height: U256,
+    /// Whether the live portal runtime (T15) rejects signatures from retired root keys.
+    retires_roots: bool,
 }
 
 fn settlement_attestation(

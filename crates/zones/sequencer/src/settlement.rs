@@ -1300,7 +1300,7 @@ impl SettlementAbi {
         ))
     }
 
-    fn from_hardfork(hardfork: TempoHardfork) -> Self {
+    pub(crate) fn from_hardfork(hardfork: TempoHardfork) -> Self {
         if hardfork >= TempoHardfork::T13 {
             Self::T13
         } else {
