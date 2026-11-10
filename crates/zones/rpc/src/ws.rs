@@ -7,6 +7,7 @@
 //! Auth is validated once during the HTTP upgrade handshake — individual
 //! messages are not re-authenticated since WS frames don't carry auth headers.
 
+use alloy_primitives::B256;
 use alloy_rpc_types_eth::{
     Filter, FilterId,
     pubsub::{Params as SubscriptionParams, SubscriptionKind},
@@ -488,25 +489,40 @@ async fn revalidate_auth(
     api: &dyn ZoneRpcApi,
 ) -> Result<(), AuthenticateError> {
     match auth.signer {
-        AuthSigner::Root => ensure_not_retired_root(api, auth.caller).await,
-        AuthSigner::Keychain { key_id } => {
-            tokio::try_join!(
-                async {
-                    validate_keychain_key_info(&api.get_keychain_key(auth.caller, key_id).await?)
-                },
-                ensure_not_retired_root(api, key_id),
+        AuthSigner::Root => ensure_not_retired_root(api.get_config_commitment(auth.caller).await?),
+        AuthSigner::Keychain {
+            key_id,
+            config_commitment,
+        } => {
+            let (key_info, commitment) = tokio::try_join!(
+                api.get_keychain_key(auth.caller, key_id),
+                api.get_config_commitment(key_id),
             )?;
-            Ok(())
-        }
-        AuthSigner::ConfigurableAccount { config_commitment } => {
-            // Commitments never return to zero, so an unset one still has the derived owners.
-            match api.get_config_commitment(auth.caller).await? {
-                Some(commitment) if commitment.is_zero() || commitment == config_commitment => {
-                    Ok(())
+            validate_keychain_key_info(&key_info)?;
+            match config_commitment {
+                None => ensure_not_retired_root(commitment),
+                Some(config_commitment) => {
+                    ensure_signed_configuration(commitment, config_commitment)
                 }
-                _ => Err(AuthError::InvalidSignature.into()),
             }
         }
+        AuthSigner::ConfigurableAccount { config_commitment } => ensure_signed_configuration(
+            api.get_config_commitment(auth.caller).await?,
+            config_commitment,
+        ),
+    }
+}
+
+/// Checks that an account's Tempo `commitment` still authorizes owners who signed with
+/// `config_commitment`. Commitments never return to zero, so an unset one still has the derived
+/// owners. `None`, before T14, authorizes none.
+fn ensure_signed_configuration(
+    commitment: Option<B256>,
+    config_commitment: B256,
+) -> Result<(), AuthenticateError> {
+    match commitment {
+        Some(commitment) if commitment.is_zero() || commitment == config_commitment => Ok(()),
+        _ => Err(AuthError::InvalidSignature.into()),
     }
 }
 

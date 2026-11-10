@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
     KeyInfo, SignatureType as KeyInfoSignatureType,
 };
+use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 use tokio::sync::Notify;
 use tokio_tungstenite::{connect_async, tungstenite};
 use zone_rpc::{
@@ -925,7 +926,7 @@ async fn ws_closes_when_keychain_key_is_revoked() {
 }
 
 /// A session closes once the zone's anchor retires its root signing key, or rotates the owners
-/// of its configurable account.
+/// of its configurable account or configurable access key.
 #[tokio::test]
 async fn ws_closes_when_a_tempo_commitment_retires_its_signer() {
     let signer = P256SigningKey::random(&mut OsRng);
@@ -937,9 +938,32 @@ async fn ws_closes_when_a_tempo_commitment_retires_its_signer() {
         .expect("the signature recovers");
     let (configurable, account, _) =
         sign_configurable_account_signature(digest, &signer).expect("signing should succeed");
+    // A configurable account as the access key of `keychain_root`.
+    let keychain_root = Address::repeat_byte(0x78);
+    let (approval, key_id, _) = sign_configurable_account_signature(
+        KeychainSignature::signing_hash(digest, keychain_root),
+        &signer,
+    )
+    .expect("signing should succeed");
+    let TempoSignature::ConfigurableAccount(approval) = approval else {
+        unreachable!("a configurable account signature")
+    };
+    let keychain = TempoSignature::Keychain(KeychainSignature::new(keychain_root, approval));
 
-    for (signature, signer_address) in [(root, root_address), (configurable, account)] {
-        let api = Arc::new(MockZoneRpcApi::default());
+    for (signature, signer_address, api) in [
+        (root, root_address, MockZoneRpcApi::default()),
+        (configurable, account, MockZoneRpcApi::default()),
+        (
+            keychain,
+            key_id,
+            MockZoneRpcApi::with_key(
+                keychain_root,
+                key_id,
+                KeyInfoSignatureType::ConfigurableAccount,
+            ),
+        ),
+    ] {
+        let api = Arc::new(api);
         let ctx = TestContext::start_shared(api.clone()).await;
         let token = build_token_with_signature(signature, &fields);
         let mut ws = connect_with_token(&ctx.ws_url(), ctx.addr, &token)

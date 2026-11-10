@@ -49,6 +49,9 @@ pub enum AuthSigner {
     Keychain {
         /// The access key's ID.
         key_id: Address,
+        /// Commitment of the configuration the key's owners signed with, when the key is a
+        /// configurable account. `None` for a primitive key, which must not become a retired root.
+        config_commitment: Option<B256>,
     },
     /// An owner quorum of the caller's configurable account (TIP-1154). It authorizes the caller
     /// while the account's Tempo commitment is unset or equals `config_commitment`.

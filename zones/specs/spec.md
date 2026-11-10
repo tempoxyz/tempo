@@ -1018,8 +1018,8 @@ The RPC server rejects authorization tokens where:
 - `issuedAt > now + 60`.
 - The signature is malformed or does not verify.
 - For Keychain signatures: the signing key is not authorized, revoked, or expired in the zone's `AccountKeychain`.
-- For primitive and Keychain signatures: the signing key's address has a nonzero Tempo configuration commitment at the zone's anchor, so it is a retired root (TIP-1113).
-- For configurable-account signatures: the owners' configuration does not match the account's Tempo configuration commitment at the zone's anchor or, while the account has none, does not derive the account (TIP-1154).
+- For primitive signatures and Keychain signatures with a primitive approval: the signing key's address has a nonzero Tempo configuration commitment at the zone's anchor, so it is a retired root (TIP-1113).
+- For configurable-account signatures, and Keychain signatures whose access key is a configurable account: the owners' configuration does not match the account's Tempo configuration commitment at the zone's anchor or, while the account has none, does not derive the account (TIP-1154). A primitive grant accepts its key's owner quorum only once the key has a nonzero commitment.
 
 Requests without an authorization token receive HTTP `401`. Requests with an invalid or expired token receive HTTP `403`.
 
