@@ -1,31 +1,46 @@
-//! Trie key shapes for the reth Antithesis workloads, ported from the zones collide driver.
+//! Trie shapes for the reth Antithesis workloads: key layouts to generate, and a tracker that
+//! measures which shapes the tries actually reach.
 //!
-//! Uniformly random keys keep a trie shallow and bushy: among 10,000 keys, two share eight
-//! leading nibbles in about one run in a hundred. A collision group is a birthday-ground pair of
-//! keys sharing up to 10 leading nibbles, plus up to two neighbours matching a shorter
-//! prefix, in the account trie or in one account's storage trie. Storage values have a random byte
-//! width from 1 to 32, so leaves land on both sides of the boundary below which a leaf is embedded
-//! in its parent instead of hashed. Later steps revisit recorded groups: growing them with a new
-//! neighbour, clearing every storage key, or rewriting a subset, so blocks, persistence and proofs
-//! have to read, split and collapse deep, narrow branches and extensions.
+//! Keys are hashes, so uniformly random keys build tries that are wide near the root and shallow
+//! below it. A collider grinds key preimages into templates, in the account trie or in one
+//! account's storage trie:
+//!
+//! - spike: a birthday-ground pair sharing up to 10 leading nibbles, plus up to two neighbours on a
+//!   shorter prefix: long extensions ending in a narrow branch.
+//! - fan: 2 to 16 keys that diverge at the nibble after a 1 to 3 nibble prefix: wide branches below
+//!   the root.
+//! - nest: a fan under the prefix of an existing group's key, with deeper neighbours under some of
+//!   its children: extensions and branches nested in each other.
+//! - mass: random slots added to one heavy storage trie, so its upper levels fill up.
+//!
+//! Storage values have a random byte width from 1 to 32, so deep leaves land on both sides of the
+//! boundary below which a leaf is embedded in its parent. Later steps revisit recorded groups:
+//! growing them, clearing every storage key, or rewriting a subset, so branches split and collapse.
+//! A targeted search for a d-nibble prefix costs about 16^d hashes, which bounds fans to shallow
+//! prefixes; past that, width comes only from key count. [ShapeTracker] reports the shapes the
+//! resulting tries really have.
+
+mod shape;
+
+pub use shape::{Leaves, ShapeTracker};
 
 use alloy_primitives::{keccak256, Address, B256, U256};
-use alloy_trie::{nodes::LeafNode, Nibbles};
 use antithesis_sdk::assert_sometimes;
-use rand_09::Rng;
+use rand_09::{seq::SliceRandom, Rng};
 use serde_json::json;
 use std::collections::{hash_map::Entry, HashMap};
 
-/// Deepest shared prefix, in nibbles, a pair is ground for. Finding a pair takes about
-/// 16^(depth/2) candidates, about a million at 10.
+/// Deepest shared prefix, in nibbles, a spike pair is ground for: about 16^(depth/2) candidates,
+/// about a million at 10.
 const MAX_DEPTH: usize = 10;
-/// Deepest prefix a neighbour is ground to match. A targeted search takes about 16^depth
-/// candidates, about a million at 5.
+/// Deepest prefix a neighbour is ground to match: about 16^depth candidates, a million at 5.
 const MAX_NEIGHBOR_DEPTH: usize = 5;
-/// Most neighbours a new group gets on top of its pair.
+/// Deepest prefix a fan's children share: each child costs about 16^(depth + 1) candidates.
+const MAX_FAN_DEPTH: usize = 3;
+/// Most neighbours a spike gets on top of its pair.
 const MAX_NEIGHBORS: usize = 2;
-/// Most keys a group grows to, which bounds the writes of one step.
-pub const MAX_MEMBERS: usize = 8;
+/// Most keys a group grows to.
+const MAX_MEMBERS: usize = 32;
 /// Most recorded groups; at the cap every step revisits one.
 const MAX_GROUPS: usize = 32;
 /// Shared prefixes from this long count as deep for coverage.
@@ -41,20 +56,11 @@ enum Trie {
 }
 
 impl Trie {
-    /// Where the key with preimage word `word` sits in the trie.
+    /// Where the key with this preimage word sits in the trie.
     fn key(self, word: B256) -> B256 {
         match self {
             Self::Accounts => keccak256(Address::from_word(word)),
             Self::Storage(_) => keccak256(word),
-        }
-    }
-
-    /// The live value of the key with preimage word, as current reads it: an account's balance
-    /// (zero when absent) or a slot's value.
-    fn current(self, word: B256, current: &impl Fn(Address, Option<U256>) -> U256) -> U256 {
-        match self {
-            Self::Accounts => current(Address::from_word(word), None),
-            Self::Storage(address) => current(address, Some(U256::from_be_bytes(word.0))),
         }
     }
 
@@ -68,27 +74,27 @@ impl Trie {
     }
 }
 
-/// One write of a collide step. Account writes create or update the account with a nonzero
-/// balance; storage writes of zero clear the slot.
+/// One generated write. Account writes create or update the account with a nonzero balance;
+/// storage writes of zero clear the slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Write {
     Account { address: Address, balance: U256 },
     Storage { address: Address, slot: U256, value: U256 },
 }
 
-/// A recorded collision group: key preimage words and their values, zero when cleared. Other
-/// writes can change those keys too, so revisits refresh the values from the caller's state.
+/// A recorded group of key preimage words in one trie.
 #[derive(Debug)]
 struct Group {
     trie: Trie,
     members: Vec<B256>,
-    values: Vec<U256>,
 }
 
-/// Collision groups generated so far in one round's state.
+/// Groups generated so far in one round's state.
 #[derive(Debug)]
 pub struct Collider {
     groups: Vec<Group>,
+    /// The account whose storage trie mass steps fill.
+    heavy: Option<Address>,
     max_depth: usize,
 }
 
@@ -99,150 +105,216 @@ impl Default for Collider {
 }
 
 impl Collider {
-    /// A collider grinding pairs that share up to max_depth nibbles, at most [MAX_DEPTH], and
-    /// neighbours up to the smaller of max_depth and [MAX_NEIGHBOR_DEPTH].
+    /// A collider whose searches go at most max_depth nibbles deep (at most 10).
     fn new(max_depth: usize) -> Self {
-        assert!((1..=MAX_DEPTH).contains(&max_depth));
-        Self { groups: Vec::new(), max_depth }
+        assert!((2..=MAX_DEPTH).contains(&max_depth));
+        Self { groups: Vec::new(), heavy: None, max_depth }
     }
 
-    /// One collide step of at most [MAX_MEMBERS] writes: half the time revisits a recorded
-    /// group, otherwise grinds a new one, in the account trie or, when an existing `owner` is
-    /// given, half the time in its storage trie. current reads the live value of a key from the
-    /// caller's state: an account's balance for no slot, otherwise the slot's value.
+    fn neighbor_depth(&self) -> usize {
+        self.max_depth.min(MAX_NEIGHBOR_DEPTH)
+    }
+
+    fn fan_depth(&self) -> usize {
+        MAX_FAN_DEPTH.min(self.max_depth - 1)
+    }
+
+    /// One step of at most budget writes: revisits a recorded group, or generates a spike, fan,
+    /// nest or mass, in the account trie or, when an existing owner is given, in a storage trie.
     pub fn step(
         &mut self,
         rng: &mut impl Rng,
         owner: Option<Address>,
-        current: impl Fn(Address, Option<U256>) -> U256,
+        budget: usize,
     ) -> Vec<Write> {
-        if !self.groups.is_empty() && (self.groups.len() >= MAX_GROUPS || rng.random_bool(0.5)) {
-            return self.revisit(rng, &current);
+        if budget == 0 {
+            return Vec::new();
         }
-        let trie = match owner {
-            Some(owner) if rng.random_bool(0.5) => Trie::Storage(owner),
-            _ => Trie::Accounts,
+        let revisit =
+            !self.groups.is_empty() && (self.groups.len() >= MAX_GROUPS || rng.random_ratio(2, 5));
+        let mut writes = if revisit {
+            self.revisit(rng, budget)
+        } else {
+            let trie = match owner {
+                Some(owner) if rng.random_bool(0.5) => Trie::Storage(owner),
+                _ => Trie::Accounts,
+            };
+            match (rng.random_range(0..4), owner) {
+                (0, _) => self.spike(rng, trie),
+                (1, _) => self.fan(rng, trie, budget),
+                (2, _) if !self.groups.is_empty() => self.nest(rng, budget),
+                (3, Some(owner)) => self.mass(rng, owner, budget),
+                _ => self.spike(rng, trie),
+            }
         };
+        writes.truncate(budget);
+        writes
+    }
+
+    /// Records a new group and returns writes setting each key to a random value.
+    fn record(&mut self, rng: &mut impl Rng, trie: Trie, members: Vec<B256>) -> Vec<Write> {
+        let writes = members.iter().map(|word| trie.write(*word, random_value(rng))).collect();
+        self.groups.push(Group { trie, members });
+        writes
+    }
+
+    fn spike(&mut self, rng: &mut impl Rng, trie: Trie) -> Vec<Write> {
         let depth = rng.random_range(1..=self.max_depth);
         let (first, second) = colliding_pair(trie, rng.random(), depth);
         let mut members = vec![first, second];
         let prefix_key = trie.key(first);
         for _ in 0..rng.random_range(0..=MAX_NEIGHBORS) {
-            let neighbor_depth = rng.random_range(1..=depth.min(MAX_NEIGHBOR_DEPTH));
-            let member = neighbor(trie, rng.random(), prefix_key, neighbor_depth);
+            let depth = rng.random_range(1..=depth.min(self.neighbor_depth()));
+            let member = find(trie, b"nbor", rng.random(), prefix_key, depth, None);
             if !members.contains(&member) {
                 members.push(member);
             }
         }
         let shared = shared_nibbles(trie.key(first), trie.key(second));
-        let details = json!({"trie": format!("{trie:?}"), "shared": shared, "keys": members.len()});
-        assert_sometimes!(shared < 4, "Generated colliding keys share a short prefix", &details);
-        assert_sometimes!(shared >= DEEP, "Generated colliding keys share a deep prefix", &details);
-        let values = members.iter().map(|_| random_value(rng)).collect();
-        let mut group = Group { trie, members, values };
-        let writes = (0..group.members.len()).collect::<Vec<_>>();
-        let writes = group.writes(&writes);
-        self.groups.push(group);
-        writes
+        let details = json!({"trie": format!("{trie:?}"), "shared": shared});
+        assert_sometimes!(shared < 4, "A generated spike shares a short prefix", &details);
+        assert_sometimes!(shared >= DEEP, "A generated spike shares a deep prefix", &details);
+        self.record(rng, trie, members)
     }
 
-    /// Grows, clears or rewrites a random recorded group.
-    fn revisit(
-        &mut self,
-        rng: &mut impl Rng,
-        current: &impl Fn(Address, Option<U256>) -> U256,
-    ) -> Vec<Write> {
-        let max_neighbor_depth = self.max_depth.min(MAX_NEIGHBOR_DEPTH);
+    fn fan(&mut self, rng: &mut impl Rng, trie: Trie, budget: usize) -> Vec<Write> {
+        let anchor = self.anchor(rng, trie);
+        let depth = rng.random_range(1..=self.fan_depth());
+        let members = fan_under(rng, trie, anchor, depth, budget.min(16));
+        self.record(rng, trie, members)
+    }
+
+    /// A fan under the prefix of an existing group's key, with deeper neighbours under up to two
+    /// of its children.
+    fn nest(&mut self, rng: &mut impl Rng, budget: usize) -> Vec<Write> {
+        let group = &self.groups[rng.random_range(0..self.groups.len())];
+        let trie = group.trie;
+        let anchor = trie.key(group.members[rng.random_range(0..group.members.len())]);
+        let depth = rng.random_range(1..=self.fan_depth());
+        let mut members = fan_under(rng, trie, anchor, depth, budget.min(8));
+        if depth + 2 <= self.neighbor_depth() {
+            for child in members.clone().into_iter().take(rng.random_range(1..=2)) {
+                let deeper = rng.random_range(depth + 2..=self.neighbor_depth());
+                let member = find(trie, b"nest", rng.random(), trie.key(child), deeper, None);
+                if !members.contains(&member) {
+                    members.push(member);
+                }
+            }
+        }
+        self.record(rng, trie, members)
+    }
+
+    /// Random slots for the heavy account's storage trie, the first owner a mass step gets.
+    fn mass(&mut self, rng: &mut impl Rng, owner: Address, budget: usize) -> Vec<Write> {
+        let address = *self.heavy.get_or_insert(owner);
+        (0..rng.random_range(1..=budget))
+            .map(|_| Write::Storage {
+                address,
+                slot: U256::from_be_bytes(rng.random::<[u8; 32]>()),
+                value: random_value(rng),
+            })
+            .collect()
+    }
+
+    /// A key to build under: a recorded member's key in this trie, or a random one.
+    fn anchor(&self, rng: &mut impl Rng, trie: Trie) -> B256 {
+        let members = self
+            .groups
+            .iter()
+            .filter(|group| group.trie == trie)
+            .flat_map(|group| &group.members)
+            .collect::<Vec<_>>();
+        if members.is_empty() || rng.random_bool(0.25) {
+            B256::from(rng.random::<[u8; 32]>())
+        } else {
+            trie.key(*members[rng.random_range(0..members.len())])
+        }
+    }
+
+    /// Grows, clears or rewrites a random recorded group, within budget writes.
+    fn revisit(&mut self, rng: &mut impl Rng, budget: usize) -> Vec<Write> {
+        let neighbor_depth = self.neighbor_depth();
         let index = rng.random_range(0..self.groups.len());
         let group = &mut self.groups[index];
         let trie = group.trie;
-        for (member, value) in group.members.iter().zip(&mut group.values) {
-            *value = trie.current(*member, current);
-        }
-        let storage = matches!(group.trie, Trie::Storage(_));
-        let set_before = group.values.iter().filter(|value| !value.is_zero()).count();
-        let indices = match rng.random_range(0..4) {
+        let storage = matches!(trie, Trie::Storage(_));
+        match rng.random_range(0..4) {
             // Grow: a new key under a member's prefix splits a branch or extension.
             0 if group.members.len() < MAX_MEMBERS => {
                 let anchor = group.members[rng.random_range(0..group.members.len())];
-                let depth = rng.random_range(1..=max_neighbor_depth);
-                let member = neighbor(group.trie, rng.random(), group.trie.key(anchor), depth);
+                let depth = rng.random_range(1..=neighbor_depth);
+                let member = find(trie, b"grow", rng.random(), trie.key(anchor), depth, None);
                 if group.members.contains(&member) {
                     return Vec::new();
                 }
-                assert_sometimes!(set_before > 1, "A generated collision group grows", &json!({}));
+                assert_sometimes!(true, "A generated group grows", &json!({}));
                 group.members.push(member);
-                group.values.push(random_value(rng));
-                vec![group.members.len() - 1]
+                vec![trie.write(member, random_value(rng))]
             }
             // Clear every storage key, so the whole subtree goes. Accounts are never deleted.
-            1 if storage => {
-                assert_sometimes!(
-                    set_before > 1,
-                    "A generated storage collision group is cleared",
-                    &json!({})
-                );
-                group.values.iter_mut().for_each(|value| *value = U256::ZERO);
-                (0..group.members.len()).collect()
+            1 if storage && group.members.len() <= budget => {
+                assert_sometimes!(true, "A generated storage group is cleared", &json!({}));
+                group.members.iter().map(|word| trie.write(*word, U256::ZERO)).collect()
             }
             // Rewrite a random nonempty subset; storage keys clear a quarter of the time.
             _ => {
-                let mut subset =
-                    (0..group.members.len()).filter(|_| rng.random_bool(0.5)).collect::<Vec<_>>();
-                if subset.is_empty() {
-                    subset.push(rng.random_range(0..group.members.len()));
-                }
-                for &i in &subset {
-                    group.values[i] = if storage && rng.random_ratio(1, 4) {
-                        U256::ZERO
-                    } else {
-                        random_value(rng)
-                    };
-                }
-                let set_after = group.values.iter().filter(|value| !value.is_zero()).count();
-                assert_sometimes!(
-                    set_after > 0 && set_after < set_before,
-                    "A generated colliding key is cleared while a sibling keeps its value",
-                    &json!({})
-                );
-                subset
-            }
-        };
-        group.writes(&indices)
-    }
-}
-
-impl Group {
-    /// The writes setting members `indices` to their current values.
-    fn writes(&mut self, indices: &[usize]) -> Vec<Write> {
-        if matches!(self.trie, Trie::Storage(_)) {
-            let keys = self.members.iter().map(|word| self.trie.key(*word)).collect::<Vec<_>>();
-            let embeds = keys.iter().zip(&self.values).any(|(key, value)| {
-                let depth = keys
+                let mut subset = group
+                    .members
                     .iter()
-                    .zip(&self.values)
-                    .filter(|(other, value)| *other != key && !value.is_zero())
-                    .map(|(other, _)| shared_nibbles(*key, *other))
-                    .max();
-                !value.is_zero() && depth.is_some_and(|depth| embedded(depth, *value))
-            });
-            assert_sometimes!(embeds, "A generated colliding storage leaf is embedded", &json!({}));
+                    .copied()
+                    .filter(|_| rng.random_bool(0.5))
+                    .collect::<Vec<_>>();
+                if subset.is_empty() {
+                    subset.push(group.members[rng.random_range(0..group.members.len())]);
+                }
+                subset.shuffle(rng);
+                subset.truncate(budget);
+                subset
+                    .into_iter()
+                    .map(|word| {
+                        let value = if storage && rng.random_ratio(1, 4) {
+                            U256::ZERO
+                        } else {
+                            random_value(rng)
+                        };
+                        trie.write(word, value)
+                    })
+                    .collect()
+            }
         }
-        indices.iter().map(|&i| self.trie.write(self.members[i], self.values[i])).collect()
     }
 }
 
-/// An address whose hash shares 1 to 4 leading nibbles with the hash of `of`.
+/// Up to count keys (at least 2) sharing the first depth nibbles of anchor, each with a different
+/// nibble after them.
+fn fan_under(
+    rng: &mut impl Rng,
+    trie: Trie,
+    anchor: B256,
+    depth: usize,
+    count: usize,
+) -> Vec<B256> {
+    let mut nibbles = (0..16u8).collect::<Vec<_>>();
+    nibbles.shuffle(rng);
+    nibbles.truncate(rng.random_range(2..=count.max(2)));
+    nibbles
+        .into_iter()
+        .map(|nibble| find(trie, b"fan_", rng.random(), anchor, depth, Some(nibble)))
+        .collect()
+}
+
+/// An address whose hash shares 1 to 4 leading nibbles with the hash of of.
 pub fn near_address(rng: &mut impl Rng, of: Address) -> Address {
     let depth = rng.random_range(1..=4);
-    Address::from_word(neighbor(Trie::Accounts, rng.random(), keccak256(of), depth))
+    Address::from_word(find(Trie::Accounts, b"near", rng.random(), keccak256(of), depth, None))
 }
 
-/// A slot whose hash shares 1 to 4 leading nibbles with the hash of `of`.
+/// A slot whose hash shares 1 to 4 leading nibbles with the hash of of.
 pub fn near_slot(rng: &mut impl Rng, of: U256) -> U256 {
     let depth = rng.random_range(1..=4);
     let key = keccak256(B256::from(of));
-    U256::from_be_bytes(neighbor(Trie::Storage(Address::ZERO), rng.random(), key, depth).0)
+    let trie = Trie::Storage(Address::ZERO);
+    U256::from_be_bytes(find(trie, b"near", rng.random(), key, depth, None).0)
 }
 
 /// A random nonzero value of random byte width, so leaves span every encoding size: half the
@@ -255,25 +327,18 @@ fn random_value(rng: &mut impl Rng) -> U256 {
     U256::from_be_bytes(bytes).max(U256::from(1))
 }
 
-/// Whether a storage leaf holding `value` below a branch at `depth` nibbles encodes in under
-/// 32 bytes, so its parent embeds it instead of referencing its hash.
-fn embedded(depth: usize, value: U256) -> bool {
-    let path = Nibbles::unpack(B256::ZERO).slice(depth + 1..);
-    alloy_rlp::encode(LeafNode::new(path, alloy_rlp::encode(value))).len() < 32
-}
-
-/// How many leading nibbles `a` and `b` share.
+/// How many leading nibbles a and b share.
 fn shared_nibbles(a: B256, b: B256) -> usize {
-    Nibbles::unpack(a).common_prefix_length(&Nibbles::unpack(b))
+    alloy_trie::Nibbles::unpack(a).common_prefix_length(&alloy_trie::Nibbles::unpack(b))
 }
 
-/// The first `depth` nibbles of `key`, as an integer.
+/// The first depth nibbles of key, as an integer.
 fn prefix(key: B256, depth: usize) -> u64 {
     u64::from_be_bytes(key[..8].try_into().expect("8 bytes")) >> (64 - 4 * depth)
 }
 
-/// The preimage word of candidate `counter` of a search tagged `tag` from `seed`. Its last 20
-/// bytes are the address an account candidate uses.
+/// The preimage word of candidate counter of a search tagged tag from seed. Its last 20 bytes are
+/// the address an account candidate uses.
 fn candidate(tag: &[u8; 4], seed: u64, counter: u64) -> B256 {
     let mut word = [0u8; 32];
     word[12..16].copy_from_slice(tag);
@@ -282,10 +347,10 @@ fn candidate(tag: &[u8; 4], seed: u64, counter: u64) -> B256 {
     B256::from(word)
 }
 
-/// Two preimages, derived from `seed`, whose keys in `trie` share at least the first `depth`
-/// nibbles. A birthday search: about 16^(depth/2) candidates.
+/// Two preimages, derived from seed, whose keys in trie share at least the first depth nibbles.
+/// A birthday search: about 16^(depth/2) candidates.
 fn colliding_pair(trie: Trie, seed: u64, depth: usize) -> (B256, B256) {
-    assert!((1..=16).contains(&depth));
+    assert!((1..=15).contains(&depth));
     let mut seen = HashMap::<u64, B256>::new();
     for counter in 0.. {
         let word = candidate(b"coll", seed, counter);
@@ -299,18 +364,22 @@ fn colliding_pair(trie: Trie, seed: u64, depth: usize) -> (B256, B256) {
     unreachable!("the search runs until it finds a pair")
 }
 
-/// A preimage, derived from `seed`, whose key in `trie` shares at least the first `depth`
-/// nibbles of `key` without being equal to it. A targeted search: about 16^depth candidates.
-fn neighbor(trie: Trie, seed: u64, key: B256, depth: usize) -> B256 {
-    assert!((1..=MAX_NEIGHBOR_DEPTH).contains(&depth));
-    let target = prefix(key, depth);
+/// A preimage, derived from seed, whose key in trie shares the first depth nibbles of key and,
+/// when next is given, has it as the following nibble; never key itself. A targeted search: about
+/// 16^depth candidates, 16 times that with next.
+fn find(trie: Trie, tag: &[u8; 4], seed: u64, key: B256, depth: usize, next: Option<u8>) -> B256 {
+    let (width, target) = match next {
+        Some(nibble) => (depth + 1, prefix(key, depth) << 4 | u64::from(nibble)),
+        None => (depth, prefix(key, depth)),
+    };
+    assert!((1..=MAX_NEIGHBOR_DEPTH).contains(&width));
     (0..)
-        .map(|counter| candidate(b"nbor", seed, counter))
+        .map(|counter| candidate(tag, seed, counter))
         .find(|word| {
-            let candidate = trie.key(*word);
-            candidate != key && prefix(candidate, depth) == target
+            let found = trie.key(*word);
+            found != key && prefix(found, width) == target
         })
-        .expect("the search runs until it finds a neighbour")
+        .expect("the search runs until it finds a key")
 }
 
 #[cfg(test)]
@@ -332,12 +401,33 @@ mod tests {
     }
 
     #[test]
-    fn neighbors_share_the_prefix() {
+    fn found_keys_share_the_prefix() {
         for trie in TRIES {
             let key = keccak256([1u8]);
             for depth in 1..=4 {
-                assert!(shared_nibbles(key, trie.key(neighbor(trie, 3, key, depth))) >= depth);
+                let found = trie.key(find(trie, b"test", 3, key, depth, None));
+                assert!(shared_nibbles(key, found) >= depth);
             }
+        }
+    }
+
+    #[test]
+    fn fans_diverge_after_the_prefix() {
+        let mut rng = StdRng::seed_from_u64(2);
+        let anchor = keccak256([2u8]);
+        for trie in TRIES {
+            let members = fan_under(&mut rng, trie, anchor, 2, 16);
+            let mut next = members
+                .iter()
+                .map(|word| {
+                    let key = trie.key(*word);
+                    assert!(shared_nibbles(anchor, key) >= 2);
+                    alloy_trie::Nibbles::unpack(key).get_unchecked(2)
+                })
+                .collect::<Vec<_>>();
+            next.sort_unstable();
+            next.dedup();
+            assert_eq!(next.len(), members.len());
         }
     }
 
@@ -356,24 +446,14 @@ mod tests {
     }
 
     #[test]
-    fn embedding_depends_on_depth_and_width() {
-        // One-byte values embed from 8 shared nibbles, wider ones need deeper branches.
-        assert!(embedded(8, U256::from(0x7f)));
-        assert!(!embedded(7, U256::from(0x7f)));
-        assert!(!embedded(8, U256::from(0x80)));
-        assert!(embedded(MAX_DEPTH, U256::from(0x7f)));
-        assert!(!embedded(MAX_DEPTH, U256::from(0xffff)));
-        assert!(!embedded(MAX_DEPTH, U256::MAX));
-    }
-
-    #[test]
-    fn steps_stay_bounded() {
+    fn steps_stay_within_budget() {
         let mut rng = StdRng::seed_from_u64(1);
         // Shallow searches keep the unoptimized test build fast.
         let mut collider = Collider::new(3);
-        for _ in 0..200 {
-            let writes = collider.step(&mut rng, Some(Address::repeat_byte(1)), |_, _| U256::ZERO);
-            assert!(writes.len() <= MAX_MEMBERS);
+        for step in 0..300 {
+            let budget = 1 + step % 20;
+            let writes = collider.step(&mut rng, Some(Address::repeat_byte(1)), budget);
+            assert!(writes.len() <= budget);
             for write in writes {
                 if let Write::Account { balance, .. } = write {
                     assert!(!balance.is_zero());
@@ -381,6 +461,6 @@ mod tests {
             }
         }
         assert!(collider.groups.len() <= MAX_GROUPS);
-        assert!(collider.groups.iter().all(|group| group.members.len() <= MAX_MEMBERS));
+        assert!(collider.groups.iter().all(|group| group.members.len() <= MAX_MEMBERS + 16));
     }
 }

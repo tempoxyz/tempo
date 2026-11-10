@@ -13,6 +13,7 @@ use antithesis_sdk::{
     assert_always, assert_always_or_unreachable, assert_sometimes, assert_unreachable,
     lifecycle::setup_complete,
 };
+use antithesis_trie_shapes::ShapeTracker;
 use eyre::{ensure, Context, Result};
 use input::{Input, Operation};
 use journal::RoundJournal;
@@ -322,6 +323,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     let strategy = DefaultStateRootStrategy::default();
     let mut state = Model::default();
     journal.replay(1..=base, &mut state)?;
+    let mut shapes = ShapeTracker::default();
     if base > 0 {
         verify(&factory, &state, base, base)?;
     }
@@ -445,6 +447,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
             }
         }
         let (bundle, updates) = apply(&mut state, number, &updates_input);
+        shapes.observe(model::tries(&state));
         // The full operations are in the journal before production tasks run.
         println!(
             "{}",

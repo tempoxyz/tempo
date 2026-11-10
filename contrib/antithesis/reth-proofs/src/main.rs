@@ -22,7 +22,7 @@ use antithesis_sdk::{
     assert_always, assert_always_or_unreachable, assert_sometimes, assert_unreachable,
     lifecycle::setup_complete, random::AntithesisRng,
 };
-use antithesis_trie_shapes::Collider;
+use antithesis_trie_shapes::{Collider, ShapeTracker};
 use eyre::{ensure, eyre, Context, Result};
 use model::{apply, root, Model};
 use persistence::{Persistence, Phase};
@@ -240,6 +240,7 @@ fn run(config: &Config, round: u64) -> Result<()> {
     let base_hash = parent.hash();
     let mut state = Model::default();
     let mut collider = Collider::default();
+    let mut shapes = ShapeTracker::default();
     invariant!(root(&state) == parent.state_root(), "genesis root");
     let shared = Arc::new(Shared {
         blocks: RwLock::new(vec![Arc::new(Snapshot {
@@ -353,6 +354,7 @@ fn run(config: &Config, round: u64) -> Result<()> {
         let writes =
             generate::writes(&mut rng, &state, &mut collider, config.accounts, config.updates);
         let (bundle, updates) = apply(&mut state, number, &writes);
+        shapes.observe(model::tries(&state));
         let retained = std::mem::take(&mut prune_requested).then(|| {
             blocks
                 .iter()

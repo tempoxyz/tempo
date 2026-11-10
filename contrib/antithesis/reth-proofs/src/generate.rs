@@ -24,7 +24,7 @@ pub(crate) fn writes(
     let mut generated = Vec::with_capacity(updates);
     while generated.len() < updates {
         if collide_next(rng, generated.len(), updates) {
-            generated.extend(collide(rng, &mut state, collider));
+            generated.extend(collide(rng, &mut state, collider, updates - generated.len()));
             continue;
         }
         generated.push({
