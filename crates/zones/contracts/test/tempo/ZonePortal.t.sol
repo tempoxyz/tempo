@@ -8,6 +8,7 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 import {
     BlockTransition,
+    CONFIGURABLE_ACCOUNT_ADDRESS,
     Capability,
     Deposit,
     DepositPayload,
@@ -15,6 +16,7 @@ import {
     DepositType,
     ENCRYPTION_KEY_GRACE_PERIOD,
     EncryptionKeyEntry,
+    IConfigurableAccount,
     IVerifier,
     IWithdrawalReceiver,
     IZoneMessenger,
@@ -1570,6 +1572,44 @@ contract ZonePortalTest is BaseTest {
         vm.prank(admin);
         portal.setSequencerSet(rotatedSigners, 2);
         _expectInvalidQuorumCertificate(portal, signers[0], batch, validSignatures);
+    }
+
+    /// @notice TIP-1112: once a sequencer upgrades to a configurable account, its original
+    /// primitive key no longer counts toward a settlement certificate.
+    function test_submitBatch_rejectsRetiredSequencerRootKey() public {
+        address[] memory signers = _activateSequencerSet(2);
+        QuorumBatch memory batch = _quorumBatch();
+        bytes32 digest = _attestationDigestFor(portal, block.chainid, _attestationFor(batch));
+
+        vm.mockCall(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            abi.encodeCall(IConfigurableAccount.getConfigCommitment, (signers[1])),
+            abi.encode(keccak256("migrated"))
+        );
+        _expectInvalidQuorumCertificate(
+            portal, signers[0], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_B_KEY)
+        );
+
+        // The signers that have not migrated still settle the same batch.
+        _submitQuorumBatch(
+            portal, signers[0], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_C_KEY)
+        );
+        assertEq(portal.zoneHeight(), batch.nextZoneHeight);
+    }
+
+    function test_submitBatch_rejectsCertificateWhenCommitmentReadReverts() public {
+        address[] memory signers = _activateSequencerSet(2);
+        QuorumBatch memory batch = _quorumBatch();
+        bytes32 digest = _attestationDigestFor(portal, block.chainid, _attestationFor(batch));
+
+        vm.mockCallRevert(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            abi.encodeCall(IConfigurableAccount.getConfigCommitment, (signers[0])),
+            ""
+        );
+        _expectInvalidQuorumCertificate(
+            portal, signers[0], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_B_KEY)
+        );
     }
 
     function test_adminCanPauseAndResumeDeposits() public {

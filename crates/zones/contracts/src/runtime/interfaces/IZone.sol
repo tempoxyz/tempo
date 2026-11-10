@@ -8,6 +8,18 @@ address constant ZONE_PORTAL_IMPL_ADDRESS = 0x5AD1000000000000000000000000000000
 address constant ZONE_VERIFIER_ADDRESS = 0x5a56000000000000000000000000000000000000;
 address constant ZONE_MESSENGER_ADDRESS = 0x5A4d000000000000000000000000000000000000;
 
+// Configurable-account precompile defined by TIP-1107, active from T14.
+address constant CONFIGURABLE_ACCOUNT_ADDRESS = 0xAACC000000000000000000000000000000000000;
+
+/// @notice TIP-1107 configurable-account precompile, reduced to the read the portal uses.
+interface IConfigurableAccount {
+
+    /// @notice Returns `account`'s TIP-1108 configuration commitment, or zero if it is not a
+    ///         configurable account.
+    function getConfigCommitment(address account) external view returns (bytes32 commitment);
+
+}
+
 /// @notice Mutually exclusive authorization role assigned to a Tempo account.
 enum Role {
     None,

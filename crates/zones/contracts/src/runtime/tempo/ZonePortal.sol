@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import {
     BlockTransition,
+    CONFIGURABLE_ACCOUNT_ADDRESS,
     Capability,
     Deposit,
     DepositPayload,
@@ -10,6 +11,7 @@ import {
     DepositType,
     ENCRYPTION_KEY_GRACE_PERIOD,
     EncryptionKeyEntry,
+    IConfigurableAccount,
     IVerifier,
     IZoneMessenger,
     IZonePortal,
@@ -1525,6 +1527,10 @@ contract ZonePortal is IZonePortal {
                 return false;
             }
             if (signer == address(0) || !isSequencer(signer)) return false;
+            // TIP-1020 recovery is stateless, so TIP-1112 leaves retiring migrated roots to its
+            // consumers: a sequencer that upgraded to a configurable account no longer votes
+            // with its original primitive key.
+            if (_isRetiredRoot(signer)) return false;
             for (uint256 j = 0; j < i; ++j) {
                 if (recovered[j] == signer) return false;
             }
@@ -1532,6 +1538,18 @@ contract ZonePortal is IZonePortal {
         }
 
         return signatures.length >= threshold;
+    }
+
+    /// @dev True when `signer` has a TIP-1108 configuration commitment, meaning `upgradeAccount`
+    ///      retired its primitive root key. Fails closed if the precompile read reverts.
+    function _isRetiredRoot(address signer) internal view returns (bool) {
+        try IConfigurableAccount(CONFIGURABLE_ACCOUNT_ADDRESS).getConfigCommitment(signer) returns (
+            bytes32 commitment
+        ) {
+            return commitment != bytes32(0);
+        } catch {
+            return true;
+        }
     }
 
     function _domainSeparator() internal view returns (bytes32) {
