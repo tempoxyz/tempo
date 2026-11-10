@@ -12,8 +12,11 @@ name: vempo proofs
 # .github/sts/tempo-verify.sts.yaml (actions: write on vempo, for this workflow only). It lasts at
 # most an hour, so each wait mints a fresh one. Fork PRs get no OIDC token and are skipped.
 
+# pull_request_target, not pull_request: the job runs the workflow file from main, so a PR cannot
+# edit it to get the vempo token for something else, and vempo's trust policy only accepts this
+# file at refs/heads/main. It checks out no code; vempo checks out and runs the PR's head commit.
 on:
-  pull_request:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] runs main's copy, checks out nothing, same-repo PRs only
   push:
     branches: [main]
 
@@ -21,7 +24,7 @@ permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 jobs:
   vempo:
@@ -44,7 +47,9 @@ jobs:
         set -euo pipefail
         deadline=$((SECONDS + 3000))
         while [ "$SECONDS" -lt "$deadline" ]; do
-          state=$(gh run view "$RUN_ID" -R "$VEMPO" --json status,conclusion --jq '.status + " " + .conclusion')
+          # A failed poll (API error, rate limit) is retried; only the deadline ends the wait.
+          state=$(gh run view "$RUN_ID" -R "$VEMPO" --json status,conclusion --jq '.status + " " + .conclusion') \
+            || { sleep 60; continue; }
           if [ "${state%% *}" = completed ]; then
             echo "conclusion=${state#* }" >>"$GITHUB_OUTPUT"
             exit 0
@@ -90,7 +95,7 @@ jobs:
         run: bash -c "$WAIT"
       - name: Fetch a fresh vempo token
         id: sts2
-        if: steps.wait1.outputs.conclusion == ''
+        if: ${{ !cancelled() && steps.start.outputs.id != '' && steps.wait1.outputs.conclusion == '' }}
         uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/vempo
@@ -98,14 +103,14 @@ jobs:
           ttl: 1h
       - name: Keep waiting for the vempo run
         id: wait2
-        if: steps.wait1.outputs.conclusion == ''
+        if: ${{ !cancelled() && steps.start.outputs.id != '' && steps.wait1.outputs.conclusion == '' }}
         env:
           GH_TOKEN: ${{ steps.sts2.outputs.token }}
           RUN_ID: ${{ steps.start.outputs.id }}
         run: bash -c "$WAIT"
       - name: Fetch a fresh vempo token
         id: sts3
-        if: steps.wait1.outputs.conclusion == '' && steps.wait2.outputs.conclusion == ''
+        if: ${{ !cancelled() && steps.start.outputs.id != '' && steps.wait1.outputs.conclusion == '' && steps.wait2.outputs.conclusion == '' }}
         uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/vempo
@@ -113,7 +118,7 @@ jobs:
           ttl: 1h
       - name: Keep waiting for the vempo run
         id: wait3
-        if: steps.wait1.outputs.conclusion == '' && steps.wait2.outputs.conclusion == ''
+        if: ${{ !cancelled() && steps.start.outputs.id != '' && steps.wait1.outputs.conclusion == '' && steps.wait2.outputs.conclusion == '' }}
         env:
           GH_TOKEN: ${{ steps.sts3.outputs.token }}
           RUN_ID: ${{ steps.start.outputs.id }}
@@ -126,3 +131,18 @@ jobs:
         run: |
           echo "vempo proofs on ${SHA:0:7}: ${CONCLUSION:-still running} ($URL, vempo readers only)" >>"$GITHUB_STEP_SUMMARY"
           [ "$CONCLUSION" = success ] || { echo "::error::vempo's proofs: ${CONCLUSION:-timed out}: $URL"; exit 1; }
+      # A newer push supersedes this job (concurrency above): stop the vempo run it started too.
+      - name: Fetch a vempo token to cancel
+        id: sts-cancel
+        if: cancelled() && steps.start.outputs.id != ''
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          scope: tempoxyz/vempo
+          policy: tempo-verify
+          ttl: 1h
+      - name: Cancel the superseded vempo run
+        if: cancelled() && steps.start.outputs.id != ''
+        env:
+          GH_TOKEN: ${{ steps.sts-cancel.outputs.token }}
+          RUN_ID: ${{ steps.start.outputs.id }}
+        run: gh run cancel "$RUN_ID" -R "$VEMPO" || true
