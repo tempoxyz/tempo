@@ -287,9 +287,14 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             }
         };
 
+        // A running agent must be stopped first: shutdown alone joins a worker that only exits
+        // on the stop signal, which would hang node exit.
         #[cfg(feature = "pyroscope")]
         if let Some(agent) = pyroscope_agent {
-            agent.shutdown();
+            match agent.stop() {
+                Ok(agent) => agent.shutdown(),
+                Err(error) => warn!(target: "reth::cli", %error, "Failed to stop Pyroscope agent"),
+            }
         }
 
         exit
