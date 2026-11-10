@@ -16,7 +16,8 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
-use std::time::Instant;
+use reth_trie_common::bundle_state::BundleAccount;
+use std::{iter, time::Instant};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -381,6 +382,33 @@ impl Tip20PoolEvent {
     }
 }
 
+/// Adds each account in `state` whose configuration commitment or code differs between its
+/// original and present info to `changed_commitments` or `changed_code`.
+fn collect_account_changes(
+    state: &AddressMap<BundleAccount>,
+    changed_commitments: &mut AddressSet,
+    changed_code: &mut AddressSet,
+) {
+    for (address, account) in state {
+        let original = account.original_info.as_ref();
+        let present = account.info.as_ref();
+        if original
+            .map(|info| info.extension.as_ref())
+            .unwrap_or_default()
+            != present
+                .map(|info| info.extension.as_ref())
+                .unwrap_or_default()
+        {
+            changed_commitments.insert(*address);
+        }
+        if original.map_or(KECCAK256_EMPTY, |info| info.code_hash)
+            != present.map_or(KECCAK256_EMPTY, |info| info.code_hash)
+        {
+            changed_code.insert(*address);
+        }
+    }
+}
+
 fn first_topic(log: &Log) -> Option<B256> {
     log.topics().first().copied()
 }
@@ -492,17 +520,17 @@ where
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
-        let new = match event {
-            CanonStateNotification::Reorg { old: _, new } => {
+        let (new, orphaned) = match event {
+            CanonStateNotification::Reorg { old, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
                     error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                 }
 
-                new
+                (new, Some(old))
             }
-            CanonStateNotification::Commit { new } => new,
+            CanonStateNotification::Commit { new } => (new, None),
         };
 
         let block_update_start = Instant::now();
@@ -598,26 +626,17 @@ where
 
         // Revalidate transactions whose authorities' configuration commitment changed,
         // including eventless first registration (TIP-1112), and transactions whose inline
-        // configurable-account grant names an account whose commitment or code changed.
+        // configurable-account grant names an account whose commitment or code changed. On a
+        // reorg, changes the orphaned blocks made count too: undoing them changes the state
+        // pooled transactions were validated against.
         let mut changed_commitments = AddressSet::default();
         let mut changed_code = AddressSet::default();
-        for (address, account) in bundle_state {
-            let original = account.original_info.as_ref();
-            let present = account.info.as_ref();
-            if original
-                .map(|info| info.extension.as_ref())
-                .unwrap_or_default()
-                != present
-                    .map(|info| info.extension.as_ref())
-                    .unwrap_or_default()
-            {
-                changed_commitments.insert(*address);
-            }
-            if original.map_or(KECCAK256_EMPTY, |info| info.code_hash)
-                != present.map_or(KECCAK256_EMPTY, |info| info.code_hash)
-            {
-                changed_code.insert(*address);
-            }
+        for state in iter::once(bundle_state).chain(
+            orphaned
+                .as_ref()
+                .map(|old| old.execution_outcome().state().state()),
+        ) {
+            collect_account_changes(state, &mut changed_commitments, &mut changed_code);
         }
         if !changed_commitments.is_empty() || !changed_code.is_empty() {
             let hashes: Vec<TxHash> = {
