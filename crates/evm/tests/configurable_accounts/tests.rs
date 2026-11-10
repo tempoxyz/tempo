@@ -2381,7 +2381,7 @@ fn retired_root_authorization_list_entries_skipped() {
 
 #[test]
 fn retired_root_authorization_list_entries_skipped_after_a_same_block_migration() {
-    // TIP-1112: an entry the root key signed before migrating, relayed by a later transaction
+    // TIP-1113: an entry the root key signed before migrating, relayed by a later transaction
     // of the same block, is skipped.
     let target = Address::repeat_byte(0x55);
     let sender = signer(2);
