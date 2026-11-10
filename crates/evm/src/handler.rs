@@ -480,7 +480,10 @@ fn access_key_id(
     let Some(signature) = signed.signature().as_keychain() else {
         return Ok(None);
     };
-    if let Some(key_id) = aa.override_key_id() {
+    // The key override is a gas-estimation input: honor it only when simulating.
+    if matches!(context, ExecutionContext::Simulation)
+        && let Some(key_id) = aa.override_key_id()
+    {
         return Ok(Some(key_id));
     }
     // A simulated configurable delegate carries placeholder owner approvals: name the delegate

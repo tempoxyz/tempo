@@ -348,6 +348,8 @@ async fn handle_test_l1_rpc_request(
         "eth_chainId" => serde_json::json!(format!("0x{chain_id:x}")),
         "eth_blockNumber" => serde_json::json!("0x0"),
         "eth_getCode" => serde_json::json!("0x01"),
+        // Accounts have no TIP-1108 configuration commitment on the test L1.
+        "eth_getAccountInfo" => serde_json::json!({"balance": "0x0", "nonce": "0x0", "code": "0x"}),
         // Synthetic SPF fixtures supply their own Tempo trie nodes; only the initial header
         // and a successful proof RPC are needed when generating their Zone witness.
         "eth_getMultiProof" => serde_json::json!([]),

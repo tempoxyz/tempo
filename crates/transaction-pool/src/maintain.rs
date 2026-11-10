@@ -625,7 +625,7 @@ where
         }
 
         // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112), and transactions whose inline
+        // including eventless first registration (TIP-1107), and transactions whose inline
         // configurable-account grant names an account whose commitment or code changed. On a
         // reorg, changes the orphaned blocks made count too: undoing them changes the state
         // pooled transactions were validated against.
