@@ -3,8 +3,19 @@
 
 # CI configuration that changes how every test builds or runs.
 [[path-rule]]
-globs = [".config/**", ".github/actions/**", ".github/affected-crates/**", ".github/workflows/test.yml"]
+globs = [
+  ".config/**",
+  ".github/actions/**",
+  ".github/affected-crates/**",
+  ".github/scripts/native-libs.sh",
+  ".github/workflows/test.yml",
+]
 mark-changed = "all"
+
+# xtask's hardfork generator tests read the bench workflow.
+[[path-rule]]
+globs = [".github/workflows/bench.yml"]
+mark-changed = ["tempo-xtask"]
 
 # Files no Rust test reads.
 [[path-rule]]

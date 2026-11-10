@@ -234,14 +234,16 @@ jobs:
           affected=all
           if [ "$EVENT_NAME" = pull_request ]; then
             git worktree add --detach "$RUNNER_TEMP/base" HEAD^1
-            affected="$(git diff --name-only HEAD^1 HEAD | cargo run --quiet --locked --manifest-path .github/affected-crates/Cargo.toml -- "$RUNNER_TEMP/base" . .github/affected-crates/rules.toml)"
+            affected="$(git diff --no-renames --name-only HEAD^1 HEAD | cargo run --quiet --locked --manifest-path .github/affected-crates/Cargo.toml -- "$RUNNER_TEMP/base" . .github/affected-crates/rules.toml)"
           fi
           echo "Affected packages: $affected"
           if [ "$affected" = all ]; then
             packages="--workspace --exclude tempo-nitro-attestation-fuzz"
           else
             # The e2e job tests tempo-e2e, and the fuzz crate is never tested here.
-            packages="$(echo "$affected" | grep -vxE 'tempo-e2e|tempo-nitro-attestation-fuzz' | sed 's/^/-p /' | tr '\n' ' ' || true)"
+            packages="$(echo "$affected" | grep -vxE '|tempo-e2e|tempo-nitro-attestation-fuzz' | sed 's/^/-p /' | tr '\n' ' ' || true)"
+            # A subset may hold no tests, or none in this partition.
+            if [ -n "$packages" ]; then packages="$packages --no-tests=warn"; fi
           fi
           echo "packages=$packages" >> "$GITHUB_OUTPUT"
       - name: Build and compile tests
