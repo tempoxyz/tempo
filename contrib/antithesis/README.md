@@ -26,7 +26,8 @@ subcommands of the same binary, in `test/v1/<template>/`:
 | `eventually_persisted` | Flushes to the head; the persisted state must match the model |
 | `finally_recovered` | The same once the server is back after the last fault |
 
-A command that finds the server down exits successfully, so a restart is not a failure. Run one
+Launch both reth targets with `--fault-tolerance legacy` (network faults and thread pauses, no container
+kills). A command that finds the server down exits successfully, so a restart is not a failure. Run one
 locally with `ANTITHESIS_TRIE_SOCKET=/tmp/trie.sock` set for both the server and the commands.
 
 The zones workload drivers live in `xtask/src/zones/antithesis`; see [`zones/README.md`](zones/README.md).
