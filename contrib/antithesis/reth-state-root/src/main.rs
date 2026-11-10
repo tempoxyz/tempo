@@ -191,7 +191,26 @@ impl Round {
     /// Resumes the active round, verifying what the database recovered, or starts a new one.
     fn open(config: &Config, campaign: &Campaign, number: u64) -> Result<Self> {
         let datadir = campaign.start()?;
+        // reth writes genesis static files before committing the database, and refuses to open
+        // static files without one. A round killed before genesis was durable has no blocks yet,
+        // so start its database over.
+        let initialized = datadir.join("initialized");
+        if !initialized.exists() {
+            for entry in fs::read_dir(&datadir)? {
+                let path = entry?.path();
+                if path.file_name().is_some_and(|name| name != "config.json") {
+                    if path.is_dir() {
+                        fs::remove_dir_all(&path)?
+                    } else {
+                        fs::remove_file(&path)?
+                    }
+                }
+            }
+        }
         let engine = Engine::open(&config.settings(), &datadir)?;
+        if !initialized.exists() {
+            persist_json(&initialized, &true)?;
+        }
         let journal = RoundJournal::open(&datadir, config.blocks)?;
         let base = engine.head();
         let mut state = Model::default();
