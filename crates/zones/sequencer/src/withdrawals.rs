@@ -41,11 +41,11 @@ use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
 use tokio::sync::Notify;
 use tokio_util::sync;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{Instrument as _, Span, debug, error, field, info, info_span, instrument, warn};
 
 use crate::{
     abi::{self, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
-    metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
+    metrics::{LatencyMetrics, SequencerMetrics, WithdrawalProcessorMetrics},
     nonce_keys::PROCESS_WITHDRAWAL_NONCE_KEY,
     settlement::{WithdrawalPage, find_processed_offset},
 };
@@ -181,13 +181,32 @@ impl Default for WithdrawalBatchLimits {
 /// (oldest first). The batch index corresponds to the portal's withdrawal queue slot index.
 pub struct WithdrawalStore {
     batches: BTreeMap<u64, Vec<abi::Withdrawal>>,
+    /// When this process saw each portal slot's `submitBatch` confirm, until the slot is
+    /// processed or passed by the portal head.
+    submitted_at: BTreeMap<u64, Instant>,
 }
 
 impl WithdrawalStore {
     pub fn new() -> Self {
         Self {
             batches: BTreeMap::new(),
+            submitted_at: BTreeMap::new(),
         }
+    }
+
+    /// Record when the `submitBatch` that created portal slot `batch_index` confirmed.
+    ///
+    /// Dropped when [`MAX_CACHED_WITHDRAWAL_SLOTS`] slots are already tracked; the slot then
+    /// records no submitted-to-processed latency.
+    pub fn record_submitted(&mut self, batch_index: u64, submitted_at: Instant) {
+        if self.submitted_at.len() < MAX_CACHED_WITHDRAWAL_SLOTS {
+            self.submitted_at.insert(batch_index, submitted_at);
+        }
+    }
+
+    /// Remove and return when portal slot `batch_index` was submitted, if this process saw it.
+    pub fn take_submitted(&mut self, batch_index: u64) -> Option<Instant> {
+        self.submitted_at.remove(&batch_index)
     }
 
     /// Add a withdrawal to the given batch.
@@ -247,11 +266,13 @@ impl WithdrawalStore {
     /// Remove a batch after all its withdrawals are processed.
     pub fn remove_batch(&mut self, batch_index: u64) {
         self.batches.remove(&batch_index);
+        self.submitted_at.remove(&batch_index);
     }
 
     /// Remove slots that the portal head has already passed.
     fn remove_before(&mut self, batch_index: u64) {
         self.batches = self.batches.split_off(&batch_index);
+        self.submitted_at = self.submitted_at.split_off(&batch_index);
     }
 
     pub fn has_batch(&self, batch_index: u64) -> bool {
@@ -331,6 +352,7 @@ pub struct WithdrawalProcessor {
     repair_notify: Arc<Notify>,
     metrics: WithdrawalProcessorMetrics,
     sequencer_metrics: SequencerMetrics,
+    latency_metrics: LatencyMetrics,
 }
 
 impl WithdrawalProcessor {
@@ -356,6 +378,7 @@ impl WithdrawalProcessor {
             repair_notify,
             metrics: WithdrawalProcessorMetrics::default(),
             sequencer_metrics: SequencerMetrics::default(),
+            latency_metrics: LatencyMetrics::default(),
         }
     }
 
@@ -624,6 +647,15 @@ impl WithdrawalProcessor {
             if shutdown.is_cancelled() {
                 return Ok(());
             }
+            // One root span per slot attempt, joined to the batch trace by portal queue index and
+            // sender tag.
+            let slot_span = info_span!(
+                parent: None,
+                "zone.withdrawals.process_slot",
+                portal_queue_index = head_val,
+                withdrawals = admitted,
+                sender_tags = sender_tags(&remaining[..admitted]).as_str(),
+            );
             let outcome = self
                 .submit_and_confirm_batches(
                     SubmitBatches {
@@ -636,13 +668,21 @@ impl WithdrawalProcessor {
                     shutdown,
                     || {},
                 )
+                .instrument(slot_span)
                 .await?;
             self.record_slot_duration(slot_started_at.elapsed());
 
             match outcome {
                 SubmitOutcome::Confirmed => {
                     if fully_admitted {
-                        self.store.lock().remove_batch(head_val);
+                        let mut store = self.store.lock();
+                        if let Some(submitted_at) = store.take_submitted(head_val) {
+                            self.latency_metrics
+                                .batch_submitted_to_withdrawals_processed_seconds
+                                .record(submitted_at.elapsed().as_secs_f64());
+                        }
+                        store.remove_batch(head_val);
+                        drop(store);
                         info!(
                             slot = head_val,
                             count = remaining.len(),
@@ -746,20 +786,34 @@ impl WithdrawalProcessor {
                     .max_priority_fee_per_gas(fees.max_priority_fee_per_gas)
                     .gas(batch.gas_limit);
 
-                in_flight.push(async move {
-                    let receipt = call
-                        .send_sync()
-                        .timeout(PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT)
-                        .await
-                        .map_err(|_| {
-                            eyre::eyre!(
-                                "processWithdrawals sync submission timed out after {} seconds",
-                                PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT.as_secs()
-                            )
-                        })
-                        .and_then(|result| result.map_err(Into::into));
-                    (batch, nonce, remaining_queue, receipt)
-                });
+                let tx_span = info_span!(
+                    "process_withdrawals_send_sync",
+                    nonce,
+                    withdrawals = batch.len(),
+                    sender_tags = sender_tags(&withdrawals[batch.start..batch.end]).as_str(),
+                    tx_hash = field::Empty,
+                );
+                in_flight.push(
+                    async move {
+                        let receipt = call
+                            .send_sync()
+                            .timeout(PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT)
+                            .await
+                            .map_err(|_| {
+                                eyre::eyre!(
+                                    "processWithdrawals sync submission timed out after {} seconds",
+                                    PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT.as_secs()
+                                )
+                            })
+                            .and_then(|result| result.map_err(Into::into));
+                        if let Ok(receipt) = &receipt {
+                            Span::current()
+                                .record("tx_hash", field::display(receipt.transaction_hash()));
+                        }
+                        (batch, nonce, remaining_queue, receipt)
+                    }
+                    .instrument(tx_span),
+                );
                 submitted += 1;
             }
 
@@ -864,6 +918,16 @@ impl WithdrawalProcessor {
             .slot_processing_duration_seconds
             .record(duration.as_secs_f64());
     }
+}
+
+/// Comma-separated sender tags of `withdrawals`, the key clients poll withdrawal status by, for
+/// span attributes that join a withdrawal's Zone, batch and L1 processing spans.
+pub(crate) fn sender_tags(withdrawals: &[abi::Withdrawal]) -> String {
+    withdrawals
+        .iter()
+        .map(|withdrawal| withdrawal.senderTag.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Return the number of withdrawals that can each append one deposit without exceeding the
@@ -1279,6 +1343,50 @@ mod tests {
 
         store.add_batch(1, vec![test_withdrawal(addr, 999)]);
         assert_eq!(store.batch_count(), 2);
+    }
+
+    #[test]
+    fn submitted_times_leave_with_their_slot() {
+        let mut store = WithdrawalStore::new();
+        let submitted_at = Instant::now();
+        for slot in 4..=6 {
+            store.record_submitted(slot, submitted_at);
+        }
+
+        store.remove_before(5);
+        assert_eq!(store.take_submitted(4), None);
+
+        store.remove_batch(5);
+        assert_eq!(store.take_submitted(5), None);
+
+        assert_eq!(store.take_submitted(6), Some(submitted_at));
+        assert_eq!(store.take_submitted(6), None);
+    }
+
+    #[test]
+    fn submitted_times_are_bounded() {
+        let mut store = WithdrawalStore::new();
+        let submitted_at = Instant::now();
+        let limit = MAX_CACHED_WITHDRAWAL_SLOTS as u64;
+        for slot in 0..=limit {
+            store.record_submitted(slot, submitted_at);
+        }
+
+        assert_eq!(store.take_submitted(limit - 1), Some(submitted_at));
+        assert_eq!(store.take_submitted(limit), None);
+    }
+
+    #[test]
+    fn sender_tags_join_in_queue_order() {
+        let mut first = test_withdrawal(Address::repeat_byte(0x42), 100);
+        first.senderTag = B256::repeat_byte(0x01);
+        let mut second = first.clone();
+        second.senderTag = B256::repeat_byte(0x02);
+
+        assert_eq!(
+            sender_tags(&[first, second]),
+            format!("{},{}", B256::repeat_byte(0x01), B256::repeat_byte(0x02))
+        );
     }
 
     #[test]

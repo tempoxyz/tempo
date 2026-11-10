@@ -59,6 +59,7 @@ reth-tracing = { workspace = true, optional = true }
 reth-transaction-pool.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
 reth-cli-runner = { workspace = true, optional = true }
+reth-node-metrics = { workspace = true, optional = true }
 reth-rpc-server-types = { workspace = true, optional = true }
 reth-cli-commands = { workspace = true, optional = true }
 reth-db-api = { workspace = true, optional = true }
@@ -97,6 +98,9 @@ parking_lot.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, default-features = true }
 antithesis_sdk = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
+pyroscope = { workspace = true, optional = true }
+pyroscope_pprofrs = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -161,6 +165,8 @@ cli = [
   "dep:sha2",
   "dep:tempo-state-bloat",
   "dep:reth-cli-runner",
+  "dep:reth-node-metrics",
+  "dep:metrics-exporter-prometheus",
   "dep:reth-rpc-server-types",
   "dep:clap",
   "dep:reth-ethereum",
@@ -173,6 +179,7 @@ cli = [
 jemalloc = [
   "reth-ethereum?/jemalloc",
   "reth-node-core/jemalloc",
+  "reth-node-metrics?/jemalloc",
   "tempo-node/jemalloc",
   "zone-node/jemalloc",
 ]
@@ -182,6 +189,14 @@ keccak-cache-global = [
   "reth-node-core/keccak-cache-global",
   "zone-node/keccak-cache-global",
 ]
+otlp = [
+  "reth-ethereum?/otlp",
+  "reth-node-core/otlp",
+  "reth-tracing?/otlp",
+  "tempo-node/otlp",
+  "zone-node/otlp",
+]
+pyroscope = ["cli", "dep:pyroscope", "dep:pyroscope_pprofrs"]
 test-utils = [
   "reth-db-api?/test-utils",
   "reth-trie?/test-utils",

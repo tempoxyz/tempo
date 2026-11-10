@@ -1505,6 +1505,59 @@ fn deferred_checkpoint_work_survives_until_operational_confirmation() {
 }
 
 #[test]
+fn operational_confirmation_reports_when_deposit_blocks_were_enqueued() {
+    let deposit_events = || {
+        L1PortalEvents::from_deposits(vec![L1Deposit::Deposit(Deposit {
+            token: Address::ZERO,
+            sender: Address::ZERO,
+            amount: 1,
+            fee: 0,
+            tempo_refund_recipient: Address::ZERO,
+            key_index: U256::ZERO,
+            ephemeral_pubkey_x: B256::ZERO,
+            ephemeral_pubkey_y_parity: 0x02,
+            ciphertext: Vec::new(),
+            nonce: [0; 12],
+            tag: [0; 16],
+        })])
+    };
+    let queue = DepositQueue::new();
+    let h10 = make_test_header(10);
+    let h11 = make_chained_header(11, h10.hash_slow());
+    let h12 = make_chained_header(12, h11.hash_slow());
+    let h13 = make_chained_header(13, h12.hash_slow());
+    queue
+        .try_enqueue_sealed(seal(h10), deposit_events())
+        .unwrap();
+    queue
+        .try_enqueue_sealed(seal(h11), L1PortalEvents::default())
+        .unwrap();
+    queue
+        .try_enqueue_sealed(seal(h12), deposit_events())
+        .unwrap();
+    queue
+        .try_enqueue_sealed(seal(h13), L1PortalEvents::default())
+        .unwrap();
+
+    // Block 10's deposit is crossed by a checkpoint and consumed by block 11's full import.
+    let checkpoint = queue.peek().unwrap().header.num_hash();
+    queue.defer_through(checkpoint).unwrap();
+    let full = queue.peek().unwrap().header.num_hash();
+    assert_eq!(queue.confirm_operational(full).unwrap().len(), 1);
+
+    let with_deposit = queue.peek().unwrap().header.num_hash();
+    assert_eq!(queue.confirm_operational(with_deposit).unwrap().len(), 1);
+
+    let without_deposit = queue.peek().unwrap().header.num_hash();
+    assert!(
+        queue
+            .confirm_operational(without_deposit)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn restart_can_seed_deferred_checkpoint_work() {
     let queue = DepositQueue::new();
     let h10 = make_test_header(10);

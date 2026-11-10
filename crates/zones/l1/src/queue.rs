@@ -1,5 +1,8 @@
 use super::*;
-use std::collections::VecDeque;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Instant,
+};
 
 /// Bounded portal work crossed by canonical checkpoint-only Zone blocks.
 ///
@@ -69,6 +72,9 @@ pub(crate) struct PendingDeposits {
     /// `drain` so that reconnecting subscribers know where the queue left off,
     /// even if the engine has already consumed the blocks.
     last_enqueued: Option<NumHash>,
+    /// When each queued L1 block carrying user deposits was enqueued, keyed by block number.
+    /// Entries leave with their block, so the map is bounded by the queue itself.
+    deposits_observed_at: BTreeMap<u64, Instant>,
 }
 
 impl PendingDeposits {
@@ -120,6 +126,14 @@ impl PendingDeposits {
         }
 
         self.last_enqueued = Some(header.num_hash());
+        if events
+            .deposits
+            .iter()
+            .any(|deposit| matches!(deposit, L1Deposit::Deposit(_)))
+        {
+            self.deposits_observed_at
+                .insert(block_number, Instant::now());
+        }
         self.pending.push_back(L1BlockDeposits { header, events });
         Ok(true)
     }
@@ -234,10 +248,12 @@ impl PendingDeposits {
     }
 
     /// Confirm a full operational import and release all deferred work it consumed.
-    pub(crate) fn confirm_operational(&mut self, expected: NumHash) -> eyre::Result<()> {
+    ///
+    /// Returns when each consumed L1 block carrying user deposits was enqueued, oldest first.
+    pub(crate) fn confirm_operational(&mut self, expected: NumHash) -> eyre::Result<Vec<Instant>> {
         self.confirm(expected)?;
         self.deferred = None;
-        Ok(())
+        Ok(self.take_deposits_observed_through(expected.number))
     }
 
     /// Confirm every pending L1 block up to and including `expected`.
@@ -268,7 +284,20 @@ impl PendingDeposits {
                 self.deferred = None;
             }
         }
+        self.take_deposits_observed_through(expected.number);
         Ok(())
+    }
+
+    /// Remove and return the enqueue times of deposit-carrying blocks up to and including
+    /// `number`, oldest first.
+    fn take_deposits_observed_through(&mut self, number: u64) -> Vec<Instant> {
+        let later = number
+            .checked_add(1)
+            .map(|next| self.deposits_observed_at.split_off(&next))
+            .unwrap_or_default();
+        std::mem::replace(&mut self.deposits_observed_at, later)
+            .into_values()
+            .collect()
     }
 
     /// Returns the most recently enqueued L1 block (number + hash), if any.
@@ -416,7 +445,9 @@ impl DepositQueue {
     }
 
     /// Confirm a full operational import and release all deferred work it consumed.
-    pub fn confirm_operational(&self, expected: NumHash) -> eyre::Result<()> {
+    ///
+    /// Returns when each consumed L1 block carrying user deposits was enqueued, oldest first.
+    pub fn confirm_operational(&self, expected: NumHash) -> eyre::Result<Vec<Instant>> {
         self.inner.lock().confirm_operational(expected)
     }
 

@@ -27,7 +27,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use alloy_primitives::{Address, B256};
@@ -39,7 +39,7 @@ use reth_chain_state::PersistedBlockSubscriptions;
 use tempo_alloy::TempoNetwork;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::{sync, task::AbortOnDropHandle};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{Instrument as _, Span, debug, error, field, info, info_span, instrument, warn};
 use zone_prover::VerifierMode;
 
 use crate::{
@@ -54,7 +54,7 @@ use crate::{
         PreparedBatch, WithdrawalPage, ZoneBlockSnapshot, fetch_finalized_batch,
         fetch_finalized_batch_boundaries, read_zone_block_snapshot,
     },
-    withdrawals::SharedWithdrawalStore,
+    withdrawals::{SharedWithdrawalStore, sender_tags},
 };
 
 /// Maximum number of times to retry a failed batch submission before restarting the pipeline.
@@ -123,6 +123,8 @@ pub struct ZoneMonitor<P: ZoneSequencerProvider> {
     config: ZoneMonitorConfig,
     /// Metrics for zone observation and L1 batch submission.
     metrics: crate::metrics::ZoneMonitorMetrics,
+    /// Wall-clock withdrawal stage latencies.
+    latency_metrics: crate::metrics::LatencyMetrics,
     /// Native provider for canonical Tempo blocks, transactions, and receipts.
     provider: P,
     /// Shared store for withdrawal data, written here and consumed by the
@@ -172,6 +174,10 @@ struct ReadyBatch {
     verifier_mode: VerifierMode,
     certificate: Option<SettlementCertificate>,
     withdrawals: Vec<abi::Withdrawal>,
+    /// When the Zone block that requested and finalized `withdrawals` was produced.
+    withdrawals_included_at: SystemTime,
+    /// Root span of this batch's trace; submission spans are its children.
+    span: Span,
 }
 
 /// Exponential delay between consecutive monitor rebuilds.
@@ -327,6 +333,7 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
         let monitor = Self {
             config,
             metrics,
+            latency_metrics: crate::metrics::LatencyMetrics::default(),
             provider,
             withdrawal_store,
             batch_submitter,
@@ -566,6 +573,22 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
     }
 
     /// Process one boundary-aligned finalized batch.
+    ///
+    /// Opens the batch's root span, so each batch is its own trace from finalization to
+    /// `submitBatch`, searchable by withdrawal batch index and sender tag.
+    #[instrument(
+        parent = None,
+        name = "zone.batch",
+        skip_all,
+        fields(
+            zone_from = self.cursor.zone_height.saturating_add(1),
+            zone_to = boundary.block_number,
+            withdrawal_batch_index = field::Empty,
+            withdrawals = field::Empty,
+            sender_tags = field::Empty,
+            portal_queue_index = field::Empty,
+        )
+    )]
     async fn process_finalized_batch(
         &self,
         boundary: FinalizedBatchLog,
@@ -575,6 +598,17 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
         let finalized_batch =
             fetch_finalized_batch(&self.provider, self.config.outbox_address, &boundary).await?;
         let end_state = read_zone_block_snapshot(&self.provider, self.config.inbox_address, to)?;
+        let span = Span::current();
+        span.record("withdrawal_batch_index", finalized_batch.finalized_index);
+        span.record("withdrawals", finalized_batch.withdrawals.len());
+        if !finalized_batch.withdrawals.is_empty() {
+            span.record(
+                "sender_tags",
+                sender_tags(&finalized_batch.withdrawals).as_str(),
+            );
+        }
+        let withdrawals_included_at =
+            UNIX_EPOCH + Duration::from_millis(finalized_batch.block_timestamp_millis);
 
         if !finalized_batch.withdrawals.is_empty() {
             info!(
@@ -605,7 +639,12 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
         loop {
             let prepared = self.batch_submitter.prepare_batch(batch.clone()).await?;
             match self
-                .prepare_artifacts(from, prepared, finalized_batch.withdrawals.clone())
+                .prepare_artifacts(
+                    from,
+                    prepared,
+                    finalized_batch.withdrawals.clone(),
+                    withdrawals_included_at,
+                )
                 .await
             {
                 Err(BatchSubmitError::PreparedAnchorInvalid(error)) => {
@@ -637,6 +676,7 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
         from: u64,
         prepared: PreparedBatch,
         withdrawals: Vec<abi::Withdrawal>,
+        withdrawals_included_at: SystemTime,
     ) -> std::result::Result<ReadyBatch, BatchSubmitError> {
         let to = prepared.batch.zone_height;
         let nitro_attempt = async {
@@ -697,6 +737,8 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
             verifier_mode,
             certificate,
             withdrawals,
+            withdrawals_included_at,
+            span: Span::current(),
         })
     }
 
@@ -725,6 +767,8 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
             verifier_mode,
             certificate,
             withdrawals,
+            withdrawals_included_at,
+            span,
         } = ready;
         let batch_data = &prepared.batch;
         let last_zone_block = batch_data.zone_height;
@@ -775,6 +819,7 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     certificate.as_ref(),
                     verifier_mode,
                 )
+                .instrument(info_span!(parent: &span, "zone.batch.submit", attempt))
                 .await
             {
                 Ok(event) => {
@@ -789,6 +834,16 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     self.metrics
                         .batch_submit_latency_seconds
                         .record(submit_started.elapsed().as_secs_f64());
+                    if !withdrawals.is_empty() {
+                        // A Zone timestamp ahead of this clock records nothing rather than zero.
+                        if let Ok(elapsed) =
+                            SystemTime::now().duration_since(withdrawals_included_at)
+                        {
+                            self.latency_metrics
+                                .withdrawal_included_to_batch_submitted_seconds
+                                .record(elapsed.as_secs_f64());
+                        }
+                    }
                     let previous_zone_block = self.submitted_zone_block();
                     let blocks_in_batch = last_zone_block - previous_zone_block;
                     info!(
@@ -819,9 +874,11 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                         .set(last_zone_block as f64);
 
                     if let Some(portal_index) = portal_index {
+                        span.record("portal_queue_index", portal_index);
                         if !withdrawals.is_empty() {
                             let count = withdrawals.len();
                             let mut store = self.withdrawal_store.lock();
+                            store.record_submitted(portal_index, std::time::Instant::now());
                             if !store.add_batch(portal_index, withdrawals) {
                                 debug!(
                                     portal_index,
@@ -1185,6 +1242,7 @@ mod tests {
         ZoneMonitor {
             config,
             metrics: crate::metrics::ZoneMonitorMetrics::default(),
+            latency_metrics: crate::metrics::LatencyMetrics::default(),
             provider: zone_provider,
             withdrawal_store: SharedWithdrawalStore::new(),
             batch_submitter: Arc::new(BatchSubmitter::new(portal_address, l1_provider, chain_spec)),
@@ -1229,6 +1287,8 @@ mod tests {
             verifier_mode: VerifierMode::NoProof,
             certificate: None,
             withdrawals: Vec::new(),
+            withdrawals_included_at: UNIX_EPOCH,
+            span: Span::none(),
         }
     }
 
@@ -1245,7 +1305,7 @@ mod tests {
 
         let ready = monitor
             .batch_preparer()
-            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new())
+            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new(), UNIX_EPOCH)
             .await
             .unwrap();
         assert_eq!(ready.verifier_mode, VerifierMode::NoProof);
@@ -1273,7 +1333,7 @@ mod tests {
 
         let error = monitor
             .batch_preparer()
-            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new())
+            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new(), UNIX_EPOCH)
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), expected_msg);
@@ -1342,7 +1402,7 @@ mod tests {
         let task = tokio::spawn(async move {
             monitor
                 .batch_preparer()
-                .prepare_artifacts(11, prepared(test_batch_data()), Vec::new())
+                .prepare_artifacts(11, prepared(test_batch_data()), Vec::new(), UNIX_EPOCH)
                 .await
         });
         if let Some(proof_tx) = proof_tx {
@@ -1392,7 +1452,7 @@ mod tests {
 
         let ready = monitor
             .batch_preparer()
-            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new())
+            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new(), UNIX_EPOCH)
             .await
             .unwrap();
         assert_eq!(ready.verifier_mode, VerifierMode::NoProof);
@@ -1444,6 +1504,8 @@ mod tests {
             verifier_mode: VerifierMode::NitroV1,
             certificate: None,
             withdrawals: Vec::new(),
+            withdrawals_included_at: UNIX_EPOCH,
+            span: Span::none(),
         };
 
         let error = monitor.submit_ready_batch(ready).await.unwrap_err();
