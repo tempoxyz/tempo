@@ -35,7 +35,9 @@ use reth_trie_db::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{num::NonZeroU64, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, spec::DEV};
+use tempo_chainspec::{
+    TempoChainSpec, constants::gas::L1_COMMITMENT_READ_GAS, gas_params::apply_zone, spec::DEV,
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, ISignatureVerifier, ITIP20ChannelReserve,
     PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -58,7 +60,7 @@ use tempo_precompiles::{
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
-    Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
+    Block as TempoBlock, SignatureType, TempoEvmKind, TempoHeader, TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
         AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CallScope,
@@ -2114,7 +2116,7 @@ fn retired_root_error_order_and_access_gas() {
     // T14 prices every transaction a little differently, with or without role checks; the
     // role charges are measured on top of a plain transaction.
     let base = delta(&|f| f.primitive(4, vec![f.getter()]));
-    // The caller is free, even as the grant signer.
+    // The caller is free, even as the grant signer; the granted key ID costs a cold access.
     let grant_tx = |f: &Fixture| {
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, other.address());
         let signature = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -2123,7 +2125,7 @@ fn retired_root_error_order_and_access_gas() {
             ..aa_tx(4, vec![f.getter()])
         })
     };
-    assert_eq!(delta(&grant_tx), base);
+    assert_eq!(delta(&grant_tx), base + cold);
     // A cold fee payer costs a cold access, an access-listed one a warm access.
     let paid = |f: &Fixture, payer: &PrivateKeySigner, list: &AccessList| {
         f.sign_primitive(sponsored(
@@ -2379,7 +2381,7 @@ fn retired_root_authorization_list_entries_skipped() {
 
 #[test]
 fn retired_root_authorization_list_entries_skipped_after_a_same_block_migration() {
-    // TIP-1112: an entry the root key signed before migrating, relayed by a later transaction
+    // TIP-1113: an entry the root key signed before migrating, relayed by a later transaction
     // of the same block, is skipped.
     let target = Address::repeat_byte(0x55);
     let sender = signer(2);
@@ -4408,6 +4410,121 @@ fn native_signature_verification_is_intrinsic_gas() {
     );
 }
 
+/// A fixture whose EVM is a zone's, which reads commitments from Tempo L1.
+fn zone_fixture(configurable: bool) -> Fixture {
+    let mut f = Fixture::with_parent(configurable);
+    f.evm.ext_mut().kind = TempoEvmKind::Zone;
+    f.reconfigure(|version| apply_zone(version, TempoHardfork::T14));
+    f
+}
+
+/// The gas parameters of a zone's EVM at T14.
+fn zone_gas_params() -> GasParams {
+    let mut version = *tempo_execution_config(TempoHardfork::T14, CHAIN_ID).version();
+    apply_zone(&mut version, TempoHardfork::T14);
+    version.gas_params
+}
+
+/// A zone charges the sender's Tempo read with the cold access it skips, and the eligible call
+/// target's read, and never registers, so it charges no write and emits no registration log.
+#[test]
+fn zones_charge_the_sender_read_instead_of_registering() {
+    let calls = vec![Call {
+        to: TxKind::Call(Address::repeat_byte(0x44)),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    }];
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
+    let reads = cold_access + 2 * L1_COMMITMENT_READ_GAS;
+
+    let mut local = Fixture::with_parent(false);
+    let local_primitive = local.run(&local.primitive(3, calls.clone()));
+    let mut f = zone_fixture(false);
+    let primitive = f.run(&f.primitive(3, calls.clone()));
+    assert!(primitive.status, "{primitive:?}");
+    assert_eq!(
+        primitive.tx_gas_used() - local_primitive.tx_gas_used(),
+        reads
+    );
+
+    let mut local = Fixture::new();
+    let registering = local.run(&local.signed(3, calls.clone()));
+    let mut f = zone_fixture(true);
+    let native = f.run(&f.signed(3, calls));
+    assert!(native.status, "{native:?}");
+    assert_eq!(native.logs, []);
+    assert!(f.commitment().is_zero());
+    let registration = gas.get(GasId::NewAccountCost) + 375 + 2 * 375 + 8 * 224;
+    assert_eq!(
+        registering.tx_gas_used() + reads - native.tx_gas_used(),
+        registration
+    );
+}
+
+/// On a zone, the first call target pays its Tempo read in intrinsic gas, whatever its code.
+/// A later call to a new target and access-list entries pay it through the zone's cold access and
+/// access-list costs, whatever the address. A later call to a repeated target pays a warm access.
+#[test]
+fn zone_commitment_reads_are_charged_once_per_read_account() {
+    let contract = Address::repeat_byte(0x55);
+    let (eligible, other) = (Address::repeat_byte(0x44), Address::repeat_byte(0x45));
+    let run = |access_list: Vec<Address>, targets: Vec<Address>| {
+        let mut f = zone_fixture(false);
+        f.update_account(contract, |info| {
+            *info = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0x00])))
+        });
+        let mut tx = aa_tx(
+            3,
+            targets
+                .into_iter()
+                .map(|to| Call {
+                    to: TxKind::Call(to),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                })
+                .collect(),
+        );
+        tx.access_list = AccessList(
+            access_list
+                .into_iter()
+                .map(|address| AccessListItem {
+                    address,
+                    storage_keys: Vec::new(),
+                })
+                .collect(),
+        );
+        let result = f.run(&f.sign_primitive(tx));
+        assert!(result.status, "{result:?}");
+        result.tx_gas_used()
+    };
+    let gas = zone_gas_params();
+    let access_list_entry = gas.get(GasId::TxAccessListAddressCost);
+    let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
+    assert_eq!(
+        access_list_entry,
+        tempo_gas_params(TempoHardfork::T14).get(GasId::TxAccessListAddressCost)
+            + L1_COMMITMENT_READ_GAS
+    );
+
+    let base = run(vec![], vec![contract]);
+    // A contract target pays the read like an eligible one.
+    assert_eq!(run(vec![], vec![eligible]), base);
+    assert_eq!(
+        run(
+            vec![CONFIGURABLE_ACCOUNT_ADDRESS, contract, other],
+            vec![contract]
+        ) - base,
+        3 * access_list_entry
+    );
+    // A second call pays the zone's cold access for a new target, and a warm access for a repeated one.
+    assert_eq!(run(vec![], vec![eligible, other]) - base, cold_access);
+    assert_eq!(
+        run(vec![], vec![eligible, eligible]) - base,
+        gas.get(GasId::WarmStorageReadCost)
+    );
+}
+
 /// A threshold above eight is met by eight approvals whose weights reach it.
 #[test]
 fn native_threshold_above_eight_is_met_by_eight_approvals() {
@@ -5463,17 +5580,19 @@ fn native_sender_signing_its_own_grant_registers_once() {
         let grant = tx.key_authorization.as_mut().unwrap();
         let tx = if invalid_grant {
             // A valid outer signature must not mask an invalid grant quorum.
-            grant.signature = configurable_account_approval(
-                account,
-                &f.config,
-                &signer(3),
-                grant.signature_hash(),
-            )
-            .into();
+            *grant = grant
+                .authorization()
+                .clone()
+                .into_signed(configurable_account_approval(
+                    account,
+                    &f.config,
+                    &signer(3),
+                    grant.signature_hash(),
+                ));
             configurable_account_signed(&f, tx)
         } else {
             // The grant's approval does not authorize the transaction's digest.
-            let approval = grant.signature.as_configurable_account().unwrap().clone();
+            let approval = grant.signature().as_configurable_account().unwrap().clone();
             tx.into_signed(TempoSignature::ConfigurableAccount(approval))
         };
         assert_eq!(
