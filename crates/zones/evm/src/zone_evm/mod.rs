@@ -486,11 +486,25 @@ pub(crate) mod tests {
         assert!(read.status, "{read:?}");
         assert_eq!(read.output[..], commitment[..]);
 
-        for selector in [
-            IConfigurableAccount::updateConfigCall::SELECTOR,
-            IConfigurableAccount::upgradeAccountCall::SELECTOR,
+        for input in [
+            IConfigurableAccount::updateConfigCall {
+                current: IConfigurableAccount::ConfigurableAccountConfig {
+                    salt: B256::ZERO,
+                    version: 0,
+                    threshold: 1,
+                    owners: vec![],
+                },
+                threshold: 1,
+                owners: vec![],
+            }
+            .abi_encode(),
+            IConfigurableAccount::upgradeAccountCall {
+                threshold: 1,
+                owners: vec![],
+            }
+            .abi_encode(),
         ] {
-            let rejected = call(selector.to_vec());
+            let rejected = call(input);
             assert_eq!(rejected.stop, InstrStop::Revert);
             assert_eq!(
                 rejected.output,
