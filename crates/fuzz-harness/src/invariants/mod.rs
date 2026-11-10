@@ -8,6 +8,7 @@
 
 use alloy_primitives::{Address, Log};
 use invariants_core::{Report, SlotChange, Step};
+use std::sync::LazyLock;
 use tempo_contracts::precompiles::{
     IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
@@ -17,6 +18,11 @@ use tempo_invariants::{Tx, all, configurable_account as account, dex, fee_amm, t
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
+
+/// Whether invariants are checked: unless the process sets `TEMPO_FUZZ_INVARIANTS=0`, as callers that only
+/// need coverage, such as a corpus minimizer, do.
+pub(crate) static ENABLED: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("TEMPO_FUZZ_INVARIANTS").is_none_or(|value| value != "0"));
 
 use reader::Reader;
 pub(crate) use views::ViewCache;
@@ -94,6 +100,9 @@ pub(crate) fn check(
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
 ) {
+    if !*ENABLED {
+        return;
+    }
     let missed = db.pre.missed();
     if let Some(effects) = &effects {
         view_cache.advance(effects.net);

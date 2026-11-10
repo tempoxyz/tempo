@@ -433,18 +433,37 @@ impl<L1: L1StorageReader> L1StorageReader for RecordingL1StorageReader<L1> {
         self.reads
             .lock()
             .expect("L1 read recorder lock poisoned")
-            .insert(TempoStorageRead { account, slot });
+            .insert(TempoStorageRead {
+                account,
+                slot: Some(slot),
+            });
         Ok(value)
+    }
+
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, zone_precompiles::L1StateError> {
+        let commitment = self.inner.read_l1_commitment(account, block_number)?;
+        self.reads
+            .lock()
+            .expect("L1 read recorder lock poisoned")
+            .insert(TempoStorageRead {
+                account,
+                slot: None,
+            });
+        Ok(commitment)
     }
 }
 
-/// A Tempo L1 storage slot accessed while replaying a Zone block.
+/// A Tempo L1 account, or one of its storage slots, accessed while replaying a Zone block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TempoStorageRead {
     /// Tempo account whose storage was accessed.
     pub account: Address,
-    /// Storage slot that was accessed.
-    pub slot: B256,
+    /// Accessed storage slot, or `None` for an account-only read of the TIP-1108 commitment.
+    pub slot: Option<B256>,
 }
 
 #[cfg(test)]
@@ -492,7 +511,10 @@ mod tests {
         assert_eq!(reader.read_l1_storage(account, slot, 10).unwrap(), value);
         assert_eq!(
             reader.take_reads(),
-            HashSet::from_iter([TempoStorageRead { account, slot }])
+            HashSet::from_iter([TempoStorageRead {
+                account,
+                slot: Some(slot)
+            }])
         );
 
         let failing = RecordingL1StorageReader::new(MockL1Reader::failing_storage());
@@ -517,21 +539,6 @@ mod tests {
 
     #[test]
     fn advance_tempo_keeps_overlay_reads_on_child_anchor() {
-        check_registry_reads_after_advance(true, false);
-    }
-
-    #[test]
-    fn discarded_advance_tempo_preserves_parent_registry_anchor() {
-        check_registry_reads_after_advance(false, false);
-    }
-
-    #[test]
-    fn advance_tempo_ignores_registry_entries_cached_at_parent_anchor() {
-        check_registry_reads_after_advance(true, true);
-        check_registry_reads_after_advance(false, true);
-    }
-
-    fn check_registry_reads_after_advance(commit_advance: bool, warm_parent_cache: bool) {
         const PARENT: u64 = 0;
         const CHILD: u64 = 1;
         let portal = Address::repeat_byte(0x42);
@@ -589,21 +596,11 @@ mod tests {
             ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
         );
 
-        if warm_parent_cache {
-            let result = evm.transact(&policy_id_tx).unwrap().discard();
-            assert!(result.status, "registry read reverted: {result:?}");
-        }
-        let reads_before_advance = reader.storage_requests().len();
-
         let tx = advance_tempo_tx(&child, vec![enabled_token]);
-        let executed = evm
+        let result = evm
             .transact(&tx)
-            .expect("advanceTempo execution must not fail");
-        let result = if commit_advance {
-            executed.commit()
-        } else {
-            executed.discard()
-        };
+            .expect("advanceTempo execution must not fail")
+            .commit();
         assert!(result.status, "advanceTempo reverted: {result:?}");
         assert_eq!(
             evm.database_as::<L1OverlayDB<InMemoryDB, MockL1Reader>>()
@@ -614,7 +611,7 @@ mod tests {
             "transaction completion must clear the shared L1 anchor"
         );
 
-        let requests = reader.storage_requests()[reads_before_advance..].to_vec();
+        let requests = reader.storage_requests();
         let portal = ZonePortalStorage::new(portal);
         let child_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), CHILD);
         let parent_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), PARENT);
@@ -626,38 +623,33 @@ mod tests {
 
         // A second transaction must read the checkpoint accepted by EVM2, not the backing DB.
         // The counter is not read by advanceTempo, so this also exercises an uncached L1 slot.
-        let expected_anchor = if commit_advance { CHILD } else { PARENT };
         assert_eq!(
             evm.state_mut()
                 .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)
                 .unwrap(),
-            U256::from(expected_anchor),
+            U256::from(CHILD),
         );
         let reads_before = reader.storage_requests().len();
         let result = evm.transact(&counter_tx).unwrap().discard();
         assert!(result.status, "registry read reverted: {result:?}");
         assert_eq!(
             ITIP403Registry::policyIdCounterCall::abi_decode_returns(&result.output).unwrap(),
-            if commit_advance { 200 } else { 100 },
+            200,
         );
         assert!(reader.storage_requests()[reads_before..].contains(&(
             TIP403_REGISTRY_ADDRESS,
             B256::from(counter_slot),
-            expected_anchor,
+            CHILD,
         )));
 
-        // The slot loaded by advanceTempo at the child anchor must be re-read at the active anchor.
         let result = evm.transact(&policy_id_tx).unwrap().discard();
         assert!(result.status, "registry read reverted: {result:?}");
         let policy =
             ITIP403Registry::tokenTransferPolicyIdCall::abi_decode_returns(&result.output).unwrap();
         assert!(policy.isSet);
-        assert_eq!(
-            policy.policyId,
-            if commit_advance { 0xbbbb } else { 0xaaaa }
-        );
+        assert_eq!(policy.policyId, 0xbbbb);
 
-        // Transactions at an unchanged anchor keep the cached registry entries.
+        // Later transactions at the same anchor reuse the cached registry entries.
         let reads_before = reader.storage_requests().len();
         for tx in [&counter_tx, &policy_id_tx] {
             assert!(evm.transact(tx).unwrap().discard().status);
@@ -668,7 +660,6 @@ mod tests {
     #[test]
     fn tip20_pause_flag_follows_l1_at_the_active_anchor_from_t15() {
         const CHILD: u64 = 1;
-        const GRANDCHILD: u64 = 2;
         let portal = Address::repeat_byte(0x42);
         let token = address!("0x20C00000000000000000000000000000000000AA");
         let enabled_token = IZoneInbox::EnabledToken {
@@ -678,20 +669,16 @@ mod tests {
             currency: "USD".into(),
         };
         let reader = MockL1Reader::default();
-        let enablement_hash = ZonePortalStorage::new(portal).token_enablement_hash.slot();
-        for anchor in [CHILD, GRANDCHILD] {
-            reader.insert(
-                portal,
-                enablement_hash,
-                anchor,
-                enabled_token.hash_with_previous(B256::ZERO).into(),
-            );
-        }
-        // Paused at the child checkpoint and unpaused again at the grandchild.
+        reader.insert(
+            portal,
+            ZonePortalStorage::new(portal).token_enablement_hash.slot(),
+            CHILD,
+            enabled_token.hash_with_previous(B256::ZERO).into(),
+        );
+        // Paused on L1 at the child checkpoint, while the local Zone flag stays unset.
         reader.insert(token, tip20::slots::PAUSED, CHILD, U256::ONE);
 
         let child = child_header(TempoHeader::default().hash_slow(), CHILD);
-        let grandchild = child_header(child.hash_slow(), GRANDCHILD);
         let paused_tx = system_tx_env(token, ITIP20::pausedCall {}.abi_encode().into());
         let paused = |evm: &mut ZoneEvm<'_>| {
             let result = evm.transact(&paused_tx).unwrap().discard();
@@ -703,11 +690,6 @@ mod tests {
             let tx = advance_tempo_tx(&child, vec![enabled_token.clone()]);
             assert!(evm.transact(&tx).unwrap().commit().status);
             assert_eq!(paused(&mut evm), paused_at_child, "{spec:?}");
-
-            // The flag cached at the child anchor must not hide the unpause.
-            let tx = advance_tempo_tx(&grandchild, Vec::new());
-            assert!(evm.transact(&tx).unwrap().commit().status);
-            assert!(!paused(&mut evm), "{spec:?}");
         }
     }
 

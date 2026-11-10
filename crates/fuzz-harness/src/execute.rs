@@ -255,6 +255,9 @@ fn broken_start(
     outcome: &TempoExecutionOutcome,
     failed_logs: &[Log],
 ) -> Vec<InvariantFailure> {
+    if !*invariants::ENABLED {
+        return Vec::new();
+    }
     let (Ok(env), Ok(start)) = (evm_config.evm_env(block.header()), state::seed(pre_state)) else {
         return Vec::new();
     };

@@ -1,7 +1,7 @@
 name: Antithesis Zones Images
 
 # Builds the zones Antithesis node image, workload image (the node image plus the test
-# template) and config image (zones/antithesis) and pushes them to the Antithesis registry,
+# template) and config image (contrib/antithesis/zones) and pushes them to the Antithesis registry,
 # ready for a run on the tempo tenant.
 
 permissions: {}
@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "zones/antithesis/**"
+      - "contrib/antithesis/zones/**"
       - "bin/**"
       - "crates/**"
       - "xtask/**"
@@ -75,7 +75,7 @@ jobs:
         with:
           project: 0c6tg19qsp
           context: .
-          file: zones/antithesis/Dockerfile
+          file: contrib/antithesis/zones/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.image_tags }}
@@ -93,7 +93,7 @@ jobs:
         run: |
           dir="$RUNNER_TEMP/antithesis-workload"
           mkdir -p "$dir"
-          cp -a zones/antithesis/test "$dir/test"
+          cp -a contrib/antithesis/zones/test "$dir/test"
           printf 'FROM %s\nCOPY --chmod=755 test/ /opt/antithesis/test/\n' \
             "$REGISTRY/tempo-zones-antithesis@$NODE_DIGEST" > "$dir/Dockerfile"
           image="$REGISTRY/tempo-zones-antithesis-workload"
@@ -117,7 +117,7 @@ jobs:
         run: |
           dir="$RUNNER_TEMP/antithesis-config"
           mkdir -p "$dir"
-          cp zones/antithesis/docker-compose.yaml "$dir/"
+          cp contrib/antithesis/zones/docker-compose.yaml "$dir/"
           {
             echo "ZONES_IMAGE=$REGISTRY/tempo-zones-antithesis:$TAG@$DIGEST"
             echo "WORKLOAD_IMAGE=$REGISTRY/tempo-zones-antithesis-workload:$TAG@$WORKLOAD_DIGEST"
