@@ -37,7 +37,9 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
-        InvalidValidAfter, InvalidValidBefore, TempoTransaction, calc_gas_balance_spending,
+        AASigned, AccountSignature, Call, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        InvalidValidAfter, InvalidValidBefore, KeyAuthorization, TempoSignature,
+        TempoSignedAuthorization, calc_gas_balance_spending,
     },
 };
 use thiserror::Error;
@@ -1225,10 +1227,10 @@ impl KeyAuthorizationTargetSubject {
 /// `transaction`.
 ///
 /// The env owns a second copy of the transaction body. [`Bytes`] payloads (calldata, AA call
-/// inputs) are shared with the envelope via refcount, and the fixed-size parts (the inline env slot,
-/// the AA `Arc` allocation) are per-transaction overhead bounded by the pool's count limits, like
-/// the pooled transaction itself. Only heap copies that scale with the transaction's fields are
-/// counted.
+/// inputs, WebAuthn data) are shared with the envelope via refcount. The fixed-size parts (the
+/// inline env slot, the AA `Arc` allocation holding the whole signed transaction) are
+/// per-transaction overhead bounded by the pool's count limits, like the pooled transaction
+/// itself. Only the owned vectors a clone allocates are counted.
 ///
 /// This is derived from the envelope and added to the pooled size at construction rather than
 /// measured from the cache, because the env is filled lazily and the pools subtract the same size
@@ -1244,13 +1246,51 @@ fn cached_tx_env_size(transaction: &TempoTxEnvelope) -> usize {
                 + tx.tx().authorization_list.len()
                     * (size_of::<SignedAuthorization>() + size_of::<Option<Address>>())
         }
-        TempoTxEnvelope::AA(tx) => {
-            let tx = tx.tx();
-            let shared_bytes = tx.calls.iter().map(|call| call.input.len()).sum::<usize>();
-            tx.size()
-                .saturating_sub(size_of::<TempoTransaction>() + shared_bytes)
-        }
+        TempoTxEnvelope::AA(tx) => aa_cloned_heap_size(tx),
     }
+}
+
+/// Returns the vectors that cloning `tx`, both body and signature, allocates.
+fn aa_cloned_heap_size(tx: &AASigned) -> usize {
+    let body = tx.tx();
+    let key_authorization = body.key_authorization.as_ref().map_or(0, |auth| {
+        // `KeyAuthorization::size` is its inline struct plus its owned vectors.
+        KeyAuthorization::size(auth).saturating_sub(size_of::<KeyAuthorization>())
+            + account_signature_heap(auth.signature())
+    });
+    let tempo_authorizations = body.tempo_authorization_list.len()
+        * size_of::<TempoSignedAuthorization>()
+        + body
+            .tempo_authorization_list
+            .iter()
+            .map(|auth| tempo_signature_heap(auth.signature()))
+            .sum::<usize>();
+
+    body.calls.len() * size_of::<Call>()
+        + body.access_list.size()
+        + key_authorization
+        + tempo_authorizations
+        + tempo_signature_heap(tx.signature())
+}
+
+fn tempo_signature_heap(signature: &TempoSignature) -> usize {
+    match signature {
+        TempoSignature::Primitive(_) => 0,
+        TempoSignature::Keychain(keychain) => account_signature_heap(&keychain.signature),
+        TempoSignature::ConfigurableAccount(signature) => configurable_account_heap(signature),
+    }
+}
+
+fn account_signature_heap(signature: &AccountSignature) -> usize {
+    match signature {
+        AccountSignature::Primitive(_) => 0,
+        AccountSignature::ConfigurableAccount(signature) => configurable_account_heap(signature),
+    }
+}
+
+fn configurable_account_heap(signature: &ConfigurableAccountSignature) -> usize {
+    signature.config().owners.len() * size_of::<ConfigurableAccountOwner>()
+        + size_of_val(signature.signatures())
 }
 
 #[cfg(test)]
@@ -1267,7 +1307,11 @@ mod tests {
     use proptest_arbitrary_interop::arb_sized;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
-    use tempo_primitives::transaction::{TEMPO_EXPIRING_NONCE_KEY, tempo_transaction::Call};
+    use tempo_primitives::transaction::{
+        ConfigurableAccountConfig, KeychainSignature, PrimitiveSignature, SignatureType,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
+        tt_signature::WebAuthnSignature,
+    };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
 
@@ -1279,6 +1323,72 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .into()
+    }
+
+    fn webauthn_signature(data_len: usize) -> PrimitiveSignature {
+        PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            r: B256::with_last_byte(1),
+            s: B256::with_last_byte(2),
+            pub_key_x: B256::with_last_byte(3),
+            pub_key_y: B256::with_last_byte(4),
+            webauthn_data: Bytes::from(vec![9u8; data_len]),
+        })
+    }
+
+    fn tempo_authorizations(
+        signature: impl Fn() -> PrimitiveSignature,
+        count: u64,
+    ) -> Vec<TempoSignedAuthorization> {
+        (0..count)
+            .map(|nonce| {
+                TempoSignedAuthorization::new_unchecked(
+                    Authorization {
+                        chain_id: U256::from(1),
+                        address: Address::with_last_byte(3),
+                        nonce,
+                    },
+                    TempoSignature::Primitive(signature()),
+                )
+            })
+            .collect()
+    }
+
+    fn configurable_account_signature(
+        owners: u8,
+        approvals: usize,
+    ) -> ConfigurableAccountSignature {
+        let config = ConfigurableAccountConfig {
+            salt: B256::with_last_byte(1),
+            version: 0,
+            threshold: 1,
+            owners: (1..=owners)
+                .map(|owner| ConfigurableAccountOwner {
+                    owner: Address::with_last_byte(owner),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        ConfigurableAccountSignature::try_new(
+            Address::with_last_byte(0xaa),
+            config,
+            vec![PrimitiveSignature::Secp256k1(Signature::test_signature()); approvals],
+        )
+        .unwrap()
+    }
+
+    /// Re-signs the body of a pooled AA transaction with `signature`.
+    fn resign_aa(
+        pooled: &TempoPooledTransaction,
+        signature: TempoSignature,
+    ) -> TempoPooledTransaction {
+        let body = pooled.inner().inner().as_aa().unwrap().tx().clone();
+        let envelope = TempoTxEnvelope::from(body.into_signed(signature));
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, pooled.sender()))
+    }
+
+    /// Heap counted on top of the envelope size.
+    fn cached_env_overhead(pooled: &TempoPooledTransaction) -> usize {
+        pooled.size() - pooled.inner().inner().size()
     }
 
     fn eip1559_pooled(access_list: AccessList, input: Bytes) -> TempoPooledTransaction {
@@ -1398,6 +1508,81 @@ mod tests {
         let envelope_size = aa.inner().inner().size();
         assert!(aa.size() >= envelope_size);
         assert!(aa.size() - envelope_size <= 256);
+    }
+
+    #[test]
+    fn size_ignores_shared_webauthn_data() {
+        let overhead = |data_len, count| {
+            let pooled = TxBuilder::aa(Address::random())
+                .authorization_list(tempo_authorizations(|| webauthn_signature(data_len), count))
+                .build();
+            cached_env_overhead(&pooled)
+        };
+        let secp = TxBuilder::aa(Address::random())
+            .authorization_list(tempo_authorizations(
+                || PrimitiveSignature::Secp256k1(Signature::test_signature()),
+                4,
+            ))
+            .build();
+
+        assert_eq!(overhead(512, 4), overhead(0, 4));
+        assert_eq!(overhead(512, 4), cached_env_overhead(&secp));
+        assert_eq!(
+            overhead(512, 4),
+            size_of::<Call>() + 4 * size_of::<TempoSignedAuthorization>()
+        );
+
+        let minimal = TxBuilder::aa(Address::random()).build();
+        let key_authorization = |data_len| {
+            let authorization =
+                KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, Address::random());
+            SignedKeyAuthorization::new(authorization, webauthn_signature(data_len))
+        };
+        let with_key = |data_len| {
+            let pooled = TxBuilder::aa(Address::random())
+                .key_authorization(key_authorization(data_len))
+                .build();
+            cached_env_overhead(&pooled)
+        };
+        assert_eq!(with_key(2048), with_key(0));
+        assert_eq!(with_key(2048), cached_env_overhead(&minimal));
+    }
+
+    #[test]
+    fn size_excludes_inline_key_authorization() {
+        let minimal = TxBuilder::aa(Address::random()).build();
+        let authorization =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random());
+        let signed = SignedKeyAuthorization::new(
+            authorization,
+            PrimitiveSignature::Secp256k1(Signature::test_signature()),
+        );
+        let with_key = TxBuilder::aa(Address::random())
+            .key_authorization(signed)
+            .build();
+
+        assert_eq!(cached_env_overhead(&minimal), size_of::<Call>());
+        assert_eq!(cached_env_overhead(&with_key), size_of::<Call>());
+    }
+
+    #[test]
+    fn size_counts_configurable_account_signature_heap() {
+        let minimal = TxBuilder::aa(Address::random()).build();
+        let base = cached_env_overhead(&minimal);
+        let signature = configurable_account_signature(5, 3);
+        let heap = 5 * size_of::<ConfigurableAccountOwner>() + 3 * size_of::<PrimitiveSignature>();
+
+        let configurable = resign_aa(
+            &minimal,
+            TempoSignature::ConfigurableAccount(signature.clone()),
+        );
+        assert_eq!(cached_env_overhead(&configurable), base + heap);
+
+        let keychain = resign_aa(
+            &minimal,
+            TempoSignature::Keychain(KeychainSignature::new(Address::random(), signature)),
+        );
+        assert_eq!(cached_env_overhead(&keychain), base + heap);
     }
 
     #[test]
