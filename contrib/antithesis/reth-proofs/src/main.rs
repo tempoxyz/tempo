@@ -23,7 +23,7 @@ use antithesis_sdk::{
     lifecycle::setup_complete, random::AntithesisRng,
 };
 use eyre::{ensure, eyre, Context, Result};
-use model::{apply, root, Model};
+use model::{apply, Model};
 use persistence::{Persistence, Phase};
 use rand_09::Rng;
 use reth_chain_state::ExecutedBlock;
@@ -113,6 +113,8 @@ impl Default for Config {
 struct Snapshot {
     number: u64,
     hash: B256,
+    /// The root the sparse-trie task computed. reth-state-root checks roots against a reference
+    /// model, so this workload only checks proofs against it.
     root: B256,
     state: Model,
 }
@@ -238,7 +240,6 @@ fn run(config: &Config, round: u64) -> Result<()> {
         factory.provider()?.sealed_header(0)?.ok_or_else(|| eyre!("missing genesis header"))?;
     let base_hash = parent.hash();
     let mut state = Model::default();
-    invariant!(root(&state) == parent.state_root(), "genesis root");
     let shared = Arc::new(Shared {
         blocks: RwLock::new(vec![Arc::new(Snapshot {
             number: 0,
@@ -386,12 +387,6 @@ fn run(config: &Config, round: u64) -> Result<()> {
         stream.finish();
         let outcome = handle.take_state_root_rx().recv_timeout(timeout)??;
         drop(handle);
-        let expected_root = root(&state);
-        invariant!(
-            outcome.state_root == expected_root,
-            "round {round} block {number}: expected {expected_root}, actual {}",
-            outcome.state_root
-        );
         let block = RecoveredBlock::new_unhashed(
             Block {
                 header: Header {
@@ -433,7 +428,12 @@ fn run(config: &Config, round: u64) -> Result<()> {
         blocks.push(executed);
         // Publish the block only once the overlay manager can serve it.
         shared.blocks.write().map_err(|_| eyre!("block snapshots poisoned"))?.push(Arc::new(
-            Snapshot { number, hash: parent.hash(), root: expected_root, state: state.clone() },
+            Snapshot {
+                number,
+                hash: parent.hash(),
+                root: outcome.state_root,
+                state: state.clone(),
+            },
         ));
         for _ in 0..config.requests {
             requests.send(())?;
