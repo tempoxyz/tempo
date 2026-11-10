@@ -233,25 +233,24 @@ pub struct Args {
 
     /// Largest network reservation the proposal budget estimator may learn.
     ///
-    /// The estimator measures how long after its own proposal windows close the
-    /// next leader starts building on them and reserves a recent percentile of that
-    /// (`--consensus.network-reserve-percentile`), moving by at most 100ms per own
-    /// proposal, never below `--consensus.network-budget` and never above this. Set
-    /// it equal to `--consensus.network-budget` for a fixed reservation; it must
-    /// stay below `--consensus.target-block-time`.
+    /// Bounds the reservation learned from finalized successors of this node's
+    /// proposals. It never falls below `--consensus.network-budget`. Set this cap
+    /// equal to that floor to keep the reservation fixed. The cap must be smaller
+    /// than `--consensus.target-block-time`.
     ///
-    /// Defaults to `network-budget + (target-block-time - network-budget) / 2`, at
-    /// most 300ms: 300ms with the default 550ms target and 50ms network budget.
+    /// Defaults to the floor plus half the remaining target interval, capped at
+    /// 300ms but never below the floor. `None` selects this derived default.
     #[arg(long = "consensus.network-budget-max")]
     pub network_budget_max: Option<PositiveDuration>,
 
     /// Percentile of recent own-proposal network times the proposal budget
     /// estimator reserves, from 50 to 100.
     ///
-    /// A sample is this node's block time minus its proposal window, so about this
-    /// share of its own blocks finish within `--consensus.target-block-time`. A
-    /// higher percentile leaves fewer late blocks and smaller ones. A median at the
-    /// target takes 50 with `--consensus.network-reserve-fast-rise=false`.
+    /// Samples measure time from a proposal window's budgeted close to its
+    /// finalized successor's header timestamp, not solely propagation. The
+    /// reservation also obeys its floor, cap, warm-up and rate limit, and may be
+    /// raised by fast rise. This percentile is not a guarantee of the share of
+    /// blocks finishing within `--consensus.target-block-time`.
     #[arg(
         long = "consensus.network-reserve-percentile",
         default_value_t = tempo_payload_types::DEFAULT_NETWORK_RESERVE_PERCENTILE
@@ -261,15 +260,10 @@ pub struct Args {
     /// Let the two most recent own-proposal network times lift the reservation
     /// above the window percentile.
     ///
-    /// The percentile over the last 16 own proposals lags a network that is getting
-    /// slower, for example while blocks grow. With fast rise the smaller network
-    /// time of two slow proposals in a row becomes what the reservation moves
-    /// toward, still by at most 100ms per own proposal and capped by
-    /// `--consensus.network-budget-max`; one slow proposal alone lifts nothing, and
-    /// the next faster one hands the reservation back to the percentile.
-    ///
-    /// On by default; pass `--consensus.network-reserve-fast-rise=false` to reserve
-    /// the window percentile alone.
+    /// When enabled, the smaller of the two latest accepted samples can raise
+    /// the reservation target above the configured percentile, within the same
+    /// floor, cap and rate limit. A single outlier does not activate this rule.
+    /// Pass `--consensus.network-reserve-fast-rise=false` to disable the rule.
     #[arg(
         long = "consensus.network-reserve-fast-rise",
         value_name = "BOOL",
@@ -283,10 +277,9 @@ pub struct Args {
     /// How far an own proposal may run past its return budget and still teach the
     /// network reservation.
     ///
-    /// The default is the builder's pacing precision on a build whose pool ran dry,
-    /// a millisecond or two. A machine whose dry builds vary more needs a larger
-    /// value, or most proposals made while the pool is dry take no sample and the
-    /// reservation ages back to `--consensus.network-budget`.
+    /// The default tolerance is 5ms. Proposals exceeding this tolerance do not
+    /// contribute network samples; without fresh samples the reservation returns
+    /// toward `--consensus.network-budget`.
     #[arg(
         long = "consensus.return-budget-overrun-tolerance",
         default_value = "5ms"
@@ -532,32 +525,21 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
-    /// `--consensus.network-budget-max`, or
-    /// [`tempo_payload_types::EstimatorConfig::default_network_budget_max`] when
-    /// none is given.
-    pub fn network_budget_max(&self) -> Duration {
-        if let Some(network_budget_max) = self.network_budget_max {
-            return network_budget_max.into_duration();
-        }
-        tempo_payload_types::EstimatorConfig::default_network_budget_max(
+    /// Returns unvalidated adaptive proposal-budget inputs using the configured
+    /// flags, a derived cap when none is supplied, and the default build multiplier.
+    pub fn estimator_config(&self) -> tempo_payload_types::EstimatorConfig {
+        let config = tempo_payload_types::EstimatorConfig::new(
             self.target_block_time.into_duration(),
             self.network_budget.into_duration(),
-        )
-    }
-
-    /// Builds proposal timing inputs for the payload builder's estimator resolver.
-    /// The resolver supplies its build multiplier and validates these inputs when
-    /// no estimator override is set.
-    pub fn estimator_config(&self) -> tempo_payload_types::EstimatorConfig {
+        );
         tempo_payload_types::EstimatorConfig {
-            target_block_time: self.target_block_time.into_duration(),
-            network_budget: self.network_budget.into_duration(),
-            network_reservation_policy: tempo_payload_types::NetworkReservation::Adaptive,
-            network_budget_max: self.network_budget_max(),
+            network_budget_max: self
+                .network_budget_max
+                .map_or(config.network_budget_max, PositiveDuration::into_duration),
             network_reserve_percentile: self.network_reserve_percentile,
             network_reserve_fast_rise: self.network_reserve_fast_rise,
             return_budget_overrun_tolerance: self.return_budget_overrun_tolerance.into_duration(),
-            ..tempo_payload_types::EstimatorConfig::default()
+            ..config
         }
     }
 

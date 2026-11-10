@@ -31,7 +31,7 @@ pub(super) struct NetworkTracker {
     minimum_reservation: Duration,
     maximum_reservation: Duration,
     current_reservation: Duration,
-    percentile: usize,
+    reserve_percentile: usize,
     fast_rise: bool,
 }
 
@@ -47,7 +47,7 @@ impl NetworkTracker {
             minimum_reservation: config.network_budget,
             maximum_reservation,
             current_reservation: config.network_budget,
-            percentile: usize::from(config.network_reserve_percentile),
+            reserve_percentile: usize::from(config.network_reserve_percentile),
             fast_rise: config.network_reserve_fast_rise,
         }
     }
@@ -124,25 +124,25 @@ impl NetworkTracker {
     }
 
     /// Expires feedback and takes one bounded step toward the configured percentile, or the minimum
-    /// with fewer than four samples, to avoid selecting the maximum. Two
+    /// during the initial warm-up of fewer than four samples. Two
     /// consecutive samples optionally raise the target to at least the smaller of those
     /// two, so a single outlier cannot force a rise in a sparse window.
     pub(super) fn reserve_for_proposal(&mut self, now: Instant) -> Duration {
         self.prune(now);
-        let target = sample_percentile(&self.samples, self.percentile).map_or(
+        let target = sample_percentile(&self.samples, self.reserve_percentile).map_or(
             self.minimum_reservation,
-            |percentile| {
-                let percentile = if self.samples.len() < 4 {
+            |percentile_reservation| {
+                let percentile_reservation = if self.samples.len() < 4 {
                     self.minimum_reservation
                 } else {
-                    percentile
+                    percentile_reservation
                 };
                 let mut newest = self.samples.iter().rev().map(|(_, value)| *value);
                 let observed = match (newest.next(), newest.next()) {
                     (Some(last), Some(previous)) if self.fast_rise => {
-                        percentile.max(last.min(previous))
+                        percentile_reservation.max(last.min(previous))
                     }
-                    _ => percentile,
+                    _ => percentile_reservation,
                 };
                 observed.clamp(self.minimum_reservation, self.maximum_reservation)
             },

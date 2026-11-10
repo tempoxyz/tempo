@@ -9,16 +9,16 @@ pub const DEFAULT_TARGET_BLOCK_TIME: Duration = Duration::from_millis(550);
 pub const DEFAULT_NETWORK_BUDGET: Duration = Duration::from_millis(50);
 
 /// Largest default learned network reservation.
-pub const DEFAULT_NETWORK_BUDGET_MAX: Duration = Duration::from_millis(300);
+const DEFAULT_NETWORK_BUDGET_MAX: Duration = Duration::from_millis(300);
 /// Percentile followed by network reservation estimates.
 pub const DEFAULT_NETWORK_RESERVE_PERCENTILE: u8 = 75;
-/// Accepted timer overshoot when recording returned proposals.
-pub const DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE: Duration = Duration::from_millis(5);
+/// Accepted replay-adjusted overrun when recording returned proposals.
+const DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE: Duration = Duration::from_millis(5);
 
 /// How proposal time is reserved for the network.
 #[derive(Clone, Copy, Debug)]
 pub enum NetworkReservation {
-    /// Learn from finalized successors, using p75 and corroborated fast rises.
+    /// Learn from finalized successors using the configured percentile and fast-rise policy.
     Adaptive,
     /// Keep the configured reservation unchanged and allow overrun observations.
     Fixed,
@@ -54,7 +54,10 @@ impl EstimatorConfig {
         Self {
             target_block_time,
             network_budget,
-            network_budget_max: Self::default_network_budget_max(target_block_time, network_budget),
+            network_budget_max: network_budget
+                .saturating_add(target_block_time.saturating_sub(network_budget) / 2)
+                .min(DEFAULT_NETWORK_BUDGET_MAX)
+                .max(network_budget),
             network_reserve_percentile: DEFAULT_NETWORK_RESERVE_PERCENTILE,
             network_reserve_fast_rise: true,
             return_budget_overrun_tolerance: DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
@@ -63,20 +66,11 @@ impl EstimatorConfig {
         }
     }
 
-    /// Default learned cap: the floor plus half the initial proposal allowance,
-    /// at most 300 ms and never below the floor.
-    pub fn default_network_budget_max(
-        target_block_time: Duration,
-        network_budget: Duration,
-    ) -> Duration {
-        network_budget
-            .saturating_add(target_block_time.saturating_sub(network_budget) / 2)
-            .min(DEFAULT_NETWORK_BUDGET_MAX)
-            .max(network_budget)
-    }
-
-    /// Rejects a network reservation that leaves no positive proposal allowance.
-    /// Call before constructing an estimator to return an error instead of panicking.
+    /// Checks that the floor leaves a positive proposal allowance, the adaptive
+    /// cap is between the floor (inclusive) and target (exclusive), and the
+    /// network percentile is from 50 to 100 inclusive. Fixed reservations ignore
+    /// the adaptive cap. Returns an error describing an invalid setting.
+    /// Call before constructing an estimator to handle invalid inputs without panicking.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.network_budget >= self.target_block_time {
             return Err(ConfigError::NetworkBudget {
