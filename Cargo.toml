@@ -12,7 +12,8 @@ publish = false
 
 [workspace]
 members = [
-  "contrib/antithesis/reth-trie",
+  "contrib/antithesis/reth-proofs",
+  "contrib/antithesis/reth-state-root",
   "bin/tempo",
   "crates/alloy",
   "crates/chainspec",
@@ -134,7 +135,7 @@ debug-assertions = true
 overflow-checks = true
 
 # The fuzz profile for Antithesis images built with coverage instrumentation (see
-# zones/antithesis/Dockerfile). Antithesis cannot symbolize instrumented code that link-time
+# contrib/antithesis/zones/Dockerfile). Antithesis cannot symbolize instrumented code that link-time
 # optimization inlined or merged, so it instruments one codegen unit per crate without LTO.
 [profile.antithesis]
 inherits = "fuzz"

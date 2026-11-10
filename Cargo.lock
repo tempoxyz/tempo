@@ -11789,6 +11789,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-proofs-antithesis"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "antithesis-instrumentation",
+ "antithesis_sdk",
+ "evm2",
+ "eyre",
+ "rand 0.9.5",
+ "reth-chain-state",
+ "reth-chainspec",
+ "reth-db",
+ "reth-db-common",
+ "reth-engine-primitives",
+ "reth-engine-tree",
+ "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-evm-ethereum",
+ "reth-execution-types",
+ "reth-node-builder",
+ "reth-node-core",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-storage-overlay",
+ "reth-tasks",
+ "reth-trie",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "reth-provider"
 version = "2.10.1"
 source = "git+https://github.com/paradigmxyz/reth?rev=5efe80f515c96fa34b569a22fb810b54f914cfb0#5efe80f515c96fa34b569a22fb810b54f914cfb0"
@@ -12342,6 +12377,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-state-root-antithesis"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "antithesis-instrumentation",
+ "antithesis_sdk",
+ "evm2",
+ "eyre",
+ "metrics-util",
+ "rand 0.9.5",
+ "reth-chain-state",
+ "reth-chainspec",
+ "reth-db",
+ "reth-db-api",
+ "reth-db-common",
+ "reth-engine-primitives",
+ "reth-engine-tree",
+ "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-evm-ethereum",
+ "reth-execution-types",
+ "reth-node-builder",
+ "reth-node-core",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-stages-types",
+ "reth-storage-overlay",
+ "reth-tasks",
+ "reth-trie",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "reth-static-file"
 version = "2.10.1"
 source = "git+https://github.com/paradigmxyz/reth?rev=5efe80f515c96fa34b569a22fb810b54f914cfb0#5efe80f515c96fa34b569a22fb810b54f914cfb0"
@@ -12601,44 +12674,6 @@ dependencies = [
  "reth-trie-sparse",
  "tracing",
  "triehash",
-]
-
-[[package]]
-name = "reth-trie-antithesis"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "alloy-rlp",
- "alloy-trie",
- "antithesis-instrumentation",
- "antithesis_sdk",
- "evm2",
- "eyre",
- "metrics-util",
- "rand 0.9.5",
- "reth-chain-state",
- "reth-chainspec",
- "reth-db",
- "reth-db-api",
- "reth-db-common",
- "reth-engine-primitives",
- "reth-engine-tree",
- "reth-ethereum-primitives",
- "reth-evm",
- "reth-evm-ethereum",
- "reth-execution-types",
- "reth-node-builder",
- "reth-node-core",
- "reth-primitives-traits",
- "reth-provider",
- "reth-stages-types",
- "reth-storage-overlay",
- "reth-tasks",
- "reth-trie",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]

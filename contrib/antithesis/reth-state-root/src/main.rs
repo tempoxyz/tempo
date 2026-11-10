@@ -94,7 +94,7 @@ impl Default for Config {
             round: 0,
             rounds: None,
             input: None,
-            datadir: Some(PathBuf::from("/data/reth-trie")),
+            datadir: Some(PathBuf::from("/data/reth-state-root")),
             blocks: 64,
             updates: 64,
             proof_workers: 2,
@@ -294,7 +294,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     // Snapshot before drawing a new input, so branches can explore distinct operations.
     static SETUP: Once = Once::new();
     SETUP.call_once(|| {
-        setup_complete(&json!({"workload": "reth-trie", "database_initialized": true}))
+        setup_complete(&json!({"workload": "reth-state-root", "database_initialized": true}))
     });
     let input_path = datadir.join("input.json");
     let input = if input_path.exists() {
@@ -621,7 +621,7 @@ fn workload() -> Result<()> {
         config.datadir = Some(campaign.start()?);
         config.input = input.clone();
         run(&mut config, &snapshotter)
-            .wrap_err_with(|| format!("reth-trie-antithesis round={}", config.round))?;
+            .wrap_err_with(|| format!("reth-state-root-antithesis round={}", config.round))?;
         assert_sometimes!(true, "Trie workload completes a round");
         // Only a verified, fully flushed round can retire its database and journal.
         campaign.retire()?;

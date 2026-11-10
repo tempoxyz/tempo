@@ -11,17 +11,17 @@ instrumented processes. Outside Antithesis the shim finds no `libvoidstar` and d
 Build the images from the repository root, with the contract submodules checked out:
 
 ```bash
-docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
+docker build -f contrib/antithesis/zones/Dockerfile -t tempo-zones-antithesis:latest \
     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
-docker build -f zones/antithesis/Dockerfile --target workload -t tempo-zones-antithesis-workload:latest \
+docker build -f contrib/antithesis/zones/Dockerfile --target workload -t tempo-zones-antithesis-workload:latest \
     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
-docker build -f zones/antithesis/Dockerfile.config -t tempo-zones-antithesis-config:latest zones/antithesis
+docker build -f contrib/antithesis/zones/Dockerfile.config -t tempo-zones-antithesis-config:latest contrib/antithesis/zones
 ```
 
 Run it locally:
 
 ```bash
-docker compose -f zones/antithesis/docker-compose.yaml up
+docker compose -f contrib/antithesis/zones/docker-compose.yaml up
 ```
 
 `ZONES_IMAGE` overrides the image the L1, provisioner and zone nodes run, and `WORKLOAD_IMAGE` the
@@ -61,6 +61,6 @@ transfer only once its receipt confirms it; the checks compare those records wit
 Run a command against the local stack the way the platform does:
 
 ```bash
-docker compose -f zones/antithesis/docker-compose.yaml exec workload \
+docker compose -f contrib/antithesis/zones/docker-compose.yaml exec workload \
     /opt/antithesis/test/v1/zone_payments/first_seed
 ```

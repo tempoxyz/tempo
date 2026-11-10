@@ -1,4 +1,4 @@
-name: Antithesis Reth Trie Images
+name: Antithesis Reth Proofs Images
 
 permissions:
   contents: read
@@ -15,13 +15,16 @@ on:
       - "xtask/**"
       - "mainnet-network-identity.json"
       - "testnet-network-identity.json"
-      - "contrib/antithesis/reth-trie/**"
-      - ".github/workflows/antithesis-reth-trie.yml"
+      - "contrib/antithesis/reth-proofs/**"
+      # The workload compiles reth-state-root's reference model and persistence writer.
+      - "contrib/antithesis/reth-state-root/src/model.rs"
+      - "contrib/antithesis/reth-state-root/src/persistence.rs"
+      - ".github/workflows/antithesis-reth-proofs.yml"
   workflow_dispatch:
 
 # Do not cancel a publication between the workload push and its paired config push.
 concurrency:
-  group: antithesis-reth-trie-${{ github.ref }}
+  group: antithesis-reth-proofs-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -29,7 +32,7 @@ env:
 
 jobs:
   build-and-push:
-    name: Build and push Antithesis trie images
+    name: Build and push Antithesis proof images
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
@@ -54,7 +57,7 @@ jobs:
           {
             echo "tag=$tag"
             echo "branch=$branch"
-            echo "image_tags=$REGISTRY/tempo-reth-trie-antithesis:$tag,$REGISTRY/tempo-reth-trie-antithesis:$branch"
+            echo "image_tags=$REGISTRY/tempo-reth-proofs-antithesis:$tag,$REGISTRY/tempo-reth-proofs-antithesis:$branch"
           } >> "$GITHUB_OUTPUT"
 
       - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -72,7 +75,7 @@ jobs:
         with:
           project: 0c6tg19qsp
           context: .
-          file: contrib/antithesis/reth-trie/Dockerfile
+          file: contrib/antithesis/reth-proofs/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.image_tags }}
@@ -84,23 +87,23 @@ jobs:
         run: |
           # Fail closed rather than publish a config that silently uses a moving tag.
           [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
-          dir="$RUNNER_TEMP/antithesis-reth-trie-config"
+          dir="$RUNNER_TEMP/antithesis-reth-proofs-config"
           mkdir -p "$dir"
-          cp contrib/antithesis/reth-trie/docker-compose.yaml contrib/antithesis/reth-trie/Dockerfile.config "$dir/"
-          printf 'RETH_TRIE_IMAGE=%s/tempo-reth-trie-antithesis:%s@%s\n' "$REGISTRY" "$TAG" "$DIGEST" > "$dir/.env"
+          cp contrib/antithesis/reth-proofs/docker-compose.yaml contrib/antithesis/reth-proofs/Dockerfile.config "$dir/"
+          printf 'RETH_PROOFS_IMAGE=%s/tempo-reth-proofs-antithesis:%s@%s\n' "$REGISTRY" "$TAG" "$DIGEST" > "$dir/.env"
 
       - name: Build and push config image
         id: config
         uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           project: 0c6tg19qsp
-          context: ${{ runner.temp }}/antithesis-reth-trie-config
-          file: ${{ runner.temp }}/antithesis-reth-trie-config/Dockerfile.config
+          context: ${{ runner.temp }}/antithesis-reth-proofs-config
+          file: ${{ runner.temp }}/antithesis-reth-proofs-config/Dockerfile.config
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/tempo-reth-trie-antithesis-config:${{ steps.tags.outputs.tag }}
-            ${{ env.REGISTRY }}/tempo-reth-trie-antithesis-config:${{ steps.tags.outputs.branch }}
+            ${{ env.REGISTRY }}/tempo-reth-proofs-antithesis-config:${{ steps.tags.outputs.tag }}
+            ${{ env.REGISTRY }}/tempo-reth-proofs-antithesis-config:${{ steps.tags.outputs.branch }}
 
       - name: Record immutable image pair
         env:
@@ -110,8 +113,8 @@ jobs:
         run: |
           [[ "$CONFIG_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           {
-            echo '### Antithesis reth trie image pair'
+            echo '### Antithesis reth proofs image pair'
             echo ''
-            echo "Workload: \`$REGISTRY/tempo-reth-trie-antithesis:$TAG@$IMAGE_DIGEST\`"
-            echo "Config: \`$REGISTRY/tempo-reth-trie-antithesis-config:$TAG@$CONFIG_DIGEST\`"
+            echo "Workload: \`$REGISTRY/tempo-reth-proofs-antithesis:$TAG@$IMAGE_DIGEST\`"
+            echo "Config: \`$REGISTRY/tempo-reth-proofs-antithesis-config:$TAG@$CONFIG_DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"

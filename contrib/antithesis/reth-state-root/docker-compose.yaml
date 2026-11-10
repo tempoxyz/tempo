@@ -1,8 +1,8 @@
 services:
-  reth-trie:
-    image: ${RETH_TRIE_IMAGE:-tempo-reth-trie-antithesis:latest}
-    container_name: reth-trie
-    hostname: reth-trie
+  reth-state-root:
+    image: ${RETH_STATE_ROOT_IMAGE:-tempo-reth-state-root-antithesis:latest}
+    container_name: reth-state-root
+    hostname: reth-state-root
     init: true
     networks:
       antithesis:

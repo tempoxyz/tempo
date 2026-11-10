@@ -1,7 +1,9 @@
 **/.git
 contrib/
-!contrib/antithesis/reth-trie/Cargo.toml
-!contrib/antithesis/reth-trie/src/**
+!contrib/antithesis/reth-proofs/Cargo.toml
+!contrib/antithesis/reth-proofs/src/**
+!contrib/antithesis/reth-state-root/Cargo.toml
+!contrib/antithesis/reth-state-root/src/**
 docs/
 localnet/
 scripts/
