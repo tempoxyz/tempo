@@ -137,7 +137,7 @@ where
     /// Updates the 2d nonce pool with the given state changes and the new tip's timestamp.
     ///
     /// Pool maintenance calls this for every committed chain, including commits too deep for
-    /// [`TransactionPool::on_canonical_state_change`], so the time-locked eviction order never
+    /// [`TransactionPoolExt::on_canonical_state_change`], so the time-locked eviction order never
     /// runs on a stale tip timestamp.
     ///
     /// Returns mined AA transactions.
