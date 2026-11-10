@@ -605,15 +605,18 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
         over: |l: &Leaves| l.delegates.iter(),
         judge: |l, grant| {
             let delegate = &grant.delegate;
-            let pre = l.of.get(delegate)?.before;
+            let LeafChange { before, after } = *l.of.get(delegate)?;
+            let eligible = |hash| hash == KECCAK256_EMPTY || hash == MARKER_CODE_HASH;
+            // An authorization list runs before the calls and may clear the delegate's code first.
+            let cleared = l.tx.authority.authorization_list && eligible(after.code_hash);
             let reserved = spec::reserved(*delegate);
             ensure!(
                 *delegate != grant.parent
                     && reserved.is_none()
-                    && (pre.code_hash == KECCAK256_EMPTY || pre.code_hash == MARKER_CODE_HASH),
+                    && (eligible(before.code_hash) || cleared),
                 "granted by {} to a delegate with code hash {}{}",
                 grant.parent,
-                pre.code_hash,
+                before.code_hash,
                 reserved.map_or_else(String::new, |space| format!(" at {space}"))
             )
         },
