@@ -1,0 +1,61 @@
+name: Delete Zones devnet from PR
+
+# "/delete-zones-devnet" on a pull request deletes the Zones devnet that
+# "/build-zones-devnet" created for it (zones-pr-<number>) through the
+# tempoxyz/workflows zones-devnet-pr-delete template, which comments the result
+# on the PR. It runs no code from the PR, so closed PRs and forks may use it.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  publish:
+    permissions:
+      id-token: write
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.issue.pull_request && github.event.comment.author_association == 'MEMBER' && startsWith(github.event.comment.body, '/delete-zones-devnet')
+    steps:
+    - name: Secure runner
+      uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+    - name: Parse command
+      env:
+        COMMENT_BODY: ${{ github.event.comment.body }}
+      run: |
+        set -euo pipefail
+
+        read -r command _ <<< "$(printf '%s\n' "$COMMENT_BODY" | tr -d '\r' | head -n 1)"
+        if [[ "$command" != "/delete-zones-devnet" ]]; then
+          echo "Unrecognized command: $command" >&2
+          exit 1
+        fi
+
+    - name: Publish event
+      env:
+        EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+        EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+        RUNNER_TEMP: ${{ runner.temp }}
+        GH_REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.issue.number }}
+        REQUESTED_BY: ${{ github.event.comment.user.login }}
+      run: |
+        set -euo pipefail
+
+        echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+        echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+        payload=$(jq -cn \
+          --arg repository "$GH_REPO" \
+          --arg pr_number "$PR_NUMBER" \
+          --arg requested_by "$REQUESTED_BY" \
+          '{repository: $repository, event: "delete_zones_devnet", data: {pr_number: $pr_number, name: ("zones-pr-" + $pr_number), requested_by: $requested_by}}')
+
+        curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+          -H "Content-Type: application/json" \
+          --key "${RUNNER_TEMP}/key" \
+          --cert "${RUNNER_TEMP}/cert" \
+          -d "$payload"
