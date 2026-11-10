@@ -24,7 +24,7 @@ RUN --mount=type=cache,id=antithesis-reth-proofs-cargo-registry,target=/usr/loca
     --mount=type=cache,id=antithesis-reth-proofs-cargo-git,target=/usr/local/cargo/git,sharing=private \
     --mount=type=cache,id=antithesis-reth-proofs-target,target=/work/target,sharing=private \
     touch contrib/antithesis/reth-proofs/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
-      contrib/antithesis/trie-shapes/src/bin/reth-proofs-commands.rs \
+      contrib/antithesis/trie-shapes/src/bin/reth-proofs-commands/main.rs \
     && cargo build --locked --profile antithesis -p reth-proofs-antithesis \
       --features reth-proofs-antithesis/fuzz --bin reth-proofs-antithesis \
       --target x86_64-unknown-linux-gnu \

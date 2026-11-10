@@ -3,12 +3,14 @@
 //! contrib/antithesis/reth-proofs/Dockerfile), so only the server reports coverage and has its
 //! threads paused.
 
+mod check;
+
 use antithesis_sdk::{
     assert_always, assert_always_or_unreachable, assert_unreachable, random::AntithesisRng,
 };
 use antithesis_trie_shapes::{
     harness::{self, BlockRoot, Client, Request, Response},
-    proofs::{self, Proved},
+    proofs::Proved,
 };
 use eyre::{bail, eyre, Result, WrapErr};
 use rand_09::Rng;
@@ -22,7 +24,7 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
     let mut rng = AntithesisRng;
     for _ in 0..count {
         let BlockRoot { number, root } = summary.roots[rng.random_range(0..summary.roots.len())];
-        let targets = proofs::targets(&mut rng, &summary.accounts, &summary.collider);
+        let targets = check::targets(&mut rng, &summary.accounts, &summary.collider);
         let request =
             Request::GetProof { round: summary.round, block: number, targets: targets.clone() };
         let Proved { proofs, witness } = match client.call(&request)? {
@@ -33,7 +35,7 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
             }
             Some(other) => bail!("unexpected answer to get_proof: {other:?}"),
         };
-        let result = proofs::check(root, &targets, &proofs);
+        let result = check::check(root, &targets, &proofs);
         assert_always!(
             result.is_ok(),
             "eth_getMultiProof proofs verify against the model's state root",
@@ -41,8 +43,8 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
                 "error": result.as_ref().err().map(|error| format!("{error:#}"))})
         );
         result.wrap_err_with(|| format!("proofs at block {number}"))?;
-        let result = proofs::from_witness(root, &targets, &witness)
-            .and_then(|proofs| proofs::check(root, &targets, &proofs));
+        let result = check::from_witness(root, &targets, &witness)
+            .and_then(|proofs| check::check(root, &targets, &proofs));
         assert_always!(
             result.is_ok(),
             "Proofs rebuilt from the execution witness verify against the model's state root",

@@ -14,7 +14,7 @@ Each directory is one Antithesis target with its own workload image, config imag
 
 Both reth targets run a `serve` process that owns the database and the model and builds blocks only
 when a test template command asks over a Unix socket (`trie-shapes/src/harness.rs`). The commands, in
-`test/v1/<template>/`, are subcommands of a separate binary (`trie-shapes/src/bin/<target>-commands.rs`)
+`test/v1/<template>/`, are subcommands of a separate binary (`<target>-commands` in `trie-shapes/src/bin`)
 built without coverage instrumentation, so only the server reports coverage and has its threads paused:
 
 | Command | What it does |
