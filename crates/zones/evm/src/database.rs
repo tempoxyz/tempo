@@ -196,7 +196,6 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
             .l1
             .read_l1_commitment_unmetered(*address, anchor)
             .map_err(|error| DatabaseError::new(error, true))?;
-        self.l1.note_mirrored_read(anchor);
         if commitment.is_zero() {
             return Ok(info);
         }
@@ -224,7 +223,6 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
             .l1
             .read_l1_storage_unmetered(*address, B256::from(*slot), anchor)
             .map_err(|error| DatabaseError::new(error, true))?;
-        self.l1.note_mirrored_read(anchor);
         Ok(value.into())
     }
 

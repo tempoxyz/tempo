@@ -114,7 +114,7 @@ impl ZoneBlockPhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ZoneTransactionKind {
+enum ZoneTransactionKind {
     AdvanceTempo,
     AdvanceTempoHeaders,
     Regular,
@@ -123,7 +123,7 @@ pub(crate) enum ZoneTransactionKind {
 }
 
 impl ZoneTransactionKind {
-    pub(crate) fn classify<'a, I>(is_system_tx: bool, calls: impl Fn() -> I) -> Self
+    fn classify<'a, I>(is_system_tx: bool, calls: impl Fn() -> I) -> Self
     where
         I: Iterator<Item = (TxKind, &'a Bytes)>,
     {
