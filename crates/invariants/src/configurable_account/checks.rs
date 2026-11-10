@@ -171,6 +171,16 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             )
         },
     },
+    // The transaction's own configurable signature names its sender.
+    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L338>
+    check! {
+        id: "TEMPO-ACCOUNT-SENDER-QUORUM",
+        over: |step: &AccountStep| quorums(step).filter(|q| q.role == Role::Sender),
+        judge: |s, q| {
+            let sender = s.tx.as_ref()?.sender;
+            ensure!(q.account == sender, "authorizes a transaction from {sender}")
+        },
+    },
     // Approvals are ascending owners that first reach the threshold at the last one.
     // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L519-L520>
     check! {
@@ -244,7 +254,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             Some(Verdict::Holds)
         },
     },
-    // Migration is signed by the sender's own original key.
+    // Migration is signed by the sender's own original key, without an authorization list.
     // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1113.md#L65-L71>
     check! {
         id: "TEMPO-ACCOUNT-UPGRADE-ROOT",
@@ -256,11 +266,14 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
                 account: e.account,
             };
             ensure!(
-                tx.sender == e.account && tx.authority.keys.contains(&root),
-                "in a transaction from {} signed by {:?}, {:?}",
+                tx.sender == e.account
+                    && tx.authority.keys.contains(&root)
+                    && !tx.authority.authorization_list,
+                "in a transaction from {} signed by {:?}, {:?}{}",
                 tx.sender,
                 tx.authority.keys,
-                tx.authority.quorums.iter().map(ToString::to_string).collect::<Vec<_>>()
+                tx.authority.quorums.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                if tx.authority.authorization_list { ", with an authorization list" } else { "" }
             )
         },
     },
@@ -324,9 +337,15 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         judge: |s, _| {
             let authority = &s.tx.as_ref()?.authority;
             let grant = authority.grant.map(|g| g.key_type);
+            let granted = s
+                .events::<KeyAuthorized>(ACCOUNT_KEYCHAIN_ADDRESS)
+                .into_iter()
+                .filter(|e| e.signatureType == CONFIGURABLE_KEY_TYPE)
+                .count();
             ensure!(
-                authority.quorums.is_empty() && grant != Some(CONFIGURABLE_KEY_TYPE),
-                "before T14 carries {} configurable-account signatures, grant key type {grant:?}",
+                authority.quorums.is_empty() && grant != Some(CONFIGURABLE_KEY_TYPE) && granted == 0,
+                "before T14 carries {} configurable-account signatures, grant key type {grant:?}, \
+                 {granted} key-type-3 grants",
                 authority.quorums.len()
             )
         },
@@ -368,6 +387,42 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
                 None => Verdict::Holds,
                 Some(space) => Verdict::Broken(format!("registers at {space}")),
             })
+        },
+    },
+    // An inline grant is signed by its parent's own key or quorum, or by an admin key the
+    // parent already had that also signs the transaction.
+    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L61>
+    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L175>
+    check! {
+        id: "TEMPO-ACCOUNT-GRANT-SIGNER",
+        over: |step: &AccountStep| {
+            step.tx
+                .iter()
+                .filter(|tx| tx.authority.active && tx.authority.grant.is_some())
+                .flat_map(|tx| tx.authority.key_authorization_signers())
+        },
+        judge: |s, signer| {
+            let tx = s.tx.as_ref()?;
+            if *signer == tx.sender {
+                return Some(Verdict::Holds);
+            }
+            let by_quorum = tx
+                .authority
+                .quorums
+                .iter()
+                .any(|q| q.role == Role::KeyAuthorization && q.account == *signer);
+            let signs_tx = tx.authority.keys.contains(&Key {
+                role: Role::AccessKey,
+                account: *signer,
+            });
+            if by_quorum || !signs_tx {
+                return Some(Verdict::Broken(format!(
+                    "signed by {signer}, not the parent {} or its acting admin key",
+                    tx.sender
+                )));
+            }
+            let admin = *s.pre.admins.get(&(tx.sender, *signer))?;
+            ensure!(admin, "signed by {signer}, not an admin key of {}", tx.sender)
         },
     },
     // Grants change only in the parent's own transactions, by its key or quorum, and never as an admin key.
@@ -454,21 +509,17 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
     // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L177>
     check! {
         id: "TEMPO-ACCOUNT-GRANT-DELEGATE",
-        over: |l: &Leaves| {
-            l.tx.authority
-                .grant
-                .filter(|g| g.key_type == CONFIGURABLE_KEY_TYPE)
-                .map(|g| g.key_id)
-        },
-        judge: |l, delegate| {
+        over: |l: &Leaves| l.delegates.iter(),
+        judge: |l, grant| {
+            let delegate = &grant.delegate;
             let pre = l.of.get(delegate)?.before;
             let reserved = spec::reserved(*delegate);
             ensure!(
-                *delegate != l.tx.sender
+                *delegate != grant.parent
                     && reserved.is_none()
                     && (pre.code_hash == KECCAK256_EMPTY || pre.code_hash == MARKER_CODE_HASH),
                 "granted by {} to a delegate with code hash {}{}",
-                l.tx.sender,
+                grant.parent,
                 pre.code_hash,
                 reserved.map_or_else(String::new, |space| format!(" at {space}"))
             )

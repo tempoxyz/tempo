@@ -2,7 +2,9 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use alloy_primitives::{Address, B256, KECCAK256_EMPTY};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, Log};
+use alloy_sol_types::SolEvent;
+use tempo_contracts::precompiles::IAccountKeychain::{KeyAuthorized, isAdminKeyCall};
 
 use crate::{Observe, ObserveError, Tx, Views, optional, view_many};
 
@@ -23,6 +25,9 @@ pub struct Commitments {
     pub precompile: Address,
     /// Each observed account's commitment, zero for an account without a configuration.
     pub of: BTreeMap<Address, B256>,
+    /// Whether each queried `(account, key)` is the account's root or an active admin key, as the
+    /// keychain reports it; unanswered reads are left out.
+    pub admins: BTreeMap<(Address, Address), bool>,
 }
 
 impl Observe for Commitments {
@@ -33,6 +38,8 @@ impl Observe for Commitments {
         let At {
             precompile,
             accounts,
+            keychain,
+            admins: queries,
         } = at;
         let calls: Vec<_> = accounts
             .iter()
@@ -54,15 +61,39 @@ impl Observe for Commitments {
                 of.insert(account, commitment);
             }
         }
-        Ok(Self { precompile, of })
+        let calls: Vec<_> = queries
+            .iter()
+            .map(|&(account, key_id)| {
+                (
+                    keychain,
+                    isAdminKeyCall {
+                        account,
+                        keyId: key_id,
+                    },
+                )
+            })
+            .collect();
+        let admins = queries
+            .iter()
+            .zip(view_many(views, &calls)?)
+            .filter_map(|(&query, admin)| Some((query, admin?)))
+            .collect();
+        Ok(Self {
+            precompile,
+            of,
+            admins,
+        })
     }
 }
 
-/// The precompile and the accounts whose commitments to read.
+/// The precompile and the accounts whose commitments to read, and the keychain and the
+/// `(account, key)` pairs whose admin status to read.
 #[derive(Debug, Clone, Copy)]
 pub struct At<'a> {
     pub precompile: Address,
     pub accounts: &'a [Address],
+    pub keychain: Address,
+    pub admins: &'a [(Address, Address)],
 }
 
 /// Who a transaction's signatures authorize it for.
@@ -76,6 +107,8 @@ pub struct Authority {
     pub keys: Vec<Key>,
     /// The inline key authorization's grant.
     pub grant: Option<Grant>,
+    /// Whether the transaction carries a nonempty EIP-7702 or Tempo authorization list.
+    pub authorization_list: bool,
 }
 
 impl Authority {
@@ -91,6 +124,30 @@ impl Authority {
             .map(|q| q.account)
             .chain(self.keys.iter().map(|k| k.account))
             .chain(self.grant.iter().map(|g| g.key_id))
+    }
+
+    /// The accounts the inline key authorization's signatures act for.
+    pub fn key_authorization_signers(&self) -> impl Iterator<Item = Address> + '_ {
+        self.quorums
+            .iter()
+            .filter(|q| q.role == Role::KeyAuthorization)
+            .map(|q| q.account)
+            .chain(
+                self.keys
+                    .iter()
+                    .filter(|k| k.role == Role::KeyAuthorization)
+                    .map(|k| k.account),
+            )
+    }
+
+    /// The `(sender, signer)` pairs whose admin status judges the inline key authorization: its
+    /// ordinary signers other than the sender.
+    pub fn admin_queries(&self, sender: Address) -> Vec<(Address, Address)> {
+        self.keys
+            .iter()
+            .filter(|k| k.role == Role::KeyAuthorization && k.account != sender)
+            .map(|k| (sender, k.account))
+            .collect()
     }
 }
 
@@ -196,4 +253,50 @@ pub struct LeafChange {
 pub struct Leaves {
     pub of: BTreeMap<Address, LeafChange>,
     pub tx: Tx,
+    /// The grants to configurable delegates the transaction made.
+    pub delegates: Vec<DelegateGrant>,
+}
+
+/// A grant of key type 3: `parent` granting its configurable delegate `delegate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DelegateGrant {
+    pub parent: Address,
+    pub delegate: Address,
+}
+
+impl fmt::Display for DelegateGrant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "grant of {} to delegate {}", self.parent, self.delegate)
+    }
+}
+
+/// The grants to configurable delegates the keychain at `keychain` made in `logs` (its
+/// `KeyAuthorized` events of key type 3), and `tx`'s inline grant when it names one.
+pub fn delegate_grants<'a>(
+    keychain: Address,
+    logs: impl IntoIterator<Item = &'a Log>,
+    tx: &Tx,
+) -> Vec<DelegateGrant> {
+    let mut grants: Vec<DelegateGrant> = logs
+        .into_iter()
+        .filter(|log| log.address == keychain)
+        .filter_map(|log| KeyAuthorized::decode_log_data(&log.data).ok())
+        .filter(|e| e.signatureType == spec::CONFIGURABLE_KEY_TYPE)
+        .map(|e| DelegateGrant {
+            parent: e.account,
+            delegate: e.publicKey,
+        })
+        .chain(
+            tx.authority
+                .grant
+                .filter(|g| g.key_type == spec::CONFIGURABLE_KEY_TYPE)
+                .map(|g| DelegateGrant {
+                    parent: tx.sender,
+                    delegate: g.key_id,
+                }),
+        )
+        .collect();
+    grants.sort_unstable();
+    grants.dedup();
+    grants
 }
