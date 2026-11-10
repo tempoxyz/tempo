@@ -112,6 +112,15 @@ pub struct AA2dPool {
     queued_eviction_order: BTreeSet<EvictionKey>,
     /// Base fee used for transaction insertion and eviction-order priorities.
     base_fee: u64,
+    /// Timestamp of the latest canonical block.
+    tip_timestamp: u64,
+    /// Every pooled transaction (regular 2D and expiring nonce) that carries `valid_after`,
+    /// keyed by `(valid_after, submission_id)`.
+    ///
+    /// Transactions without `valid_after` are never inserted, so the index costs nothing for
+    /// them. The last entry is the transaction that becomes includable the latest, newest
+    /// submission first on ties.
+    time_locked: BTreeMap<(u64, u64), TxHash>,
     /// Tracks the number of transactions per sender for DoS protection.
     ///
     /// Bounded by pool size (max unique senders = pending_limit + queued_limit).
@@ -156,6 +165,8 @@ impl AA2dPool {
             pending_eviction_order: Default::default(),
             queued_eviction_order: Default::default(),
             base_fee: 0,
+            tip_timestamp: 0,
+            time_locked: Default::default(),
             txs_by_sender: Default::default(),
             txs_by_lane: Default::default(),
             pending_count: 0,
@@ -194,6 +205,27 @@ impl AA2dPool {
         self.base_fee = base_fee;
         self.rebuild_eviction_order();
         self.independent_transactions.on_new_base_fee(base_fee);
+    }
+
+    /// Sets the timestamp of the latest canonical block, which decides which pooled transactions
+    /// are still time-locked.
+    pub(crate) fn set_tip_timestamp(&mut self, timestamp: u64) {
+        self.tip_timestamp = timestamp;
+    }
+
+    /// Adds the transaction to the [`Self::time_locked`] index if it carries `valid_after`.
+    fn index_time_locked(&mut self, tx: &AA2dStoredTransaction) {
+        if let Some(valid_after) = tx.transaction.transaction.inner().valid_after() {
+            self.time_locked
+                .insert((valid_after, tx.submission_id), *tx.transaction.hash());
+        }
+    }
+
+    /// Removes the transaction from the [`Self::time_locked`] index.
+    fn unindex_time_locked(&mut self, tx: &AA2dStoredTransaction) {
+        if let Some(valid_after) = tx.transaction.transaction.inner().valid_after() {
+            self.time_locked.remove(&(valid_after, tx.submission_id));
+        }
     }
 
     fn rebuild_eviction_order(&mut self) {
@@ -346,6 +378,7 @@ impl AA2dPool {
             }
         };
         self.queued_size += transaction.transaction.size();
+        self.index_time_locked(&tx.inner);
 
         // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
         // This must happen after successful by_id insertion to avoid leaking slot entries
@@ -361,6 +394,7 @@ impl AA2dPool {
             self.by_hash.remove(replaced.inner.transaction.hash());
             // Remove from eviction set
             self.remove_eviction_key(replaced);
+            self.unindex_time_locked(&replaced.inner);
         }
 
         // insert transaction by hash
@@ -532,6 +566,10 @@ impl AA2dPool {
         };
 
         // Insert into expiring nonce map and by_hash
+        if let Some(valid_after) = transaction.transaction.inner().valid_after() {
+            self.time_locked
+                .insert((valid_after, pending_tx.submission_id), tx_hash);
+        }
         expiring_nonce_entry.insert(pending_tx);
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
@@ -901,6 +939,7 @@ impl AA2dPool {
 
         // Remove from eviction set
         self.remove_eviction_key(&tx);
+        self.unindex_time_locked(&tx.inner);
 
         // Clean up cached nonce key slots if this was the last transaction of the sequence
         if self.by_id.range(id.seq_id.range()).next().is_none()
@@ -1263,6 +1302,9 @@ impl AA2dPool {
     /// Evicts queued transactions first, then pending if either the transaction count or reported
     /// size exceeds the configured subpool limit. Pending eviction can demote descendants, so the
     /// queued limit is checked again afterwards.
+    ///
+    /// Pending eviction drops transactions that are still time-locked before any executable one,
+    /// see [`Self::evict_one_pending`].
     pub(crate) fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
@@ -1341,8 +1383,19 @@ impl AA2dPool {
     }
 
     /// Evicts one pending transaction, considering both regular 2D and expiring nonce txs.
-    /// Evicts the transaction with lowest priority; ties broken by submission order (newer first).
+    ///
+    /// A transaction whose `valid_after` is still in the future can't be included yet and so
+    /// never pays a fee in the meantime. It must not displace an executable transaction, so the
+    /// one that unlocks the latest (newest submission on ties) is evicted first. Otherwise the
+    /// transaction with lowest priority is evicted; ties broken by submission order (newer first).
     fn evict_one_pending(&mut self) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        // The last entry unlocks the latest, so if it is not locked, none are.
+        if let Some((&(valid_after, _), &hash)) = self.time_locked.last_key_value()
+            && valid_after > self.tip_timestamp
+        {
+            return self.remove_transaction_by_hash(&hash);
+        }
+
         let worst_2d = self
             .pending_eviction_order
             .first()
@@ -1423,6 +1476,7 @@ impl AA2dPool {
         pending_tx: AA2dStoredTransaction,
     ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         self.by_hash.remove(pending_tx.transaction.hash());
+        self.unindex_time_locked(&pending_tx);
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
             let expiring_hash = pending_tx
                 .transaction
@@ -1635,6 +1689,29 @@ impl AA2dPool {
             self.expiring_nonce_txs.len(),
             self.expiring_nonce_eviction_order.len()
         );
+        let time_locked_txs = self
+            .by_hash
+            .values()
+            .filter(|tx| tx.transaction.inner().valid_after().is_some())
+            .count();
+        assert_eq!(
+            self.time_locked.len(),
+            time_locked_txs,
+            "time_locked.len() ({}) != pooled txs with valid_after ({})",
+            self.time_locked.len(),
+            time_locked_txs
+        );
+        for ((valid_after, _), hash) in &self.time_locked {
+            let tx = self
+                .by_hash
+                .get(hash)
+                .expect("time_locked entry must point at a pooled tx");
+            assert_eq!(
+                tx.transaction.inner().valid_after(),
+                Some(*valid_after),
+                "time_locked entry valid_after mismatch"
+            );
+        }
         assert_eq!(
             self.by_id.len(),
             self.pending_eviction_order.len() + self.queued_eviction_order.len(),
@@ -8183,5 +8260,191 @@ mod tests {
         assert!(first.is_some(), "should yield the expiring nonce tx");
         assert_eq!(*first.unwrap().hash(), tx_hash);
         assert!(best.next().is_none());
+    }
+
+    /// Adds the transaction under T1 and returns the hashes it evicted.
+    fn add_and_collect_discarded(pool: &mut AA2dPool, tx: &TempoPooledTransaction) -> Vec<B256> {
+        let added = pool
+            .add_transaction(
+                Arc::new(wrap_valid_tx(tx.clone(), TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        pool.assert_invariants();
+        match added {
+            AddedTransaction::Pending(pending) => {
+                pending.discarded.iter().map(|tx| *tx.hash()).collect()
+            }
+            AddedTransaction::Parked { .. } => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn evicts_time_locked_before_executable() {
+        let mut pool = eviction_test_pool();
+        pool.set_tip_timestamp(100);
+
+        // Executable but pays no tip, so it has the lowest priority in the pool.
+        let executable = TxBuilder::aa(Address::random())
+            .nonce_key(U256::ONE)
+            .max_priority_fee(0)
+            .build();
+        let locked = |key: u64, valid_after: u64| {
+            TxBuilder::aa(Address::random())
+                .nonce_key(U256::from(key))
+                .valid_after(valid_after)
+                .build()
+        };
+        let locked_a = locked(2, 150);
+        let locked_b = locked(3, 150);
+        let locked_c = locked(4, 140);
+
+        assert!(add_and_collect_discarded(&mut pool, &executable).is_empty());
+        assert!(add_and_collect_discarded(&mut pool, &locked_a).is_empty());
+        assert_eq!(pool.time_locked.len(), 1);
+
+        // Same `valid_after`: the newest submission is evicted first.
+        assert_eq!(
+            add_and_collect_discarded(&mut pool, &locked_b),
+            vec![*locked_b.hash()]
+        );
+        // A later `valid_after` is evicted before an earlier one, regardless of submission order.
+        assert_eq!(
+            add_and_collect_discarded(&mut pool, &locked_c),
+            vec![*locked_a.hash()]
+        );
+        assert!(pool.contains(executable.hash()));
+        assert!(pool.contains(locked_c.hash()));
+        assert_eq!(pool.time_locked.len(), 1);
+
+        // Once the tip reaches `valid_after` nothing is locked and the tip-0 tx loses on priority.
+        pool.set_tip_timestamp(140);
+        let paying = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(5))
+            .build();
+        assert_eq!(
+            add_and_collect_discarded(&mut pool, &paying),
+            vec![*executable.hash()]
+        );
+        assert!(pool.contains(locked_c.hash()));
+
+        // Removing the unlocked tx cleans the index.
+        pool.remove_transactions([locked_c.hash()].into_iter());
+        assert!(pool.time_locked.is_empty());
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn evicts_time_locked_expiring_nonce_before_executable() {
+        let mut pool = eviction_test_pool();
+        pool.set_tip_timestamp(100);
+
+        let locked_expiring = TxBuilder::aa(Address::random())
+            .nonce_key(U256::MAX)
+            .valid_after(150)
+            .build();
+        let executable = TxBuilder::aa(Address::random())
+            .nonce_key(U256::ONE)
+            .max_priority_fee(0)
+            .build();
+        let paying = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(2))
+            .build();
+
+        assert!(add_and_collect_discarded(&mut pool, &locked_expiring).is_empty());
+        assert!(add_and_collect_discarded(&mut pool, &executable).is_empty());
+        assert_eq!(pool.time_locked.len(), 1);
+
+        assert_eq!(
+            add_and_collect_discarded(&mut pool, &paying),
+            vec![*locked_expiring.hash()]
+        );
+        assert!(pool.contains(executable.hash()));
+        assert!(pool.time_locked.is_empty());
+        assert_expiring_eviction_index_len(&pool, 0);
+
+        // Direct removal of a time-locked expiring tx cleans the index too.
+        pool.remove_transactions([paying.hash()].into_iter());
+        let locked_expiring = TxBuilder::aa(Address::random())
+            .nonce_key(U256::MAX)
+            .valid_after(150)
+            .build();
+        add_and_collect_discarded(&mut pool, &locked_expiring);
+        assert_eq!(pool.time_locked.len(), 1);
+        pool.remove_transactions([locked_expiring.hash()].into_iter());
+        assert!(pool.time_locked.is_empty());
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn evicting_time_locked_lane_head_demotes_descendants() {
+        let mut pool = eviction_test_pool();
+        pool.set_tip_timestamp(100);
+
+        let sender = Address::random();
+        let head = TxBuilder::aa(sender)
+            .nonce_key(U256::ONE)
+            .nonce(0)
+            .valid_after(150)
+            .build();
+        let child = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(1).build();
+        let executable = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(2))
+            .max_priority_fee(0)
+            .build();
+
+        add_and_collect_discarded(&mut pool, &head);
+        add_and_collect_discarded(&mut pool, &child);
+        assert_eq!(pool.pending_and_queued_txn_count(), (2, 0));
+
+        assert_eq!(
+            add_and_collect_discarded(&mut pool, &executable),
+            vec![*head.hash()]
+        );
+        assert!(pool.contains(child.hash()));
+        assert!(pool.contains(executable.hash()));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 1));
+        assert!(pool.time_locked.is_empty());
+    }
+
+    #[test]
+    fn replacing_time_locked_tx_updates_index() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let tx = |valid_after: Option<u64>, fee: u128| {
+            let builder = TxBuilder::aa(sender)
+                .nonce_key(U256::ONE)
+                .max_priority_fee(fee)
+                .max_fee(fee * 20);
+            match valid_after {
+                Some(valid_after) => builder.valid_after(valid_after).build(),
+                None => builder.build(),
+            }
+        };
+
+        let original = tx(Some(150), 1_000_000_000);
+        add_and_collect_discarded(&mut pool, &original);
+        assert_eq!(pool.time_locked.len(), 1);
+
+        let relocked = tx(Some(200), 2_000_000_000);
+        add_and_collect_discarded(&mut pool, &relocked);
+        assert!(!pool.contains(original.hash()));
+        assert_eq!(
+            pool.time_locked.values().copied().collect::<Vec<_>>(),
+            vec![*relocked.hash()]
+        );
+        assert!(
+            pool.time_locked
+                .keys()
+                .all(|(valid_after, _)| *valid_after == 200)
+        );
+
+        let unlocked = tx(None, 4_000_000_000);
+        add_and_collect_discarded(&mut pool, &unlocked);
+        assert!(pool.time_locked.is_empty());
+
+        pool.remove_transactions([unlocked.hash()].into_iter());
+        pool.assert_invariants();
     }
 }

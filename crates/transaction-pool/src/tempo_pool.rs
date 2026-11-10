@@ -10,7 +10,7 @@ use crate::{
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
-use alloy_consensus::Transaction;
+use alloy_consensus::{BlockHeader, Transaction};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, AddressSet, Entry, HashMap},
@@ -83,6 +83,14 @@ where
         mut aa_2d_pool: AA2dPool,
     ) -> Self {
         aa_2d_pool.set_base_fee(protocol_pool.inner().block_info().pending_basefee);
+        aa_2d_pool.set_tip_timestamp(
+            protocol_pool
+                .validator()
+                .validator()
+                .inner
+                .fork_tracker()
+                .tip_timestamp(),
+        );
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
@@ -1343,8 +1351,11 @@ where
         // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
         // keep ordering its eviction sets against a stale base fee once the fee starts moving.
         let pending_basefee = update.pending_block_base_fee;
+        let tip_timestamp = update.new_tip.timestamp();
         self.protocol_pool.on_canonical_state_change(update);
-        self.aa_2d_pool.write().set_base_fee(pending_basefee);
+        let mut aa_2d_pool = self.aa_2d_pool.write();
+        aa_2d_pool.set_base_fee(pending_basefee);
+        aa_2d_pool.set_tip_timestamp(tip_timestamp);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
