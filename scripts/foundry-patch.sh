@@ -209,6 +209,66 @@ if [[ -n "$EVM2_PATCHES" ]]; then
   done
 fi
 
+# Message inputs may reference caller memory and must be resolved through the EVM.
+# Celo's transfer also mutably borrows the EVM, so preserve its input first.
+if [[ -f "$FOUNDRY_ROOT/crates/evm/core/src/evm/eth.rs" ]]; then
+  sed -i \
+    -e 's/return self.celo.then(|| celo_transfer(evm, \&message.input, gas));/return self.celo.then(|| {\n                let input = evm.message_input(message).to_vec();\n                celo_transfer(evm, \&input, gas)\n            });/' \
+    -e 's/\&message.input/evm.message_input(message)/g' \
+    "$FOUNDRY_ROOT/crates/evm/core/src/evm/eth.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/evm/coverage/src/inspector.rs" ]]; then
+  sed -i 's/CallData::new(\&message.input)/CallData::new(interp.input())/' \
+    "$FOUNDRY_ROOT/crates/evm/coverage/src/inspector.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/evm/fuzz/src/inspector.rs" ]]; then
+  sed -i 's/message.input.to_bytes()/message.input.to_bytes(interp.memory())/g' \
+    "$FOUNDRY_ROOT/crates/evm/fuzz/src/inspector.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/logs.rs" ]] &&
+  grep -q 'self.hardhat_log(&message.input)' "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/logs.rs"; then
+  sed -i \
+    -e '/fn do_hardhat_log<T: EvmTypesHost>(/,/) -> Option<MessageResult<T>>/s/        message: \&Message<T>,/        interp: \&mut Interpreter<\x27_, \x27_, T>,\n        message: \&Message<T>,/' \
+    -e 's/self.hardhat_log(\&message.input)/self.hardhat_log(message.input.as_bytes(interp.memory()))/' \
+    -e 's/        _interp: \&mut Interpreter/        interp: \&mut Interpreter/' \
+    -e 's/self.do_hardhat_log::<T>(message)/self.do_hardhat_log::<T>(interp, message)/' \
+    "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/logs.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs" ]]; then
+  if grep -q 'input.extend_from_slice(&message.input);' "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs"; then
+    sed -i \
+      -e '/let create2_deployer = self.inner.create2_deployer;/a\        let init_code = message.input.to_bytes(interp.memory());' \
+      -e 's/input.extend_from_slice(\&message.input)/input.extend_from_slice(\&init_code)/' \
+      "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs"
+  fi
+  sed -i \
+    -e 's/message.input.to_bytes()/Bytes::copy_from_slice(evm.message_input(message))/g' \
+    -e 's/\.get(\&\*message.input)/.get(interp.host().message_input(message))/' \
+    -e 's/message.input.get(\.\.4)/interp.host().message_input(message).get(..4)/g' \
+    -e 's/if interp.host().message_input(message).get(\.\.4)/if evm.message_input(message).get(..4)/' \
+    -e 's/cheatcodes.is_storage_hook_callback(message)/cheatcodes.is_storage_hook_callback(message, message.input.as_bytes(interp.memory()))/' \
+    "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/cheatcodes/src/inspector.rs" ]]; then
+  sed -i \
+    -e '/message.destination = derive_create_destination(/,/    );/s/\&message.input/ccx.evm.message_input(\&message)/' \
+    -e 's/Vm::VmCalls::abi_decode(\&message.input)/Vm::VmCalls::abi_decode(interp.host().message_input(message))/' \
+    -e 's/\&call.input,/call.input.as_bytes(interp.memory()),/g' \
+    -e 's/call.input.to_bytes()/call.input.to_bytes(interp.memory())/g' \
+    -e 's/with_input(call.input.to_bytes(interp.memory()))/with_input(Bytes::copy_from_slice(evm.message_input(call)))/' \
+    -e 's/input.input.to_bytes()/input.input.to_bytes(interp.memory())/g' \
+    -e 's/\&input.input,/input.input.as_bytes(interp.memory()),/g' \
+    -e 's/is_storage_hook_callback(\&self, call: \&MessageFor<FEN>)/is_storage_hook_callback(\&self, call: \&MessageFor<FEN>, input: \&[u8])/' \
+    -e 's/\*call.input == \*active.callback_input/input == active.callback_input.as_ref()/' \
+    -e 's/self.is_storage_hook_callback(call)/self.is_storage_hook_callback(call, call.input.as_bytes(interp.memory()))/' \
+    "$FOUNDRY_ROOT/crates/cheatcodes/src/inspector.rs"
+fi
+
 # evm2's mark_created now preserves the storage baseline by default.
 if [[ -f "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs" ]]; then
   sed -i 's/\.mark_created_keeping_storage()/\.mark_created()/g' \
