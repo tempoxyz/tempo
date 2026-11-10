@@ -68,12 +68,23 @@ pub(crate) fn writes(
 }
 
 /// Generates one request's targets from a sample of the tip state: existing, deleted and absent
-/// keys, absent neighbours of existing keys, and repeated addresses. At older blocks, keys of the
-/// tip state may not exist yet.
-pub(crate) fn targets(rng: &mut impl Rng, accounts: &[AccountSample]) -> Vec<ProofTarget> {
+/// keys, absent neighbours of existing keys, repeated addresses, and every slot of a storage
+/// collider group. At older blocks, keys of the tip state may not exist yet.
+pub(crate) fn targets(
+    rng: &mut impl Rng,
+    accounts: &[AccountSample],
+    collider: &Collider,
+) -> Vec<ProofTarget> {
     let addresses = accounts.iter().map(|account| account.address).collect::<Vec<_>>();
+    let groups = collider.storage_groups().collect::<Vec<_>>();
     let mut targets = Vec::<ProofTarget>::new();
     for _ in 0..rng.random_range(1..=8) {
+        // Random slots almost never land on a leaf embedded in its parent; group members do.
+        if !groups.is_empty() && rng.random_ratio(1, 8) {
+            let (address, slots) = groups[rng.random_range(0..groups.len())];
+            targets.push(ProofTarget { address, slots: slots.to_vec() });
+            continue;
+        }
         let roll = rng.random_range(0..8);
         let address = if roll == 0 && !targets.is_empty() {
             targets[rng.random_range(0..targets.len())].address
