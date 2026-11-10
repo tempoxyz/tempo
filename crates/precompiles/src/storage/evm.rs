@@ -667,6 +667,9 @@ where
         let frame = self.frame.ok_or_else(|| {
             TempoPrecompileError::Fatal("nested call outside a precompile frame".into())
         })?;
+        // Bytecode storage accesses are not recorded as storage actions, so the transaction can
+        // no longer be rebuilt from them (parallel block building).
+        self.actions.mark_unreplayable();
         // Account access is charged as CALL charges it, including EIP-7702 delegation.
         let warm_cost = self.version.gas_params.get(GasId::WarmStorageReadCost);
         let cold_cost = self.version.gas_params.cold_account_additional_cost();
