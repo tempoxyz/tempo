@@ -107,12 +107,11 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Disable prewarming for the payload builder.
-    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    #[arg(long = "builder.disable-prewarming", default_value_t = true)]
     pub builder_disable_prewarming: bool,
 
-    /// Enable prewarming for the payload builder. Off by default; `--builder.disable-prewarming`
-    /// takes precedence.
-    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    /// No-op legacy flag for payload builder prewarming.
+    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
 
     /// Enable speculative parallel payload builder.
@@ -184,7 +183,7 @@ impl TempoNodeArgs {
 
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            enable_prewarming: self.builder_enable_prewarming && !self.builder_disable_prewarming,
+            enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
             estimator: None,
