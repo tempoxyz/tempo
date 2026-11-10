@@ -114,7 +114,7 @@ impl TempoPooledTransaction {
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
-        let in_memory_size = transaction.size();
+        let in_memory_size = transaction.size() + cached_tx_env_size(&transaction);
         Self {
             inner: EthPooledTransaction {
                 transaction,
@@ -241,7 +241,7 @@ impl TempoPooledTransaction {
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let key_id = key_authorization.recover_signer().ok()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             let fee_token = self.effective_fee_token();
@@ -262,12 +262,12 @@ impl TempoPooledTransaction {
             let aa_tx = self.inner().as_aa()?;
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             Some(KeyAuthorizationTargetSubject {
                 account,
-                key_id: key_authorization.authorization.key_id,
+                key_id: key_authorization.authorization().key_id,
             })
         })
     }
@@ -279,7 +279,7 @@ impl TempoPooledTransaction {
             .tx()
             .key_authorization
             .as_ref()?
-            .authorization
+            .authorization()
             .witness()?;
         Some(KeyAuthorizationWitnessSubject {
             account: *self.sender_ref(),
@@ -1219,11 +1219,29 @@ impl KeyAuthorizationTargetSubject {
     }
 }
 
+/// Returns an estimate of the memory held by the [`TempoTxEnv`] cached for `transaction`.
+///
+/// The env is a second copy of the transaction that shares only its calldata [`Bytes`] (AA call
+/// inputs) with the envelope, so it is counted as the envelope minus that calldata. This is
+/// derived from the envelope at construction because the env is filled lazily and the pools
+/// subtract the same size they added on insert.
+fn cached_tx_env_size(transaction: &TempoTxEnvelope) -> usize {
+    let shared_calldata = match transaction {
+        TempoTxEnvelope::AA(tx) => tx.tx().calls.iter().map(|call| call.input.len()).sum(),
+        TempoTxEnvelope::Legacy(_)
+        | TempoTxEnvelope::Eip2930(_)
+        | TempoTxEnvelope::Eip1559(_)
+        | TempoTxEnvelope::Eip7702(_) => transaction.input().len(),
+    };
+    transaction.size().saturating_sub(shared_calldata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
+    use alloy_eips::eip2930::AccessListItem;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -1233,10 +1251,79 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
+        TempoTransaction, tempo_transaction::Call,
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
+
+    fn large_access_list() -> AccessList {
+        (0..64u8)
+            .map(|i| AccessListItem {
+                address: Address::with_last_byte(i),
+                storage_keys: (0..32u8).map(B256::with_last_byte).collect(),
+            })
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    fn configurable_account_signature(
+        owners: u8,
+        approvals: usize,
+    ) -> ConfigurableAccountSignature {
+        let config = ConfigurableAccountConfig {
+            salt: B256::with_last_byte(1),
+            version: 0,
+            threshold: 1,
+            owners: (1..=owners)
+                .map(|owner| ConfigurableAccountOwner {
+                    owner: Address::with_last_byte(owner),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        ConfigurableAccountSignature::try_new(
+            Address::with_last_byte(0xaa),
+            config,
+            vec![PrimitiveSignature::Secp256k1(Signature::test_signature()); approvals],
+        )
+        .unwrap()
+    }
+
+    /// Re-signs the body of a pooled AA transaction with `signature`.
+    fn resign_aa(
+        pooled: &TempoPooledTransaction,
+        signature: TempoSignature,
+    ) -> TempoPooledTransaction {
+        let body = pooled.inner().inner().as_aa().unwrap().tx().clone();
+        let envelope = TempoTxEnvelope::from(body.into_signed(signature));
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, pooled.sender()))
+    }
+
+    /// Heap counted on top of the envelope size.
+    fn cached_env_overhead(pooled: &TempoPooledTransaction) -> usize {
+        pooled.size() - pooled.inner().inner().size()
+    }
+
+    fn eip1559_pooled(access_list: AccessList, input: Bytes) -> TempoPooledTransaction {
+        let tx = TxEip1559 {
+            to: TxKind::Call(Address::with_last_byte(2)),
+            gas_limit: 21000,
+            access_list,
+            input,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        TempoPooledTransaction::new(Recovered::new_unchecked(
+            envelope,
+            Address::with_last_byte(1),
+        ))
+    }
 
     fn signed_aa_envelope(tx: TempoTransaction) -> (TempoTxEnvelope, Address) {
         let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
@@ -1252,7 +1339,7 @@ mod tests {
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
         // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
         tx.key_authorization
-            .take_if(|auth| auth.signature.is_configurable_account());
+            .take_if(|auth| auth.signature().is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
         let raw = envelope.encoded_2718();
         let encoded_length = raw.len();
@@ -1277,6 +1364,95 @@ mod tests {
         assert!(fresh.cached_tx_env().is_some());
         assert_eq!(fresh.key_expiry(), None);
         assert_eq!(fresh.resolved_fee_token(), None);
+    }
+
+    #[test]
+    fn size_counts_cached_tx_env_access_list() {
+        let eip1559 = eip1559_pooled(large_access_list(), Bytes::new());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), 2 * envelope_size);
+
+        let aa = TxBuilder::aa(Address::random())
+            .access_list(large_access_list())
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert_eq!(aa.size(), 2 * envelope_size);
+    }
+
+    #[test]
+    fn size_counts_configurable_account_signature_heap() {
+        let minimal = TxBuilder::aa(Address::random()).build();
+        let overhead =
+            |signature: TempoSignature| cached_env_overhead(&resign_aa(&minimal, signature));
+        let small = configurable_account_signature(1, 1);
+        let large = configurable_account_signature(5, 3);
+        // Extra owners and approvals are owned vectors that the env copies.
+        let extra_heap =
+            4 * size_of::<ConfigurableAccountOwner>() + 2 * size_of::<PrimitiveSignature>();
+
+        let configurable = |signature: &ConfigurableAccountSignature| {
+            overhead(TempoSignature::ConfigurableAccount(signature.clone()))
+        };
+        assert!(configurable(&large) >= configurable(&small) + extra_heap);
+
+        let keychain = |signature: &ConfigurableAccountSignature| {
+            overhead(TempoSignature::Keychain(KeychainSignature::new(
+                Address::random(),
+                signature.clone(),
+            )))
+        };
+        assert!(keychain(&large) >= keychain(&small) + extra_heap);
+    }
+
+    #[test]
+    fn size_is_stable_across_tx_env_caching() {
+        let transactions = [
+            eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])),
+            TxBuilder::aa(Address::random())
+                .access_list(large_access_list())
+                .build(),
+        ];
+        for transaction in transactions {
+            let size = transaction.size();
+            assert!(transaction.cached_tx_env().is_none());
+            let _ = transaction.tx_env();
+            assert!(transaction.cached_tx_env().is_some());
+            assert_eq!(transaction.size(), size);
+            assert_eq!(transaction.with_discarded_caches().size(), size);
+        }
+    }
+
+    #[test]
+    fn size_does_not_double_count_shared_calldata() {
+        let input = Bytes::from(vec![7u8; 100_000]);
+        let eip1559 = eip1559_pooled(AccessList::default(), input.clone());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), 2 * envelope_size - input.len());
+        // The env holds the same buffer as the envelope, which is why it is not counted.
+        let env_input = &eip1559.tx_env().as_eip1559().unwrap().input;
+        assert_eq!(env_input.as_ptr(), eip1559.input().as_ptr());
+
+        let aa = TxBuilder::aa(Address::random())
+            .calls(vec![
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input: input.clone(),
+                },
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input,
+                },
+            ])
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert_eq!(aa.size(), 2 * envelope_size - 2 * 100_000);
+        let calls = &aa.tx_env().as_aa().unwrap().inner().tx().calls;
+        let envelope_calls = &aa.inner().inner().as_aa().unwrap().tx().calls;
+        for (call, envelope_call) in calls.iter().zip(envelope_calls) {
+            assert_eq!(call.input.as_ptr(), envelope_call.input.as_ptr());
+        }
     }
 
     #[test]
