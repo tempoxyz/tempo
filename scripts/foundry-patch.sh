@@ -215,6 +215,48 @@ if [[ -f "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs" ]]; then
     "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs"
 fi
 
+# Initial call depth belongs to the EVM, not its execution configuration.
+if [[ -f "$FOUNDRY_ROOT/crates/evm/core/src/backend/mod.rs" ]] &&
+  grep -q 'env.version.initial_call_depth' "$FOUNDRY_ROOT/crates/evm/core/src/backend/mod.rs"; then
+  sed -i \
+    -e '/env.version.initial_call_depth = depth;/d' \
+    -e '/prepared.set_access_list(target.transaction.access_list().cloned());/i\        prepared.set_initial_call_depth(depth);' \
+    "$FOUNDRY_ROOT/crates/evm/core/src/backend/mod.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs" ]] &&
+  ! grep -q 'pub fn set_initial_call_depth' "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs"; then
+  sed -i '/    \/\/\/ Records the transaction.s EIP-2930 access list\./i\    /// Sets the inspector-visible depth of the nested transaction\x27s root message.\n    pub fn set_initial_call_depth(\&mut self, depth: u16) {\n        self.executor.set_initial_call_depth(depth);\n    }\n' \
+    "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs" ]] &&
+  grep -q 'env.version.initial_call_depth' "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs"; then
+  sed -i \
+    -e 's/let mut env = env.unwrap_or_else(|| evm_env(evm));/let env = env.unwrap_or_else(|| evm_env(evm));/' \
+    -e '/env.version.initial_call_depth = depth;/d' \
+    -e '/let mut child = backend.backend().lifecycle().nested_evm(evm, tx, Some(env), None);/a\        child.set_initial_call_depth(depth);' \
+    -e '/env.version.initial_call_depth = depth + 1;/d' \
+    -e 's/let (prepared, mut replay) = backend.backend().prepare_nested(tx.clone(), evm, Some(env));/let (mut prepared, mut replay) =\n            backend.backend().prepare_nested(tx.clone(), evm, Some(env));\n        prepared.set_initial_call_depth(depth + 1);/' \
+    -e '/The root keeps its depth in the surrounding trace, with a fresh call-depth budget\./d' \
+    -e '/env.version.initial_call_depth = message.depth;/d' \
+    -e '/let mut child = backend.backend().lifecycle().nested_evm(evm, \&tx, Some(env), None);/a\        // The root keeps its depth in the surrounding trace, with a fresh call-depth budget.\n        child.set_initial_call_depth(message.depth);' \
+    "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/cheatcodes/src/inspector.rs" ]]; then
+  sed -i 's/interp.version().initial_call_depth/interp.host().initial_call_depth()/g' \
+    "$FOUNDRY_ROOT/crates/cheatcodes/src/inspector.rs"
+fi
+
+# Keep the exhaustive execution-config comparison aligned with Version's fields.
+if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/executors/mod.rs" ]]; then
+  sed -i \
+    -e 's/^        initial_call_depth,$/        tx_total_gas_cap,/' \
+    -e 's/version.initial_call_depth == initial_call_depth/version.tx_total_gas_cap == tx_total_gas_cap/' \
+    "$FOUNDRY_ROOT/crates/evm/evm/src/executors/mod.rs"
+fi
+
 # Tracing now uses evm2's OpcodeSet instead of the inspectors' OpcodeFilter.
 # The precompile flag still controls tagging for exclusion, not call recording.
 if [[ -f "$FOUNDRY_ROOT/crates/evm/traces/src/lib.rs" ]]; then
