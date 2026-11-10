@@ -973,6 +973,7 @@ where
             self.l1_config.retry_connection_interval,
             self.l1_config.portal_address,
             self.enabled_tokens.clone(),
+            self.l1_state_cache.clone(),
             chain_id,
             max_response_size,
         )
@@ -1653,6 +1654,7 @@ where
         retry_connection_interval: Duration,
         portal_address: Address,
         enabled_tokens: EnabledTokenRegistry,
+        l1_state_cache: L1StateCache,
         chain_id: u64,
         max_response_size: usize,
     ) -> eyre::Result<()> {
@@ -1677,6 +1679,7 @@ where
             redacted_rpc_config.clone(),
             enabled_tokens,
             l1_provider,
+            l1_state_cache,
         ));
         let local_addr = start_redacted_rpc(redacted_rpc_config, api).await?;
         info!(target: "reth::cli", %local_addr, "Redacted zone RPC server started");

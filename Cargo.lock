@@ -12430,7 +12430,6 @@ dependencies = [
  "reth-trie-db",
  "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -14784,6 +14783,7 @@ dependencies = [
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
+ "commonware-utils",
  "derive_more",
  "evm2",
  "evm2-jit",
@@ -15057,6 +15057,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "antithesis_sdk",
+ "commonware-codec",
  "crossbeam-channel",
  "metrics",
  "proptest",
@@ -15105,6 +15106,7 @@ dependencies = [
  "reth-primitives-traits",
  "serde",
  "serde_json",
+ "tempo-dkg-onchain-artifacts",
  "tempo-primitives",
  "thiserror 2.0.21",
  "tracing",
