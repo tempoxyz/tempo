@@ -22,7 +22,7 @@ pub use tempo_primitives::account::CONFIGURABLE_ACCOUNT_CODE_HASH as MARKER_CODE
 pub const CONFIGURABLE_KEY_TYPE: u8 = 3;
 
 /// The first configuration rule `config` breaks, `None` when it passes them all.
-// <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L74-L80>
+// <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L74-L80>
 pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option<&'static str> {
     if owners.is_empty() || owners.len() > MAX_CONFIGURABLE_ACCOUNT_OWNERS {
         return Some("it does not have 1 to 48 owners");
@@ -92,7 +92,7 @@ pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
 }
 
 /// The reserved address space `account` lies in, `None` when it is outside them all.
-// <https://github.com/tempoxyz/tempo/blob/6a8514bcd6ff790599d3d6de9a0be8a189e4cb36/tips/tip-1107.md#L501>
+// <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L501>
 pub fn reserved(account: Address) -> Option<&'static str> {
     let bytes = account.as_slice();
     let low = u16::from_be_bytes([bytes[18], bytes[19]]);
