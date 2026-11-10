@@ -1547,16 +1547,19 @@ impl ZoneTestNode {
         let eth_handlers = node_handle.node.eth_handlers().clone();
         let rpc_enabled_tokens = enabled_tokens.clone();
         let rpc_l1_provider = redacted_l1_provider;
+        let rpc_l1_state_cache = l1_state_cache.clone();
         let rpc_api_factory = Arc::new(move |config: zone_node::rpc::RedactedRpcConfig| {
             let eth_handlers = eth_handlers.clone();
             let enabled_tokens = rpc_enabled_tokens.clone();
             let l1_provider = rpc_l1_provider.clone();
+            let l1_state_cache = rpc_l1_state_cache.clone();
             Box::pin(async move {
                 Ok(Arc::new(zone_node::rpc::ZoneRpc::new(
                     eth_handlers,
                     config,
                     enabled_tokens,
                     l1_provider,
+                    l1_state_cache,
                 )) as Arc<dyn zone_node::rpc::ZoneRpcApi>)
             })
                 as Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>>>>>
@@ -3367,7 +3370,10 @@ impl ZoneAccount {
         Ok((block_number, balance))
     }
 
-    async fn submit_deposit_with_memo(
+    /// Submit a pathUSD deposit to `recipient` on L1 without waiting for the zone to process it.
+    ///
+    /// Returns the L1 block containing the deposit.
+    pub(crate) async fn submit_deposit_with_memo(
         &mut self,
         amount: u128,
         recipient: Address,
@@ -4085,8 +4091,16 @@ pub(crate) fn deposit_allowlist_admin() -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&B256::repeat_byte(0xad)).expect("valid test admin key")
 }
 
+/// Deposit allowlist of a real P2P test cluster.
+struct AllowlistSetup<'a> {
+    /// Addresses every sequencer's list starts with.
+    seed: &'a [Address],
+    /// Whether the RPC-only node runs with the admin and relays `zoneAdmin` writes.
+    rpc_relays_writes: bool,
+}
+
 /// Three-member P2P quorum whose sequencers enforce a deposit allowlist administered by
-/// [`deposit_allowlist_admin`], plus an RPC-only node that relays `zoneAdmin` calls to them.
+/// [`deposit_allowlist_admin`], plus an RPC-only node that mirrors their list.
 pub(crate) struct DepositAllowlistP2pCluster {
     pub(crate) cluster: RealP2pCluster,
     pub(crate) rpc_node: ZoneTestNode,
@@ -4096,11 +4110,14 @@ pub(crate) struct DepositAllowlistP2pCluster {
 }
 
 /// Start a real-L1 cluster whose sequencers seed their deposit allowlists with `seed`, launching
-/// only `active_nodes` of the three quorum members, plus one RPC-only node.
+/// only `active_nodes` of the three quorum members, plus one RPC-only node. With
+/// `rpc_relays_writes` the RPC-only node runs with the admin and relays `zoneAdmin` writes;
+/// otherwise writes must go to the sequencers directly.
 pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
     withdrawal_batch_interval_blocks: u64,
     active_nodes: usize,
     seed: &[Address],
+    rpc_relays_writes: bool,
 ) -> eyre::Result<DepositAllowlistP2pCluster> {
     let parts = start_real_p2p_cluster_inner(
         withdrawal_batch_interval_blocks,
@@ -4109,7 +4126,10 @@ pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
         None,
         false,
         None,
-        Some(seed),
+        Some(AllowlistSetup {
+            seed,
+            rpc_relays_writes,
+        }),
         false,
     )
     .await?;
@@ -4132,9 +4152,10 @@ async fn start_real_p2p_cluster_inner(
     l1_block_time: Option<Duration>,
     proxy_p2p: bool,
     prover_config: Option<ZoneProverConfig>,
-    deposit_allowlist_seed: Option<&[Address]>,
+    deposit_allowlist: Option<AllowlistSetup<'_>>,
     l1_proofs_unavailable: bool,
 ) -> eyre::Result<RealP2pClusterParts> {
+    let deposit_allowlist_seed = deposit_allowlist.as_ref().map(|setup| setup.seed);
     eyre::ensure!(
         (2..=3).contains(&active_nodes),
         "real P2P test cluster requires two or three active nodes, got {active_nodes}"
@@ -4364,7 +4385,10 @@ async fn start_real_p2p_cluster_inner(
                     vec![SecretKey::from(attestation_signers[0].credential())],
                     None,
                     None,
-                    Some(allowlist_admin),
+                    deposit_allowlist
+                        .as_ref()
+                        .is_some_and(|setup| setup.rpc_relays_writes)
+                        .then_some(allowlist_admin),
                 )
                 .await?,
             zone_chain_id: allowlist_admin.zone_chain_id,
@@ -4767,8 +4791,8 @@ impl RedactedRpcL1TestCtx {
 }
 
 impl RedactedRpcTestCtx {
-    /// Seeds the zero Tempo commitment of a P256 or WebAuthn token signer, which zones read when
-    /// execution loads the signer's account.
+    /// Seeds the zero Tempo commitment of a P256 or WebAuthn token signer, which zone RPC
+    /// authorization reads to reject retired roots.
     fn seed_p256_signer(&self, signing_key: &P256SigningKey) {
         let (x, y) = p256_public_key(signing_key);
         self.fixture.seed_no_commitment(
@@ -4820,6 +4844,31 @@ impl RedactedRpcTestCtx {
         )
     }
 
+    /// Build an auth token signed by the owner quorum of the configurable account whose
+    /// version-zero configuration has `signing_key` as its sole owner, returning the token and
+    /// the account.
+    pub(crate) fn configurable_account_token(
+        &self,
+        signing_key: &P256SigningKey,
+    ) -> (String, Address) {
+        let now = now_secs();
+        let (fields, digest) = zone_node::rpc::auth::build_token_fields(
+            self.config.zone_id,
+            self.config.chain_id,
+            now,
+            now + 600,
+        );
+        let (signature, account, _) =
+            auth_tokens::sign_configurable_account_signature(digest, signing_key)
+                .expect("configurable account signing failed");
+        // Authorization reads the account's commitment from Tempo.
+        self.fixture.seed_no_commitment(account);
+        (
+            auth_tokens::build_token_with_signature(signature, &fields),
+            account,
+        )
+    }
+
     /// Build a Keychain auth token signed by a P256 access key.
     pub(crate) fn keychain_p256_token(
         &self,
@@ -4829,13 +4878,16 @@ impl RedactedRpcTestCtx {
     ) -> (String, Address) {
         // AccountKeychain lookups load the root account.
         self.fixture.seed_no_commitment(root_account);
-        build_keychain_auth_token(
+        let (token, key_id) = build_keychain_auth_token(
             signing_key,
             root_account,
             version,
             self.config.zone_id,
             self.config.chain_id,
-        )
+        );
+        // Authorization reads the key ID's commitment.
+        self.fixture.seed_no_commitment(key_id);
+        (token, key_id)
     }
 
     /// Send an authenticated JSON-RPC call to the redacted RPC server.
@@ -5092,21 +5144,25 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
 
 /// Start a zone with a redacted RPC server backed by a real L1 + ZonePortal.
 pub(crate) async fn start_zone_with_redacted_rpc_l1() -> eyre::Result<RedactedRpcL1TestCtx> {
-    start_zone_with_redacted_rpc_l1_inner().await
+    start_zone_with_redacted_rpc_l1_with_encryption(Vec::new()).await
 }
 
 /// Start a zone with a redacted RPC server backed by a real L1 and a portal
-/// with a registered encryption key.
-pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption()
--> eyre::Result<RedactedRpcL1TestCtx> {
-    start_zone_with_redacted_rpc_l1_inner().await
-}
-
-async fn start_zone_with_redacted_rpc_l1_inner() -> eyre::Result<RedactedRpcL1TestCtx> {
+/// with a registered encryption key, whose node also holds `additional_decryption_keys` for keys
+/// the portal rotates to.
+pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption(
+    additional_decryption_keys: Vec<SecretKey>,
+) -> eyre::Result<RedactedRpcL1TestCtx> {
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
 
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1_with_decryption_keys(
+        l1.http_url(),
+        l1.ws_url(),
+        portal_address,
+        additional_decryption_keys,
+    )
+    .await?;
 
     zone.wait_for_l2_tempo_finalized(0, DEFAULT_TIMEOUT).await?;
 

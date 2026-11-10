@@ -35,7 +35,7 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
   # Foundry master after the evm2 migration (foundry-rs/foundry#17541).
-  FOUNDRY_REF: 2f55169dffed0a04a779d6293269e6d667c2c142
+  FOUNDRY_REF: 781ed1fc340d03d8335e7d302076e195d303de9c
 
 jobs:
   check-specs-changes:
