@@ -1,8 +1,8 @@
 use crate::Node;
 use eyre::Result;
 use reth_provider::{ProviderFactory, SaveBlocksInput};
-use std::{
-    sync::mpsc,
+use reth_tasks::executor::{
+    channel,
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -18,8 +18,8 @@ pub(crate) enum Phase {
 
 /// One background database writer with at most one unacknowledged save.
 pub(crate) struct Persistence {
-    requests: mpsc::SyncSender<SaveBlocksInput>,
-    acknowledgements: mpsc::Receiver<Result<()>>,
+    requests: channel::Sender<SaveBlocksInput>,
+    acknowledgements: channel::Receiver<Result<()>>,
     writer: JoinHandle<()>,
     state: WriteState,
 }
@@ -27,8 +27,8 @@ pub(crate) struct Persistence {
 impl Persistence {
     /// Start the same bounded writer used for both threshold saves and the final flush.
     pub(crate) fn new(factory: ProviderFactory<Node>) -> Self {
-        let (requests, request_rx) = mpsc::sync_channel::<SaveBlocksInput>(1);
-        let (ack_tx, acknowledgements) = mpsc::sync_channel(1);
+        let (requests, request_rx) = channel::bounded::<SaveBlocksInput>(1);
+        let (ack_tx, acknowledgements) = channel::bounded(1);
         let writer = thread::spawn(move || {
             while let Ok(input) = request_rx.recv() {
                 let result = (|| -> Result<()> {
@@ -75,8 +75,8 @@ impl Persistence {
         } else {
             match self.acknowledgements.try_recv() {
                 Ok(result) => Some(result),
-                Err(mpsc::TryRecvError::Empty) => None,
-                Err(mpsc::TryRecvError::Disconnected) => {
+                Err(channel::TryRecvError::Empty) => None,
+                Err(channel::TryRecvError::Disconnected) => {
                     eyre::bail!("persistence worker disconnected")
                 }
             }

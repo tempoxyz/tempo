@@ -5,6 +5,9 @@
 //! persists them with state masking. Meanwhile proof threads serve `eth_getMultiProof` requests at
 //! random produced blocks through the provider the RPC uses, and verify every proof against the
 //! block's state root.
+//!
+//! With `fuzz`, synchronous workers use the selected executor. Tokio startup/recovery,
+//! database I/O and Antithesis input are outside the deterministic scheduling contract.
 
 #[expect(dead_code, reason = "Shared with reth-state-root, whose input generator is unused here.")]
 #[path = "../../reth-state-root/src/model.rs"]
@@ -48,18 +51,22 @@ use reth_provider::{
     SaveBlocksInput,
 };
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
-use reth_tasks::{RayonConfig, RuntimeBuilder, RuntimeConfig, TokioConfig};
+use reth_tasks::{
+    executor::{
+        channel,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            RwLock,
+        },
+        thread,
+        time::Duration,
+    },
+    RayonConfig, RuntimeBuilder, RuntimeConfig, TokioConfig,
+};
 use reth_trie::{HashedPostState, SortedTrieData};
 use serde::Deserialize;
 use serde_json::json;
-use std::{
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc, Arc, Mutex, Once, RwLock,
-    },
-    thread,
-    time::Duration,
-};
+use std::sync::{Arc, Once};
 
 macro_rules! invariant {
     ($condition:expr, $message:literal $(, $argument:expr)* $(,)?) => {{
@@ -249,17 +256,15 @@ fn run(config: &Config, round: u64) -> Result<()> {
         db_tip: AtomicU64::new(0),
         state_tip: AtomicU64::new(0),
     });
-    let (requests, request_rx) = mpsc::channel::<()>();
-    let request_rx = Arc::new(Mutex::new(request_rx));
+    let (requests, request_rx) = channel::unbounded::<()>();
     let request_threads = (0..config.request_threads)
         .map(|_| {
             let (factory, shared, request_rx) =
-                (factory.clone(), Arc::clone(&shared), Arc::clone(&request_rx));
+                (factory.clone(), Arc::clone(&shared), request_rx.clone());
             thread::spawn(move || -> Result<u64> {
                 let mut served = 0;
                 // The channel closes after the round's last request is queued.
-                while request_rx.lock().map_err(|_| eyre!("request queue poisoned"))?.recv().is_ok()
-                {
+                while request_rx.recv().is_ok() {
                     request_proof(&factory, &shared)?;
                     served += 1;
                 }
@@ -487,7 +492,7 @@ fn main() -> Result<()> {
         );
         previous_hook(information);
     }));
-    let result = workload();
+    let result = reth_tasks::executor::Runtime::new().run(workload);
     assert_always_or_unreachable!(
         result.is_ok(),
         "Proof workload completes without errors",

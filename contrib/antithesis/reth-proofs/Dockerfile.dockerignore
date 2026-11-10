@@ -10,6 +10,7 @@
 !testnet-network-identity.json
 !bin/**
 !crates/**
+!vendor/reth/**
 !xtask/**
 !contrib/antithesis/reth-proofs/Cargo.toml
 !contrib/antithesis/reth-proofs/src/**

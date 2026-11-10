@@ -7,7 +7,7 @@ mod encode;
 mod metrics;
 mod prewarming;
 
-use crossbeam_channel::Sender;
+use reth_tasks::executor::channel::{self, Sender};
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
@@ -510,7 +510,7 @@ where
 
             let Some(mut pool_tx) = best_txs.next() else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
-                    std::thread::sleep(Duration::from_millis(1));
+                    reth_tasks::executor::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
                 }
@@ -1100,7 +1100,7 @@ where
         oneshot::Receiver<RootsTaskResult>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
+            channel::unbounded::<(BestTransaction, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
         let parent = Span::current();
 

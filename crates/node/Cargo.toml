@@ -170,6 +170,7 @@ trie-debug = [
 # Native EVM2 JIT compilation; building requires LLVM.
 jit = ["tempo-evm/jit"]
 fuzz = [
+	"reth-node-builder/fuzz",
 	"dep:antithesis_sdk",
 	"antithesis_sdk/full",
 	"tempo-payload-builder/fuzz",

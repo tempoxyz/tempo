@@ -1,4 +1,7 @@
 //! Antithesis workload for the sparse-trie, proof, overlay and persistence pipeline.
+//!
+//! With `fuzz`, synchronous workers use the selected executor. Tokio startup/recovery,
+//! database/filesystem I/O and Antithesis input are outside the deterministic scheduling contract.
 
 mod input;
 mod journal;
@@ -47,7 +50,9 @@ use reth_provider::{
 };
 use reth_stages_types::StageId;
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
-use reth_tasks::{RayonConfig, RuntimeBuilder, RuntimeConfig, TokioConfig};
+use reth_tasks::{
+    executor::time::Duration, RayonConfig, RuntimeBuilder, RuntimeConfig, TokioConfig,
+};
 use reth_trie::{HashedPostState, SortedTrieData};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -56,7 +61,6 @@ use std::{
     fs,
     path::PathBuf,
     sync::{Arc, Once},
-    time::Duration,
 };
 
 macro_rules! invariant {
@@ -642,7 +646,7 @@ fn main() -> Result<()> {
         );
         previous_hook(information);
     }));
-    let result = workload();
+    let result = reth_tasks::executor::Runtime::new().run(workload);
     assert_always_or_unreachable!(
         result.is_ok(),
         "Trie workload completes without errors",

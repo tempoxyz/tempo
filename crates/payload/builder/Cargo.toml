@@ -47,7 +47,6 @@ alloy-rlp.workspace = true
 metrics.workspace = true
 serde_json = { workspace = true, default-features = true, optional = true }
 tracing.workspace = true
-crossbeam-channel.workspace = true
 tokio.workspace = true
 
 antithesis_sdk = { workspace = true, optional = true }
@@ -59,6 +58,8 @@ tempo-precompiles.workspace = true
 [features]
 trie-debug = ["reth-engine-tree/trie-debug"]
 fuzz = [
+	"reth-tasks/fuzz",
+	"reth-engine-tree/fuzz",
 	"dep:antithesis_sdk",
 	"antithesis_sdk/full",
 	"dep:reth-consensus",

@@ -24,6 +24,7 @@ members = [
   "crates/dkg-onchain-artifacts",
   "crates/eyre",
   "crates/ext",
+  "crates/executor",
   "crates/evm",
   "crates/hardfork",
   "crates/e2e",
@@ -64,6 +65,8 @@ members = [
   "crates/zones/sequencer",
   "crates/zones/spf",
 ]
+
+exclude = ["vendor/reth"]
 
 # Resolver 3 is available with edition 2024
 resolver = "3"
@@ -178,6 +181,9 @@ inherits = "reproducible"
 panic = "unwind"
 
 [workspace.dependencies]
+either = "1"
+shuttle = "=0.9.10"
+tempo-executor = { path = "crates/executor" }
 # Zones
 zone-chainspec = { path = "crates/zones/chainspec" }
 zone-evm = { path = "crates/zones/evm" }
@@ -525,3 +531,23 @@ evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "37fb326b91a76d
 # reth-trie-db = { path = "../reth/crates/trie/db" }
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
+
+[patch."https://github.com/paradigmxyz/reth"]
+reth-tasks = { path = "vendor/reth/crates/tasks" }
+reth-engine-tree = { path = "vendor/reth/crates/engine/tree" }
+reth-trie-common = { path = "vendor/reth/crates/trie/common" }
+reth-trie-parallel = { path = "vendor/reth/crates/trie/parallel" }
+reth-trie-sparse = { path = "vendor/reth/crates/trie/sparse" }
+reth-storage-overlay = { path = "vendor/reth/crates/storage/storage-overlay" }
+reth-provider = { path = "vendor/reth/crates/storage/provider" }
+reth-etl = { path = "vendor/reth/crates/etl" }
+reth-static-file = { path = "vendor/reth/crates/static-file/static-file" }
+reth-evm = { path = "vendor/reth/crates/evm/evm" }
+reth-evm-ethereum = { path = "vendor/reth/crates/ethereum/evm" }
+reth-stages = { path = "vendor/reth/crates/stages/stages" }
+reth-cli-commands = { path = "vendor/reth/crates/cli/commands" }
+reth-node-builder = { path = "vendor/reth/crates/node/builder" }
+reth-network = { path = "vendor/reth/crates/net/network" }
+reth-downloaders = { path = "vendor/reth/crates/net/downloaders" }
+reth-chain-state = { path = "vendor/reth/crates/chain-state" }
+reth-trie = { path = "vendor/reth/crates/trie/trie" }

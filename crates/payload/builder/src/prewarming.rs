@@ -3,7 +3,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
     },
 };
 
@@ -13,7 +12,10 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
 use reth_evm_ethereum::EvmFactory as _;
 use reth_storage_api::{EvmStateProviderBox, StateProvider as _, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerStatefulPool};
+use reth_tasks::{
+    TaskExecutor, WorkerStatefulPool,
+    executor::channel::{self, Receiver, Sender},
+};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -46,8 +48,8 @@ impl BestTransactionsPrewarming {
         Txs: BestTransactions<Item = BestTransaction> + 'static,
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (transactions_tx, transactions_rx) = channel::unbounded();
+        let (commands_tx, commands_rx) = channel::unbounded();
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
@@ -257,7 +259,7 @@ impl Drop for BestTransactionsPrewarming {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
-        let (_drain_tx, replacement_rx) = mpsc::channel();
+        let (_drain_tx, replacement_rx) = channel::unbounded();
         let drain_rx = core::mem::replace(&mut self.transactions_rx, replacement_rx);
         let _ = self
             .commands_tx
@@ -857,8 +859,8 @@ mod tests {
     #[test]
     fn stale_empty_replies_do_not_hide_buffered_transactions() {
         for empty_replies in [2, 32] {
-            let (transactions_tx, transactions_rx) = mpsc::channel();
-            let (commands_tx, commands_rx) = mpsc::channel();
+            let (transactions_tx, transactions_rx) = channel::unbounded();
+            let (commands_tx, commands_rx) = channel::unbounded();
             let sender = Address::random();
             let first = test_tx(sender, 0);
             let second = test_tx(sender, 1);
@@ -881,15 +883,15 @@ mod tests {
             assert_eq!(prewarming.next().unwrap().tx.hash(), second.hash());
             assert!(matches!(
                 commands_rx.try_recv(),
-                Err(mpsc::TryRecvError::Empty)
+                Err(channel::TryRecvError::Empty)
             ));
         }
     }
 
     #[test]
     fn stale_empty_replies_do_not_hide_a_fresh_advance() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (transactions_tx, transactions_rx) = channel::unbounded();
+        let (commands_tx, commands_rx) = channel::unbounded();
         for _ in 0..32 {
             transactions_tx.send(None).unwrap();
         }
@@ -918,8 +920,8 @@ mod tests {
 
     #[test]
     fn empty_advance_returns_none_and_can_resume_on_a_later_poll() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (transactions_tx, transactions_rx) = channel::unbounded();
+        let (commands_tx, commands_rx) = channel::unbounded();
         let tx = test_tx(Address::random(), 0);
         let expected = *tx.hash();
         let coordinator = thread::spawn(move || {
@@ -949,8 +951,8 @@ mod tests {
 
     #[test]
     fn buffered_transactions_survive_empty_replies_and_coordinator_disconnect() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (transactions_tx, transactions_rx) = channel::unbounded();
+        let (commands_tx, commands_rx) = channel::unbounded();
         let tx = test_tx(Address::random(), 0);
         let expected = *tx.hash();
         transactions_tx.send(None).unwrap();
@@ -1008,7 +1010,7 @@ mod tests {
         let executor = TaskExecutor::test();
 
         // Occupy every prewarm worker so the jobs spawned for the transactions stay queued.
-        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = channel::unbounded::<()>();
         let release_rx = Arc::new(Mutex::new(release_rx));
         let pool = executor.prewarming_pool();
         for _ in 0..pool.current_num_threads() {
@@ -1030,7 +1032,7 @@ mod tests {
         wait_until(|| log.lock().unwrap().yielded == 2);
 
         // Release the workers after a timeout so a regression fails instead of hanging.
-        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = channel::unbounded::<()>();
         let watchdog = thread::spawn(move || {
             let timed_out = done_rx.recv_timeout(Duration::from_secs(5)).is_err();
             drop(release_tx);
@@ -1195,8 +1197,8 @@ mod tests {
 
     #[test]
     fn mark_invalid_skips_buffered_transactions_on_invalidated_lanes() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (transactions_tx, transactions_rx) = channel::unbounded();
+        let (commands_tx, commands_rx) = channel::unbounded();
         let sender = Address::random();
         let other = Address::random();
         let invalid_regular = test_tx(sender, 0);
@@ -1242,8 +1244,8 @@ mod tests {
 
     #[test]
     fn next_skips_invalidated_transactions_that_arrive_after_mark_invalid() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, _commands_rx) = mpsc::channel();
+        let (transactions_tx, transactions_rx) = channel::unbounded();
+        let (commands_tx, _commands_rx) = channel::unbounded();
         let sender = Address::random();
         let invalid = test_tx(sender, 0);
         let late_same_sender = test_tx(sender, 1);
@@ -1277,8 +1279,8 @@ mod tests {
 
     #[test]
     fn expiring_nonce_invalidation_keeps_the_existing_buffer() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (transactions_tx, transactions_rx) = channel::unbounded();
+        let (commands_tx, commands_rx) = channel::unbounded();
         let sender = Address::random();
         let rejected = test_payment_tx_with_nonce_key(sender, 500_000, U256::MAX);
         let buffered = [

@@ -9,7 +9,7 @@ publish = false
 workspace = true
 
 [features]
-fuzz = ["reth-db/fuzz", "reth-trie/fuzz"]
+fuzz = ["reth-db/fuzz", "reth-engine-tree/fuzz", "reth-tasks/fuzz", "reth-trie/fuzz"]
 
 [dependencies]
 reth-chain-state.workspace = true

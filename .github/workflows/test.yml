@@ -52,7 +52,7 @@ jobs:
           # Run the Rust jobs when Rust sources, manifests, Cargo.lock or their CI config change.
           filters: |
             rust:
-              - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
+              - '{bin,crates,examples,scripts,xtask,tips/verify,vendor/reth}/**'
               - 'Cargo.lock'
               - '*-network-identity.json'
               - '*.toml'
@@ -61,7 +61,7 @@ jobs:
               - '.github/workflows/{test,lint,bench}.yml'
             # Rust changes that can reach the node, xtask or e2e binaries. The fuzzer and corpus crates can't.
             node:
-              - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
+              - '{bin,crates,examples,scripts,xtask,tips/verify,vendor/reth}/**'
               - 'Cargo.lock'
               - '*-network-identity.json'
               - '*.toml'
@@ -223,6 +223,13 @@ jobs:
         with:
           name: zones-test-artifacts
           path: crates/zones/contracts/out
+      - name: Exercise blocking executor backends
+        if: matrix.partition == 1
+        run: |
+          cargo build --locked -p tempo-executor --example trace
+          timeout 30s target/debug/examples/trace
+          cargo build --locked -p tempo-executor --features fuzz --example trace
+          timeout 30s target/debug/examples/trace
       - name: Build and compile tests
         run: cargo nextest run --profile ci --workspace --exclude tempo-nitro-attestation-fuzz --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests

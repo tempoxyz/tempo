@@ -151,6 +151,8 @@ fuzz = ["fuzz-execution", "tempo-consensus/fuzz"]
 # Antithesis SDK assertions without the consensus ones, for nodes where consensus never runs
 # (`--dev`), whose consensus assertions would otherwise be reported as never reached.
 fuzz-execution = [
+	"reth-cli-commands/fuzz",
+	"reth-node-builder/fuzz",
 	"dep:antithesis_sdk",
 	"antithesis_sdk/full",
 	"tempo-node/fuzz",

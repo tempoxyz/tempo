@@ -43,7 +43,7 @@ jobs:
           # Run the Rust jobs when Rust sources, manifests, Cargo.lock or their CI config change.
           filters: |
             rust:
-              - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
+              - '{bin,crates,examples,scripts,xtask,tips/verify,vendor/reth}/**'
               - 'Cargo.lock'
               - '*-network-identity.json'
               - '*.toml'
