@@ -80,8 +80,7 @@ use zone_l1::{
     L1PortalEvents, L1StateCache, encryption_key_address, state::EnabledTokenRegistry,
 };
 use zone_node::{
-    ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig,
-    rpc::auth::build_token_fields,
+    ZoneNode, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig, rpc::auth::build_token_fields,
 };
 use zone_p2p::{LeadershipSchedule, LeadershipState, P2pConfig, P2pPeerId, Role};
 use zone_precompiles::{
@@ -1334,7 +1333,7 @@ impl ZoneTestNode {
         p2p_config: Option<P2pConfig>,
         spawn_engine: bool,
         additional_decryption_keys: Vec<SecretKey>,
-        prover_config: Option<ZoneProverConfig>,
+        prover_addresses: Option<zone_sequencer::ProverAddresses>,
         deposit_allowlist: Option<zone_node::DepositAllowlist>,
         deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
     ) -> eyre::Result<Self> {
@@ -1438,8 +1437,8 @@ impl ZoneTestNode {
                 });
             }
         }
-        if let Some(config) = prover_config {
-            zone_node = zone_node.with_prover(config);
+        if let Some(addresses) = prover_addresses {
+            zone_node = zone_node.with_prover(addresses);
         }
         // Multi-sequencer nodes run the real role controller, which owns the engine; the
         // harness must not drive a second head writer against the same queue.
@@ -3948,7 +3947,7 @@ pub(crate) async fn start_real_p2p_cluster_without_l1_proofs(
 }
 
 /// Settlement prover routed to an endpoint where nothing listens, so every proof fails fast.
-fn unreachable_settlement_prover() -> eyre::Result<ZoneProverConfig> {
+fn unreachable_settlement_prover() -> eyre::Result<zone_sequencer::ProverAddresses> {
     let unreachable = TempoHardfork::VARIANTS
         .iter()
         .map(|&hardfork| zone_sequencer::HardforkProverAddress {
@@ -3962,9 +3961,10 @@ fn unreachable_settlement_prover() -> eyre::Result<ZoneProverConfig> {
     let policy = serde_json::to_vec(&serde_json::json!({
         "pcrs": { "0": [&pcr], "1": [&pcr], "2": [&pcr] }
     }))?;
-    let prover_addresses = zone_sequencer::ProverAddresses::new(unreachable, Some(&policy))?
-        .expect("hardforks are non-empty");
-    Ok(ZoneProverConfig::Settlement(prover_addresses))
+    Ok(
+        zone_sequencer::ProverAddresses::new(unreachable, Some(&policy))?
+            .expect("hardforks are non-empty"),
+    )
 }
 
 /// Start the full three-member real-L1 cluster with one shared, controllable L1 proxy. Existing
@@ -4131,7 +4131,7 @@ async fn start_real_p2p_cluster_inner(
     proxy_mode: L1ProxyMode,
     l1_block_time: Option<Duration>,
     proxy_p2p: bool,
-    prover_config: Option<ZoneProverConfig>,
+    prover_addresses: Option<zone_sequencer::ProverAddresses>,
     deposit_allowlist_seed: Option<&[Address]>,
     l1_proofs_unavailable: bool,
 ) -> eyre::Result<RealP2pClusterParts> {
@@ -4341,7 +4341,7 @@ async fn start_real_p2p_cluster_inner(
                 Some(config),
                 false,
                 additional_decryption_keys,
-                prover_config.clone(),
+                prover_addresses.clone(),
                 deposit_allowlists[index].clone(),
                 None,
             )

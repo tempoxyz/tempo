@@ -4,8 +4,7 @@
 # - provision: creates the zone on L1 with three sequencers (2-of-3 settlement) and writes
 #   genesis, keys and the manifest to the shared volume, then exits
 # - zone-0..2: the sequencer quorum; zone-0 is the initial leader
-# - zone-rpc: RPC follower outside the quorum that re-proves every settled batch with the
-#   native prover and runs the solvency checker
+# - zone-rpc: RPC follower outside the quorum that runs the solvency checker
 # - workload: waits until the zone replicates, then signals that setup is complete; the test
 #   commands in /opt/antithesis/test run here and keep their ledger in /state
 #
