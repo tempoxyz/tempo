@@ -79,15 +79,14 @@ jobs:
 
       - name: Prepare digest-paired configuration
         env:
-          TAG: ${{ steps.tags.outputs.tag }}
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
-          # Fail closed rather than publish a config that silently uses a moving tag.
+          # Antithesis rejects references combining a tag and digest. Use only the digest.
           [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           dir="$RUNNER_TEMP/antithesis-reth-trie-config"
           mkdir -p "$dir"
           cp contrib/antithesis/reth-trie/docker-compose.yaml contrib/antithesis/reth-trie/Dockerfile.config "$dir/"
-          printf 'RETH_TRIE_IMAGE=%s/tempo-reth-trie-antithesis:%s@%s\n' "$REGISTRY" "$TAG" "$DIGEST" > "$dir/.env"
+          printf 'RETH_TRIE_IMAGE=%s/tempo-reth-trie-antithesis@%s\n' "$REGISTRY" "$DIGEST" > "$dir/.env"
 
       - name: Build and push config image
         id: config
@@ -104,7 +103,6 @@ jobs:
 
       - name: Record immutable image pair
         env:
-          TAG: ${{ steps.tags.outputs.tag }}
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           CONFIG_DIGEST: ${{ steps.config.outputs.digest }}
         run: |
@@ -112,6 +110,6 @@ jobs:
           {
             echo '### Antithesis reth trie image pair'
             echo ''
-            echo "Workload: \`$REGISTRY/tempo-reth-trie-antithesis:$TAG@$IMAGE_DIGEST\`"
-            echo "Config: \`$REGISTRY/tempo-reth-trie-antithesis-config:$TAG@$CONFIG_DIGEST\`"
+            echo "Workload: \`$REGISTRY/tempo-reth-trie-antithesis@$IMAGE_DIGEST\`"
+            echo "Config: \`$REGISTRY/tempo-reth-trie-antithesis-config@$CONFIG_DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"
