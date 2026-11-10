@@ -334,7 +334,7 @@ that should bounce.
 
 | File state | Behavior while leading |
 |------------|------------------------|
-| Missing (uninitialized) | Credits every deposit. The node logs a warning at startup. |
+| Missing (uninitialized) | Bounces every deposit. The node logs a warning at startup. |
 | Present | Credits only listed senders. A present but empty list bounces every deposit. |
 | Unreadable, or over 80,000 addresses | The node fails to start. |
 
@@ -385,8 +385,8 @@ same `initialized`, `nonce`, and `listHash` hold the same list.
    the peer that uses it.
 3. Restart the sequencers with `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>`, and
    the relaying RPC followers with `--deposits.allowlist.admin <ADDRESS>`. The lists are
-   uninitialized, so the sequencers keep crediting every deposit.
-4. Send a signed `zoneAdmin_replaceDepositAllowlist` with the full list.
+   uninitialized, so a sequencer bounces every deposit while it leads until the next step lands.
+4. Send a signed `zoneAdmin_replaceDepositAllowlist` with the full list right away.
 5. Call `zoneAdmin_getDepositAllowlistStatus` and confirm that every sequencer reports
    `initialized: true` with the same `nonce` and `listHash`.
 6. Turn access mode off with `just set-access-mode false`. From here on, the allowlist alone
@@ -394,8 +394,8 @@ same `initialized`, `nonce`, and `listHash` hold the same list.
 
 #### Adding, replacing, or restoring a sequencer
 
-Once access mode is off, an uninitialized sequencer credits every deposit while it leads, and
-a sequencer restored with an old file enforces an old list. Nothing monitors for this, so treat
+An uninitialized sequencer bounces every deposit while it leads, and a sequencer restored with
+an old file enforces an old list. Nothing monitors for this, so treat
 the file as part of every sequencer change: if a sequencer fails irreparably and its datadir is
 replaced, bring `deposit-allowlist.json` over with it. Before such a sequencer joins the leader
 rotation:
@@ -405,8 +405,8 @@ rotation:
 2. Start it, then confirm with `zoneAdmin_getDepositAllowlistStatus` that it matches the others.
 
 If no healthy copy is available, start the node and immediately send a signed
-`zoneAdmin_replaceDepositAllowlist` with a new nonce. Until that write lands, the node credits
-everyone while it leads.
+`zoneAdmin_replaceDepositAllowlist` with a new nonce. Until that write lands, the node bounces
+every deposit while it leads.
 
 Status also detects drift after a failed write, a restored backup, or a sequencer that ran
 without `--deposits.allowlist` while writes were sent. To fix drift, send a signed replace
