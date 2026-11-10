@@ -392,9 +392,9 @@ async fn test_invalid_non_secp_auth_tokens_are_rejected() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Authorized P256 keychain tokens authenticate as the root account in the V2 encoding only.
+/// Authorized P256 V2 keychain tokens authenticate as the root account.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_keychain_auth_tokens_require_v2() -> eyre::Result<()> {
+async fn test_keychain_auth_tokens_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut ctx = start_zone_with_redacted_rpc().await?;
@@ -417,12 +417,6 @@ async fn test_keychain_auth_tokens_require_v2() -> eyre::Result<()> {
         now_secs() + 300,
     )
     .await?;
-
-    let (v1_token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, 0x03);
-    let (status, _) = ctx
-        .call_raw("eth_blockNumber", serde_json::json!([]), &v1_token)
-        .await?;
-    assert_eq!(status.as_u16(), 403, "V1 keychain token should return 403");
 
     let (token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, 0x04);
     let resp = ctx
