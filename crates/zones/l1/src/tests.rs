@@ -1207,21 +1207,28 @@ async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
         })
         .unwrap();
 
+    let deposit = Deposit {
+        token,
+        sender,
+        amount: 1_000_000,
+        fee: 0,
+        tempo_refund_recipient: sender,
+        key_index: U256::ZERO,
+        ephemeral_pubkey_x: encrypted.eph_pub_x,
+        ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
+        ciphertext: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        tag: encrypted.tag,
+    };
+    // A bad tag fails decryption but still yields an ECDH proof for the on-chain refund.
+    let mut tampered = deposit.clone();
+    tampered.tag[0] ^= 1;
     let block = L1BlockDeposits {
         header: seal(make_test_header(block_number)),
-        events: L1PortalEvents::from_deposits(vec![L1Deposit::Deposit(Deposit {
-            token,
-            sender,
-            amount: 1_000_000,
-            fee: 0,
-            tempo_refund_recipient: sender,
-            key_index: U256::ZERO,
-            ephemeral_pubkey_x: encrypted.eph_pub_x,
-            ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
-            ciphertext: encrypted.ciphertext,
-            nonce: encrypted.nonce,
-            tag: encrypted.tag,
-        })]),
+        events: L1PortalEvents::from_deposits(vec![
+            L1Deposit::Deposit(deposit),
+            L1Deposit::Deposit(tampered),
+        ]),
     };
 
     let prepared = block
@@ -1229,16 +1236,17 @@ async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
         .await
         .expect("decrypted deposit should prepare without an engine-side policy read");
 
-    assert_eq!(prepared.queued_deposits.len(), 1);
+    assert_eq!(prepared.queued_deposits.len(), 2);
     assert_eq!(
         prepared.queued_deposits[0].depositType,
         DepositType::Deposit
     );
     assert_eq!(
         prepared.decryptions.len(),
-        1,
-        "successfully decrypted deposits must provide on-chain decryption data"
+        2,
+        "every user deposit must provide on-chain decryption data"
     );
+    assert_eq!(prepared.recipients, vec![Some(recipient), None]);
 }
 
 #[tokio::test]
@@ -1251,6 +1259,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
     let encryption_keys = EncryptionKeyRing::new([old.clone(), current.clone()]);
     let mut deposits = Vec::new();
     let mut expected_shared_secrets = Vec::new();
+    let mut expected_recipients = Vec::new();
 
     for (key_index, key, recipient) in [
         (
@@ -1298,6 +1307,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
         )
         .unwrap();
         expected_shared_secrets.push(decrypted.proof.shared_secret);
+        expected_recipients.push(Some(recipient));
         deposits.push(L1Deposit::Deposit(Deposit {
             token,
             sender,
@@ -1329,6 +1339,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
             .collect::<Vec<_>>(),
         expected_shared_secrets
     );
+    assert_eq!(prepared.recipients, expected_recipients);
 }
 
 #[test]

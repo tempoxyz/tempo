@@ -17,10 +17,11 @@ ENV CARGO_PROFILE_ANTITHESIS_DEBUG=line-tables-only \
     CARGO_PROFILE_ANTITHESIS_LTO=off
 # COPY preserves timestamps. Force the local crates fresh when this layer reruns:
 # its source may have changed while an earlier cached-target build was running.
-# Cargo locks its own registry; a private target cache never waits on a concurrent or cancelled
-# build, and each workload keeps its own (their features differ).
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=shared \
+# Private caches per workload: a concurrent or cancelled build (a cancelled workflow does not
+# stop its remote build) never holds them, and Cargo's package-cache lock lives outside the
+# registry mount, so concurrent builds must not share it.
+RUN --mount=type=cache,id=antithesis-reth-proofs-cargo-registry,target=/usr/local/cargo/registry,sharing=private \
+    --mount=type=cache,id=antithesis-reth-proofs-cargo-git,target=/usr/local/cargo/git,sharing=private \
     --mount=type=cache,id=antithesis-reth-proofs-target,target=/work/target,sharing=private \
     touch contrib/antithesis/reth-proofs/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
     && cargo build --locked --profile antithesis -p reth-proofs-antithesis \
@@ -36,8 +37,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
     && readelf -n /out/reth-proofs-antithesis | grep 'Build ID:'
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+# gdb lets debugging sessions attach to the workload (gdb -p) or open its core dumps.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates libssl3 \
+    && apt-get install --no-install-recommends -y ca-certificates libssl3 gdb \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/reth-proofs-antithesis /usr/local/bin/reth-proofs-antithesis
 # The instrumentation shim loads Antithesis's injected runtime when available, and
