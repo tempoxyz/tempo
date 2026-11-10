@@ -2116,7 +2116,7 @@ fn retired_root_error_order_and_access_gas() {
     // T14 prices every transaction a little differently, with or without role checks; the
     // role charges are measured on top of a plain transaction.
     let base = delta(&|f| f.primitive(4, vec![f.getter()]));
-    // The caller is free, even as the grant signer.
+    // The caller is free, even as the grant signer; the granted key ID costs a cold access.
     let grant_tx = |f: &Fixture| {
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, other.address());
         let signature = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -2125,7 +2125,7 @@ fn retired_root_error_order_and_access_gas() {
             ..aa_tx(4, vec![f.getter()])
         })
     };
-    assert_eq!(delta(&grant_tx), base);
+    assert_eq!(delta(&grant_tx), base + cold);
     // A cold fee payer costs a cold access, an access-listed one a warm access.
     let paid = |f: &Fixture, payer: &PrivateKeySigner, list: &AccessList| {
         f.sign_primitive(sponsored(

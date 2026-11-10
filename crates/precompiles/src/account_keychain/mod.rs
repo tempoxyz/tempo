@@ -245,7 +245,8 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
     /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller, has
     ///   incompatible code or is reserved (precompile, TIP-20, virtual or zone portal)
-    /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14
+    /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14, or
+    ///   from T14 a primitive type for a `keyId` with a nonzero configuration commitment
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -322,6 +323,11 @@ impl AccountKeychain {
         // Check if this key was previously revoked - prevents replay attacks
         if existing_key.is_revoked {
             return Err(AccountKeychainError::key_already_revoked().into());
+        }
+
+        // TIP-1111: a migrated delegate only takes ConfigurableAccount grants.
+        if !is_delegate_grant && self.storage.is_retired_root(key_id)? {
+            return Err(AccountKeychainError::invalid_signature_type().into());
         }
 
         let signature_type = StoredSignatureType::try_from(signature_type)?;
@@ -1667,7 +1673,7 @@ mod tests {
     use crate::{
         Precompile,
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
@@ -2035,6 +2041,43 @@ mod tests {
                 },
             )?;
             assert!(keychain.keys[account][admin_key].read()?.enforce_limits);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t14_primitive_grant_to_migrated_delegate_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let account = Address::random();
+        let delegate = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            StorageCtx.set_config_commitment(
+                delegate,
+                B256::repeat_byte(1),
+                ConfigCommitmentWriteGas::Intrinsic,
+            )?;
+
+            let err = authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: delegate,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(
+                err,
+                TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::InvalidSignatureType(_)
+                )
+            ));
 
             Ok(())
         })
