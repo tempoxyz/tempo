@@ -10,6 +10,8 @@ use std::{iter, str::FromStr};
 ///
 /// These are the recovered sender, the fee payer, every direct call target, the delegate and
 /// recovered authority of every EIP-7702 or Tempo authorization, and every access list entry.
+/// Keychain-signed Tempo authorizations are skipped by execution from T0, so only their
+/// delegate is checked.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressFilter {
     addresses: AddressSet,
