@@ -134,15 +134,26 @@ jobs:
       # A newer push supersedes this job (concurrency above): stop the vempo run it started too.
       - name: Fetch a vempo token to cancel
         id: sts-cancel
-        if: cancelled() && steps.start.outputs.id != ''
+        if: cancelled() && steps.sts1.outcome == 'success'
         uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/vempo
           policy: tempo-verify
           ttl: 1h
       - name: Cancel the superseded vempo run
-        if: cancelled() && steps.start.outputs.id != ''
+        if: cancelled() && steps.sts1.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.sts-cancel.outputs.token }}
           RUN_ID: ${{ steps.start.outputs.id }}
-        run: gh run cancel "$RUN_ID" -R "$VEMPO" || true
+        run: |
+          # The job can be cancelled after dispatch but before the start step published the ID:
+          # find the run by its request ID then.
+          for _ in $(seq 6); do
+            [ -n "$RUN_ID" ] && break
+            RUN_ID=$(gh run list -R "$VEMPO" --workflow verify-tempo.yml --event workflow_dispatch --limit 50 \
+              --json databaseId,displayTitle \
+              --jq 'map(select(.displayTitle | endswith("[" + env.REQUEST_ID + "]"))) | .[0].databaseId // empty') || true
+            [ -n "$RUN_ID" ] || sleep 10
+          done
+          [ -n "$RUN_ID" ] || { echo "no vempo run found for $REQUEST_ID"; exit 0; }
+          gh run cancel "$RUN_ID" -R "$VEMPO" || true
