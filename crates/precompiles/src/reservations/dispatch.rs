@@ -19,6 +19,9 @@ impl Precompile for Reservations {
                     hold(call) => mutate(call, msg_sender, |sender, c| self.hold(sender, c)),
                     adjust(call) => mutate(call, msg_sender, |sender, c| self.adjust(sender, c)),
                     capture(call) => mutate(call, msg_sender, |sender, c| self.capture(sender, c)),
+                    captureFor(call) => mutate(call, msg_sender, |sender, c| {
+                        self.capture_for(sender, c)
+                    }),
                     charge(call) => mutate(call, msg_sender, |sender, c| self.charge(sender, c)),
                     release(call) => mutate(call, msg_sender, |sender, c| self.release(sender, c.id)),
                     setDebtCap(call) => mutate(call, msg_sender, |sender, c| {

@@ -9,7 +9,8 @@ use tempo_contracts::precompiles::{IReservations, ITIP20, RESERVATIONS_ADDRESS, 
 
 use crate::utils::{TestNodeBuilder, setup_test_token};
 
-/// A card authorization held, captured above the hold and partly refunded through transactions.
+/// A card authorization held, captured above the hold and partly refunded through transactions,
+/// then a second one captured by its payee.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_hold_capture_refund() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -98,7 +99,8 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
     assert_eq!(token.balanceOf(owner).call().await?, U256::from(350));
     assert_eq!(reservations.reserved(owner, token_address).call().await?, 0);
 
-    let receipt = IReservations::new(RESERVATIONS_ADDRESS, payee_provider)
+    let payee_reservations = IReservations::new(RESERVATIONS_ADDRESS, payee_provider);
+    let receipt = payee_reservations
         .refund(owner, id, 100)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
@@ -117,6 +119,39 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         .map(|log| (log.from, log.to, log.amount))
         .collect();
     assert!(transfers.contains(&(payee, owner, U256::from(100))));
+
+    // The payee settles a hold itself, up to the held amount, without the owner's signature.
+    let second = B256::random();
+    let receipt = reservations
+        .hold(token_address, second, 200, now + 3_600, payee)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(3_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let receipt = payee_reservations
+        .captureFor(owner, second, 150)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(3_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let captured = receipt
+        .logs()
+        .iter()
+        .find_map(|log| IReservations::HoldCaptured::decode_log(&log.inner).ok())
+        .expect("captureFor emits HoldCaptured");
+    assert_eq!(
+        (captured.owner, captured.id, captured.amount, captured.debt),
+        (owner, second, 150, 0)
+    );
+    assert_eq!(token.balanceOf(payee).call().await?, U256::from(700));
+    assert_eq!(token.balanceOf(owner).call().await?, U256::from(300));
+    assert_eq!(reservations.reserved(owner, token_address).call().await?, 0);
 
     Ok(())
 }

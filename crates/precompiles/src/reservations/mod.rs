@@ -65,7 +65,7 @@ struct Authorization {
     token: Address,
     /// Amount the live hold reserves.
     held: U96,
-    /// Resolved payee, the only account allowed to refund.
+    /// Resolved payee, the only account allowed to refund or to capture for the owner.
     payee: Address,
     expires_at: u64,
     /// `Shortfall::epoch` when the hold was placed; an earlier epoch means a burn took part of it.
@@ -277,43 +277,25 @@ impl Reservations {
     }
 
     fn capture(&mut self, owner: Address, call: IReservations::captureCall) -> Result<()> {
-        let mut auth = self.live_hold(owner, call.id)?;
+        let auth = self.live_hold(owner, call.id)?;
         ensure_key_may_act(owner, &auth)?;
-        let captured = amount_u96(call.amount)?;
-        let held = auth.held.to::<u128>();
-        let mut token = TIP20Token::from_address(auth.token)?;
-        // The payee may have become forbidden since the hold was placed.
-        token.ensure_transfer_authorized(owner, auth.payee)?;
-        let mut position = self.positions[owner][auth.token].read()?;
-        // Releasing the hold first returns the reservation it consumes to the spendable balance.
-        let released = self.unreserve(owner, &auth, &mut position, held)?;
-        // The hold already counted against the key's limit; only an excess is new spend.
-        let excess = call.amount.saturating_sub(held);
-        let (debt, spend) = self.pay(
-            &mut token,
-            owner,
-            auth.payee,
-            Payment {
-                amount: call.amount,
-                released,
-                spend: excess,
-            },
-            position,
-        )?;
-        record_spend(&mut auth, spend, excess);
-        settle_limit(owner, &mut auth, call.amount)?;
+        self.settle_hold(owner, call.id, auth, call.amount)
+    }
 
-        auth.held = U96::ZERO;
-        auth.expires_at = 0;
-        auth.captured = captured;
-        self.authorizations[owner][call.id].write(auth)?;
-        self.emit_event(ReservationsEvent::hold_captured(
-            owner,
-            call.id,
-            auth.token,
-            call.amount,
-            debt,
-        ))
+    /// Captures the owner's live hold for its payee (the caller), so an approved hold still
+    /// settles after the owner revoked or rotated the key that placed it.
+    fn capture_for(&mut self, payee: Address, call: IReservations::captureForCall) -> Result<()> {
+        let auth = self.live_hold(call.owner, call.id)?;
+        if auth.payee != payee {
+            return Err(ReservationsError::unauthorized().into());
+        }
+        // The owner may be its own payee; another of its access keys still may not settle the hold.
+        ensure_key_may_act(call.owner, &auth)?;
+        // The hold is the owner's consent; capturing more would spend beyond it.
+        if call.amount > auth.held.to::<u128>() {
+            return Err(ReservationsError::invalid_amount().into());
+        }
+        self.settle_hold(call.owner, call.id, auth, call.amount)
     }
 
     fn charge(&mut self, owner: Address, call: IReservations::chargeCall) -> Result<()> {
@@ -476,6 +458,48 @@ impl Reservations {
             captured: auth.captured.to(),
             refunded: auth.refunded.to(),
         })
+    }
+
+    /// Pays `amount` of `owner`'s live hold `auth` to its payee, ends the hold and records `amount`
+    /// as captured. Only the excess over the hold counts against the signing access key's limit.
+    fn settle_hold(
+        &mut self,
+        owner: Address,
+        id: B256,
+        mut auth: Authorization,
+        amount: u128,
+    ) -> Result<()> {
+        let captured = amount_u96(amount)?;
+        let held = auth.held.to::<u128>();
+        let mut token = TIP20Token::from_address(auth.token)?;
+        // The payee may have become forbidden since the hold was placed.
+        token.ensure_transfer_authorized(owner, auth.payee)?;
+        let mut position = self.positions[owner][auth.token].read()?;
+        // Releasing the hold first returns the reservation it consumes to the spendable balance.
+        let released = self.unreserve(owner, &auth, &mut position, held)?;
+        // The hold already counted against the key's limit; only an excess is new spend.
+        let excess = amount.saturating_sub(held);
+        let (debt, spend) = self.pay(
+            &mut token,
+            owner,
+            auth.payee,
+            Payment {
+                amount,
+                released,
+                spend: excess,
+            },
+            position,
+        )?;
+        record_spend(&mut auth, spend, excess);
+        settle_limit(owner, &mut auth, amount)?;
+
+        auth.held = U96::ZERO;
+        auth.expires_at = 0;
+        auth.captured = captured;
+        self.authorizations[owner][id].write(auth)?;
+        self.emit_event(ReservationsEvent::hold_captured(
+            owner, id, auth.token, amount, debt,
+        ))
     }
 
     /// Pays `payment.amount` from `owner`'s available balance plus the `released` reservation to
@@ -760,6 +784,17 @@ mod tests {
         fn capture(&mut self, id: B256, amount: u128) -> Result<()> {
             self.reservations
                 .capture(self.owner, IReservations::captureCall { id, amount })
+        }
+
+        fn capture_for(&mut self, caller: Address, id: B256, amount: u128) -> Result<()> {
+            self.reservations.capture_for(
+                caller,
+                IReservations::captureForCall {
+                    owner: self.owner,
+                    id,
+                    amount,
+                },
+            )
         }
 
         fn charge(&mut self, id: B256, amount: u128, payee: Address) -> Result<()> {
@@ -1075,6 +1110,93 @@ mod tests {
                     600,
                     100,
                 )]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_payee_captures_after_the_key_is_revoked() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let mut keychain = authorize_card_key(f.owner, key, f.token.address(), 500)?;
+            let id = B256::random();
+            f.hold(id, 300)?;
+
+            // The owner revokes the key that placed the hold; the hold stays live, even past its
+            // expiry, until it is released.
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.revoke_key(f.owner, IAccountKeychain::revokeKeyCall { keyId: key })?;
+            StorageCtx.set_timestamp(U256::from(EXPIRY));
+            keychain.set_tx_origin(f.payee)?;
+            f.reservations.clear_emitted_events();
+            f.capture_for(f.payee, id, 250)?;
+
+            assert_eq!(f.balance(f.payee)?, U256::from(250));
+            assert_eq!(f.balance(f.owner)?, U256::from(750));
+            assert_eq!((f.reserved()?, f.available()?), (0, 750));
+            assert_eq!(
+                f.reservations.captured(f.owner, id)?,
+                IReservations::capturedReturn {
+                    captured: 250,
+                    refunded: 0
+                }
+            );
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::hold_captured(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    250,
+                    0,
+                )]);
+
+            // The settled record takes refunds like an owner capture.
+            f.refund(f.payee, id, 50)?;
+            assert_eq!(f.balance(f.owner)?, U256::from(800));
+            assert_eq!(
+                f.capture_for(f.payee, id, 1).unwrap_err(),
+                ReservationsError::hold_not_found().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_capture_for_requires_the_payee_and_the_held_amount() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            // Debt room does not let the payee capture above the hold.
+            f.set_debt_cap(f.payee, 1_000)?;
+            let id = B256::random();
+            f.hold(id, 300)?;
+
+            for caller in [f.owner, Address::random()] {
+                assert_eq!(
+                    f.capture_for(caller, id, 100).unwrap_err(),
+                    ReservationsError::unauthorized().into()
+                );
+            }
+            for amount in [0, 301] {
+                assert_eq!(
+                    f.capture_for(f.payee, id, amount).unwrap_err(),
+                    ReservationsError::invalid_amount().into()
+                );
+            }
+            assert_eq!(
+                f.capture_for(f.payee, B256::random(), 1).unwrap_err(),
+                ReservationsError::hold_not_found().into()
+            );
+            // Releasing stays with the owner: the payee's release looks up its own holds.
+            assert_eq!(
+                f.reservations.release(f.payee, id).unwrap_err(),
+                ReservationsError::hold_not_found().into()
+            );
+            assert_eq!(f.reserved()?, 300);
+
+            f.capture_for(f.payee, id, 300)?;
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
+            assert_eq!(f.debt()?.amount, 0);
             Ok(())
         })
     }
@@ -1935,6 +2057,40 @@ mod tests {
             assert_eq!(
                 remaining_limit(&keychain, f.owner, key, f.token.address())()?,
                 U256::from(100)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_capture_for_gives_back_to_the_live_placing_key() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let mut keychain = authorize_card_key(f.owner, key, f.token.address(), 100)?;
+            let id = B256::random();
+            f.hold(id, 100)?;
+
+            // The payee's own transaction: the part of the hold left uncaptured returns to the key.
+            keychain.set_tx_origin(f.payee)?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            f.capture_for(f.payee, id, 40)?;
+            assert_eq!(
+                remaining_limit(&keychain, f.owner, key, f.token.address())()?,
+                U256::from(60)
+            );
+
+            // An owner paying itself still cannot settle another access key's hold.
+            keychain.set_tx_origin(f.owner)?;
+            keychain.set_transaction_key(key)?;
+            f.payee = f.owner;
+            let own = B256::random();
+            f.hold(own, 10)?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            authorize_card_key(f.owner, Address::random(), f.token.address(), 100)?;
+            assert_eq!(
+                f.capture_for(f.owner, own, 10).unwrap_err(),
+                ReservationsError::unauthorized().into()
             );
             Ok(())
         })

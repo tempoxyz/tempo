@@ -26,6 +26,9 @@ crate::sol! {
         function adjust(bytes32 id, uint128 amount) external;
         /// Pays `amount` to the hold's payee and releases the rest of the hold.
         function capture(bytes32 id, uint128 amount) external;
+        /// Pays `amount`, at most the held amount, of `owner`'s live hold to its payee (the caller)
+        /// and releases the rest. Settles holds whose placing key was revoked or rotated.
+        function captureFor(address owner, bytes32 id, uint128 amount) external;
         /// Pays `amount` to `payee` without a hold, from available balance and then capped debt.
         function charge(address token, bytes32 id, uint128 amount, address payee) external;
         /// Releases the caller's hold.
