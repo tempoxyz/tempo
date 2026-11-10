@@ -1245,6 +1245,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "antithesis-instrumentation"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009bd9354d773dea6b85c08fa0d929ff6c52003cbe3cf496614eff79d2895eb5"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "antithesis-trie-shapes"
 version = "0.1.0"
 dependencies = [
@@ -1254,6 +1263,7 @@ dependencies = [
  "antithesis_sdk",
  "eyre",
  "rand 0.9.5",
+ "reth-trie-common",
  "serde",
  "serde_json",
 ]
@@ -11801,6 +11811,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-trie",
+ "antithesis-instrumentation",
  "antithesis-trie-shapes",
  "antithesis_sdk",
  "evm2",
@@ -11828,7 +11839,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tempo-antithesis-coverage",
 ]
 
 [[package]]
@@ -12392,6 +12402,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-trie",
+ "antithesis-instrumentation",
  "antithesis-trie-shapes",
  "antithesis_sdk",
  "evm2",
@@ -12420,7 +12431,6 @@ dependencies = [
  "reth-trie-db",
  "serde",
  "serde_json",
- "tempo-antithesis-coverage",
 ]
 
 [[package]]
@@ -14377,6 +14387,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-signer-trezor",
  "alloy-sol-types",
+ "antithesis-instrumentation",
  "antithesis_sdk",
  "base64 0.22.1",
  "blake3",
@@ -14431,7 +14442,6 @@ dependencies = [
  "tar",
  "tempfile",
  "tempo-alloy",
- "tempo-antithesis-coverage",
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-consensus-config",
@@ -14503,13 +14513,6 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
-]
-
-[[package]]
-name = "tempo-antithesis-coverage"
-version = "1.18.2"
-dependencies = [
- "cc",
 ]
 
 [[package]]
@@ -15323,7 +15326,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-eth",
- "antithesis_sdk",
+ "antithesis-instrumentation",
  "base64 0.22.1",
  "bytes",
  "clap",
@@ -15354,7 +15357,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tempo-alloy",
- "tempo-antithesis-coverage",
  "tempo-chainspec",
  "tempo-consensus-config",
  "tempo-contracts",
@@ -15382,11 +15384,11 @@ name = "tempo-zone"
 version = "0.4.0"
 dependencies = [
  "alloy-primitives",
+ "antithesis-instrumentation",
  "antithesis_sdk",
  "reth-cli-util",
  "reth-node-core",
  "rustls",
- "tempo-antithesis-coverage",
  "zone-node",
 ]
 
@@ -15451,6 +15453,24 @@ dependencies = [
  "zone-prover",
  "zone-rpc",
  "zone-spf",
+]
+
+[[package]]
+name = "tempo-zones-antithesis"
+version = "1.18.2"
+dependencies = [
+ "alloy",
+ "antithesis_sdk",
+ "clap",
+ "eyre",
+ "futures",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempo-contracts",
+ "tempo-primitives",
+ "tokio",
+ "zone-precompiles",
 ]
 
 [[package]]

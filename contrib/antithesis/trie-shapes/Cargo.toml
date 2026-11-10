@@ -12,6 +12,9 @@ workspace = true
 alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp.workspace = true
 alloy-trie.workspace = true
+# Proofs travel from the reth-proofs server to its test commands as JSON. account-ext keeps the
+# account encoding the server's (Tempo's) when the commands build on their own.
+reth-trie-common = { workspace = true, features = ["serde", "account-ext"] }
 antithesis_sdk = { workspace = true, features = ["full", "rand_core_v0_9"] }
 eyre.workspace = true
 rand_09.workspace = true

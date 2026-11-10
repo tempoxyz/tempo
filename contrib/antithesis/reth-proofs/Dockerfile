@@ -24,6 +24,7 @@ RUN --mount=type=cache,id=antithesis-reth-proofs-cargo-registry,target=/usr/loca
     --mount=type=cache,id=antithesis-reth-proofs-cargo-git,target=/usr/local/cargo/git,sharing=private \
     --mount=type=cache,id=antithesis-reth-proofs-target,target=/work/target,sharing=private \
     touch contrib/antithesis/reth-proofs/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
+      contrib/antithesis/trie-shapes/src/bin/reth-proofs-commands.rs \
     && cargo build --locked --profile antithesis -p reth-proofs-antithesis \
       --features reth-proofs-antithesis/fuzz --bin reth-proofs-antithesis \
       --target x86_64-unknown-linux-gnu \
@@ -34,7 +35,11 @@ RUN --mount=type=cache,id=antithesis-reth-proofs-cargo-registry,target=/usr/loca
     && readelf -SW /out/reth-proofs-antithesis | grep __sancov_guards \
     && readelf -SW /out/reth-proofs-antithesis | grep __sancov_pcs \
     && readelf -SW /out/reth-proofs-antithesis | grep .debug_info \
-    && readelf -n /out/reth-proofs-antithesis | grep 'Build ID:'
+    && readelf -n /out/reth-proofs-antithesis | grep 'Build ID:' \
+    && cargo build --locked --profile antithesis -p antithesis-trie-shapes --bin reth-proofs-commands \
+      --target x86_64-unknown-linux-gnu --target-dir target/uninstrumented \
+    && cp target/uninstrumented/x86_64-unknown-linux-gnu/antithesis/reth-proofs-commands /out/ \
+    && ! readelf -SW /out/reth-proofs-commands | grep -q __sancov_guards
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 # gdb lets debugging sessions attach to the workload (gdb -p) or open its core dumps.
@@ -42,6 +47,10 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates libssl3 gdb \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/reth-proofs-antithesis /usr/local/bin/reth-proofs-antithesis
+# The test template's commands: a separate binary built without the sancov flags, in its own
+# target dir, so only the server reports coverage and has its threads paused. SDK assertions
+# reach Antithesis either way.
+COPY --from=builder /out/reth-proofs-commands /usr/local/bin/reth-proofs-commands
 # The instrumentation shim loads Antithesis's injected runtime when available, and
 # falls back locally. No separately downloaded libvoidstar is needed with this SDK.
 RUN mkdir /symbols && ln -s /usr/local/bin/reth-proofs-antithesis /symbols/reth-proofs-antithesis

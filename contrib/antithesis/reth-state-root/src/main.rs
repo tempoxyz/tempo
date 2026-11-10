@@ -24,16 +24,16 @@ mod model;
 mod persistence;
 
 use alloy_primitives::{keccak256, B256, U256};
-use tempo_antithesis_coverage as _;
+use antithesis_instrumentation as _;
 use antithesis_sdk::{
     assert_always_or_unreachable, assert_sometimes, assert_unreachable, random::AntithesisRng,
 };
 use antithesis_trie_shapes::{
-    harness::{self, BlockRoot, Client, Request, Response, Summary},
+    harness::{self, BlockRoot, Request, Response, Summary},
     Collider, ShapeTracker, Write,
 };
 use engine::{Engine, Settings};
-use eyre::{bail, ensure, eyre, Context, Result};
+use eyre::{ensure, eyre, Context, Result};
 use journal::RoundJournal;
 use lifecycle::{clear_tables, persist_json, Campaign};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
@@ -516,19 +516,6 @@ fn serve(config: Option<String>) -> Result<()> {
     )
 }
 
-/// anytime_root: checks the root the overlay serves at the tip against the model's.
-fn anytime_root() -> Result<()> {
-    let Some(mut client) = Client::connect()? else { return harness::unavailable() };
-    match client.call(&Request::CheckRoot)? {
-        None => harness::unavailable(),
-        Some(Response::Root { number, root }) => {
-            println!("{}", json!({"root": {"number": number, "root": root}}));
-            Ok(())
-        }
-        Some(other) => bail!("unexpected answer to check_root: {other:?}"),
-    }
-}
-
 fn main() -> Result<()> {
     antithesis_sdk::antithesis_init();
     let previous_hook = std::panic::take_hook();
@@ -543,12 +530,6 @@ fn main() -> Result<()> {
     let command = arguments.next().unwrap_or_default();
     let result = match command.as_str() {
         "serve" => serve(arguments.next()),
-        "first_genesis" => harness::first_genesis(),
-        "parallel_driver_writes" => harness::parallel_driver_writes(),
-        "parallel_driver_blocks" => harness::parallel_driver_blocks(),
-        "anytime_root" => anytime_root(),
-        "eventually_persisted" => harness::persisted().map(drop),
-        "finally_recovered" => harness::finally(|| Ok(harness::persisted()?.is_some())),
         other => Err(eyre!("unknown command {other:?}")),
     };
     assert_always_or_unreachable!(

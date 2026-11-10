@@ -21,6 +21,7 @@
 //! resulting tries really have.
 
 pub mod harness;
+pub mod proofs;
 mod shape;
 
 pub use shape::{Leaves, ShapeTracker};

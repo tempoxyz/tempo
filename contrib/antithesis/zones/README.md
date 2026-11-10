@@ -39,7 +39,7 @@ key in the `ANTITHESIS_REGISTRY_KEY` repository secret.
 
 `test/v1/zone_payments` ships at `/opt/antithesis/test/v1` in the workload image only (the Dockerfile's
 `workload` target), so only the `workload` container offers it. The test platform finds templates in the
-images it is given, so they must be in the image rather than copied in when a container starts. Each command is a `tempo-zone-xtask antithesis` subcommand:
+images it is given, so they must be in the image rather than copied in when a container starts. Each command is a subcommand of `tempo-zones-antithesis` ([`xtask/zones-antithesis`](../../../xtask/zones-antithesis)), built without coverage instrumentation so only the nodes report coverage:
 
 | Command | What it does |
 |---|---|

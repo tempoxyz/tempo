@@ -18,17 +18,17 @@ use alloy::{
 use antithesis_sdk::{
     assert_always, assert_sometimes, assert_sometimes_greater_than, random::get_random,
 };
+use clap::Parser as _;
 use eyre::{OptionExt as _, WrapErr as _, eyre};
 use serde_json::json;
 use std::{path::PathBuf, time::Duration};
 use tempo_contracts::{
-    precompiles::ITIP20,
+    precompiles::{ITIP20, PATH_USD_ADDRESS},
     zones::{
         DepositPayload, IZoneInbox, IZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
         ZonePortal,
     },
 };
-use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::transaction::calc_gas_balance_spending;
 use zone_precompiles::ecies::encrypt_deposit;
 
@@ -36,6 +36,17 @@ use ledger::{Account, Lease, Ledger, Record};
 
 mod checks;
 mod ledger;
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to install rustls CryptoProvider");
+    Antithesis::parse()
+        .run()
+        .await
+        .wrap_err("Antithesis test command failed")
+}
 
 /// Dev accounts 8..=19 of the test mnemonic fund deposits. 0 administers the portal and 5..=7
 /// are the sequencers, which pay their own settlement gas.
@@ -68,7 +79,7 @@ const SENDER_CANDIDATES: usize = 16;
 
 /// Antithesis test commands; see `contrib/antithesis/zones/README.md`.
 #[derive(Debug, clap::Parser)]
-pub(crate) struct Antithesis {
+struct Antithesis {
     /// Tempo L1 HTTP RPC URL.
     #[arg(long, env = "L1_RPC_URL", default_value = "http://10.20.0.10:8545")]
     l1_rpc_url: reqwest::Url,
@@ -116,7 +127,7 @@ enum Command {
 }
 
 impl Antithesis {
-    pub(crate) async fn run(self) -> eyre::Result<()> {
+    async fn run(self) -> eyre::Result<()> {
         antithesis_sdk::antithesis_init();
         let ctx = Context::init(&self).await?;
         let driver = match self.command {

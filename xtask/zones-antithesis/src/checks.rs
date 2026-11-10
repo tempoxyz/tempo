@@ -12,10 +12,9 @@ use futures::{StreamExt as _, TryStreamExt as _, stream};
 use serde_json::json;
 use std::{collections::BTreeMap, time::Duration};
 use tempo_contracts::{
-    precompiles::ITIP20,
+    precompiles::{ITIP20, PATH_USD_ADDRESS},
     zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZonePortal},
 };
-use tempo_precompiles::PATH_USD_ADDRESS;
 
 use super::{Context, Record, is_rpc_error, poll_until, shuffled};
 

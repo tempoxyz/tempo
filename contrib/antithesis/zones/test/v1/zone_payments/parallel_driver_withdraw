@@ -1,4 +1,2 @@
 #!/bin/sh
-# Test commands run uninstrumented (see crates/antithesis-coverage).
-export TEMPO_ANTITHESIS_COVERAGE_DISABLED=1
-exec tempo-zone-xtask antithesis withdraw
+exec tempo-zones-antithesis withdraw
