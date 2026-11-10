@@ -115,7 +115,7 @@ use tempo_precompiles::{
     tip20::{ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token, is_tip20_prefix},
     tip403_registry::TIP403Registry,
 };
-use tempo_primitives::{TempoAddressExt as _, TempoBlockExt};
+use tempo_primitives::TempoBlockExt;
 
 /// Returns every precompile that is available to a Zone EVM.
 ///
@@ -285,8 +285,7 @@ where
                 StorageCredits,
                 storage_credits::StorageCreditsRules
             )
-        } else if address == CONFIGURABLE_ACCOUNT_ADDRESS && address.is_precompile(self.env.spec())
-        {
+        } else if address == CONFIGURABLE_ACCOUNT_ADDRESS && self.env.spec().is_t14() {
             zone_precompile!(
                 evm,
                 message,
@@ -295,7 +294,7 @@ where
                 ConfigurableAccount,
                 configurable_account::ConfigurableAccountRules
             )
-        } else if address == SIGNATURE_VERIFIER_ADDRESS && address.is_precompile(self.env.spec()) {
+        } else if address == SIGNATURE_VERIFIER_ADDRESS && self.env.spec().is_t14() {
             zone_precompile!(evm, message, gas, &self.env, SignatureVerifier)
         } else {
             #[cfg(feature = "std")]
@@ -340,7 +339,8 @@ pub fn is_zone_precompile(address: Address, spec: TempoHardfork) -> bool {
         | ACCOUNT_KEYCHAIN_ADDRESS
         | RECEIVE_POLICY_GUARD_ADDRESS
         | STORAGE_CREDITS_ADDRESS => true,
-        CONFIGURABLE_ACCOUNT_ADDRESS | SIGNATURE_VERIFIER_ADDRESS => address.is_precompile(spec),
+        // Zones gain these with TIP-1154 at T14, whatever fork activated them on Tempo.
+        CONFIGURABLE_ACCOUNT_ADDRESS | SIGNATURE_VERIFIER_ADDRESS => spec.is_t14(),
         _ => false,
     }
 }
@@ -348,3 +348,21 @@ pub fn is_zone_precompile(address: Address, spec: TempoHardfork) -> bool {
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub mod test_utils;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Zones add ConfigurableAccount and SignatureVerifier at T14 (TIP-1154), even though Tempo
+    /// activated SignatureVerifier earlier, so zone blocks before T14 execute unchanged.
+    #[test]
+    fn tip1154_precompiles_activate_at_t14() {
+        for address in [CONFIGURABLE_ACCOUNT_ADDRESS, SIGNATURE_VERIFIER_ADDRESS] {
+            assert!(
+                !is_zone_precompile(address, TempoHardfork::T13),
+                "{address}"
+            );
+            assert!(is_zone_precompile(address, TempoHardfork::T14), "{address}");
+        }
+    }
+}
