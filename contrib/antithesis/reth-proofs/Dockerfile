@@ -4,27 +4,29 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
     && apt-get install --no-install-recommends -y clang libclang-dev pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
-ARG CARGO_BUILD_JOBS=2
 WORKDIR /work
 # The Dockerfile-specific allowlist includes every workspace member manifest.
 COPY . ./
-# Instrument target code only, not host build scripts/proc macros. Disable LTO: it can
-# optimize away compile-time coverage. Keep assertions and DWARF for Antithesis.
-ENV CARGO_PROFILE_ANTITHESIS_DEBUG=2 \
+# Instrument target code only, not host build scripts/proc macros. Disable LTO (with it the
+# crate-local ThinLTO pass over multiple codegen units): it can optimize away compile-time
+# coverage. Keep assertions and line tables for Antithesis.
+ENV CARGO_PROFILE_ANTITHESIS_DEBUG=line-tables-only \
     CARGO_PROFILE_ANTITHESIS_DEBUG_ASSERTIONS=true \
     CARGO_PROFILE_ANTITHESIS_OVERFLOW_CHECKS=true \
     CARGO_PROFILE_ANTITHESIS_STRIP=false \
     CARGO_PROFILE_ANTITHESIS_LTO=off
 # COPY preserves timestamps. Force the local crates fresh when this layer reruns:
 # its source may have changed while an earlier cached-target build was running.
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/work/target,sharing=locked \
+# Cargo locks its own registry; a private target cache never waits on a concurrent or cancelled
+# build, and each workload keeps its own (their features differ).
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=shared \
+    --mount=type=cache,id=antithesis-reth-proofs-target,target=/work/target,sharing=private \
     touch contrib/antithesis/reth-proofs/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
     && cargo build --locked --profile antithesis -p reth-proofs-antithesis \
       --features reth-proofs-antithesis/fuzz --bin reth-proofs-antithesis \
       --target x86_64-unknown-linux-gnu \
-      --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Ccodegen-units=1","-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
+      --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
     && mkdir /out \
     && cp target/x86_64-unknown-linux-gnu/antithesis/reth-proofs-antithesis /out/ \
     && nm /out/reth-proofs-antithesis | grep ' T antithesis_load_libvoidstar$' \
