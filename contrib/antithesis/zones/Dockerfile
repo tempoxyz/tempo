@@ -24,6 +24,8 @@ RUN apt-get update \
 # Release optimizations with debug assertions and symbols, without LTO and with one codegen
 # unit per crate so Antithesis can symbolize the coverage instrumentation.
 ARG RUST_PROFILE=antithesis
+# Full DWARF (the profile inherits line tables only), so gdb can print locals, arguments and types.
+ARG CARGO_PROFILE_ANTITHESIS_DEBUG=2
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
 ARG VERGEN_GIT_SHA_SHORT=00000000
