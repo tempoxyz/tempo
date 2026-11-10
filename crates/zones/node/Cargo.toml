@@ -53,6 +53,7 @@ reth-rpc-api.workspace = true
 reth-rpc-builder.workspace = true
 reth-rpc-eth-api.workspace = true
 reth-rpc-eth-types.workspace = true
+reth-rpc-server-types.workspace = true
 reth-storage-api.workspace = true
 reth-tasks.workspace = true
 reth-tracing = { workspace = true, optional = true }
@@ -60,7 +61,6 @@ reth-transaction-pool.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
 reth-cli-runner = { workspace = true, optional = true }
 reth-node-metrics = { workspace = true, optional = true }
-reth-rpc-server-types = { workspace = true, optional = true }
 reth-cli-commands = { workspace = true, optional = true }
 reth-db-api = { workspace = true, optional = true }
 reth-trie = { workspace = true, optional = true }
@@ -167,7 +167,6 @@ cli = [
   "dep:reth-cli-runner",
   "dep:reth-node-metrics",
   "dep:metrics-exporter-prometheus",
-  "dep:reth-rpc-server-types",
   "dep:clap",
   "dep:reth-ethereum",
   "dep:reth-tracing",
