@@ -15,6 +15,8 @@ extend-exclude = [
 ]
 
 [default.extend-words]
+# Upstream Reth cursor terminology and identifiers.
+seeked = "seeked"
 COSE = "COSE"
 ba = "ba"
 multline = "multline"
