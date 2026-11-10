@@ -36,7 +36,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, SignatureType, calc_gas_balance_spending,
+    },
 };
 use thiserror::Error;
 
@@ -546,8 +548,8 @@ impl TempoPooledTransaction {
 
     /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
     /// an access key signs for it), the key authorization signer, a separate fee payer, the access
-    /// key, or the key ID an inline key authorization grants (whose commitment decides which key
-    /// types it accepts, TIP-1111).
+    /// key, or the key ID a primitive inline key authorization grants (TIP-1111: a migrated key ID
+    /// only takes ConfigurableAccount grants, so its first commitment invalidates the grant).
     pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
         let Some(tx) = self.inner().as_aa() else {
             return accounts.contains(self.sender_ref());
@@ -564,9 +566,12 @@ impl TempoPooledTransaction {
             .fee_payer_signature
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
-        let granted_key = self
-            .key_authorization_target_subject()
-            .map(|subject| subject.key_id);
+        let granted_key = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .filter(|authorization| authorization.key_type != SignatureType::ConfigurableAccount)
+            .map(|authorization| authorization.key_id);
         [sender, grant_signer, fee_payer, access_key, granted_key]
             .into_iter()
             .flatten()
@@ -1237,8 +1242,8 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        KeyAuthorization, PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
-        TempoTransaction, tempo_transaction::Call,
+        KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
+        tempo_transaction::Call,
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
@@ -1879,20 +1884,28 @@ mod tests {
     }
 
     #[test]
-    fn granted_key_is_an_authority() {
+    fn primitive_granted_key_is_an_authority() {
         let sender = Address::random();
         let signer = PrivateKeySigner::random();
         let key_id = Address::random();
-        let authorization = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, key_id)
-            .with_account(sender);
-        let signature = signer
-            .sign_hash_sync(&authorization.signature_hash())
-            .unwrap();
-        let tx = TxBuilder::aa(sender)
-            .key_authorization(authorization.into_signed(PrimitiveSignature::Secp256k1(signature)))
-            .build();
+        let grant = |key_type| {
+            let authorization =
+                KeyAuthorization::unrestricted(42431, key_type, key_id).with_account(sender);
+            let signature = signer
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            TxBuilder::aa(sender)
+                .key_authorization(
+                    authorization.into_signed(PrimitiveSignature::Secp256k1(signature)),
+                )
+                .build()
+        };
 
-        assert!(tx.has_authority_in(&AddressSet::from_iter([key_id])));
-        assert!(!tx.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        let primitive = grant(SignatureType::Secp256k1);
+        assert!(primitive.has_authority_in(&AddressSet::from_iter([key_id])));
+        assert!(!primitive.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        // A configurable grant's validity doesn't depend on its key ID's commitment value.
+        let configurable = grant(SignatureType::ConfigurableAccount);
+        assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));
     }
 }
