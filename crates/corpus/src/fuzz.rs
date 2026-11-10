@@ -348,7 +348,7 @@ pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
 }
 
 /// The blocks a block list file lists for `catalog`'s corpus: those under its section header, and
-/// any before the first header, which must be in its range.
+/// any before the first header, which must be in its range. Other `#` lines are comments.
 pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
     // A corpus grows at its tip, so a section names it by the parent of its first block. Sections
@@ -357,13 +357,13 @@ pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let tip = format!(" tip {} ", B256::from(catalog.cursor.parent));
     let (mut blocks, mut ours) = (Vec::new(), true);
     for line in fs::read_to_string(path)?.lines().map(str::trim) {
-        if let Some(header) = line.strip_prefix('#') {
+        if let Some(header) = line.strip_prefix("# corpus ") {
             ours = if header.contains(" parent ") {
                 header.contains(&parent)
             } else {
                 header.contains(&tip)
             };
-        } else if ours && !line.is_empty() {
+        } else if ours && !line.is_empty() && !line.starts_with('#') {
             let block: u64 = line.parse()?;
             eyre::ensure!(
                 (context.start..catalog.cursor.next).contains(&block),
