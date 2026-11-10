@@ -1,4 +1,4 @@
-//! Configurable account transaction authority (TIP-1112, TIP-1113).
+//! Configurable account transaction authority (TIP-1107, TIP-1113).
 
 use super::{TempoEvmTypes, access_key_id};
 use crate::{
@@ -410,7 +410,7 @@ fn validate_configurable_roles(
     })
 }
 
-/// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1112).
+/// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1113).
 ///
 /// Each distinct non-caller account is charged one account access, deduplicated against
 /// `accounts` (which collects every charged account). Configurable signers and delegates always
