@@ -6,8 +6,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{BuildTimeMultiplier, FinishedBuild, RESERVE_PERCENTILE};
+use super::{BuildTimeMultiplier, FinishedBuild};
 use crate::samples::{is_expired, record_sample, sample_percentile, step_toward};
+
+/// Percentile followed by build-work estimates.
+const RESERVE_PERCENTILE: usize = 75;
 
 /// Largest change of the multiplier, up or down, per busy build, in
 /// [`BuildTimeMultiplier`] fixed-point units.
