@@ -24,6 +24,8 @@ RUN apt-get update \
 # Release optimizations with debug assertions and symbols, without LTO and with one codegen
 # unit per crate so Antithesis can symbolize the coverage instrumentation.
 ARG RUST_PROFILE=antithesis
+# Full DWARF (the profile inherits line tables only), so gdb can print locals, arguments and types.
+ARG CARGO_PROFILE_ANTITHESIS_DEBUG=2
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
 ARG VERGEN_GIT_SHA_SHORT=00000000
@@ -78,8 +80,9 @@ RUN /out/tempo-xtask generate-genesis --output /genesis --accounts 20 --no-dkg-i
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 
+# gdb lets debugging sessions attach to the nodes (gdb -p) or open their core dumps.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates jq \
+    ca-certificates jq gdb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/ /usr/local/bin/
