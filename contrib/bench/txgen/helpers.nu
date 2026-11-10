@@ -57,6 +57,9 @@ const TXGEN_HELPER_SINGLE_SENDER_PRESETS = ["zone-earn-serial"]
 # and MPP opens from the accounts state bloat derives with real keys (generate-state-bloat
 # --signable-count), and rotates pathUSD mints across issuers that users[0] grants in setup.
 const TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS = 10000
+# State bloat leaves those senders a token unit each, about 200 transactions' fees, so setup
+# tops up the ones beyond the genesis users with pathUSD from the issuers (32 per transaction).
+const TXGEN_HELPER_SENDER_TOPUP = "10000000000"
 const TXGEN_HELPER_PUBLIC_MIX_ISSUERS = 32
 const TXGEN_HELPER_ISSUER_ROLE = "0x114e74f6ea3bd819998f78687bfcb11b140da08e9b7d222fa9c1f1ba1f2aa122"
 # Setup transactions a sender may have awaiting inclusion at once, below the txpool's
@@ -1594,11 +1597,35 @@ def txgen-public-mix-senders [preset_name: string, mix: list<any>, accounts: int
     {
         accounts: ({senders: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 ([$accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS] | math max)]}}
             | merge (if $mints { {issuers: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 $issuers]}} } else { {} }))
-        setup: (if $mints { [(txgen-grant-issuers-step $issuers)] } else { [] })
+        setup: ((if $mints { [(txgen-grant-issuers-step $issuers)] } else { [] })
+            | append (txgen-topup-senders-steps $accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS $issuers))
         templates: ([public_transfer public_transfer_memo] | where { |name| $name in $names }
             | each { |name| {$name: {from: $random}} } | reduce --fold {} { |entry, acc| $acc | merge $entry }
             | merge (if $mints { {public_mint: {from: {pool: issuers, select: random}}} } else { {} }))
         sequences: (if "mpp_open_only" in $names { {mpp_open_only: {bindings: {payer: {account: $random}}}} } else { {} })
+    }
+}
+
+# Sends senders[first..end) pathUSD for fees, 32 transfers per transaction, rotating across
+# users[0..funders) so each funder stays within the setup window.
+def txgen-topup-senders-steps [first: int, end: int, funders: int] {
+    if $first >= $end { return [] }
+    let batch = $TXGEN_HELPER_MAX_AA_CALLS
+    0..<((($end - $first) + $batch - 1) // $batch) | each { |index|
+        let start = $first + $index * $batch
+        let stop = ([($start + $batch) $end] | math min)
+        {id: $"topup_senders_($index)", tx: {
+            type: tempo
+            from: {pool: users, select: {index: ($index mod $funders)}}
+            gas_limit: 5000000
+            fee_token: "0x20c0000000000000000000000000000000000000"
+            calls: ($start..<$stop | each { |sender| {
+                to: "0x20c0000000000000000000000000000000000000"
+                abi: ERC20
+                function: transfer
+                args: [{pool: {pool: senders, select: {index: $sender}}} $TXGEN_HELPER_SENDER_TOPUP]
+            } })
+        }}
     }
 }
 

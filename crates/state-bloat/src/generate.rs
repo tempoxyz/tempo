@@ -75,7 +75,7 @@ pub struct GenerateStateBloat {
     out: PathBuf,
 
     /// Balance value to assign to each account (in smallest units)
-    #[arg(long, default_value = "1000000000000")]
+    #[arg(long, default_value = "1000000")]
     balance: u64,
 
     /// Number of addresses to derive using proper BIP32 (signable).

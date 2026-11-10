@@ -15,7 +15,7 @@ const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
-const BLOAT_VERSION = 2
+const BLOAT_VERSION = 1
 const LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
 
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
