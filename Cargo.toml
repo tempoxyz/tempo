@@ -17,6 +17,7 @@ members = [
   "contrib/antithesis/trie-shapes",
   "bin/tempo",
   "crates/alloy",
+  "crates/antithesis-coverage",
   "crates/chainspec",
   "crates/consensus",
   "crates/corpus",
@@ -358,8 +359,8 @@ commonware-storage = "2026.10.0"
 commonware-utils = "2026.10.0"
 
 antithesis_sdk = { version = "0.3.0", default-features = false }
-antithesis-instrumentation = "0.1.1"
 antithesis-trie-shapes = { path = "contrib/antithesis/trie-shapes" }
+tempo-antithesis-coverage = { path = "crates/antithesis-coverage" }
 arbitrary = { version = "1.4", features = ["derive"] }
 async-trait = "0.1"
 auto_impl = "1"

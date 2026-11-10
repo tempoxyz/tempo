@@ -30,4 +30,10 @@ Launch both reth targets with `--fault-tolerance legacy` (network faults and thr
 kills), which leaves restart recovery unexercised: "Restart recovers persisted blocks" stays unreached. A command that finds the server down exits successfully, so a restart is not a failure. Run one
 locally with `ANTITHESIS_TRIE_SOCKET=/tmp/trie.sock` set for both the server and the commands.
 
+Every target's binaries link [`tempo-antithesis-coverage`](../../crates/antithesis-coverage), the
+coverage shim that loads Antithesis's libvoidstar. The test template commands export
+`TEMPO_ANTITHESIS_COVERAGE_DISABLED=1`, so they run uninstrumented even though they share the
+instrumented build (the reth targets run the server's own binary): only the system under test
+reports coverage and gets its threads paused. The SDK's assertions and randomness still work.
+
 The zones workload drivers live in `xtask/src/zones/antithesis`; see [`zones/README.md`](zones/README.md).

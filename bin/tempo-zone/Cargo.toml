@@ -30,7 +30,7 @@ antithesis_sdk = { workspace = true, optional = true }
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-antithesis-instrumentation = { workspace = true, optional = true }
+tempo-antithesis-coverage = { workspace = true, optional = true }
 
 [[bin]]
 name = "tempo-zone"
@@ -43,7 +43,7 @@ default = ["asm-keccak", "jemalloc", "keccak-cache-global"]
 fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "zone-node/fuzz"]
 # Link Antithesis's coverage runtime shim, for binaries built with its sancov flags (see
 # contrib/antithesis/zones/Dockerfile). Linux only.
-antithesis-coverage = ["dep:antithesis-instrumentation"]
+antithesis-coverage = ["dep:tempo-antithesis-coverage"]
 
 asm-keccak = [
 	"alloy-primitives/asm-keccak",

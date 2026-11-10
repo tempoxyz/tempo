@@ -24,7 +24,7 @@ mod model;
 mod persistence;
 
 use alloy_primitives::{keccak256, B256, U256};
-use antithesis_instrumentation as _;
+use tempo_antithesis_coverage as _;
 use antithesis_sdk::{
     assert_always_or_unreachable, assert_sometimes, assert_unreachable, random::AntithesisRng,
 };

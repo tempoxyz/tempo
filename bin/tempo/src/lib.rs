@@ -27,7 +27,7 @@ use opentelemetry_otlp as _;
 
 // Links Antithesis's coverage runtime shim into binaries built with its sancov flags.
 #[cfg(all(target_os = "linux", feature = "antithesis-coverage"))]
-use antithesis_instrumentation as _;
+use tempo_antithesis_coverage as _;
 
 pub mod cli;
 #[cfg(feature = "corpus")]

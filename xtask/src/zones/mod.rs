@@ -31,7 +31,7 @@ use tempo_state_bloat::GenerateStateBloat;
 
 // Links Antithesis's coverage runtime shim into binaries built with its sancov flags.
 #[cfg(all(target_os = "linux", feature = "antithesis-coverage"))]
-use antithesis_instrumentation as _;
+use tempo_antithesis_coverage as _;
 
 mod admin;
 mod antithesis;

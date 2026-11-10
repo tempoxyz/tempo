@@ -34,7 +34,7 @@ mod generate;
 mod proof;
 
 use alloy_primitives::B256;
-use antithesis_instrumentation as _;
+use tempo_antithesis_coverage as _;
 use antithesis_sdk::{
     assert_always, assert_always_or_unreachable, assert_sometimes, assert_unreachable,
     random::AntithesisRng,
