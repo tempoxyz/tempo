@@ -582,6 +582,9 @@ interface IZonePortal {
     /// @notice Emitted when the independently mutable enforcement flags are initialized or updated.
     event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
 
+    /// @notice Emitted when zone-internal TIP-20 transfers are enabled or disabled.
+    event TransfersEnabledUpdated(bool enabled);
+
     error NotSequencer();
     error NotAdmin();
     error NotPauseAuthority();
@@ -686,6 +689,11 @@ interface IZonePortal {
     /// @notice Change callback gateway enforcement. Only callable by the admin.
     function setGatewayMode(bool enforced) external;
 
+    /// @notice Whether zone-internal TIP-20 transfers are enabled.
+    function transfersEnabled() external view returns (bool);
+
+    /// @notice Enable or disable zone-internal TIP-20 transfers. Only callable by the admin.
+    function setTransfersEnabled(bool enabled) external;
     /// @notice TIP-1094: queue a transfer a canonical TIP-20 already credited to this portal.
     /// @dev Called only by TIP-20 transfer routing; `msg.sender` identifies the token.
     function depositVirtual(

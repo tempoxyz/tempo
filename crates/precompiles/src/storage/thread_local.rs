@@ -12,7 +12,7 @@ use evm2::{
 use scoped_tls::scoped_thread_local;
 use std::cell::RefCell;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
@@ -273,6 +273,12 @@ impl StorageCtx {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
 
+    /// Returns the kind of EVM this context executes over. See
+    /// [`PrecompileStorageProvider::kind`].
+    pub fn kind(&self) -> TempoEvmKind {
+        Self::with_storage(|s| s.kind())
+    }
+
     /// Runs a nested call from the running precompile. See [`PrecompileStorageProvider::call`].
     ///
     /// The provider stays borrowed while the child runs. A child that re-enters a Tempo
@@ -369,7 +375,7 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
     }
 
-    /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a
+    /// Returns whether `address` is a retired root key (TIP-1113): from T14, an address with a
     /// nonzero configuration commitment no longer acts through its own key. Reads the commitment
     /// at call time, so a migration earlier in the block counts.
     pub fn is_retired_root(&self, address: Address) -> Result<bool> {

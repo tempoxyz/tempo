@@ -239,8 +239,13 @@ contract ZonePortal is IZonePortal {
     /// @notice Whether the T13 token cursor has been authenticated by an operational batch.
     bool public tokenEnablementCursorInitialized;
 
+    /// @notice Whether zone-internal TIP-20 transfers are enabled.
+    /// @dev Packed after the token cursor flag in slot 28. Defaults to false, so existing zones
+    ///      opt in explicitly. Read from finalized Tempo state by the zone TIP-20 precompile.
+    bool public transfersEnabled;
+
     /// @notice TIP-1094: whether transfers to zone deposit addresses are accepted.
-    /// @dev Appended after all T13 storage; packed into slot 28. Starts disabled.
+    /// @dev Packed after `transfersEnabled` in slot 28. Starts disabled.
     bool public virtualDepositsEnabled;
 
     /// @dev TIP-1094 minimum accepted key version; zero means the initial minimum of 1.
@@ -548,6 +553,13 @@ contract ZonePortal is IZonePortal {
         _requireCapabilityActive(Capability.AccessPolicy);
         _isGatewayEnforced = enforced;
         emit EnforcementModesUpdated(_isAccessEnforced, enforced);
+    }
+
+    /// @notice Enable or disable zone-internal TIP-20 transfers.
+    function setTransfersEnabled(bool enabled) external onlyAdmin {
+        _requireCapabilityActive(Capability.AccessPolicy);
+        transfersEnabled = enabled;
+        emit TransfersEnabledUpdated(enabled);
     }
 
     /// @notice Return whether account allowlist enforcement is enabled.

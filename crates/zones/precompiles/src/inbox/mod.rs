@@ -30,7 +30,7 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{Handler, Mapping, Slot, StorageCtx},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Error, TIP20Token},
-    tip403_registry::{AuthRole, TIP403Registry},
+    tip403_registry::TIP403Registry,
 };
 use tempo_precompiles_macros::contract;
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
@@ -484,7 +484,6 @@ impl ZoneInbox {
 
     /// Mint with Solidity `try/catch` semantics: ordinary reverts are caught while fatal and
     /// out-of-gas failures abort the outer Inbox call.
-    /// +T13: Bridged assets use TIP-403 `Recipient` authorization rather than `MintRecipient`.
     fn try_mint(&mut self, token: Address, to: Address, amount: u128) -> ZoneResult<bool> {
         self.try_mint_with_memo(token, to, amount, None)
     }
@@ -497,58 +496,46 @@ impl ZoneInbox {
         amount: u128,
         memo: Option<B256>,
     ) -> ZoneResult<bool> {
-        let ensure_logic_err = |err: TempoPrecompileError| {
-            if err.is_system_error() {
-                Err(err)
-            } else {
-                Ok(false)
-            }
-        };
+        match self.mint(token, to, amount, memo) {
+            Ok(()) => Ok(true),
+            Err(err) if err.is_system_error() => Err(err.into()),
+            Err(_) => Ok(false),
+        }
+    }
 
+    /// Mints bridged `amount` of `token` to `to`, with `mintWithMemo` when `memo` is given,
+    /// discarding any changes on failure.
+    ///
+    /// Reverts with `PolicyForbids` when `to`'s receive policy blocks the Inbox, and otherwise
+    /// with the token's own mint error.
+    /// +T13: Bridged assets use TIP-403 `Recipient` authorization rather than `MintRecipient`.
+    fn mint(
+        &mut self,
+        token: Address,
+        to: Address,
+        amount: u128,
+        memo: Option<B256>,
+    ) -> Result<(), TempoPrecompileError> {
         // TODO: Resolve virtual addresses through `AddressRegistry`precompile once it activates.
-        let can_receive = TIP403Registry::new()
-            .validate_receive_policy(token, ZONE_INBOX_ADDRESS, to)
-            .map(|reason| reason.is_none())
-            .or_else(ensure_logic_err)?;
-
-        if !can_receive {
-            return Ok(false);
+        if TIP403Registry::new()
+            .validate_receive_policy(token, ZONE_INBOX_ADDRESS, to)?
+            .is_some()
+        {
+            return Err(TIP20Error::policy_forbids().into());
         }
 
         let checkpoint = self.storage.checkpoint();
-        let role = if self.storage.spec().is_t13() {
-            AuthRole::recipient()
-        } else {
-            AuthRole::mint_recipient()
-        };
-        let success = TIP20Token::from_address(token)
-            .and_then(|mut token| match memo {
-                None => token.mint_with_role(
-                    ZONE_INBOX_ADDRESS,
-                    ITIP20::mintCall {
-                        to,
-                        amount: U256::from(amount),
-                    },
-                    role,
-                ),
-                Some(memo) => token.mint_with_memo_with_role(
-                    ZONE_INBOX_ADDRESS,
-                    ITIP20::mintWithMemoCall {
-                        to,
-                        amount: U256::from(amount),
-                        memo,
-                    },
-                    role,
-                ),
-            })
-            .map(|_| true)
-            .or_else(ensure_logic_err)?;
-
-        if success {
-            checkpoint.commit();
+        let mut token = TIP20Token::from_address(token)?;
+        let amount = U256::from(amount);
+        match memo {
+            None => token.mint(ZONE_INBOX_ADDRESS, ITIP20::mintCall { to, amount })?,
+            Some(memo) => token.mint_with_memo(
+                ZONE_INBOX_ADDRESS,
+                ITIP20::mintWithMemoCall { to, amount, memo },
+            )?,
         }
-
-        Ok(success)
+        checkpoint.commit();
+        Ok(())
     }
 
     fn claim_refund(&mut self, caller: Address, token: Address) -> ZoneResult<u128> {
@@ -556,7 +543,11 @@ impl ZoneInbox {
         if self.storage.spec().is_t13() && amount == 0 {
             return Err(ZoneInboxError::no_refund().into());
         }
-        if !self.try_mint(token, caller, amount)? {
+        // +T15: Revert with the mint's own error, such as `ContractPaused` for a token paused on
+        // Tempo.
+        if self.storage.spec().is_t15() {
+            self.mint(token, caller, amount, None)?;
+        } else if !self.try_mint(token, caller, amount)? {
             return Err(TempoPrecompileError::from(TIP20Error::policy_forbids()).into());
         }
 

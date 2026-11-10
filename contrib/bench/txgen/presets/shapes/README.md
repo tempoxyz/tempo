@@ -50,6 +50,13 @@ transaction-rate stand-in for gas share; set `share` when the gas split is known
 derek bench preset=neobank-multi gas-limit=500M general-gas-limit=30M bench-env="TXGEN_NEOBANK_INSTANCES=contrib/bench/txgen/presets/shapes/examples.yml"
 ```
 
+A shapes file kept outside this repository can be passed inline instead, gzipped and then
+base64-encoded in `TXGEN_NEOBANK_SHAPES_GZ_B64`, which wins over `TXGEN_NEOBANK_INSTANCES`:
+
+```
+derek bench preset=neobank-multi run-side=feature bench-env="TXGEN_NEOBANK_SHAPES_GZ_B64=<output of gzip -c shapes.yml | base64 -w0>"
+```
+
 The helper prints the shapes' combined peak target, the sum of
 `tx_per_month / 2592000 * peak_factor` per shape. Headroom is the bench's sustained
 TPS for that mix over this target.

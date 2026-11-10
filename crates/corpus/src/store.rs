@@ -9,7 +9,7 @@ use alloy_primitives::B256;
 use async_trait::async_trait;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use bytes::Bytes;
-use eyre::OptionExt;
+use eyre::{OptionExt, WrapErr};
 use futures::TryStreamExt;
 use object_store::{
     ClientConfigKey, CredentialProvider, ObjectStore, ObjectStoreExt, PutMode, RetryConfig,
@@ -27,6 +27,7 @@ use slatedb::{
 };
 use std::{sync::Arc, time::Duration};
 use tempo_primitives::Block;
+use tracing::warn;
 use url::Url;
 
 /// Maximum serialized size of one block record (block plus its transactions) or one
@@ -50,20 +51,30 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 pub const SLATEDB_RETRIES: Option<u32> = Some(3);
 /// How long a replaced checkpoint stays readable after a newer one is published.
 const RETIRED_CHECKPOINT_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// Lifetime of a replay's lease checkpoint. [Store::renew_lease] extends it every third of
+/// it, so a lease a crashed replay leaves behind expires on its own.
+const LEASE_LIFETIME: Duration = Duration::from_secs(10 * 60);
+/// Bounds each lease operation: SlateDB's `Admin` retries object-store failures without limit
+/// and has no setting for [SLATEDB_RETRIES]. Well under a third of [LEASE_LIFETIME], so a renewal
+/// that times out still fails before the lease expires.
+const LEASE_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 pub const CONTEXT_KEY: &[u8] = b"corpus-context";
 pub const CURSOR_KEY: &[u8] = b"corpus-cursor";
 
+/// What every block of a corpus is pinned to. The corpus ends at its published [Cursor], so
+/// fills append blocks without changing the context, except for `forks`, which an extending
+/// fill replaces with its own schedule once it agrees up to the published tip.
+///
+/// Older corpora also stored their pinned `end`, `tip` and `end_tx` here; deserializing ignores
+/// them, and the first extending fill rewrites the stored context without them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Context {
     pub chain_id: u64,
     pub genesis: String,
     pub forks: String,
     pub start: u64,
-    pub end: u64,
     pub parent: String,
-    pub tip: String,
     pub first_tx: u64,
-    pub end_tx: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,24 +105,25 @@ pub struct Catalog {
     /// Only the unpublished bounded page lives in memory, never in root JSON.
     #[serde(skip)]
     pub records: Vec<Record>,
+    /// Whether the last fill published every block up to its pinned end. A fill clears it
+    /// before opening its writer, so `false` means a fill is running or was interrupted.
     pub complete: bool,
     /// Changed by conditional PUT before opening a writer. A superseded writer
     /// never rereads/retries its publication token after a failed CAS.
     pub generation: u64,
+    /// Set by `corpus gc` through a conditional PUT before it deletes anything and cleared
+    /// when it finishes. A fill refuses to claim a corpus while it is set, and one that read
+    /// the catalog before gc claimed it fails its own claim's CAS.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collecting: bool,
 }
 
 impl Catalog {
     pub fn validate(&self) -> eyre::Result<()> {
         let c = &self.context;
+        eyre::ensure!(c.start > 0, "unsupported corpus context/range");
         eyre::ensure!(
-            c.start > 0 && c.end > c.start && c.end_tx >= c.first_tx,
-            "unsupported corpus context/range"
-        );
-        eyre::ensure!(
-            self.cursor.next >= c.start
-                && self.cursor.next <= c.end
-                && self.cursor.tx >= c.first_tx
-                && self.cursor.tx <= c.end_tx,
+            self.cursor.next >= c.start && self.cursor.tx >= c.first_tx,
             "invalid published cursor"
         );
         if self.cursor.next == c.start {
@@ -121,17 +133,6 @@ impl Catalog {
         for record in &self.records {
             cursor.advance(record)?;
         }
-        eyre::ensure!(
-            cursor.next <= c.end && cursor.tx <= c.end_tx,
-            "extra records/ordinals"
-        );
-        eyre::ensure!(
-            !self.complete
-                || (cursor.next == c.end
-                    && cursor.tx == c.end_tx
-                    && cursor.parent == c.tip.parse::<B256>()?.0),
-            "incomplete corpus publication"
-        );
         eyre::ensure!(
             (self.cursor.next == c.start && self.records.is_empty()) || self.checkpoint.is_some(),
             "missing pinned checkpoint"
@@ -397,6 +398,103 @@ impl Store {
         Ok(())
     }
 
+    /// Creates a checkpoint of the catalog's published one that only the caller holds, so a
+    /// fill retiring the published checkpoint cannot expire the snapshot a long replay reads.
+    /// Expires after `LEASE_LIFETIME` unless renewed with [Self::renew_lease].
+    pub async fn lease(&self, catalog: &Catalog) -> eyre::Result<String> {
+        let published = catalog
+            .checkpoint
+            .as_ref()
+            .ok_or_eyre("corpus has no published checkpoint")?
+            .parse()?;
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        let created = tokio::time::timeout(
+            LEASE_OPERATION_TIMEOUT,
+            admin.create_detached_checkpoint(&CheckpointOptions {
+                lifetime: Some(LEASE_LIFETIME),
+                source: Some(published),
+                name: None,
+            }),
+        )
+        .await
+        .wrap_err("creating the replay lease timed out")??;
+        Ok(created.id.to_string())
+    }
+
+    /// Extends `lease` every third of `LEASE_LIFETIME`, retrying a failed renewal while the lease
+    /// still has time left. Returns only once the lease may expire before the next attempt, so
+    /// the caller must stop reading through it then.
+    pub async fn renew_lease(self, lease: String) -> eyre::Result<()> {
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        let id = lease.parse()?;
+        let mut renewed = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(LEASE_LIFETIME / 3).await;
+            let error = match tokio::time::timeout(
+                LEASE_OPERATION_TIMEOUT,
+                admin.refresh_checkpoint(id, Some(LEASE_LIFETIME)),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    renewed = tokio::time::Instant::now();
+                    continue;
+                }
+                Ok(Err(error)) => eyre::Report::from(error),
+                Err(elapsed) => eyre::Report::from(elapsed),
+            };
+            if renewed.elapsed() + LEASE_LIFETIME / 3 + LEASE_OPERATION_TIMEOUT >= LEASE_LIFETIME {
+                return Err(error.wrap_err("replay lease expires before it can be renewed"));
+            }
+            warn!(%error, "Replay lease renewal failed; retrying");
+        }
+    }
+
+    /// Leases `catalog`'s published checkpoint ([Self::lease]), points `catalog` at the lease and
+    /// renews it on `runtime` in the background. Calls `expiring` once renewal gives up, so the
+    /// caller stops reading through it. Release it with [Lease::release].
+    ///
+    /// Leasing writes to the corpus. A reader that cannot, such as one with read-only or
+    /// anonymous access, reads the published checkpoint directly instead: a fill extending the
+    /// corpus meanwhile may then retire that checkpoint once its grace lifetime ends.
+    pub fn lease_published(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        catalog: &mut Catalog,
+        expiring: impl FnOnce() + Send + 'static,
+    ) -> eyre::Result<Lease> {
+        let id = match runtime.block_on(self.lease(catalog)) {
+            Ok(id) => id,
+            Err(error) => {
+                warn!(
+                    %error,
+                    "Cannot lease the published checkpoint; reading it without a lease"
+                );
+                return Ok(Lease(None));
+            }
+        };
+        catalog.checkpoint = Some(id.clone());
+        let renew = self.clone().renew_lease(id.clone());
+        let renewal = runtime.spawn(async move {
+            let renewed = renew.await;
+            expiring();
+            renewed
+        });
+        Ok(Lease(Some((id, renewal))))
+    }
+
+    /// Deletes a lease from [Self::lease].
+    pub async fn release_lease(&self, lease: &str) -> eyre::Result<()> {
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        tokio::time::timeout(
+            LEASE_OPERATION_TIMEOUT,
+            admin.delete_checkpoint(lease.parse()?),
+        )
+        .await
+        .wrap_err("releasing the replay lease timed out")??;
+        Ok(())
+    }
+
     pub async fn checkpoint(&self, db: &Db) -> eyre::Result<String> {
         db.flush_with_options(FlushOptions {
             flush_type: FlushType::MemTable,
@@ -407,6 +505,34 @@ impl Store {
             .await?
             .id
             .to_string())
+    }
+}
+
+/// A reader's lease on a published checkpoint, renewed in the background
+/// ([Store::lease_published]). A lease that is never released expires on its own.
+pub struct Lease(Option<(String, tokio::task::JoinHandle<eyre::Result<()>>)>);
+
+impl Lease {
+    /// Whether renewal gave up, so the lease may expire and reads through it must stop.
+    pub fn expiring(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|(_, renewal)| renewal.is_finished())
+    }
+
+    /// Stops renewing and deletes the lease. Fails with the renewal's error if it gave up.
+    pub fn release(self, runtime: &tokio::runtime::Runtime, store: &Store) -> eyre::Result<()> {
+        let Some((id, renewal)) = self.0 else {
+            return Ok(());
+        };
+        let renewed = if renewal.is_finished() {
+            runtime.block_on(renewal)?
+        } else {
+            renewal.abort();
+            Ok(())
+        };
+        let released = runtime.block_on(store.release_lease(&id));
+        renewed.and(released)
     }
 }
 
@@ -687,10 +813,10 @@ pub fn forks_agree(stored: &str, current: &str, timestamp: u64) -> bool {
     active(stored) == active(current)
 }
 
-/// Timestamp of the corpus' last block, read from its published record.
-pub async fn tip_timestamp(reader: &DbReader, context: &Context) -> eyre::Result<u64> {
-    let number = context
-        .end
+/// Timestamp of the last block before `cursor`, read from its published record.
+pub async fn tip_timestamp(reader: &DbReader, cursor: &Cursor) -> eyre::Result<u64> {
+    let number = cursor
+        .next
         .checked_sub(1)
         .ok_or_eyre("empty corpus range")?;
     let record = metadata(reader, number).await?;
@@ -849,17 +975,32 @@ pub mod tests {
                 genesis: B256::ZERO.to_string(),
                 forks: "test".to_owned(),
                 start,
-                end: start + count as u64,
                 parent: B256::ZERO.to_string(),
-                tip: B256::from([count as u8; 32]).to_string(),
                 first_tx: 0,
-                end_tx: count as u64 * transactions,
             },
             records,
             checkpoint: Some("00000000-0000-0000-0000-000000000000".to_owned()),
             complete: true,
             generation: 1,
+            collecting: false,
         }
+    }
+
+    #[test]
+    fn legacy_context_with_pinned_end_still_reads() -> eyre::Result<()> {
+        let mut catalog = catalog(1, 2, 1);
+        catalog.seal()?;
+        let mut legacy = serde_json::to_value(&catalog)?;
+        let context = legacy["context"]
+            .as_object_mut()
+            .ok_or_eyre("context is an object")?;
+        context.insert("end".to_owned(), 3.into());
+        context.insert("tip".to_owned(), B256::ZERO.to_string().into());
+        context.insert("end_tx".to_owned(), 2.into());
+        let decoded: Catalog = serde_json::from_value(legacy)?;
+        decoded.validate()?;
+        assert_eq!(decoded.context, catalog.context);
+        Ok(())
     }
 
     proptest! {
@@ -874,7 +1015,8 @@ pub mod tests {
             prop_assert!(roundtrip.validate().is_ok());
             prop_assert!(roundtrip.records.is_empty());
             let mut missing = expected.clone();
-            missing.records.remove(count/2);
+            // Not the last record: a shorter prefix is a valid corpus.
+            missing.records.remove((count - 1) / 2);
             prop_assert!(missing.validate().is_err());
             let mut extra = expected.clone();
             extra.records.push(extra.records.last().unwrap().clone());

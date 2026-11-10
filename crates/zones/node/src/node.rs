@@ -5,7 +5,10 @@
 
 use crate::{
     DepositAllowlist, DepositAllowlistAdmin, ZoneConsensus, ZoneEngine,
-    deposit_allowlist::{AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests},
+    deposit_allowlist::{
+        AllowlistMirror, AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests,
+        mirror_leader,
+    },
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
     role::{
@@ -65,7 +68,7 @@ use std::{
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt as _};
 use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
@@ -100,8 +103,8 @@ use zone_p2p::{
     P2pCommand, P2pConfig, P2pNetworkId, P2pPeerId, ZoneManifest, spawn_p2p,
 };
 use zone_payload::{
-    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, WithdrawalRevealEncryptor, ZonePayloadAttributes,
-    ZonePayloadFactory, ZonePayloadTypes,
+    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, TransferAllowlist, WithdrawalRevealEncryptor,
+    ZonePayloadAttributes, ZonePayloadFactory, ZonePayloadTypes, validate_transfer_calls,
 };
 use zone_primitives::constants::{decode_l1_chain_id, zone_chain_id};
 use zone_rpc::ZoneDebugApiRpcServer;
@@ -202,7 +205,8 @@ pub struct ZoneSequencerAddOnsConfig {
     pub withdrawal_poll_interval: Duration,
     /// Gas and concurrency limits for withdrawal processing transactions.
     pub withdrawal_batch_limits: WithdrawalBatchLimits,
-    /// Depositor allowlist enforced while leading. `None` credits every deposit.
+    /// Depositor and transfer allowlist enforced while leading. `None` credits every deposit and
+    /// admits every transfer.
     pub deposit_allowlist: Option<DepositAllowlist>,
 }
 
@@ -291,6 +295,8 @@ pub struct ZoneNode {
     p2p_config: Option<P2pConfig>,
     /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
     deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
+    /// Copy of the sequencers' allowlist that an RPC-only node checks transfers against.
+    allowlist_mirror: AllowlistMirror,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
 }
@@ -341,6 +347,7 @@ impl ZoneNode {
             prover_config: None,
             p2p_config: None,
             deposit_allowlist_admin: None,
+            allowlist_mirror: AllowlistMirror::default(),
             external_deposit_consumer: false,
         }
     }
@@ -525,6 +532,8 @@ where
     p2p_config: Option<P2pConfig>,
     /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
     deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
+    /// Copy of the sequencers' allowlist that an RPC-only node keeps current.
+    allowlist_mirror: AllowlistMirror,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
 }
@@ -544,7 +553,7 @@ where
     N: FullNodeTypes<Types = ZoneNode>,
 {
     /// Creates a new ZoneAddOns instance.
-    pub fn new(
+    pub(crate) fn new(
         deposit_queue: DepositQueue,
         l1_config: L1SubscriberConfig,
         l1_state_cache: L1StateCache,
@@ -557,6 +566,7 @@ where
         prover_config: Option<ZoneProverConfig>,
         p2p_config: Option<P2pConfig>,
         deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
+        allowlist_mirror: AllowlistMirror,
         external_deposit_consumer: bool,
     ) -> Self {
         Self {
@@ -580,6 +590,7 @@ where
             prover_config,
             p2p_config,
             deposit_allowlist_admin,
+            allowlist_mirror,
             external_deposit_consumer,
         }
     }
@@ -834,8 +845,8 @@ where
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
-        // A sequencer serves its own allowlist; an RPC-only node configured with the admin relays
-        // each call to every sequencer over P2P.
+        // A sequencer serves its own allowlist. An RPC-only node mirrors the sequencers' lists and,
+        // when configured with the admin, relays each call to every sequencer over P2P.
         let local_allowlist = self
             .sequencer_config
             .as_ref()
@@ -851,12 +862,22 @@ where
                     "zone-deposit-allowlist-applier",
                     apply_relayed_requests(local_allowlist, ports.requests),
                 );
-            } else if let Some(admin) = self.deposit_allowlist_admin {
-                allowlist_rpc = Some(
-                    AllowlistRelay::new(ports.client, admin, task_executor.clone())
-                        .into_rpc()
-                        .remove_context(),
-                );
+            } else {
+                task_executor.spawn_task(mirror_leader(
+                    ports.client.clone(),
+                    runtime.schedule.clone(),
+                    self.allowlist_mirror.clone(),
+                    pool.clone(),
+                ));
+                if let Some(admin) = self.deposit_allowlist_admin {
+                    let relay = AllowlistRelay::new(
+                        ports.client,
+                        admin,
+                        self.allowlist_mirror.clone(),
+                        task_executor.clone(),
+                    );
+                    allowlist_rpc = Some(relay.into_rpc().remove_context());
+                }
             }
         }
         let handle = self
@@ -964,6 +985,7 @@ where
             self.l1_config.retry_connection_interval,
             self.l1_config.portal_address,
             self.enabled_tokens.clone(),
+            self.l1_state_cache.clone(),
             chain_id,
             max_response_size,
         )
@@ -1363,7 +1385,6 @@ where
         let peer_tips = PeerTipRegistry::default();
         let relayer = match individual_signer {
             Some(signer) => {
-                use tempo_alloy::provider::ext::TempoProviderBuilderExt as _;
                 let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
                     .with_nonce_key_filler()
                     .wallet(signer)
@@ -1645,6 +1666,7 @@ where
         retry_connection_interval: Duration,
         portal_address: Address,
         enabled_tokens: EnabledTokenRegistry,
+        l1_state_cache: L1StateCache,
         chain_id: u64,
         max_response_size: usize,
     ) -> eyre::Result<()> {
@@ -1669,6 +1691,7 @@ where
             redacted_rpc_config.clone(),
             enabled_tokens,
             l1_provider,
+            l1_state_cache,
         ));
         let local_addr = start_redacted_rpc(redacted_rpc_config, api).await?;
         info!(target: "reth::cli", %local_addr, "Redacted zone RPC server started");
@@ -1794,14 +1817,25 @@ where
         if let Some(encryptor) = self.withdrawal_reveal_encryptor.clone() {
             payload_factory = payload_factory.with_withdrawal_reveal_encryptor(encryptor);
         }
+        let mut pool_builder = ZonePoolBuilder::new(executor_builder.enabled_tokens.clone());
+        if let Some(allowlist) = self
+            .sequencer_config
+            .as_ref()
+            .and_then(|config| config.deposit_allowlist.clone())
+        {
+            let allowlist: Arc<dyn TransferAllowlist> = Arc::new(allowlist);
+            payload_factory = payload_factory.with_transfer_allowlist(allowlist.clone());
+            pool_builder = pool_builder.with_transfer_allowlist(allowlist);
+        } else if self.p2p_config.as_ref().is_some_and(P2pConfig::is_rpc_only) {
+            pool_builder =
+                pool_builder.with_transfer_allowlist(Arc::new(self.allowlist_mirror.clone()));
+        }
         if let Some(key) = self.virtual_address_key {
             payload_factory = payload_factory.with_virtual_address_key(key);
         }
         ComponentsBuilder::default()
             .node_types::<N>()
-            .pool(ZonePoolBuilder::new(
-                executor_builder.enabled_tokens.clone(),
-            ))
+            .pool(pool_builder)
             .executor(executor_builder)
             .payload(BasicPayloadServiceBuilder::new(payload_factory))
             .network(NoopNetworkBuilder::<ZoneNetworkPrimitives>::default())
@@ -1822,6 +1856,7 @@ where
             self.prover_config.clone(),
             self.p2p_config.clone(),
             self.deposit_allowlist_admin,
+            self.allowlist_mirror.clone(),
             self.external_deposit_consumer,
         )
     }
@@ -1962,12 +1997,24 @@ where
 #[non_exhaustive]
 pub struct ZonePoolBuilder {
     enabled_tokens: EnabledTokenRegistry,
+    /// Allowlist that transfer calls must satisfy. `None` admits every transfer.
+    transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
 }
 
 impl ZonePoolBuilder {
     /// Create a pool builder using the shared enabled-token registry.
     pub fn new(enabled_tokens: EnabledTokenRegistry) -> Self {
-        Self { enabled_tokens }
+        Self {
+            enabled_tokens,
+            transfer_allowlist: None,
+        }
+    }
+
+    /// Reject transactions whose calls move funds to or from accounts `allowlist` does not
+    /// allow.
+    pub(crate) fn with_transfer_allowlist(mut self, allowlist: Arc<dyn TransferAllowlist>) -> Self {
+        self.transfer_allowlist = Some(allowlist);
+        self
     }
 }
 
@@ -2037,7 +2084,12 @@ where
 
         let provider = ctx.provider().clone();
         let enabled_tokens = self.enabled_tokens;
+        let transfer_allowlist = self.transfer_allowlist;
         validator.set_additional_stateful_validation(move |_origin, tx, _account_state| {
+            // The in-memory allowlist check runs before the balance check, which reads state.
+            if let Some(allowlist) = &transfer_allowlist {
+                validate_transfer_calls(allowlist.as_ref(), tx)?;
+            }
             validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
         });
 
@@ -2142,7 +2194,6 @@ mod tests {
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::Recovered;
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::transaction::{Call, TempoTransaction};
     use zone_chainspec::tempo_chain_spec_for_l1;
 
@@ -2303,16 +2354,12 @@ mod tests {
         );
         let transaction = pooled_transaction(envelope, sender);
 
-        let err = zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7)
-            .unwrap_err();
+        let err = zone_evm::validate_transaction(transaction.tx_env(), &[]).unwrap_err();
         assert!(matches!(
             err,
             tempo_evm::TempoInvalidTransaction::CallsValidation(_)
         ));
-        assert!(
-            zone_evm::validate_transaction(transaction.tx_env(), &[sender], TempoHardfork::T7)
-                .is_ok()
-        );
+        assert!(zone_evm::validate_transaction(transaction.tx_env(), &[sender]).is_ok());
     }
 
     #[test]
@@ -2333,8 +2380,6 @@ mod tests {
             ],
         );
 
-        assert!(
-            zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7).is_err()
-        );
+        assert!(zone_evm::validate_transaction(transaction.tx_env(), &[]).is_err());
     }
 }

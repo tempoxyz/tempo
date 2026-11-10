@@ -70,6 +70,7 @@ jobs:
       feature-ref: ${{ steps.refs.outputs.feature-ref }}
       feature-name: ${{ steps.refs.outputs.feature-name }}
       should-skip: ${{ steps.refs.outputs.should-skip }}
+      refresh-state: ${{ steps.refs.outputs.refresh-state }}
       is-stale: ${{ steps.refs.outputs.is-stale }}
       stale-age-hours: ${{ steps.refs.outputs.stale-age-hours }}
       nightly-created: ${{ steps.refs.outputs.nightly-created }}
@@ -211,8 +212,17 @@ jobs:
             const data = await resp.json();
             if (!data.ok) core.warning(`Slack API error: ${JSON.stringify(data)}`);
 
+  # Separate from resolve-refs, which save-state needs to succeed to refresh state.
+  fail-on-stale:
+    needs: resolve-refs
+    if: needs.resolve-refs.outputs.is-stale == 'true'
+    name: fail-on-stale
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
       - name: Fail on stale nightly
-        if: steps.refs.outputs.is-stale == 'true'
         run: |
           echo "::error::Nightly Docker build is stale (>24h old). Aborting replay benchmark."
           exit 1
@@ -258,7 +268,12 @@ jobs:
 
   save-state:
     needs: [resolve-refs, bench-replay]
-    if: success()
+    # A run skipped or stale on an unchanged nightly re-saves the same state, so a
+    # quiet main or Docker outage doesn't age out a baseline that still runs.
+    if: |
+      !cancelled() &&
+      needs.resolve-refs.result == 'success' &&
+      (needs.bench-replay.result == 'success' || needs.resolve-refs.outputs.refresh-state == 'true')
     name: save-state
     runs-on: ubuntu-latest
     permissions:

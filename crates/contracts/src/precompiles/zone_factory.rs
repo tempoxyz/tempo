@@ -75,21 +75,6 @@ pub fn initial_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount;
     ]
 }
 
-/// Returns the native ZoneFactory state with the T15 portal runtime (TIP-1094) and the T13
-/// verifier and messenger runtimes.
-pub fn t15_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
-    let [factory, portal, verifier, messenger] = t13_zone_factory_state(owner);
-    [
-        factory,
-        InitialZoneFactoryAccount {
-            code: T15_ZONE_PORTAL_RUNTIME,
-            ..portal
-        },
-        verifier,
-        messenger,
-    ]
-}
-
 /// Returns the native ZoneFactory state with the T13 shared runtimes.
 pub fn t13_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
     let [factory, _, _, _] = initial_zone_factory_state(owner);
@@ -110,6 +95,23 @@ pub fn t13_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] 
             code: T13_ZONE_MESSENGER_RUNTIME,
             storage: None,
         },
+    ]
+}
+
+/// Returns the native ZoneFactory state with the T15 shared runtimes.
+///
+/// T15 replaces only the portal runtime; the verifier and messenger keep their T13 code.
+pub fn t15_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
+    let [factory, _, verifier, messenger] = t13_zone_factory_state(owner);
+    [
+        factory,
+        InitialZoneFactoryAccount {
+            address: ZONE_PORTAL_IMPL_ADDRESS,
+            code: T15_ZONE_PORTAL_RUNTIME,
+            storage: None,
+        },
+        verifier,
+        messenger,
     ]
 }
 

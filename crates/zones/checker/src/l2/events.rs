@@ -98,6 +98,17 @@ enum ReceiptEvent {
     },
 }
 
+impl ReceiptEvent {
+    /// Return whether this event burns tokens or moves them to the zero address.
+    fn reduces_supply(&self) -> bool {
+        match self {
+            Self::TokenBurn { .. } => true,
+            Self::Transfer(transfer) => transfer.to.is_zero(),
+            Self::Anchor(_) | Self::Action(_) => false,
+        }
+    }
+}
+
 /// Reconcile Inbox mints with their outcome in one receipt.
 fn authenticate_receipt_mints(
     transaction_hash: B256,
@@ -174,6 +185,7 @@ impl Mint {
             event,
             ReceiptEvent::Transfer(transfer)
                 if transfer.token == self.token
+                    && !transfer.from.is_zero()
                     && transfer.from == self.recipient
                     && !transfer.to.is_zero()
                     && transfer.to != self.recipient
@@ -217,7 +229,7 @@ fn authenticate_receipt_withdrawals(
     let burns = receipt
         .windows(3)
         .enumerate()
-        .filter_map(|(start, events)| WithdrawalBurn::from_events(start + events.len(), events))
+        .filter_map(|(start, events)| WithdrawalBurn::from_events(start, events))
         .collect::<Vec<_>>();
     let mut consumed = vec![false; burns.len()];
 
@@ -261,6 +273,23 @@ fn authenticate_receipt_withdrawals(
     if burns.iter().enumerate().any(|(index, _)| !consumed[index]) {
         eyre::bail!(
             "transaction {} has an unexplained withdrawal debit and burn",
+            transaction_hash
+        );
+    }
+
+    // Outbox withdrawals are the only Zone path that burns tokens.
+    let in_withdrawal = |index: usize| {
+        burns
+            .iter()
+            .any(|burn| (burn.start_index..burn.end_index).contains(&index))
+    };
+    if receipt
+        .iter()
+        .enumerate()
+        .any(|(index, event)| event.reduces_supply() && !in_withdrawal(index))
+    {
+        eyre::bail!(
+            "transaction {} has a token burn outside a withdrawal",
             transaction_hash
         );
     }
@@ -308,6 +337,7 @@ fn matching_fee_burn(
 
 /// One debit, transfer-to-zero, and burn sequence within a receipt.
 struct WithdrawalBurn {
+    start_index: usize,
     end_index: usize,
     token: Address,
     owner: Address,
@@ -316,7 +346,7 @@ struct WithdrawalBurn {
 
 impl WithdrawalBurn {
     /// Decode one adjacent transfer, zero transfer, and burn sequence.
-    fn from_events(end_index: usize, events: &[ReceiptEvent]) -> Option<Self> {
+    fn from_events(start_index: usize, events: &[ReceiptEvent]) -> Option<Self> {
         let [debit, transfer, burn] = events else {
             return None;
         };
@@ -343,7 +373,8 @@ impl WithdrawalBurn {
             && debit.amount == transfer.amount
             && debit.amount == burn_amount)
             .then_some(Self {
-                end_index,
+                start_index,
+                end_index: start_index + events.len(),
                 token: debit.token,
                 owner: debit.from,
                 amount: debit.amount,
@@ -390,6 +421,11 @@ impl EventCollector {
         }
 
         if !successful {
+            eyre::ensure!(
+                !events.iter().any(ReceiptEvent::reduces_supply),
+                "failed transaction {} has a token burn",
+                transaction_hash
+            );
             self.transfers
                 .extend(events.into_iter().filter_map(|event| {
                     let ReceiptEvent::Transfer(transfer) = event else {
@@ -651,8 +687,9 @@ mod tests {
     use alloy_consensus::{SignableTransaction as _, TxLegacy, TxType};
     use alloy_eips::BlockNumHash;
     use alloy_primitives::{Bytes, LogData, Signature, TxKind, U256, address};
-    use alloy_sol_types::SolEvent;
+    use alloy_sol_types::{SolCall, SolEvent};
     use reth_ethereum_primitives::Receipt;
+    use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
 
     fn collect<T, R>(
         transactions: &[T],
@@ -917,9 +954,6 @@ mod tests {
 
     #[test]
     fn checkpoint_only_blocks_require_the_exact_event_and_transaction_shape() {
-        use alloy_sol_types::SolCall;
-        use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
-
         let header = tempo_primitives::TempoHeader {
             inner: alloy_consensus::Header {
                 number: 109,
@@ -1435,6 +1469,108 @@ mod tests {
         });
 
         assert!(authenticate_mints(vec![mint, unrelated, outcome]).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_recipient_mint_hiding_another_mint() {
+        let token = Address::repeat_byte(1);
+        let amount = U256::from(10);
+        let zero_mint = transfer(token, Address::ZERO, Address::ZERO, amount);
+        let hidden_mint = transfer(token, Address::ZERO, Address::repeat_byte(2), amount);
+        let outcome = ReceiptEvent::Action(L2BridgeAction::Deposit {
+            token,
+            amount,
+            result: DepositResult::Processed {
+                recipient: Address::ZERO,
+            },
+        });
+
+        let error = authenticate_mints(vec![zero_mint, hidden_mint, outcome]).unwrap_err();
+        assert!(error.to_string().contains("unexplained mint"), "{error}");
+    }
+
+    #[test]
+    fn rejects_token_burn_outside_withdrawal() {
+        let token = Address::repeat_byte(1);
+        let owner = Address::repeat_byte(2);
+        let amount = U256::from(10);
+        let token_burn = ReceiptEvent::TokenBurn {
+            token,
+            from: owner,
+            amount,
+        };
+        let burn_transfer = transfer(token, owner, Address::ZERO, amount);
+
+        for events in [
+            vec![burn_transfer, token_burn],
+            vec![token_burn],
+            vec![burn_transfer],
+        ] {
+            let error = authenticate_withdrawals(events).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("token burn outside a withdrawal"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_token_burn_beside_authenticated_withdrawal() {
+        let token = Address::repeat_byte(1);
+        let sender = Address::repeat_byte(2);
+        let mut events = burn(token, sender, 100);
+        events.push(withdrawal(token, sender, 100, 0));
+        events.push(ReceiptEvent::TokenBurn {
+            token,
+            from: sender,
+            amount: U256::ONE,
+        });
+
+        let error = authenticate_withdrawals(events).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("token burn outside a withdrawal"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_token_burn_in_failed_receipt() {
+        let token = address!("20c0000000000000000000000000000000000000");
+        let owner = Address::repeat_byte(1);
+        let failed = Receipt {
+            tx_type: TxType::Legacy,
+            success: false,
+            cumulative_gas_used: 0,
+            logs: vec![
+                event_log(
+                    token,
+                    ITIP20::Transfer {
+                        from: owner,
+                        to: Address::ZERO,
+                        amount: U256::ONE,
+                    },
+                ),
+                event_log(
+                    token,
+                    ITIP20::Burn {
+                        from: owner,
+                        amount: U256::ONE,
+                    },
+                ),
+            ],
+        };
+
+        let error = collect(
+            &[transaction(), transaction()],
+            &[failed, receipt(vec![anchor_log(7)])],
+            BlockNumHash::new(4, B256::repeat_byte(4)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("token burn"), "{error:#}");
     }
 
     #[test]

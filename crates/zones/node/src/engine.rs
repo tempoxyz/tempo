@@ -400,9 +400,13 @@ impl ZoneEngine {
             )
             .await?;
             if let Some((allowlist, senders)) = self.deposit_allowlist.as_ref().zip(senders) {
-                let rejected = allowlist.reject_unlisted(&senders, &mut prepared.decryptions)?;
+                let rejected = allowlist.reject_unlisted(
+                    &senders,
+                    &prepared.recipients,
+                    &mut prepared.decryptions,
+                )?;
                 if rejected > 0 {
-                    info!(target: "zone::engine", rejected, "Bouncing deposits from senders not on the allowlist");
+                    info!(target: "zone::engine", rejected, "Bouncing deposits whose sender or recipient is not on the allowlist");
                     metrics::counter!("zone_deposit_allowlist_rejected_total")
                         .increment(rejected as u64);
                 }
@@ -681,6 +685,7 @@ fn zone_timestamp_millis(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec as _;
     use std::{
         collections::VecDeque,
@@ -689,6 +694,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tokio::sync::oneshot;
     use zone_chainspec::test_utils::set_tempo_fork;
+    use zone_p2p::LeadershipState;
 
     #[test]
     fn zone_timestamp_uses_l1_timestamp_as_a_lower_bound() {
@@ -731,9 +737,6 @@ mod tests {
 
     #[test]
     fn checkpoint_import_stops_at_each_leadership_boundary() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        use zone_p2p::LeadershipState;
-
         let outgoing = PrivateKey::from_seed(1).public_key();
         let incoming = PrivateKey::from_seed(2).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, outgoing.clone(), 0));
@@ -796,8 +799,6 @@ mod tests {
 
     #[test]
     fn uninitialized_leadership_fences_checkpoint_import() {
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
         let permit = ProductionPermit::new(
             LeadershipSchedule::uninitialized(),
             PrivateKey::from_seed(1).public_key(),
@@ -1173,10 +1174,6 @@ mod tests {
 
     #[test]
     fn production_permit_is_a_single_schedule_lookup() {
-        use alloy_primitives::B256;
-        use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-        use zone_p2p::LeadershipState;
-
         let me = PrivateKey::from_seed(1).public_key();
         let other = PrivateKey::from_seed(2).public_key();
         let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, me.clone(), 0));

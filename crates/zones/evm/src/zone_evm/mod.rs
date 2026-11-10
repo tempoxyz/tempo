@@ -1,12 +1,13 @@
 //! Zone runtime EVM and its private execution policies.
 
+#[cfg(test)]
+mod cold_access;
 pub(crate) mod contract_creation;
 mod validation;
 
 pub(crate) use contract_creation::zone_execution_config;
 pub use validation::validate_transaction;
 
-use crate::executor::ZoneTransactionKind;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use evm2::{
@@ -16,8 +17,7 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
 use zone_precompiles::{
-    L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
-    tx_context,
+    L1State, L1StorageReader, tempo_state::TEMPO_BLOCK_NUMBER_SLOT, tx_context,
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
 
@@ -41,7 +41,6 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
             ZoneTxHandler {
                 inner: handler,
                 l1: l1.clone(),
-                spec,
             },
         );
     }
@@ -53,7 +52,6 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
 struct ZoneTxHandler<L1> {
     inner: AnyTxHandler<TempoEvmTypes, TxResult<TempoEvmTypes>>,
     l1: L1State<L1>,
-    spec: TempoHardfork,
 }
 
 impl<L1: L1StorageReader> ZoneTxHandler<L1> {
@@ -62,7 +60,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<ZoneTxContext<L1>> {
         self.l1.reset_transaction_state();
-        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST, self.spec)?;
+        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
 
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
@@ -70,26 +68,8 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .host
             .state_mut()
             .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
-
-        // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
-        // only. Keep its entries only while they were loaded at this transaction's anchor.
-        // Anchor-changing transactions switch anchors mid-transaction, and a cache hit skips
-        // `L1OverlayDB`, which would hide the switch: they always start from an empty cache.
-        let changes_anchor = matches!(
-            ZoneTransactionKind::classify(request.envelope.evm_tx().is_system_tx(), || {
-                request.envelope.evm_tx().calls()
-            }),
-            ZoneTransactionKind::AdvanceTempo | ZoneTransactionKind::AdvanceTempoHeaders
-        );
-        if self.l1.select_registry_cache_anchor(initial_anchor) || changes_anchor {
-            request
-                .host
-                .state_mut()
-                .overlay_db_mut()
-                .cache
-                .storage
-                .remove(&TIP403_REGISTRY_ADDRESS);
-        }
+        // The accepted cache keys mirrored slots without their anchor. That is sound because a
+        // Zone EVM executes one block, whose committed opening advanceTempo is its only anchor change.
         self.l1.begin_transaction(initial_anchor);
 
         let tx_hash = match request.envelope.execution_context() {
@@ -148,7 +128,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::{ZoneBlockExecutor, ZoneDbError, ZoneEvm, ZoneEvmConfig};
     use alloy_consensus::{SignableTransaction, TxEip7702, TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Signature, U256};
+    use alloy_primitives::{Address, B256, Signature, TxKind, U256};
+    use alloy_sol_types::{SolCall, SolError};
     use evm2::{
         PendingState, TxResult,
         evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
@@ -162,29 +143,60 @@ pub(crate) mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
     };
-    use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
+    use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, storage::StorageCtx};
     use tempo_primitives::{
-        TempoTxEnvelope,
+        TempoEvmKind, TempoTxEnvelope,
         transaction::{
             Authorization, TempoSignature, TempoSignedAuthorization, TempoTransaction,
             envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
         },
     };
     use zone_chainspec::ZoneChainSpec;
-    use zone_precompiles::{ADVANCE_TEMPO_SELECTOR, test_utils::MockL1Reader};
+    use zone_precompiles::{
+        ADVANCE_TEMPO_SELECTOR, ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader,
+        zone_fee_manager,
+    };
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
 
-    pub(crate) fn config() -> ZoneEvmConfig<MockL1Reader> {
+    /// A dev Zone EVM config that reads Tempo through `l1`.
+    pub(crate) fn config(l1: MockL1Reader) -> ZoneEvmConfig<MockL1Reader> {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 1).unwrap();
         ZoneEvmConfig::new(
             std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap()),
-            MockL1Reader::default(),
+            l1,
             Address::ZERO,
         )
+    }
+
+    /// A zone environment at `spec` that charges no fees, with a 30M block gas limit.
+    pub(crate) fn fee_free_env(spec: TempoHardfork) -> TempoEvmEnv {
+        let mut env = TempoEvmEnv {
+            spec,
+            ..Default::default()
+        };
+        env.version = tempo_chainspec::gas_params::version(evm2::SpecId::from(spec), spec, false);
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, spec);
+        env.version.features.remove(evm2::EvmFeatures::FEE_CHARGE);
+        env.block.gas_limit = U256::from(30_000_000);
+        env
+    }
+
+    /// A zone database whose fee manager defaults to pathUSD, holding `sender` at nonce 1.
+    pub(crate) fn sender_db(sender: Address) -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&ZONE_FEE_MANAGER_ADDRESS, AccountInfo::default());
+        db.insert_account_storage(
+            &ZONE_FEE_MANAGER_ADDRESS,
+            &zone_fee_manager::slots::DEFAULT_FEE_TOKEN,
+            &U256::from_be_slice(tempo_precompiles::DEFAULT_FEE_TOKEN.as_slice()),
+        );
+        db.insert_account_info(&sender, AccountInfo::default().with_nonce(1));
+        db
     }
 
     pub(super) fn test_evm(db: InMemoryDB) -> ZoneEvm<'static> {
@@ -195,7 +207,7 @@ pub(crate) mod tests {
         };
         env.version = tempo_chainspec::gas_params::version(evm2::SpecId::OSAKA, spec, false);
         env.block.gas_limit = U256::from(30_000_000);
-        BlockExecutorFactory::evm_with_env(&config(), db, env)
+        BlockExecutorFactory::evm_with_env(&config(MockL1Reader::default()), db, env)
     }
 
     pub(super) fn transaction(
@@ -250,6 +262,21 @@ pub(crate) mod tests {
             transaction(Address::ZERO, eip7702),
             transaction(Address::ZERO, tempo),
         ]
+    }
+
+    /// The handler's own storage contexts over a zone EVM follow zone rules too, not only zone
+    /// precompile calls.
+    #[test]
+    fn handler_storage_contexts_follow_zone_rules() {
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &config(MockL1Reader::default()),
+            InMemoryDB::default(),
+            TempoEvmEnv::default(),
+        );
+        assert_eq!(
+            StorageCtx::enter_evm(&mut evm, || StorageCtx::default().kind()),
+            TempoEvmKind::Zone
+        );
     }
 
     #[test]
@@ -310,7 +337,7 @@ pub(crate) mod tests {
                 registry,
                 NoPrecompiles::default(),
             );
-            let config = config();
+            let config = config(MockL1Reader::default());
             let block = Default::default();
             let ctx = config.context_for_block(&block).unwrap();
             let mut executor = ZoneBlockExecutor::new(evm, ctx, config.chain_spec());
@@ -381,7 +408,6 @@ pub(crate) mod tests {
             ZoneTxHandler {
                 inner: inner.get_by_type(0).unwrap(),
                 l1: l1.clone(),
-                spec,
             },
         );
         evm.set_execution_config(
@@ -405,5 +431,63 @@ pub(crate) mod tests {
             assert_eq!(l1.get_anchor(), None);
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn configurable_account_precompile_reads_tempo_and_rejects_writes() {
+        let (sender, account) = (Address::repeat_byte(0x01), Address::repeat_byte(0x04));
+        let commitment = B256::repeat_byte(7);
+        let l1 = MockL1Reader::default();
+        l1.insert_commitment(account, 0, commitment);
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &config(l1),
+            sender_db(sender),
+            fee_free_env(TempoHardfork::T14),
+        );
+        let mut call = |input: Vec<u8>| {
+            let tx = TxLegacy {
+                nonce: 1,
+                gas_limit: 1_000_000,
+                to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
+                input: input.into(),
+                ..Default::default()
+            };
+            evm.transact(&transaction(
+                sender,
+                tx.into_signed(Signature::test_signature()),
+            ))
+            .unwrap()
+            .discard()
+        };
+
+        let read = call(IConfigurableAccount::getConfigCommitmentCall { account }.abi_encode());
+        assert!(read.status, "{read:?}");
+        assert_eq!(read.output[..], commitment[..]);
+
+        for input in [
+            IConfigurableAccount::updateConfigCall {
+                current: IConfigurableAccount::ConfigurableAccountConfig {
+                    salt: B256::ZERO,
+                    version: 0,
+                    threshold: 1,
+                    owners: vec![],
+                },
+                threshold: 1,
+                owners: vec![],
+            }
+            .abi_encode(),
+            IConfigurableAccount::upgradeAccountCall {
+                threshold: 1,
+                owners: vec![],
+            }
+            .abi_encode(),
+        ] {
+            let rejected = call(input);
+            assert_eq!(rejected.stop, InstrStop::Revert);
+            assert_eq!(
+                rejected.output,
+                IConfigurableAccount::UnsupportedOnZone {}.abi_encode()
+            );
+        }
     }
 }

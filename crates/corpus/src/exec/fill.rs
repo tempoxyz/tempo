@@ -33,17 +33,20 @@ use tracing::{info, warn};
 /// Range and options of a fill.
 #[derive(Debug, Clone)]
 pub struct FillArgs {
-    /// First block; genesis is context, not a captured block.
+    /// First block of a new corpus; genesis is context, not a captured block. An existing
+    /// corpus must start here.
     pub from: u64,
-    /// Exclusive end, clamped to the available head.
-    pub to: u64,
+    /// Exclusive end, clamped to the available head; `None` fills up to the head.
+    pub to: Option<u64>,
     /// Re-read and fully replay published records instead of checking metadata only.
     pub verify_existing: bool,
     /// Capture worker threads.
     pub workers: usize,
 }
 
-/// Ensures a pinned exclusive-end range has a durable, verified corpus in `store`.
+/// Captures every block from `store`'s published cursor (`from` for a new corpus) up to the pinned
+/// exclusive end and publishes it as durable, verified corpus records, so an existing corpus
+/// grows to the archive's head.
 ///
 /// Blocking: run it on a blocking thread. `handle` drives the object-store I/O.
 pub fn fill<N>(
@@ -67,13 +70,17 @@ where
     };
     let expected = read_only()?;
     let best = expected.best_block_number()?;
-    let end = args.to.min(best);
-    if args.to > best {
-        warn!(
-            requested = args.to,
-            best, "Clamping exclusive end to available head"
-        );
-    }
+    let end = match args.to {
+        Some(to) if to > best => {
+            warn!(
+                requested = to,
+                best, "Clamping exclusive end to available head"
+            );
+            best
+        }
+        Some(to) => to,
+        None => best,
+    };
     eyre::ensure!(end > args.from, "empty/reversed corpus range");
     let canonical_hash = |number| {
         expected
@@ -95,44 +102,54 @@ where
         genesis: chain.genesis_hash().to_string(),
         forks: chain.display_hardforks().to_string(),
         start: args.from,
-        end,
         parent: canonical_hash(args.from - 1)?.to_string(),
-        tip: canonical_hash(end - 1)?.to_string(),
         first_tx: first_tx(args.from)?,
-        end_tx: first_tx(end)?,
     };
-    let tip_timestamp = expected
-        .header_by_number(end - 1)?
-        .ok_or_else(|| eyre::eyre!("missing header at {}", end - 1))?
-        .timestamp();
-    // Each worker opens its own transaction; holding this one through the capture would
-    // keep the archive from reusing pages for the whole fill.
-    drop(expected);
+    let tip = canonical_hash(end - 1)?;
     let (mut catalog, prior) = match handle.block_on(store.catalog())? {
         Some((catalog, version)) => {
+            // Published blocks were captured under the stored fork schedule, so the current
+            // one must agree up to the published tip; later blocks are captured under it.
+            let published = catalog.cursor.next - 1;
+            let published_timestamp = expected
+                .header_by_number(published)?
+                .ok_or_else(|| eyre::eyre!("missing header at {published}"))?
+                .timestamp();
             eyre::ensure!(
                 catalog.context
                     == Context {
                         forks: catalog.context.forks.clone(),
                         ..context.clone()
                     }
-                    && store::forks_agree(&catalog.context.forks, &context.forks, tip_timestamp),
+                    && store::forks_agree(
+                        &catalog.context.forks,
+                        &context.forks,
+                        published_timestamp
+                    ),
                 "corpus context conflicts with requested chain/range"
+            );
+            eyre::ensure!(
+                canonical_hash(published)?.0 == catalog.cursor.parent,
+                "published corpus tip is not canonical in the source archive"
             );
             (catalog, Some(version))
         }
         None => (
             Catalog {
                 cursor: store::Cursor::initial(&context)?,
-                context,
+                context: context.clone(),
                 checkpoint: None,
                 records: Vec::new(),
                 complete: false,
                 generation: 0,
+                collecting: false,
             },
             None,
         ),
     };
+    // Each worker opens its own transaction; holding this one through the capture would
+    // keep the archive from reusing pages for the whole fill.
+    drop(expected);
     if catalog.checkpoint.is_some() {
         let reader = handle.block_on(store.reader(&catalog))?;
         // Errors must not skip closing the reader below.
@@ -156,14 +173,19 @@ where
         handle.block_on(reader.close())?;
         verified?;
     }
-    if catalog.complete {
+    if end <= catalog.cursor.next {
         info!(
             records = catalog.cursor.next - catalog.context.start,
             verified = args.verify_existing,
-            "Corpus already complete; no writes"
+            "Corpus already reaches the requested end; no writes"
         );
         return Ok(());
     }
+    eyre::ensure!(
+        !catalog.collecting,
+        "corpus gc is collecting this corpus; fill after it finishes, or rerun gc --force if it was interrupted"
+    );
+    catalog.complete = false;
     catalog.generation = catalog
         .generation
         .checked_add(1)
@@ -184,10 +206,15 @@ where
             .build(),
     )?;
     let result = (|| -> eyre::Result<()> {
-        let context_bytes = serde_json::to_vec(&catalog.context)?;
-        if let Some(stored) = handle.block_on(db.get(CONTEXT_KEY))? {
+        let stored = handle.block_on(db.get(CONTEXT_KEY))?;
+        if let Some(stored) = &stored {
+            // An interrupted extending fill may have stored its fork schedule already.
+            let stored: Context = serde_json::from_slice(stored)?;
             eyre::ensure!(
-                stored.as_ref() == context_bytes,
+                Context {
+                    forks: catalog.context.forks.clone(),
+                    ..stored
+                } == catalog.context,
                 "stored corpus context conflict"
             );
         } else {
@@ -195,6 +222,12 @@ where
                 catalog.cursor.next == catalog.context.start,
                 "published corpus has no stored context"
             );
+        }
+        // The claimed catalog still names the published checkpoint's context; the first
+        // sealed checkpoint publishes this one.
+        catalog.context.forks = context.forks;
+        let context_bytes = serde_json::to_vec(&catalog.context)?;
+        if stored.as_deref() != Some(&context_bytes[..]) {
             handle.block_on(db.put(CONTEXT_KEY, &context_bytes))?;
         }
         let state = BlockchainProvider::new(provider_factory.clone())?;
@@ -443,8 +476,14 @@ where
                         provider_factory
                             .database_provider_ro()?
                             .block_hash(end - 1)?
-                            .is_some_and(|hash| hash.to_string() == catalog.context.tip),
+                            .is_some_and(|hash| hash == tip),
                         "canonical pin changed during capture"
+                    );
+                    // Records chain by parent hash from the canonical published tip, so ending
+                    // at the pinned tip proves every captured block canonical.
+                    eyre::ensure!(
+                        stop != end || catalog.cursor.parent == tip.0,
+                        "captured chain does not end at the pinned tip"
                     );
                     let superseded = catalog.checkpoint.replace(checkpoint);
                     catalog.complete = stop == end;

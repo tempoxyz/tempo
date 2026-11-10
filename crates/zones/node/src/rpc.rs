@@ -21,9 +21,11 @@ use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
     Filter, FilterChanges, FilterId, TransactionRequest,
+    error::EthRpcErrorCode,
     state::{EvmOverrides, StateOverride},
 };
 use alloy_sol_types::SolCall;
+use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
 use futures::StreamExt;
 use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
@@ -39,7 +41,7 @@ use reth_rpc_eth_api::{
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
 use reth_rpc_eth_types::{EthApiError, logs_utils};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -61,7 +63,10 @@ use tokio::{
     sync::Mutex,
     time::{MissedTickBehavior, interval},
 };
-use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
+use zone_l1::{
+    TempoStateExt as _,
+    state::{EnabledTokenRegistry, L1StateCache, L1StateProvider, L1StateProviderConfig},
+};
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
@@ -367,6 +372,14 @@ where
     }
 }
 
+/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
+///
+/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
+/// collection timeout.
+const MULTI_PROOF_RETRIES: usize = 7;
+/// Delay before each `eth_getMultiProof` retry.
+const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
+
 /// Fetch all L1 read proofs at the checkpoint selected by the opening advanceTempo transaction.
 async fn collect_tempo_witness(
     provider: &DynProvider<TempoNetwork>,
@@ -401,20 +414,36 @@ async fn collect_tempo_witness(
 
     let mut targets = BTreeMap::<Address, BTreeSet<B256>>::new();
     for read in reads {
-        targets.entry(read.account).or_default().insert(read.slot);
+        // An account-only read still needs the account proof, which every target carries.
+        targets.entry(read.account).or_default().extend(read.slot);
     }
     let targets = targets
         .into_iter()
         .map(|(account, slots)| (account, slots.into_iter().collect::<Vec<_>>()))
         .collect::<Vec<_>>();
-    let proofs = provider
-        .client()
-        .request::<_, Vec<EIP1186AccountProofResponse>>(
-            "eth_getMultiProof",
-            (targets, BlockId::number(tempo_block_number)),
-        )
-        .await
-        .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
+    // The L1 RPC may balance connections across nodes whose heads differ by a few
+    // milliseconds, so the node serving this request can lack a block the subscriber already
+    // saw finalized. Retry only that answer (`block not found`); return every other error.
+    let proofs = (|| {
+        provider
+            .client()
+            .request::<_, Vec<EIP1186AccountProofResponse>>(
+                "eth_getMultiProof",
+                (targets.clone(), BlockId::number(tempo_block_number)),
+            )
+    })
+    .retry(
+        ConstantBuilder::default()
+            .with_delay(MULTI_PROOF_RETRY_DELAY)
+            .with_max_times(MULTI_PROOF_RETRIES),
+    )
+    .when(|error| {
+        error.as_error_resp().is_some_and(|response| {
+            response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+        })
+    })
+    .await
+    .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
 
     let mut nodes = BTreeMap::new();
     for proof in proofs {
@@ -685,6 +714,10 @@ where
 type RpcBlock = Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeaderResponse>;
 const FILTER_OWNER_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Bounds the Tempo reads of token authentication and session rechecks, so they fail instead of
+/// waiting on an unresponsive Tempo RPC.
+const L1_COMMITMENT_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
 fn filter_not_found_error() -> JsonRpcError {
     JsonRpcError::invalid_params("filter not found")
 }
@@ -761,24 +794,35 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     config: zone_rpc::RedactedRpcConfig,
     enabled_tokens: EnabledTokenRegistry,
     l1_provider: DynProvider<TempoNetwork>,
+    /// Reads Tempo commitments through the node's L1 state cache.
+    l1_state: L1StateProvider,
     /// Maps filter IDs to the authenticated account that created them.
     /// The reth filter registry remains the source of truth for filter liveness.
     filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
-    /// Wrap reth's [`EthHandlers`] (api + filter + pubsub) and an L1 provider.
+    /// Wrap reth's [`EthHandlers`] (api + filter + pubsub), an L1 provider, and the node's L1 state
+    /// cache, which commitment reads share with execution.
     pub fn new(
         eth: EthHandlers<Api>,
         config: zone_rpc::RedactedRpcConfig,
         enabled_tokens: EnabledTokenRegistry,
         l1_provider: DynProvider<TempoNetwork>,
+        l1_state_cache: L1StateCache,
     ) -> Self {
+        let l1_state = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            l1_state_cache,
+            l1_provider.clone(),
+            tokio::runtime::Handle::current(),
+        );
         let rpc = Self {
             eth,
             config,
             enabled_tokens,
             l1_provider,
+            l1_state,
             filter_owners: Arc::new(Mutex::new(HashMap::new())),
         };
         rpc.spawn_filter_owner_pruner();
@@ -883,9 +927,13 @@ where
 impl<Api> zone_rpc::ZoneRpcApi for ZoneRpc<Api>
 where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
+    Api::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
         Box::pin(async move {
+            // The call loads `account`, whose Tempo commitment zone execution reads. Reading it
+            // through the bounded path first keeps the call from waiting on Tempo.
+            Self::get_config_commitment(self, account).await?;
             let request = TempoTransactionRequest {
                 inner: TransactionRequest {
                     from: Some(account),
@@ -901,11 +949,41 @@ where
                 ..Default::default()
             };
 
-            let output = EthCall::call(&self.eth.api, request, None, EvmOverrides::default())
-                .await
-                .wrap_err("AccountKeychain.getKey eth_call failed")?;
+            let output = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                EthCall::call(&self.eth.api, request, None, EvmOverrides::default()),
+            )
+            .await
+            .wrap_err("timed out calling AccountKeychain.getKey")?
+            .wrap_err("AccountKeychain.getKey eth_call failed")?;
 
             IAccountKeychain::getKeyCall::abi_decode_returns(output.as_ref()).map_err(Into::into)
+        })
+    }
+
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>> {
+        Box::pin(async move {
+            let provider = self.eth.api.provider();
+            let header = provider
+                .latest_header()?
+                .ok_or_eyre("zone has no latest header")?;
+            if !provider
+                .chain_spec()
+                .tempo_hardfork_at(header.timestamp())
+                .is_t14()
+            {
+                return Ok(None);
+            }
+            let anchor = provider
+                .state_by_block_hash(header.hash())?
+                .tempo_block_number()?;
+            let commitment = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                self.l1_state.read_l1_commitment_async(account, anchor),
+            )
+            .await
+            .wrap_err("timed out reading the Tempo commitment")??;
+            Ok(Some(commitment))
         })
     }
 
@@ -1618,6 +1696,7 @@ mod tests {
     use super::*;
     use alloy_provider::ProviderBuilder;
     use reth_provider::test_utils::MockEthProvider;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tempo_alloy::rpc::ForkSchedule;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
@@ -1644,9 +1723,6 @@ mod tests {
 
     #[tokio::test]
     async fn tempo_witness_collects_checkpoint_proofs_and_propagates_errors() -> eyre::Result<()> {
-        use alloy_provider::ProviderBuilder;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         let header = TempoHeader::default();
         let initial = alloy_eips::NumHash {
             number: 0,
@@ -1694,7 +1770,10 @@ mod tests {
             .erased();
         let account = Address::repeat_byte(0xaa);
         let slot = B256::repeat_byte(0xbb);
-        let reads = HashSet::from([zone_evm::TempoStorageRead { account, slot }]);
+        let reads = HashSet::from([zone_evm::TempoStorageRead {
+            account,
+            slot: Some(slot),
+        }]);
         let mut checkpoint = TempoHeader::default();
         checkpoint.inner.number = 10;
         let first_tx_input = IZoneInbox::advanceTempoCall {
@@ -1745,6 +1824,79 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("checkpoint hash mismatch"));
+        handle.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tempo_witness_retries_multi_proof_only_while_block_not_found() -> eyre::Result<()> {
+        let header = TempoHeader::default();
+        let initial = alloy_eips::NumHash {
+            number: 0,
+            hash: header.hash_slow(),
+        };
+        // Number of leading calls answered with `block not found`.
+        let not_found_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let requests = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut module = RpcModule::new((not_found_calls.clone(), requests.clone()));
+        let mut block = serde_json::to_value(TempoHeaderResponse {
+            inner: alloy_rpc_types_eth::Header::new(header.clone()),
+            timestamp_millis: 0,
+        })?;
+        block["transactions"] = serde_json::json!([]);
+        block["uncles"] = serde_json::json!([]);
+        module.register_method("eth_getBlockByNumber", move |_, _, _| block.clone())?;
+        module.register_method("eth_getMultiProof", |_, ctx, _| {
+            ctx.1.fetch_add(1, Ordering::Relaxed);
+            let remaining = ctx.0.load(Ordering::Relaxed);
+            if remaining > 0 {
+                ctx.0.store(remaining - 1, Ordering::Relaxed);
+                return Err(ErrorObjectOwned::owned(
+                    EthRpcErrorCode::ResourceNotFound.code(),
+                    "block not found: 0xa",
+                    None::<()>,
+                ));
+            }
+            Ok::<_, ErrorObjectOwned>(Vec::<serde_json::Value>::new())
+        })?;
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build("127.0.0.1:0")
+            .await?;
+        let address = server.local_addr()?;
+        let handle = server.start(module);
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_http(format!("http://{address}").parse()?)
+            .erased();
+        let reads = HashSet::from([zone_evm::TempoStorageRead {
+            account: Address::repeat_byte(0xaa),
+            slot: Some(B256::repeat_byte(0xbb)),
+        }]);
+        let mut checkpoint = TempoHeader::default();
+        checkpoint.inner.number = 10;
+        let first_tx_input = IZoneInbox::advanceTempoCall {
+            header: alloy_rlp::encode(&checkpoint).into(),
+            deposits: Vec::new(),
+            decryptions: Vec::new(),
+            enabledTokens: Vec::new(),
+        }
+        .abi_encode();
+
+        // A node that catches up within the retry budget yields the proofs.
+        not_found_calls.store(2, Ordering::Relaxed);
+        collect_tempo_witness(&provider, initial, Some(&first_tx_input), &reads).await?;
+        assert_eq!(requests.load(Ordering::Relaxed), 3);
+
+        // A node that never catches up fails after the last attempt.
+        requests.store(0, Ordering::Relaxed);
+        not_found_calls.store(u32::MAX, Ordering::Relaxed);
+        let error = collect_tempo_witness(&provider, initial, Some(&first_tx_input), &reads)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("block not found: 0xa"));
+        assert_eq!(
+            requests.load(Ordering::Relaxed) as usize,
+            MULTI_PROOF_RETRIES + 1
+        );
         handle.stop()?;
         Ok(())
     }

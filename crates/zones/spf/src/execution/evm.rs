@@ -514,7 +514,7 @@ mod tests {
         let database_error = DatabaseError::new(witness_error, true);
         let transaction_error = reth_evm::InternalBlockExecutionError::EVM {
             hash: B256::ZERO,
-            error: Box::new(HandlerError::Database(database_error.clone())),
+            error: evm2::AnyError::new(HandlerError::Database(database_error.clone())),
         };
         for error in [
             transaction_error.into(),

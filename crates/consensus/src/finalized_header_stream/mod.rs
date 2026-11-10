@@ -392,7 +392,7 @@ where
         .first()
         .expect("a non-empty inclusive range always returns a header");
     let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-        &mut boundary_header.extra_data().as_ref(),
+        &mut commonware_codec::Copying(boundary_header.extra_data().as_ref()),
     )
     .map_err(|error| Error::MalformedBoundary {
         height: boundary_header.number(),

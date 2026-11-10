@@ -29,7 +29,6 @@ use crate::utils::{
 /// Verifies sender balance decreased (minus gas) and recipient received the
 /// exact transfer amount.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_deposit_then_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -56,7 +55,7 @@ async fn test_deposit_then_transfer() -> eyre::Result<()> {
     // Submit the tx then inject an L1 block so the zone produces a block including it.
     let transfer_amount: u128 = 400_000;
     // Seed the current anchor before estimation/pool validation. The next empty block inherits it.
-    fixture.seed_no_receive_policy(bob)?;
+    fixture.seed_transfer_recipient(bob)?;
     let tip20 = ITIP20::new(PATH_USD_ADDRESS, &provider);
 
     let native_balance = provider.get_balance(dev_address).await?;
@@ -197,7 +196,6 @@ async fn test_deposit_then_request_withdrawal() -> eyre::Result<()> {
 /// Verifies that chained transfers work correctly and each intermediate balance
 /// is accurate after accounting for gas.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_sequential_transfers() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -233,7 +231,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     let alice_provider = ProviderBuilder::new()
         .wallet(alice_signer)
         .connect_http(zone.http_url().clone());
-    fixture.seed_no_receive_policy(bob)?;
+    fixture.seed_transfer_recipient(bob)?;
     let tip20_alice = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
 
     let pending = tip20_alice
@@ -262,7 +260,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     let bob_provider = ProviderBuilder::new()
         .wallet(bob_signer)
         .connect_http(zone.http_url().clone());
-    fixture.seed_no_receive_policy(charlie)?;
+    fixture.seed_transfer_recipient(charlie)?;
     let tip20_bob = ITIP20::new(PATH_USD_ADDRESS, &bob_provider);
 
     let pending = tip20_bob
@@ -323,7 +321,6 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
 
 /// Transfer emits a `Transfer` event with correct fields.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_transfer_emits_events() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -347,7 +344,7 @@ async fn test_transfer_emits_events() -> eyre::Result<()> {
     .await?;
 
     // Transfer to Bob. Seed its receive-policy baseline before pool validation.
-    fixture.seed_no_receive_policy(bob)?;
+    fixture.seed_transfer_recipient(bob)?;
     let tip20 = ITIP20::new(PATH_USD_ADDRESS, &provider);
 
     let pending = tip20
@@ -390,7 +387,6 @@ async fn test_transfer_emits_events() -> eyre::Result<()> {
 
 /// `transferWithMemo` emits a `TransferWithMemo` event with the correct memo.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -415,7 +411,7 @@ async fn test_transfer_with_memo() -> eyre::Result<()> {
     .await?;
 
     // Transfer with memo. Seed its receive-policy baseline before pool validation.
-    fixture.seed_no_receive_policy(bob)?;
+    fixture.seed_transfer_recipient(bob)?;
     let tip20 = ITIP20::new(PATH_USD_ADDRESS, &provider);
 
     let pending = tip20

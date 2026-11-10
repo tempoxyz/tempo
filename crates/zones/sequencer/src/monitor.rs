@@ -1070,6 +1070,7 @@ mod tests {
         Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
     };
     use zone_chainspec::test_utils::set_tempo_fork;
+    use zone_prover::{NITRO_VERIFIER_CONFIG_V1, ProofBundle};
 
     fn mock_provider(asserter: Asserter) -> DynProvider<TempoNetwork> {
         alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -1409,8 +1410,6 @@ mod tests {
 
     #[tokio::test]
     async fn submission_error_invalidates_pipeline_on_hardfork_change() {
-        use zone_prover::{NITRO_VERIFIER_CONFIG_V1, ProofBundle};
-
         let l1 = Asserter::new();
         let mut monitor = test_monitor(l1.clone(), TestZoneProvider::new());
         let batch = BatchData {

@@ -118,7 +118,9 @@ mod tests {
     use super::*;
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, revert_bytes, setup_storage},
+        test_util::{
+            TIP20Setup, assert_full_coverage, check_selector_coverage, revert_bytes, setup_storage,
+        },
         tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
@@ -128,7 +130,9 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
+        IRolesAuth::{self, IRolesAuthCalls},
+        ITIP20::ITIP20Calls,
+        RolesAuthError, TIP20Error, UnknownFunctionSelector,
     };
 
     #[test]
@@ -621,9 +625,6 @@ mod tests {
 
     #[test]
     fn tip20_test_selector_coverage() -> eyre::Result<()> {
-        use crate::test_util::{assert_full_coverage, check_selector_coverage};
-        use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
-
         // Use T12 so the TIP-1006 selectors are active too.
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         let admin = Address::random();

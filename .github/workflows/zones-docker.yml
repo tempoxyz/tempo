@@ -12,6 +12,12 @@ on:
       - 'rust-toolchain.toml'
       - '.cargo/**'
       - 'crates/**'
+      # The fuzzer and corpus crates are never linked into these images.
+      - '!crates/corpus/**'
+      - '!crates/fuzz-harness/**'
+      - '!crates/fuzz-types/**'
+      - '!crates/invariants/**'
+      - '!crates/nitro-attestation/fuzz/**'
       - 'bin/**'
       - 'xtask/**'
       - 'zones/docker/**'
@@ -30,6 +36,12 @@ on:
       # Integration tests do not change the packaged binaries.
       - '!crates/node/tests/**'
       - '!crates/zones/node/tests/**'
+      # The fuzzer and corpus crates are never linked into these images.
+      - '!crates/corpus/**'
+      - '!crates/fuzz-harness/**'
+      - '!crates/fuzz-types/**'
+      - '!crates/invariants/**'
+      - '!crates/nitro-attestation/fuzz/**'
       - 'bin/**'
       - 'xtask/**'
       - 'zones/docker/**'
@@ -116,7 +128,13 @@ env:
 jobs:
   detect-changes:
     name: Detect Zones image changes
-    if: github.repository == 'tempoxyz/tempo' && github.event.pull_request.draft != true
+    # Fork pull requests get no OIDC token, so Depot refuses their builds;
+    # every image job depends on this one and skips with it.
+    if: >-
+      github.repository == 'tempoxyz/tempo' &&
+      github.event.pull_request.draft != true &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
     # Images published from a zones/ or prover/ tag are releases: they need the
     # VK approvals of the release environment. Verify-only runs publish nothing.
     environment: ${{ (startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) && inputs.production_image_verify_only != true && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true && 'release' || '' }}
@@ -149,6 +167,12 @@ jobs:
               - 'crates/**'
               - '!crates/node/tests/**'
               - '!crates/zones/node/tests/**'
+              # The fuzzer and corpus crates are never linked into these images.
+              - '!crates/corpus/**'
+              - '!crates/fuzz-harness/**'
+              - '!crates/fuzz-types/**'
+              - '!crates/invariants/**'
+              - '!crates/nitro-attestation/fuzz/**'
               - 'bin/**'
               - 'xtask/**'
               - 'zones/docker/**'
@@ -1075,7 +1099,9 @@ jobs:
       (github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)))
-    runs-on: ubuntu-latest
+    # Pinned: Ubuntu 26.04 uses the containerd image store, where .Id is the
+    # manifest digest and differs with layer compression between builders.
+    runs-on: ubuntu-24.04
     permissions:
       id-token: write
       packages: write
@@ -1242,7 +1268,8 @@ jobs:
       github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true && inputs.production_image_verify_only != true)))
-    runs-on: ubuntu-latest
+    # Pinned with production-reproducible-verify: .Id must mean the same here.
+    runs-on: ubuntu-24.04
     permissions:
       id-token: write
       packages: write
@@ -1393,7 +1420,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish Zones CI event
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pre-release/zones-v')
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
