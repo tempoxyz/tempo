@@ -121,10 +121,9 @@ impl Corpus {
         let (sender, receiver) = mpsc::channel(1);
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
         let task = AbortOnDropHandle::new(self.runtime.spawn(async move {
-            let window = window.max(1);
-            // Each window is sized from the stored bytes per block of the one before, so heavy
-            // blocks come in fewer at a time. The first is small until that is known.
-            let (mut rest, mut size) = (&blocks[..], window.min(FIRST_WINDOW));
+            // Each window is sized from the stored bytes per block of the one before, starting
+            // from one block, so heavy blocks come in fewer at a time.
+            let (mut rest, mut size) = (&blocks[..], 1);
             while !rest.is_empty() {
                 let (blocks, tail) = rest.split_at(size.min(rest.len()));
                 rest = tail;
@@ -180,7 +179,7 @@ impl Corpus {
                     && let Some(next) = (WINDOW_BYTES * inputs.len())
                         .checked_div(inputs.iter().map(|input| input.size).sum())
                 {
-                    size = next.clamp(1, window);
+                    size = next.clamp(1, window.max(1));
                 }
                 let failed = read.is_err();
                 if sender.send(read).await.is_err() || failed {
@@ -196,12 +195,8 @@ impl Corpus {
     }
 }
 
-/// Stored block bytes [Corpus::windows] aims to read per window. Each reader holds a few windows
-/// decoded, which take several times their stored size.
+/// Stored block bytes [Corpus::windows] aims to read per window.
 const WINDOW_BYTES: usize = 32 << 20;
-
-/// Blocks in [Corpus::windows]' first window, read before their sizes are known.
-const FIRST_WINDOW: usize = 256;
 
 /// A window spanning at least this many corpus blocks per block it lists is read with point reads.
 const SPARSE_SPAN: u64 = 4;
