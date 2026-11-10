@@ -46,11 +46,15 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{
     providers::LatestStateProviderRef, test_utils::MockNodeTypesWithDB, AccountReader,
     DatabaseProviderROFactory, HeaderProvider, ProviderFactory, StageCheckpointReader,
-    StateProvider, StateRootProvider,
+    StateProvider, StateRootProvider, StorageSettingsCache,
 };
 use reth_stages_types::StageId;
 use reth_storage_overlay::OverlayStateProviderFactory;
-use reth_trie::HashedPostState;
+use reth_trie::{
+    verify::{Output, DEFAULT_STORAGE_LOOKAHEAD},
+    HashedPostState,
+};
+use reth_trie_db::{with_adapter, DatabaseVerifier};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -402,6 +406,19 @@ fn verify(factory: &ProviderFactory<Node>, state: &Model, tip: u64, state_tip: u
         invariant!(
             latest.state_root(HashedPostState::default())? == expected_root,
             "persisted root at {tip}"
+        );
+        // repair-trie --dry-run: every stored trie node must be the one a rebuild from hashed
+        // state produces, including nodes a matching root would not reveal. The persistence
+        // writer is idle here, so the verifier's transactions read one snapshot.
+        let inconsistencies = with_adapter!(factory, |A| {
+            DatabaseVerifier::<_, A>::new(factory.db_ref(), 2, DEFAULT_STORAGE_LOOKAHEAD)?
+                .filter(|output| !matches!(output, Ok(Output::Progress(_))))
+                .take(16)
+                .collect::<Result<Vec<_>, _>>()?
+        });
+        invariant!(
+            inconsistencies.is_empty(),
+            "persisted trie nodes at {tip}: {inconsistencies:?}"
         );
     }
     Ok(())
