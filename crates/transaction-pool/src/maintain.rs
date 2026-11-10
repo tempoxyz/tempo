@@ -5,7 +5,7 @@ use crate::{
     transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
-    Address, B256, Log, TxHash,
+    Address, B256, KECCAK256_EMPTY, Log, TxHash,
     map::{AddressMap, AddressSet, B256Set},
 };
 use alloy_sol_types::SolEvent;
@@ -596,21 +596,19 @@ where
             revalidate_txs.extend(transactions);
         }
 
-        // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112).
+        // Revalidate transactions whose authorities' configuration commitment or code changed,
+        // including eventless first registration (TIP-1112). A granted configurable account's
+        // validity also depends on its code.
         let changed_commitments: AddressSet = bundle_state
             .iter()
             .filter(|(_, account)| {
-                account
-                    .original_info
-                    .as_ref()
+                let (original, info) = (account.original_info.as_ref(), account.info.as_ref());
+                original
                     .map(|info| info.extension.as_ref())
                     .unwrap_or_default()
-                    != account
-                        .info
-                        .as_ref()
-                        .map(|info| info.extension.as_ref())
-                        .unwrap_or_default()
+                    != info.map(|info| info.extension.as_ref()).unwrap_or_default()
+                    || original.map_or(KECCAK256_EMPTY, |info| info.code_hash)
+                        != info.map_or(KECCAK256_EMPTY, |info| info.code_hash)
             })
             .map(|(address, _)| *address)
             .collect();
