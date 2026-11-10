@@ -19,8 +19,8 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 
 use super::{Context, Record, is_rpc_error, poll_until, shuffled};
 
-/// How long `check-settled` waits for the system to recover once faults stop.
-const SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Recovery budget shared by post-fault settlement and execution differential checks.
+pub(super) const SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Accounts and transactions `check-consistency` samples per run.
 const SAMPLE: usize = 16;
 /// Blocks per `eth_getLogs` request.

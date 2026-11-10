@@ -15269,6 +15269,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-eth",
+ "alloy-trie",
  "antithesis-instrumentation",
  "antithesis_sdk",
  "base64 0.22.1",

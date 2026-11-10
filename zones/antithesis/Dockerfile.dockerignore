@@ -11,3 +11,10 @@ target/
 zones/contrib/
 zones/docs/
 zones/localnet/
+
+# Cargo resolves all workspace members even for node-only builds.
+!contrib/
+contrib/*
+!contrib/antithesis/
+contrib/antithesis/*
+!contrib/antithesis/reth-trie/
