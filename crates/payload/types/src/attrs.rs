@@ -5,6 +5,7 @@ use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
+use tempo_dkg_onchain_artifacts::CeremonyOutput;
 use tempo_primitives::TempoConsensusContext;
 
 /// Container type for all components required to build a payload.
@@ -46,6 +47,13 @@ pub struct TempoPayloadAttributes {
     proposer_public_key: Option<B256>,
     /// Consensus view for this block
     consensus_context: Option<TempoConsensusContext>,
+    /// The DKG ceremony output on the parent, set by consensus for a boundary block. The payload
+    /// builder fills in the rest of the block's [`tempo_dkg_onchain_artifacts::OnchainDkgOutcome`]
+    /// from the parent state. Consensus passes attributes in-process, so it is never sent over the
+    /// wire.
+    #[serde(skip)]
+    #[debug(skip)]
+    dkg_ceremony_output: Option<CeremonyOutput>,
 }
 
 impl TempoPayloadAttributes {
@@ -76,6 +84,7 @@ impl TempoPayloadAttributes {
             extra_data,
             proposer_public_key,
             consensus_context,
+            dkg_ceremony_output: None,
         }
     }
 
@@ -87,6 +96,17 @@ impl TempoPayloadAttributes {
     /// Sets the extra data to be included in the block header.
     pub fn with_extra_data(mut self, extra_data: Bytes) -> Self {
         self.extra_data = extra_data;
+        self
+    }
+
+    /// Returns the DKG ceremony output on the parent, set for a boundary block.
+    pub fn dkg_ceremony_output(&self) -> Option<&CeremonyOutput> {
+        self.dkg_ceremony_output.as_ref()
+    }
+
+    /// Sets the DKG ceremony output on the parent of a boundary block.
+    pub fn with_dkg_ceremony_output(mut self, output: CeremonyOutput) -> Self {
+        self.dkg_ceremony_output = Some(output);
         self
     }
 

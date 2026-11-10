@@ -19,7 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 bincode.workspace = true

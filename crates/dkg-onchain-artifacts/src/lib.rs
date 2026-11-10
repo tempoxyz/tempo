@@ -20,6 +20,9 @@ use commonware_utils::{NZU32, ordered};
 
 const MAX_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
+/// The output of a DKG ceremony, as [`OnchainDkgOutcome::output`] carries it.
+pub type CeremonyOutput = Output<MinSig, PublicKey>;
+
 /// The outcome of a DKG ceremony as it is written to the chain.
 ///
 /// This DKG outcome can encode up to [`u16::MAX`] validators. Note that in

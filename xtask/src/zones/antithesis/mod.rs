@@ -1,4 +1,4 @@
-//! Antithesis test commands for the zone test environment in `zones/antithesis`.
+//! Antithesis test commands for the zone test environment in `contrib/antithesis/zones`.
 //!
 //! Each subcommand is one test command: drivers send deposits, withdrawals and TIP-20 transfers
 //! between accounts the workload keeps creating, so the L1 and zone tries grow during a run, and
@@ -66,7 +66,7 @@ const POLL: Duration = Duration::from_millis(500);
 /// How many leased-account candidates a driver tries before giving up for this run.
 const SENDER_CANDIDATES: usize = 16;
 
-/// Antithesis test commands; see `zones/antithesis/README.md`.
+/// Antithesis test commands; see `contrib/antithesis/zones/README.md`.
 #[derive(Debug, clap::Parser)]
 pub(crate) struct Antithesis {
     /// Tempo L1 HTTP RPC URL.
