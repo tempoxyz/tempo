@@ -556,14 +556,16 @@ where
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
 
-        // Pool-only key-expiry propagation buffer: reject keychain txs whose key
-        // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
+        // Pool-only key-expiry checks: reject keychain txs whose key expires too soon
+        // (within AA_VALID_BEFORE_MIN_SECS of tip timestamp) or at or before `valid_after`,
+        // since such a transaction can never execute.
         if let Some(key_expiry) = key_expiry {
             let min_allowed = self
                 .inner
                 .fork_tracker()
                 .tip_timestamp()
-                .saturating_add(AA_VALID_BEFORE_MIN_SECS);
+                .saturating_add(AA_VALID_BEFORE_MIN_SECS)
+                .max(transaction.inner().valid_after().unwrap_or_default());
             if key_expiry <= min_allowed {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
@@ -591,6 +593,10 @@ where
             ) {
                 Ok(true) => {}
                 Ok(false) => {
+                    #[cfg(feature = "fuzz")]
+                    antithesis_sdk::assert_reachable!(
+                        "Pool rejects a transaction for insufficient fee AMM liquidity"
+                    );
                     return TransactionValidationOutcome::Invalid(
                         transaction,
                         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
@@ -2221,6 +2227,62 @@ mod tests {
                 ),
                 "Should not fail with validity window errors"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_access_key_expiring_by_valid_after_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid_after = current_time + 60;
+        let root = PrivateKeySigner::random();
+        let access_key = PrivateKeySigner::random();
+
+        for (expiry, admitted) in [(valid_after, false), (valid_after + 1, true)] {
+            let authorization = KeyAuthorization::unrestricted(
+                MODERATO.chain_id(),
+                SignatureType::Secp256k1,
+                access_key.address(),
+            )
+            .with_expiry(expiry);
+            let signature = root
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            let transaction = TxBuilder::aa(root.address())
+                .fee_token(PATH_USD_ADDRESS)
+                .valid_after(valid_after)
+                .key_authorization(
+                    authorization.into_signed(PrimitiveSignature::Secp256k1(signature)),
+                )
+                .build_keychain(root.address(), &access_key);
+            let validator = setup_validator(&transaction, current_time);
+
+            let outcome = validator
+                .validate_transaction(TransactionOrigin::External, transaction)
+                .await;
+
+            if admitted {
+                assert!(
+                    outcome.is_valid(),
+                    "key outliving valid_after should be admitted: {outcome:?}"
+                );
+            } else {
+                let TransactionValidationOutcome::Invalid(_, ref err) = outcome else {
+                    panic!("key expiring by valid_after should be rejected: {outcome:?}");
+                };
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::AccessKeyExpired {
+                            expiry: rejected_expiry,
+                            min_allowed,
+                        }) if *rejected_expiry == expiry && *min_allowed == valid_after
+                    ),
+                    "Expected AccessKeyExpired bounded by valid_after, got: {err:?}"
+                );
+            }
         }
     }
 

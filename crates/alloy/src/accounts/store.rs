@@ -2634,7 +2634,7 @@ fn writable_access_key(
             is_admin: authorization.is_admin,
             account: authorization.account,
             key_type: "secp256k1",
-            signature: writable_signature(&authorization.signature)?,
+            signature: writable_signature(authorization.signature())?,
         },
     })
 }
@@ -3654,7 +3654,7 @@ mod tests {
             )
         );
         let AccountSignature::Primitive(PrimitiveSignature::WebAuthn(signature)) =
-            &authorization.signature
+            authorization.signature()
         else {
             panic!("expected WebAuthn root signature")
         };
@@ -4544,10 +4544,10 @@ mod tests {
             &root,
         );
         let different = expected
-            .authorization
+            .authorization()
             .clone()
             .with_expiry(4_000_000_000)
-            .into_signed(expected.signature.clone());
+            .into_signed(expected.signature().clone());
         let key = TempoAccessKey::from_secp256k1(account, 4217, signer.clone())
             .with_key_authorization(expected.clone());
         let mut request = TempoTransactionRequest {

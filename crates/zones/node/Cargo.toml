@@ -88,6 +88,7 @@ minicbor-serde.workspace = true
 clap = { workspace = true, optional = true }
 eyre.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
+backon.workspace = true
 futures.workspace = true
 jsonrpsee.workspace = true
 k256.workspace = true

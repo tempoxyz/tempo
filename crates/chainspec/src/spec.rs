@@ -143,7 +143,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 
     TempoChainSpec::from_genesis(genesis)
         .with_network_identity(NetworkIdentity::mainnet())
-        .with_default_follow_url("wss://rpc.presto.tempo.xyz")
+        .with_default_follow_url("wss://rpc.mainnet.tempo.xyz")
         .into()
 });
 

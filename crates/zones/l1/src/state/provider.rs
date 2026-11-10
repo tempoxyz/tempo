@@ -14,13 +14,15 @@
 //! submissions. A WebSocket transport keeps a
 //! request until L1 answers it, so the number of those attempts still awaiting L1 is capped.
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_client::RpcClient;
 use alloy_transport::layers::RetryBackoffLayer;
 use eyre::{Result, WrapErr as _};
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use tempo_alloy::TempoNetwork;
+use tempo_contracts::TempoHardfork;
+use tempo_primitives::account::decode_config_commitment;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use zone_precompiles::{
@@ -214,13 +216,36 @@ impl L1StateProvider {
             }
         }
 
+        self.metrics
+            .record_cache_miss(tx_context::execution_origin());
+
+        let value = self.fetch_blocking(
+            format_args!("storage address={address} slot={slot} block={block_number}"),
+            move |this| async move { this.fetch_slot(address, slot, block_number).await },
+        )?;
+        self.cache.lock().set(address, slot, block_number, value);
+        Ok(value)
+    }
+
+    /// Runs `fetch` on the runtime from a blocking thread, retrying until it succeeds or
+    /// [`L1StateProviderConfig::max_sync_attempts`] is reached. `read` names the value in logs
+    /// and errors.
+    ///
+    /// During an RPC simulation or cache prewarming, `fetch` gets one attempt under
+    /// [`NON_CANONICAL_FETCH_TIMEOUT`], and fails without a request once
+    /// [`MAX_OUTSTANDING_NON_CANONICAL_FETCHES`] are still awaiting L1.
+    fn fetch_blocking<T, Fut>(
+        &self,
+        read: std::fmt::Arguments<'_>,
+        fetch: impl Fn(Self) -> Fut,
+    ) -> Result<T>
+    where
+        T: std::fmt::Display + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+    {
         // Published by the Zone EVM's transaction handler on the EVM thread. Any other caller reads
         // `Canonical` and keeps the unbounded retry.
-        let origin = tx_context::execution_origin();
-        self.metrics.record_cache_miss(origin);
-        warn!(%address, %slot, block_number, ?origin, "L1 storage cache miss, fetching from RPC");
-
-        let canonical = origin == ExecutionOrigin::Canonical;
+        let canonical = tx_context::execution_origin() == ExecutionOrigin::Canonical;
         let max_sync_attempts = if !canonical {
             Some(NON_CANONICAL_SYNC_ATTEMPTS)
         } else {
@@ -233,7 +258,7 @@ impl L1StateProvider {
             let result = tokio::task::block_in_place(|| {
                 self.runtime_handle.block_on(async {
                     if canonical {
-                        return self.fetch_slot(address, slot, block_number).await;
+                        return fetch(self.clone()).await;
                     }
                     // The transport keeps the request after a timeout, so the fetch holds the permit.
                     let permit = self
@@ -242,18 +267,18 @@ impl L1StateProvider {
                         .try_acquire_owned()
                         .map_err(|_| {
                             eyre::eyre!(
-                                "{MAX_OUTSTANDING_NON_CANONICAL_FETCHES} L1 storage fetches are still awaiting L1"
+                                "{MAX_OUTSTANDING_NON_CANONICAL_FETCHES} L1 fetches are still awaiting L1"
                             )
                         })?;
-                    let this = self.clone();
+                    let fetch = fetch(self.clone());
                     let fetch = tokio::spawn(async move {
                         let _permit = permit;
-                        this.fetch_slot(address, slot, block_number).await
+                        fetch.await
                     });
                     match tokio::time::timeout(NON_CANONICAL_FETCH_TIMEOUT, fetch).await {
-                        Ok(joined) => joined.wrap_err("eth_getStorageAt task failed")?,
+                        Ok(joined) => joined.wrap_err("L1 fetch task failed")?,
                         Err(_) => Err(eyre::eyre!(
-                            "eth_getStorageAt timed out after {NON_CANONICAL_FETCH_TIMEOUT:?}"
+                            "L1 fetch timed out after {NON_CANONICAL_FETCH_TIMEOUT:?}"
                         )),
                     }
                 })
@@ -262,21 +287,20 @@ impl L1StateProvider {
 
             match result {
                 Ok(value) => {
-                    self.cache.lock().set(address, slot, block_number, value);
                     if attempt > 1 {
-                        info!(%address, %slot, block_number, %value, ?elapsed, attempt, "L1 storage RPC fetch succeeded after retries");
+                        info!(%read, %value, ?elapsed, attempt, "L1 RPC fetch succeeded after retries");
                     } else {
-                        info!(%address, %slot, block_number, %value, ?elapsed, "L1 storage RPC fetch succeeded");
+                        debug!(%read, %value, ?elapsed, "L1 RPC fetch succeeded");
                     }
                     return Ok(value);
                 }
                 Err(rpc_err) => {
                     if max_sync_attempts.is_some_and(|max_attempts| attempt >= max_attempts.get()) {
                         return Err(eyre::eyre!(
-                            "L1 storage RPC fetch failed after {attempt} attempts for address={address} slot={slot} block={block_number}: {rpc_err}"
+                            "L1 RPC fetch failed after {attempt} attempts for {read}: {rpc_err}"
                         ));
                     }
-                    warn!(%address, %slot, block_number, %rpc_err, ?elapsed, attempt, "L1 storage RPC fetch failed, retrying");
+                    warn!(%read, %rpc_err, ?elapsed, attempt, "L1 RPC fetch failed, retrying");
                 }
             }
         }
@@ -301,7 +325,6 @@ impl L1StateProvider {
 
         // Async reads come from outside the EVM.
         self.metrics.record_cache_miss(ExecutionOrigin::Canonical);
-        warn!(%address, %slot, block_number, "L1 storage cache miss, fetching from RPC");
 
         let value = self.fetch_slot(address, slot, block_number).await?;
         self.cache.lock().set(address, slot, block_number, value);
@@ -340,6 +363,49 @@ impl L1StorageReader for L1StateProvider {
                 block_number,
                 reason: error.to_string(),
             })
+    }
+
+    /// Cache first, RPC fallback, with the blocking and retry semantics of
+    /// [`get_storage`](L1StateProvider::get_storage). An extension that is not a valid commitment
+    /// fails without a retry.
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> std::result::Result<B256, L1StateError> {
+        if let Some(commitment) = self.cache.lock().get_commitment(account, block_number) {
+            return Ok(commitment);
+        }
+        let unavailable = |reason: String| L1StateError::AccountUnavailable {
+            account,
+            block_number,
+            reason,
+        };
+        let extension = self
+            .fetch_blocking(
+                format_args!("account extension account={account} block={block_number}"),
+                move |this| async move {
+                    let info = this
+                        .provider
+                        .get_account_info(account)
+                        .number(block_number)
+                        .await
+                        .wrap_err_with(|| {
+                            format!(
+                                "eth_getAccountInfo failed for account={account} block={block_number}"
+                            )
+                        })?;
+                    Ok(Bytes::copy_from_slice(&info.extension))
+                },
+            )
+            .map_err(|error| unavailable(format!("{error:#}")))?;
+        // A nonempty extension only exists once Tempo has activated T14.
+        let commitment = decode_config_commitment(&extension, TempoHardfork::T14)
+            .map_err(|error| unavailable(format!("invalid account commitment: {error}")))?;
+        self.cache
+            .lock()
+            .set_commitment(account, block_number, commitment);
+        Ok(commitment)
     }
 }
 
@@ -509,6 +575,81 @@ mod tests {
             requests.load(Ordering::SeqCst),
             1,
             "a full cap must not send a request"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cached_commitment_is_served_without_rpc() {
+        let config = L1StateProviderConfig {
+            max_sync_attempts: Some(NonZeroU32::MIN),
+            ..Default::default()
+        };
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect("http://127.0.0.1:1")
+            .await
+            .expect("HTTP transport construction is lazy")
+            .erased();
+        let cache = L1StateCache::default();
+        let (account, commitment) = (Address::repeat_byte(1), B256::repeat_byte(2));
+        cache.lock().set_commitment(account, 7, commitment);
+        let reader =
+            L1StateProvider::new_raw(config, cache, provider, tokio::runtime::Handle::current());
+
+        let (cached, missing) = tokio::task::spawn_blocking(move || {
+            (
+                reader.read_l1_commitment(account, 7),
+                reader.read_l1_commitment(account, 8),
+            )
+        })
+        .await
+        .expect("commitment task must not panic");
+        assert_eq!(cached, Ok(commitment));
+        // A miss at another height goes to the dead endpoint and fails closed.
+        let missing = missing.expect_err("dead endpoint must fail after one attempt");
+        assert!(matches!(
+            missing,
+            L1StateError::AccountUnavailable {
+                block_number: 8,
+                ..
+            }
+        ));
+        assert!(missing.is_unavailable());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_commitment_fails_without_retry() {
+        let asserter = alloy_provider::mock::Asserter::new();
+        // An unsupported commitment format tag.
+        asserter.push_success(&alloy_rpc_types_eth::AccountInfo {
+            extension: Bytes::from_static(&[0xff]).into(),
+            ..Default::default()
+        });
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter)
+            .erased();
+        // Retrying indefinitely, a retried decode error would never return.
+        let reader = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            L1StateCache::default(),
+            provider,
+            tokio::runtime::Handle::current(),
+        );
+        let account = Address::repeat_byte(1);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::task::spawn_blocking(move || reader.read_l1_commitment(account, 7)),
+        )
+        .await
+        .expect("an invalid commitment must not be retried")
+        .expect("commitment task must not panic");
+        assert_eq!(
+            result,
+            Err(L1StateError::AccountUnavailable {
+                account,
+                block_number: 7,
+                reason: "invalid account commitment: unsupported account commitment format".into(),
+            })
         );
     }
 }

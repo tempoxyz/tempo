@@ -47,7 +47,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -211,8 +211,8 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(args, |attributes| {
-            self.pool.best_transactions_with_attributes(attributes)
+        self.build_payload(args, |attributes, timestamp| {
+            self.pool.best_transactions_for_block(attributes, timestamp)
         })
     }
 
@@ -236,7 +236,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
-            |_| core::iter::empty(),
+            |_, _| core::iter::empty(),
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -260,7 +260,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        best_txs: impl FnOnce(BestTransactionsAttributes, u64) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
@@ -422,10 +422,13 @@ where
         }
 
         let pool_fetch_start = Instant::now();
-        let raw_best_txs = best_txs(BestTransactionsAttributes::new(
-            executor.evm().block().basefee.to(),
-            Some(executor.evm().block().blob_basefee.to()),
-        ));
+        let raw_best_txs = best_txs(
+            BestTransactionsAttributes::new(
+                executor.evm().block().basefee.to(),
+                Some(executor.evm().block().blob_basefee.to()),
+            ),
+            executor.evm().block().timestamp.to(),
+        );
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
@@ -552,6 +555,11 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Payload builder defers a non-payment transaction at the general gas limit",
+                    &serde_json::json!({ "general_gas_used": non_payment_gas_used, "general_gas_limit": general_gas_limit })
+                );
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::Other(Box::new(
@@ -640,11 +648,20 @@ where
                             // This exact transaction is already included, typically in the parent
                             // block before pool maintenance evicted it. Skip it without marking it
                             // invalid.
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "Payload builder skips an expiring nonce transaction already included"
+                            );
                             trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
                             self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
                         } else {
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "Payload builder evicts a pool transaction that fails execution",
+                                &serde_json::json!({ "error": error.to_string() })
+                            );
                             trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                             best_txs.mark_invalid(
                                 &pool_tx,
@@ -987,6 +1004,60 @@ where
             ?builder_finish_elapsed,
             "Built payload"
         );
+
+        #[cfg(feature = "fuzz")]
+        {
+            let consensus = tempo_evm::consensus::TempoConsensus::new(chain_spec);
+            let sealed_block = block.sealed_block();
+            antithesis_sdk::assert_always_less_than_or_equal_to!(
+                block.gas_used(),
+                block.gas_limit(),
+                "Payload builder keeps block gas used within the gas limit"
+            );
+            antithesis_sdk::assert_always!(
+                execution_result.receipts.len() == total_transactions,
+                "Payload builder produces one receipt per included transaction",
+                &serde_json::json!({ "receipts": execution_result.receipts.len(), "transactions": total_transactions })
+            );
+            let header = reth_consensus::HeaderValidator::validate_header(
+                &consensus,
+                sealed_block.sealed_header(),
+            );
+            antithesis_sdk::assert_always!(
+                header.is_ok(),
+                "Payload builder block header passes consensus header validation",
+                &serde_json::json!({ "block_number": block.number(), "error": header.err().map(|err| err.to_string()) })
+            );
+            let against_parent = reth_consensus::HeaderValidator::validate_header_against_parent(
+                &consensus,
+                sealed_block.sealed_header(),
+                &parent_header,
+            );
+            antithesis_sdk::assert_always!(
+                against_parent.is_ok(),
+                "Payload builder block header is a valid child of its parent",
+                &serde_json::json!({ "block_number": block.number(), "error": against_parent.err().map(|err| err.to_string()) })
+            );
+            let pre_execution =
+                reth_consensus::Consensus::validate_block_pre_execution(&consensus, sealed_block);
+            antithesis_sdk::assert_always!(
+                pre_execution.is_ok(),
+                "Payload builder block body passes consensus pre-execution validation",
+                &serde_json::json!({ "block_number": block.number(), "error": pre_execution.err().map(|err| err.to_string()) })
+            );
+            let post_execution = reth_consensus::FullConsensus::<tempo_primitives::TempoPrimitives>::validate_block_post_execution(
+                &consensus,
+                &block,
+                execution_result,
+                None,
+                None,
+            );
+            antithesis_sdk::assert_always!(
+                post_execution.is_ok(),
+                "Payload builder execution outputs pass consensus post-execution validation",
+                &serde_json::json!({ "block_number": block.number(), "error": post_execution.err().map(|err| err.to_string()) })
+            );
+        }
 
         let block = Arc::new(block);
         let execution_block_encoder = ExecutionBlockEncoder::new(

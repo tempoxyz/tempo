@@ -9,7 +9,7 @@ use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::ReadExt;
 use evm2::{
-    EvmTypes, TxResult, TxResultWithState,
+    EvmTypes, TxResult, TxResultWithState, TxStateChanges,
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
@@ -239,6 +239,10 @@ impl BlockTransactionResult<TempoEvmTypes> for TempoTxResult {
     fn result(&self) -> &TxResultWithState<TempoEvmTypes> {
         self.inner.result()
     }
+
+    fn into_result(self) -> TxResultWithState<TempoEvmTypes> {
+        self.inner.into_result()
+    }
 }
 
 impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
@@ -315,8 +319,8 @@ impl<'a> TempoBlockExecutor<'a> {
             non_payment_gas_left: self.non_payment_gas_left,
             incentive_gas_used: self.incentive_gas_used,
             block_gas_used: self.block_gas_used,
-            cumulative_gas_used: self.inner.cumulative_gas_used,
-            blob_gas_used: self.inner.blob_gas_used,
+            cumulative_gas_used: self.inner.inner.cumulative_gas_used,
+            blob_gas_used: self.inner.inner.blob_gas_used,
         }
     }
 
@@ -331,8 +335,8 @@ impl<'a> TempoBlockExecutor<'a> {
         self.non_payment_gas_left = state.non_payment_gas_left;
         self.incentive_gas_used = state.incentive_gas_used;
         self.block_gas_used = state.block_gas_used;
-        self.inner.cumulative_gas_used = state.cumulative_gas_used;
-        self.inner.blob_gas_used = state.blob_gas_used;
+        self.inner.inner.cumulative_gas_used = state.cumulative_gas_used;
+        self.inner.inner.blob_gas_used = state.blob_gas_used;
         self.replay_state = StorageActionReplayState::default();
     }
 
@@ -458,13 +462,14 @@ impl<'a> TempoBlockExecutor<'a> {
             return Ok(());
         }
 
-        let outcome =
-            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut self.extra_data.as_ref())
-                .map_err(|err| {
-                    BlockValidationError::msg(format!(
-                        "failed decoding boundary block extra data as DKG outcome: {err}"
-                    ))
-                })?;
+        let outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+            &mut commonware_codec::Copying(self.extra_data.as_ref()),
+        )
+        .map_err(|err| {
+            BlockValidationError::msg(format!(
+                "failed decoding boundary block extra data as DKG outcome: {err}"
+            ))
+        })?;
         let epoch = outcome.epoch;
         let public_keys = outcome
             .players()
@@ -877,7 +882,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
     fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutorTx<Self>,
-        f: impl FnOnce(&TxResult<TempoEvmTypes>) -> CommitChanges,
+        f: impl FnOnce(&TxResult<TempoEvmTypes>, TxStateChanges<'_>) -> CommitChanges,
     ) -> Result<Option<GasOutput>, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
@@ -899,7 +904,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let mut validated = None;
         let gas_output = self.inner.execute_transaction_with_commit_condition(
             (tx_env, recovered),
-            |result| {
+            |result, state_changes| {
                 let block_gas_used = if use_regular_gas {
                     result.execution_gas_spent()
                 } else {
@@ -915,7 +920,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     block_gas_used,
                 );
                 let commit = if next_section.is_ok() {
-                    f(result)
+                    f(result, state_changes)
                 } else {
                     CommitChanges::No
                 };
@@ -952,7 +957,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
-            let mut inner = self.inner;
+            let mut inner = self.inner.inner;
             let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
             let result = reth_execution_types::BlockExecutionResult {
                 receipts: inner.receipts,
@@ -1409,11 +1414,13 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let executor = TestExecutorBuilder::default()
+            let mut executor = TestExecutorBuilder::default()
                 .with_epoch_length(5)
+                .with_parent_beacon_block_root(B256::ZERO)
                 .with_spec(fork)
                 .build(&mut db, &chainspec);
 
+            executor.apply_pre_execution_changes().unwrap();
             let output = executor.finish().unwrap();
             db.commit_source(&reth_execution_types::BundleSource(&output.state));
             assert_eq!(
