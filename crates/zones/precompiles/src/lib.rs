@@ -1,4 +1,5 @@
 //! Zone-native precompiles and shared execution for Tempo precompiles on a Zone.
+//! (CI test: touch only this crate.)
 //!
 //! All implementations use ordinary EVM storage. The Zone EVM installs an anchored database below
 //! the revm journal, so TIP-20, TIP-403, and Zone fee-manager code transparently observe
