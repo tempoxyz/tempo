@@ -2699,10 +2699,15 @@ async fn run_payload_job(
             }
             // The application received the block and may propose it; hand
             // the body to the actor loop for a later build on this proposal.
-            let (execution_block, _) = retained.into_consensus_execution_payload();
-            Some(Digested::from(Block::from_execution_block_unchecked(
+            let (execution_block, execution_block_encoded) =
+                retained.into_consensus_execution_payload();
+            Block::try_from_execution_block_with_encoded_cache(
                 execution_block,
-            )))
+                execution_block_encoded,
+            )
+            .inspect_err(|error| warn!(%error, "built payload failed validation; not retaining it"))
+            .ok()
+            .map(Digested::from)
         }
         Some(Err(error)) => {
             warn!(
