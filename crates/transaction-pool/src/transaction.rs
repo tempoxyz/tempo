@@ -545,8 +545,9 @@ impl TempoPooledTransaction {
     }
 
     /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
-    /// an access key signs for it), the key authorization signer, a separate fee payer or the
-    /// access key.
+    /// an access key signs for it), the key authorization signer, a separate fee payer, the access
+    /// key, or the key ID an inline key authorization grants (whose commitment decides which key
+    /// types it accepts, TIP-1111).
     pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
         let Some(tx) = self.inner().as_aa() else {
             return accounts.contains(self.sender_ref());
@@ -563,7 +564,10 @@ impl TempoPooledTransaction {
             .fee_payer_signature
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
-        [sender, grant_signer, fee_payer, access_key]
+        let granted_key = self
+            .key_authorization_target_subject()
+            .map(|subject| subject.key_id);
+        [sender, grant_signer, fee_payer, access_key, granted_key]
             .into_iter()
             .flatten()
             .any(|authority| accounts.contains(&authority))
@@ -1871,5 +1875,25 @@ mod tests {
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
         }
+    }
+
+    #[test]
+    fn granted_key_is_an_authority() {
+        use tempo_primitives::transaction::{KeyAuthorization, PrimitiveSignature, SignatureType};
+
+        let sender = Address::random();
+        let signer = PrivateKeySigner::random();
+        let key_id = Address::random();
+        let authorization = KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, key_id)
+            .with_account(sender);
+        let signature = signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let tx = TxBuilder::aa(sender)
+            .key_authorization(authorization.into_signed(PrimitiveSignature::Secp256k1(signature)))
+            .build();
+
+        assert!(tx.has_authority_in(&AddressSet::from_iter([key_id])));
+        assert!(!tx.has_authority_in(&AddressSet::from_iter([Address::random()])));
     }
 }
