@@ -64,6 +64,7 @@ where
                 enabled_tokens: prepared.enabled_tokens.clone(),
                 queued_deposits: vec![deposit.clone()],
                 decryptions,
+                recipients: Vec::new(),
                 follows_checkpoint_blocks: false,
             };
             let context = self.clone();

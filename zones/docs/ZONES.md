@@ -323,9 +323,10 @@ the imported transaction.
 ### Sequencer deposit allowlist
 
 With portal access mode off, anyone can deposit on L1. A sequencer started with
-`--deposits.allowlist` bounces deposits whose L1 sender is not on its local allowlist while it
-leads: the deposit fails decryption and refunds to its `tempoRefundRecipient`, minus the bounce-back
-fee. The check runs only on the leader, so each sequencer enforces its own copy of the list.
+`--deposits.allowlist` bounces deposits whose L1 sender or decrypted zone recipient is not on its
+local allowlist while it leads: the deposit fails decryption and refunds to its
+`tempoRefundRecipient`, minus the bounce-back fee. The check runs only on the leader, so each
+sequencer enforces its own copy of the list.
 
 Each sequencer stores its list in `<datadir>/deposit-allowlist.json`. The file is the whole
 state, and consensus does not replicate it. Manage it as carefully as the sequencer key: a
@@ -349,12 +350,13 @@ Users keep the same address on Tempo and the zone, so the list also restricts zo
 transfers once [transfers are enabled](#enabling-zone-transfers). A sequencer with
 `--deposits.allowlist` rejects a transaction on submission when one of its calls (including the
 calls of an AA batch) is a `transfer`, `transferFrom`, or memo variant whose `from` or `to` is not
-listed, or a `ReceivePolicyGuard` `claim` whose caller or `to` is not listed. While it leads, it
-checks each pool transaction again against its current list before executing it, and leaves out
-and drops from its pool any that the list now rejects. Submission also rejects a `transferFrom`
-from an unlisted caller, whatever parties it names, so an unlisted account cannot learn whether
-an address is listed from whether its transaction is accepted. A screened call whose arguments do
-not decode is rejected with `malformed transfer calldata`, since the precompile would revert it.
+listed. While it leads, it checks each pool transaction again against its current list before
+executing it, and leaves out and drops from its pool any that the list now rejects. Submission
+also rejects a `transferFrom` from an unlisted caller, whatever parties it names, so an unlisted
+account cannot learn whether an address is listed from whether its transaction is accepted. A
+screened call whose arguments do not decode is rejected with `malformed transfer calldata`, since
+the precompile would revert it. `ReceivePolicyGuard` claims are not checked: from T15 a transfer
+or mint that a receive policy blocks reverts on a zone instead of moving funds into the guard.
 
 Checking calls is enough because zones disable contract creation and authorization lists, and
 T15, which enables transfers, removes the Multicall3 and Permit2 predeploys. No contract can move
@@ -376,8 +378,7 @@ exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is cred
 the withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback
 recipient must both be listed. The fallback is checked when the withdrawal is requested, so it is
 still credited if it is removed from the list before the bounce. The withdrawal's Tempo recipient
-is not checked, since Tempo transfers are open anyway. Funds that a receive policy held in the `ReceivePolicyGuard` can be
-claimed only while the claimer and the destination are both listed.
+is not checked, since Tempo transfers are open anyway.
 
 Limits:
 
@@ -385,8 +386,6 @@ Limits:
 - The submission error tells a listed sender that a counterparty is not listed, so a listed
   account can check addresses one at a time.
 - Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
-- Deposit recipients are not checked, so a listed depositor can still credit an unlisted zone
-  address. That address can only withdraw.
 
 #### Flags and methods
 
@@ -956,7 +955,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
 | `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
-| `--deposits.allowlist` | false | Bounce deposits from L1 senders missing from `<datadir>/deposit-allowlist.json`, and reject zone transfers unless both parties are listed; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
+| `--deposits.allowlist` | false | Bounce deposits whose L1 sender or zone recipient is missing from `<datadir>/deposit-allowlist.json`, and reject zone transfers unless both parties are listed; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
 | `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers |
 | `--deposit-decryption-keys-file` | (optional) | File containing additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `--zone.batch-interval-blocks` | 120 | Zone blocks between empty withdrawal batch boundaries / L1 submissions (~1 minute at Tempo's 500 ms block time) |

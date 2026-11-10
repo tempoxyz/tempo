@@ -3365,7 +3365,10 @@ impl ZoneAccount {
         Ok((block_number, balance))
     }
 
-    async fn submit_deposit_with_memo(
+    /// Submit a pathUSD deposit to `recipient` on L1 without waiting for the zone to process it.
+    ///
+    /// Returns the L1 block containing the deposit.
+    pub(crate) async fn submit_deposit_with_memo(
         &mut self,
         amount: u128,
         recipient: Address,
