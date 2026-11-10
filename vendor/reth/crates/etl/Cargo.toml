@@ -1,0 +1,22 @@
+[package]
+name = "reth-etl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tempfile.workspace = true
+reth-db-api.workspace = true
+tempo-executor.workspace = true
+
+[dev-dependencies]
+alloy-primitives = { workspace = true, features = ["getrandom"] }
+
+[features]
+fuzz = ["tempo-executor/fuzz"]

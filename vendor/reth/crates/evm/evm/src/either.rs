@@ -1,0 +1,117 @@
+//! Helper type that represents one of two possible executor types
+
+use crate::{execute::Executor, Database};
+
+// re-export Either
+pub use futures_util::future::Either;
+use reth_execution_types::{BlockExecutionOutput, BlockExecutionResult, StateUpdate};
+use reth_primitives_traits::{NodePrimitives, RecoveredBlock};
+
+impl<A, B, DB> Executor<DB> for Either<A, B>
+where
+    A: Executor<DB>,
+    B: Executor<DB, Primitives = A::Primitives, Error = A::Error>,
+    DB: Database,
+{
+    type Primitives = A::Primitives;
+    type Error = A::Error;
+
+    fn execute_one(
+        &mut self,
+        block: &RecoveredBlock<<Self::Primitives as NodePrimitives>::Block>,
+    ) -> Result<BlockExecutionResult<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
+    {
+        match self {
+            Self::Left(a) => a.execute_one(block),
+            Self::Right(b) => b.execute_one(block),
+        }
+    }
+
+    fn execute(
+        self,
+        block: &RecoveredBlock<<Self::Primitives as NodePrimitives>::Block>,
+    ) -> Result<BlockExecutionOutput<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
+    {
+        match self {
+            Self::Left(a) => a.execute(block),
+            Self::Right(b) => b.execute(block),
+        }
+    }
+
+    fn execute_one_with_state_hook<F>(
+        &mut self,
+        block: &RecoveredBlock<<Self::Primitives as NodePrimitives>::Block>,
+        state_hook: F,
+    ) -> Result<BlockExecutionResult<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
+    where
+        F: FnMut(StateUpdate) + Send + 'static,
+    {
+        match self {
+            Self::Left(a) => a.execute_one_with_state_hook(block, state_hook),
+            Self::Right(b) => b.execute_one_with_state_hook(block, state_hook),
+        }
+    }
+
+    fn execute_with_state_hook<F>(
+        self,
+        block: &RecoveredBlock<<Self::Primitives as NodePrimitives>::Block>,
+        state_hook: F,
+    ) -> Result<BlockExecutionOutput<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
+    where
+        F: FnMut(StateUpdate) + Send + 'static,
+    {
+        match self {
+            Self::Left(a) => a.execute_with_state_hook(block, state_hook),
+            Self::Right(b) => b.execute_with_state_hook(block, state_hook),
+        }
+    }
+
+    fn execute_with_state_closure<F>(
+        self,
+        block: &RecoveredBlock<<Self::Primitives as NodePrimitives>::Block>,
+        state: F,
+    ) -> Result<BlockExecutionOutput<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
+    where
+        F: FnMut(&reth_trie_common::bundle_state::BundleState),
+    {
+        match self {
+            Self::Left(a) => a.execute_with_state_closure(block, state),
+            Self::Right(b) => b.execute_with_state_closure(block, state),
+        }
+    }
+
+    fn execute_with_state_closure_always<F>(
+        self,
+        block: &RecoveredBlock<<Self::Primitives as NodePrimitives>::Block>,
+        state: F,
+    ) -> Result<BlockExecutionOutput<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
+    where
+        F: FnMut(&reth_trie_common::bundle_state::BundleState),
+    {
+        match self {
+            Self::Left(a) => a.execute_with_state_closure_always(block, state),
+            Self::Right(b) => b.execute_with_state_closure_always(block, state),
+        }
+    }
+
+    fn size_hint(&self) -> usize {
+        match self {
+            Self::Left(a) => a.size_hint(),
+            Self::Right(b) => b.size_hint(),
+        }
+    }
+
+    fn into_state(self) -> reth_trie_common::bundle_state::BundleState {
+        match self {
+            Self::Left(a) => a.into_state(),
+            Self::Right(b) => b.into_state(),
+        }
+    }
+
+    fn take_bal(&mut self) -> Option<alloy_eip7928::BlockAccessList> {
+        match self {
+            Self::Left(a) => a.take_bal(),
+            Self::Right(b) => b.take_bal(),
+        }
+    }
+}
