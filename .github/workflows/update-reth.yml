@@ -697,8 +697,14 @@ jobs:
                   echo "Amp made no changes for stuck jobs — giving up"
                   exit 1
                 else
-                  # Amp committed (or rewrote history) itself; push in case it did not (a no-op if it did).
-                  git push --force-with-lease origin "HEAD:refs/heads/$PR_BRANCH"
+                  # Amp committed itself; push in case it did not (a no-op if it did). Only
+                  # publish a fast-forward of the commit Amp started from, so a HEAD left on
+                  # another ref (such as origin/main) can never replace the PR branch.
+                  if ! git merge-base --is-ancestor "$PRE_SHA" HEAD; then
+                    echo "::error::Amp left HEAD at $(git rev-parse HEAD), which does not contain $PRE_SHA"
+                    exit 1
+                  fi
+                  git push origin "HEAD:refs/heads/$PR_BRANCH"
                 fi
                 # Restart the outer loop to wait for new CI run
                 continue 2
@@ -749,8 +755,14 @@ jobs:
               echo "Amp made no changes but CI is still failing — giving up"
               exit 1
             else
-              # Amp committed (or rewrote history) itself; push in case it did not (a no-op if it did).
-              git push --force-with-lease origin "HEAD:refs/heads/$PR_BRANCH"
+              # Amp committed itself; push in case it did not (a no-op if it did). Only
+              # publish a fast-forward of the commit Amp started from, so a HEAD left on
+              # another ref (such as origin/main) can never replace the PR branch.
+              if ! git merge-base --is-ancestor "$PRE_SHA" HEAD; then
+                echo "::error::Amp left HEAD at $(git rev-parse HEAD), which does not contain $PRE_SHA"
+                exit 1
+              fi
+              git push origin "HEAD:refs/heads/$PR_BRANCH"
             fi
           done
 
