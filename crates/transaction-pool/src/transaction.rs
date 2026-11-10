@@ -1237,7 +1237,8 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
+        KeyAuthorization, PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
+        TempoTransaction, tempo_transaction::Call,
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
@@ -1879,8 +1880,6 @@ mod tests {
 
     #[test]
     fn granted_key_is_an_authority() {
-        use tempo_primitives::transaction::{KeyAuthorization, PrimitiveSignature, SignatureType};
-
         let sender = Address::random();
         let signer = PrivateKeySigner::random();
         let key_id = Address::random();
