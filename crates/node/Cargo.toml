@@ -84,6 +84,8 @@ serde_json.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 
+antithesis_sdk = { workspace = true, optional = true }
+
 [dev-dependencies]
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
@@ -167,3 +169,10 @@ trie-debug = [
 ]
 # Native EVM2 JIT compilation; building requires LLVM.
 jit = ["tempo-evm/jit"]
+fuzz = [
+	"dep:antithesis_sdk",
+	"antithesis_sdk/full",
+	"tempo-payload-builder/fuzz",
+	"tempo-payload-types/fuzz",
+	"tempo-transaction-pool/fuzz",
+]

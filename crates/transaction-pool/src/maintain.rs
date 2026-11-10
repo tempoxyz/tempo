@@ -544,7 +544,7 @@ where
         let updates = TempoPoolUpdates::from_chain(tip);
 
         // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112) and commitments a reorg reverted.
+        // including eventless first registration (TIP-1107) and commitments a reorg reverted.
         // Record them before any pool snapshot so outcomes validated against an old commitment
         // are either already inserted, and found by the scan below, or validated again.
         let changed_commitments: AddressSet = old
@@ -780,6 +780,7 @@ mod tests {
     use crate::test_utils::TxBuilder;
     use alloy_primitives::{Address, B256, TxHash};
     use reth_primitives_traits::RecoveredBlock;
+    use reth_provider::ExecutionOutcome;
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
@@ -1128,8 +1129,6 @@ mod tests {
         blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,
         receipts: Vec<Vec<tempo_primitives::TempoReceipt>>,
     ) -> Arc<Chain<TempoPrimitives>> {
-        use reth_provider::{Chain, ExecutionOutcome};
-
         Arc::new(Chain::new(
             blocks,
             ExecutionOutcome::default().with_receipts(receipts),

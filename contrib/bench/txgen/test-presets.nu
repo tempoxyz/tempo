@@ -123,7 +123,7 @@ assert equal ($card_mix | length) 18
 assert ($card_mix | all { |name| $name | str starts-with "vault_withdraw_" })
 let shard = ($card.templates | get vault_withdraw_0)
 assert equal ($shard | get -o sponsor) null
-assert equal $shard.nonce {uniform: [0 9223372036854775807]}
+assert equal ($shard | get -o nonce) null
 assert equal ($shard.calls | last | get function) transfer
 assert equal ($shard.calls | last | get args | first) $TXGEN_HELPER_CARD_SETTLEMENT_ACCOUNT
 rm -rf $card_dir
@@ -509,4 +509,17 @@ with-env {TXGEN_TEST_BASE: "/x"} {
     assert equal (txgen-bench-env-txgen-vars "") {}
     assert equal (txgen-bench-env-txgen-vars "TXGEN_NEOBANK_MODULES='spend,cashout' BENCH_TPS_SCHEDULE=200:30s TXGEN_ZONE_COUNT=\"8\" TXGEN_NEOBANK_INSTANCES=$TXGEN_TEST_BASE/i.yml") {TXGEN_NEOBANK_MODULES: "spend,cashout", TXGEN_ZONE_COUNT: "8", TXGEN_NEOBANK_INSTANCES: "/x/i.yml"}
 }
+# Inline deployment shapes (gzip, then base64) decode to a file neobank-multi reads like any shapes file.
+let shapes_file = ($multi_spec.spec_path | path dirname | path join shapes examples.yml)
+let inline_dir = (mktemp -d)
+assert equal (txgen-neobank-inline-shapes $inline_dir) null
+with-env {TXGEN_NEOBANK_SHAPES_GZ_B64: (open --raw $shapes_file | ^gzip -c | encode base64)} {
+    let inline = (txgen-neobank-inline-shapes $inline_dir)
+    assert equal (open $inline) (open $shapes_file)
+    assert equal (txgen-neobank-instances $inline | get name) (txgen-neobank-instances $shapes_file | get name)
+}
+with-env {TXGEN_NEOBANK_SHAPES_GZ_B64: "bm90IGd6aXA="} {
+    assert (try { txgen-neobank-inline-shapes $inline_dir; false } catch { true })
+}
+rm -rf $inline_dir
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"

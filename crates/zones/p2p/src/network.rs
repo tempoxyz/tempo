@@ -2,11 +2,16 @@ use std::{net::SocketAddr, num::NonZeroUsize, time::Duration};
 
 use alloy_primitives::Address as EthereumAddress;
 use commonware_cryptography::{
-    Signer as _,
+    ChaCha20Poly1305, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableTrackedPeers, authenticated::lookup};
 use commonware_runtime::{Quota, Supervisor as _};
+use commonware_stream::{
+    SakeCups,
+    cups::{self, Cups},
+    sake::{self, Sake},
+};
 use commonware_utils::{NZU32, NZUsize, ordered::Map};
 use eyre::WrapErr as _;
 
@@ -69,7 +74,25 @@ impl P2pNetworkId {
     }
 }
 
-pub(crate) type Network = lookup::Network<commonware_runtime::tokio::Context, PrivateKey>;
+/// Upgrades Zone p2p connections to authenticated, encrypted streams.
+pub(crate) type Upgrader = SakeCups<PrivateKey, ChaCha20Poly1305>;
+pub(crate) type Network = lookup::Network<commonware_runtime::tokio::Context, Upgrader>;
+
+/// Pins the v2026.9.0 wire protocol (SAKE V0, CUPS V0) and its handshake time
+/// bounds so that sequencers on either commonware release can talk during a
+/// rolling upgrade. Versions are not negotiated: moving to V1 needs every
+/// sequencer to switch together.
+fn upgrader(ed25519_private_key: PrivateKey) -> Upgrader {
+    Cups::new(
+        Sake {
+            signer: ed25519_private_key,
+            synchrony_bound: Duration::from_secs(5),
+            max_handshake_age: Duration::from_secs(10),
+            version: sake::Version::V0,
+        },
+        cups::Version::V0,
+    )
+}
 pub(crate) type Oracle = lookup::Oracle<PublicKey>;
 
 /// Builds the synchronized Commonware configuration for the Zone's small, trusted peer set.
@@ -82,13 +105,15 @@ fn setup_commonware_config(
     listen: SocketAddr,
     max_peers: NonZeroUsize,
     bypass_ip_check: bool,
-) -> lookup::Config<PrivateKey> {
+) -> lookup::Config<Upgrader> {
     let mut config = lookup::Config::recommended(
-        ed25519_private_key,
+        upgrader(ed25519_private_key),
         namespace,
         listen,
         max_peers,
         MAX_MESSAGE_SIZE,
+        // The mailbox capacity before it became configurable.
+        NZUsize!(1_000),
     );
 
     // Zone membership is fixed by the manifest and registered at a single peer-set index.

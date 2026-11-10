@@ -3,11 +3,11 @@ use alloy_network::Network;
 use alloy_primitives::{Address, U256};
 use alloy_provider::{
     Identity, Provider, ProviderBuilder, ProviderLayer, RootProvider,
-    fillers::{JoinFill, NonceFiller, TxFiller},
+    fillers::{JoinFill, TxFiller},
 };
 use alloy_rpc_client::{BuiltInConnectionString, ConnectionConfig};
 use alloy_transport::{
-    Authorization, BoxTransport, TransportConnect, TransportError, TransportErrorKind,
+    Authorization, BoxTransport, Transport, TransportConnect, TransportError, TransportErrorKind,
 };
 use std::str::FromStr;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -21,7 +21,9 @@ use tempo_primitives::transaction::{CallScope, TEMPO_EXPIRING_NONCE_KEY};
 
 use crate::{
     TempoFillers, TempoNetwork,
-    fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, SponsorFiller},
+    fillers::{
+        ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, SponsorFiller, TempoNonceFiller,
+    },
     rpc::ForkSchedule,
     transport::{AuthHeaderTransport, RelayConnector, SponsorshipMode},
 };
@@ -269,7 +271,7 @@ impl TransportConnect for ConfiguredBuiltInConnection {
             .connect_boxed_with(self.config.clone())
             .await?;
         Ok(match self.config.auth.clone() {
-            Some(auth) => BoxTransport::new(AuthHeaderTransport::new(transport, auth)?),
+            Some(auth) => AuthHeaderTransport::new(transport, auth)?.boxed(),
             None => transport,
         })
     }
@@ -340,7 +342,7 @@ pub trait TempoProviderBuilderExt<L, F>: Sized {
         self,
     ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, TempoNetwork>
     where
-        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>;
+        F: Into<JoinFill<Identity, TempoFillers<TempoNonceFiller>>>;
 
     /// Returns a provider builder with the recommended Tempo fillers and the expiring nonce filler.
     ///
@@ -354,7 +356,7 @@ pub trait TempoProviderBuilderExt<L, F>: Sized {
         self,
     ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>, TempoNetwork>
     where
-        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>;
+        F: Into<JoinFill<Identity, TempoFillers<TempoNonceFiller>>>;
 
     /// Returns a provider builder with the recommended Tempo fillers and the nonce key filler.
     ///
@@ -369,7 +371,7 @@ pub trait TempoProviderBuilderExt<L, F>: Sized {
         self,
     ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
     where
-        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>;
+        F: Into<JoinFill<Identity, TempoFillers<TempoNonceFiller>>>;
 }
 
 impl<L, F> TempoProviderBuilderExt<L, F> for ProviderBuilder<L, F, TempoNetwork>
@@ -399,7 +401,7 @@ where
         self,
     ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, TempoNetwork>
     where
-        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>,
+        F: Into<JoinFill<Identity, TempoFillers<TempoNonceFiller>>>,
     {
         self.map_filler(|fillers| {
             fillers
@@ -412,7 +414,7 @@ where
         self,
     ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>, TempoNetwork>
     where
-        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>,
+        F: Into<JoinFill<Identity, TempoFillers<TempoNonceFiller>>>,
     {
         self.map_filler(|fillers| {
             fillers
@@ -425,7 +427,7 @@ where
         self,
     ) -> ProviderBuilder<L, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>
     where
-        F: Into<JoinFill<Identity, TempoFillers<NonceFiller>>>,
+        F: Into<JoinFill<Identity, TempoFillers<TempoNonceFiller>>>,
     {
         self.map_filler(|fillers| {
             fillers

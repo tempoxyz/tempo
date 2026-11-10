@@ -135,7 +135,7 @@ impl SafeBatchFile {
             transactions: vec![SafeBatchTransaction {
                 to: to.to_string(),
                 value: "0",
-                data: format!("0x{}", const_hex::encode(calldata)),
+                data: const_hex::encode_prefixed(calldata),
             }],
         };
         batch.meta.checksum = Some(calculate_safe_checksum(&batch)?);
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(batch.transactions[0].to, target.to_string());
         assert_eq!(
             batch.transactions[0].data,
-            format!("0x{}", const_hex::encode(calldata))
+            const_hex::encode_prefixed(calldata)
         );
         let checksum = calculate_safe_checksum(&batch).unwrap();
         assert_eq!(batch.meta.checksum.as_deref(), Some(checksum.as_str()));

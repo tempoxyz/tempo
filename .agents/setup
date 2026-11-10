@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Prepares an Amp orb for building and testing Tempo and Zones, including the local zone services
 # in .amp/services.yaml. Idempotent; safe to rerun on a warm snapshot.
+#
+# Also prepares a Pyramid Hand, and a Pyramid golden-disk warmer, which runs this and then
+# .agents/warm on reviewed main so new Hands start from a built target/. There every build stays
+# on the Hand's own disk: no shared Archil cache, no fail-closed target and no zone services.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -8,6 +12,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NEXTEST_VERSION="0.9.127" # matches .github/workflows/test.yml
 SCCACHE_VERSION="0.14.0"  # matches Dockerfile.chef
 ARCHIL_MOUNT="$HOME/archil" # mounted by .agents/resume
+
+# Pyramid's Hand image, which its warmers share, ships this directory.
+pyramid_hand() { [[ -d /usr/local/lib/pyramid-hand ]]; }
 
 step() {
   local name="$1"
@@ -34,6 +41,17 @@ install_apt_packages() {
 }
 
 install_rust() {
+  if pyramid_hand && command -v rustup >/dev/null; then
+    # The Hand image's own toolchains, which warmers and Hands share: a warm build's fingerprints
+    # name the rustc that made them, so a toolchain of our own would rebuild everything on a Hand.
+    # Tools below (nextest, just) still go to ~/.cargo/bin, after the image's cargo on PATH.
+    mkdir -p "$HOME/.cargo/bin"
+    export PATH="$PATH:$HOME/.cargo/bin"
+    rustup component add --toolchain stable rustfmt clippy
+    rustup toolchain list | grep -q '^nightly' ||
+      rustup toolchain install nightly --profile minimal -c rustfmt,clippy --allow-downgrade
+    return
+  fi
   if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
     # Rustup adds `. "$HOME/.cargo/env"` to ~/.profile, ~/.bash_profile, and ~/.bashrc.
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
@@ -133,20 +151,51 @@ install_archil() {
   archil --version
 }
 
+configure_pyramid_hand() {
+  # On a golden disk the repository root is a volume of its own, which the warmer fills and new
+  # Hands clone copy-on-write. Keep cargo's downloaded crates and git checkouts there too, so a Hand
+  # reuses the warmer's at the same ~/.cargo paths the warm build's fingerprints name.
+  if mountpoint -q "$PWD"; then
+    local dir
+    for dir in registry git; do
+      local home_dir="$HOME/.cargo/$dir" shared=".git/pyramid-cargo-$dir"
+      [[ -L "$home_dir" ]] && continue
+      mkdir -p "$shared" "$HOME/.cargo"
+      if [[ -d "$home_dir" ]]; then
+        cp -a --no-clobber "$home_dir/." "$shared/" 2>/dev/null || true
+        rm -rf "$home_dir"
+      fi
+      ln -s "$PWD/$shared" "$home_dir"
+    done
+  fi
+  # Pin vergen's build timestamp like CI and orbs do, so reth-node-core and its dependents keep the
+  # warm build's fingerprints. orb.toml is ignored, so it stays on the volume for every clone.
+  printf '[env]
+SOURCE_DATE_EPOCH = "1700000000"
+' > .cargo/orb.toml.tmp
+  mv .cargo/orb.toml.tmp .cargo/orb.toml
+}
+
 step "apt packages" install_apt_packages
-step "archil" install_archil
+pyramid_hand || step "archil" install_archil
 step "rust toolchains" install_rust
-step "sccache" install_sccache
-step "build cache" configure_build_cache
+if pyramid_hand; then
+  step "pyramid hand" configure_pyramid_hand
+else
+  step "sccache" install_sccache
+  step "build cache" configure_build_cache
+fi
 step "cargo-nextest" install_nextest
 step "just" install_just
 step "foundry" install_foundry
 step "submodules" git submodule update --init --recursive --depth 1
 # Pulls service images and the pinned explorer checkout; Amp starts the services.
-step "zone services" bash .amp/setup
+pyramid_hand || step "zone services" bash .amp/setup
 step "zone contracts" forge build --root crates/zones/contracts --skip test --no-lint
 # Fetch only queries rustc; it must work before Archil is mounted, without starting sccache.
 step "cargo fetch" env RUSTC_WRAPPER= cargo fetch --locked
+# A Pyramid Hand keeps its target/, which a golden disk brings already built.
+pyramid_hand && exit 0
 # Drop disposable outputs from old snapshots, without following an existing remote target link.
 rm -rf target
 mkdir -p .amp

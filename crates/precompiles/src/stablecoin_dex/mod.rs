@@ -1159,6 +1159,25 @@ impl StablecoinDEX {
                     .tick_level_handler(tick, order.is_bid())
                     .read()?;
                 let new_order = self.orders[new_level.links.head].read_in_book(book_key)?;
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_always_or_unreachable!(
+                    new_order.tick() == tick
+                        && new_order.is_bid() == order.is_bid()
+                        && if order.is_bid() {
+                            tick < order.tick()
+                        } else {
+                            tick > order.tick()
+                        },
+                    "DEX swap advances to a worse tick whose head order rests there",
+                    &serde_json::json!({
+                        "filled_tick": order.tick(),
+                        "next_tick": tick,
+                        "is_bid": order.is_bid(),
+                        "head_order_id": new_order.order_id().to_string(),
+                        "head_order_tick": new_order.tick(),
+                        "head_order_is_bid": new_order.is_bid(),
+                    })
+                );
 
                 Some((new_level, new_order))
             }
@@ -1181,6 +1200,22 @@ impl StablecoinDEX {
                 .write(level)?;
 
             let new_order = self.orders[order.next()].read_in_book(book_key)?;
+            #[cfg(feature = "fuzz")]
+            antithesis_sdk::assert_always_or_unreachable!(
+                new_order.tick() == order.tick()
+                    && new_order.is_bid() == order.is_bid()
+                    && new_order.remaining() > 0,
+                "DEX next order in a tick level rests at the same tick and side with liquidity left",
+                &serde_json::json!({
+                    "filled_order_id": order.order_id().to_string(),
+                    "tick": order.tick(),
+                    "is_bid": order.is_bid(),
+                    "next_order_id": new_order.order_id().to_string(),
+                    "next_order_tick": new_order.tick(),
+                    "next_order_is_bid": new_order.is_bid(),
+                    "next_order_remaining": new_order.remaining().to_string(),
+                })
+            );
             storage_credits.credit_slots(new_order.maker(), credits);
 
             Some((level, new_order))
@@ -5151,8 +5186,6 @@ mod tests {
 
     #[test]
     fn test_blacklisted_user_cannot_use_internal_balance() -> eyre::Result<()> {
-        use crate::tip403_registry::{ITIP403Registry, TIP403Registry};
-
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();

@@ -1,17 +1,29 @@
 use alloy::{
+    consensus::BlockHeader,
     network::ReceiptResponse,
-    primitives::{Address, U256},
+    primitives::{Address, U256, address},
     providers::{Provider, ProviderBuilder},
+    signers::SignerSync,
 };
-use alloy_eips::BlockNumberOrTag;
+use alloy_eips::{BlockNumberOrTag, eip2718::Encodable2718};
 use eyre::WrapErr;
 use futures::{StreamExt, future::join_all, stream};
-use reth_e2e_test_utils::{receipt::PendingTransactionExt, wait::poll_until, wallet::test_signer};
+use reth_e2e_test_utils::{
+    receipt::PendingTransactionExt,
+    wait::poll_until,
+    wallet::{Wallet, test_signer},
+};
+use reth_node_api::BuiltPayload;
 use std::env;
 use tempo_chainspec::constants::gas::{
-    TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_FLOOR, tempo_t7_next_block_base_fee,
+    TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_FLOOR, TEMPO_T7_BASE_FEE_GAS_TARGET,
+    tempo_t7_next_block_base_fee,
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{Call, TempoTransaction},
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_base_fee() -> eyre::Result<()> {
@@ -204,16 +216,6 @@ async fn test_t7_floor_base_fee_transaction_succeeds_after_low_activity() -> eyr
 /// Admission must retain floor-priced transactions through a temporary base-fee spike.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_t7_floor_transaction_queued_through_base_fee_spike() -> eyre::Result<()> {
-    use alloy::{consensus::BlockHeader, primitives::address, signers::SignerSync};
-    use alloy_eips::eip2718::Encodable2718;
-    use reth_e2e_test_utils::wallet::Wallet;
-    use reth_node_api::BuiltPayload;
-    use tempo_chainspec::constants::gas::TEMPO_T7_BASE_FEE_GAS_TARGET;
-    use tempo_primitives::{
-        TempoTxEnvelope,
-        transaction::{Call, TempoTransaction},
-    };
-
     // INVALID consumes the entire gas limit without spending time in a busy loop.
     let burner = address!("1234567890123456789012345678901234567890");
     let mut genesis: serde_json::Value =

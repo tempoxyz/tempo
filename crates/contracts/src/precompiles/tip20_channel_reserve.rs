@@ -1,9 +1,10 @@
+use crate::precompiles::tip20::is_static_call;
 pub use ITIP20ChannelReserve::{
     ITIP20ChannelReserveErrors as TIP20ChannelReserveError,
     ITIP20ChannelReserveEvents as TIP20ChannelReserveEvent,
 };
 use alloy_primitives::{Address, address};
-use alloy_sol_types::{SolCall, SolType};
+use alloy_sol_types::SolCall;
 
 /// Native TIP-1034 channel reserve precompile address.
 pub const TIP20_CHANNEL_RESERVE_ADDRESS: Address =
@@ -239,21 +240,18 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
     ///
     /// # NOTES
     /// - Only validates calldata; caller must check that `to == TIP20_CHANNEL_RESERVE_ADDRESS`.
-    /// - Static-only calls require exact ABI-encoded length.
+    /// - Static-only calls require the ABI-encoded length followed by at most
+    ///   `max_trailing_bytes` trailing bytes: `0` before T15 and
+    ///   [`MAX_PAYMENT_TRAILING_BYTES`](crate::precompiles::tip20::MAX_PAYMENT_TRAILING_BYTES) from T15.
     /// - Dynamic calls require valid ABI decoding and calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`].
     /// - Dynamic calls also require valid `signature` encoding.
     ///
     /// [TIP-20 channel reserve payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_with_valid_signature(
         input: &[u8],
+        max_trailing_bytes: usize,
         validate_signature: impl Fn(&[u8]) -> bool,
     ) -> bool {
-        fn is_static_call<C: SolCall>(input: &[u8]) -> bool {
-            input.first_chunk::<4>() == Some(&C::SELECTOR)
-                && <C::Parameters<'_> as SolType>::ENCODED_SIZE
-                    .is_some_and(|canonical_size| input.len() == 4 + canonical_size)
-        }
-
         fn decode_dynamic_call<C: SolCall>(input: &[u8]) -> Option<C> {
             if input.first_chunk::<4>() != Some(&C::SELECTOR)
                 || input.len() > MAX_PAYMENT_CALLDATA_LEN
@@ -264,14 +262,14 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
             C::abi_decode_validate(input).ok()
         }
 
-        is_static_call::<ITIP20ChannelReserve::openCall>(input)
-            || is_static_call::<ITIP20ChannelReserve::topUpCall>(input)
+        is_static_call::<ITIP20ChannelReserve::openCall>(input, max_trailing_bytes)
+            || is_static_call::<ITIP20ChannelReserve::topUpCall>(input, max_trailing_bytes)
             || decode_dynamic_call::<ITIP20ChannelReserve::closeCall>(input)
                 .is_some_and(|call| validate_signature(call.signature.as_ref()))
             || decode_dynamic_call::<ITIP20ChannelReserve::settleCall>(input)
                 .is_some_and(|call| validate_signature(call.signature.as_ref()))
-            || is_static_call::<ITIP20ChannelReserve::requestCloseCall>(input)
-            || is_static_call::<ITIP20ChannelReserve::withdrawCall>(input)
+            || is_static_call::<ITIP20ChannelReserve::requestCloseCall>(input, max_trailing_bytes)
+            || is_static_call::<ITIP20ChannelReserve::withdrawCall>(input, max_trailing_bytes)
     }
 }
 
@@ -284,8 +282,8 @@ mod tests {
     impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
         /// Test-only helper that accepts any decoded signature.
         /// Avoids depending on `tempo-primitives`, which performs real signature validation.
-        fn is_payment(input: &[u8]) -> bool {
-            Self::is_payment_with_valid_signature(input, |_| true)
+        fn is_payment(input: &[u8], max_trailing_bytes: usize) -> bool {
+            Self::is_payment_with_valid_signature(input, max_trailing_bytes, |_| true)
         }
     }
 
@@ -318,13 +316,13 @@ mod tests {
     fn test_is_payment() {
         for calldata in payment_calldatas() {
             assert!(ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(
-                &calldata
+                &calldata, 0
             ));
         }
 
         let mut unknown = payment_calldatas()[0].clone();
         unknown[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
-        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&unknown));
+        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&unknown, 0));
     }
 
     #[test]
@@ -337,7 +335,7 @@ mod tests {
         .abi_encode();
         // Corrupt the dynamic `signature` offset word.
         calldata[4 + 8 * 32 + 31] = 0;
-        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&calldata));
+        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&calldata, 0));
 
         let mut oversized = ITIP20ChannelReserve::settleCall {
             descriptor: descriptor(),
@@ -346,9 +344,9 @@ mod tests {
         }
         .abi_encode();
         assert!(oversized.len() > 2048);
-        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&oversized));
+        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&oversized, 0));
 
         oversized.truncate(4);
-        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&oversized));
+        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&oversized, 0));
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 use alloy_primitives::{B256, Bytes, U256, address, keccak256};
-use alloy_sol_types::{SolCall, SolError, SolValue};
+use alloy_sol_types::{SolCall, SolError, SolInterface, SolValue};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::UnknownFunctionSelector,
@@ -12,7 +12,7 @@ use tempo_precompiles::{
     receive_policy_guard::ReceivePolicyGuard,
     storage::{ContractStorage, Handler, StorageCtx},
     test_util::TIP20Setup,
-    tip20::{ITIP20, TIP20Token},
+    tip20::{self, ITIP20, TIP20Token},
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry},
     zone_factory::portal::{self, ZonePortalStorage},
 };
@@ -1051,6 +1051,36 @@ fn claim_refund_zero_amount_is_gated_by_t13() -> eyre::Result<()> {
         )?;
         assert_eq!(output.is_revert(), hardfork.is_t13());
         assert_eq!(output.bytes, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn claim_refund_reverts_with_the_mint_error_from_t15() -> eyre::Result<()> {
+    for (hardfork, expected) in [
+        (TempoHardfork::T14, TIP20Error::policy_forbids()),
+        (TempoHardfork::T15, TIP20Error::contract_paused()),
+    ] {
+        let mut harness = Harness::new_with_hardfork(hardfork)?;
+        {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                ZoneInbox::new().withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].write(444)?;
+                StorageCtx.sstore(PATH_USD_ADDRESS, tip20::slots::PAUSED, U256::ONE)?;
+                Ok(())
+            })?;
+        }
+
+        let output = harness.call(
+            BOB,
+            IZoneInbox::claimRefundCall {
+                token: PATH_USD_ADDRESS,
+            }
+            .abi_encode(),
+        )?;
+        assert!(output.is_revert(), "{hardfork:?}");
+        assert_eq!(output.bytes, expected.abi_encode(), "{hardfork:?}");
+        assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::ZERO);
     }
     Ok(())
 }
