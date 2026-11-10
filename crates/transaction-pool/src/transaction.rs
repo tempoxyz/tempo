@@ -36,7 +36,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, SignatureType, calc_gas_balance_spending,
+    },
 };
 use thiserror::Error;
 
@@ -542,6 +544,18 @@ impl TempoPooledTransaction {
             self.fee_payer().unwrap_or(sender),
             |_slot| {},
         );
+    }
+
+    /// The `key_id` of this transaction's inline grant of a configurable-account delegate, or
+    /// `None` without such a grant.
+    ///
+    /// The grant is valid only while that account's code matches its configuration commitment.
+    /// Registration installs the account marker in the same write and the commitment never
+    /// returns to zero, so a change to its code alone requires revalidation.
+    pub(crate) fn configurable_grant_target(&self) -> Option<Address> {
+        let authorization = self.inner().as_aa()?.tx().key_authorization.as_ref()?;
+        (authorization.key_type == SignatureType::ConfigurableAccount)
+            .then_some(authorization.key_id)
     }
 
     /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
