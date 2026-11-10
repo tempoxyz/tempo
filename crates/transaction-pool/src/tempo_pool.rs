@@ -705,15 +705,18 @@ where
 {
     /// Validates again, against the latest state, every pooled transaction with an authority in
     /// `accounts` (its sender unless an access key signs, key authorization signer, separate fee
-    /// payer or access key), or every pooled transaction when `accounts` is `None`. Transactions
-    /// that stay valid are re-added; invalid ones leave the pool. A transaction whose validation
+    /// payer or access key), or every pooled transaction when `accounts` is `None`. Invalid
+    /// transactions leave the pool. Valid ones stay where they are, so their subscribers and the
+    /// payload iterators that already yielded them see no change. A transaction whose validation
     /// fails, such as on a state read error, stays pooled unchanged.
+    ///
+    /// Returns `false` when any validation failed, so the caller can retry those transactions.
     ///
     /// For chains whose configuration commitments mirror another chain's, where a block's own
     /// state changes do not show which commitments changed.
-    pub async fn revalidate_authorities(&self, accounts: Option<&AddressSet>) {
+    pub async fn revalidate_authorities(&self, accounts: Option<&AddressSet>) -> bool {
         if accounts.is_some_and(AddressSet::is_empty) {
-            return;
+            return true;
         }
         let transactions: Vec<_> = self
             .all_transactions()
@@ -722,38 +725,35 @@ where
             .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
             .collect();
         if transactions.is_empty() {
-            return;
+            return true;
         }
         let total = transactions.len();
-        let origins: Vec<_> = transactions.iter().map(|(origin, _)| *origin).collect();
-        // Validate before removing anything, so a transaction keeps its slot when its validation
-        // fails rather than resolves.
-        let validated: Vec<_> = self
+        let mut failed = 0;
+        let mut invalid = Vec::new();
+        for outcome in self
             .protocol_pool
             .validator()
             .validate_transactions(transactions)
             .await
-            .into_iter()
-            .zip(origins)
-            .filter(|(outcome, _)| !matches!(outcome, TransactionValidationOutcome::Error(..)))
-            .collect();
-        self.remove_transactions(
-            validated
-                .iter()
-                .map(|(outcome, _)| outcome.tx_hash())
-                .collect(),
-        );
-        let valid = validated
-            .into_iter()
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .filter(Result::is_ok)
-            .count();
+        {
+            match outcome {
+                TransactionValidationOutcome::Invalid(tx, _) => invalid.push(*tx.hash()),
+                TransactionValidationOutcome::Error(..) => failed += 1,
+                TransactionValidationOutcome::Valid { .. } => {}
+            }
+        }
+        let invalid_count = invalid.len();
+        // Removing a transaction that left the pool during validation, such as one mined since,
+        // does nothing.
+        self.remove_transactions(invalid);
         tracing::debug!(
             target: "txpool",
             total,
-            valid,
+            invalid = invalid_count,
+            failed,
             "Revalidated transactions of changed authorities"
         );
+        failed == 0
     }
 }
 
@@ -2300,14 +2300,18 @@ mod tests {
             ExtendedAccount::new(other_pooled.nonce() + 1, *other_pooled.cost()),
         );
 
-        pool.revalidate_authorities(Some(&AddressSet::from_iter([Address::random()])))
-            .await;
+        assert!(
+            pool.revalidate_authorities(Some(&AddressSet::from_iter([Address::random()])))
+                .await
+        );
         assert!(pool.get(pooled.hash()).is_some());
-        pool.revalidate_authorities(Some(&AddressSet::from_iter([sender])))
-            .await;
+        assert!(
+            pool.revalidate_authorities(Some(&AddressSet::from_iter([sender])))
+                .await
+        );
         assert!(pool.get(pooled.hash()).is_none());
         assert!(pool.get(other_pooled.hash()).is_some());
-        pool.revalidate_authorities(None).await;
+        assert!(pool.revalidate_authorities(None).await);
         assert!(pool.get(other_pooled.hash()).is_none());
     }
 
@@ -2326,8 +2330,26 @@ mod tests {
         );
         provider.headers.lock().clear();
 
-        pool.revalidate_authorities(None).await;
+        assert!(!pool.revalidate_authorities(None).await);
         assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn revalidate_authorities_leaves_valid_transactions_in_place() {
+        let pooled = crate::test_utils::TxBuilder::eip1559(Address::random()).build_eip1559();
+        let sender = pooled.sender();
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), U256::ZERO));
+        set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, U256::from(u64::MAX));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+        let before = pool.get(pooled.hash()).expect("transaction is pooled");
+
+        assert!(pool.revalidate_authorities(None).await);
+        let after = pool
+            .get(pooled.hash())
+            .expect("valid transaction stays pooled");
+        assert!(Arc::ptr_eq(&before, &after));
     }
 
     #[tokio::test]

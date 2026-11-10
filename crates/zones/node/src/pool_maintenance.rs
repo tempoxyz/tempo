@@ -19,8 +19,9 @@ use zone_l1::{TempoStateExt as _, state::L1StateCache};
 /// that moves it back and the events the stream drops during a revalidation are both covered. The
 /// transactions revalidated are those with an authority whose Tempo account changed between the two
 /// anchors, as recorded in `l1_state_cache`, or every transaction when the cache has not recorded
-/// all of those Tempo blocks or no anchor was processed yet. Runs until the canonical state stream
-/// ends.
+/// all of those Tempo blocks or no anchor was processed yet. An anchor counts as processed only
+/// once every selected transaction was validated, so a failed validation is retried on the next
+/// event. Runs until the canonical state stream ends.
 pub(crate) async fn maintain_mirrored_commitments<Client>(
     pool: TempoTransactionPool<Client, ZoneEvmConfig>,
     l1_state_cache: L1StateCache,
@@ -45,7 +46,7 @@ pub(crate) async fn maintain_mirrored_commitments<Client>(
                 continue;
             }
         };
-        let changed = match anchor.replace(current) {
+        let changed = match anchor {
             Some(previous) if previous == current => continue,
             Some(previous) => l1_state_cache
                 .lock()
@@ -58,6 +59,11 @@ pub(crate) async fn maintain_mirrored_commitments<Client>(
             changed = changed.as_ref().map(|changed| changed.len()),
             "Revalidating transactions after a Tempo anchor change"
         );
-        pool.revalidate_authorities(changed.as_ref()).await;
+        // Keep the previous anchor when a validation failed, so the next event retries the range.
+        if pool.revalidate_authorities(changed.as_ref()).await {
+            anchor = Some(current);
+        } else {
+            warn!(target: "txpool", anchor = current, "Failed to revalidate transactions, retrying on the next event");
+        }
     }
 }
