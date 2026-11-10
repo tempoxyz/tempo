@@ -500,11 +500,11 @@ async fn revalidate_auth(
         }
         AuthSigner::ConfigurableAccount { config_commitment } => {
             // Commitments never return to zero, so an unset one still has the derived owners.
-            let commitment = api.get_config_commitment(auth.caller).await?;
-            if commitment.is_zero() || commitment == config_commitment {
-                Ok(())
-            } else {
-                Err(AuthError::InvalidSignature.into())
+            match api.get_config_commitment(auth.caller).await? {
+                Some(commitment) if commitment.is_zero() || commitment == config_commitment => {
+                    Ok(())
+                }
+                _ => Err(AuthError::InvalidSignature.into()),
             }
         }
     }

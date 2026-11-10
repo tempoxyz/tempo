@@ -348,9 +348,13 @@ pub(crate) async fn authenticate_token(
         }
         TempoSignature::ConfigurableAccount(configurable_signature) => {
             // The owners' configuration must be the account's Tempo commitment at the anchor, or
-            // derive the account while it has none.
+            // derive the account while it has none. Before T14 zones reject configurable accounts.
+            let commitment = api
+                .get_config_commitment(caller)
+                .await?
+                .ok_or(AuthError::InvalidSignature)?;
             configurable_signature
-                .validate_account_commitment(api.get_config_commitment(caller).await?)
+                .validate_account_commitment(commitment)
                 .map_err(|_| AuthError::InvalidSignature)?;
             AuthSigner::ConfigurableAccount {
                 config_commitment: configurable_signature.config_commitment(),
@@ -366,12 +370,16 @@ pub(crate) async fn authenticate_token(
 }
 
 /// Rejects a token signing key whose address has a TIP-1108 commitment: from TIP-1113, such a key
-/// is a retired root and no longer signs for its address (TIP-1154).
+/// is a retired root and no longer signs for its address (TIP-1154). Before T14 no key is retired.
 pub(crate) async fn ensure_not_retired_root(
     api: &dyn ZoneRpcApi,
     signing_key: alloy_primitives::Address,
 ) -> Result<(), AuthenticateError> {
-    if api.get_config_commitment(signing_key).await?.is_zero() {
+    if api
+        .get_config_commitment(signing_key)
+        .await?
+        .is_none_or(|commitment| commitment.is_zero())
+    {
         Ok(())
     } else {
         Err(AuthError::RetiredRootKey.into())
@@ -457,6 +465,8 @@ mod tests {
     struct TestApi {
         key_infos: Mutex<HashMap<(Address, Address), KeyInfo>>,
         commitments: Mutex<HashMap<Address, B256>>,
+        /// Whether the zone has not activated configurable accounts yet.
+        before_t14: bool,
     }
 
     impl TestApi {
@@ -492,13 +502,14 @@ mod tests {
             Box::pin(async move { Ok(key_info) })
         }
 
-        fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, B256> {
-            let commitment = self
-                .commitments
-                .lock()
-                .get(&account)
-                .copied()
-                .unwrap_or_default();
+        fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>> {
+            let commitment = (!self.before_t14).then(|| {
+                self.commitments
+                    .lock()
+                    .get(&account)
+                    .copied()
+                    .unwrap_or_default()
+            });
             Box::pin(async move { Ok(commitment) })
         }
 
@@ -757,6 +768,42 @@ mod tests {
             err,
             AuthenticateError::Invalid(crate::auth::AuthError::RetiredRootKey)
         ));
+    }
+
+    #[tokio::test]
+    async fn configurable_account_tokens_are_rejected_before_t14() {
+        let key = P256SigningKey::random(&mut OsRng);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+        let api = TestApi {
+            before_t14: true,
+            ..Default::default()
+        };
+
+        let (signature, _, _) =
+            sign_configurable_account_signature(digest, &key).expect("signing failed");
+        let err = authenticate_token(
+            &build_token_with_signature(signature, &fields),
+            &test_config(),
+            &api,
+        )
+        .await
+        .expect_err("configurable accounts are inactive before T14");
+        assert!(matches!(
+            err,
+            AuthenticateError::Invalid(crate::auth::AuthError::InvalidSignature)
+        ));
+
+        // No root is retired before T14.
+        let signature = sign_p256_signature(digest, &key).expect("p256 signing failed");
+        let auth = authenticate_token(
+            &build_token_with_signature(signature, &fields),
+            &test_config(),
+            &api,
+        )
+        .await
+        .expect("a root signs before T14");
+        assert_eq!(auth.signer, AuthSigner::Root);
     }
 
     #[tokio::test]

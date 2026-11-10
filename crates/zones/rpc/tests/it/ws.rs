@@ -130,14 +130,14 @@ impl ZoneRpcApi for MockZoneRpcApi {
         Box::pin(async move { Ok(key_info) })
     }
 
-    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, B256> {
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>> {
         let commitment = self
             .commitments
             .lock()
             .get(&account)
             .copied()
             .unwrap_or_default();
-        Box::pin(async move { Ok(commitment) })
+        Box::pin(async move { Ok(Some(commitment)) })
     }
 
     fn block_number(&self) -> BoxFut<'_> {

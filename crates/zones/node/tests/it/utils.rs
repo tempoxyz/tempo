@@ -1547,16 +1547,19 @@ impl ZoneTestNode {
         let eth_handlers = node_handle.node.eth_handlers().clone();
         let rpc_enabled_tokens = enabled_tokens.clone();
         let rpc_l1_provider = redacted_l1_provider;
+        let rpc_l1_state_cache = l1_state_cache.clone();
         let rpc_api_factory = Arc::new(move |config: zone_node::rpc::RedactedRpcConfig| {
             let eth_handlers = eth_handlers.clone();
             let enabled_tokens = rpc_enabled_tokens.clone();
             let l1_provider = rpc_l1_provider.clone();
+            let l1_state_cache = rpc_l1_state_cache.clone();
             Box::pin(async move {
                 Ok(Arc::new(zone_node::rpc::ZoneRpc::new(
                     eth_handlers,
                     config,
                     enabled_tokens,
                     l1_provider,
+                    l1_state_cache,
                 )) as Arc<dyn zone_node::rpc::ZoneRpcApi>)
             })
                 as Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>>>>>
