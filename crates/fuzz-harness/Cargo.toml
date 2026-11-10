@@ -16,6 +16,10 @@ workspace = true
 crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
+[features]
+# Requires RUSTFLAGS="-C instrument-coverage" to link the LLVM profile runtime.
+executor-counters = []
+
 [dependencies]
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
