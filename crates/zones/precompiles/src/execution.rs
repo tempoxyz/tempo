@@ -61,6 +61,11 @@ impl ZonePrecompileEnv {
             non_creditable_slots,
         }
     }
+
+    /// The hardfork the Zone EVM runs at.
+    pub(crate) const fn spec(&self) -> TempoHardfork {
+        self.spec
+    }
 }
 
 /// Result of applying zone-specific pre-execution rules.

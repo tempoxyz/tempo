@@ -241,7 +241,7 @@ impl TempoPooledTransaction {
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let key_id = key_authorization.recover_signer().ok()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             let fee_token = self.effective_fee_token();
@@ -262,12 +262,12 @@ impl TempoPooledTransaction {
             let aa_tx = self.inner().as_aa()?;
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             Some(KeyAuthorizationTargetSubject {
                 account,
-                key_id: key_authorization.authorization.key_id,
+                key_id: key_authorization.authorization().key_id,
             })
         })
     }
@@ -279,7 +279,7 @@ impl TempoPooledTransaction {
             .tx()
             .key_authorization
             .as_ref()?
-            .authorization
+            .authorization()
             .witness()?;
         Some(KeyAuthorizationWitnessSubject {
             account: *self.sender_ref(),
@@ -395,6 +395,16 @@ impl TempoPooledTransaction {
             .flatten()
             .min()
             .is_some_and(|expiry| expiry <= cutoff)
+    }
+
+    /// Returns whether the transaction can be included in a block with `timestamp`: its
+    /// `valid_after` has been reached and neither its `valid_before` nor its signing key has
+    /// expired.
+    ///
+    /// Unlike [`Self::is_expired_by`], this also rejects transactions that are not valid yet, so
+    /// it must not drive eviction.
+    pub(crate) fn is_includable_at(&self, timestamp: u64) -> bool {
+        self.inner().ensure_valid_after(timestamp).is_ok() && !self.is_expired_by(timestamp)
     }
 
     /// Caches the effective fee token determined during transaction validation.
@@ -1242,7 +1252,7 @@ mod tests {
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
         // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
         tx.key_authorization
-            .take_if(|auth| auth.signature.is_configurable_account());
+            .take_if(|auth| auth.signature().is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
         let raw = envelope.encoded_2718();
         let encoded_length = raw.len();

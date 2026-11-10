@@ -34,10 +34,8 @@ env:
   CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
-  # Foundry's evm2 migration (foundry-rs/foundry#17541) with commonware 2026.10.0
-  # (foundry-rs/foundry#18098). Pin to a commit and move the pin to
-  # Foundry master once that PR merges.
-  FOUNDRY_REF: cf59666579dce53e3c3c15dd37b94b9f3706808d
+  # Foundry master after the evm2 migration (foundry-rs/foundry#17541).
+  FOUNDRY_REF: 2f55169dffed0a04a779d6293269e6d667c2c142
 
 jobs:
   check-specs-changes:

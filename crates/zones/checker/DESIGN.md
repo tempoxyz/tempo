@@ -127,6 +127,8 @@ For a sender-paid withdrawal, the sender's debit and burn must equal principal
 plus fee. Sponsored withdrawals must instead contain an exact principal debit
 from the sender and a separate exact fee debit from a nonzero payer. Deposit
 bounce-backs are exempt because they do not debit a Zone user.
+Any other TIP-20 burn or transfer to the zero address, including one in a
+failed receipt, fails authentication.
 
 ## Failure behavior
 
