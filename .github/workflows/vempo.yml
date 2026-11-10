@@ -10,7 +10,10 @@ name: vempo proofs
 #
 # The vempo token comes from GitHub STS under the trust policy tempoxyz/vempo keeps in
 # .github/sts/tempo-verify.sts.yaml (actions: write on vempo, for this workflow only). It lasts at
-# most an hour, so each wait mints a fresh one. Fork PRs get no OIDC token and are skipped.
+# most an hour, so each wait mints a fresh one.
+#
+# Fork PRs are skipped by the job's same-repository if. Keep it: under pull_request_target a fork
+# PR's run could be granted id-token: write and mint the vempo token.
 
 # pull_request_target, not pull_request: the job runs the workflow file from main, so a PR cannot
 # edit it to get the vempo token for something else, and vempo's trust policy only accepts this
@@ -73,14 +76,18 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.sts1.outputs.token }}
         run: |
+          # Only runs created from shortly before this dispatch count, and the oldest of them wins,
+          # so a run planted earlier with this request ID is never adopted.
+          SINCE=$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%SZ)
+          export SINCE
           gh workflow run verify-tempo.yml -R "$VEMPO" --ref main \
             -f tempo_ref="$SHA" -f tempo_pr="$PR" -f request_id="$REQUEST_ID"
           id=""
           for _ in $(seq 30); do
             sleep 10
             id=$(gh run list -R "$VEMPO" --workflow verify-tempo.yml --event workflow_dispatch --limit 50 \
-              --json databaseId,displayTitle \
-              --jq 'map(select(.displayTitle | endswith("[" + env.REQUEST_ID + "]"))) | .[0].databaseId // empty')
+              --json databaseId,displayTitle,createdAt \
+              --jq 'map(select((.displayTitle | endswith("[" + env.REQUEST_ID + "]")) and .createdAt >= env.SINCE)) | last | .databaseId // empty')
             [ -z "$id" ] || break
           done
           [ -n "$id" ] || { echo "::error::vempo's Verify tempo run for $REQUEST_ID did not appear"; exit 1; }
