@@ -3,6 +3,7 @@
 use crate::model::{apply, generate, random_address, random_slot, Model, Update};
 use alloy_primitives::{Address, KECCAK256_EMPTY, U256};
 use antithesis_sdk::random::AntithesisRng;
+use antithesis_trie_shapes::Collider;
 use eyre::{ensure, Result};
 use rand_09::{seq::SliceRandom, Rng};
 use serde::{Deserialize, Serialize};
@@ -38,11 +39,12 @@ pub(crate) enum Operation {
 impl Input {
     pub(crate) fn generate(blocks: u64, updates: usize) -> Self {
         let mut state = Model::default();
+        let mut collider = Collider::default();
         let mut operations = Vec::new();
         for number in 1..=blocks {
             // Draw from Antithesis directly so each explored branch can choose different work.
             let mut rng = AntithesisRng;
-            let generated = generate(&mut rng, &state, updates);
+            let generated = generate(&mut rng, &state, &mut collider, updates);
             apply(&mut state, number, &generated);
             // Hint only a subset of writes, then add unrelated reads. This exercises both
             // warmed and cold trie paths rather than making every hint predict a write.

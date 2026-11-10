@@ -9,4 +9,7 @@ Each directory is one Antithesis target with its own workload image, config imag
 | [`reth-state-root`](reth-state-root) | Sparse-trie state root computation, persistence and restart recovery | [`antithesis-reth-state-root.yml`](../../.github/workflows/antithesis-reth-state-root.yml) |
 | [`zones`](zones) | A Tempo L1 and zones network running deposits, withdrawals and transfers | [`antithesis-zones.yml`](../../.github/workflows/antithesis-zones.yml) |
 
+[`trie-shapes`](trie-shapes) is a library both reth targets generate writes with: collision groups
+of keys sharing long hashed prefixes, grown, cleared and rewritten across blocks.
+
 The zones workload drivers live in `xtask/src/zones/antithesis`; see [`zones/README.md`](zones/README.md).

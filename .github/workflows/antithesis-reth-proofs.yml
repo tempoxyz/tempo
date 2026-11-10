@@ -16,6 +16,7 @@ on:
       - "mainnet-network-identity.json"
       - "testnet-network-identity.json"
       - "contrib/antithesis/reth-proofs/**"
+      - "contrib/antithesis/trie-shapes/**"
       # The workload compiles reth-state-root's reference model and persistence writer.
       - "contrib/antithesis/reth-state-root/src/model.rs"
       - "contrib/antithesis/reth-state-root/src/persistence.rs"

@@ -14,6 +14,7 @@ publish = false
 members = [
   "contrib/antithesis/reth-proofs",
   "contrib/antithesis/reth-state-root",
+  "contrib/antithesis/trie-shapes",
   "bin/tempo",
   "crates/alloy",
   "crates/chainspec",
