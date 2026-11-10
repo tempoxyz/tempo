@@ -254,7 +254,8 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
     /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller, has
     ///   incompatible code or is reserved (precompile, TIP-20, virtual or zone portal)
-    /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14
+    /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14, or
+    ///   from T14 a primitive type for a `keyId` with a nonzero configuration commitment
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -331,6 +332,11 @@ impl AccountKeychain {
         // Check if this key was previously revoked - prevents replay attacks
         if existing_key.is_revoked {
             return Err(AccountKeychainError::key_already_revoked().into());
+        }
+
+        // TIP-1111: a migrated delegate only takes ConfigurableAccount grants.
+        if !is_delegate_grant && self.storage.is_retired_root(key_id)? {
+            return Err(AccountKeychainError::invalid_signature_type().into());
         }
 
         let signature_type = StoredSignatureType::try_from(signature_type)?;
@@ -1250,7 +1256,7 @@ impl AccountKeychain {
     /// Warning: this returns true when `key_id == account`, because the root key
     /// is implicitly admin even when it is not stored as an access key.
     ///
-    /// From T14 the root key of an account with a nonzero configuration commitment (TIP-1112) is
+    /// From T14 the root key of an account with a nonzero configuration commitment (TIP-1113) is
     /// not, and the keychain never stores it as an admin key, so this returns false for it.
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
         if key_id == account && !self.storage.is_retired_root(account)? {
@@ -1355,7 +1361,9 @@ impl AccountKeychain {
         // Validate that the signature type matches the key type stored in the keychain
         // Only check if expected_sig_type is provided (T1+ hardfork)
         if let Some(sig_type) = expected_sig_type
-            && !self.accepts_signature_type(&key, key_id, sig_type)?
+            && !Self::accepts_signature_type(&key, sig_type, || {
+                self.storage.is_retired_root(key_id)
+            })?
         {
             return Err(AccountKeychainError::signature_type_mismatch(
                 key.signature_type as u8,
@@ -1734,21 +1742,20 @@ impl AccountKeychain {
         Ok(())
     }
 
-    /// Returns whether `key`, registered under `key_id`, accepts a signature of `signature_type`
+    /// Returns whether `key` accepts a signature of `signature_type`
     /// (0=Secp256k1, 1=P256, 2=WebAuthn, 3=ConfigurableAccount).
     ///
     /// A signature must have the key's stored type. From T14, a primitive key also accepts a
-    /// configurable account signature when `key_id` has a nonzero configuration commitment: the
+    /// configurable account signature when its key ID has a nonzero configuration commitment: the
     /// primitive delegate migrated to configurable ownership and its owner quorum now holds the
     /// grant. A key stored as `ConfigurableAccount` never accepts a primitive signature.
     ///
-    /// Reads the commitment of `key_id` as currently stored, and only when the key's stored type is
-    /// primitive and `signature_type` is configurable.
-    fn accepts_signature_type(
-        &self,
+    /// Calls `is_retired_root` only when the key's stored type is primitive and `signature_type`
+    /// is configurable.
+    pub(crate) fn accepts_signature_type(
         key: &AuthorizedKey,
-        key_id: Address,
         signature_type: u8,
+        is_retired_root: impl FnOnce() -> Result<bool>,
     ) -> Result<bool> {
         if key.signature_type as u8 == signature_type {
             return Ok(true);
@@ -1758,7 +1765,7 @@ impl AccountKeychain {
         {
             return Ok(false);
         }
-        self.storage.is_retired_root(key_id)
+        is_retired_root()
     }
 }
 
@@ -1768,7 +1775,7 @@ mod tests {
     use crate::{
         Precompile,
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
@@ -2136,6 +2143,43 @@ mod tests {
                 },
             )?;
             assert!(keychain.keys[account][admin_key].read()?.enforce_limits);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t14_primitive_grant_to_migrated_delegate_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let account = Address::random();
+        let delegate = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            StorageCtx.set_config_commitment(
+                delegate,
+                B256::repeat_byte(1),
+                ConfigCommitmentWriteGas::Intrinsic,
+            )?;
+
+            let err = authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: delegate,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(
+                err,
+                TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::InvalidSignatureType(_)
+                )
+            ));
 
             Ok(())
         })

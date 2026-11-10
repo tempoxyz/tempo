@@ -296,11 +296,13 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
+        let input = evm.message_input(message).to_vec();
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
             .with_non_creditable_slots(self.non_creditable_slots.clone());
         Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.call_target, &message.input, message.caller)
+            self.call_tempo(message.call_target, &input, message.caller)
         }))
     }
 }
