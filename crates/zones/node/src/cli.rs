@@ -288,18 +288,32 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         };
 
         // A running agent must be stopped first: shutdown alone joins a worker that only exits
-        // on the stop signal, which would hang node exit.
+        // on the stop signal. Stop can still block forever if the final snapshot fails, so it
+        // runs on its own thread and node exit waits at most PYROSCOPE_STOP_TIMEOUT.
         #[cfg(feature = "pyroscope")]
         if let Some(agent) = pyroscope_agent {
-            match agent.stop() {
-                Ok(agent) => agent.shutdown(),
-                Err(error) => warn!(target: "reth::cli", %error, "Failed to stop Pyroscope agent"),
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                match agent.stop() {
+                    Ok(agent) => agent.shutdown(),
+                    Err(error) => {
+                        warn!(target: "reth::cli", %error, "Failed to stop Pyroscope agent")
+                    }
+                }
+                let _ = done_tx.send(());
+            });
+            if done_rx.recv_timeout(PYROSCOPE_STOP_TIMEOUT).is_err() {
+                warn!(target: "reth::cli", "Pyroscope agent did not stop in time; exiting without it");
             }
         }
 
         exit
     })
 }
+
+/// Longest node exit waits for the Pyroscope agent to flush and stop.
+#[cfg(feature = "pyroscope")]
+const PYROSCOPE_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Prometheus builder that exports the `tempo_zone_latency_*` histograms with buckets, so
 /// long-window percentiles can be computed from `_bucket` series.
