@@ -36,7 +36,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, TempoTransaction, calc_gas_balance_spending,
+    },
 };
 use thiserror::Error;
 
@@ -114,7 +116,7 @@ impl TempoPooledTransaction {
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
-        let in_memory_size = transaction.size();
+        let in_memory_size = transaction.size() + cached_tx_env_size(&transaction);
         Self {
             inner: EthPooledTransaction {
                 transaction,
@@ -1219,11 +1221,44 @@ impl KeyAuthorizationTargetSubject {
     }
 }
 
+/// Returns the heap that the [`TempoTxEnv`] cached by [`TempoPooledTransaction::tx_env`] copies from
+/// `transaction`.
+///
+/// The env owns a second copy of the transaction body. [`Bytes`] payloads (calldata, AA call
+/// inputs) are shared with the envelope via refcount, and the fixed-size parts (the inline env slot,
+/// the AA `Arc` allocation) are per-transaction overhead bounded by the pool's count limits, like
+/// the pooled transaction itself. Only heap copies that scale with the transaction's fields are
+/// counted.
+///
+/// This is derived from the envelope and added to the pooled size at construction rather than
+/// measured from the cache, because the env is filled lazily and the pools subtract the same size
+/// they added on insert.
+fn cached_tx_env_size(transaction: &TempoTxEnvelope) -> usize {
+    match transaction {
+        TempoTxEnvelope::Legacy(_) => 0,
+        TempoTxEnvelope::Eip2930(tx) => tx.tx().access_list.size(),
+        TempoTxEnvelope::Eip1559(tx) => tx.tx().access_list.size(),
+        // The env also caches the recovered authority of every authorization.
+        TempoTxEnvelope::Eip7702(tx) => {
+            tx.tx().access_list.size()
+                + tx.tx().authorization_list.len()
+                    * (size_of::<SignedAuthorization>() + size_of::<Option<Address>>())
+        }
+        TempoTxEnvelope::AA(tx) => {
+            let tx = tx.tx();
+            let shared_bytes = tx.calls.iter().map(|call| call.input.len()).sum::<usize>();
+            tx.size()
+                .saturating_sub(size_of::<TempoTransaction>() + shared_bytes)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
-    use alloy_consensus::TxEip1559;
+    use alloy_consensus::{TxEip1559, TxEip7702};
+    use alloy_eips::{eip2930::AccessListItem, eip7702::Authorization};
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -1232,11 +1267,38 @@ mod tests {
     use proptest_arbitrary_interop::arb_sized;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
-    use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
-    };
+    use tempo_primitives::transaction::{TEMPO_EXPIRING_NONCE_KEY, tempo_transaction::Call};
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
+
+    fn large_access_list() -> AccessList {
+        (0..64u8)
+            .map(|i| AccessListItem {
+                address: Address::with_last_byte(i),
+                storage_keys: (0..32u8).map(B256::with_last_byte).collect(),
+            })
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    fn eip1559_pooled(access_list: AccessList, input: Bytes) -> TempoPooledTransaction {
+        let tx = TxEip1559 {
+            to: TxKind::Call(Address::with_last_byte(2)),
+            gas_limit: 21000,
+            access_list,
+            input,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        TempoPooledTransaction::new(Recovered::new_unchecked(
+            envelope,
+            Address::with_last_byte(1),
+        ))
+    }
 
     fn signed_aa_envelope(tx: TempoTransaction) -> (TempoTxEnvelope, Address) {
         let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
@@ -1277,6 +1339,117 @@ mod tests {
         assert!(fresh.cached_tx_env().is_some());
         assert_eq!(fresh.key_expiry(), None);
         assert_eq!(fresh.resolved_fee_token(), None);
+    }
+
+    #[test]
+    fn size_counts_cached_tx_env_access_list() {
+        let access_list = large_access_list();
+        let access_list_size = access_list.size();
+
+        let eip1559 = eip1559_pooled(access_list.clone(), Bytes::new());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), envelope_size + access_list_size);
+
+        let aa = TxBuilder::aa(Address::random())
+            .access_list(access_list.clone())
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert!(aa.size() >= envelope_size + access_list_size);
+
+        let authorization_list = (0..8u64)
+            .map(|nonce| {
+                Authorization {
+                    chain_id: U256::from(1),
+                    address: Address::with_last_byte(3),
+                    nonce,
+                }
+                .into_signed(Signature::test_signature())
+            })
+            .collect::<Vec<_>>();
+        let authorization_size = authorization_list.len()
+            * (size_of::<SignedAuthorization>() + size_of::<Option<Address>>());
+        let tx = TxEip7702 {
+            to: Address::with_last_byte(2),
+            gas_limit: 100_000,
+            access_list,
+            authorization_list,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip7702(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        let envelope_size = envelope.size();
+        let eip7702 =
+            TempoPooledTransaction::new(Recovered::new_unchecked(envelope, Address::random()));
+        assert_eq!(
+            eip7702.size(),
+            envelope_size + access_list_size + authorization_size
+        );
+    }
+
+    #[test]
+    fn size_of_minimal_transactions_excludes_fixed_overhead() {
+        let eip1559 = eip1559_pooled(AccessList::default(), Bytes::new());
+        assert_eq!(eip1559.size(), eip1559.inner().inner().size());
+
+        let aa = TxBuilder::aa(Address::random()).build();
+        let envelope_size = aa.inner().inner().size();
+        assert!(aa.size() >= envelope_size);
+        assert!(aa.size() - envelope_size <= 256);
+    }
+
+    #[test]
+    fn size_is_stable_across_tx_env_caching() {
+        let transactions = [
+            eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])),
+            TxBuilder::aa(Address::random())
+                .access_list(large_access_list())
+                .build(),
+        ];
+        for transaction in transactions {
+            let size = transaction.size();
+            assert!(transaction.cached_tx_env().is_none());
+            let _ = transaction.tx_env();
+            assert!(transaction.cached_tx_env().is_some());
+            assert_eq!(transaction.size(), size);
+            assert_eq!(transaction.with_discarded_caches().size(), size);
+        }
+    }
+
+    #[test]
+    fn size_does_not_double_count_shared_calldata() {
+        let input = Bytes::from(vec![7u8; 100_000]);
+        let eip1559 = eip1559_pooled(AccessList::default(), input.clone());
+        let envelope_size = eip1559.inner().inner().size();
+        assert!(envelope_size >= input.len());
+        assert!(eip1559.size() < envelope_size + 1024);
+        // The env holds the same buffer as the envelope, which is why it is not counted.
+        let env_input = &eip1559.tx_env().as_eip1559().unwrap().input;
+        assert_eq!(env_input.as_ptr(), eip1559.input().as_ptr());
+
+        let aa = TxBuilder::aa(Address::random())
+            .calls(vec![
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input: input.clone(),
+                },
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input,
+                },
+            ])
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert!(aa.size() < envelope_size + 4096);
+        let calls = &aa.tx_env().as_aa().unwrap().inner().tx().calls;
+        let envelope_calls = &aa.inner().inner().as_aa().unwrap().tx().calls;
+        for (call, envelope_call) in calls.iter().zip(envelope_calls) {
+            assert_eq!(call.input.as_ptr(), envelope_call.input.as_ptr());
+        }
     }
 
     #[test]
