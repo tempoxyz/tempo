@@ -229,7 +229,7 @@ fn authenticate_receipt_withdrawals(
     let burns = receipt
         .windows(3)
         .enumerate()
-        .filter_map(|(start, events)| WithdrawalBurn::from_events(start + events.len(), events))
+        .filter_map(|(start, events)| WithdrawalBurn::from_events(start, events))
         .collect::<Vec<_>>();
     let mut consumed = vec![false; burns.len()];
 
@@ -281,7 +281,7 @@ fn authenticate_receipt_withdrawals(
     let in_withdrawal = |index: usize| {
         burns
             .iter()
-            .any(|burn| (burn.end_index - 3..burn.end_index).contains(&index))
+            .any(|burn| (burn.start_index..burn.end_index).contains(&index))
     };
     if receipt
         .iter()
@@ -337,6 +337,7 @@ fn matching_fee_burn(
 
 /// One debit, transfer-to-zero, and burn sequence within a receipt.
 struct WithdrawalBurn {
+    start_index: usize,
     end_index: usize,
     token: Address,
     owner: Address,
@@ -345,7 +346,7 @@ struct WithdrawalBurn {
 
 impl WithdrawalBurn {
     /// Decode one adjacent transfer, zero transfer, and burn sequence.
-    fn from_events(end_index: usize, events: &[ReceiptEvent]) -> Option<Self> {
+    fn from_events(start_index: usize, events: &[ReceiptEvent]) -> Option<Self> {
         let [debit, transfer, burn] = events else {
             return None;
         };
@@ -372,7 +373,8 @@ impl WithdrawalBurn {
             && debit.amount == transfer.amount
             && debit.amount == burn_amount)
             .then_some(Self {
-                end_index,
+                start_index,
+                end_index: start_index + events.len(),
                 token: debit.token,
                 owner: debit.from,
                 amount: debit.amount,
