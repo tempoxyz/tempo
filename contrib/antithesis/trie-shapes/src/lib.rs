@@ -136,6 +136,7 @@ impl Collider {
         if budget == 0 {
             return Vec::new();
         }
+        let recorded = self.groups.len();
         let revisit =
             !self.groups.is_empty() && (self.groups.len() >= MAX_GROUPS || rng.random_ratio(2, 5));
         let mut writes = if revisit {
@@ -154,6 +155,10 @@ impl Collider {
             }
         };
         writes.truncate(budget);
+        // A new group's writes follow its members in order: keep only the members written.
+        if self.groups.len() > recorded {
+            self.groups.last_mut().expect("a group was recorded").members.truncate(writes.len());
+        }
         writes
     }
 
@@ -494,6 +499,19 @@ mod tests {
         }
         assert!(collider.groups.len() <= MAX_GROUPS);
         assert!(collider.groups.iter().all(|group| group.members.len() <= MAX_MEMBERS + 16));
+    }
+
+    #[test]
+    fn new_groups_hold_only_written_members() {
+        let mut rng = StdRng::seed_from_u64(4);
+        let mut collider = Collider::new(3);
+        for _ in 0..300 {
+            let before = collider.groups.len();
+            let writes = collider.step(&mut rng, Some(Address::repeat_byte(1)), 2);
+            if collider.groups.len() > before {
+                assert_eq!(collider.groups.last().unwrap().members.len(), writes.len());
+            }
+        }
     }
 
     #[test]

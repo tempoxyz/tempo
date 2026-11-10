@@ -209,6 +209,9 @@ impl Round {
         } else {
             Collider::default()
         };
+        // The replayed tries are the baseline the next block's transitions are measured from.
+        let mut shapes = ShapeTracker::default();
+        shapes.observe(model::tries(&state));
         Ok(Self {
             id: AntithesisRng.random(),
             number,
@@ -218,7 +221,7 @@ impl Round {
             state,
             collider,
             collider_path,
-            shapes: ShapeTracker::default(),
+            shapes,
             pending: Vec::new(),
         })
     }
