@@ -1106,7 +1106,7 @@ WebSocket connections follow the same authorization model. The authorization tok
 - `eth_subscribe("logs")`: scoped to the authenticated account using the same event filtering rules.
 - `eth_subscribe("newPendingTransactions")`: disabled.
 
-The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key. Likewise, it must terminate a connection within 1 second of the zone's anchor retiring its signing key, or changing the configuration commitment of its configurable-account caller.
+The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key. Likewise, it rechecks the session's signer every second and terminates the connection once the zone's anchor has retired its signing key, or changed the configuration commitment its configurable-account signer signed with.
 
 ### Zone-Specific Methods
 

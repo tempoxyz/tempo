@@ -714,8 +714,8 @@ where
 type RpcBlock = Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeaderResponse>;
 const FILTER_OWNER_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Bounds a Tempo commitment read on an L1 state cache miss, so token authentication and session
-/// rechecks fail instead of waiting on an unresponsive Tempo RPC.
+/// Bounds the Tempo reads of token authentication and session rechecks, so they fail instead of
+/// waiting on an unresponsive Tempo RPC.
 const L1_COMMITMENT_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn filter_not_found_error() -> JsonRpcError {
@@ -931,6 +931,9 @@ where
 {
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
         Box::pin(async move {
+            // The call loads `account`, whose Tempo commitment zone execution reads. Reading it
+            // through the bounded path first keeps the call from waiting on Tempo.
+            Self::get_config_commitment(self, account).await?;
             let request = TempoTransactionRequest {
                 inner: TransactionRequest {
                     from: Some(account),
@@ -946,9 +949,13 @@ where
                 ..Default::default()
             };
 
-            let output = EthCall::call(&self.eth.api, request, None, EvmOverrides::default())
-                .await
-                .wrap_err("AccountKeychain.getKey eth_call failed")?;
+            let output = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                EthCall::call(&self.eth.api, request, None, EvmOverrides::default()),
+            )
+            .await
+            .wrap_err("timed out calling AccountKeychain.getKey")?
+            .wrap_err("AccountKeychain.getKey eth_call failed")?;
 
             IAccountKeychain::getKeyCall::abi_decode_returns(output.as_ref()).map_err(Into::into)
         })

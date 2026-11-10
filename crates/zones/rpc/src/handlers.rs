@@ -26,7 +26,7 @@ use crate::{
 ///   serializing to JSON.
 pub trait ZoneRpcApi: Send + Sync + 'static {
     /// `AccountKeychain.getKey(account, keyId)` — returns the current keychain
-    /// authorization for a recovered access key.
+    /// authorization for a recovered access key. Fails when Tempo state cannot be read in time.
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo>;
 
     /// Returns the TIP-1108 commitment that zone execution reads for `account` at the current
