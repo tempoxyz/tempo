@@ -41,10 +41,11 @@ ARG COVERAGE_RUSTFLAGS="-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-l
 # The build platform's architecture (BuildKit sets it), so local arm64 builds stay native.
 ARG TARGETARCH
 
-# Cargo locks its own registry; a private target cache never waits on a concurrent or cancelled
-# build (a cancelled workflow does not stop its remote build).
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=shared \
+# Private caches per workload: a concurrent or cancelled build (a cancelled workflow does not
+# stop its remote build) never holds them, and Cargo's package-cache lock lives outside the
+# registry mount, so concurrent builds must not share it.
+RUN --mount=type=cache,id=antithesis-zones-cargo-registry,target=/usr/local/cargo/registry,sharing=private \
+    --mount=type=cache,id=antithesis-zones-cargo-git,target=/usr/local/cargo/git,sharing=private \
     --mount=type=cache,id=antithesis-zones-target,target=/app/target,sharing=private \
     case "${TARGETARCH}" in arm64) target=aarch64-unknown-linux-gnu ;; *) target=x86_64-unknown-linux-gnu ;; esac \
     && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${COVERAGE_RUSTFLAGS}" \

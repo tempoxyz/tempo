@@ -17,10 +17,11 @@ ENV CARGO_PROFILE_ANTITHESIS_DEBUG=line-tables-only \
     CARGO_PROFILE_ANTITHESIS_LTO=off
 # COPY preserves timestamps. Force the local crate fresh when this layer reruns:
 # its source may have changed while an earlier cached-target build was running.
-# Cargo locks its own registry; a private target cache never waits on a concurrent or cancelled
-# build, and each workload keeps its own (their features differ).
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=shared \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=shared \
+# Private caches per workload: a concurrent or cancelled build (a cancelled workflow does not
+# stop its remote build) never holds them, and Cargo's package-cache lock lives outside the
+# registry mount, so concurrent builds must not share it.
+RUN --mount=type=cache,id=antithesis-reth-state-root-cargo-registry,target=/usr/local/cargo/registry,sharing=private \
+    --mount=type=cache,id=antithesis-reth-state-root-cargo-git,target=/usr/local/cargo/git,sharing=private \
     --mount=type=cache,id=antithesis-reth-state-root-target,target=/work/target,sharing=private \
     touch contrib/antithesis/reth-state-root/src/main.rs \
     && cargo build --locked --profile antithesis -p reth-state-root-antithesis \
