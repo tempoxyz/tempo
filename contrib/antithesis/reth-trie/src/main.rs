@@ -290,7 +290,7 @@ fn run(
     let input_blocks =
         input.operations.split_inclusive(|op| matches!(op, Operation::Commit)).collect::<Vec<_>>();
     let total_blocks = input_blocks.len() as u64;
-    let mut journal = RoundJournal::open(&datadir, total_blocks)?;
+    let mut journal = RoundJournal::open(datadir, total_blocks)?;
 
     let manager = factory.overlay_manager();
     let base =
