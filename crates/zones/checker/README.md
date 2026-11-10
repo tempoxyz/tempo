@@ -153,6 +153,10 @@ At minimum, alert when `disabled` or `divergence_active` is `1`, verification
 lag continues to grow, or the verified height stops advancing while the Zone
 head advances.
 
+Also alert when `unproven_custody_blocks_total` increases while verification
+lag is small: outside replay after a rebuild, a skipped custody check means the
+Tempo RPC refused proofs for a recent anchor.
+
 ### Verified activity logs
 
 After a Zone block is durably verified, the checker emits structured
