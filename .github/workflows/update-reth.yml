@@ -574,6 +574,15 @@ jobs:
             for _ in $(seq 1 30); do
               PR_HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
               [ "$PR_HEAD_SHA" = "$LOCAL_SHA" ] && break
+              # Someone else pushed on top of our commit: continue from their head.
+              if [ -n "$PR_HEAD_SHA" ] && git fetch --quiet origin "$PR_BRANCH" \
+                && [ "$(git rev-parse FETCH_HEAD)" = "$PR_HEAD_SHA" ] \
+                && git merge-base --is-ancestor "$LOCAL_SHA" "$PR_HEAD_SHA"; then
+                echo "PR head $PR_HEAD_SHA contains $LOCAL_SHA; fast-forwarding to it"
+                git merge --ff-only "$PR_HEAD_SHA"
+                LOCAL_SHA="$PR_HEAD_SHA"
+                break
+              fi
               echo "Waiting for PR head to update to $LOCAL_SHA (currently $PR_HEAD_SHA)..."
               sleep 10
             done
@@ -606,6 +615,19 @@ jobs:
               # so it is not waited on: only a failure reported before the other checks
               # finish is handled above, and a later E2E failure is left to reviewers.
               PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | length')
+              # Check runs register one workflow at a time, so a list of only fast checks
+              # can show nothing pending. lint success and test success always run
+              # (if: always()) after their workflows' jobs: wait until both are listed.
+              AGGREGATES=$(echo "$STATUS" | jq -r '[.[] | select(.name == "lint success" or .name == "test success")] | length')
+              if [ "$PENDING" = "0" ] 2>/dev/null && [ "$AGGREGATES" -lt 2 ] 2>/dev/null; then
+                if [ $(( (SECONDS - WAIT_START) / 60 )) -ge "$CI_TIMEOUT_MINUTES" ]; then
+                  echo "::error::lint success / test success never registered on the PR head"
+                  exit 1
+                fi
+                echo "Waiting for lint success and test success to register..."
+                sleep 60
+                continue
+              fi
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
                 PR_NUMBER=$(gh pr view "$PR_BRANCH" --json number --jq '.number')
