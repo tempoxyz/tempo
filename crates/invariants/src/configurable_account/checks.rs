@@ -399,30 +399,67 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             step.tx
                 .iter()
                 .filter(|tx| tx.authority.active && tx.authority.grant.is_some())
-                .flat_map(|tx| tx.authority.key_authorization_signers())
+                .map(|tx| tx.sender)
         },
-        judge: |s, signer| {
+        judge: |s, sender| {
             let tx = s.tx.as_ref()?;
-            if *signer == tx.sender {
-                return Some(Verdict::Holds);
+            let signers: Vec<Address> = tx.authority.key_authorization_signers().collect();
+            if signers.is_empty() {
+                return Some(Verdict::Broken(
+                    "carries a grant whose signature recovers to no signer".to_string(),
+                ));
             }
-            let by_quorum = tx
-                .authority
-                .quorums
+            let mut unknown = false;
+            for signer in signers {
+                if signer == *sender {
+                    continue;
+                }
+                let by_quorum = tx
+                    .authority
+                    .quorums
+                    .iter()
+                    .any(|q| q.role == Role::KeyAuthorization && q.account == signer);
+                let signs_tx = tx.authority.keys.contains(&Key {
+                    role: Role::AccessKey,
+                    account: signer,
+                });
+                if by_quorum || !signs_tx {
+                    return Some(Verdict::Broken(format!(
+                        "grant signed by {signer}, not the parent or its acting admin key"
+                    )));
+                }
+                match s.pre.admins.get(&(*sender, signer)) {
+                    Some(true) => {}
+                    Some(false) => {
+                        return Some(Verdict::Broken(format!(
+                            "grant signed by {signer}, not an admin key"
+                        )));
+                    }
+                    None => unknown = true,
+                }
+            }
+            (!unknown).then_some(Verdict::Holds)
+        },
+    },
+    // A key-type-3 grant is used only by its delegate's quorum, never by an ordinary access key.
+    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L177>
+    check! {
+        id: "TEMPO-ACCOUNT-GRANT-TYPE",
+        over: |step: &AccountStep| {
+            step.tx
                 .iter()
-                .any(|q| q.role == Role::KeyAuthorization && q.account == *signer);
-            let signs_tx = tx.authority.keys.contains(&Key {
+                .filter(|tx| tx.authority.active)
+                .filter_map(|tx| tx.authority.grant)
+                .filter(|g| g.key_type == CONFIGURABLE_KEY_TYPE)
+                .map(|g| g.key_id)
+        },
+        judge: |s, key_id| {
+            let tx = s.tx.as_ref()?;
+            let ordinary = tx.authority.keys.contains(&Key {
                 role: Role::AccessKey,
-                account: *signer,
+                account: *key_id,
             });
-            if by_quorum || !signs_tx {
-                return Some(Verdict::Broken(format!(
-                    "signed by {signer}, not the parent {} or its acting admin key",
-                    tx.sender
-                )));
-            }
-            let admin = *s.pre.admins.get(&(tx.sender, *signer))?;
-            ensure!(admin, "signed by {signer}, not an admin key of {}", tx.sender)
+            ensure!(!ordinary, "a key-type-3 grant used by an ordinary access-key signature")
         },
     },
     // Grants change only in the parent's own transactions, by its key or quorum, and never as an admin key.
