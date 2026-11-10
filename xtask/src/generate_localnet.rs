@@ -1,9 +1,8 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use eyre::{OptionExt as _, WrapErr as _, ensure};
-use rand_08::SeedableRng as _;
 use reth_network_peers::pk2id;
-use secp256k1::SECP256K1;
+use secp256k1::rand::{SeedableRng as _, rngs::StdRng};
 use serde::Serialize;
 
 use crate::genesis_args::GenesisArgs;
@@ -82,14 +81,13 @@ impl GenerateLocalnet {
             );
         }
 
-        let mut rng =
-            rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
+        let mut rng = StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
         let mut trusted_peers = vec![];
 
         let mut all_configs = vec![];
         for validator in &consensus_config.validators {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
-                let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
+                let (sk, pk) = secp256k1::generate_keypair(&mut rng);
                 (sk, pk2id(&pk))
             };
 

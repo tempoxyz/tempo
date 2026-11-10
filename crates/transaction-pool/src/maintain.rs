@@ -597,7 +597,7 @@ where
         }
 
         // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1112).
+        // including eventless first registration (TIP-1107).
         let changed_commitments: AddressSet = bundle_state
             .iter()
             .filter(|(_, account)| {
@@ -770,6 +770,7 @@ mod tests {
     use crate::test_utils::TxBuilder;
     use alloy_primitives::{Address, B256, TxHash};
     use reth_primitives_traits::RecoveredBlock;
+    use reth_provider::ExecutionOutcome;
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
@@ -1118,8 +1119,6 @@ mod tests {
         blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,
         receipts: Vec<Vec<tempo_primitives::TempoReceipt>>,
     ) -> Arc<Chain<TempoPrimitives>> {
-        use reth_provider::{Chain, ExecutionOutcome};
-
         Arc::new(Chain::new(
             blocks,
             ExecutionOutcome::default().with_receipts(receipts),

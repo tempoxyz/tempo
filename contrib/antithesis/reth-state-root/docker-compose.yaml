@@ -1,0 +1,29 @@
+services:
+  reth-state-root:
+    image: ${RETH_STATE_ROOT_IMAGE:-tempo-reth-state-root-antithesis:latest}
+    container_name: reth-state-root
+    hostname: reth-state-root
+    init: true
+    # gdb -p from docker exec needs CAP_SYS_PTRACE when the kernel's Yama ptrace_scope is 1.
+    cap_add:
+      - SYS_PTRACE
+    networks:
+      antithesis:
+        ipv4_address: 10.20.0.10
+    # Antithesis controls kill/restart timing; Docker restart policies mask faults.
+    # The binary initializes the database, emits setup_complete, then continuously
+    # runs bounded rounds. No test-template driver or shell restart loop is needed.
+    command: ['{"datadir":"/state"}']
+    volumes:
+      - trie-state:/state
+
+# Match the explicit bridge subnet used by the Zones Antithesis configuration.
+networks:
+  antithesis:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.20.0.0/24
+
+volumes:
+  trie-state:

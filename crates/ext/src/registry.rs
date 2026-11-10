@@ -100,10 +100,9 @@ impl Registry {
     /// check was more than 6 hours ago.
     pub(crate) fn needs_update_check(&self, extension: &str) -> bool {
         let now = now_secs();
-        match self.extensions.get(extension) {
-            Some(ext) => now.saturating_sub(ext.checked_at) >= UPDATE_CHECK_INTERVAL_SECS,
-            None => true,
-        }
+        self.extensions
+            .get(extension)
+            .is_none_or(|ext| now.saturating_sub(ext.checked_at) >= UPDATE_CHECK_INTERVAL_SECS)
     }
 
     /// Records a successful install or update check for an extension.

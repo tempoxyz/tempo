@@ -7,6 +7,10 @@ use std::{
 };
 
 use super::{BuildTimeMultiplier, FinishedBuild};
+use crate::samples::{is_expired, record_sample, sample_percentile, step_toward};
+
+/// Percentile followed by build-work estimates.
+const RESERVE_PERCENTILE: usize = 75;
 
 /// Largest change of the multiplier, up or down, per busy build, in
 /// [`BuildTimeMultiplier`] fixed-point units.
@@ -20,8 +24,6 @@ const SAMPLE_WINDOW: usize = 16;
 /// Age after which a finished build no longer counts. Once every build behind
 /// an estimate has expired, the estimate is back at its initial value.
 pub(super) const SAMPLE_TTL: Duration = Duration::from_secs(5 * 60);
-/// Percentile of its window of finished builds each estimate follows.
-const RESERVE_PERCENTILE: usize = 75;
 
 /// Learns how much replayable work follows the transaction cutoff.
 ///
@@ -124,7 +126,7 @@ where
     fn get(&self, now: Instant) -> TValue {
         // Samples finish in order, so the newest expires last.
         match self.samples.back() {
-            Some((at, _)) if !is_expired(*at, now) => self.current,
+            Some((at, _)) if !is_expired(*at, now, SAMPLE_TTL) => self.current,
             _ => self.initial,
         }
     }
@@ -140,30 +142,13 @@ where
     /// moving the estimate while newer ones are left.
     fn observe(&mut self, now: Instant, observed: TValue) {
         self.current = self.get(now);
-        self.samples.retain(|(at, _)| !is_expired(*at, now));
-        if self.samples.len() == SAMPLE_WINDOW {
-            self.samples.pop_front();
-        }
-        self.samples.push_back((now, observed));
-
-        let mut values: Vec<TValue> = self.samples.iter().map(|(_, value)| *value).collect();
-        values.sort_unstable();
-        // Rounding the rank up returns a lone sample as is.
-        let percentile = values[(values.len() * RESERVE_PERCENTILE).div_ceil(100) - 1];
+        record_sample::<_, SAMPLE_WINDOW>(&mut self.samples, now, observed, SAMPLE_TTL);
+        let percentile = sample_percentile(&self.samples, RESERVE_PERCENTILE)
+            .expect("the just-recorded sample is in the window");
 
         let target = percentile.min(observed.max(self.current));
-        self.current = if target >= self.current {
-            self.current + (target - self.current).min(self.max_step)
-        } else {
-            self.current - (self.current - target).min(self.max_step)
-        };
+        self.current = step_toward(self.current, target, self.max_step);
     }
-}
-
-/// Whether a build that finished `at` no longer counts at `now`. `at` may be
-/// slightly after `now` when callers read the clock before taking the lock.
-fn is_expired(at: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(at) > SAMPLE_TTL
 }
 
 #[cfg(test)]

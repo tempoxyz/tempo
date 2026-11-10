@@ -1,7 +1,16 @@
-//! Shared build-time and validation feedback for paced payloads.
+//! Shared payload-work estimates and proposal pacing learned from finalized successors.
 
 mod build_plan;
 mod build_time;
+pub(crate) mod config;
+mod network;
+mod proposal;
+
+pub use config::{
+    DEFAULT_NETWORK_BUDGET, DEFAULT_NETWORK_RESERVE_PERCENTILE, DEFAULT_TARGET_BLOCK_TIME,
+};
+use config::{EstimatorConfig, NetworkReservation};
+pub use proposal::ProposalBudget;
 
 pub use build_plan::{BuildPlan, PayloadBudgetDecision};
 
@@ -15,30 +24,64 @@ use std::{
 
 use crate::{ValidationLatencyEstimator, ValidationLatencyWorkload};
 use build_time::BuildTimeTracker;
+use network::NetworkTracker;
 
-/// Static configuration of the shared proposal budget estimator.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Config {
-    /// Build time multiplier the estimator starts from, and returns to once it
-    /// has seen no finished build for a while.
-    pub build_time_multiplier: BuildTimeMultiplier,
+/// Identifies a proposal by its own epoch and view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProposalKey {
+    /// Epoch in which this proposal was made.
+    pub epoch: u64,
+    /// View in which this proposal was made.
+    pub view: u64,
 }
 
-/// Cloneable pacing feedback shared by consensus and the payload builder.
+/// Clock readings and replay-adjusted elapsed time for a returned proposal.
+#[derive(Debug)]
+pub struct ProposalTiming {
+    /// Identity of the returned proposal, not its parent or child.
+    pub key: ProposalKey,
+    /// Unix milliseconds when the proposal window opened, on the header clock.
+    pub window_opened_millis: u64,
+    /// Unix milliseconds when the proposal was returned, on the same clock.
+    pub returned_millis: u64,
+    /// Return budget plus lateness past the replay-adjusted return target,
+    /// excluding timer overshoot.
+    pub elapsed: Duration,
+}
+
+/// Shared build and validation estimates with an adaptive proposal return budget.
+/// Network reservations follow finalized successors of this node's proposals.
 ///
 /// Clones share state: feedback recorded on one is seen by every other.
 #[derive(Clone, Debug)]
 pub struct Estimator {
+    target_block_time: Duration,
+    overrun_tolerance: Option<Duration>,
     state: Arc<Mutex<EstimatorState>>,
 }
 
 impl Estimator {
-    /// Creates an estimator without any feedback yet.
-    pub fn new(config: Config) -> Self {
+    /// Creates an estimator without feedback.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config` is invalid. Call [`EstimatorConfig::validate`] beforehand to
+    /// handle invalid configuration without panicking.
+    pub fn new(config: EstimatorConfig) -> Self {
+        config.validate().expect("invalid estimator configuration");
         Self {
+            target_block_time: config.target_block_time,
+            overrun_tolerance: match config.network_reservation_policy {
+                NetworkReservation::Adaptive {
+                    return_budget_overrun_tolerance,
+                    ..
+                } => Some(return_budget_overrun_tolerance),
+                NetworkReservation::Fixed => None,
+            },
             state: Arc::new(Mutex::new(EstimatorState {
                 validation: ValidationLatencyEstimator::default(),
                 build_time: BuildTimeTracker::new(config.build_time_multiplier),
+                network: NetworkTracker::new(&config),
             })),
         }
     }
@@ -74,6 +117,65 @@ impl Estimator {
     /// time, for the plans of later builds.
     pub fn on_build_finished(&self, now: Instant, finished_build: FinishedBuild) {
         self.lock_state().build_time.observe(now, finished_build);
+    }
+
+    /// Records an own proposal returned at monotonic `now` for a future network sample.
+    ///
+    /// `budget` must be the result of this proposal's `start_proposal` call.
+    /// Returns false when `timing.elapsed` exceeds that budget's sampling tolerance.
+    /// Timer overshoot is not part of elapsed work. Duplicate identities replace
+    /// earlier returns; unmatched returns expire after ten seconds, with at most
+    /// eight retained. Both millisecond readings use the header timestamp clock.
+    pub fn on_proposal_returned(
+        &self,
+        now: Instant,
+        budget: ProposalBudget,
+        timing: ProposalTiming,
+    ) -> bool {
+        if budget.overran(timing.elapsed) {
+            return false;
+        }
+        self.lock_state()
+            .network
+            .proposal_returned(now, budget.return_budget(), timing);
+        true
+    }
+
+    /// Observes a finalized child of `parent`, using its own `child` identity.
+    ///
+    /// The caller must guarantee finality. Unmatched parents are ignored; a
+    /// matched return is consumed even when discarded. Only consecutive views
+    /// in the same epoch count. Timestamps before the parent's return, and
+    /// samples longer than five seconds, are discarded as skew or stalls.
+    /// `now` is monotonic; `child_timestamp_millis` uses the header clock.
+    /// Returns true when a network sample was recorded.
+    pub fn on_child_block_finalized(
+        &self,
+        now: Instant,
+        parent: ProposalKey,
+        child: ProposalKey,
+        child_timestamp_millis: u64,
+    ) -> bool {
+        self.lock_state()
+            .network
+            .child_finalized(now, parent, child, child_timestamp_millis)
+    }
+
+    /// Returns the prepared proposal's pacing allowance, not a build timeout.
+    ///
+    /// Call exactly once per own proposal: each call moves the network reservation
+    /// by at most 100 ms. `now` is monotonic and expires old feedback; `preparation`
+    /// is time spent preparing before opening the header's proposal window.
+    /// Required payload work may overrun the returned allowance.
+    #[must_use]
+    pub fn start_proposal(&self, now: Instant, preparation: Duration) -> ProposalBudget {
+        let network_reservation = self.lock_state().network.reserve_for_proposal(now);
+        ProposalBudget::new(
+            self.target_block_time,
+            network_reservation,
+            preparation,
+            self.overrun_tolerance,
+        )
     }
 
     /// Locks the shared state, blocking while another clone holds it.
@@ -207,6 +309,7 @@ impl FinishedBuild {
 struct EstimatorState {
     validation: ValidationLatencyEstimator,
     build_time: BuildTimeTracker,
+    network: NetworkTracker,
 }
 
 #[cfg(test)]
@@ -268,7 +371,7 @@ mod tests {
     #[test]
     fn expired_builds_reset_plan_to_configured_values() {
         let start = Instant::now();
-        let estimator = Estimator::new(Config::default());
+        let estimator = Estimator::new(EstimatorConfig::default());
         estimator.on_build_finished(
             start,
             FinishedBuild::new(

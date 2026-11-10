@@ -1,7 +1,7 @@
 //! Executes a block of pathUSD transfers on the dev genesis through the harness's C ABI, the path a
 //! runner takes: decoding the input, executing it and encoding the outcome.
 
-use alloy_consensus::{Signed, TxLegacy};
+use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::Encodable2718 as _;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address};
 use alloy_sol_types::SolCall as _;
@@ -36,7 +36,7 @@ fn transfers(count: u64) -> Vec<u8> {
             input: input.abi_encode().into(),
             ..Default::default()
         };
-        let tx = Signed::new_unhashed(tx, Signature::test_signature());
+        let tx = tx.into_signed(Signature::test_signature());
         TempoTxEnvelope::Legacy(tx).encoded_2718().into()
     };
     let txs: Vec<_> = (0..count).map(transfer).collect();

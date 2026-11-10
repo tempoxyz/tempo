@@ -4,7 +4,7 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Bytes, KECCAK256_EMPTY, LogData, aliases::U96, bytes, keccak256};
+use alloy_primitives::{Bytes, KECCAK256_EMPTY, Log, LogData, aliases::U96, bytes, keccak256};
 use alloy_sol_types::{SolError, SolEvent, SolValue};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use evm2::{
@@ -35,7 +35,9 @@ use reth_trie_db::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{num::NonZeroU64, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, spec::DEV};
+use tempo_chainspec::{
+    TempoChainSpec, constants::gas::L1_COMMITMENT_READ_GAS, gas_params::apply_zone, spec::DEV,
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, ISignatureVerifier, ITIP20ChannelReserve,
     PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -58,7 +60,7 @@ use tempo_precompiles::{
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
-    Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
+    Block as TempoBlock, SignatureType, TempoEvmKind, TempoHeader, TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
         AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CallScope,
@@ -564,6 +566,21 @@ fn configurable_account_logs(result: &TxResult<TempoEvmTypes>) -> Vec<LogData> {
         .collect()
 }
 
+/// The event registering `f.account` at its version-zero configuration.
+fn registration_log(f: &Fixture) -> Log {
+    Log {
+        address: CONFIGURABLE_ACCOUNT_ADDRESS,
+        data: IConfigurableAccount::ConfigurableAccountConfigUpdated {
+            account: f.account,
+            salt: f.config.salt,
+            version: 0,
+            threshold: f.config.threshold,
+            owners: abi_owners(&f.config),
+        }
+        .encode_log_data(),
+    }
+}
+
 fn assert_upgraded(
     f: &mut Fixture,
     result: &TxResult<TempoEvmTypes>,
@@ -760,7 +777,7 @@ fn eoa_migration_commits_configuration() {
 
 #[test]
 fn eoa_migration_error_order() {
-    let only_call = IConfigurableAccount::UpgradeMustBeOnlyCall {}.abi_encode();
+    let direct_call = IConfigurableAccount::UpgradeMustBeDirectCall {}.abi_encode();
     let root_required = IConfigurableAccount::PrimitiveRootRequired {}.abi_encode();
     let has_code = IConfigurableAccount::AccountHasCode {}.abi_encode();
     let invalid_config = IConfigurableAccount::InvalidConfig {}.abi_encode();
@@ -773,19 +790,7 @@ fn eoa_migration_error_order() {
     };
     let delegate = Address::repeat_byte(0x74);
 
-    // 1: the call must be the transaction's only call, however the account signs.
-    expect_revert(
-        Fixture::with_parent(false),
-        "upgrade then call",
-        |f| f.primitive(3, vec![upgrade.clone(), f.getter()]).into(),
-        &only_call,
-    );
-    expect_revert(
-        Fixture::with_parent(false),
-        "call then upgrade",
-        |f| f.primitive(3, vec![f.getter(), upgrade.clone()]).into(),
-        &only_call,
-    );
+    // 1: a top-level call with no authorization list, however the account signs.
     expect_revert(
         Fixture::with_parent(false),
         "nested call",
@@ -794,7 +799,7 @@ fn eoa_migration_error_order() {
             call.input = upgrade.input.clone();
             f.primitive(3, vec![call]).into()
         },
-        &only_call,
+        &direct_call,
     );
     expect_revert(
         Fixture::with_parent(false),
@@ -809,7 +814,7 @@ fn eoa_migration_error_order() {
                 authorizations,
             )
         },
-        &only_call,
+        &direct_call,
     );
     expect_revert(
         Fixture::with_parent(false),
@@ -832,35 +837,8 @@ fn eoa_migration_error_order() {
             })
             .into()
         },
-        &only_call,
+        &direct_call,
     );
-    expect_revert(
-        Fixture::with_parent(false),
-        "key authorization",
-        |f| {
-            let grant =
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, signer(6).address());
-            let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
-            f.sign_primitive(TempoTransaction {
-                key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
-                ..aa_tx(3, vec![upgrade.clone()])
-            })
-            .into()
-        },
-        &only_call,
-    );
-    // 1 before 2: a batch is rejected before the signer is.
-    expect_revert(
-        Fixture::with_parent(false),
-        "access key batch",
-        |f| {
-            let key = signer(6);
-            grant_key(f, 3, &key, 0);
-            keychain_tx(f, &key, 4, vec![upgrade.clone(), f.getter()]).into()
-        },
-        &only_call,
-    );
-
     // 2: only a primitive root signature may migrate.
     expect_revert(
         Fixture::with_parent(false),
@@ -1018,6 +996,52 @@ fn eoa_migration_after_delegation_cleared() {
 }
 
 #[test]
+fn eoa_migration_anywhere_in_batch() {
+    for position in 0..3 {
+        let mut f = Fixture::with_parent(false);
+        let config = f.upgraded(1, owner_set(vec![signer(2).address()]));
+        let mut calls = vec![f.getter(), f.getter()];
+        calls.insert(position, Fixture::upgrade(&config));
+        let result = f.run(&f.primitive(3, calls));
+        assert_upgraded(&mut f, &result, &config);
+    }
+}
+
+#[test]
+fn eoa_migration_with_key_authorization() {
+    let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![signer(2).address()]));
+    let zero_threshold = ConfigurableAccountConfig {
+        threshold: 0,
+        ..base.clone()
+    };
+    for migrates in [true, false] {
+        let mut f = Fixture::with_parent(false);
+        let key = signer(6);
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address());
+        let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        let config = if migrates { &base } else { &zero_threshold };
+        let tx = f.sign_primitive(TempoTransaction {
+            key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
+            ..aa_tx(3, vec![Fixture::upgrade(config)])
+        });
+        let result = f.run(&tx);
+        if migrates {
+            assert_upgraded(&mut f, &result, &base);
+        } else {
+            assert_eq!(
+                result.output,
+                IConfigurableAccount::InvalidConfig {}.abi_encode()
+            );
+            assert_eq!(f.commitment(), B256::ZERO);
+        }
+
+        // The grant is applied before execution, so it stays whether or not the account migrated.
+        let result = f.run(&keychain_tx(&f, &key, 4, vec![f.getter()]));
+        assert!(result.status, "migrates {migrates}: {result:?}");
+    }
+}
+
+#[test]
 fn eoa_migration_failure_keeps_fee_and_nonce() {
     let member = signer(2).address();
     let base = Fixture::with_parent(false).upgraded(1, owner_set(vec![member]));
@@ -1029,7 +1053,7 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
         let (label, error) = if batch {
             (
                 "batch",
-                IConfigurableAccount::UpgradeMustBeOnlyCall {}.abi_encode(),
+                IConfigurableAccount::AccountAlreadyConfigurable {}.abi_encode(),
             )
         } else {
             (
@@ -1043,7 +1067,8 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
         let config = if batch { &base } else { &zero_threshold };
         let mut calls = vec![Fixture::upgrade(config)];
         if batch {
-            calls.push(f.getter());
+            // A second upgrade reverts and takes the first with it.
+            calls.push(Fixture::upgrade(config));
         }
         let tx = f.sign_primitive(TempoTransaction {
             max_fee_per_gas: 1,
@@ -2091,7 +2116,7 @@ fn retired_root_error_order_and_access_gas() {
     // T14 prices every transaction a little differently, with or without role checks; the
     // role charges are measured on top of a plain transaction.
     let base = delta(&|f| f.primitive(4, vec![f.getter()]));
-    // The caller is free, even as the grant signer.
+    // The caller is free, even as the grant signer; the granted key ID costs a cold access.
     let grant_tx = |f: &Fixture| {
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, other.address());
         let signature = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -2100,7 +2125,7 @@ fn retired_root_error_order_and_access_gas() {
             ..aa_tx(4, vec![f.getter()])
         })
     };
-    assert_eq!(delta(&grant_tx), base);
+    assert_eq!(delta(&grant_tx), base + cold);
     // A cold fee payer costs a cold access, an access-listed one a warm access.
     let paid = |f: &Fixture, payer: &PrivateKeySigner, list: &AccessList| {
         f.sign_primitive(sponsored(
@@ -2356,7 +2381,7 @@ fn retired_root_authorization_list_entries_skipped() {
 
 #[test]
 fn retired_root_authorization_list_entries_skipped_after_a_same_block_migration() {
-    // TIP-1112: an entry the root key signed before migrating, relayed by a later transaction
+    // TIP-1113: an entry the root key signed before migrating, relayed by a later transaction
     // of the same block, is skipped.
     let target = Address::repeat_byte(0x55);
     let sender = signer(2);
@@ -3893,7 +3918,8 @@ fn native_first_transaction_registers() {
         };
         let result = f.run(&f.signed(3, calls));
         assert_eq!(result.status, caught, "caught {caught}: {result:?}");
-        assert_eq!(result.logs, []);
+        // Registration runs before the batch checkpoint, so its event survives the revert.
+        assert_eq!(result.logs, [registration_log(&f)]);
         assert_eq!(f.commitment(), f.config.commitment().unwrap());
         let after = f.info(account).unwrap();
         assert_eq!(after.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
@@ -3909,6 +3935,7 @@ fn native_first_transaction_registers() {
 
         let result = f.run(&f.signed(4, vec![f.getter()]));
         assert!(result.status, "{result:?}");
+        assert!(configurable_account_logs(&result).is_empty());
         assert_eq!(
             IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output)
                 .unwrap(),
@@ -4038,11 +4065,10 @@ fn native_rotation_rejects_access_keys_and_callbacks() {
             output.output,
             IConfigurableAccount::UnauthorizedConfigurableAccountCaller {}.abi_encode()
         );
-        assert!(
-            output
-                .logs
-                .iter()
-                .all(|log| log.address != CONFIGURABLE_ACCOUNT_ADDRESS)
+        // Only the registration event survives the reverted rotation.
+        assert_eq!(
+            configurable_account_logs(&output),
+            [registration_log(&f).data]
         );
         assert_eq!(f.commitment(), f.config.commitment().unwrap());
     }
@@ -4070,7 +4096,8 @@ fn configurable_account_rotation() {
         };
         let result = f.run(&f.signed(nonce, vec![Fixture::rotation(&f.config, &next), f.getter()]));
         assert!(result.status, "migrated {migrated}: {result:?}");
-        assert_eq!(result.logs.len(), 1);
+        // A first transaction also registers the account, logging its version-zero configuration.
+        assert_eq!(result.logs.len(), if migrated { 1 } else { 2 });
         assert_eq!(
             IConfigurableAccount::getConfigCommitmentCall::abi_decode_returns(&result.output)
                 .unwrap(),
@@ -4180,7 +4207,11 @@ fn native_batch_rotation_failure(registered: bool, halt: bool) {
     let output = f.run(&f.signed(nonce, calls));
     assert_eq!(output.stop.is_halt(), halt);
     assert_eq!(output.stop.is_revert(), !halt);
-    assert_eq!(output.logs, []);
+    // Only a first registration's event survives the batch rollback.
+    assert_eq!(
+        output.logs,
+        Vec::from_iter((!registered).then(|| registration_log(&f)))
+    );
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
     nonce += 1;
     assert_eq!(f.info(f.account).unwrap().nonce, nonce);
@@ -4341,7 +4372,7 @@ fn configurable_sender_rejections() {
 }
 
 /// A configurable-account signature adds its TIP-1114 verification cost `V - 3,000` to intrinsic
-/// gas, on top of the first-use account proof and the TIP-1108 registration write.
+/// gas, on top of the first-use account proof, the TIP-1108 registration write and its event.
 #[test]
 fn native_signature_verification_is_intrinsic_gas() {
     let calls = vec![Call {
@@ -4371,10 +4402,126 @@ fn native_signature_verification_is_intrinsic_gas() {
     let verification = calldata + keccak(75 + 21) + keccak(96);
     // First use: derivation K(68 + 21), plus the registration write, priced like account creation.
     let new_account = tempo_gas_params(TempoHardfork::T14).get(GasId::NewAccountCost);
-    let first_use = keccak(68 + 21) + new_account;
+    // The registration event: LOG2 over salt, version, threshold and one owner (224 bytes).
+    let first_use = keccak(68 + 21) + new_account + 375 + 2 * 375 + 8 * 224;
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
+    );
+}
+
+/// A fixture whose EVM is a zone's, which reads commitments from Tempo L1.
+fn zone_fixture(configurable: bool) -> Fixture {
+    let mut f = Fixture::with_parent(configurable);
+    f.evm.ext_mut().kind = TempoEvmKind::Zone;
+    f.reconfigure(|version| apply_zone(version, TempoHardfork::T14));
+    f
+}
+
+/// The gas parameters of a zone's EVM at T14.
+fn zone_gas_params() -> GasParams {
+    let mut version = *tempo_execution_config(TempoHardfork::T14, CHAIN_ID).version();
+    apply_zone(&mut version, TempoHardfork::T14);
+    version.gas_params
+}
+
+/// A zone charges the sender's Tempo read with the cold access it skips, and the eligible call
+/// target's read, and never registers, so it charges no write and emits no registration log.
+#[test]
+fn zones_charge_the_sender_read_instead_of_registering() {
+    let calls = vec![Call {
+        to: TxKind::Call(Address::repeat_byte(0x44)),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    }];
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
+    let reads = cold_access + 2 * L1_COMMITMENT_READ_GAS;
+
+    let mut local = Fixture::with_parent(false);
+    let local_primitive = local.run(&local.primitive(3, calls.clone()));
+    let mut f = zone_fixture(false);
+    let primitive = f.run(&f.primitive(3, calls.clone()));
+    assert!(primitive.status, "{primitive:?}");
+    assert_eq!(
+        primitive.tx_gas_used() - local_primitive.tx_gas_used(),
+        reads
+    );
+
+    let mut local = Fixture::new();
+    let registering = local.run(&local.signed(3, calls.clone()));
+    let mut f = zone_fixture(true);
+    let native = f.run(&f.signed(3, calls));
+    assert!(native.status, "{native:?}");
+    assert_eq!(native.logs, []);
+    assert!(f.commitment().is_zero());
+    let registration = gas.get(GasId::NewAccountCost) + 375 + 2 * 375 + 8 * 224;
+    assert_eq!(
+        registering.tx_gas_used() + reads - native.tx_gas_used(),
+        registration
+    );
+}
+
+/// On a zone, the first call target pays its Tempo read in intrinsic gas, whatever its code.
+/// A later call to a new target and access-list entries pay it through the zone's cold access and
+/// access-list costs, whatever the address. A later call to a repeated target pays a warm access.
+#[test]
+fn zone_commitment_reads_are_charged_once_per_read_account() {
+    let contract = Address::repeat_byte(0x55);
+    let (eligible, other) = (Address::repeat_byte(0x44), Address::repeat_byte(0x45));
+    let run = |access_list: Vec<Address>, targets: Vec<Address>| {
+        let mut f = zone_fixture(false);
+        f.update_account(contract, |info| {
+            *info = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0x00])))
+        });
+        let mut tx = aa_tx(
+            3,
+            targets
+                .into_iter()
+                .map(|to| Call {
+                    to: TxKind::Call(to),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                })
+                .collect(),
+        );
+        tx.access_list = AccessList(
+            access_list
+                .into_iter()
+                .map(|address| AccessListItem {
+                    address,
+                    storage_keys: Vec::new(),
+                })
+                .collect(),
+        );
+        let result = f.run(&f.sign_primitive(tx));
+        assert!(result.status, "{result:?}");
+        result.tx_gas_used()
+    };
+    let gas = zone_gas_params();
+    let access_list_entry = gas.get(GasId::TxAccessListAddressCost);
+    let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
+    assert_eq!(
+        access_list_entry,
+        tempo_gas_params(TempoHardfork::T14).get(GasId::TxAccessListAddressCost)
+            + L1_COMMITMENT_READ_GAS
+    );
+
+    let base = run(vec![], vec![contract]);
+    // A contract target pays the read like an eligible one.
+    assert_eq!(run(vec![], vec![eligible]), base);
+    assert_eq!(
+        run(
+            vec![CONFIGURABLE_ACCOUNT_ADDRESS, contract, other],
+            vec![contract]
+        ) - base,
+        3 * access_list_entry
+    );
+    // A second call pays the zone's cold access for a new target, and a warm access for a repeated one.
+    assert_eq!(run(vec![], vec![eligible, other]) - base, cold_access);
+    assert_eq!(
+        run(vec![], vec![eligible, eligible]) - base,
+        gas.get(GasId::WarmStorageReadCost)
     );
 }
 
@@ -5433,17 +5580,19 @@ fn native_sender_signing_its_own_grant_registers_once() {
         let grant = tx.key_authorization.as_mut().unwrap();
         let tx = if invalid_grant {
             // A valid outer signature must not mask an invalid grant quorum.
-            grant.signature = configurable_account_approval(
-                account,
-                &f.config,
-                &signer(3),
-                grant.signature_hash(),
-            )
-            .into();
+            *grant = grant
+                .authorization()
+                .clone()
+                .into_signed(configurable_account_approval(
+                    account,
+                    &f.config,
+                    &signer(3),
+                    grant.signature_hash(),
+                ));
             configurable_account_signed(&f, tx)
         } else {
             // The grant's approval does not authorize the transaction's digest.
-            let approval = grant.signature.as_configurable_account().unwrap().clone();
+            let approval = grant.signature().as_configurable_account().unwrap().clone();
             tx.into_signed(TempoSignature::ConfigurableAccount(approval))
         };
         assert_eq!(
@@ -5542,4 +5691,23 @@ fn native_granted_configurable_account_access_is_charged_once() {
         gas(GrantUser::Delegate, true, false) + gas(GrantUser::AccessKey, false, false),
         gas(GrantUser::AccessKey, true, false) + gas(GrantUser::Delegate, false, false)
     );
+}
+
+/// A granted delegate that is also the block beneficiary pays the same cold access as any other.
+#[test]
+fn granted_configurable_account_access_ignores_beneficiary_warmth() {
+    let delegate = Address::repeat_byte(0xbe);
+    let gas = |beneficiary: Address| {
+        let mut f = Fixture::with_parent(false);
+        f.update_block(|block| block.beneficiary = beneficiary);
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate);
+        let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        let result = f.run(&f.sign_primitive(TempoTransaction {
+            key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
+            ..aa_tx(3, vec![f.getter()])
+        }));
+        assert!(result.status, "{result:?}");
+        result.total_gas_spent
+    };
+    assert_eq!(gas(delegate), gas(Address::repeat_byte(0x77)));
 }

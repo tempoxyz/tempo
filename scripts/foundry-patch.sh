@@ -185,12 +185,71 @@ if [[ -n "$EVM2_PATCHES" ]]; then
     evm2_sources+=("https://github.com/mablr/evm2")
   fi
   for source in "${evm2_sources[@]}"; do
-    if grep -qF "[patch.\"$source\"]" "$FOUNDRY_CARGO"; then
-      echo "Foundry Cargo.toml already patches $source – keeping existing section."
-      continue
-    fi
-    printf '\n[patch."%s"]\n%s' "$source" "$EVM2_PATCHES" >> "$FOUNDRY_CARGO"
+    tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+    awk -v section="[patch.\"$source\"]" -v patches="$EVM2_PATCHES" '
+      $0 == section {
+        seen = 1
+        in_section = 1
+        print
+        printf "%s", patches
+        next
+      }
+      /^\[/ { in_section = 0 }
+      in_section && /^evm2[A-Za-z0-9_-]* = / { next }
+      { print }
+      END {
+        if (!seen) {
+          print ""
+          print section
+          printf "%s", patches
+        }
+      }
+    ' "$FOUNDRY_CARGO" > "$tmp_cargo"
+    mv "$tmp_cargo" "$FOUNDRY_CARGO"
   done
+fi
+
+# evm2's mark_created now preserves the storage baseline by default.
+if [[ -f "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs" ]]; then
+  sed -i 's/\.mark_created_keeping_storage()/\.mark_created()/g' \
+    "$FOUNDRY_ROOT/crates/evm/core/src/evm/lifecycle.rs"
+fi
+
+# Tracing now uses evm2's OpcodeSet instead of the inspectors' OpcodeFilter.
+# The precompile flag still controls tagging for exclusion, not call recording.
+if [[ -f "$FOUNDRY_ROOT/crates/evm/traces/src/lib.rs" ]]; then
+  sed -i \
+    -e 's/use evm2_inspectors::{ColorChoice, tracing::OpcodeFilter};/use evm2_inspectors::ColorChoice;/' \
+    -e 's/OpcodeFilter::new().enabled(OpCode::JUMP).enabled(OpCode::JUMPDEST)/[OpCode::JUMP.get(), OpCode::JUMPDEST.get()].into_iter().collect()/' \
+    -e 's/exclude_precompile_calls: false/record_precompile_calls: false/' \
+    "$FOUNDRY_ROOT/crates/evm/traces/src/lib.rs"
+fi
+
+# The removed Host helper delegated to the account's gas-emptiness predicate.
+if [[ -f "$FOUNDRY_ROOT/crates/cheatcodes/src/fs.rs" ]]; then
+  sed -i \
+    's/ccx.evm.target_is_empty_for_new_account_gas(\&created_address, version.features)?/ccx.evm.state_mut().account(\&created_address)?.is_empty_for_new_account_gas(version.features)/' \
+    "$FOUNDRY_ROOT/crates/cheatcodes/src/fs.rs"
+fi
+
+if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs" ]]; then
+  sed -i \
+    -e 's/\.mark_created_keeping_storage()/\.mark_created()/g' \
+    -e 's/inspector_config().steps\([;)]\)/inspector_config().steps()\1/g' \
+    -e 's/\.target_is_empty_for_new_account_gas(\&message.destination, features)/.state_mut().account(\&message.destination).map(|account| account.is_empty_for_new_account_gas(features))/' \
+    -e 's/(0\.\.=u8::MAX).filter(|\&op| filter.is_enabled(OpCode::new_or_unknown(op))).collect()/*filter/' \
+    -e 's/, opcode::OpCode//' \
+    "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs"
+fi
+
+# The interpreter no longer tracks step costs; match the tracer's gas accounting.
+if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs" ]] &&
+  grep -q 'interp.step_cost()' "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs"; then
+  sed -i \
+    -e 's/^    gas: u64,$/    gas: u64,\n    gas_before: u64,/' \
+    -e 's/^            gas,$/            gas,\n            gas_before: interp.gas().remaining_excluding_state_spill(),/' \
+    -e 's/interp.step_cost()/if interp.result().is_err_and(InstrStop::is_out_of_gas) {\n                step.gas\n            } else {\n                step.gas_before.saturating_sub(interp.gas().remaining_excluding_state_spill())\n            }/' \
+    "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs"
 fi
 
 echo "Updated Cargo.toml patch sections:"
