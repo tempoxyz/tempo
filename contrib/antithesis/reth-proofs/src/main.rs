@@ -33,7 +33,7 @@ mod persistence;
 mod generate;
 mod proof;
 
-use alloy_primitives::B256;
+use alloy_primitives::{Bytes, B256};
 use antithesis_instrumentation as _;
 use antithesis_sdk::{
     assert_always, assert_always_or_unreachable, assert_sometimes, assert_unreachable,
@@ -53,7 +53,7 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{test_utils::MockNodeTypesWithDB, DatabaseProviderROFactory, ProviderFactory};
 use reth_storage_overlay::OverlayStateProviderFactory;
 use reth_trie::AccountProof;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -297,7 +297,17 @@ impl Round {
     }
 }
 
-/// Serves one `eth_getMultiProof` request at a block of the view's round.
+/// The answer to one proof request.
+#[derive(Serialize, Deserialize)]
+struct Proved {
+    /// `eth_getMultiProof`'s proofs, one per target.
+    proofs: Vec<AccountProof>,
+    /// The execution witness of a block reading the same targets.
+    witness: Vec<Bytes>,
+}
+
+/// Serves one `eth_getMultiProof` request, with the witness of the same reads, at a block of
+/// the view's round.
 fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Result<Response> {
     if round != view.round {
         return Ok(Response::Rejected { reason: format!("round {round} is over") });
@@ -321,12 +331,16 @@ fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Resul
     )
     .database_provider_ro()
     .map_err(eyre::Report::from)
-    .and_then(|provider| proof::get_multi_proof(&provider, targets));
+    .and_then(|provider| {
+        let proofs = proof::get_multi_proof(&provider, targets)?;
+        let witness = proof::witness(&provider, &proofs)?;
+        Ok(Proved { proofs, witness })
+    });
     let error = result.as_ref().err().map(|error| format!("{error:#}"));
     invariant!(
         error.is_none(),
-        "eth_getMultiProof at block {number} (db tip {db_tip}, state tip {state_tip}) for \
-         {targets:?}: {}",
+        "eth_getMultiProof and witness at block {number} (db tip {db_tip}, state tip \
+         {state_tip}) for {targets:?}: {}",
         error.as_deref().unwrap_or_default()
     );
     Ok(Response::Proofs { proofs: serde_json::to_value(result?)? })
@@ -356,14 +370,12 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
     let mut rng = AntithesisRng;
     for _ in 0..count {
         let BlockRoot { number, root } = summary.roots[rng.random_range(0..summary.roots.len())];
-        let targets = generate::targets(&mut rng, &summary.accounts);
+        let targets = generate::targets(&mut rng, &summary.accounts, &summary.collider);
         let request =
             Request::GetProof { round: summary.round, block: number, targets: targets.clone() };
-        let proofs = match client.call(&request)? {
+        let Proved { proofs, witness } = match client.call(&request)? {
             None => return harness::unavailable().map(|()| false),
-            Some(Response::Proofs { proofs }) => {
-                serde_json::from_value::<Vec<AccountProof>>(proofs)?
-            }
+            Some(Response::Proofs { proofs }) => serde_json::from_value(proofs)?,
             Some(Response::Rejected { reason }) => {
                 return harness::rejected(&reason).map(|()| false)
             }
@@ -377,6 +389,15 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
                 "error": result.as_ref().err().map(|error| format!("{error:#}"))})
         );
         result.wrap_err_with(|| format!("proofs at block {number}"))?;
+        let result = proof::from_witness(root, &targets, &witness)
+            .and_then(|proofs| proof::check(root, &targets, &proofs));
+        assert_always!(
+            result.is_ok(),
+            "Proofs rebuilt from the execution witness verify against the model's state root",
+            &json!({"block": number, "targets": targets,
+                "error": result.as_ref().err().map(|error| format!("{error:#}"))})
+        );
+        result.wrap_err_with(|| format!("witness proofs at block {number}"))?;
     }
     Ok(true)
 }

@@ -17,11 +17,16 @@ impl Precompile for SignatureVerifier {
             return err;
         }
 
-        // `verifyConfigurableAccount` input is bounded by its decoder and already charged.
+        // `verifyConfigurableAccount` and `verifyKeychain` input, which can carry a configurable
+        // account signature, is bounded by its decoder and already charged.
         if calldata.len() > MAX_CALLDATA_LEN
             && !(self.storage.spec().is_t14()
-                && calldata
-                    .starts_with(&ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR))
+                && [
+                    ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR,
+                    ISignatureVerifier::verifyKeychainCall::SELECTOR,
+                ]
+                .iter()
+                .any(|selector| calldata.starts_with(selector)))
         {
             return self
                 .storage

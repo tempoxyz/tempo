@@ -39,7 +39,7 @@ env:
   # (foundry-rs/foundry#18264), plus evm2's initial call depth on `Evm`
   # (foundry-rs/foundry#18325). Pin to a commit and move the pin to
   # Foundry master once those PRs merge.
-  FOUNDRY_REF: 4da08def7838ae53a4f1224cf2c1dca61e159eff
+  FOUNDRY_REF: 2f55bf2310a7dc6eaf646ba35b10781f10d3f7ac
 
 jobs:
   check-specs-changes:
