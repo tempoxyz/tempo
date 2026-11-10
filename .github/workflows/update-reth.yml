@@ -571,20 +571,31 @@ jobs:
             # Checks must belong to the commit just pushed: right after a push, the PR can still
             # report the previous head's checks, whose stale failures would send Amp a problem it
             # already fixed (and then give up when Amp finds nothing to change).
+            # Once the head has matched, later pushes (e.g. a maintainer's manual fix) are followed
+            # like before, since gh pr checks always reports the PR's current head.
             EXPECTED_SHA=$(git rev-parse HEAD)
             echo "Polling CI checks for $EXPECTED_SHA..."
-            WAIT_START=$SECONDS
-            while true; do
+            HEAD_WAIT_START=$SECONDS
+            HEAD_MATCHED=false
+            while [ "$HEAD_MATCHED" != "true" ]; do
               PR_HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
-              if [ "$PR_HEAD_SHA" != "$EXPECTED_SHA" ]; then
-                if [ $(( SECONDS - WAIT_START )) -ge 600 ]; then
-                  echo "::error::PR head is still ${PR_HEAD_SHA:-unknown}, expected $EXPECTED_SHA after 10m"
-                  exit 1
-                fi
+              if [ "$PR_HEAD_SHA" = "$EXPECTED_SHA" ]; then
+                HEAD_MATCHED=true
+              elif [ $(( SECONDS - HEAD_WAIT_START )) -ge 600 ]; then
+                echo "::error::PR head is still ${PR_HEAD_SHA:-unknown}, expected $EXPECTED_SHA after 10m"
+                exit 1
+              else
                 echo "Waiting for the PR head to become $EXPECTED_SHA (now ${PR_HEAD_SHA:-unknown})..."
                 sleep 15
-                continue
               fi
+            done
+
+            # The stuck-CI timer starts once CI can run on the pushed commit.
+            WAIT_START=$SECONDS
+            # Gate checks that every CI run reports; until all of them appear, CI hasn't fully
+            # started and an empty pending list doesn't mean it passed.
+            EXPECTED_CHECKS='["lint success","specs success","test success"]'
+            while true; do
 
               STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
               # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
@@ -607,6 +618,12 @@ jobs:
               # so it is not waited on: only a failure reported before the other checks
               # finish is handled above, and a later E2E failure is left to reviewers.
               PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | length')
+              MISSING=$(echo "$STATUS" | jq -r --argjson expected "$EXPECTED_CHECKS" '$expected - map(.name) | join(", ")')
+              if [ "$PENDING" = "0" ] 2>/dev/null && [ -n "$MISSING" ]; then
+                echo "Waiting for gate checks to report: $MISSING"
+                sleep 60
+                continue
+              fi
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
                 PR_NUMBER=$(gh pr view "$PR_BRANCH" --json number --jq '.number')
