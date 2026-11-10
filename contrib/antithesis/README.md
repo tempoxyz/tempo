@@ -27,7 +27,7 @@ subcommands of the same binary, in `test/v1/<template>/`:
 | `finally_recovered` | The same once the server is back after the last fault |
 
 Launch both reth targets with `--fault-tolerance legacy` (network faults and thread pauses, no container
-kills). A command that finds the server down exits successfully, so a restart is not a failure. Run one
+kills), which leaves restart recovery unexercised: "Restart recovers persisted blocks" stays unreached. A command that finds the server down exits successfully, so a restart is not a failure. Run one
 locally with `ANTITHESIS_TRIE_SOCKET=/tmp/trie.sock` set for both the server and the commands.
 
 The zones workload drivers live in `xtask/src/zones/antithesis`; see [`zones/README.md`](zones/README.md).
