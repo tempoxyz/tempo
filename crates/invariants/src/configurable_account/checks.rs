@@ -492,12 +492,12 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
                     };
                     stored == CONFIGURABLE_KEY_TYPE || !commitment.is_zero()
                 } else {
-                    stored != CONFIGURABLE_KEY_TYPE
+                    tx.authority.access_key_type == Some(stored)
                 };
                 if !ok {
                     return Some(Verdict::Broken(format!(
-                        "access key {key} signs {} under a grant of key type {stored}",
-                        if configurable { "as a configurable account" } else { "ordinarily" }
+                        "access key {key} signs as key type {:?} under a grant of key type {stored}",
+                        tx.authority.access_key_type
                     )));
                 }
                 judged = true;

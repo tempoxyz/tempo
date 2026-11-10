@@ -133,6 +133,8 @@ pub struct Authority {
     pub grant: Option<Grant>,
     /// Whether the transaction carries a nonempty EIP-7702 or Tempo authorization list.
     pub authorization_list: bool,
+    /// The key type of the keychain envelope's inner signature, when it has one.
+    pub access_key_type: Option<u8>,
 }
 
 impl Authority {

@@ -42,19 +42,23 @@ pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address, active: bool) -> 
                 .quorums
                 .push(quorum(Role::Sender, signature, signature_hash));
         }
-        TempoSignature::Keychain(keychain) => match &keychain.signature {
-            AccountSignature::ConfigurableAccount(signature) => {
-                let inner = KeychainSignature::signing_hash(signature_hash, keychain.user_address);
-                authority
-                    .quorums
-                    .push(quorum(Role::AccessKey, signature, inner));
-            }
-            AccountSignature::Primitive(_) => {
-                if let Ok(key_id) = keychain.key_id(&signature_hash) {
-                    authority.keys.push(key(Role::AccessKey, key_id));
+        TempoSignature::Keychain(keychain) => {
+            authority.access_key_type = Some(keychain.signature.signature_type().into());
+            match &keychain.signature {
+                AccountSignature::ConfigurableAccount(signature) => {
+                    let inner =
+                        KeychainSignature::signing_hash(signature_hash, keychain.user_address);
+                    authority
+                        .quorums
+                        .push(quorum(Role::AccessKey, signature, inner));
+                }
+                AccountSignature::Primitive(_) => {
+                    if let Ok(key_id) = keychain.key_id(&signature_hash) {
+                        authority.keys.push(key(Role::AccessKey, key_id));
+                    }
                 }
             }
-        },
+        }
     }
     let inner = aa.tx();
     if let Some(grant) = &inner.key_authorization {
