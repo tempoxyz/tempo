@@ -62,7 +62,8 @@ storage provider.
 Checkpoint-only blocks must contain only `advanceTempoHeaders` and its successful
 `TempoBlockFinalized` event. They advance the verified Zone height and verify
 unchanged token supply, while retaining the last full import's accounting state
-and Tempo custody anchor. The next full import authenticates every Tempo block
+and Tempo custody anchor, so custody verified at that import still holds and is
+not read again. The next full import authenticates every Tempo block
 since that anchor and applies their Portal events in order before its Zone
 events. This includes deposits and token enablements deferred across any number
 of checkpoint-only blocks. The retained accounting anchor survives restarts;
@@ -111,9 +112,10 @@ Pruned state disables immediately because it cannot recover.
 Tempo RPC codes `-32001` (resource not found), `-32002` (resource unavailable),
 and `-32603` (internal error) are retried regardless of message text.
 
-Portal custody is read with `eth_getProof` and verified against the anchor
-header's state root; a proof that does not verify is retried like an unavailable
-response. When the RPC refuses a proof as outside its proof window (code
+Portal custody is read with one `eth_getMultiProof` request per full import and
+verified against the anchor header's state root, which the checker already
+authenticated while importing that Tempo block; a proof that does not verify is
+retried like an unavailable response. When the RPC refuses a proof as outside its proof window (code
 `4444`), the checker skips the custody check for that block and increments
 `unproven_custody_blocks_total` if the anchor is more than 7,200 blocks
 (`MAX_L1_LOOKAHEAD_BLOCKS`) behind the Tempo tip, as during replay after a
@@ -207,7 +209,8 @@ node's authenticated L1 observations, Tempo RPC URL, Portal address, Zone ID,
 chain specification, and data directory. No checker-specific anchor, Portal, or
 database argument is needed.
 
-The Tempo RPC must serve `eth_getProof` for at least the latest 7,200 blocks.
+The Tempo RPC must serve `eth_getMultiProof` for at least the latest 7,200
+blocks, as zone nodes already need for SPF witness collection.
 reth serves proofs only at its tip by default, so start the Tempo node with
 `--rpc.eth-proof-window 7200` or larger.
 

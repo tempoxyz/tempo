@@ -7,9 +7,8 @@ use alloy_eips::{BlockId, BlockNumHash};
 use alloy_network::{BlockResponse as _, primitives::HeaderResponse as _};
 use alloy_primitives::{Address, B256, Bloom, Sealable as _, U256};
 use alloy_provider::{DynProvider, Provider};
-use alloy_rpc_types_eth::EIP1186AccountProofResponse;
+use alloy_rpc_types_eth::{EIP1186AccountProofResponse, error::EthRpcErrorCode};
 use alloy_transport::{RpcError, TransportError, TransportErrorKind};
-use futures::{StreamExt as _, TryStreamExt as _, stream};
 use reth_trie_common::AccountProof;
 use tempo_alloy::{
     TempoNetwork,
@@ -22,12 +21,6 @@ use crate::AttemptError;
 
 use events::EventCollector;
 pub(crate) use events::L1PortalEvent;
-
-/// Bound on concurrent Portal balance reads for one token set.
-const BALANCE_CONCURRENCY: usize = 8;
-
-/// JSON-RPC code reth returns for a state proof outside its `--rpc.eth-proof-window`.
-const PRUNED_HISTORY_CODE: i64 = 4444;
 
 /// Failure acquiring or interpreting exact Tempo state.
 #[derive(Debug)]
@@ -62,6 +55,9 @@ impl From<L1ReadError> for AttemptError {
 #[derive(Debug, Default)]
 pub(crate) struct L1BlockEvidence {
     blocks: Vec<L1BlockEvents>,
+    /// State root of the last block, from its authenticated header. `None` when no Tempo block
+    /// was imported, as for a checkpoint-only Zone block.
+    anchor_state_root: Option<B256>,
 }
 
 /// Recognized Portal events from one authenticated L1 block, in receipt order.
@@ -124,6 +120,11 @@ impl L1BlockEvidence {
     pub(crate) fn blocks(&self) -> &[L1BlockEvents] {
         &self.blocks
     }
+
+    /// Return the authenticated state root of the last imported Tempo block, if any.
+    pub(crate) fn anchor_state_root(&self) -> Option<B256> {
+        self.anchor_state_root
+    }
 }
 
 /// Fetch every Tempo block in `(parent, expected]`, authenticating the complete parent chain.
@@ -142,6 +143,7 @@ pub(crate) async fn collect_l1_range_at(
     // Walk backwards from the Zone-authenticated tip so every requested hash is bound to it.
     let mut cursor = expected;
     let mut blocks = Vec::new();
+    let mut anchor_state_root = None;
     while cursor.number > parent.number {
         let (previous, evidence) =
             if let Some(evidence) = tracker.authenticated_portal_logs(cursor).map_err(finding)? {
@@ -153,6 +155,7 @@ pub(crate) async fn collect_l1_range_at(
             } else {
                 fetch_l1_block_at(provider, portal, cursor).await?
             };
+        anchor_state_root = anchor_state_root.or(evidence.anchor_state_root);
         blocks.push(evidence);
         cursor = previous;
     }
@@ -167,6 +170,7 @@ pub(crate) async fn collect_l1_range_at(
             .rev()
             .flat_map(|block| block.blocks)
             .collect(),
+        anchor_state_root,
     })
 }
 
@@ -198,6 +202,7 @@ fn collect_tracked_l1_block_evidence(
             timestamp_millis: evidence.timestamp_millis,
             events: collector.finish(),
         }],
+        anchor_state_root: Some(evidence.state_root),
     })
 }
 
@@ -245,12 +250,18 @@ async fn fetch_l1_block_at(
     .map_err(disable)?;
     Ok((
         BlockNumHash::new(number - 1, header.parent_hash),
-        collect_l1_block_evidence(portal, coordinate, header.timestamp_millis, &receipts)?,
+        collect_l1_block_evidence(
+            portal,
+            coordinate,
+            header.timestamp_millis,
+            header.state_root,
+            &receipts,
+        )?,
     ))
 }
 
-/// Read Portal custody for every token, proven against the authenticated state root of
-/// `anchor`.
+/// Read Portal custody for every token at `anchor`, proven against its authenticated
+/// `state_root` with one `eth_getMultiProof` request.
 ///
 /// Returns [`PortalCustody::OutsideProofWindow`] only for anchors more than
 /// [`MAX_L1_LOOKAHEAD_BLOCKS`] behind the Tempo tip, such as during replay after a rebuild.
@@ -261,86 +272,68 @@ pub(crate) async fn portal_balances(
     portal: Address,
     tokens: impl IntoIterator<Item = Address>,
     anchor: BlockNumHash,
-) -> Result<PortalCustody, L1ReadError> {
-    let header = provider
-        .get_header_by_hash(anchor.hash)
-        .await
-        .map_err(classify_rpc_error)?
-        .ok_or_else(|| {
-            unavailable(eyre::eyre!(
-                "Tempo anchor {} ({}) is unavailable",
-                anchor.number,
-                anchor.hash
-            ))
-        })?;
-    let header = validate_rpc_header(&header)?;
-    if header.block != anchor {
-        return Err(disable(eyre::eyre!(
-            "Tempo RPC returned block {} ({}) for anchor {} ({})",
-            header.block.number,
-            header.block.hash,
-            anchor.number,
-            anchor.hash
-        )));
-    }
-    let state_root = header.state_root;
-    let balances = stream::iter(tokens.into_iter().map(|token| async move {
-        portal_balance(provider, token, portal, anchor.hash, state_root)
-            .await
-            .map(|balance| (token, balance))
-    }))
-    .buffer_unordered(BALANCE_CONCURRENCY)
-    .try_collect::<Vec<_>>()
-    .await?;
-    if let Some(balances) = balances
-        .iter()
-        .map(|&(token, balance)| balance.map(|balance| (token, balance)))
-        .collect::<Option<Vec<_>>>()
-    {
-        return Ok(PortalCustody::Proven(balances));
-    }
-
-    let tip = provider
-        .get_block_number()
-        .await
-        .map_err(classify_rpc_error)?;
-    if tip.saturating_sub(anchor.number) > MAX_L1_LOOKAHEAD_BLOCKS {
-        return Ok(PortalCustody::OutsideProofWindow);
-    }
-    Err(disable(eyre::eyre!(
-        "Tempo RPC refused eth_getProof for block {} at tip {tip}; observe mode requires \
-         --rpc.eth-proof-window >= {MAX_L1_LOOKAHEAD_BLOCKS}",
-        anchor.number
-    )))
-}
-
-/// Read and prove Portal custody for one token at `block`.
-///
-/// Returns `None` when the RPC no longer serves state proofs for `block`.
-async fn portal_balance(
-    provider: &DynProvider<TempoNetwork>,
-    token: Address,
-    portal: Address,
-    block: B256,
     state_root: B256,
-) -> Result<Option<U256>, L1ReadError> {
-    let slot = TIP20Token::from_address(token)
-        .map_err(|error| disable(eyre::Report::new(error)))?
-        .balances[portal]
-        .slot();
-    let slot = B256::from(slot);
-    let response = match provider
-        .get_proof(token, vec![slot])
-        .block_id(BlockId::hash_canonical(block))
+) -> Result<PortalCustody, L1ReadError> {
+    let slots = tokens
+        .into_iter()
+        .map(|token| {
+            let slot = TIP20Token::from_address(token)
+                .map_err(|error| disable(eyre::Report::new(error)))?
+                .balances[portal]
+                .slot();
+            Ok((token, B256::from(slot)))
+        })
+        .collect::<Result<Vec<_>, L1ReadError>>()?;
+    if slots.is_empty() {
+        return Ok(PortalCustody::Proven(Vec::new()));
+    }
+    let targets = slots
+        .iter()
+        .map(|&(token, slot)| (token, vec![slot]))
+        .collect::<Vec<_>>();
+    let proofs = match provider
+        .client()
+        .request::<_, Vec<EIP1186AccountProofResponse>>(
+            "eth_getMultiProof",
+            (targets, BlockId::hash_canonical(anchor.hash)),
+        )
         .await
     {
-        Ok(response) => response,
-        Err(RpcError::ErrorResp(error)) if error.code == PRUNED_HISTORY_CODE => return Ok(None),
+        Ok(proofs) => proofs,
+        Err(RpcError::ErrorResp(error))
+            if error.code == i64::from(EthRpcErrorCode::PrunedHistory.code()) =>
+        {
+            let tip = provider
+                .get_block_number()
+                .await
+                .map_err(classify_rpc_error)?;
+            if tip.saturating_sub(anchor.number) > MAX_L1_LOOKAHEAD_BLOCKS {
+                return Ok(PortalCustody::OutsideProofWindow);
+            }
+            return Err(disable(eyre::eyre!(
+                "Tempo RPC refused eth_getMultiProof for block {} at tip {tip}; observe mode \
+                 requires --rpc.eth-proof-window >= {MAX_L1_LOOKAHEAD_BLOCKS}",
+                anchor.number
+            )));
+        }
         Err(error) => return Err(classify_rpc_error(error).into()),
     };
     // A proof that does not verify is an RPC fault, not a Zone finding: retry, then disable.
-    verify_balance_proof(token, slot, state_root, response)
-        .map(Some)
+    if proofs.len() != slots.len() {
+        return Err(unavailable(eyre::eyre!(
+            "Tempo RPC returned {} proofs for {} tokens",
+            proofs.len(),
+            slots.len()
+        )));
+    }
+    slots
+        .into_iter()
+        .zip(proofs)
+        .map(|((token, slot), proof)| {
+            verify_balance_proof(token, slot, state_root, proof).map(|balance| (token, balance))
+        })
+        .collect::<eyre::Result<_>>()
+        .map(PortalCustody::Proven)
         .map_err(unavailable)
 }
 
@@ -379,6 +372,7 @@ fn collect_l1_block_evidence(
     portal: Address,
     block: BlockNumHash,
     timestamp_millis: u64,
+    state_root: B256,
     receipts: &[TempoTransactionReceipt],
 ) -> Result<L1BlockEvidence, L1ReadError> {
     let number = block.number;
@@ -393,6 +387,7 @@ fn collect_l1_block_evidence(
             timestamp_millis,
             events: event_collector.finish(),
         }],
+        anchor_state_root: Some(state_root),
     })
 }
 
@@ -450,6 +445,7 @@ mod tests {
 
     const BLOCK: u64 = 100;
     const HASH: B256 = B256::repeat_byte(0x10);
+    const ANCHOR: BlockNumHash = BlockNumHash::new(BLOCK, HASH);
 
     #[tokio::test]
     async fn checkpoint_deferred_range_preserves_order_and_authenticates_its_parent() {
@@ -491,6 +487,7 @@ mod tests {
                 .record_with_portal_evidence(
                     BlockNumHash::new(number, B256::with_last_byte(number as u8)),
                     B256::with_last_byte((number - 1) as u8),
+                    B256::repeat_byte(number as u8),
                     number * 1_000,
                     Default::default(),
                     vec![Log {
@@ -505,6 +502,7 @@ mod tests {
             .record_with_portal_evidence(
                 tip,
                 B256::with_last_byte(102),
+                B256::repeat_byte(103),
                 103_000,
                 Default::default(),
                 vec![],
@@ -521,6 +519,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![101_000, 102_000, 103_000]
         );
+        assert_eq!(evidence.anchor_state_root(), Some(B256::repeat_byte(103)));
         let mut state = State::default();
         // Applying a deposit before its deferred enablement would fail with UnknownToken.
         state.apply(&effects::from_tempo(&evidence)).unwrap();
@@ -554,6 +553,7 @@ mod tests {
                 inner: Header {
                     number,
                     parent_hash: tip.hash,
+                    state_root: B256::repeat_byte(number as u8),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -582,6 +582,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(evidence.portal_events().count(), 0);
+        assert_eq!(evidence.anchor_state_root(), Some(B256::repeat_byte(103)));
     }
 
     #[test]
@@ -664,6 +665,7 @@ mod tests {
         let tracked = zone_l1::AuthenticatedPortalLogs {
             block: NumHash::new(BLOCK, HASH),
             parent_hash: parent.hash,
+            state_root: B256::ZERO,
             timestamp_millis: 0,
             logs: vec![log],
         };
@@ -680,6 +682,7 @@ mod tests {
         let tracked = zone_l1::AuthenticatedPortalLogs {
             block: NumHash::new(BLOCK, HASH),
             parent_hash: B256::repeat_byte(0xff),
+            state_root: B256::ZERO,
             timestamp_millis: 0,
             logs: vec![],
         };
@@ -773,23 +776,6 @@ mod tests {
         B256::from(TIP20Token::from_address(token).unwrap().balances[portal].slot())
     }
 
-    fn header_response(number: u64, state_root: B256) -> (BlockNumHash, serde_json::Value) {
-        let header = TempoHeader {
-            inner: Header {
-                number,
-                state_root,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let response = TempoHeaderResponse {
-            inner: RpcHeader::new(header),
-            timestamp_millis: 0,
-        };
-        let anchor = BlockNumHash::new(number, response.inner.hash);
-        (anchor, serde_json::to_value(response).unwrap())
-    }
-
     #[test]
     fn verifies_portal_balance_proof_against_state_root() {
         let token = address!("20c0000000000000000000000000000000000001");
@@ -842,15 +828,20 @@ mod tests {
         let portal = Address::repeat_byte(0x20);
         let value = U256::from(1_000);
         let (root, proof) = balance_proof(token, balance_slot(token, portal), value);
-        let (anchor, header) = header_response(BLOCK, root);
-        asserter.push_success(&header);
-        asserter.push_success(&proof);
+        asserter.push_success(&vec![proof]);
 
         assert_eq!(
-            portal_balances(&provider, portal, [token], anchor)
+            portal_balances(&provider, portal, [token], ANCHOR, root)
                 .await
                 .unwrap(),
             PortalCustody::Proven(vec![(token, value)])
+        );
+        // No enabled tokens: nothing to prove and no request.
+        assert_eq!(
+            portal_balances(&provider, portal, [], ANCHOR, root)
+                .await
+                .unwrap(),
+            PortalCustody::Proven(Vec::new())
         );
     }
 
@@ -862,16 +853,22 @@ mod tests {
             .erased();
         let token = address!("20c0000000000000000000000000000000000001");
         let portal = Address::repeat_byte(0x20);
-        let (_, proof) = balance_proof(token, balance_slot(token, portal), U256::from(1_000));
-        let (anchor, header) = header_response(BLOCK, B256::repeat_byte(1));
-        asserter.push_success(&header);
-        asserter.push_success(&proof);
+        let (root, proof) = balance_proof(token, balance_slot(token, portal), U256::from(1_000));
+        asserter.push_success(&vec![proof.clone()]);
+        asserter.push_success(&Vec::<EIP1186AccountProofResponse>::new());
 
-        let error = portal_balances(&provider, portal, [token], anchor)
+        let error = portal_balances(&provider, portal, [token], ANCHOR, B256::repeat_byte(1))
             .await
             .unwrap_err();
         assert!(
             matches!(&error, L1ReadError::Unavailable(error) if error.to_string().contains("invalid Portal custody proof")),
+            "{error:?}"
+        );
+        let error = portal_balances(&provider, portal, [token], ANCHOR, root)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, L1ReadError::Unavailable(error) if error.to_string().contains("0 proofs for 1 tokens")),
             "{error:?}"
         );
     }
@@ -888,18 +885,17 @@ mod tests {
             let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
                 .connect_mocked_client(asserter.clone())
                 .erased();
-            let (anchor, header) = header_response(BLOCK, B256::repeat_byte(1));
-            asserter.push_success(&header);
             asserter.push_failure(
                 serde_json::from_value(serde_json::json!({
-                    "code": PRUNED_HISTORY_CODE,
+                    "code": EthRpcErrorCode::PrunedHistory.code(),
                     "message": "distance to target block exceeds maximum proof window",
                 }))
                 .unwrap(),
             );
             asserter.push_success(&U64::from(tip));
 
-            let result = portal_balances(&provider, portal, [token], anchor).await;
+            let result =
+                portal_balances(&provider, portal, [token], ANCHOR, B256::repeat_byte(1)).await;
             if outside {
                 assert_eq!(result.unwrap(), PortalCustody::OutsideProofWindow);
             } else {

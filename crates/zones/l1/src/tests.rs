@@ -213,6 +213,7 @@ fn l1_block_tracker_retains_authenticated_portal_logs_after_consumption() {
         .record_with_portal_evidence(
             anchor,
             parent_hash,
+            B256::ZERO,
             0,
             L1PortalEvents::default(),
             vec![log.clone()],

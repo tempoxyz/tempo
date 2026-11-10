@@ -490,43 +490,55 @@ where
     );
     zone_state.map_err(|error| fail(error.into()))?;
 
-    let custody = loop {
-        match portal_balances(l1, config.portal_address, tokens.iter().copied(), tempo).await {
-            Ok(custody) => break custody,
-            Err(L1ReadError::Unavailable(error)) => {
-                record_l1_retry(
-                    metrics,
-                    &mut l1_backoff,
-                    &error,
-                    "Portal balance acquisition",
-                )?;
-                l1_backoff.wait().await;
+    // Checkpoint-only blocks keep the anchor and liabilities of the last full import, whose
+    // custody was already verified.
+    if let Some(state_root) = tempo_block.anchor_state_root() {
+        let custody = loop {
+            match portal_balances(
+                l1,
+                config.portal_address,
+                tokens.iter().copied(),
+                tempo,
+                state_root,
+            )
+            .await
+            {
+                Ok(custody) => break custody,
+                Err(L1ReadError::Unavailable(error)) => {
+                    record_l1_retry(
+                        metrics,
+                        &mut l1_backoff,
+                        &error,
+                        "Portal balance acquisition",
+                    )?;
+                    l1_backoff.wait().await;
+                }
+                Err(error) => return Err(classify_block_l1_error(error, zone)),
             }
-            Err(error) => return Err(classify_block_l1_error(error, zone)),
-        }
-    };
-    match custody {
-        PortalCustody::Proven(balances) => {
-            let custody = state.verify_portal_balances(balances);
-            #[cfg(feature = "fuzz")]
-            assert_always!(
-                custody.is_ok(),
-                "Portal custody covers zone liabilities",
-                &json!({
-                    "zone_block": zone.number,
-                    "error": custody.as_ref().err().map(ToString::to_string),
-                })
-            );
-            custody.map_err(|error| fail(error.into()))?;
-        }
-        PortalCustody::OutsideProofWindow => {
-            metrics.unproven_custody_blocks_total.increment(1);
-            tracing::debug!(
-                target: "zone::checker",
-                zone_block = zone.number,
-                tempo_block = tempo.number,
-                "Portal custody anchor is outside the Tempo proof window; skipping custody check"
-            );
+        };
+        match custody {
+            PortalCustody::Proven(balances) => {
+                let custody = state.verify_portal_balances(balances);
+                #[cfg(feature = "fuzz")]
+                assert_always!(
+                    custody.is_ok(),
+                    "Portal custody covers zone liabilities",
+                    &json!({
+                        "zone_block": zone.number,
+                        "error": custody.as_ref().err().map(ToString::to_string),
+                    })
+                );
+                custody.map_err(|error| fail(error.into()))?;
+            }
+            PortalCustody::OutsideProofWindow => {
+                metrics.unproven_custody_blocks_total.increment(1);
+                tracing::debug!(
+                    target: "zone::checker",
+                    zone_block = zone.number,
+                    tempo_block = tempo.number,
+                    "Portal custody anchor is outside the Tempo proof window; skipping custody check"
+                );
+            }
         }
     }
 
