@@ -34,8 +34,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     && readelf -n /out/reth-proofs-antithesis | grep 'Build ID:'
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+# gdb lets debugging sessions attach to the workload (gdb -p) or open its core dumps.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates libssl3 \
+    && apt-get install --no-install-recommends -y ca-certificates libssl3 gdb \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/reth-proofs-antithesis /usr/local/bin/reth-proofs-antithesis
 # The instrumentation shim loads Antithesis's injected runtime when available, and
