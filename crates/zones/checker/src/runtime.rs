@@ -25,7 +25,7 @@ use crate::{
     AttemptError, CheckerConfig,
     accounting::effects,
     bootstrap,
-    l1::{L1ReadError, classify_rpc_error, collect_l1_range_at, portal_balances},
+    l1::{L1ReadError, PortalCustody, classify_rpc_error, collect_l1_range_at, portal_balances},
     l2::{AccountingStateError, collect_l2_block_evidence, read_accounting_state},
     latency::{self, LatencyTracker},
     persistence::{AppliedStatus, BlockRef, CandidateTransition, Finding, Snapshot, Status, Store},
@@ -490,16 +490,9 @@ where
     );
     zone_state.map_err(|error| fail(error.into()))?;
 
-    let balances = loop {
-        match portal_balances(
-            l1,
-            config.portal_address,
-            tokens.iter().copied(),
-            tempo.hash,
-        )
-        .await
-        {
-            Ok(balances) => break balances,
+    let custody = loop {
+        match portal_balances(l1, config.portal_address, tokens.iter().copied(), tempo).await {
+            Ok(custody) => break custody,
             Err(L1ReadError::Unavailable(error)) => {
                 record_l1_retry(
                     metrics,
@@ -512,17 +505,30 @@ where
             Err(error) => return Err(classify_block_l1_error(error, zone)),
         }
     };
-    let custody = state.verify_portal_balances(balances);
-    #[cfg(feature = "fuzz")]
-    assert_always!(
-        custody.is_ok(),
-        "Portal custody covers zone liabilities",
-        &json!({
-            "zone_block": zone.number,
-            "error": custody.as_ref().err().map(ToString::to_string),
-        })
-    );
-    custody.map_err(|error| fail(error.into()))?;
+    match custody {
+        PortalCustody::Proven(balances) => {
+            let custody = state.verify_portal_balances(balances);
+            #[cfg(feature = "fuzz")]
+            assert_always!(
+                custody.is_ok(),
+                "Portal custody covers zone liabilities",
+                &json!({
+                    "zone_block": zone.number,
+                    "error": custody.as_ref().err().map(ToString::to_string),
+                })
+            );
+            custody.map_err(|error| fail(error.into()))?;
+        }
+        PortalCustody::OutsideProofWindow => {
+            metrics.unproven_custody_blocks_total.increment(1);
+            tracing::debug!(
+                target: "zone::checker",
+                zone_block = zone.number,
+                tempo_block = tempo.number,
+                "Portal custody anchor is outside the Tempo proof window; skipping custody check"
+            );
+        }
+    }
 
     let next = store
         .apply(candidate)

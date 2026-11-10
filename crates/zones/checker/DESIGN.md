@@ -101,6 +101,13 @@ Portal custody >= account_total
                 + pending_zone_refunds
 ```
 
+Custody is the Portal's TIP-20 balance slot, proven with `eth_getProof` against
+the state root of the authenticated anchor header. A proof that does not verify
+is a Tempo RPC fault, not a divergence. Anchors more than
+`MAX_L1_LOOKAHEAD_BLOCKS` behind the Tempo tip, reached only while replaying
+history, may be outside the RPC's proof window; their custody check is skipped
+and counted, while every other invariant is still verified.
+
 ## Event authentication
 
 Events drive the ghost model but are not accepted in isolation. The checker

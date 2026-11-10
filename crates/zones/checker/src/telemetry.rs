@@ -134,6 +134,8 @@ pub(crate) struct CheckerMetrics {
     pub(crate) verified_zone_blocks_total: Counter,
     /// Number of checker-state rebuilds after local history changes.
     pub(crate) recovery_rebuilds_total: Counter,
+    /// Number of verified Zone blocks whose Tempo anchor was too old to prove Portal custody.
+    pub(crate) unproven_custody_blocks_total: Counter,
     /// Time from a deposit's Tempo block to the Zone block that processed it.
     pub(crate) deposit_latency_seconds: Histogram,
     /// Time from a user withdrawal's Zone request to the Tempo block that processed it.

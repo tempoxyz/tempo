@@ -36,7 +36,7 @@ affect the aggregate solvency model are retained. Genesis bridge cursors are
 checked only to establish the empty bootstrap baseline.
 
 It then reads affected balances and every enabled token's supply from the exact
-Zone post-state and reads Portal custody at the exact imported Tempo block. The
+Zone post-state and proves Portal custody at the exact imported Tempo block. The
 required invariants are:
 
 ```text
@@ -111,6 +111,14 @@ Pruned state disables immediately because it cannot recover.
 Tempo RPC codes `-32001` (resource not found), `-32002` (resource unavailable),
 and `-32603` (internal error) are retried regardless of message text.
 
+Portal custody is read with `eth_getProof` and verified against the anchor
+header's state root; a proof that does not verify is retried like an unavailable
+response. When the RPC refuses a proof as outside its proof window (code
+`4444`), the checker skips the custody check for that block and increments
+`unproven_custody_blocks_total` if the anchor is more than 7,200 blocks
+(`MAX_L1_LOOKAHEAD_BLOCKS`) behind the Tempo tip, as during replay after a
+rebuild. A refusal for a more recent anchor disables the checker.
+
 A deterministic mismatch records one durable finding, freezes the verified tip,
 and continues acknowledging subsequent notifications while recording how far the
 unchecked range extends. A finding remains active until the checker is rebuilt
@@ -135,6 +143,7 @@ The node's existing metrics endpoint exports:
 - `reth_tempo_zone_checker_acquisition_retries_total`
 - `reth_tempo_zone_checker_verified_zone_blocks_total`
 - `reth_tempo_zone_checker_recovery_rebuilds_total`
+- `reth_tempo_zone_checker_unproven_custody_blocks_total`
 
 At minimum, alert when `disabled` or `divergence_active` is `1`, verification
 lag continues to grow, or the verified height stops advancing while the Zone
@@ -197,6 +206,10 @@ Use `--checker.mode observe` or `CHECKER_MODE=observe`. The checker reuses the
 node's authenticated L1 observations, Tempo RPC URL, Portal address, Zone ID,
 chain specification, and data directory. No checker-specific anchor, Portal, or
 database argument is needed.
+
+The Tempo RPC must serve `eth_getProof` for at least the latest 7,200 blocks.
+reth serves proofs only at its tip by default, so start the Tempo node with
+`--rpc.eth-proof-window 7200` or larger.
 
 ## Source organization
 

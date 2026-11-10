@@ -7,14 +7,16 @@ use alloy_eips::{BlockId, BlockNumHash};
 use alloy_network::{BlockResponse as _, primitives::HeaderResponse as _};
 use alloy_primitives::{Address, B256, Bloom, Sealable as _, U256};
 use alloy_provider::{DynProvider, Provider};
+use alloy_rpc_types_eth::EIP1186AccountProofResponse;
 use alloy_transport::{RpcError, TransportError, TransportErrorKind};
 use futures::{StreamExt as _, TryStreamExt as _, stream};
+use reth_trie_common::AccountProof;
 use tempo_alloy::{
     TempoNetwork,
     rpc::{TempoHeaderResponse, TempoTransactionReceipt},
 };
-use tempo_contracts::precompiles::ITIP20;
-use zone_l1::L1BlockTracker;
+use tempo_precompiles::tip20::TIP20Token;
+use zone_l1::{L1BlockTracker, MAX_L1_LOOKAHEAD_BLOCKS};
 
 use crate::AttemptError;
 
@@ -23,6 +25,9 @@ pub(crate) use events::L1PortalEvent;
 
 /// Bound on concurrent Portal balance reads for one token set.
 const BALANCE_CONCURRENCY: usize = 8;
+
+/// JSON-RPC code reth returns for a state proof outside its `--rpc.eth-proof-window`.
+const PRUNED_HISTORY_CODE: i64 = 4444;
 
 /// Failure acquiring or interpreting exact Tempo state.
 #[derive(Debug)]
@@ -67,10 +72,21 @@ pub(crate) struct L1BlockEvents {
     pub(crate) events: Vec<L1PortalEvent>,
 }
 
+/// Portal custody at one Tempo anchor.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PortalCustody {
+    /// Balances proven against the anchor's authenticated state root.
+    Proven(Vec<(Address, U256)>),
+    /// The anchor is more than [`MAX_L1_LOOKAHEAD_BLOCKS`] behind the Tempo tip and the RPC no
+    /// longer serves its state proofs.
+    OutsideProofWindow,
+}
+
 /// Header fields bound to the hash reported by the Tempo RPC.
 pub(crate) struct ValidatedRpcHeader {
     pub(crate) block: BlockNumHash,
     pub(crate) parent_hash: B256,
+    pub(crate) state_root: B256,
     pub(crate) receipts_root: B256,
     pub(crate) logs_bloom: Bloom,
     pub(crate) timestamp_millis: u64,
@@ -91,6 +107,7 @@ pub(crate) fn validate_rpc_header(
     Ok(ValidatedRpcHeader {
         block: BlockNumHash::new(header.number(), computed_hash),
         parent_hash: header.parent_hash(),
+        state_root: header.state_root(),
         receipts_root: header.receipts_root(),
         logs_bloom: header.logs_bloom(),
         timestamp_millis: header.as_ref().timestamp_millis(),
@@ -232,36 +249,129 @@ async fn fetch_l1_block_at(
     ))
 }
 
-/// Read Portal custody for one token at an exact canonical Tempo block.
-pub(crate) async fn portal_balance(
-    provider: &DynProvider<TempoNetwork>,
-    token: Address,
-    portal: Address,
-    block: B256,
-) -> Result<U256, L1ReadError> {
-    ITIP20::new(token, provider)
-        .balanceOf(portal)
-        .block(BlockId::hash_canonical(block))
-        .call()
-        .await
-        .map_err(classify_contract_error)
-}
-
-/// Read Portal custody for every token, concurrently, at one exact canonical Tempo block.
+/// Read Portal custody for every token, proven against the authenticated state root of
+/// `anchor`.
+///
+/// Returns [`PortalCustody::OutsideProofWindow`] only for anchors more than
+/// [`MAX_L1_LOOKAHEAD_BLOCKS`] behind the Tempo tip, such as during replay after a rebuild.
+/// A refused proof for a more recent anchor disables the checker because the RPC does not meet
+/// observe mode's proof-window requirement.
 pub(crate) async fn portal_balances(
     provider: &DynProvider<TempoNetwork>,
     portal: Address,
     tokens: impl IntoIterator<Item = Address>,
-    block: B256,
-) -> Result<Vec<(Address, U256)>, L1ReadError> {
-    stream::iter(tokens.into_iter().map(|token| async move {
-        portal_balance(provider, token, portal, block)
+    anchor: BlockNumHash,
+) -> Result<PortalCustody, L1ReadError> {
+    let header = provider
+        .get_header_by_hash(anchor.hash)
+        .await
+        .map_err(classify_rpc_error)?
+        .ok_or_else(|| {
+            unavailable(eyre::eyre!(
+                "Tempo anchor {} ({}) is unavailable",
+                anchor.number,
+                anchor.hash
+            ))
+        })?;
+    let header = validate_rpc_header(&header)?;
+    if header.block != anchor {
+        return Err(disable(eyre::eyre!(
+            "Tempo RPC returned block {} ({}) for anchor {} ({})",
+            header.block.number,
+            header.block.hash,
+            anchor.number,
+            anchor.hash
+        )));
+    }
+    let state_root = header.state_root;
+    let balances = stream::iter(tokens.into_iter().map(|token| async move {
+        portal_balance(provider, token, portal, anchor.hash, state_root)
             .await
             .map(|balance| (token, balance))
     }))
     .buffer_unordered(BALANCE_CONCURRENCY)
-    .try_collect()
-    .await
+    .try_collect::<Vec<_>>()
+    .await?;
+    if let Some(balances) = balances
+        .iter()
+        .map(|&(token, balance)| balance.map(|balance| (token, balance)))
+        .collect::<Option<Vec<_>>>()
+    {
+        return Ok(PortalCustody::Proven(balances));
+    }
+
+    let tip = provider
+        .get_block_number()
+        .await
+        .map_err(classify_rpc_error)?;
+    if tip.saturating_sub(anchor.number) > MAX_L1_LOOKAHEAD_BLOCKS {
+        return Ok(PortalCustody::OutsideProofWindow);
+    }
+    Err(disable(eyre::eyre!(
+        "Tempo RPC refused eth_getProof for block {} at tip {tip}; observe mode requires \
+         --rpc.eth-proof-window >= {MAX_L1_LOOKAHEAD_BLOCKS}",
+        anchor.number
+    )))
+}
+
+/// Read and prove Portal custody for one token at `block`.
+///
+/// Returns `None` when the RPC no longer serves state proofs for `block`.
+async fn portal_balance(
+    provider: &DynProvider<TempoNetwork>,
+    token: Address,
+    portal: Address,
+    block: B256,
+    state_root: B256,
+) -> Result<Option<U256>, L1ReadError> {
+    let slot = TIP20Token::from_address(token)
+        .map_err(|error| disable(eyre::Report::new(error)))?
+        .balances[portal]
+        .slot();
+    let slot = B256::from(slot);
+    let response = match provider
+        .get_proof(token, vec![slot])
+        .block_id(BlockId::hash_canonical(block))
+        .await
+    {
+        Ok(response) => response,
+        Err(RpcError::ErrorResp(error)) if error.code == PRUNED_HISTORY_CODE => return Ok(None),
+        Err(error) => return Err(classify_rpc_error(error).into()),
+    };
+    // A proof that does not verify is an RPC fault, not a Zone finding: retry, then disable.
+    verify_balance_proof(token, slot, state_root, response)
+        .map(Some)
+        .map_err(unavailable)
+}
+
+/// Verify one TIP-20 balance slot of `token` against an authenticated Tempo state root.
+fn verify_balance_proof(
+    token: Address,
+    slot: B256,
+    state_root: B256,
+    response: EIP1186AccountProofResponse,
+) -> eyre::Result<U256> {
+    eyre::ensure!(
+        response.address == token,
+        "Tempo RPC returned a proof for {} instead of {token}",
+        response.address
+    );
+    let proof = AccountProof::from_eip1186_proof(response);
+    let [storage] = proof.storage_proofs.as_slice() else {
+        eyre::bail!(
+            "Tempo RPC returned {} storage proofs for {token}, expected one",
+            proof.storage_proofs.len()
+        );
+    };
+    eyre::ensure!(
+        storage.key == slot,
+        "Tempo RPC proved slot {} of {token} instead of {slot}",
+        storage.key
+    );
+    proof
+        .verify(state_root)
+        .map_err(|error| eyre::eyre!("invalid Portal custody proof for {token}: {error}"))?;
+    Ok(storage.value)
 }
 
 /// Fetch receipts and collect Portal events for one authenticated L1 block.
@@ -284,19 +394,6 @@ fn collect_l1_block_evidence(
             events: event_collector.finish(),
         }],
     })
-}
-
-fn classify_contract_error(error: alloy_contract::Error) -> L1ReadError {
-    if error.as_revert_data().is_some() {
-        return finding(error);
-    }
-    match error {
-        alloy_contract::Error::TransportError(error) => classify_rpc_error(error).into(),
-        error @ (alloy_contract::Error::ContractNotDeployed
-        | alloy_contract::Error::ZeroData(..)
-        | alloy_contract::Error::AbiError(_)) => finding(error),
-        error => disable(error),
-    }
 }
 
 /// Classify one provider RPC failure using its structured code and message.
@@ -341,9 +438,12 @@ mod tests {
     use crate::accounting::{State, effects};
     use alloy_consensus::Header;
     use alloy_eips::NumHash;
-    use alloy_primitives::{B256, Log};
-    use alloy_rpc_types_eth::Header as RpcHeader;
+    use alloy_primitives::{B256, Bytes, Log, U64, address, keccak256};
+    use alloy_rpc_types_eth::{EIP1186StorageProof, Header as RpcHeader};
     use alloy_sol_types::SolEvent;
+    use reth_trie_common::{
+        EMPTY_ROOT_HASH, HashBuilder, Nibbles, TrieAccount, proof::ProofRetainer,
+    };
     use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_contracts::zones::ZonePortal;
     use tempo_primitives::TempoHeader;
@@ -604,5 +704,210 @@ mod tests {
             classify_rpc_error(terminal),
             AttemptError::Disable(_)
         ));
+    }
+
+    /// Build a Tempo state root and an EIP-1186 proof of one TIP-20 balance slot.
+    fn balance_proof(
+        token: Address,
+        slot: B256,
+        value: U256,
+    ) -> (B256, EIP1186AccountProofResponse) {
+        let storage_path = Nibbles::unpack(keccak256(slot));
+        let mut storage =
+            HashBuilder::default().with_proof_retainer(ProofRetainer::from_iter([storage_path]));
+        storage.add_leaf(storage_path, &alloy_rlp::encode_fixed_size(&value));
+        let storage_root = storage.root();
+        let storage_proof = proof_nodes(storage, storage_path);
+
+        let code_hash = keccak256([0xef]);
+        let account = |storage_root| {
+            alloy_rlp::encode(TrieAccount {
+                storage_root,
+                code_hash,
+                ..Default::default()
+            })
+        };
+        let token_path = Nibbles::unpack(keccak256(token));
+        let mut accounts = [
+            (token_path, account(storage_root)),
+            (
+                Nibbles::unpack(keccak256(Address::repeat_byte(0x99))),
+                account(EMPTY_ROOT_HASH),
+            ),
+        ];
+        accounts.sort_by_key(|(path, _)| *path);
+        let mut state =
+            HashBuilder::default().with_proof_retainer(ProofRetainer::from_iter([token_path]));
+        for (path, account) in &accounts {
+            state.add_leaf(*path, account);
+        }
+        let state_root = state.root();
+        let account_proof = proof_nodes(state, token_path);
+
+        let response = EIP1186AccountProofResponse {
+            address: token,
+            balance: U256::ZERO,
+            code_hash,
+            nonce: 0,
+            storage_hash: storage_root,
+            account_proof,
+            storage_proof: vec![EIP1186StorageProof {
+                key: slot.into(),
+                value,
+                proof: storage_proof,
+            }],
+        };
+        (state_root, response)
+    }
+
+    fn proof_nodes(mut builder: HashBuilder, path: Nibbles) -> Vec<Bytes> {
+        builder
+            .take_proof_nodes()
+            .matching_nodes_sorted(&path)
+            .into_iter()
+            .map(|(_, node)| node)
+            .collect()
+    }
+
+    fn balance_slot(token: Address, portal: Address) -> B256 {
+        B256::from(TIP20Token::from_address(token).unwrap().balances[portal].slot())
+    }
+
+    fn header_response(number: u64, state_root: B256) -> (BlockNumHash, serde_json::Value) {
+        let header = TempoHeader {
+            inner: Header {
+                number,
+                state_root,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let response = TempoHeaderResponse {
+            inner: RpcHeader::new(header),
+            timestamp_millis: 0,
+        };
+        let anchor = BlockNumHash::new(number, response.inner.hash);
+        (anchor, serde_json::to_value(response).unwrap())
+    }
+
+    #[test]
+    fn verifies_portal_balance_proof_against_state_root() {
+        let token = address!("20c0000000000000000000000000000000000001");
+        let slot = balance_slot(token, Address::repeat_byte(0x20));
+        let value = U256::from(1_000);
+        let (root, response) = balance_proof(token, slot, value);
+
+        assert_eq!(
+            verify_balance_proof(token, slot, root, response.clone()).unwrap(),
+            value
+        );
+
+        let error =
+            verify_balance_proof(token, slot, B256::repeat_byte(1), response.clone()).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid Portal custody proof"),
+            "{error}"
+        );
+
+        let mut inflated = response.clone();
+        inflated.storage_proof[0].value = value + U256::ONE;
+        let error = verify_balance_proof(token, slot, root, inflated).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid Portal custody proof"),
+            "{error}"
+        );
+
+        let error =
+            verify_balance_proof(token, B256::repeat_byte(2), root, response.clone()).unwrap_err();
+        assert!(error.to_string().contains("instead of"), "{error}");
+
+        let mut other_account = response.clone();
+        other_account.address = Address::repeat_byte(3);
+        let error = verify_balance_proof(token, slot, root, other_account).unwrap_err();
+        assert!(error.to_string().contains("instead of"), "{error}");
+
+        let mut no_storage = response;
+        no_storage.storage_proof.clear();
+        let error = verify_balance_proof(token, slot, root, no_storage).unwrap_err();
+        assert!(error.to_string().contains("expected one"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn portal_balances_prove_custody_at_the_anchor() {
+        let asserter = alloy_transport::mock::Asserter::new();
+        let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter.clone())
+            .erased();
+        let token = address!("20c0000000000000000000000000000000000001");
+        let portal = Address::repeat_byte(0x20);
+        let value = U256::from(1_000);
+        let (root, proof) = balance_proof(token, balance_slot(token, portal), value);
+        let (anchor, header) = header_response(BLOCK, root);
+        asserter.push_success(&header);
+        asserter.push_success(&proof);
+
+        assert_eq!(
+            portal_balances(&provider, portal, [token], anchor)
+                .await
+                .unwrap(),
+            PortalCustody::Proven(vec![(token, value)])
+        );
+    }
+
+    #[tokio::test]
+    async fn portal_balances_reject_an_unverifiable_proof_as_unavailable() {
+        let asserter = alloy_transport::mock::Asserter::new();
+        let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter.clone())
+            .erased();
+        let token = address!("20c0000000000000000000000000000000000001");
+        let portal = Address::repeat_byte(0x20);
+        let (_, proof) = balance_proof(token, balance_slot(token, portal), U256::from(1_000));
+        let (anchor, header) = header_response(BLOCK, B256::repeat_byte(1));
+        asserter.push_success(&header);
+        asserter.push_success(&proof);
+
+        let error = portal_balances(&provider, portal, [token], anchor)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, L1ReadError::Unavailable(error) if error.to_string().contains("invalid Portal custody proof")),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_proofs_skip_only_anchors_outside_the_required_window() {
+        let token = address!("20c0000000000000000000000000000000000001");
+        let portal = Address::repeat_byte(0x20);
+        for (tip, outside) in [
+            (BLOCK + MAX_L1_LOOKAHEAD_BLOCKS + 1, true),
+            (BLOCK + MAX_L1_LOOKAHEAD_BLOCKS, false),
+        ] {
+            let asserter = alloy_transport::mock::Asserter::new();
+            let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
+                .connect_mocked_client(asserter.clone())
+                .erased();
+            let (anchor, header) = header_response(BLOCK, B256::repeat_byte(1));
+            asserter.push_success(&header);
+            asserter.push_failure(
+                serde_json::from_value(serde_json::json!({
+                    "code": PRUNED_HISTORY_CODE,
+                    "message": "distance to target block exceeds maximum proof window",
+                }))
+                .unwrap(),
+            );
+            asserter.push_success(&U64::from(tip));
+
+            let result = portal_balances(&provider, portal, [token], anchor).await;
+            if outside {
+                assert_eq!(result.unwrap(), PortalCustody::OutsideProofWindow);
+            } else {
+                assert!(
+                    matches!(&result, Err(L1ReadError::Disable(error)) if error.to_string().contains("--rpc.eth-proof-window")),
+                    "{result:?}"
+                );
+            }
+        }
     }
 }
