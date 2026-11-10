@@ -496,8 +496,8 @@ fn main() -> Result<()> {
         "parallel_driver_writes" => harness::parallel_driver_writes(),
         "parallel_driver_blocks" => harness::parallel_driver_blocks(),
         "anytime_root" => anytime_root(),
-        "eventually_persisted" => harness::persisted(false).map(drop),
-        "finally_recovered" => harness::persisted(true).map(drop),
+        "eventually_persisted" => harness::persisted().map(drop),
+        "finally_recovered" => harness::finally(|| Ok(harness::persisted()?.is_some())),
         other => Err(eyre!("unknown command {other:?}")),
     };
     assert_always_or_unreachable!(

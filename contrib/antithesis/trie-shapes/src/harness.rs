@@ -271,13 +271,10 @@ pub fn parallel_driver_blocks() -> Result<()> {
     build(&mut client, AntithesisRng.random_range(1..=4))
 }
 
-/// eventually_persisted and finally_recovered: flushes both frontiers to the head, which makes the
-/// server check the persisted state. With wait, the server must answer within STARTUP_WAIT, as it
-/// must once faults stop; otherwise a down server ends the command. Returns the client for
-/// further checks, or None when the server is down.
-pub fn persisted(wait: bool) -> Result<Option<Client>> {
-    let client = if wait { Some(Client::wait()?.0) } else { Client::connect()? };
-    let Some(mut client) = client else {
+/// Flushes both frontiers to the head, which makes the server check the persisted state. Returns
+/// the client for further checks, or None when the server is down or went away.
+pub fn persisted() -> Result<Option<Client>> {
+    let Some(mut client) = Client::connect()? else {
         unavailable()?;
         return Ok(None);
     };
@@ -292,6 +289,20 @@ pub fn persisted(wait: bool) -> Result<Option<Client>> {
         }
         Some(other) => bail!("unexpected answer to flush: {other:?}"),
     }
+}
+
+/// finally_recovered: runs check, which returns false when the server went away or the state moved
+/// on before it finished, until it completes. Faults have stopped, so the server must let it
+/// complete within STARTUP_WAIT.
+pub fn finally(mut check: impl FnMut() -> Result<bool>) -> Result<()> {
+    let deadline = Instant::now() + STARTUP_WAIT;
+    while Instant::now() < deadline {
+        if check()? {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    bail!("the final check did not complete within {STARTUP_WAIT:?}")
 }
 
 /// Logs a request the server rejected; the state moved on, so the command has nothing to do.

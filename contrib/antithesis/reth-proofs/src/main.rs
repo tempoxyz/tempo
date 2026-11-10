@@ -350,9 +350,10 @@ fn serve(config: Option<String>) -> Result<()> {
 }
 
 /// Requests proofs at count random blocks of the summary's round, for targets drawn from its
-/// accounts, and verifies each against the model's state root at that block.
-fn request_proofs(client: &mut Client, count: usize) -> Result<()> {
-    let Some(summary) = client.summary()? else { return harness::unavailable() };
+/// accounts, and verifies each against the model's state root at that block. Returns false when
+/// the server went away or the round ended before every proof was checked.
+fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
+    let Some(summary) = client.summary()? else { return harness::unavailable().map(|()| false) };
     let mut rng = AntithesisRng;
     for _ in 0..count {
         let BlockRoot { number, root } = summary.roots[rng.random_range(0..summary.roots.len())];
@@ -360,11 +361,13 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<()> {
         let request =
             Request::GetProof { round: summary.round, block: number, targets: targets.clone() };
         let proofs = match client.call(&request)? {
-            None => return harness::unavailable(),
+            None => return harness::unavailable().map(|()| false),
             Some(Response::Proofs { proofs }) => {
                 serde_json::from_value::<Vec<AccountProof>>(proofs)?
             }
-            Some(Response::Rejected { reason }) => return harness::rejected(&reason),
+            Some(Response::Rejected { reason }) => {
+                return harness::rejected(&reason).map(|()| false)
+            }
             Some(other) => bail!("unexpected answer to get_proof: {other:?}"),
         };
         let result = proof::check(root, &targets, &proofs);
@@ -376,21 +379,21 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<()> {
         );
         result.wrap_err_with(|| format!("proofs at block {number}"))?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// parallel_driver_proofs: one to four proof requests.
 fn parallel_driver_proofs() -> Result<()> {
     let Some(mut client) = Client::connect()? else { return harness::unavailable() };
-    request_proofs(&mut client, AntithesisRng.random_range(1..=4))
+    request_proofs(&mut client, AntithesisRng.random_range(1..=4)).map(drop)
 }
 
 /// eventually_persisted and finally_recovered: proofs once every block is persisted, most of them
-/// reverted from the tip.
-fn persisted_proofs(wait: bool) -> Result<()> {
-    match harness::persisted(wait)? {
+/// reverted from the tip. Returns false when the server went away before they were checked.
+fn persisted_proofs() -> Result<bool> {
+    match harness::persisted()? {
         Some(mut client) => request_proofs(&mut client, 8),
-        None => Ok(()),
+        None => Ok(false),
     }
 }
 
@@ -412,8 +415,8 @@ fn main() -> Result<()> {
         "parallel_driver_writes" => harness::parallel_driver_writes(),
         "parallel_driver_blocks" => harness::parallel_driver_blocks(),
         "parallel_driver_proofs" => parallel_driver_proofs(),
-        "eventually_persisted" => persisted_proofs(false),
-        "finally_recovered" => persisted_proofs(true),
+        "eventually_persisted" => persisted_proofs().map(drop),
+        "finally_recovered" => harness::finally(persisted_proofs),
         other => Err(eyre!("unknown command {other:?}")),
     };
     assert_always_or_unreachable!(
