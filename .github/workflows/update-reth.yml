@@ -587,6 +587,9 @@ jobs:
               sleep 10
             done
             if [ "$PR_HEAD_SHA" != "$LOCAL_SHA" ]; then
+              PR_HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+            fi
+            if [ "$PR_HEAD_SHA" != "$LOCAL_SHA" ]; then
               echo "::error::PR head is $PR_HEAD_SHA, expected $LOCAL_SHA after 5 minutes"
               exit 1
             fi
@@ -694,8 +697,8 @@ jobs:
                   echo "Amp made no changes for stuck jobs — giving up"
                   exit 1
                 else
-                  # Amp committed itself; push in case it did not (a no-op if it did)
-                  git push origin "$PR_BRANCH"
+                  # Amp committed (or rewrote history) itself; push in case it did not (a no-op if it did).
+                  git push --force-with-lease origin "$PR_BRANCH"
                 fi
                 # Restart the outer loop to wait for new CI run
                 continue 2
@@ -746,8 +749,8 @@ jobs:
               echo "Amp made no changes but CI is still failing — giving up"
               exit 1
             else
-              # Amp committed itself; push in case it did not (a no-op if it did)
-              git push origin "$PR_BRANCH"
+              # Amp committed (or rewrote history) itself; push in case it did not (a no-op if it did).
+              git push --force-with-lease origin "$PR_BRANCH"
             fi
           done
 
