@@ -35,11 +35,11 @@ use antithesis_trie_shapes::{
 use engine::{Engine, Settings};
 use eyre::{bail, ensure, eyre, Context, Result};
 use journal::RoundJournal;
-use lifecycle::{persist_json, Campaign};
+use lifecycle::{clear_tables, persist_json, Campaign};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use model::{apply, generate, root, write_updates, Model};
 use rand_09::Rng;
-use reth_db::DatabaseEnv;
+use reth_db::{init_db, DatabaseEnv};
 use reth_db_api::{cursor::DbCursorRO, tables, transaction::DbTx};
 use reth_engine_tree::tree::TreeConfig;
 use reth_primitives_traits::AlloyBlockHeader;
@@ -50,6 +50,7 @@ use reth_provider::{
 };
 use reth_stages_types::StageId;
 use reth_storage_overlay::OverlayStateProviderFactory;
+use reth_tasks::Runtime;
 use reth_trie::{
     verify::{Output, DEFAULT_STORAGE_LOOKAHEAD},
     HashedPostState,
@@ -119,6 +120,10 @@ impl Default for Config {
 struct Server {
     config: Config,
     campaign: Campaign,
+    /// Shared by every round's engine.
+    runtime: Runtime,
+    /// The campaign database every round resets and reuses.
+    db: Arc<DatabaseEnv>,
     snapshotter: Snapshotter,
     /// None only while one round is retired and the next opens.
     round: Mutex<Option<Round>>,
@@ -146,13 +151,18 @@ impl Server {
                     let finished = guard.take().expect("active round");
                     let number = finished.number + 1;
                     finished.finish(&self.snapshotter)?;
+                    invariant!(
+                        Arc::strong_count(&self.db) == 1,
+                        "round releases all database handles"
+                    );
                     assert_sometimes!(true, "Trie workload completes a round");
-                    // Only a verified, fully flushed round can retire its database and journal.
+                    // Only a verified, fully flushed round can authorize resetting its database
+                    // and journal.
                     self.campaign.retire()?;
                     if self.config.rounds.is_some_and(|rounds| number >= rounds) {
                         std::process::exit(0);
                     }
-                    *guard = Some(Round::open(&self.config, &self.campaign, number)?);
+                    *guard = Some(Round::open(self, number)?);
                 }
                 guard.as_mut().expect("active round").build_block(&self.config)
             }
@@ -189,13 +199,15 @@ struct Round {
 
 impl Round {
     /// Resumes the active round, verifying what the database recovered, or starts a new one.
-    fn open(config: &Config, campaign: &Campaign, number: u64) -> Result<Self> {
-        let datadir = campaign.start()?;
+    fn open(server: &Server, number: u64) -> Result<Self> {
+        let config = &server.config;
+        let datadir = server.campaign.start(&server.db)?;
         // reth writes genesis static files before committing the database, and refuses to open
         // static files without one. A round killed before genesis was durable has no blocks yet,
-        // so start its database over.
+        // so start its tables and files over.
         let initialized = datadir.join("initialized");
         if !initialized.exists() {
+            clear_tables(&server.db)?;
             for entry in fs::read_dir(&datadir)? {
                 let path = entry?.path();
                 if path.file_name().is_some_and(|name| name != "config.json") {
@@ -207,7 +219,8 @@ impl Round {
                 }
             }
         }
-        let engine = Engine::open(&config.settings(), &datadir)?;
+        let engine =
+            Engine::open(&config.settings(), server.runtime.clone(), server.db.clone(), &datadir)?;
         if !initialized.exists() {
             persist_json(&initialized, &true)?;
         }
@@ -493,8 +506,10 @@ fn serve(config: Option<String>) -> Result<()> {
     let snapshotter = recorder.snapshotter();
     recorder.install()?;
     let campaign = Campaign::new(&config)?;
-    let round = Round::open(&config, &campaign, 0)?;
-    let server = Server { config, campaign, snapshotter, round: Mutex::new(Some(round)) };
+    let runtime = engine::runtime(&config.settings())?;
+    let db = Arc::new(init_db(campaign.database_path()?, Default::default())?);
+    let mut server = Server { config, campaign, runtime, db, snapshotter, round: Mutex::new(None) };
+    server.round = Mutex::new(Some(Round::open(&server, 0)?));
     harness::serve(
         &json!({"workload": "reth-state-root", "database_initialized": true}),
         move |request| server.handle(request),

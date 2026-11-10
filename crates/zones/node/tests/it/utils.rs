@@ -1547,16 +1547,19 @@ impl ZoneTestNode {
         let eth_handlers = node_handle.node.eth_handlers().clone();
         let rpc_enabled_tokens = enabled_tokens.clone();
         let rpc_l1_provider = redacted_l1_provider;
+        let rpc_l1_state_cache = l1_state_cache.clone();
         let rpc_api_factory = Arc::new(move |config: zone_node::rpc::RedactedRpcConfig| {
             let eth_handlers = eth_handlers.clone();
             let enabled_tokens = rpc_enabled_tokens.clone();
             let l1_provider = rpc_l1_provider.clone();
+            let l1_state_cache = rpc_l1_state_cache.clone();
             Box::pin(async move {
                 Ok(Arc::new(zone_node::rpc::ZoneRpc::new(
                     eth_handlers,
                     config,
                     enabled_tokens,
                     l1_provider,
+                    l1_state_cache,
                 )) as Arc<dyn zone_node::rpc::ZoneRpcApi>)
             })
                 as Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>>>>>
@@ -4788,8 +4791,8 @@ impl RedactedRpcL1TestCtx {
 }
 
 impl RedactedRpcTestCtx {
-    /// Seeds the zero Tempo commitment of a P256 or WebAuthn token signer, which zones read when
-    /// execution loads the signer's account.
+    /// Seeds the zero Tempo commitment of a P256 or WebAuthn token signer, which zone RPC
+    /// authorization reads to reject retired roots.
     fn seed_p256_signer(&self, signing_key: &P256SigningKey) {
         let (x, y) = p256_public_key(signing_key);
         self.fixture.seed_no_commitment(
@@ -4841,6 +4844,31 @@ impl RedactedRpcTestCtx {
         )
     }
 
+    /// Build an auth token signed by the owner quorum of the configurable account whose
+    /// version-zero configuration has `signing_key` as its sole owner, returning the token and
+    /// the account.
+    pub(crate) fn configurable_account_token(
+        &self,
+        signing_key: &P256SigningKey,
+    ) -> (String, Address) {
+        let now = now_secs();
+        let (fields, digest) = zone_node::rpc::auth::build_token_fields(
+            self.config.zone_id,
+            self.config.chain_id,
+            now,
+            now + 600,
+        );
+        let (signature, account, _) =
+            auth_tokens::sign_configurable_account_signature(digest, signing_key)
+                .expect("configurable account signing failed");
+        // Authorization reads the account's commitment from Tempo.
+        self.fixture.seed_no_commitment(account);
+        (
+            auth_tokens::build_token_with_signature(signature, &fields),
+            account,
+        )
+    }
+
     /// Build a Keychain auth token signed by a P256 access key.
     pub(crate) fn keychain_p256_token(
         &self,
@@ -4850,13 +4878,16 @@ impl RedactedRpcTestCtx {
     ) -> (String, Address) {
         // AccountKeychain lookups load the root account.
         self.fixture.seed_no_commitment(root_account);
-        build_keychain_auth_token(
+        let (token, key_id) = build_keychain_auth_token(
             signing_key,
             root_account,
             version,
             self.config.zone_id,
             self.config.chain_id,
-        )
+        );
+        // Authorization reads the key ID's commitment.
+        self.fixture.seed_no_commitment(key_id);
+        (token, key_id)
     }
 
     /// Send an authenticated JSON-RPC call to the redacted RPC server.
@@ -5113,21 +5144,25 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
 
 /// Start a zone with a redacted RPC server backed by a real L1 + ZonePortal.
 pub(crate) async fn start_zone_with_redacted_rpc_l1() -> eyre::Result<RedactedRpcL1TestCtx> {
-    start_zone_with_redacted_rpc_l1_inner().await
+    start_zone_with_redacted_rpc_l1_with_encryption(Vec::new()).await
 }
 
 /// Start a zone with a redacted RPC server backed by a real L1 and a portal
-/// with a registered encryption key.
-pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption()
--> eyre::Result<RedactedRpcL1TestCtx> {
-    start_zone_with_redacted_rpc_l1_inner().await
-}
-
-async fn start_zone_with_redacted_rpc_l1_inner() -> eyre::Result<RedactedRpcL1TestCtx> {
+/// with a registered encryption key, whose node also holds `additional_decryption_keys` for keys
+/// the portal rotates to.
+pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption(
+    additional_decryption_keys: Vec<SecretKey>,
+) -> eyre::Result<RedactedRpcL1TestCtx> {
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
 
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1_with_decryption_keys(
+        l1.http_url(),
+        l1.ws_url(),
+        portal_address,
+        additional_decryption_keys,
+    )
+    .await?;
 
     zone.wait_for_l2_tempo_finalized(0, DEFAULT_TIMEOUT).await?;
 

@@ -6,7 +6,9 @@ pub(crate) mod config;
 mod network;
 mod proposal;
 
-pub use config::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
+pub use config::{
+    DEFAULT_NETWORK_BUDGET, DEFAULT_NETWORK_RESERVE_PERCENTILE, DEFAULT_TARGET_BLOCK_TIME,
+};
 use config::{EstimatorConfig, NetworkReservation};
 pub use proposal::ProposalBudget;
 
@@ -23,11 +25,6 @@ use std::{
 use crate::{ValidationLatencyEstimator, ValidationLatencyWorkload};
 use build_time::BuildTimeTracker;
 use network::NetworkTracker;
-
-/// Percentile followed by both build and network estimates.
-const RESERVE_PERCENTILE: usize = 75;
-/// Dry builds pace in 1 ms steps and can return a millisecond or two late.
-const OVERRUN_TOLERANCE: Duration = Duration::from_millis(5);
 
 /// Identifies a proposal by its own epoch and view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,17 +72,16 @@ impl Estimator {
         Self {
             target_block_time: config.target_block_time,
             overrun_tolerance: match config.network_reservation_policy {
-                NetworkReservation::Adaptive => Some(OVERRUN_TOLERANCE),
+                NetworkReservation::Adaptive {
+                    return_budget_overrun_tolerance,
+                    ..
+                } => Some(return_budget_overrun_tolerance),
                 NetworkReservation::Fixed => None,
             },
             state: Arc::new(Mutex::new(EstimatorState {
                 validation: ValidationLatencyEstimator::default(),
                 build_time: BuildTimeTracker::new(config.build_time_multiplier),
-                network: NetworkTracker::new(
-                    config.network_budget,
-                    config.target_block_time,
-                    config.network_reservation_policy,
-                ),
+                network: NetworkTracker::new(&config),
             })),
         }
     }

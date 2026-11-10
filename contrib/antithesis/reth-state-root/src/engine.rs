@@ -8,7 +8,7 @@ use alloy_primitives::{keccak256, B256};
 use eyre::{ensure, Result};
 use reth_chain_state::ExecutedBlock;
 use reth_chainspec::ChainSpec;
-use reth_db::init_db;
+use reth_db::DatabaseEnv;
 use reth_engine_primitives::MIN_PERSISTENCE_BACKPRESSURE_THRESHOLD;
 use reth_engine_tree::tree::{
     state_root_strategy::{
@@ -77,10 +77,14 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
-    /// Opens or creates the database in datadir through the node's startup path, including
-    /// consistency checks, the durable unwind marker and Merkle's recovery mode.
-    pub(crate) fn open(settings: &Settings, datadir: &Path) -> Result<Self> {
-        ensure!((1..=16).contains(&settings.proof_workers), "proof_workers must be 1..=16");
+    /// Opens db, with its static files and RocksDB in datadir, through the node's startup path,
+    /// including consistency checks, the durable unwind marker and Merkle's recovery mode.
+    pub(crate) fn open(
+        settings: &Settings,
+        runtime: Runtime,
+        db: Arc<DatabaseEnv>,
+        datadir: &Path,
+    ) -> Result<Self> {
         ensure!((1..=3600).contains(&settings.timeout_secs), "timeout_secs must be 1..=3600");
         let threshold = settings.persistence_threshold;
         let buffer = settings
@@ -105,21 +109,6 @@ impl Engine {
             .with_num_state_masking_blocks(masking)
             .with_memory_block_buffer_target(buffer)
             .with_persistence_backpressure_threshold(backpressure);
-        let runtime = RuntimeBuilder::new(RuntimeConfig {
-            tokio: TokioConfig::with_worker_threads(2),
-            rayon: RayonConfig {
-                cpu_threads: Some(2),
-                rpc_threads: Some(1),
-                storage_threads: Some(2),
-                proof_storage_worker_threads: Some(settings.proof_workers),
-                proof_account_worker_threads: Some(settings.proof_workers),
-                prewarming_threads: Some(1),
-                bal_streaming_threads: Some(1),
-                state_trie_overlay_worker_threads: Some(1),
-                ..Default::default()
-            },
-        })
-        .build()?;
         fs::create_dir_all(datadir)?;
         let chain = Arc::new(ChainSpec::default());
         let data_dir = ChainPath::<DataDirPath>::new(
@@ -127,7 +116,6 @@ impl Engine {
             chain.chain,
             Default::default(),
         );
-        let db = Arc::new(init_db(data_dir.db(), Default::default())?);
         let context = LaunchContext::new(runtime.clone(), data_dir)
             .with(WithConfigs { config: NodeConfig::new(chain), toml_config: Default::default() })
             .attach(db);
@@ -453,19 +441,38 @@ impl Engine {
 
     /// Stops the writer once every save is acknowledged, and drains the worker pools.
     pub(crate) fn close(self) -> Result<()> {
-        self.persistence.finish()?;
+        let Self { runtime, factory, persistence, parent, .. } = self;
+        persistence.finish()?;
         // Synchronize final trie completion before the caller takes a metrics snapshot.
-        if let Some(trie) = self.factory.overlay_manager().take_sparse_trie() {
-            invariant!(
-                trie.into_trie_for(self.parent.hash())?.is_some(),
-                "missing final reusable trie"
-            );
+        if let Some(trie) = factory.overlay_manager().take_sparse_trie() {
+            invariant!(trie.into_trie_for(parent.hash())?.is_some(), "missing final reusable trie");
         }
-        // Root delivery precedes worker teardown. Drain their queues so the last database handle
-        // closes before process exit destroys RocksDB's global scheduler.
+        drop(factory);
+        // Root delivery precedes worker teardown. Drain their queues so round-local handles are
+        // released before the next round resets its tables and files.
         for name in ["sparse-trie", "trie-hashing", "storage-workers", "account-workers", "drop"] {
-            self.runtime.spawn_blocking_named(name, || {}).get();
+            runtime.spawn_blocking_named(name, || {}).get();
         }
         Ok(())
     }
+}
+
+/// The task runtime engines run on, with settings' proof workers.
+pub(crate) fn runtime(settings: &Settings) -> Result<Runtime> {
+    ensure!((1..=16).contains(&settings.proof_workers), "proof_workers must be 1..=16");
+    Ok(RuntimeBuilder::new(RuntimeConfig {
+        tokio: TokioConfig::with_worker_threads(2),
+        rayon: RayonConfig {
+            cpu_threads: Some(2),
+            rpc_threads: Some(1),
+            storage_threads: Some(2),
+            proof_storage_worker_threads: Some(settings.proof_workers),
+            proof_account_worker_threads: Some(settings.proof_workers),
+            prewarming_threads: Some(1),
+            bal_streaming_threads: Some(1),
+            state_trie_overlay_worker_threads: Some(1),
+            ..Default::default()
+        },
+    })
+    .build()?)
 }

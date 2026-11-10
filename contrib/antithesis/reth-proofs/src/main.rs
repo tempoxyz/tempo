@@ -47,7 +47,7 @@ use engine::{Engine, Settings};
 use eyre::{bail, ensure, eyre, Context, Result};
 use model::{apply, root, write_updates, Model};
 use rand_09::Rng;
-use reth_db::DatabaseEnv;
+use reth_db::{init_db, DatabaseEnv};
 use reth_engine_tree::tree::TreeConfig;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{test_utils::MockNodeTypesWithDB, DatabaseProviderROFactory, ProviderFactory};
@@ -186,16 +186,15 @@ struct Round {
 impl Round {
     fn open(config: &Config, number: u64) -> Result<Self> {
         let datadir = tempfile::tempdir()?;
-        let engine = Engine::open(
-            &Settings {
-                proof_workers: config.proof_workers,
-                timeout_secs: config.timeout_secs,
-                persistence_threshold: config.persistence_threshold,
-                num_state_masking_blocks: config.num_state_masking_blocks,
-                memory_block_buffer_target: config.memory_block_buffer_target,
-            },
-            datadir.path(),
-        )?;
+        let settings = Settings {
+            proof_workers: config.proof_workers,
+            timeout_secs: config.timeout_secs,
+            persistence_threshold: config.persistence_threshold,
+            num_state_masking_blocks: config.num_state_masking_blocks,
+            memory_block_buffer_target: config.memory_block_buffer_target,
+        };
+        let db = Arc::new(init_db(datadir.path().join("db"), Default::default())?);
+        let engine = Engine::open(&settings, engine::runtime(&settings)?, db, datadir.path())?;
         let state = Model::default();
         let genesis = engine.parent();
         invariant!(root(&state) == genesis.state_root(), "genesis root");
