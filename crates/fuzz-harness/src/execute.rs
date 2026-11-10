@@ -3,6 +3,7 @@
 use std::{
     cell::RefCell,
     fmt::{Debug, Display, Write as _},
+    mem,
     sync::{Arc, Mutex},
 };
 
@@ -468,11 +469,11 @@ fn execute_block(
     )
     .map_err(|err| BlockFailure {
         class: class(&err),
-        partial: Some(Box::new(std::mem::take(&mut outputs))),
+        partial: Some(Box::new(mem::take(&mut outputs))),
     })?;
     let output = executor.finish().map_err(|err| BlockFailure {
         class: class(&err),
-        partial: Some(Box::new(std::mem::take(&mut outputs))),
+        partial: Some(Box::new(mem::take(&mut outputs))),
     })?;
     let post_block = take(&hooked);
     let net = Net::of(&post_block);

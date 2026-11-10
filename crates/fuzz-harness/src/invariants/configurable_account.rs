@@ -134,12 +134,11 @@ pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, rep
 /// `signature`'s quorum, its approvals recovered over the TIP-1107 digest.
 fn quorum(role: Role, signature: &ConfigurableAccountSignature, inner_digest: B256) -> Quorum {
     let account = signature.account();
-    let config = signature.config();
-    let digest = spec::approval_digest(inner_digest, account, config.version);
+    let digest = signature.digest(inner_digest);
     Quorum {
         role,
         account,
-        config: spec::from_primitive(config),
+        config: spec::from_primitive(signature.config()),
         approvals: signature
             .signatures()
             .iter()

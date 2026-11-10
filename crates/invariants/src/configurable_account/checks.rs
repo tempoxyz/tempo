@@ -1,5 +1,7 @@
 //! Configurable account invariants (TIP-1107, TIP-1111, TIP-1113).
 
+use std::{fmt, ops::Deref};
+
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY};
 use alloy_sol_types::SolEvent;
 use invariants_core::{check, ensure};
@@ -551,10 +553,6 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     },
 ];
 
-impl StepChecked<Option<Tx>> for Commitments {
-    const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
-}
-
 /// A transaction's effect on the leaves of the accounts it changed or named.
 pub const LEAF_CHECKS: &[Check<Leaves>] = &[
     // An account with a commitment has the 0xef marker as code.
@@ -641,6 +639,55 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
 
 type AccountStep = Step<Commitments, Option<Tx>>;
 
+/// What a keychain event did to a grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantKind {
+    Authorized,
+    Admin,
+    Revoked,
+    Limit,
+}
+
+/// A grant a keychain event changed.
+struct GrantChange {
+    kind: GrantKind,
+    account: Address,
+    key: Address,
+    /// The key type an authorization stored.
+    key_type: Option<u8>,
+}
+
+impl fmt::Display for GrantChange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?} grant of key {} for {}",
+            self.kind, self.key, self.account
+        )
+    }
+}
+
+/// An `AccountUpgraded` event, shown by its account.
+struct Upgrade(AccountUpgraded);
+
+impl Deref for Upgrade {
+    type Target = AccountUpgraded;
+
+    fn deref(&self) -> &AccountUpgraded {
+        &self.0
+    }
+}
+
+impl fmt::Display for Upgrade {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "migration of {}", self.0.account)
+    }
+}
+
+impl StepChecked<Option<Tx>> for Commitments {
+    const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
+}
+
 impl Checked for Leaves {
     const CHECKS: &'static [Check<Self>] = LEAF_CHECKS;
 }
@@ -664,34 +711,6 @@ fn own_writes(s: &AccountStep, account: Address) -> Vec<u64> {
         .filter(|e| e.account == account)
         .map(|_| 1);
     updates.chain(upgrades).collect()
-}
-
-/// What a keychain event did to a grant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GrantKind {
-    Authorized,
-    Admin,
-    Revoked,
-    Limit,
-}
-
-/// A grant a keychain event changed.
-struct GrantChange {
-    kind: GrantKind,
-    account: Address,
-    key: Address,
-    /// The key type an authorization stored.
-    key_type: Option<u8>,
-}
-
-impl std::fmt::Display for GrantChange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{:?} grant of key {} for {}",
-            self.kind, self.key, self.account
-        )
-    }
 }
 
 /// The grants the step's keychain events changed.
@@ -742,23 +761,6 @@ fn upgrades(step: &AccountStep) -> Vec<Upgrade> {
         .collect()
 }
 
-/// An `AccountUpgraded` event, shown by its account.
-struct Upgrade(AccountUpgraded);
-
-impl std::ops::Deref for Upgrade {
-    type Target = AccountUpgraded;
-
-    fn deref(&self) -> &AccountUpgraded {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Upgrade {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "migration of {}", self.0.account)
-    }
-}
-
 /// The step's owner-update events for `account`, in order; `None` when its prior commitment is unknown.
 fn updates_of(s: &AccountStep, account: Address) -> Option<Vec<ConfigurableAccountConfigUpdated>> {
     // Registration's version-0 event, for an account without a commitment, is not an owner update.
@@ -773,24 +775,33 @@ fn updates_of(s: &AccountStep, account: Address) -> Option<Vec<ConfigurableAccou
 
 /// The configurations the step's events wrote for `account`, in order.
 fn configs_written(s: &AccountStep, account: Address) -> Vec<ConfigurableAccountConfig> {
-    let precompile = s.post.precompile;
-    s.logs_from(precompile)
+    s.logs_from(s.post.precompile)
         .filter_map(|log| {
-            if let Ok(e) = AccountUpgraded::decode_log_data(&log.data) {
-                return (e.account == account).then_some(ConfigurableAccountConfig {
-                    salt: e.salt,
-                    version: 1,
-                    threshold: e.threshold,
-                    owners: e.owners,
-                });
-            }
-            let e = ConfigurableAccountConfigUpdated::decode_log_data(&log.data).ok()?;
-            (e.account == account).then_some(ConfigurableAccountConfig {
-                salt: e.salt,
-                version: e.version,
-                threshold: e.threshold,
-                owners: e.owners,
-            })
+            let (written, config) = match AccountUpgraded::decode_log_data(&log.data) {
+                Ok(e) => (
+                    e.account,
+                    ConfigurableAccountConfig {
+                        salt: e.salt,
+                        version: 1,
+                        threshold: e.threshold,
+                        owners: e.owners,
+                    },
+                ),
+                // Not a migration: an owner update, or an event that writes no configuration.
+                Err(_) => match ConfigurableAccountConfigUpdated::decode_log_data(&log.data) {
+                    Ok(e) => (
+                        e.account,
+                        ConfigurableAccountConfig {
+                            salt: e.salt,
+                            version: e.version,
+                            threshold: e.threshold,
+                            owners: e.owners,
+                        },
+                    ),
+                    Err(_) => return None,
+                },
+            };
+            (written == account).then_some(config)
         })
         .collect()
 }

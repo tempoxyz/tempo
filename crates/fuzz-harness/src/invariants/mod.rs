@@ -9,6 +9,7 @@
 use alloy_primitives::{Address, Log};
 use invariants_core::{Report, SlotChange, Step};
 use std::sync::LazyLock;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
@@ -42,7 +43,7 @@ pub(crate) struct StepEffects<'a> {
     pub(crate) net: &'a Net,
     pub(crate) logs: &'a [Log],
     pub(crate) tx: Tx,
-    pub(crate) spec: tempo_chainspec::hardfork::TempoHardfork,
+    pub(crate) spec: TempoHardfork,
 }
 
 impl StepEffects<'_> {

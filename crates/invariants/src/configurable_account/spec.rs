@@ -2,28 +2,49 @@
 
 use alloy_primitives::{Address, B256, keccak256};
 use tempo_contracts::precompiles::SYSTEM_PRECOMPILES;
-pub use tempo_primitives::transaction::configurable_account::{
+pub(crate) use tempo_primitives::transaction::configurable_account::{
     MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES as MAX_APPROVAL_BYTES,
     MAX_CONFIGURABLE_ACCOUNT_SIGNATURES as MAX_APPROVALS,
-    configurable_account_digest as approval_digest,
 };
 use tempo_primitives::{
     TempoAddressExt, is_tip20_prefix,
     transaction::configurable_account::{
-        self as primitives, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
+        self, CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     },
 };
 
 use super::IConfigurableAccount::{ConfigurableAccountConfig, ConfigurableAccountOwner};
 
-pub use tempo_primitives::account::CONFIGURABLE_ACCOUNT_CODE_HASH as MARKER_CODE_HASH;
+pub(crate) use tempo_primitives::account::CONFIGURABLE_ACCOUNT_CODE_HASH as MARKER_CODE_HASH;
 
 /// The key type of a grant to a configurable delegate (TIP-1111).
-pub const CONFIGURABLE_KEY_TYPE: u8 = 3;
+pub(crate) const CONFIGURABLE_KEY_TYPE: u8 = 3;
+
+/// `config` as the precompile's interface types it.
+pub fn from_primitive(
+    config: &configurable_account::ConfigurableAccountConfig,
+) -> ConfigurableAccountConfig {
+    ConfigurableAccountConfig {
+        salt: config.salt,
+        version: config.version,
+        threshold: config.threshold,
+        owners: config
+            .owners
+            .iter()
+            .map(|o| ConfigurableAccountOwner {
+                owner: o.owner,
+                weight: o.weight,
+            })
+            .collect(),
+    }
+}
 
 /// The first configuration rule `config` breaks, `None` when it passes them all.
 // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L74-L80>
-pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option<&'static str> {
+pub(crate) fn broken_rule(
+    threshold: u8,
+    owners: &[ConfigurableAccountOwner],
+) -> Option<&'static str> {
     if owners.is_empty() || owners.len() > MAX_CONFIGURABLE_ACCOUNT_OWNERS {
         return Some("it does not have 1 to 48 owners");
     }
@@ -49,42 +70,26 @@ pub fn broken_rule(threshold: u8, owners: &[ConfigurableAccountOwner]) -> Option
     }
     let mut weights: Vec<u8> = owners.iter().map(|owner| owner.weight).collect();
     weights.sort_unstable_by(|a, b| b.cmp(a));
-    let quorum: u32 = weights
+    if weights
         .iter()
         .take(MAX_APPROVALS)
         .map(|&w| u32::from(w))
-        .sum();
-    if quorum < u32::from(threshold) {
+        .sum::<u32>()
+        < u32::from(threshold)
+    {
         return Some("its eight largest weights add up to less than its threshold");
     }
     None
 }
 
-/// `config` as the precompile's interface types it.
-pub fn from_primitive(config: &primitives::ConfigurableAccountConfig) -> ConfigurableAccountConfig {
-    ConfigurableAccountConfig {
-        salt: config.salt,
-        version: config.version,
-        threshold: config.threshold,
-        owners: config
-            .owners
-            .iter()
-            .map(|o| ConfigurableAccountOwner {
-                owner: o.owner,
-                weight: o.weight,
-            })
-            .collect(),
-    }
-}
-
 /// The commitment of `config`, unvalidated so invalid writes are still judged; `None` with more
 /// owners than a byte counts.
-pub fn commitment(config: &ConfigurableAccountConfig) -> Option<B256> {
+pub(crate) fn commitment(config: &ConfigurableAccountConfig) -> Option<B256> {
     primitive(config).commitment_preimage().ok().map(keccak256)
 }
 
 /// The address a version-0 configuration derives, unvalidated.
-pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
+pub(crate) fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
     primitive(config)
         .account_preimage()
         .ok()
@@ -93,7 +98,7 @@ pub fn derived_address(config: &ConfigurableAccountConfig) -> Option<Address> {
 
 /// The reserved address space `account` lies in, `None` when it is outside them all.
 // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L501>
-pub fn reserved(account: Address) -> Option<&'static str> {
+pub(crate) fn reserved(account: Address) -> Option<&'static str> {
     let bytes = account.as_slice();
     let low = u16::from_be_bytes([bytes[18], bytes[19]]);
     if account.is_zero() {
@@ -116,20 +121,22 @@ pub fn reserved(account: Address) -> Option<&'static str> {
 }
 
 /// The salt of `account`'s configuration after it migrates.
-pub fn upgrade_salt(account: Address) -> B256 {
+pub(crate) fn upgrade_salt(account: Address) -> B256 {
     keccak256([CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, account.as_slice()].concat())
 }
 
 /// `config` as `tempo_primitives` types it.
-fn primitive(config: &ConfigurableAccountConfig) -> primitives::ConfigurableAccountConfig {
-    primitives::ConfigurableAccountConfig {
+fn primitive(
+    config: &ConfigurableAccountConfig,
+) -> configurable_account::ConfigurableAccountConfig {
+    configurable_account::ConfigurableAccountConfig {
         salt: config.salt,
         version: config.version,
         threshold: config.threshold,
         owners: config
             .owners
             .iter()
-            .map(|o| primitives::ConfigurableAccountOwner {
+            .map(|o| configurable_account::ConfigurableAccountOwner {
                 owner: o.owner,
                 weight: o.weight,
             })

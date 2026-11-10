@@ -24,14 +24,14 @@ pub use checks::{LEAF_CHECKS, STEP_CHECKS, VIEW};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commitments {
     /// The precompile read.
-    pub precompile: Address,
+    precompile: Address,
     /// Each observed account's commitment, zero for an account without a configuration.
-    pub of: BTreeMap<Address, B256>,
+    of: BTreeMap<Address, B256>,
     /// Whether each queried `(account, key)` is the account's root or an active admin key, as the
     /// keychain reports it; unanswered reads are left out.
-    pub admins: BTreeMap<(Address, Address), bool>,
+    admins: BTreeMap<(Address, Address), bool>,
     /// Each queried `(account, access key)`'s stored grant, as the keychain reports it.
-    pub keys: BTreeMap<(Address, Address), KeyInfo>,
+    keys: BTreeMap<(Address, Address), KeyInfo>,
 }
 
 impl Observe for Commitments {
@@ -139,7 +139,7 @@ pub struct Authority {
 
 impl Authority {
     /// The quorums approving for `account`.
-    pub fn quorums_of(&self, account: Address) -> impl Iterator<Item = &Quorum> {
+    fn quorums_of(&self, account: Address) -> impl Iterator<Item = &Quorum> {
         self.quorums.iter().filter(move |q| q.account == account)
     }
 
@@ -153,7 +153,7 @@ impl Authority {
     }
 
     /// The accounts the inline key authorization's signatures act for.
-    pub fn key_authorization_signers(&self) -> impl Iterator<Item = Address> + '_ {
+    fn key_authorization_signers(&self) -> impl Iterator<Item = Address> + '_ {
         self.quorums
             .iter()
             .filter(|q| q.role == Role::KeyAuthorization)
