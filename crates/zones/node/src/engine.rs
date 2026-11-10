@@ -398,9 +398,13 @@ impl ZoneEngine {
             )
             .await?;
             if let Some((allowlist, senders)) = self.deposit_allowlist.as_ref().zip(senders) {
-                let rejected = allowlist.reject_unlisted(&senders, &mut prepared.decryptions)?;
+                let rejected = allowlist.reject_unlisted(
+                    &senders,
+                    &prepared.recipients,
+                    &mut prepared.decryptions,
+                )?;
                 if rejected > 0 {
-                    info!(target: "zone::engine", rejected, "Bouncing deposits from senders not on the allowlist");
+                    info!(target: "zone::engine", rejected, "Bouncing deposits whose sender or recipient is not on the allowlist");
                     metrics::counter!("zone_deposit_allowlist_rejected_total")
                         .increment(rejected as u64);
                 }
