@@ -698,7 +698,7 @@ jobs:
                   exit 1
                 else
                   # Amp committed (or rewrote history) itself; push in case it did not (a no-op if it did).
-                  git push --force-with-lease origin "$PR_BRANCH"
+                  git push --force-with-lease origin "HEAD:refs/heads/$PR_BRANCH"
                 fi
                 # Restart the outer loop to wait for new CI run
                 continue 2
@@ -750,7 +750,7 @@ jobs:
               exit 1
             else
               # Amp committed (or rewrote history) itself; push in case it did not (a no-op if it did).
-              git push --force-with-lease origin "$PR_BRANCH"
+              git push --force-with-lease origin "HEAD:refs/heads/$PR_BRANCH"
             fi
           done
 
