@@ -65,8 +65,7 @@ templates:
         - {random_bytes: 32}
   public_mint:
     type: tempo
-    # Dev genesis grants the pathUSD issuer role to users[0]; the helper rotates
-    # mints across issuers it grants in setup.
+    # Dev genesis grants the pathUSD issuer role to users[0].
     from: {pool: users, select: {index: 0}}
     gas_limit: 300000
     fee_token: "0x20c0000000000000000000000000000000000000"

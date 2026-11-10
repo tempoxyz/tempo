@@ -53,21 +53,6 @@ const TXGEN_HELPER_ZONE_TO_ZONE_TRANSFER_TOPIC = "0x45310f61ef78f3fcb9ab97ea2730
 const TXGEN_HELPER_WITHDRAWAL_PROCESSED_TOPIC = "0x65042ea6dad60c26f055e80ec401b3437c854ed586a0704d305bb4e9ea4518cf"
 # Presets whose zone settlement and Earn deposits come from one sender with ordered nonces.
 const TXGEN_HELPER_SINGLE_SENDER_PRESETS = ["zone-earn-serial"]
-# The txpool holds at most 16 transactions per sender. public-mix sends its random transfers
-# and MPP opens from the accounts state bloat derives with real keys (generate-state-bloat
-# --signable-count), and rotates pathUSD mints across issuers that users[0] grants in setup.
-const TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS = 10000
-# State bloat leaves those senders a token unit each, about 200 transactions' fees, so setup
-# tops up the ones beyond the genesis users with pathUSD from the issuers (32 per transaction).
-const TXGEN_HELPER_SENDER_TOPUP = "10000000000"
-const TXGEN_HELPER_PUBLIC_MIX_ISSUERS = 32
-# Presets that model one operator's few senders on purpose; e2e nodes keep the old per-sender
-# pool limit for them, so they measure execution rather than the 16-transaction cap.
-const TXGEN_HELPER_HOT_SENDER_PRESETS = ["zone-earn-serial" "card-settlement" "batch-payout" "institutional" "cross-border"]
-const TXGEN_HELPER_ISSUER_ROLE = "0x114e74f6ea3bd819998f78687bfcb11b140da08e9b7d222fa9c1f1ba1f2aa122"
-# Setup transactions a sender may have awaiting inclusion at once, below the txpool's
-# per-sender limit: each further step waits for the receipt of the step this many before it.
-const TXGEN_HELPER_SETUP_SENDER_WINDOW = 6
 # Card settlement: a small pool of shard senders redeem vault shares and forward proceeds.
 const TXGEN_HELPER_CARD_SETTLEMENT_PRESETS = ["card-settlement"]
 const TXGEN_HELPER_CARD_SETTLEMENT_SENDERS = 18
@@ -691,13 +676,7 @@ def txgen-wait-for-txpool-drain [rpc_url: string, timeout_secs: int = $TXGEN_HEL
     print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
 }
 
-# Faucet addresses per batch: the faucet sends one transaction per address from one sender,
-# so a batch stays within the txpool's 16 transactions per sender.
-const TXGEN_HELPER_FUND_BATCH = 12
-
-# Funds the spec's accounts through the faucet, skipping the first funded_below mnemonic
-# accounts, which genesis (and state bloat's signable accounts) already fund.
-def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string, funded_below: int = 0] {
+def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
     let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
     if $result.exit_code != 0 {
         error make { msg: $"failed to list txgen addresses for ($spec_path): ($result.stderr | str trim)" }
@@ -708,43 +687,14 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string, 
     if ($addresses | is-empty) {
         error make { msg: $"txgen spec produced no addresses: ($spec_path)" }
     }
-    let funded = if $funded_below > 0 {
-        let funded_spec = ($spec_path | path dirname | path join $"funded-accounts-(random uuid).yml")
-        {chain_id: 1337, accounts: {funded: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 $funded_below]}}} | to yaml | save -f $funded_spec
-        let listed = (^$txgen_bin addresses -s $funded_spec -f shell | complete)
-        rm -f $funded_spec
-        if $listed.exit_code != 0 {
-            error make { msg: $"failed to list funded accounts: ($listed.stderr | str trim)" }
-        }
-        $listed.stdout | str trim | split row " " | where { |addr| $addr != "" } | str downcase
-    } else { [] }
-    let addresses = ($addresses | where { |addr| ($addr | str downcase) not-in $funded })
-    if ($addresses | is-empty) {
-        print "  All txgen accounts are funded at genesis"
-        return
-    }
 
     print $"  Funding (($addresses | length)) txgen account\(s\)..."
-    for batch in ($addresses | chunks $TXGEN_HELPER_FUND_BATCH) {
-        $batch | par-each { |address|
-            txgen-rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
-        } | ignore
-        txgen-wait-for-txpool-empty $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
-    }
+    $addresses | par-each { |address|
+        txgen-rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
+    } | ignore
 
     print "  Waiting for faucet transactions to drain..."
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
-}
-
-# Waits until the txpool has no pending transactions, polling quickly.
-def txgen-wait-for-txpool-empty [rpc_url: string, timeout_secs: int] {
-    let deadline = ((date now) + ($timeout_secs * 1sec))
-    while (date now) < $deadline {
-        let response = (txgen-rpc-call $rpc_url '{"jsonrpc":"2.0","method":"txpool_status","params":[],"id":1}')
-        if ($response.result.pending | into int) == 0 { return }
-        sleep 100ms
-    }
-    error make { msg: $"txpool did not drain within ($timeout_secs)s while funding accounts" }
 }
 
 # Portal count: TXGEN_ZONE_COUNT, else the preset's pinned count, else the TPS-sized default.
@@ -898,7 +848,7 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     mkdir $output_dir
     let output = ($output_dir | path join zones.yml)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: (txgen-window-setup-senders $steps $TXGEN_HELPER_SETUP_SENDER_WINDOW)}, templates: $templates, mix: $mix} | to yaml | save -f $output
+        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
     $output
 }
 
@@ -985,7 +935,7 @@ def txgen-prepare-zone-to-zone-preset [spec_path: string, count: int, accounts: 
     # Keep the preset's file name: reports derive the preset label from it.
     let output = ($output_dir | path join ($spec_path | path basename))
     {include: $base, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: (txgen-window-setup-senders $steps $TXGEN_HELPER_SETUP_SENDER_WINDOW)}, templates: $templates, mix: $mix} | to yaml | save -f $output
+        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
     $output
 }
 
@@ -1096,7 +1046,7 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
     mkdir $output_dir
     let output = ($output_dir | path join ($spec_path | path basename))
-    { include: $spec_path, templates: $templates, mix: $mix, append: { setup: { steps: (txgen-window-setup-senders $steps $TXGEN_HELPER_SETUP_SENDER_WINDOW) } } } | to yaml | save -f $output
+    { include: $spec_path, templates: $templates, mix: $mix, append: { setup: { steps: $steps } } } | to yaml | save -f $output
     $output
 }
 
@@ -1491,7 +1441,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     $"# Per-instance copies of neobank-generic templates, rendered by helpers.nu.\ntemplates:\n($raw_templates | str join "\n")\n"
         | save -f ($output_dir | path join $raw_name)
     let body = ({include: [($spec_path | path expand) $raw_name], accounts: $accounts_record,
-        setup: {steps: (txgen-window-setup-senders ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup) $vault_setup)) $TXGEN_HELPER_SETUP_SENDER_WINDOW)},
+        setup: {steps: ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup) $vault_setup))},
         templates: $templates,
         mix: ($entries | each { |entry| {template: $entry.name, weight: $entry.weight} })} | to yaml)
     # Keychain steps hold ${TXGEN_*} placeholders: appended as text after the setup above.
@@ -1611,102 +1561,11 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
-    let senders = (txgen-public-mix-senders $preset_name $spec.mix $accounts)
-    let steps = ($vault_setup | append (txgen-after-vault ($users | append $senders.setup | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup) $vault_setup))
-    {include: $spec_path, accounts: ({users: {range: [0 $accounts]}} | merge $senders.accounts),
-        setup: {steps: (txgen-window-setup-senders $steps $TXGEN_HELPER_SETUP_SENDER_WINDOW)},
-        templates: ($templates | merge $senders.templates),
-        sequences: $senders.sequences,
+    {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
+        setup: {steps: ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup) $vault_setup))},
+        templates: $templates,
         mix: $mix} | to yaml | save -f $output
     $output
-}
-
-# Spreads public-mix's random-sender traffic within the txpool's per-sender limit: transfers
-# and MPP opens come from every signable state-bloat account instead of the per-user pool,
-# and mints rotate across issuers instead of all coming from users[0]. Entries merge over
-# the included templates; other presets keep their senders.
-def txgen-public-mix-senders [preset_name: string, mix: list<any>, accounts: int] {
-    let none = {accounts: {}, setup: [], templates: {}, sequences: {}}
-    if $preset_name != "public-mix" { return $none }
-    let names = ($mix | each { |entry| $entry | get -o template | default ($entry | get -o sequence | default "") })
-    let random = {pool: senders, select: random}
-    # Issuers are users[1..=issuers]; users[0] already carries its per-user templates.
-    let issuers = ([($accounts - 1) $TXGEN_HELPER_PUBLIC_MIX_ISSUERS] | math min)
-    let mints = ("public_mint" in $names) and $issuers > 0
-    {
-        accounts: ({senders: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 ([$accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS] | math max)]}}
-            | merge (if $mints { {issuers: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [1 ($issuers + 1)]}} } else { {} }))
-        setup: ((if $mints { [(txgen-grant-issuers-step $issuers)] } else { [] })
-            | append (txgen-topup-senders-steps $accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS ([$issuers 1] | math max)))
-        templates: ([public_transfer public_transfer_memo] | where { |name| $name in $names }
-            | each { |name| {$name: {from: $random}} } | reduce --fold {} { |entry, acc| $acc | merge $entry }
-            | merge (if $mints { {public_mint: {from: {pool: issuers, select: random}}} } else { {} }))
-        sequences: (if "mpp_open_only" in $names { {mpp_open_only: {bindings: {payer: {account: $random}}}} } else { {} })
-    }
-}
-
-# Sends senders[first..end) pathUSD for fees, 32 transfers per transaction, rotating across
-# users[0..funders) so each funder stays within the setup window.
-def txgen-topup-senders-steps [first: int, end: int, funders: int] {
-    if $first >= $end { return [] }
-    let batch = $TXGEN_HELPER_MAX_AA_CALLS
-    0..<((($end - $first) + $batch - 1) // $batch) | each { |index|
-        let start = $first + $index * $batch
-        let stop = ([($start + $batch) $end] | math min)
-        {id: $"topup_senders_($index)", tx: {
-            type: tempo
-            from: {pool: users, select: {index: ($index mod $funders)}}
-            gas_limit: 5000000
-            fee_token: "0x20c0000000000000000000000000000000000000"
-            calls: ($start..<$stop | each { |sender| {
-                to: "0x20c0000000000000000000000000000000000000"
-                abi: ERC20
-                function: transfer
-                args: [{pool: {pool: senders, select: {index: $sender}}} $TXGEN_HELPER_SENDER_TOPUP]
-            } })
-        }}
-    }
-}
-
-# users[0] administers pathUSD and grants its issuer role to users[1..=issuers]. Each grant
-# writes a fresh role slot (about 250k gas).
-def txgen-grant-issuers-step [issuers: int] {
-    {id: grant_issuers, tx: {
-        type: tempo
-        from: {pool: users, select: {index: 0}}
-        gas_limit: ($issuers * 300000 + 500000)
-        fee_token: "0x20c0000000000000000000000000000000000000"
-        calls: (1..$issuers | each { |index| {
-            to: "0x20c0000000000000000000000000000000000000"
-            abi: ERC20
-            function: grantRole
-            args: [$TXGEN_HELPER_ISSUER_ROLE {pool: {pool: users, select: {index: $index}}}]
-        } })
-    }}
-}
-
-# Keeps each sender's setup transactions awaiting inclusion within the txpool's per-sender
-# limit: a sender's step waits for the receipt of its step WINDOW places earlier. Setup
-# otherwise dispatches independent nonce lanes (such as the deployer's portals) all at once.
-def txgen-window-setup-senders [steps: list<any>, window: int] {
-    let keyed = ($steps | each { |step|
-        let body = ($step | get -o tx | default ($step | get -o deploy | default {}))
-        {id: $step.id, sender: ($body | get -o from | to json -r)}
-    } | where sender != "null")
-    let waits = ($keyed | group-by sender | values | each { |group|
-        let ids = ($group | get id)
-        if ($ids | length) <= $window { [] } else {
-            $window..<($ids | length) | each { |index| {id: ($ids | get $index), after: ($ids | get ($index - $window))} }
-        }
-    } | flatten)
-    if ($waits | is-empty) { return $steps }
-    let waits = ($waits | reduce --fold {} { |wait, acc| $acc | insert $wait.id $wait.after })
-    $steps | each { |step|
-        let after = ($waits | get -o $step.id)
-        if $after == null { $step } else {
-            $step | upsert depends_on (($step | get -o depends_on | default []) | append $after | uniq)
-        }
-    }
 }
 
 # The TXGEN_* variables bench-env sets, read through bash's export as the sender's
@@ -1845,9 +1704,7 @@ def txgen-run-preset-pipeline [
         $spec_path = (txgen-prepare-tip20-policy $spec_path $generate_rpc_url $tx_token_count $accounts)
     }
     if not $skip_faucet_funding {
-        # Genesis funds users[0..accounts]; state bloat funds its signable accounts.
-        let funded_below = if $bloat_mib > 0 { [($accounts + 1) $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS] | math max } else { $accounts + 1 }
-        txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url $funded_below
+        txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
     let txgen_duration = $"($duration)s"

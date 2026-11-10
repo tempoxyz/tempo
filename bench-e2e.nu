@@ -41,6 +41,9 @@ const E2E_LOCAL_RETH_ARGS = [
     "--txpool.max-pending-txns" "200000"
     "--txpool.max-new-txns" "200000"
     "--txpool.max-batch-size" "200000"
+    # Bench presets send many transactions per sender; keep them clear of the node's
+    # 16-transaction per-sender default.
+    "--txpool.max-account-slots" "150000"
 ]
 
 def merge-e2e-features [...features: string] {
@@ -1724,9 +1727,8 @@ def "main e2e" [
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
-    let node_args = $E2E_LOCAL_RETH_ARGS | append (if $preset_spec.scenario_id in $TXGEN_HELPER_HOT_SENDER_PRESETS { ["--txpool.max-account-slots" "150000"] } else { [] })
-    let baseline_arg_filter = if $needs_baseline { supported-node-arg-filter $baseline_tempo $node_args } else { { supported: [], removed: [] } }
-    let feature_arg_filter = if $needs_feature { supported-node-arg-filter $feature_tempo $node_args } else { { supported: [], removed: [] } }
+    let baseline_arg_filter = if $needs_baseline { supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
+    let feature_arg_filter = if $needs_feature { supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
     if $removed_arg_config != "" {
         let current_config = ($env | get -o BENCH_CONFIG | default "")
