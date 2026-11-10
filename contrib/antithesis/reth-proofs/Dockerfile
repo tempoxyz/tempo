@@ -15,12 +15,12 @@ ENV CARGO_PROFILE_ANTITHESIS_DEBUG=2 \
     CARGO_PROFILE_ANTITHESIS_OVERFLOW_CHECKS=true \
     CARGO_PROFILE_ANTITHESIS_STRIP=false \
     CARGO_PROFILE_ANTITHESIS_LTO=off
-# COPY preserves timestamps. Force the local crate fresh when this layer reruns:
+# COPY preserves timestamps. Force the local crates fresh when this layer reruns:
 # its source may have changed while an earlier cached-target build was running.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/work/target,sharing=locked \
-    touch contrib/antithesis/reth-proofs/src/main.rs \
+    touch contrib/antithesis/reth-proofs/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
     && cargo build --locked --profile antithesis -p reth-proofs-antithesis \
       --features reth-proofs-antithesis/fuzz --bin reth-proofs-antithesis \
       --target x86_64-unknown-linux-gnu \

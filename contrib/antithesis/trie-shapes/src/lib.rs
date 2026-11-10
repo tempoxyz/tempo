@@ -2,7 +2,7 @@
 //!
 //! Uniformly random keys keep a trie shallow and bushy: among 10,000 keys, two share eight
 //! leading nibbles in about one run in a hundred. A collision group is a birthday-ground pair of
-//! keys sharing up to [MAX_DEPTH] leading nibbles, plus up to two neighbours matching a shorter
+//! keys sharing up to 10 leading nibbles, plus up to two neighbours matching a shorter
 //! prefix, in the account trie or in one account's storage trie. Storage values have a random byte
 //! width from 1 to 32, so leaves land on both sides of the boundary below which a leaf is embedded
 //! in its parent instead of hashed. Later steps revisit recorded groups: growing them with a new
@@ -18,10 +18,10 @@ use std::collections::{hash_map::Entry, HashMap};
 
 /// Deepest shared prefix, in nibbles, a pair is ground for. Finding a pair takes about
 /// 16^(depth/2) candidates, about a million at 10.
-pub const MAX_DEPTH: usize = 10;
+const MAX_DEPTH: usize = 10;
 /// Deepest prefix a neighbour is ground to match. A targeted search takes about 16^depth
 /// candidates, about a million at 5.
-pub const MAX_NEIGHBOR_DEPTH: usize = 5;
+const MAX_NEIGHBOR_DEPTH: usize = 5;
 /// Most neighbours a new group gets on top of its pair.
 const MAX_NEIGHBORS: usize = 2;
 /// Most keys a group grows to, which bounds the writes of one step.
@@ -33,7 +33,7 @@ const DEEP: usize = MAX_DEPTH - 2;
 
 /// The trie a group's keys live in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Trie {
+enum Trie {
     /// Keys are hashed addresses.
     Accounts,
     /// Keys are hashed slots of this account.
@@ -46,6 +46,15 @@ impl Trie {
         match self {
             Self::Accounts => keccak256(Address::from_word(word)),
             Self::Storage(_) => keccak256(word),
+        }
+    }
+
+    /// The live value of the key with preimage word, as current reads it: an account's balance
+    /// (zero when absent) or a slot's value.
+    fn current(self, word: B256, current: &impl Fn(Address, Option<U256>) -> U256) -> U256 {
+        match self {
+            Self::Accounts => current(Address::from_word(word), None),
+            Self::Storage(address) => current(address, Some(U256::from_be_bytes(word.0))),
         }
     }
 
@@ -67,7 +76,8 @@ pub enum Write {
     Storage { address: Address, slot: U256, value: U256 },
 }
 
-/// A recorded collision group: key preimage words and their current values, zero when cleared.
+/// A recorded collision group: key preimage words and their values, zero when cleared. Other
+/// writes can change those keys too, so revisits refresh the values from the caller's state.
 #[derive(Debug)]
 struct Group {
     trie: Trie,
@@ -91,17 +101,23 @@ impl Default for Collider {
 impl Collider {
     /// A collider grinding pairs that share up to max_depth nibbles, at most [MAX_DEPTH], and
     /// neighbours up to the smaller of max_depth and [MAX_NEIGHBOR_DEPTH].
-    pub fn new(max_depth: usize) -> Self {
+    fn new(max_depth: usize) -> Self {
         assert!((1..=MAX_DEPTH).contains(&max_depth));
         Self { groups: Vec::new(), max_depth }
     }
 
     /// One collide step of at most [MAX_MEMBERS] writes: half the time revisits a recorded
     /// group, otherwise grinds a new one, in the account trie or, when an existing `owner` is
-    /// given, half the time in its storage trie.
-    pub fn step(&mut self, rng: &mut impl Rng, owner: Option<Address>) -> Vec<Write> {
+    /// given, half the time in its storage trie. current reads the live value of a key from the
+    /// caller's state: an account's balance for no slot, otherwise the slot's value.
+    pub fn step(
+        &mut self,
+        rng: &mut impl Rng,
+        owner: Option<Address>,
+        current: impl Fn(Address, Option<U256>) -> U256,
+    ) -> Vec<Write> {
         if !self.groups.is_empty() && (self.groups.len() >= MAX_GROUPS || rng.random_bool(0.5)) {
-            return self.revisit(rng);
+            return self.revisit(rng, &current);
         }
         let trie = match owner {
             Some(owner) if rng.random_bool(0.5) => Trie::Storage(owner),
@@ -131,10 +147,18 @@ impl Collider {
     }
 
     /// Grows, clears or rewrites a random recorded group.
-    fn revisit(&mut self, rng: &mut impl Rng) -> Vec<Write> {
+    fn revisit(
+        &mut self,
+        rng: &mut impl Rng,
+        current: &impl Fn(Address, Option<U256>) -> U256,
+    ) -> Vec<Write> {
         let max_neighbor_depth = self.max_depth.min(MAX_NEIGHBOR_DEPTH);
         let index = rng.random_range(0..self.groups.len());
         let group = &mut self.groups[index];
+        let trie = group.trie;
+        for (member, value) in group.members.iter().zip(&mut group.values) {
+            *value = trie.current(*member, current);
+        }
         let storage = matches!(group.trie, Trie::Storage(_));
         let set_before = group.values.iter().filter(|value| !value.is_zero()).count();
         let indices = match rng.random_range(0..4) {
@@ -223,7 +247,7 @@ pub fn near_slot(rng: &mut impl Rng, of: U256) -> U256 {
 
 /// A random nonzero value of random byte width, so leaves span every encoding size: half the
 /// time up to 4 bytes, as most real amounts are, otherwise up to 32.
-pub fn random_value(rng: &mut impl Rng) -> U256 {
+fn random_value(rng: &mut impl Rng) -> U256 {
     let max_width = if rng.random_bool(0.5) { 4 } else { 32 };
     let width = rng.random_range(1..=max_width);
     let mut bytes = [0u8; 32];
@@ -239,7 +263,7 @@ fn embedded(depth: usize, value: U256) -> bool {
 }
 
 /// How many leading nibbles `a` and `b` share.
-pub fn shared_nibbles(a: B256, b: B256) -> usize {
+fn shared_nibbles(a: B256, b: B256) -> usize {
     Nibbles::unpack(a).common_prefix_length(&Nibbles::unpack(b))
 }
 
@@ -348,7 +372,7 @@ mod tests {
         // Shallow searches keep the unoptimized test build fast.
         let mut collider = Collider::new(3);
         for _ in 0..200 {
-            let writes = collider.step(&mut rng, Some(Address::repeat_byte(1)));
+            let writes = collider.step(&mut rng, Some(Address::repeat_byte(1)), |_, _| U256::ZERO);
             assert!(writes.len() <= MAX_MEMBERS);
             for write in writes {
                 if let Write::Account { balance, .. } = write {

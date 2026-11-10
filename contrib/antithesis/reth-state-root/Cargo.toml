@@ -41,7 +41,7 @@ eyre.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
 rand_09.workspace = true
 antithesis-instrumentation.workspace = true
-antithesis-trie-shapes = { path = "../trie-shapes" }
+antithesis-trie-shapes.workspace = true
 antithesis_sdk = { workspace = true, features = ["full", "rand_core_v0_9"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

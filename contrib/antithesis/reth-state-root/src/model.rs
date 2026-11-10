@@ -92,8 +92,16 @@ pub(crate) fn collide(
 ) -> Vec<Update> {
     let owner = (!state.is_empty())
         .then(|| *state.keys().nth(rng.random_range(0..state.len())).expect("sampled account"));
-    collider
-        .step(rng, owner)
+    let writes = collider.step(rng, owner, |address, slot| {
+        let entry = state.get(&address);
+        match slot {
+            None => entry.map(|entry| entry.account.balance).unwrap_or_default(),
+            Some(slot) => {
+                entry.and_then(|entry| entry.storage.get(&slot)).copied().unwrap_or_default()
+            }
+        }
+    });
+    writes
         .into_iter()
         .map(|write| {
             let update = match write {
