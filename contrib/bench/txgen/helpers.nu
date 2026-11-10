@@ -61,6 +61,9 @@ const TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS = 10000
 # tops up the ones beyond the genesis users with pathUSD from the issuers (32 per transaction).
 const TXGEN_HELPER_SENDER_TOPUP = "10000000000"
 const TXGEN_HELPER_PUBLIC_MIX_ISSUERS = 32
+# Presets that model one operator's few senders on purpose; e2e nodes keep the old per-sender
+# pool limit for them, so they measure execution rather than the 16-transaction cap.
+const TXGEN_HELPER_HOT_SENDER_PRESETS = ["zone-earn-serial" "card-settlement" "batch-payout" "institutional" "cross-border"]
 const TXGEN_HELPER_ISSUER_ROLE = "0x114e74f6ea3bd819998f78687bfcb11b140da08e9b7d222fa9c1f1ba1f2aa122"
 # Setup transactions a sender may have awaiting inclusion at once, below the txpool's
 # per-sender limit: each further step waits for the receipt of the step this many before it.
@@ -688,9 +691,9 @@ def txgen-wait-for-txpool-drain [rpc_url: string, timeout_secs: int = $TXGEN_HEL
     print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
 }
 
-# Faucet addresses per batch: the faucet mints every token to each address from one sender,
+# Faucet addresses per batch: the faucet sends one transaction per address from one sender,
 # so a batch stays within the txpool's 16 transactions per sender.
-const TXGEN_HELPER_FUND_BATCH = 3
+const TXGEN_HELPER_FUND_BATCH = 12
 
 # Funds the spec's accounts through the faucet, skipping the first funded_below mnemonic
 # accounts, which genesis (and state bloat's signable accounts) already fund.
@@ -895,7 +898,7 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     mkdir $output_dir
     let output = ($output_dir | path join zones.yml)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
+        setup: {steps: (txgen-window-setup-senders $steps $TXGEN_HELPER_SETUP_SENDER_WINDOW)}, templates: $templates, mix: $mix} | to yaml | save -f $output
     $output
 }
 
@@ -982,7 +985,7 @@ def txgen-prepare-zone-to-zone-preset [spec_path: string, count: int, accounts: 
     # Keep the preset's file name: reports derive the preset label from it.
     let output = ($output_dir | path join ($spec_path | path basename))
     {include: $base, accounts: {users: {range: [0 $accounts]}},
-        setup: {steps: $steps}, templates: $templates, mix: $mix} | to yaml | save -f $output
+        setup: {steps: (txgen-window-setup-senders $steps $TXGEN_HELPER_SETUP_SENDER_WINDOW)}, templates: $templates, mix: $mix} | to yaml | save -f $output
     $output
 }
 
@@ -1093,7 +1096,7 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
     mkdir $output_dir
     let output = ($output_dir | path join ($spec_path | path basename))
-    { include: $spec_path, templates: $templates, mix: $mix, append: { setup: { steps: $steps } } } | to yaml | save -f $output
+    { include: $spec_path, templates: $templates, mix: $mix, append: { setup: { steps: (txgen-window-setup-senders $steps $TXGEN_HELPER_SETUP_SENDER_WINDOW) } } } | to yaml | save -f $output
     $output
 }
 
@@ -1488,7 +1491,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     $"# Per-instance copies of neobank-generic templates, rendered by helpers.nu.\ntemplates:\n($raw_templates | str join "\n")\n"
         | save -f ($output_dir | path join $raw_name)
     let body = ({include: [($spec_path | path expand) $raw_name], accounts: $accounts_record,
-        setup: {steps: ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup) $vault_setup))},
+        setup: {steps: (txgen-window-setup-senders ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup) $vault_setup)) $TXGEN_HELPER_SETUP_SENDER_WINDOW)},
         templates: $templates,
         mix: ($entries | each { |entry| {template: $entry.name, weight: $entry.weight} })} | to yaml)
     # Keychain steps hold ${TXGEN_*} placeholders: appended as text after the setup above.
@@ -1627,11 +1630,12 @@ def txgen-public-mix-senders [preset_name: string, mix: list<any>, accounts: int
     if $preset_name != "public-mix" { return $none }
     let names = ($mix | each { |entry| $entry | get -o template | default ($entry | get -o sequence | default "") })
     let random = {pool: senders, select: random}
-    let issuers = ([$accounts $TXGEN_HELPER_PUBLIC_MIX_ISSUERS] | math min)
-    let mints = ("public_mint" in $names) and $issuers > 1
+    # Issuers are users[1..=issuers]; users[0] already carries its per-user templates.
+    let issuers = ([($accounts - 1) $TXGEN_HELPER_PUBLIC_MIX_ISSUERS] | math min)
+    let mints = ("public_mint" in $names) and $issuers > 0
     {
         accounts: ({senders: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 ([$accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS] | math max)]}}
-            | merge (if $mints { {issuers: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 $issuers]}} } else { {} }))
+            | merge (if $mints { {issuers: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [1 ($issuers + 1)]}} } else { {} }))
         setup: ((if $mints { [(txgen-grant-issuers-step $issuers)] } else { [] })
             | append (txgen-topup-senders-steps $accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS $issuers))
         templates: ([public_transfer public_transfer_memo] | where { |name| $name in $names }
@@ -1664,14 +1668,15 @@ def txgen-topup-senders-steps [first: int, end: int, funders: int] {
     }
 }
 
-# users[0] administers pathUSD and grants its issuer role to users[1..issuers).
+# users[0] administers pathUSD and grants its issuer role to users[1..=issuers]. Each grant
+# writes a fresh role slot (about 250k gas).
 def txgen-grant-issuers-step [issuers: int] {
     {id: grant_issuers, tx: {
         type: tempo
         from: {pool: users, select: {index: 0}}
-        gas_limit: 5000000
+        gas_limit: ($issuers * 300000 + 500000)
         fee_token: "0x20c0000000000000000000000000000000000000"
-        calls: (1..<$issuers | each { |index| {
+        calls: (1..$issuers | each { |index| {
             to: "0x20c0000000000000000000000000000000000000"
             abi: ERC20
             function: grantRole
