@@ -746,7 +746,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::types::to_raw;
+    use crate::{auth::AuthSigner, types::to_raw};
 
     #[derive(Default)]
     struct MockZoneRpcApi;
@@ -846,7 +846,7 @@ mod tests {
         AuthContext {
             caller: Address::repeat_byte(0xaa),
             expires_at: 1_700_000_000,
-            signer: crate::auth::AuthSigner::Root,
+            signer: AuthSigner::Root,
         }
     }
 

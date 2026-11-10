@@ -375,6 +375,10 @@ const fn account_unavailable(account: Address, block_number: u64, reason: String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_provider::mock::Asserter;
+    use alloy_rpc_types_eth::AccountInfo;
+    use tempo_primitives::account::encode_config_commitment;
+    use tokio::runtime::Handle;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn finite_sync_attempt_limit_returns_diagnostic_error() {
@@ -387,12 +391,8 @@ mod tests {
             .await
             .expect("HTTP transport construction is lazy")
             .erased();
-        let reader = L1StateProvider::new_raw(
-            config,
-            L1StateCache::default(),
-            provider,
-            tokio::runtime::Handle::current(),
-        );
+        let reader =
+            L1StateProvider::new_raw(config, L1StateCache::default(), provider, Handle::current());
 
         let err =
             tokio::task::spawn_blocking(move || reader.get_storage(Address::ZERO, B256::ZERO, 7))
@@ -418,8 +418,7 @@ mod tests {
         let cache = L1StateCache::default();
         let (account, commitment) = (Address::repeat_byte(1), B256::repeat_byte(2));
         cache.lock().set_commitment(account, 7, commitment);
-        let reader =
-            L1StateProvider::new_raw(config, cache, provider, tokio::runtime::Handle::current());
+        let reader = L1StateProvider::new_raw(config, cache, provider, Handle::current());
 
         let (cached, missing) = tokio::task::spawn_blocking(move || {
             (
@@ -444,10 +443,10 @@ mod tests {
 
     #[tokio::test]
     async fn async_commitment_read_fetches_once_then_serves_the_cache() {
-        let asserter = alloy_provider::mock::Asserter::new();
+        let asserter = Asserter::new();
         let commitment = B256::repeat_byte(2);
-        asserter.push_success(&alloy_rpc_types_eth::AccountInfo {
-            extension: tempo_primitives::account::encode_config_commitment(commitment).into(),
+        asserter.push_success(&AccountInfo {
+            extension: encode_config_commitment(commitment).into(),
             ..Default::default()
         });
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -457,7 +456,7 @@ mod tests {
             L1StateProviderConfig::default(),
             L1StateCache::default(),
             provider,
-            tokio::runtime::Handle::current(),
+            Handle::current(),
         );
         let account = Address::repeat_byte(1);
 
@@ -472,9 +471,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn invalid_commitment_fails_without_retry() {
-        let asserter = alloy_provider::mock::Asserter::new();
+        let asserter = Asserter::new();
         // An unsupported commitment format tag.
-        asserter.push_success(&alloy_rpc_types_eth::AccountInfo {
+        asserter.push_success(&AccountInfo {
             extension: Bytes::from_static(&[0xff]).into(),
             ..Default::default()
         });
@@ -486,7 +485,7 @@ mod tests {
             L1StateProviderConfig::default(),
             L1StateCache::default(),
             provider,
-            tokio::runtime::Handle::current(),
+            Handle::current(),
         );
         let account = Address::repeat_byte(1);
 

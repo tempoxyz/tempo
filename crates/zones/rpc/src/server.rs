@@ -456,8 +456,8 @@ mod tests {
     }
 
     use auth_tokens::{
-        build_token_with_signature, now_secs, sign_configurable_account_signature,
-        sign_keychain_signature, sign_p256_signature,
+        build_token_with_signature, configurable_account_config, now_secs,
+        sign_configurable_account_signature, sign_keychain_signature, sign_p256_signature,
     };
 
     const ZONE_ID: u32 = 7;
@@ -780,11 +780,12 @@ mod tests {
         let now = now_secs();
         let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
         // The access key is the configurable account of `owner`, signing for `root`.
-        let (approval, key_id, config) = sign_configurable_account_signature(
+        let (approval, key_id) = sign_configurable_account_signature(
             KeychainSignature::signing_hash(digest, root),
             &owner,
         )
         .expect("signing failed");
+        let config = configurable_account_config(&owner);
         let TempoSignature::ConfigurableAccount(approval) = approval else {
             unreachable!("a configurable account signature")
         };
@@ -875,7 +876,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (signature, _, _) =
+        let (signature, _) =
             sign_configurable_account_signature(digest, &key).expect("signing failed");
         let err = authenticate_token(
             &build_token_with_signature(signature, &fields),
@@ -906,8 +907,9 @@ mod tests {
         let owner = P256SigningKey::random(&mut OsRng);
         let now = now_secs();
         let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
-        let (signature, account, config) =
+        let (signature, account) =
             sign_configurable_account_signature(digest, &owner).expect("signing failed");
+        let config = configurable_account_config(&owner);
         let config_commitment = config.commitment().expect("valid configuration");
         let token = build_token_with_signature(signature, &fields);
         let api = TestApi::default();

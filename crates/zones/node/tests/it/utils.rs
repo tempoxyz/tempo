@@ -4837,7 +4837,7 @@ impl RedactedRpcTestCtx {
             now,
             now + 600,
         );
-        let (signature, account, _) =
+        let (signature, account) =
             auth_tokens::sign_configurable_account_signature(digest, signing_key)
                 .expect("configurable account signing failed");
         // Authorization reads the account's commitment from Tempo.

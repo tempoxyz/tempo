@@ -936,11 +936,11 @@ async fn ws_closes_when_a_tempo_commitment_retires_its_signer() {
     let root_address = root
         .recover_signer(&digest)
         .expect("the signature recovers");
-    let (configurable, account, _) =
+    let (configurable, account) =
         sign_configurable_account_signature(digest, &signer).expect("signing should succeed");
     // A configurable account as the access key of `keychain_root`.
     let keychain_root = Address::repeat_byte(0x78);
-    let (approval, key_id, _) = sign_configurable_account_signature(
+    let (approval, key_id) = sign_configurable_account_signature(
         KeychainSignature::signing_hash(digest, keychain_root),
         &signer,
     )
@@ -950,18 +950,36 @@ async fn ws_closes_when_a_tempo_commitment_retires_its_signer() {
     };
     let keychain = TempoSignature::Keychain(KeychainSignature::new(keychain_root, approval));
 
-    for (signature, signer_address, api) in [
-        (root, root_address, MockZoneRpcApi::default()),
-        (configurable, account, MockZoneRpcApi::default()),
-        (
-            keychain,
-            key_id,
-            MockZoneRpcApi::with_key(
+    struct Case {
+        signature: TempoSignature,
+        signer_address: Address,
+        api: MockZoneRpcApi,
+    }
+
+    for Case {
+        signature,
+        signer_address,
+        api,
+    } in [
+        Case {
+            signature: root,
+            signer_address: root_address,
+            api: MockZoneRpcApi::default(),
+        },
+        Case {
+            signature: configurable,
+            signer_address: account,
+            api: MockZoneRpcApi::default(),
+        },
+        Case {
+            signature: keychain,
+            signer_address: key_id,
+            api: MockZoneRpcApi::with_key(
                 keychain_root,
                 key_id,
                 KeyInfoSignatureType::ConfigurableAccount,
             ),
-        ),
+        },
     ] {
         let api = Arc::new(api);
         let ctx = TestContext::start_shared(api.clone()).await;

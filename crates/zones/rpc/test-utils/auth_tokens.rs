@@ -129,17 +129,8 @@ pub(crate) fn sign_keychain_signature(
 pub(crate) fn sign_configurable_account_signature(
     digest: B256,
     signing_key: &P256SigningKey,
-) -> eyre::Result<(TempoSignature, Address, ConfigurableAccountConfig)> {
-    let (pub_key_x, pub_key_y) = p256_public_key(signing_key);
-    let config = ConfigurableAccountConfig {
-        salt: B256::ZERO,
-        version: 0,
-        threshold: 1,
-        owners: vec![ConfigurableAccountOwner {
-            owner: derive_p256_address(&pub_key_x, &pub_key_y),
-            weight: 1,
-        }],
-    };
+) -> eyre::Result<(TempoSignature, Address)> {
+    let config = configurable_account_config(signing_key);
     let account = config
         .derive_account()
         .map_err(|err| eyre::eyre!("{err:?}"))?;
@@ -147,13 +138,24 @@ pub(crate) fn sign_configurable_account_signature(
         configurable_account_digest(digest, account, config.version),
         signing_key,
     )?;
-    let signature = ConfigurableAccountSignature::try_new(account, config.clone(), vec![approval])
+    let signature = ConfigurableAccountSignature::try_new(account, config, vec![approval])
         .map_err(|err| eyre::eyre!("{err:?}"))?;
-    Ok((
-        TempoSignature::ConfigurableAccount(signature),
-        account,
-        config,
-    ))
+    Ok((TempoSignature::ConfigurableAccount(signature), account))
+}
+
+pub(crate) fn configurable_account_config(
+    signing_key: &P256SigningKey,
+) -> ConfigurableAccountConfig {
+    let (pub_key_x, pub_key_y) = p256_public_key(signing_key);
+    ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: derive_p256_address(&pub_key_x, &pub_key_y),
+            weight: 1,
+        }],
+    }
 }
 
 pub(crate) fn p256_public_key(signing_key: &P256SigningKey) -> (B256, B256) {

@@ -31,6 +31,7 @@ use std::{
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
+    time::interval,
 };
 use tracing::warn;
 
@@ -579,7 +580,7 @@ async fn handle_ws_session(
     let terminate_connection = async {
         let token_expiry = tokio::time::sleep(duration_until_unix_timestamp(auth.expires_at));
         tokio::pin!(token_expiry);
-        let mut auth_recheck = tokio::time::interval(Duration::from_secs(1));
+        let mut auth_recheck = interval(Duration::from_secs(1));
         let mut close_session_rx = close_session_rx;
 
         loop {

@@ -60,8 +60,9 @@ use tempo_contracts::precompiles::{
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
 use tokio::{
+    runtime::Handle,
     sync::Mutex,
-    time::{MissedTickBehavior, interval},
+    time::{MissedTickBehavior, interval, timeout},
 };
 use zone_l1::{
     TempoStateExt as _,
@@ -815,7 +816,7 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
             L1StateProviderConfig::default(),
             l1_state_cache,
             l1_provider.clone(),
-            tokio::runtime::Handle::current(),
+            Handle::current(),
         );
         let rpc = Self {
             eth,
@@ -970,7 +971,7 @@ where
             let anchor = provider
                 .state_by_block_hash(header.hash())?
                 .tempo_block_number()?;
-            let commitment = tokio::time::timeout(
+            let commitment = timeout(
                 L1_COMMITMENT_READ_TIMEOUT,
                 self.l1_state.read_l1_commitment_async(account, anchor),
             )
