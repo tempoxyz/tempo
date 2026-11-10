@@ -44,4 +44,3 @@ antithesis-instrumentation.workspace = true
 antithesis_sdk = { workspace = true, features = ["full", "rand_core_v0_9"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tempfile.workspace = true

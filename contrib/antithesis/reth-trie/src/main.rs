@@ -214,10 +214,6 @@ fn run(
     runtime: &Runtime,
     db: Arc<DatabaseEnv>,
 ) -> Result<()> {
-    ensure!((1..=1024).contains(&config.blocks), "blocks must be 1..=1024");
-    ensure!((1..=4096).contains(&config.updates), "updates must be 1..=4096");
-    ensure!((1..=16).contains(&config.proof_workers), "proof_workers must be 1..=16");
-    ensure!((1..=3600).contains(&config.timeout_secs), "timeout_secs must be 1..=3600");
     let buffer = config.memory_block_buffer_target.unwrap_or_else(|| {
         TreeConfig::default().memory_block_buffer_target().min(config.persistence_threshold)
     });
@@ -597,6 +593,10 @@ fn workload() -> Result<()> {
     let text = std::env::args().nth(1).unwrap_or_else(|| "{}".into());
     let mut config: Config =
         serde_json::from_str(&text).wrap_err("invalid workload configuration")?;
+    ensure!((1..=1024).contains(&config.blocks), "blocks must be 1..=1024");
+    ensure!((1..=4096).contains(&config.updates), "updates must be 1..=4096");
+    ensure!((1..=16).contains(&config.proof_workers), "proof_workers must be 1..=16");
+    ensure!((1..=3600).contains(&config.timeout_secs), "timeout_secs must be 1..=3600");
     ensure!(config.rounds != Some(0), "rounds must be positive");
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
