@@ -30,6 +30,9 @@ use tracing::warn;
 /// Worker threads of a corpus's runtime: they renew its lease and decode the blocks it reads ahead.
 const WORKERS: usize = 4;
 
+/// Stored block bytes [Corpus::windows] aims to read per window.
+const WINDOW_BYTES: usize = 32 << 20;
+
 /// A corpus, open at its published checkpoint. A fill extending it meanwhile does not change
 /// what this reads.
 pub struct Corpus {
@@ -112,15 +115,21 @@ impl Corpus {
     }
 
     /// Each of `blocks`, in block order and once each, with its stored input size and harness
-    /// input, in windows of up to `window` blocks, each read and decoded on the corpus's runtime
-    /// while the caller works on the one before. Iteration stops after the first error.
+    /// input, in windows of up to `window` blocks and about `WINDOW_BYTES` stored bytes, each read
+    /// and decoded on the corpus's runtime while the caller works on the one before. Iteration
+    /// stops after the first error.
     pub fn windows(&self, mut blocks: Vec<u64>, window: usize) -> Windows<'_> {
         blocks.sort_unstable();
         blocks.dedup();
         let (sender, receiver) = mpsc::channel(1);
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
         let task = AbortOnDropHandle::new(self.runtime.spawn(async move {
-            for blocks in blocks.chunks(window.max(1)) {
+            // Each window is sized from the stored bytes per block of the one before, starting
+            // from one block, so heavy blocks come in fewer at a time.
+            let (mut rest, mut size) = (&blocks[..], 1);
+            while !rest.is_empty() {
+                let (blocks, tail) = rest.split_at(size.min(rest.len()));
+                rest = tail;
                 let read = async {
                     let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
                         return Ok(Vec::new());
@@ -169,6 +178,12 @@ impl Corpus {
                         .await
                 }
                 .await;
+                if let Ok(inputs) = &read
+                    && let Some(next) = (WINDOW_BYTES * inputs.len())
+                        .checked_div(inputs.iter().map(|input| input.size).sum())
+                {
+                    size = next.clamp(1, window.max(1));
+                }
                 let failed = read.is_err();
                 if sender.send(read).await.is_err() || failed {
                     break;
