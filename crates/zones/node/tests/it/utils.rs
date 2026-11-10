@@ -3367,7 +3367,10 @@ impl ZoneAccount {
         Ok((block_number, balance))
     }
 
-    async fn submit_deposit_with_memo(
+    /// Submit a pathUSD deposit to `recipient` on L1 without waiting for the zone to process it.
+    ///
+    /// Returns the L1 block containing the deposit.
+    pub(crate) async fn submit_deposit_with_memo(
         &mut self,
         amount: u128,
         recipient: Address,
@@ -4085,8 +4088,16 @@ pub(crate) fn deposit_allowlist_admin() -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&B256::repeat_byte(0xad)).expect("valid test admin key")
 }
 
+/// Deposit allowlist of a real P2P test cluster.
+struct AllowlistSetup<'a> {
+    /// Addresses every sequencer's list starts with.
+    seed: &'a [Address],
+    /// Whether the RPC-only node runs with the admin and relays `zoneAdmin` writes.
+    rpc_relays_writes: bool,
+}
+
 /// Three-member P2P quorum whose sequencers enforce a deposit allowlist administered by
-/// [`deposit_allowlist_admin`], plus an RPC-only node that relays `zoneAdmin` calls to them.
+/// [`deposit_allowlist_admin`], plus an RPC-only node that mirrors their list.
 pub(crate) struct DepositAllowlistP2pCluster {
     pub(crate) cluster: RealP2pCluster,
     pub(crate) rpc_node: ZoneTestNode,
@@ -4096,11 +4107,14 @@ pub(crate) struct DepositAllowlistP2pCluster {
 }
 
 /// Start a real-L1 cluster whose sequencers seed their deposit allowlists with `seed`, launching
-/// only `active_nodes` of the three quorum members, plus one RPC-only node.
+/// only `active_nodes` of the three quorum members, plus one RPC-only node. With
+/// `rpc_relays_writes` the RPC-only node runs with the admin and relays `zoneAdmin` writes;
+/// otherwise writes must go to the sequencers directly.
 pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
     withdrawal_batch_interval_blocks: u64,
     active_nodes: usize,
     seed: &[Address],
+    rpc_relays_writes: bool,
 ) -> eyre::Result<DepositAllowlistP2pCluster> {
     let parts = start_real_p2p_cluster_inner(
         withdrawal_batch_interval_blocks,
@@ -4109,7 +4123,10 @@ pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
         None,
         false,
         None,
-        Some(seed),
+        Some(AllowlistSetup {
+            seed,
+            rpc_relays_writes,
+        }),
         false,
     )
     .await?;
@@ -4132,9 +4149,10 @@ async fn start_real_p2p_cluster_inner(
     l1_block_time: Option<Duration>,
     proxy_p2p: bool,
     prover_config: Option<ZoneProverConfig>,
-    deposit_allowlist_seed: Option<&[Address]>,
+    deposit_allowlist: Option<AllowlistSetup<'_>>,
     l1_proofs_unavailable: bool,
 ) -> eyre::Result<RealP2pClusterParts> {
+    let deposit_allowlist_seed = deposit_allowlist.as_ref().map(|setup| setup.seed);
     eyre::ensure!(
         (2..=3).contains(&active_nodes),
         "real P2P test cluster requires two or three active nodes, got {active_nodes}"
@@ -4364,7 +4382,10 @@ async fn start_real_p2p_cluster_inner(
                     vec![SecretKey::from(attestation_signers[0].credential())],
                     None,
                     None,
-                    Some(allowlist_admin),
+                    deposit_allowlist
+                        .as_ref()
+                        .is_some_and(|setup| setup.rpc_relays_writes)
+                        .then_some(allowlist_admin),
                 )
                 .await?,
             zone_chain_id: allowlist_admin.zone_chain_id,

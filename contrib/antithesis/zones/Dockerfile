@@ -3,9 +3,9 @@
 # tools, the scripts docker-compose.yaml runs and the test template.
 #
 # Build from the repository root (requires the crates/zones/contracts/lib submodules):
-#   docker build -f zones/antithesis/Dockerfile -t tempo-zones-antithesis:latest \
+#   docker build -f contrib/antithesis/zones/Dockerfile -t tempo-zones-antithesis:latest \
 #     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
-#   docker build -f zones/antithesis/Dockerfile --target workload \
+#   docker build -f contrib/antithesis/zones/Dockerfile --target workload \
 #     -t tempo-zones-antithesis-workload:latest \
 #     --build-arg VERGEN_GIT_SHA="$(git rev-parse HEAD)" .
 
@@ -24,6 +24,8 @@ RUN apt-get update \
 # Release optimizations with debug assertions and symbols, without LTO and with one codegen
 # unit per crate so Antithesis can symbolize the coverage instrumentation.
 ARG RUST_PROFILE=antithesis
+# Full DWARF (the profile inherits line tables only), so gdb can print locals, arguments and types.
+ARG CARGO_PROFILE_ANTITHESIS_DEBUG=2
 # The build context has no Git metadata, so the version SHA comes from the caller.
 ARG VERGEN_GIT_SHA=0000000000000000000000000000000000000000
 ARG VERGEN_GIT_SHA_SHORT=00000000
@@ -78,15 +80,16 @@ RUN /out/tempo-xtask generate-genesis --output /genesis --accounts 20 --no-dkg-i
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 
+# gdb lets debugging sessions attach to the nodes (gdb -p) or open their core dumps.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates jq \
+    ca-certificates jq gdb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/ /usr/local/bin/
 COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
 COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 COPY --from=l1-genesis /genesis/l1-genesis.json /opt/zones/l1-genesis.json
-COPY zones/antithesis/scripts/ /opt/zones/
+COPY contrib/antithesis/zones/scripts/ /opt/zones/
 
 # Antithesis reads the symbols of instrumented binaries from /symbols; the binaries keep theirs.
 RUN mkdir /symbols && for bin in tempo tempo-zone tempo-xtask tempo-zone-xtask; do \
@@ -101,7 +104,7 @@ WORKDIR /app
 # this image has it, so no other container offers test commands. Build it with
 # --target workload.
 FROM runtime AS workload
-COPY --chmod=755 zones/antithesis/test/ /opt/antithesis/test/
+COPY --chmod=755 contrib/antithesis/zones/test/ /opt/antithesis/test/
 
 # The default target stays the image the nodes run.
 FROM runtime

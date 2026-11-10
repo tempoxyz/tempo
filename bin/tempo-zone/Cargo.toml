@@ -3,7 +3,7 @@ name = "tempo-zone"
 description = "Tempo Zone L2 node binary"
 default-run = "tempo-zone"
 
-version = "0.5.0"
+version = "0.4.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -42,7 +42,7 @@ default = ["asm-keccak", "jemalloc", "keccak-cache-global"]
 # Report Antithesis SDK assertions. Without it the assertions and their details are compiled out.
 fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "zone-node/fuzz"]
 # Link Antithesis's coverage runtime shim, for binaries built with its sancov flags (see
-# zones/antithesis/Dockerfile). Linux only.
+# contrib/antithesis/zones/Dockerfile). Linux only.
 antithesis-coverage = ["dep:antithesis-instrumentation"]
 
 asm-keccak = [

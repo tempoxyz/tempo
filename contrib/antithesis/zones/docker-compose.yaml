@@ -16,6 +16,9 @@ x-zone: &zone
   image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
   entrypoint: ["/opt/zones/zone-node.sh"]
   init: true
+  # gdb -p from docker exec needs CAP_SYS_PTRACE when the kernel's Yama ptrace_scope is 1.
+  cap_add:
+    - SYS_PTRACE
   healthcheck: &rpc-healthcheck
     test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
     interval: 5s
@@ -33,6 +36,9 @@ services:
     container_name: l1
     hostname: l1
     init: true
+    # gdb -p from docker exec needs CAP_SYS_PTRACE when the kernel's Yama ptrace_scope is 1.
+    cap_add:
+      - SYS_PTRACE
     entrypoint: ["/usr/local/bin/tempo"]
     command:
       - node
@@ -147,6 +153,9 @@ services:
     container_name: workload
     hostname: workload
     init: true
+    # gdb -p from docker exec needs CAP_SYS_PTRACE when the kernel's Yama ptrace_scope is 1.
+    cap_add:
+      - SYS_PTRACE
     entrypoint: ["/opt/zones/workload.sh"]
     depends_on:
       provision:
