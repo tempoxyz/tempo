@@ -5190,7 +5190,7 @@ dependencies = [
 
 [[package]]
 name = "exithatch"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "eyre"
@@ -15360,7 +15360,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-primitives",
  "antithesis-instrumentation",
@@ -17574,7 +17574,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zone-chainspec"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
@@ -17592,7 +17592,7 @@ dependencies = [
 
 [[package]]
 name = "zone-checker"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
@@ -17641,7 +17641,7 @@ dependencies = [
 
 [[package]]
 name = "zone-evm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -17679,7 +17679,7 @@ dependencies = [
 
 [[package]]
 name = "zone-l1"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17720,7 +17720,7 @@ dependencies = [
 
 [[package]]
 name = "zone-node"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy",
  "alloy-chains",
@@ -17826,7 +17826,7 @@ dependencies = [
 
 [[package]]
 name = "zone-p2p"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
@@ -17852,7 +17852,7 @@ dependencies = [
 
 [[package]]
 name = "zone-payload"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17892,7 +17892,7 @@ dependencies = [
 
 [[package]]
 name = "zone-precompiles"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "alloy",
@@ -17921,7 +17921,7 @@ dependencies = [
 
 [[package]]
 name = "zone-primitives"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -17933,7 +17933,7 @@ dependencies = [
 
 [[package]]
 name = "zone-prover"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -17964,7 +17964,7 @@ dependencies = [
 
 [[package]]
 name = "zone-rpc"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -18002,7 +18002,7 @@ dependencies = [
 
 [[package]]
 name = "zone-sequencer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -18055,7 +18055,7 @@ dependencies = [
 
 [[package]]
 name = "zone-spf"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
