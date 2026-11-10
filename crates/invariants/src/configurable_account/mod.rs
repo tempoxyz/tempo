@@ -4,7 +4,9 @@ use std::{collections::BTreeMap, fmt};
 
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, Log};
 use alloy_sol_types::SolEvent;
-use tempo_contracts::precompiles::IAccountKeychain::{KeyAuthorized, isAdminKeyCall};
+use tempo_contracts::precompiles::IAccountKeychain::{
+    KeyAuthorized, KeyInfo, getKeyCall, isAdminKeyCall,
+};
 
 use crate::{Observe, ObserveError, Tx, Views, optional, view_many};
 
@@ -28,6 +30,8 @@ pub struct Commitments {
     /// Whether each queried `(account, key)` is the account's root or an active admin key, as the
     /// keychain reports it; unanswered reads are left out.
     pub admins: BTreeMap<(Address, Address), bool>,
+    /// Each queried `(account, access key)`'s stored grant, as the keychain reports it.
+    pub keys: BTreeMap<(Address, Address), KeyInfo>,
 }
 
 impl Observe for Commitments {
@@ -40,6 +44,7 @@ impl Observe for Commitments {
             accounts,
             keychain,
             admins: queries,
+            keys: key_queries,
         } = at;
         let calls: Vec<_> = accounts
             .iter()
@@ -78,10 +83,28 @@ impl Observe for Commitments {
             .zip(view_many(views, &calls)?)
             .filter_map(|(&query, admin)| Some((query, admin?)))
             .collect();
+        let calls: Vec<_> = key_queries
+            .iter()
+            .map(|&(account, key_id)| {
+                (
+                    keychain,
+                    getKeyCall {
+                        account,
+                        keyId: key_id,
+                    },
+                )
+            })
+            .collect();
+        let keys = key_queries
+            .iter()
+            .zip(view_many(views, &calls)?)
+            .filter_map(|(&query, info)| Some((query, info?)))
+            .collect();
         Ok(Self {
             precompile,
             of,
             admins,
+            keys,
         })
     }
 }
@@ -94,6 +117,7 @@ pub struct At<'a> {
     pub accounts: &'a [Address],
     pub keychain: Address,
     pub admins: &'a [(Address, Address)],
+    pub keys: &'a [(Address, Address)],
 }
 
 /// Who a transaction's signatures authorize it for.
@@ -137,6 +161,21 @@ impl Authority {
                     .iter()
                     .filter(|k| k.role == Role::KeyAuthorization)
                     .map(|k| k.account),
+            )
+    }
+
+    /// The access keys signing inside a keychain envelope, each with whether it signs as a
+    /// configurable account.
+    pub fn access_keys(&self) -> impl Iterator<Item = (Address, bool)> + '_ {
+        self.quorums
+            .iter()
+            .filter(|q| q.role == Role::AccessKey)
+            .map(|q| (q.account, true))
+            .chain(
+                self.keys
+                    .iter()
+                    .filter(|k| k.role == Role::AccessKey)
+                    .map(|k| (k.account, false)),
             )
     }
 

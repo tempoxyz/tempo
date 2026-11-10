@@ -98,11 +98,18 @@ pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, rep
     accounts.sort_unstable();
     accounts.dedup();
     let admins = effects.tx.authority.admin_queries(effects.tx.sender);
+    let keys: Vec<_> = effects
+        .tx
+        .authority
+        .access_keys()
+        .map(|(key, _)| (effects.tx.sender, key))
+        .collect();
     let at = At {
         precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
         accounts: &accounts,
         keychain: ACCOUNT_KEYCHAIN_ADDRESS,
         admins: &admins,
+        keys: &keys,
     };
     reader.check::<Commitments>(report, at, CONFIGURABLE_ACCOUNT_ADDRESS, VIEW);
     let leaves = Leaves {

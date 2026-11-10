@@ -462,6 +462,49 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
             ensure!(!ordinary, "a key-type-3 grant used by an ordinary access-key signature")
         },
     },
+    // An access key signs as the key type its grant stores, except that a configurable
+    // signature may use an ordinary grant whose key ID already has a commitment.
+    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L184>
+    check! {
+        id: "TEMPO-ACCOUNT-ACCESS-KEY-TYPE",
+        over: |step: &AccountStep| {
+            step.tx.iter().filter(|tx| tx.authority.active).map(|tx| tx.sender)
+        },
+        judge: |s, sender| {
+            let tx = s.tx.as_ref()?;
+            let inline = tx.authority.grant.map(|g| g.key_id);
+            let mut judged = false;
+            for (key, configurable) in tx.authority.access_keys() {
+                // A grant made in the same transaction is judged by TEMPO-ACCOUNT-GRANT-TYPE.
+                if inline == Some(key) {
+                    continue;
+                }
+                let Some(info) = s.pre.keys.get(&(*sender, key)) else {
+                    continue;
+                };
+                if info.keyId != key || info.isRevoked {
+                    continue;
+                }
+                let stored = info.signatureType as u8;
+                let ok = if configurable {
+                    let Some(commitment) = s.pre.of.get(&key) else {
+                        continue;
+                    };
+                    stored == CONFIGURABLE_KEY_TYPE || !commitment.is_zero()
+                } else {
+                    stored != CONFIGURABLE_KEY_TYPE
+                };
+                if !ok {
+                    return Some(Verdict::Broken(format!(
+                        "access key {key} signs {} under a grant of key type {stored}",
+                        if configurable { "as a configurable account" } else { "ordinarily" }
+                    )));
+                }
+                judged = true;
+            }
+            judged.then_some(Verdict::Holds)
+        },
+    },
     // Grants change only in the parent's own transactions, by its key or quorum, and never as an admin key.
     // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1111.md#L175-L176>
     check! {
