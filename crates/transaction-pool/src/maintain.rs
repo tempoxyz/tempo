@@ -404,35 +404,48 @@ impl StateChanges {
     /// Collects the accounts whose configuration commitment or code differs between their
     /// original and present info in `states`.
     fn new<'a>(
-        states: impl IntoIterator<Item = &'a AddressMap<BundleAccount>>,
+        states: impl IntoIterator<Item = &'a AddressMap<BundleAccount>> + Clone,
         fee_tokens: AddressSet,
     ) -> Self {
-        let mut changes = Self {
+        Self {
+            commitments: states
+                .clone()
+                .into_iter()
+                .flatten()
+                .filter(|(_, account)| {
+                    account
+                        .original_info
+                        .as_ref()
+                        .map(|info| info.extension.as_ref())
+                        .unwrap_or_default()
+                        != account
+                            .info
+                            .as_ref()
+                            .map(|info| info.extension.as_ref())
+                            .unwrap_or_default()
+                })
+                .map(|(address, _)| *address)
+                .collect(),
+            code: states
+                .into_iter()
+                .flatten()
+                .filter(|(_, account)| {
+                    account
+                        .original_info
+                        .as_ref()
+                        .map_or(KECCAK256_EMPTY, |info| info.code_hash)
+                        != account
+                            .info
+                            .as_ref()
+                            .map_or(KECCAK256_EMPTY, |info| info.code_hash)
+                })
+                .map(|(address, _)| *address)
+                .collect(),
             fee_tokens,
-            ..Default::default()
-        };
-        for (address, account) in states.into_iter().flatten() {
-            let original = account.original_info.as_ref();
-            let present = account.info.as_ref();
-            if original
-                .map(|info| info.extension.as_ref())
-                .unwrap_or_default()
-                != present
-                    .map(|info| info.extension.as_ref())
-                    .unwrap_or_default()
-            {
-                changes.commitments.insert(*address);
-            }
-            if original.map_or(KECCAK256_EMPTY, |info| info.code_hash)
-                != present.map_or(KECCAK256_EMPTY, |info| info.code_hash)
-            {
-                changes.code.insert(*address);
-            }
         }
-        changes
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.commitments.is_empty() && self.code.is_empty() && self.fee_tokens.is_empty()
     }
 

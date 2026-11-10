@@ -1632,6 +1632,7 @@ mod tests {
     }
 
     use crate::{
+        maintain::TempoPoolUpdates,
         test_utils::{MockProviderStorageExt, TxBuilder, wrap_valid_tx},
         transaction::KeychainSubject,
         tt_2d_pool::AA2dPoolConfig,
@@ -1651,6 +1652,7 @@ mod tests {
         error::InvalidPoolTransactionError,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
+    use reth_trie_common::bundle_state::{AccountStatus, BundleState, StorageSlot};
     use tempo_chainspec::{
         TempoChainSpec,
         hardfork::TempoHardfork,
@@ -1663,6 +1665,7 @@ mod tests {
         account_keychain::{
             AccountKeychain, AuthorizedKey, SpendingLimitState, StoredSignatureType,
         },
+        tip_fee_manager::{TipFeeManager, amm},
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
@@ -2047,15 +2050,7 @@ mod tests {
             .into_iter()
             .chain([other_sender, other_lane, other_pool])
         {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: U256::MAX,
-                state_nonce: 0,
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(tx, None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
+            pool.add_validated_transaction(TransactionOrigin::External, valid_outcome(tx, 0))
                 .unwrap();
         }
         let timestamp = if expired { 50 } else { 49 };
@@ -2338,15 +2333,7 @@ mod tests {
             aa_2d_queued,
             other_aa_2d_queued,
         ] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: 0,
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled, None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
+            pool.add_validated_transaction(TransactionOrigin::External, valid_outcome(pooled, 0))
                 .expect("transaction should be admitted");
         }
 
@@ -3622,13 +3609,13 @@ mod tests {
     async fn evicts_transactions_after_their_fee_pool_is_drained() {
         let sender = Address::random();
         let user_token = address!("20C0000000000000000000000000000000000005");
-        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        let pooled = TxBuilder::aa(sender).build();
         pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(user_token));
 
-        let manager = tempo_precompiles::tip_fee_manager::TipFeeManager::new();
+        let manager = TipFeeManager::new();
         let slot = manager.pools[manager.pool_id(user_token, DEFAULT_FEE_TOKEN)].base_slot();
         let pool_word = |reserve_validator_token| {
-            tempo_precompiles::tip_fee_manager::amm::Pool {
+            amm::Pool {
                 reserve_user_token: 0,
                 reserve_validator_token,
             }
@@ -3637,7 +3624,7 @@ mod tests {
         };
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
-            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+            .with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
         provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
         provider.add_account(
             TIP_FEE_MANAGER_ADDRESS,
@@ -3673,25 +3660,17 @@ mod tests {
         let mut storage = HashMap::default();
         storage.insert(
             slot,
-            reth_trie_common::bundle_state::StorageSlot::new_changed(
-                pool_word(u64::MAX.into()),
-                pool_word(0),
-            ),
+            StorageSlot::new_changed(pool_word(u64::MAX.into()), pool_word(0)),
         );
         let mut bundle_state = AddressMap::default();
         bundle_state.insert(
             TIP_FEE_MANAGER_ADDRESS,
-            BundleAccount::new(
-                None,
-                None,
-                storage,
-                reth_trie_common::bundle_state::AccountStatus::Changed,
-            ),
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
         );
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        let mut updates = TempoPoolUpdates::new();
         updates.liquidity_decreased_tokens =
             amm_cache.on_new_state(&reth_provider::ExecutionOutcome {
-                bundle: reth_trie_common::bundle_state::BundleState {
+                bundle: BundleState {
                     state: bundle_state,
                     ..Default::default()
                 },

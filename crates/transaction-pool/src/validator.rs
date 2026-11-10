@@ -386,18 +386,16 @@ where
             .collect()
     }
 
-    /// Returns the current tip's state provider, matching read cache and the AMM cache generation
-    /// sampled before the tip was resolved.
+    /// Returns the current tip's state provider and matching read cache.
     ///
     /// Using one tip hash prevents a concurrent head update from pairing old state with a new cache.
+    /// Sample [`AmmLiquidityCache::generation`] before calling it.
     fn latest_state_provider_and_cache(
         &self,
-    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>, u64)> {
-        let amm_generation = self.amm_liquidity_cache.generation();
+    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
         let tip = self.inner.client().chain_info()?.best_hash;
         let tip_provider = self.inner.client().state_by_block_hash(tip);
-        let (provider, cache) = self.provider_and_cache_for_tip(tip, tip_provider)?;
-        Ok((provider, cache, amm_generation))
+        self.provider_and_cache_for_tip(tip, tip_provider)
     }
 
     /// Returns the shared cache if its tip matches `tip_hash`, otherwise a fresh cache.
@@ -782,13 +780,13 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state, amm_generation) =
-            match self.latest_state_provider_and_cache() {
-                Ok(provider_and_cache) => provider_and_cache,
-                Err(err) => {
-                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-                }
-            };
+        let amm_generation = self.amm_liquidity_cache.generation();
+        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+            Ok(provider_and_cache) => provider_and_cache,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
 
         self.validate_batch(
             state_provider,
@@ -805,18 +803,18 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state, amm_generation) =
-            match self.latest_state_provider_and_cache() {
-                Ok(provider_and_cache) => provider_and_cache,
-                Err(err) => {
-                    return transactions
-                        .into_iter()
-                        .map(|(_, tx)| {
-                            TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                        })
-                        .collect();
-                }
-            };
+        let amm_generation = self.amm_liquidity_cache.generation();
+        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+            Ok(provider_and_cache) => provider_and_cache,
+            Err(err) => {
+                return transactions
+                    .into_iter()
+                    .map(|(_, tx)| {
+                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                    })
+                    .collect();
+            }
+        };
 
         self.validate_batch(state_provider, cached_state, amm_generation, transactions)
     }
@@ -826,18 +824,18 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state, amm_generation) =
-            match self.latest_state_provider_and_cache() {
-                Ok(provider_and_cache) => provider_and_cache,
-                Err(err) => {
-                    return transactions
-                        .into_iter()
-                        .map(|tx| {
-                            TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                        })
-                        .collect();
-                }
-            };
+        let amm_generation = self.amm_liquidity_cache.generation();
+        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+            Ok(provider_and_cache) => provider_and_cache,
+            Err(err) => {
+                return transactions
+                    .into_iter()
+                    .map(|tx| {
+                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                    })
+                    .collect();
+            }
+        };
 
         self.validate_batch(
             state_provider,
@@ -1328,7 +1326,7 @@ mod tests {
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (latest_hash, shared_cache.clone());
 
-        let (_, validation_cache, _) = validator.latest_state_provider_and_cache().unwrap();
+        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
 
         assert!(Arc::ptr_eq(&validation_cache, &shared_cache));
     }
@@ -1346,7 +1344,7 @@ mod tests {
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
 
-        let (_, validation_cache, _) = validator.latest_state_provider_and_cache().unwrap();
+        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
 
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
     }

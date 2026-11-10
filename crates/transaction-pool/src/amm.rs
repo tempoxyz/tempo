@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, mem, sync::Arc};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{
@@ -185,7 +185,7 @@ impl AmmLiquidityCache {
     pub fn clear(&self) {
         let mut inner = self.inner.write();
         let generation = inner.generation + 1;
-        let mut pending_rechecks = std::mem::take(&mut inner.pending_rechecks);
+        let mut pending_rechecks = mem::take(&mut inner.pending_rechecks);
         pending_rechecks.extend(inner.pool_cache.keys().map(|(user_token, _)| *user_token));
         pending_rechecks.extend(inner.quote_token_cache.keys().copied());
         *inner = AmmLiquidityCacheInner {
@@ -224,7 +224,7 @@ impl AmmLiquidityCache {
     pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) -> AddressSet {
         let mut inner = self.inner.write();
         inner.generation += 1;
-        let mut decreased = std::mem::take(&mut inner.pending_rechecks);
+        let mut decreased = mem::take(&mut inner.pending_rechecks);
 
         // Process FeeManager slot changes: update pool reserves and validator preferences.
         if let Some(storage) = execution_outcome
