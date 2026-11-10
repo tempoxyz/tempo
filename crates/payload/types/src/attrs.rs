@@ -90,6 +90,13 @@ impl TempoPayloadAttributes {
         self
     }
 
+    /// Sets `prev_randao`, which the builder writes to the header's `mix_hash`
+    /// and the EVM returns from `PREVRANDAO` (TIP-1153). Zero unless set.
+    pub fn with_prev_randao(mut self, prev_randao: B256) -> Self {
+        self.inner.prev_randao = prev_randao;
+        self
+    }
+
     /// Returns the proposer's public key.
     pub fn proposer_public_key(&self) -> Option<&B256> {
         self.proposer_public_key.as_ref()

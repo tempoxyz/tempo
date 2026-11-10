@@ -16,6 +16,7 @@ mod fee_recipient;
 mod follow;
 mod metrics;
 mod payload_builder;
+mod prev_randao;
 mod restart;
 mod simple;
 mod snapshot;
