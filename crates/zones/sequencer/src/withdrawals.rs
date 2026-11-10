@@ -196,7 +196,7 @@ impl WithdrawalStore {
 
     /// Record when the `submitBatch` that created portal slot `batch_index` confirmed.
     ///
-    /// Dropped when [`MAX_CACHED_WITHDRAWAL_SLOTS`] slots are already tracked; the slot then
+    /// Dropped when `MAX_CACHED_WITHDRAWAL_SLOTS` slots are already tracked; the slot then
     /// records no submitted-to-processed latency.
     pub fn record_submitted(&mut self, batch_index: u64, submitted_at: Instant) {
         if self.submitted_at.len() < MAX_CACHED_WITHDRAWAL_SLOTS {
