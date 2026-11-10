@@ -136,11 +136,14 @@ overflow-checks = true
 
 # The fuzz profile for Antithesis images built with coverage instrumentation (see
 # contrib/antithesis/zones/Dockerfile). Antithesis cannot symbolize instrumented code that link-time
-# optimization inlined or merged, so it instruments one codegen unit per crate without LTO.
+# optimization inlined or merged. lto = "off" also disables the crate-local ThinLTO pass that
+# otherwise runs over multiple codegen units, so crates keep 16 units and codegen in parallel.
+# One-off CI builds gain nothing from incremental compilation.
 [profile.antithesis]
 inherits = "fuzz"
 lto = "off"
-codegen-units = 1
+codegen-units = 16
+incremental = false
 
 [profile.bench]
 inherits = "maxperf"
