@@ -86,6 +86,25 @@ use zone_rpc::{
 
 use crate::{follower::PeerTipRegistry, role::SharedRoleStatus};
 
+/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
+///
+/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
+/// collection timeout.
+const MULTI_PROOF_RETRIES: usize = 7;
+/// Delay before each `eth_getMultiProof` retry.
+const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
+/// Most targets, and most storage slots in total, one `eth_getMultiProof` request may carry.
+///
+/// Reth rejects larger requests (`DEFAULT_MAX_PROOF_SLOTS`).
+const MULTI_PROOF_MAX_ITEMS: usize = 1024;
+/// Smallest request worth splitting off. Below it the L1 node builds the proofs in a few ms, so
+/// another request costs more than it saves.
+const MULTI_PROOF_MIN_CHUNK: usize = 128;
+/// Most `eth_getMultiProof` requests in flight for one witness. Each holds one of the L1 node's
+/// tracing permits (cores - 2 by default), which other zones and RPC users share, and proof time
+/// stopped improving past 8 requests in benchmarks against mainnet.
+const MULTI_PROOF_MAX_PARALLEL: usize = 8;
+
 /// Multi-sequencer handles for the sequencer RPC methods.
 ///
 /// The RPC servers launch before the role controller, so the node installs this context
@@ -371,25 +390,6 @@ where
         })
     }
 }
-
-/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
-///
-/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
-/// collection timeout.
-const MULTI_PROOF_RETRIES: usize = 7;
-/// Delay before each `eth_getMultiProof` retry.
-const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
-/// Most targets, and most storage slots in total, one `eth_getMultiProof` request may carry.
-///
-/// Reth rejects larger requests (`DEFAULT_MAX_PROOF_SLOTS`).
-const MULTI_PROOF_MAX_ITEMS: usize = 1024;
-/// Smallest request worth splitting off. Below it the L1 node builds the proofs in a few ms, so
-/// another round trip costs more than it saves.
-const MULTI_PROOF_MIN_CHUNK: usize = 128;
-/// Most `eth_getMultiProof` requests in flight for one witness. Each holds one of the L1 node's
-/// tracing permits (cores - 2 by default), which other zones and RPC users share, and proof time
-/// stopped improving past 8 requests in benchmarks against mainnet.
-const MULTI_PROOF_MAX_PARALLEL: usize = 8;
 
 /// Fetch all L1 read proofs at the checkpoint selected by the opening advanceTempo transaction.
 async fn collect_tempo_witness(
