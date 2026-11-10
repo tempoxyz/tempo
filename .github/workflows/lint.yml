@@ -210,13 +210,16 @@ jobs:
     needs: [docs]
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
-    # Only one Pages deployment can be in progress at a time. Main pushes get
-    # per-run workflow concurrency groups, so serialize deploys here and let the
-    # newest commit's docs supersede an older (possibly stalled) deployment.
+    # Only one Pages deployment can be in progress at a time, and main pushes get
+    # per-run workflow concurrency groups, so serialize deploys here. Queue rather
+    # than cancel: runs can reach this job out of commit order, and the step below
+    # skips a deploy once a newer commit's docs have been deployed.
     concurrency:
       group: github-pages
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
+      contents: read
+      deployments: read
       pages: write
       id-token: write
     environment:
@@ -226,8 +229,30 @@ jobs:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
+      - name: Skip if a newer commit is already deployed
+        id: superseded
+        # Fail open: if the GitHub API check errors, deploy anyway.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/$1"; }
+          api "deployments?environment=github-pages&per_page=20" | jq -r '.[] | "\(.id) \(.sha)"' |
+            while read -r id deployed; do
+              [ "$deployed" != "$SHA" ] || continue
+              case "$(api "deployments/$id/statuses?per_page=1" | jq -r '.[0].state // empty')" in success | inactive) ;; *) continue ;; esac
+              if [ "$(api "compare/$SHA...$deployed" | jq -r .status)" = ahead ]; then
+                echo "::notice::Skipping: newer commit $deployed was already deployed"
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                break
+              fi
+            done
+
       - name: Deploy to GitHub Pages
         id: deployment
+        if: steps.superseded.outputs.skip != 'true'
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
 
   typos:
