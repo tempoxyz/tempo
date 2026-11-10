@@ -528,19 +528,25 @@ impl Args {
     /// Returns unvalidated adaptive proposal-budget inputs using the configured
     /// flags, a derived cap when none is supplied, and the default build multiplier.
     pub fn estimator_config(&self) -> tempo_payload_types::EstimatorConfig {
-        let config = tempo_payload_types::EstimatorConfig::new(
+        let mut config = tempo_payload_types::EstimatorConfig::new(
             self.target_block_time.into_duration(),
             self.network_budget.into_duration(),
         );
-        tempo_payload_types::EstimatorConfig {
-            network_budget_max: self
-                .network_budget_max
-                .map_or(config.network_budget_max, PositiveDuration::into_duration),
-            network_reserve_percentile: self.network_reserve_percentile,
-            network_reserve_fast_rise: self.network_reserve_fast_rise,
-            return_budget_overrun_tolerance: self.return_budget_overrun_tolerance.into_duration(),
-            ..config
+        if let tempo_payload_types::NetworkReservation::Adaptive {
+            network_budget_max,
+            network_reserve_percentile,
+            network_reserve_fast_rise,
+            return_budget_overrun_tolerance,
+        } = &mut config.network_reservation_policy
+        {
+            if let Some(max) = self.network_budget_max {
+                *network_budget_max = max.into_duration();
+            }
+            *network_reserve_percentile = self.network_reserve_percentile;
+            *network_reserve_fast_rise = self.network_reserve_fast_rise;
+            *return_budget_overrun_tolerance = self.return_budget_overrun_tolerance.into_duration();
         }
+        config
     }
 
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`

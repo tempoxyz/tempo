@@ -72,7 +72,10 @@ impl Estimator {
         Self {
             target_block_time: config.target_block_time,
             overrun_tolerance: match config.network_reservation_policy {
-                NetworkReservation::Adaptive => Some(config.return_budget_overrun_tolerance),
+                NetworkReservation::Adaptive {
+                    return_budget_overrun_tolerance,
+                    ..
+                } => Some(return_budget_overrun_tolerance),
                 NetworkReservation::Fixed => None,
             },
             state: Arc::new(Mutex::new(EstimatorState {

@@ -29,26 +29,18 @@ pub(super) struct NetworkTracker {
     samples: VecDeque<(Instant, Duration)>,
     pending: VecDeque<PendingProposal>,
     minimum_reservation: Duration,
-    maximum_reservation: Duration,
     current_reservation: Duration,
-    reserve_percentile: usize,
-    fast_rise: bool,
+    policy: NetworkReservation,
 }
 
 impl NetworkTracker {
     pub(super) fn new(config: &EstimatorConfig) -> Self {
-        let maximum_reservation = match config.network_reservation_policy {
-            NetworkReservation::Adaptive => config.network_budget_max,
-            NetworkReservation::Fixed => config.network_budget,
-        };
         Self {
             samples: VecDeque::with_capacity(NETWORK_SAMPLE_CAPACITY),
             pending: VecDeque::with_capacity(MAX_PENDING_PROPOSALS),
             minimum_reservation: config.network_budget,
-            maximum_reservation,
             current_reservation: config.network_budget,
-            reserve_percentile: usize::from(config.network_reserve_percentile),
-            fast_rise: config.network_reserve_fast_rise,
+            policy: config.network_reservation_policy,
         }
     }
 
@@ -129,9 +121,17 @@ impl NetworkTracker {
     /// two, so a single outlier cannot force a rise in a sparse window.
     pub(super) fn reserve_for_proposal(&mut self, now: Instant) -> Duration {
         self.prune(now);
-        let target = sample_percentile(&self.samples, self.reserve_percentile).map_or(
-            self.minimum_reservation,
-            |percentile_reservation| {
+        let NetworkReservation::Adaptive {
+            network_budget_max,
+            network_reserve_percentile,
+            network_reserve_fast_rise,
+            ..
+        } = self.policy
+        else {
+            return self.minimum_reservation;
+        };
+        let target = sample_percentile(&self.samples, usize::from(network_reserve_percentile))
+            .map_or(self.minimum_reservation, |percentile_reservation| {
                 let percentile_reservation = if self.samples.len() < 4 {
                     self.minimum_reservation
                 } else {
@@ -139,14 +139,13 @@ impl NetworkTracker {
                 };
                 let mut newest = self.samples.iter().rev().map(|(_, value)| *value);
                 let observed = match (newest.next(), newest.next()) {
-                    (Some(last), Some(previous)) if self.fast_rise => {
+                    (Some(last), Some(previous)) if network_reserve_fast_rise => {
                         percentile_reservation.max(last.min(previous))
                     }
                     _ => percentile_reservation,
                 };
-                observed.clamp(self.minimum_reservation, self.maximum_reservation)
-            },
-        );
+                observed.clamp(self.minimum_reservation, network_budget_max)
+            });
         self.current_reservation = step_toward(
             self.current_reservation,
             target,
@@ -154,7 +153,7 @@ impl NetworkTracker {
         );
         debug_assert!(
             self.current_reservation >= self.minimum_reservation
-                && self.current_reservation <= self.maximum_reservation
+                && self.current_reservation <= network_budget_max
         );
         self.current_reservation
     }

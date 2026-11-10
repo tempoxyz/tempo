@@ -19,7 +19,16 @@ const DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE: Duration = Duration::from_millis(
 #[derive(Clone, Copy, Debug)]
 pub enum NetworkReservation {
     /// Learn from finalized successors using the configured percentile and fast-rise policy.
-    Adaptive,
+    Adaptive {
+        /// Maximum learned network reservation; equal to the floor disables learning.
+        network_budget_max: Duration,
+        /// Reserved network percentile, from 50 to 100 inclusive.
+        network_reserve_percentile: u8,
+        /// Whether two consecutive slow samples can raise the percentile target.
+        network_reserve_fast_rise: bool,
+        /// Maximum accepted proposal overrun; `Duration::MAX` records every proposal.
+        return_budget_overrun_tolerance: Duration,
+    },
     /// Keep the configured reservation unchanged and allow overrun observations.
     Fixed,
 }
@@ -32,14 +41,6 @@ pub struct EstimatorConfig {
     /// Initial and minimum network reservation, including propagation, voting,
     /// unprojected validation and the next proposal's preparation.
     pub network_budget: Duration,
-    /// Maximum learned network reservation; equal to the floor disables learning.
-    pub network_budget_max: Duration,
-    /// Reserved network percentile, from 50 to 100 inclusive.
-    pub network_reserve_percentile: u8,
-    /// Whether two consecutive slow samples can raise the percentile target.
-    pub network_reserve_fast_rise: bool,
-    /// Maximum accepted proposal overrun; `Duration::MAX` records every proposal.
-    pub return_budget_overrun_tolerance: Duration,
     /// Initial build multiplier, also used after five minutes without finished builds.
     pub build_time_multiplier: BuildTimeMultiplier,
     /// Whether the network reservation adapts or stays fixed.
@@ -54,22 +55,23 @@ impl EstimatorConfig {
         Self {
             target_block_time,
             network_budget,
-            network_budget_max: network_budget
-                .saturating_add(target_block_time.saturating_sub(network_budget) / 2)
-                .min(DEFAULT_NETWORK_BUDGET_MAX)
-                .max(network_budget),
-            network_reserve_percentile: DEFAULT_NETWORK_RESERVE_PERCENTILE,
-            network_reserve_fast_rise: true,
-            return_budget_overrun_tolerance: DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
             build_time_multiplier: BuildTimeMultiplier::default(),
-            network_reservation_policy: NetworkReservation::Adaptive,
+            network_reservation_policy: NetworkReservation::Adaptive {
+                network_budget_max: network_budget
+                    .saturating_add(target_block_time.saturating_sub(network_budget) / 2)
+                    .min(DEFAULT_NETWORK_BUDGET_MAX)
+                    .max(network_budget),
+                network_reserve_percentile: DEFAULT_NETWORK_RESERVE_PERCENTILE,
+                network_reserve_fast_rise: true,
+                return_budget_overrun_tolerance: DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
+            },
         }
     }
 
     /// Checks that the floor leaves a positive proposal allowance, the adaptive
     /// cap is between the floor (inclusive) and target (exclusive), and the
-    /// network percentile is from 50 to 100 inclusive. Fixed reservations ignore
-    /// the adaptive cap. Returns an error describing an invalid setting.
+    /// network percentile is from 50 to 100 inclusive. Fixed reservations only
+    /// validate the floor. Returns an error describing an invalid setting.
     /// Call before constructing an estimator to handle invalid inputs without panicking.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.network_budget >= self.target_block_time {
@@ -78,22 +80,26 @@ impl EstimatorConfig {
                 target_block_time: self.target_block_time,
             });
         }
-        if matches!(
-            self.network_reservation_policy,
-            NetworkReservation::Adaptive
-        ) && (self.network_budget_max < self.network_budget
-            || self.network_budget_max >= self.target_block_time)
+        if let NetworkReservation::Adaptive {
+            network_budget_max,
+            network_reserve_percentile,
+            ..
+        } = self.network_reservation_policy
         {
-            return Err(ConfigError::NetworkBudgetMax {
-                network_budget_max: self.network_budget_max,
-                network_budget: self.network_budget,
-                target_block_time: self.target_block_time,
-            });
-        }
-        if !(50..=100).contains(&self.network_reserve_percentile) {
-            return Err(ConfigError::NetworkPercentile {
-                percentile: self.network_reserve_percentile,
-            });
+            if network_budget_max < self.network_budget
+                || network_budget_max >= self.target_block_time
+            {
+                return Err(ConfigError::NetworkBudgetMax {
+                    network_budget_max,
+                    network_budget: self.network_budget,
+                    target_block_time: self.target_block_time,
+                });
+            }
+            if !(50..=100).contains(&network_reserve_percentile) {
+                return Err(ConfigError::NetworkPercentile {
+                    percentile: network_reserve_percentile,
+                });
+            }
         }
         Ok(())
     }
