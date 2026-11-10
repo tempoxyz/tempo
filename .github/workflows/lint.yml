@@ -210,6 +210,12 @@ jobs:
     needs: [docs]
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
+    # Only one Pages deployment can be in progress at a time. Main pushes get
+    # per-run workflow concurrency groups, so serialize deploys here and let the
+    # newest commit's docs supersede an older (possibly stalled) deployment.
+    concurrency:
+      group: github-pages
+      cancel-in-progress: true
     permissions:
       pages: write
       id-token: write
