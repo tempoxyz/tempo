@@ -5,8 +5,8 @@
 
 extern crate alloc;
 
-// The buffered native bridge is replaced by serial iteration during simulation.
-#[cfg(all(feature = "std", feature = "fuzz"))]
+// Retained upstream dependency; iteration uses the selected executor facade.
+#[cfg(feature = "std")]
 use reth_primitives_traits as _;
 
 #[cfg(feature = "std")]

@@ -65,7 +65,7 @@ use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
 #[cfg(feature = "engine")]
-use rayon as _;
+use tempo_executor as _;
 
 /// Fully resolved Tempo execution environment.
 pub type TempoEvmEnv = EthEvmEnv<TempoEvmTypes>;

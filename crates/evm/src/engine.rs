@@ -137,12 +137,12 @@ mod tests {
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use reth_chainspec::EthChainSpec;
     use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
     use reth_primitives_traits::SealedBlock;
     use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
+    use tempo_executor::rayon::iter::{IntoParallelIterator, ParallelIterator};
     use tempo_primitives::{
         AASigned, BlockBody, SubBlockMetadata, TempoHeader, TempoTransaction,
         transaction::{

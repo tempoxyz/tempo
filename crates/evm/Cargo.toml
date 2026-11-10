@@ -37,7 +37,7 @@ reth-primitives-traits.workspace = true
 reth-rpc-eth-api = { workspace = true, optional = true }
 reth-storage-api.workspace = true
 
-rayon = { workspace = true, optional = true }
+tempo-executor = { workspace = true, optional = true }
 alloy-consensus.workspace = true
 alloy-eip7928.workspace = true
 alloy-eips.workspace = true
@@ -96,7 +96,7 @@ tikv-jemallocator = "0.6.1"
 [features]
 default = ["rpc", "engine"]
 rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
-engine = ["dep:tempo-payload-types", "dep:rayon"]
+engine = ["dep:tempo-payload-types", "dep:tempo-executor"]
 # Shared genesis state initialization helpers for genesis generators.
 genesis = ["dep:alloy-genesis", "dep:eyre"]
 # Native EVM2 JIT compilation; building requires LLVM.

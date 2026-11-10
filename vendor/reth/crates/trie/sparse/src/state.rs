@@ -6,16 +6,14 @@ use alloc::vec::Vec;
 use alloy_primitives::{map::B256Map, B256};
 use either::Either;
 use reth_execution_errors::{SparseStateTrieResult, SparseTrieErrorKind};
-#[cfg(all(feature = "std", not(feature = "fuzz")))]
-use reth_primitives_traits::ParallelBridgeBuffered;
 use reth_trie_common::{
     updates::{StorageTrieUpdates, TrieUpdates},
     DecodedMultiProof, MultiProof, Nibbles, ProofTrieNodeV2,
 };
 #[cfg(feature = "std")]
+use tempo_executor::rayon::iter::IntoParallelIterator;
+#[cfg(feature = "std")]
 use tempo_executor::rayon::iter::IntoParallelRefMutIterator;
-#[cfg(all(feature = "std", feature = "fuzz"))]
-use tempo_executor::rayon::iter::ParallelBridge;
 #[cfg(feature = "std")]
 use tempo_executor::rayon::iter::ParallelIterator;
 #[cfg(feature = "std")]
@@ -292,10 +290,7 @@ where
         #[cfg(feature = "std")]
         let results: Vec<_> = {
             let parent_span = tracing::Span::current();
-            #[cfg(not(feature = "fuzz"))]
-            let targets = targets.into_iter().par_bridge_buffered();
-            #[cfg(feature = "fuzz")]
-            let targets = targets.into_iter().par_bridge();
+            let targets = targets.into_par_iter();
             targets
                 .map(|(hashed_address, target, mut nodes)| {
                     let _span = tracing::trace_span!(
