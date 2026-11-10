@@ -9,11 +9,13 @@ publish = false
 workspace = true
 
 [dependencies]
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-rlp.workspace = true
 alloy-trie.workspace = true
-antithesis_sdk.workspace = true
+antithesis_sdk = { workspace = true, features = ["full", "rand_core_v0_9"] }
+eyre.workspace = true
 rand_09.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

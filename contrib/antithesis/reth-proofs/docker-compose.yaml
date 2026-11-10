@@ -7,9 +7,10 @@ services:
     networks:
       antithesis:
         ipv4_address: 10.20.0.10
-    # The binary emits setup_complete after its first database initialization, then runs
-    # bounded rounds on fresh databases indefinitely. Antithesis controls kill/restart timing.
-    command: ['{}']
+    # The server emits setup_complete after its first database initialization, then builds
+    # blocks and serves proofs when the test template's commands
+    # (/opt/antithesis/test/v1/reth_proofs) ask. Antithesis controls kill/restart timing.
+    command: ["serve", "{}"]
 
 # Match the explicit bridge subnet used by the reth-state-root and zones Antithesis configurations.
 networks:

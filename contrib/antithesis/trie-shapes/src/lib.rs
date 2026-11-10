@@ -20,6 +20,7 @@
 //! prefixes; past that, width comes only from key count. [ShapeTracker] reports the shapes the
 //! resulting tries really have.
 
+pub mod harness;
 mod shape;
 
 pub use shape::{Leaves, ShapeTracker};
@@ -27,6 +28,7 @@ pub use shape::{Leaves, ShapeTracker};
 use alloy_primitives::{keccak256, Address, B256, U256};
 use antithesis_sdk::assert_sometimes;
 use rand_09::{seq::SliceRandom, Rng};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{hash_map::Entry, HashMap};
 
@@ -47,7 +49,8 @@ const MAX_GROUPS: usize = 32;
 const DEEP: usize = MAX_DEPTH - 2;
 
 /// The trie a group's keys live in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Trie {
     /// Keys are hashed addresses.
     Accounts,
@@ -76,21 +79,24 @@ impl Trie {
 
 /// One generated write. Account writes create or update the account with a nonzero balance;
 /// storage writes of zero clear the slot.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Write {
     Account { address: Address, balance: U256 },
     Storage { address: Address, slot: U256, value: U256 },
 }
 
 /// A recorded group of key preimage words in one trie.
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Group {
     trie: Trie,
     members: Vec<B256>,
 }
 
 /// Groups generated so far in one round's state.
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Collider {
     groups: Vec<Group>,
     /// The account whose storage trie mass steps fill.
@@ -149,6 +155,32 @@ impl Collider {
         };
         writes.truncate(budget);
         writes
+    }
+
+    /// Adds the groups and members other recorded, as test commands step copies of the server's
+    /// collider concurrently. A group is identified by its trie and first member, and grows to at
+    /// most MAX_MEMBERS from other's; new groups stop at MAX_GROUPS.
+    pub fn merge(&mut self, other: Self) {
+        self.heavy = self.heavy.or(other.heavy);
+        for group in other.groups {
+            let existing = self.groups.iter().position(|existing| {
+                existing.trie == group.trie && existing.members.first() == group.members.first()
+            });
+            match existing {
+                Some(index) => {
+                    let existing = &mut self.groups[index];
+                    for member in group.members {
+                        if existing.members.len() < MAX_MEMBERS &&
+                            !existing.members.contains(&member)
+                        {
+                            existing.members.push(member);
+                        }
+                    }
+                }
+                None if self.groups.len() < MAX_GROUPS => self.groups.push(group),
+                None => {}
+            }
+        }
     }
 
     /// Records a new group and returns writes setting each key to a random value.
@@ -462,5 +494,29 @@ mod tests {
         }
         assert!(collider.groups.len() <= MAX_GROUPS);
         assert!(collider.groups.iter().all(|group| group.members.len() <= MAX_MEMBERS + 16));
+    }
+
+    #[test]
+    fn merge_keeps_concurrent_steps() {
+        let mut rng = StdRng::seed_from_u64(3);
+        let mut server = Collider::new(3);
+        server.step(&mut rng, None, 8);
+        let (mut first, mut second) = (server.clone(), server.clone());
+        while first.groups.len() == server.groups.len() {
+            first.step(&mut rng, Some(Address::repeat_byte(1)), 8);
+        }
+        while second.groups.len() == server.groups.len() {
+            second.step(&mut rng, Some(Address::repeat_byte(2)), 8);
+        }
+        let grown = first.groups[0].members.len().max(second.groups[0].members.len());
+        server.merge(first);
+        server.merge(second);
+        assert!(server.groups.len() >= 3);
+        assert!(server.groups[0].members.len() >= grown.min(MAX_MEMBERS));
+        // Merging the same groups again adds nothing.
+        let before = server.clone();
+        server.merge(before.clone());
+        assert_eq!(server.groups.len(), before.groups.len());
+        assert!(server.groups.iter().zip(&before.groups).all(|(a, b)| a.members == b.members));
     }
 }

@@ -7,7 +7,10 @@
 
 use crate::model::{collide, collide_next, random_address, random_slot, Model, Update};
 use alloy_primitives::{Address, B256, U256};
-use antithesis_trie_shapes::{near_address, near_slot, Collider};
+use antithesis_trie_shapes::{
+    harness::{AccountSample, ProofTarget},
+    near_address, near_slot, Collider,
+};
 use rand_09::Rng;
 
 /// Generates one block's writes. New random accounts stop at `accounts`; collision groups add
@@ -64,24 +67,26 @@ pub(crate) fn writes(
     generated
 }
 
-/// Generates one request's `(address, slots)` targets: existing, deleted and absent keys,
-/// absent neighbours of existing keys, and repeated addresses.
-pub(crate) fn targets(rng: &mut impl Rng, state: &Model) -> Vec<(Address, Vec<B256>)> {
-    let addresses = state.keys().copied().collect::<Vec<_>>();
-    let mut targets = Vec::<(Address, Vec<B256>)>::new();
+/// Generates one request's targets from a sample of the tip state: existing, deleted and absent
+/// keys, absent neighbours of existing keys, and repeated addresses. At older blocks, keys of the
+/// tip state may not exist yet.
+pub(crate) fn targets(rng: &mut impl Rng, accounts: &[AccountSample]) -> Vec<ProofTarget> {
+    let addresses = accounts.iter().map(|account| account.address).collect::<Vec<_>>();
+    let mut targets = Vec::<ProofTarget>::new();
     for _ in 0..rng.random_range(1..=8) {
         let roll = rng.random_range(0..8);
         let address = if roll == 0 && !targets.is_empty() {
-            targets[rng.random_range(0..targets.len())].0
+            targets[rng.random_range(0..targets.len())].address
         } else if roll < 5 && !addresses.is_empty() {
             addresses[rng.random_range(0..addresses.len())]
         } else {
             new_address(rng, &addresses)
         };
         // Touched slots include deleted ones, whose exclusion proofs end at collapsed nodes.
-        let slots = state
-            .get(&address)
-            .map(|entry| entry.touched_slots.iter().copied().collect::<Vec<_>>())
+        let slots = accounts
+            .iter()
+            .find(|account| account.address == address)
+            .map(|account| account.slots.clone())
             .unwrap_or_default();
         let requested = (0..rng.random_range(0..=6))
             .map(|_| {
@@ -92,7 +97,7 @@ pub(crate) fn targets(rng: &mut impl Rng, state: &Model) -> Vec<(Address, Vec<B2
                 })
             })
             .collect();
-        targets.push((address, requested));
+        targets.push(ProofTarget { address, slots: requested });
     }
     targets
 }

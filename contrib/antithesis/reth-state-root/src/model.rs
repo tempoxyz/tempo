@@ -6,9 +6,9 @@ use alloy_primitives::{
     Address, B256, U256,
 };
 use alloy_trie::{HashBuilder, Nibbles, TrieAccount};
-use antithesis_trie_shapes::{Collider, Leaves, Write};
+use antithesis_trie_shapes::{harness::AccountSample, Collider, Leaves, Write};
 use evm2::evm::AccountInfo;
-use rand_09::Rng;
+use rand_09::{seq::IteratorRandom, Rng};
 use reth_primitives_traits::Account;
 use reth_trie::{bundle_state::BundleState, HashedPostState, HashedStorage};
 use serde::{Deserialize, Serialize};
@@ -94,21 +94,44 @@ pub(crate) fn collide(
     let owner = (!state.is_empty())
         .then(|| *state.keys().nth(rng.random_range(0..state.len())).expect("sampled account"));
     let writes = collider.step(rng, owner, budget);
-    writes
+    writes.into_iter().flat_map(|write| write_updates(state, write)).collect()
+}
+
+/// The updates one trie-shapes write makes, applied to state. An account write bumps the nonce. A
+/// storage write to an account the state lacks creates the account first: a test command may draw
+/// it from a summary of an earlier round.
+#[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
+pub(crate) fn write_updates(state: &mut Model, write: Write) -> Vec<Update> {
+    let account = |state: &Model, address: Address, balance: U256| {
+        let mut account =
+            state.get(&address).map(|entry| entry.account.clone()).unwrap_or_default();
+        account.nonce += 1;
+        account.balance = balance;
+        Update::Account { address, account }
+    };
+    let updates = match write {
+        Write::Account { address, balance } => vec![account(state, address, balance)],
+        Write::Storage { address, slot, value } => (!state.contains_key(&address))
+            .then(|| account(state, address, U256::from(1)))
+            .into_iter()
+            .chain([Update::Storage { address, slot, value }])
+            .collect(),
+    };
+    for update in &updates {
+        update.apply_to_model(state);
+    }
+    updates
+}
+
+/// Up to 64 random accounts of state, each with up to 16 random slots it has written.
+pub(crate) fn sample(rng: &mut impl Rng, state: &Model) -> Vec<AccountSample> {
+    state
+        .iter()
+        .choose_multiple(rng, 64)
         .into_iter()
-        .map(|write| {
-            let update = match write {
-                Write::Account { address, balance } => {
-                    let mut account =
-                        state.get(&address).map(|entry| entry.account.clone()).unwrap_or_default();
-                    account.nonce += 1;
-                    account.balance = balance;
-                    Update::Account { address, account }
-                }
-                Write::Storage { address, slot, value } => Update::Storage { address, slot, value },
-            };
-            update.apply_to_model(state);
-            update
+        .map(|(address, entry)| AccountSample {
+            address: *address,
+            slots: entry.touched_slots.iter().copied().choose_multiple(rng, 16),
         })
         .collect()
 }

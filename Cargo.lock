@@ -1261,7 +1261,9 @@ dependencies = [
  "alloy-rlp",
  "alloy-trie",
  "antithesis_sdk",
+ "eyre",
  "rand 0.9.5",
+ "serde",
  "serde_json",
 ]
 
@@ -11828,9 +11830,11 @@ dependencies = [
  "reth-node-core",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-stages-types",
  "reth-storage-overlay",
  "reth-tasks",
  "reth-trie",
+ "reth-trie-common",
  "serde",
  "serde_json",
  "tempfile",

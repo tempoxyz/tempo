@@ -41,6 +41,8 @@ COPY --from=builder /out/reth-state-root-antithesis /usr/local/bin/reth-state-ro
 # The instrumentation shim loads Antithesis's injected runtime when available, and
 # falls back locally. No separately downloaded libvoidstar is needed with this SDK.
 RUN mkdir /symbols && ln -s /usr/local/bin/reth-state-root-antithesis /symbols/reth-state-root-antithesis
+# The test template's commands run in this container, next to the server.
+COPY --chmod=755 contrib/antithesis/reth-state-root/test/ /opt/antithesis/test/
 ENV RUST_BACKTRACE=full
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/reth-state-root-antithesis"]

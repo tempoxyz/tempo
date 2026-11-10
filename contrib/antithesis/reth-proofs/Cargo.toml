@@ -27,9 +27,12 @@ reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-stages-types.workspace = true
 reth-storage-overlay = { workspace = true, features = ["rayon"] }
 reth-tasks = { workspace = true, features = ["rayon", "test-utils"] }
 reth-trie.workspace = true
+# Proofs travel to the test commands as JSON.
+reth-trie-common = { workspace = true, features = ["serde"] }
 alloy-consensus.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-rlp.workspace = true
