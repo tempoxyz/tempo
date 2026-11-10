@@ -129,6 +129,25 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Rejects reth's debug consensus clients (`--debug.rpc-consensus-url`, `--debug.etherscan`)
+/// when the Tempo consensus engine is active.
+///
+/// Reth's debug launcher drives the same beacon engine handle with new payloads and forkchoice
+/// updates without any certificate checks, so it must not run next to the Tempo consensus or
+/// certified follow stack.
+fn ensure_no_debug_forkchoice_driver(cli: &TempoCli) -> eyre::Result<()> {
+    if let Commands::Node(node_cmd) = &cli.command
+        && node_cmd.ext.has_consensus_engine(node_cmd.dev.dev)
+        && (node_cmd.debug.rpc_consensus_url.is_some() || node_cmd.debug.etherscan.is_some())
+    {
+        eyre::bail!(
+            "--debug.rpc-consensus-url and --debug.etherscan drive forkchoice outside the Tempo consensus engine and are only allowed with --dev or --follow.nocertify"
+        );
+    }
+
+    Ok(())
+}
+
 fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
     let factory = genesis
         .alloc
@@ -260,6 +279,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     };
 
     apply_tempo_cli_overrides(&mut cli)?;
+    ensure_no_debug_forkchoice_driver(&cli)?;
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -786,7 +806,7 @@ mod tests {
 
     use super::{
         TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
-        follow::FollowMode, snapshot_download,
+        ensure_no_debug_forkchoice_driver, follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::precompiles::{
@@ -1060,6 +1080,69 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn debug_consensus_clients_rejected_with_consensus_engine() {
+        init_defaults_once();
+
+        let rejected = [
+            // certified follow
+            &[
+                "tempo",
+                "node",
+                "--follow",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ][..],
+            &["tempo", "node", "--follow", "--debug.etherscan"],
+            // validator mode
+            &[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ],
+        ];
+        for args in rejected {
+            let cli = TempoCli::try_parse_from(args).unwrap();
+            let err = ensure_no_debug_forkchoice_driver(&cli).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("only allowed with --dev or --follow.nocertify"),
+                "{args:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_consensus_clients_allowed_without_consensus_engine() {
+        init_defaults_once();
+
+        let allowed = [
+            &[
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ][..],
+            &[
+                "tempo",
+                "node",
+                "--dev",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ],
+            &["tempo", "node", "--follow"],
+        ];
+        for args in allowed {
+            let cli = TempoCli::try_parse_from(args).unwrap();
+            ensure_no_debug_forkchoice_driver(&cli).unwrap();
+        }
     }
 
     #[test]
