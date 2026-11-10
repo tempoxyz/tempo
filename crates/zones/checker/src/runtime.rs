@@ -496,6 +496,7 @@ where
         let custody = loop {
             match portal_balances(
                 l1,
+                &config.l1_block_tracker,
                 config.portal_address,
                 tokens.iter().copied(),
                 tempo,
@@ -532,7 +533,7 @@ where
             }
             PortalCustody::OutsideProofWindow => {
                 metrics.unproven_custody_blocks_total.increment(1);
-                tracing::debug!(
+                tracing::warn!(
                     target: "zone::checker",
                     zone_block = zone.number,
                     tempo_block = tempo.number,

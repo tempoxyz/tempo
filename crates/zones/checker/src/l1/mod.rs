@@ -264,11 +264,13 @@ async fn fetch_l1_block_at(
 /// `state_root` with one `eth_getMultiProof` request.
 ///
 /// Returns [`PortalCustody::OutsideProofWindow`] only for anchors more than
-/// [`MAX_L1_LOOKAHEAD_BLOCKS`] behind the Tempo tip, such as during replay after a rebuild.
+/// [`MAX_L1_LOOKAHEAD_BLOCKS`] behind the latest Tempo block `tracker` authenticated, such
+/// as during replay after a rebuild.
 /// A refused proof for a more recent anchor disables the checker because the RPC does not meet
 /// observe mode's proof-window requirement.
 pub(crate) async fn portal_balances(
     provider: &DynProvider<TempoNetwork>,
+    tracker: &L1BlockTracker,
     portal: Address,
     tokens: impl IntoIterator<Item = Address>,
     anchor: BlockNumHash,
@@ -303,11 +305,19 @@ pub(crate) async fn portal_balances(
         Err(RpcError::ErrorResp(error))
             if error.code == i64::from(EthRpcErrorCode::PrunedHistory.code()) =>
         {
-            let tip = provider
-                .get_block_number()
-                .await
-                .map_err(classify_rpc_error)?;
-            if tip.saturating_sub(anchor.number) > MAX_L1_LOOKAHEAD_BLOCKS {
+            // Measure the distance from the authenticated tip, never one the RPC reports, so
+            // the RPC cannot make a recent anchor look old enough to skip.
+            let tip = tracker
+                .latest()
+                .ok_or_else(|| unavailable(eyre::eyre!("no authenticated Tempo tip yet")))?
+                .number;
+            let distance = tip.checked_sub(anchor.number).ok_or_else(|| {
+                unavailable(eyre::eyre!(
+                    "authenticated Tempo tip {tip} is behind anchor {}",
+                    anchor.number
+                ))
+            })?;
+            if distance > MAX_L1_LOOKAHEAD_BLOCKS {
                 return Ok(PortalCustody::OutsideProofWindow);
             }
             return Err(disable(eyre::eyre!(
@@ -433,7 +443,7 @@ mod tests {
     use crate::accounting::{State, effects};
     use alloy_consensus::Header;
     use alloy_eips::NumHash;
-    use alloy_primitives::{B256, Bytes, Log, U64, address, keccak256};
+    use alloy_primitives::{B256, Bytes, Log, address, keccak256};
     use alloy_rpc_types_eth::{EIP1186StorageProof, Header as RpcHeader};
     use alloy_sol_types::SolEvent;
     use reth_trie_common::{
@@ -831,16 +841,30 @@ mod tests {
         asserter.push_success(&vec![proof]);
 
         assert_eq!(
-            portal_balances(&provider, portal, [token], ANCHOR, root)
-                .await
-                .unwrap(),
+            portal_balances(
+                &provider,
+                &L1BlockTracker::default(),
+                portal,
+                [token],
+                ANCHOR,
+                root
+            )
+            .await
+            .unwrap(),
             PortalCustody::Proven(vec![(token, value)])
         );
         // No enabled tokens: nothing to prove and no request.
         assert_eq!(
-            portal_balances(&provider, portal, [], ANCHOR, root)
-                .await
-                .unwrap(),
+            portal_balances(
+                &provider,
+                &L1BlockTracker::default(),
+                portal,
+                [],
+                ANCHOR,
+                root
+            )
+            .await
+            .unwrap(),
             PortalCustody::Proven(Vec::new())
         );
     }
@@ -857,16 +881,30 @@ mod tests {
         asserter.push_success(&vec![proof.clone()]);
         asserter.push_success(&Vec::<EIP1186AccountProofResponse>::new());
 
-        let error = portal_balances(&provider, portal, [token], ANCHOR, B256::repeat_byte(1))
-            .await
-            .unwrap_err();
+        let error = portal_balances(
+            &provider,
+            &L1BlockTracker::default(),
+            portal,
+            [token],
+            ANCHOR,
+            B256::repeat_byte(1),
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(&error, L1ReadError::Unavailable(error) if error.to_string().contains("invalid Portal custody proof")),
             "{error:?}"
         );
-        let error = portal_balances(&provider, portal, [token], ANCHOR, root)
-            .await
-            .unwrap_err();
+        let error = portal_balances(
+            &provider,
+            &L1BlockTracker::default(),
+            portal,
+            [token],
+            ANCHOR,
+            root,
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(&error, L1ReadError::Unavailable(error) if error.to_string().contains("0 proofs for 1 tokens")),
             "{error:?}"
@@ -874,17 +912,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refused_proofs_skip_only_anchors_outside_the_required_window() {
+    async fn refused_proofs_skip_only_anchors_outside_the_authenticated_window() {
         let token = address!("20c0000000000000000000000000000000000001");
         let portal = Address::repeat_byte(0x20);
-        for (tip, outside) in [
-            (BLOCK + MAX_L1_LOOKAHEAD_BLOCKS + 1, true),
-            (BLOCK + MAX_L1_LOOKAHEAD_BLOCKS, false),
+        for tip in [
+            Some(BLOCK + MAX_L1_LOOKAHEAD_BLOCKS + 1),
+            Some(BLOCK + MAX_L1_LOOKAHEAD_BLOCKS),
+            Some(BLOCK - 1),
+            None,
         ] {
             let asserter = alloy_transport::mock::Asserter::new();
             let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
                 .connect_mocked_client(asserter.clone())
                 .erased();
+            // reth's ExceedsMaxProofWindow reply.
             asserter.push_failure(
                 serde_json::from_value(serde_json::json!({
                     "code": EthRpcErrorCode::PrunedHistory.code(),
@@ -892,17 +933,34 @@ mod tests {
                 }))
                 .unwrap(),
             );
-            asserter.push_success(&U64::from(tip));
+            let tracker = L1BlockTracker::default();
+            if let Some(tip) = tip {
+                tracker
+                    .record(BlockNumHash::new(tip, B256::repeat_byte(0x77)))
+                    .unwrap();
+            }
 
-            let result =
-                portal_balances(&provider, portal, [token], ANCHOR, B256::repeat_byte(1)).await;
-            if outside {
-                assert_eq!(result.unwrap(), PortalCustody::OutsideProofWindow);
-            } else {
-                assert!(
+            let result = portal_balances(
+                &provider,
+                &tracker,
+                portal,
+                [token],
+                ANCHOR,
+                B256::repeat_byte(1),
+            )
+            .await;
+            match tip {
+                Some(tip) if tip > BLOCK + MAX_L1_LOOKAHEAD_BLOCKS => {
+                    assert_eq!(result.unwrap(), PortalCustody::OutsideProofWindow);
+                }
+                Some(tip) if tip >= BLOCK => assert!(
                     matches!(&result, Err(L1ReadError::Disable(error)) if error.to_string().contains("--rpc.eth-proof-window")),
                     "{result:?}"
-                );
+                ),
+                _ => assert!(
+                    matches!(&result, Err(L1ReadError::Unavailable(_))),
+                    "{result:?}"
+                ),
             }
         }
     }
