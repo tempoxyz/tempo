@@ -1120,6 +1120,7 @@ mod tests {
             header: SealedHeader::seal_slow(l1_header),
             queued_deposits: vec![],
             decryptions: vec![],
+            recipients: vec![],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };
@@ -1193,6 +1194,7 @@ mod tests {
             header: SealedHeader::seal_slow(TempoHeader::default()),
             queued_deposits: vec![],
             decryptions: vec![],
+            recipients: vec![],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };

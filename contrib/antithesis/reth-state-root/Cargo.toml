@@ -1,5 +1,5 @@
 [package]
-name = "reth-trie-antithesis"
+name = "reth-state-root-antithesis"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -44,4 +44,3 @@ antithesis-instrumentation.workspace = true
 antithesis_sdk = { workspace = true, features = ["full", "rand_core_v0_9"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tempfile.workspace = true

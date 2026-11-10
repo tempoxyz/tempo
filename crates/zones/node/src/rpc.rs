@@ -41,7 +41,7 @@ use reth_rpc_eth_api::{
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
 use reth_rpc_eth_types::{EthApiError, logs_utils};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -63,7 +63,10 @@ use tokio::{
     sync::Mutex,
     time::{MissedTickBehavior, interval},
 };
-use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
+use zone_l1::{
+    TempoStateExt as _,
+    state::{EnabledTokenRegistry, L1StateCache, L1StateProvider, L1StateProviderConfig},
+};
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
@@ -711,6 +714,10 @@ where
 type RpcBlock = Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeaderResponse>;
 const FILTER_OWNER_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Bounds the Tempo reads of token authentication and session rechecks, so they fail instead of
+/// waiting on an unresponsive Tempo RPC.
+const L1_COMMITMENT_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
 fn filter_not_found_error() -> JsonRpcError {
     JsonRpcError::invalid_params("filter not found")
 }
@@ -787,24 +794,35 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     config: zone_rpc::RedactedRpcConfig,
     enabled_tokens: EnabledTokenRegistry,
     l1_provider: DynProvider<TempoNetwork>,
+    /// Reads Tempo commitments through the node's L1 state cache.
+    l1_state: L1StateProvider,
     /// Maps filter IDs to the authenticated account that created them.
     /// The reth filter registry remains the source of truth for filter liveness.
     filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
-    /// Wrap reth's [`EthHandlers`] (api + filter + pubsub) and an L1 provider.
+    /// Wrap reth's [`EthHandlers`] (api + filter + pubsub), an L1 provider, and the node's L1 state
+    /// cache, which commitment reads share with execution.
     pub fn new(
         eth: EthHandlers<Api>,
         config: zone_rpc::RedactedRpcConfig,
         enabled_tokens: EnabledTokenRegistry,
         l1_provider: DynProvider<TempoNetwork>,
+        l1_state_cache: L1StateCache,
     ) -> Self {
+        let l1_state = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            l1_state_cache,
+            l1_provider.clone(),
+            tokio::runtime::Handle::current(),
+        );
         let rpc = Self {
             eth,
             config,
             enabled_tokens,
             l1_provider,
+            l1_state,
             filter_owners: Arc::new(Mutex::new(HashMap::new())),
         };
         rpc.spawn_filter_owner_pruner();
@@ -909,9 +927,13 @@ where
 impl<Api> zone_rpc::ZoneRpcApi for ZoneRpc<Api>
 where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
+    Api::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
         Box::pin(async move {
+            // The call loads `account`, whose Tempo commitment zone execution reads. Reading it
+            // through the bounded path first keeps the call from waiting on Tempo.
+            Self::get_config_commitment(self, account).await?;
             let request = TempoTransactionRequest {
                 inner: TransactionRequest {
                     from: Some(account),
@@ -927,11 +949,41 @@ where
                 ..Default::default()
             };
 
-            let output = EthCall::call(&self.eth.api, request, None, EvmOverrides::default())
-                .await
-                .wrap_err("AccountKeychain.getKey eth_call failed")?;
+            let output = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                EthCall::call(&self.eth.api, request, None, EvmOverrides::default()),
+            )
+            .await
+            .wrap_err("timed out calling AccountKeychain.getKey")?
+            .wrap_err("AccountKeychain.getKey eth_call failed")?;
 
             IAccountKeychain::getKeyCall::abi_decode_returns(output.as_ref()).map_err(Into::into)
+        })
+    }
+
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>> {
+        Box::pin(async move {
+            let provider = self.eth.api.provider();
+            let header = provider
+                .latest_header()?
+                .ok_or_eyre("zone has no latest header")?;
+            if !provider
+                .chain_spec()
+                .tempo_hardfork_at(header.timestamp())
+                .is_t14()
+            {
+                return Ok(None);
+            }
+            let anchor = provider
+                .state_by_block_hash(header.hash())?
+                .tempo_block_number()?;
+            let commitment = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                self.l1_state.read_l1_commitment_async(account, anchor),
+            )
+            .await
+            .wrap_err("timed out reading the Tempo commitment")??;
+            Ok(Some(commitment))
         })
     }
 

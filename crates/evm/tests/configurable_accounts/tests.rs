@@ -2117,7 +2117,7 @@ fn retired_root_error_order_and_access_gas() {
     // T14 prices every transaction a little differently, with or without role checks; the
     // role charges are measured on top of a plain transaction.
     let base = delta(&|f| f.primitive(4, vec![f.getter()]));
-    // The caller is free, even as the grant signer.
+    // The caller is free, even as the grant signer; the granted key ID costs a cold access.
     let grant_tx = |f: &Fixture| {
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, other.address());
         let signature = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -2126,7 +2126,7 @@ fn retired_root_error_order_and_access_gas() {
             ..aa_tx(4, vec![f.getter()])
         })
     };
-    assert_eq!(delta(&grant_tx), base);
+    assert_eq!(delta(&grant_tx), base + cold);
     // A cold fee payer costs a cold access, an access-listed one a warm access.
     let paid = |f: &Fixture, payer: &PrivateKeySigner, list: &AccessList| {
         f.sign_primitive(sponsored(
@@ -2382,7 +2382,7 @@ fn retired_root_authorization_list_entries_skipped() {
 
 #[test]
 fn retired_root_authorization_list_entries_skipped_after_a_same_block_migration() {
-    // TIP-1112: an entry the root key signed before migrating, relayed by a later transaction
+    // TIP-1113: an entry the root key signed before migrating, relayed by a later transaction
     // of the same block, is skipped.
     let target = Address::repeat_byte(0x55);
     let sender = signer(2);

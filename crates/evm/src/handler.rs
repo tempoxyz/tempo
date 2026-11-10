@@ -480,7 +480,10 @@ fn access_key_id(
     let Some(signature) = signed.signature().as_keychain() else {
         return Ok(None);
     };
-    if let Some(key_id) = aa.override_key_id() {
+    // The key override is a gas-estimation input: honor it only when simulating.
+    if matches!(context, ExecutionContext::Simulation)
+        && let Some(key_id) = aa.override_key_id()
+    {
         return Ok(Some(key_id));
     }
     // A simulated configurable delegate carries placeholder owner approvals: name the delegate
@@ -1688,7 +1691,11 @@ fn execute_aa(
         };
     reservoir += state_refund;
     configurable_account::register_commitments(request.host, request.tx.inner())?;
-    let mut result = execute_batch(
+    // The calls run one level below the transaction, as under revm's batch checkpoint, so
+    // tracers nest them under one root and see them as internal calls.
+    let initial_call_depth = request.host.initial_call_depth();
+    request.host.set_initial_call_depth(initial_call_depth + 1);
+    let result = execute_batch(
         request.host,
         caller,
         access_key,
@@ -1698,7 +1705,9 @@ fn execute_aa(
         reservoir,
         &tx.calls,
         tx.nonce_key.is_zero(),
-    )?;
+    );
+    request.host.set_initial_call_depth(initial_call_depth);
+    let mut result = result?;
     result
         .gas
         .record_refund(i64::try_from(regular_refund).unwrap_or(i64::MAX));

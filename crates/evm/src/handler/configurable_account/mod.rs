@@ -1,4 +1,4 @@
-//! Configurable account transaction authority (TIP-1112, TIP-1113).
+//! Configurable account transaction authority (TIP-1107, TIP-1113).
 
 use super::{TempoEvmTypes, access_key_id};
 use crate::{
@@ -189,7 +189,7 @@ pub(crate) fn validate_state(
     if spec.is_t14() {
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
         if let Some(aa) = envelope.as_aa() {
-            extra_gas += granted_configurable_account_access_gas(host, aa, spec, &accounts)?;
+            extra_gas += granted_key_access_gas(host, aa, spec, &accounts)?;
         }
         extra_gas += zone_commitment_reads_gas(host, envelope, spec)?;
     }
@@ -410,7 +410,7 @@ fn validate_configurable_roles(
     })
 }
 
-/// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1112).
+/// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1113).
 ///
 /// Each distinct non-caller account is charged one account access, deduplicated against
 /// `accounts` (which collects every charged account). Configurable signers and delegates always
@@ -469,16 +469,17 @@ fn validate_root_keys(
     Ok(extra_gas)
 }
 
-/// The inline grant's code check runs with intrinsic-only metering. Charge its account load
-/// here, unless caller loading or a configurable signing role already accounts for that address.
-/// Merely naming a recipient neither validates an owner witness nor registers a commitment.
-fn granted_configurable_account_access_gas(
+/// The inline grant's key ID check (code for a configurable grant, commitment for a primitive one)
+/// runs with intrinsic-only metering. Charge its account load here, unless caller loading or a
+/// configurable signing role already accounts for that address. Merely naming a recipient neither
+/// validates an owner witness nor registers a commitment.
+fn granted_key_access_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
     accounts: &[Address],
 ) -> HandlerResult<u64> {
-    if let Some(granted) = aa.granted_configurable_account()
+    if let Some(granted) = aa.tx().key_authorization.as_ref().map(|auth| auth.key_id)
         && granted != aa.signer()
         && !accounts.contains(&granted)
     {
