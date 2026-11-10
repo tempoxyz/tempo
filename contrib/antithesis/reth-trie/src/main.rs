@@ -47,7 +47,7 @@ use reth_provider::{
 };
 use reth_stages_types::StageId;
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
-use reth_tasks::{RayonConfig, RuntimeBuilder, RuntimeConfig, TokioConfig};
+use reth_tasks::{RayonConfig, Runtime, RuntimeBuilder, RuntimeConfig, TokioConfig};
 use reth_trie::{HashedPostState, SortedTrieData};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -208,7 +208,12 @@ fn metric_counts(snapshotter: &Snapshotter) -> BTreeMap<String, u64> {
         .collect()
 }
 
-fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
+fn run(
+    config: &mut Config,
+    snapshotter: &Snapshotter,
+    runtime: &Runtime,
+    db: Arc<DatabaseEnv>,
+) -> Result<()> {
     ensure!((1..=1024).contains(&config.blocks), "blocks must be 1..=1024");
     ensure!((1..=4096).contains(&config.updates), "updates must be 1..=4096");
     ensure!((1..=16).contains(&config.proof_workers), "proof_workers must be 1..=16");
@@ -236,34 +241,14 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
         .with_num_state_masking_blocks(masking)
         .with_memory_block_buffer_target(buffer)
         .with_persistence_backpressure_threshold(backpressure);
-    let runtime = RuntimeBuilder::new(RuntimeConfig {
-        tokio: TokioConfig::with_worker_threads(2),
-        rayon: RayonConfig {
-            cpu_threads: Some(2),
-            rpc_threads: Some(1),
-            storage_threads: Some(2),
-            proof_storage_worker_threads: Some(config.proof_workers),
-            proof_account_worker_threads: Some(config.proof_workers),
-            prewarming_threads: Some(1),
-            bal_streaming_threads: Some(1),
-            state_trie_overlay_worker_threads: Some(1),
-            ..Default::default()
-        },
-    })
-    .build()?;
-    // A supplied directory survives process death; standalone runs default to a temporary one.
-    let temporary = config.datadir.is_none().then(tempfile::tempdir).transpose()?;
-    let datadir = config.datadir.clone().unwrap_or_else(|| {
-        temporary.as_ref().expect("temporary directory created").path().to_path_buf()
-    });
-    fs::create_dir_all(&datadir)?;
+    let datadir = config.datadir.as_ref().expect("campaign supplies the round directory");
+    fs::create_dir_all(datadir)?;
     let chain = Arc::new(ChainSpec::default());
     let data_dir = ChainPath::<DataDirPath>::new(
         datadir.to_string_lossy().parse()?,
         chain.chain,
         Default::default(),
     );
-    let db = Arc::new(init_db(data_dir.db(), Default::default())?);
     let context = LaunchContext::new(runtime.clone(), data_dir)
         .with(WithConfigs { config: NodeConfig::new(chain), toml_config: Default::default() })
         .attach(db);
@@ -464,7 +449,7 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
                 .collect()
         });
         let (mut handle, pending) = strategy.spawn_state_root(
-            &runtime,
+            runtime,
             factory_view,
             StateRootTaskOptions {
                 parent_header: parent.clone(),
@@ -589,8 +574,9 @@ fn run(config: &mut Config, snapshotter: &Snapshotter) -> Result<()> {
     if let Some(trie) = manager.take_sparse_trie() {
         invariant!(trie.into_trie_for(parent.hash())?.is_some(), "missing final reusable trie");
     }
-    // Root delivery precedes worker teardown. Drain their queues so the last database handle
-    // closes before process exit destroys RocksDB's global scheduler.
+    drop(factory);
+    // Root delivery precedes worker teardown. Drain their queues so round-local handles
+    // are released before the next round resets its tables and files.
     for name in ["sparse-trie", "trie-hashing", "storage-workers", "account-workers", "drop"] {
         runtime.spawn_blocking_named(name, || {}).get();
     }
@@ -617,13 +603,30 @@ fn workload() -> Result<()> {
     recorder.install()?;
     let input = config.input.clone();
     let campaign = Campaign::new(&config)?;
+    let runtime = RuntimeBuilder::new(RuntimeConfig {
+        tokio: TokioConfig::with_worker_threads(2),
+        rayon: RayonConfig {
+            cpu_threads: Some(2),
+            rpc_threads: Some(1),
+            storage_threads: Some(2),
+            proof_storage_worker_threads: Some(config.proof_workers),
+            proof_account_worker_threads: Some(config.proof_workers),
+            prewarming_threads: Some(1),
+            bal_streaming_threads: Some(1),
+            state_trie_overlay_worker_threads: Some(1),
+            ..Default::default()
+        },
+    })
+    .build()?;
+    let db = Arc::new(init_db(campaign.database_path()?, Default::default())?);
     loop {
-        config.datadir = Some(campaign.start()?);
+        config.datadir = Some(campaign.start(&db)?);
         config.input = input.clone();
-        run(&mut config, &snapshotter)
+        run(&mut config, &snapshotter, &runtime, db.clone())
             .wrap_err_with(|| format!("reth-trie-antithesis round={}", config.round))?;
+        invariant!(Arc::strong_count(&db) == 1, "round releases all database handles");
         assert_sometimes!(true, "Trie workload completes a round");
-        // Only a verified, fully flushed round can retire its database and journal.
+        // Only a verified, fully flushed round can authorize resetting its database and journal.
         campaign.retire()?;
         config.round += 1;
         if config.rounds.is_some_and(|rounds| config.round >= rounds) {

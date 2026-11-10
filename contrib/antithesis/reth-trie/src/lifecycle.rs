@@ -1,5 +1,14 @@
 use crate::Config;
 use eyre::{ensure, Result};
+use reth_chainspec::ChainSpec;
+use reth_db::DatabaseEnv;
+use reth_db_api::{
+    database::Database,
+    tables::Tables,
+    tables_to_generic,
+    transaction::{DbTx, DbTxMut},
+};
+use reth_node_core::dirs::{ChainPath, DataDirPath};
 use serde::Serialize;
 use std::{
     fs,
@@ -27,11 +36,31 @@ impl Campaign {
         })
     }
 
+    /// The MDBX environment outlives round-local journals, static files and RocksDB.
+    pub(crate) fn database_path(&self) -> Result<PathBuf> {
+        let legacy = ChainPath::<DataDirPath>::new(
+            self.active.to_string_lossy().parse()?,
+            ChainSpec::<alloy_consensus::Header>::default().chain,
+            Default::default(),
+        );
+        ensure!(
+            !legacy.db().exists(),
+            "legacy active-round database layout; resume with the old workload or use a fresh datadir"
+        );
+        Ok(self.root.join("db"))
+    }
+
     /// Resume the active round or durably create it, rejecting changed restart configuration.
-    pub(crate) fn start(&self) -> Result<PathBuf> {
-        // A retired directory can only belong to a fully verified round, so recovery may delete it.
+    pub(crate) fn start(&self, db: &DatabaseEnv) -> Result<PathBuf> {
+        // The durable retirement marker authorizes an idempotent reset, including after a crash.
         if self.retired.exists() {
+            let tx = db.tx_mut()?;
+            for table in Tables::ALL {
+                tables_to_generic!(table, |T| tx.clear::<T>())?;
+            }
+            tx.commit()?;
             fs::remove_dir_all(&self.retired)?;
+            fs::File::open(&self.root)?.sync_all()?;
         }
         fs::create_dir_all(&self.active)?;
         let config_path = self.active.join("config.json");
@@ -48,11 +77,10 @@ impl Campaign {
         Ok(self.active.clone())
     }
 
-    /// Durably remove a completed round from the active name before deleting its files.
+    /// Durably mark a completed round; the next start resets MDBX before deleting its files.
     pub(crate) fn retire(&self) -> Result<()> {
         fs::rename(&self.active, &self.retired)?;
         fs::File::open(&self.root)?.sync_all()?;
-        fs::remove_dir_all(&self.retired)?;
         Ok(())
     }
 }
