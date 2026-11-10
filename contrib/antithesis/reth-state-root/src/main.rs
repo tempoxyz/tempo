@@ -35,7 +35,7 @@ use antithesis_trie_shapes::{
 use engine::{Engine, Settings};
 use eyre::{bail, ensure, eyre, Context, Result};
 use journal::RoundJournal;
-use lifecycle::Campaign;
+use lifecycle::{persist_json, Campaign};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use model::{apply, generate, root, write_updates, Model};
 use rand_09::Rng;
@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -179,6 +180,9 @@ struct Round {
     /// The model at the db tip, replayed from the journal as saves are acknowledged.
     persisted_state: Model,
     collider: Collider,
+    /// Where the collider is saved after each generated block, so a restart can revisit its
+    /// groups.
+    collider_path: PathBuf,
     shapes: ShapeTracker,
     pending: Vec<Write>,
 }
@@ -199,6 +203,12 @@ impl Round {
         invariant!(recovered_root == engine.parent().state_root(), "recovered root at {base}");
         println!("{}", json!({"recovery": "complete", "head": base, "root": recovered_root}));
         assert_sometimes!(base > 0, "Restart recovers persisted blocks");
+        let collider_path = datadir.join("collider.json");
+        let collider = if collider_path.exists() {
+            serde_json::from_slice(&fs::read(&collider_path)?)?
+        } else {
+            Collider::default()
+        };
         Ok(Self {
             id: AntithesisRng.random(),
             number,
@@ -206,7 +216,8 @@ impl Round {
             journal,
             persisted_state: state.clone(),
             state,
-            collider: Collider::default(),
+            collider,
+            collider_path,
             shapes: ShapeTracker::default(),
             pending: Vec::new(),
         })
@@ -256,6 +267,7 @@ impl Round {
                 let operations = input::operations(&mut rng, updates);
                 // Sync the replay record before mutating the model or starting production tasks.
                 self.journal.record(number, &operations)?;
+                persist_json(&self.collider_path, &self.collider)?;
                 operations
             }
         };
