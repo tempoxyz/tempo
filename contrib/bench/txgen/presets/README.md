@@ -33,7 +33,7 @@ Nodes hold at most 16 pool transactions per sender, so `public-mix` spreads its 
 transfers, memo transfers and MPP opens come from the 10,000 accounts state bloat derives
 with real keys (topped up with pathUSD in setup), pathUSD mints rotate across 32 issuers that
 `users[0]` grants in setup, and per-user zone and vault templates keep their fixed senders.
-Setup keeps at most 12 transactions per sender awaiting inclusion.
+Setup keeps at most 6 transactions per sender awaiting inclusion.
 
 For the previous transfer-only default, explicitly select
 `tip20:recipient=existing,fee-token=any_tip20` (local) or

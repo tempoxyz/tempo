@@ -40,28 +40,32 @@ impl TempoFaucetExt {
 #[async_trait]
 impl TempoFaucetExtApiServer for TempoFaucetExt {
     async fn fund_address(&self, address: Address) -> RpcResult<Vec<B256>> {
-        // One transaction per request: the txpool holds at most 16 transactions per sender.
-        let calls = self
-            .faucet_token_addresses
-            .iter()
-            .map(|token| Call {
-                to: (*token).into(),
-                value: U256::ZERO,
-                input: ITIP20::mintCall {
-                    to: address,
-                    amount: self.funding_amount,
-                }
-                .abi_encode()
-                .into(),
-            })
-            .collect();
-        let tx_hash = *self
-            .provider
-            .send_transaction(TempoTransactionRequest::default().with_calls(calls))
-            .await
-            .map_err(|err| rpc_err(INTERNAL_ERROR_CODE, err.to_string(), None))?
-            .tx_hash();
+        // Batch mints so each request holds few of the faucet signer's 16 pool slots, within
+        // the txpool's 32 calls per transaction.
+        let mut tx_hashes = Vec::new();
+        for tokens in self.faucet_token_addresses.chunks(32) {
+            let calls = tokens
+                .iter()
+                .map(|token| Call {
+                    to: (*token).into(),
+                    value: U256::ZERO,
+                    input: ITIP20::mintCall {
+                        to: address,
+                        amount: self.funding_amount,
+                    }
+                    .abi_encode()
+                    .into(),
+                })
+                .collect();
+            let tx_hash = *self
+                .provider
+                .send_transaction(TempoTransactionRequest::default().with_calls(calls))
+                .await
+                .map_err(|err| rpc_err(INTERNAL_ERROR_CODE, err.to_string(), None))?
+                .tx_hash();
+            tx_hashes.push(tx_hash);
+        }
 
-        Ok(vec![tx_hash])
+        Ok(tx_hashes)
     }
 }

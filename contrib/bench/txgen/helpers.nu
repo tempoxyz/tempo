@@ -67,7 +67,7 @@ const TXGEN_HELPER_HOT_SENDER_PRESETS = ["zone-earn-serial" "card-settlement" "b
 const TXGEN_HELPER_ISSUER_ROLE = "0x114e74f6ea3bd819998f78687bfcb11b140da08e9b7d222fa9c1f1ba1f2aa122"
 # Setup transactions a sender may have awaiting inclusion at once, below the txpool's
 # per-sender limit: each further step waits for the receipt of the step this many before it.
-const TXGEN_HELPER_SETUP_SENDER_WINDOW = 12
+const TXGEN_HELPER_SETUP_SENDER_WINDOW = 6
 # Card settlement: a small pool of shard senders redeem vault shares and forward proceeds.
 const TXGEN_HELPER_CARD_SETTLEMENT_PRESETS = ["card-settlement"]
 const TXGEN_HELPER_CARD_SETTLEMENT_SENDERS = 18
@@ -1637,7 +1637,7 @@ def txgen-public-mix-senders [preset_name: string, mix: list<any>, accounts: int
         accounts: ({senders: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 ([$accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS] | math max)]}}
             | merge (if $mints { {issuers: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [1 ($issuers + 1)]}} } else { {} }))
         setup: ((if $mints { [(txgen-grant-issuers-step $issuers)] } else { [] })
-            | append (txgen-topup-senders-steps $accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS $issuers))
+            | append (txgen-topup-senders-steps $accounts $TXGEN_HELPER_BLOAT_SIGNABLE_ACCOUNTS ([$issuers 1] | math max)))
         templates: ([public_transfer public_transfer_memo] | where { |name| $name in $names }
             | each { |name| {$name: {from: $random}} } | reduce --fold {} { |entry, acc| $acc | merge $entry }
             | merge (if $mints { {public_mint: {from: {pool: issuers, select: random}}} } else { {} }))
