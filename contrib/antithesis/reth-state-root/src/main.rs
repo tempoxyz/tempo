@@ -266,8 +266,10 @@ impl Round {
                 updates.extend(generate(&mut rng, &scratch, &mut self.collider, padding));
                 let operations = input::operations(&mut rng, updates);
                 // Sync the replay record before mutating the model or starting production tasks.
-                self.journal.record(number, &operations)?;
+                // Save the collider first: a kill before the journal record regenerates the block,
+                // and groups for keys never written are harmless to revisit.
                 persist_json(&self.collider_path, &self.collider)?;
+                self.journal.record(number, &operations)?;
                 operations
             }
         };
