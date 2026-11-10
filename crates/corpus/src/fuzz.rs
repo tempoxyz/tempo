@@ -30,6 +30,9 @@ use tracing::warn;
 /// Worker threads of a corpus's runtime: they renew its lease and decode the blocks it reads ahead.
 const WORKERS: usize = 4;
 
+/// Stored block bytes [Corpus::windows] aims to read per window.
+const WINDOW_BYTES: usize = 32 << 20;
+
 /// A corpus, open at its published checkpoint. A fill extending it meanwhile does not change
 /// what this reads.
 pub struct Corpus {
@@ -112,7 +115,7 @@ impl Corpus {
     }
 
     /// Each of `blocks`, in block order and once each, with its stored input size and harness
-    /// input, in windows of up to `window` blocks and about [WINDOW_BYTES] stored bytes, each read
+    /// input, in windows of up to `window` blocks and about `WINDOW_BYTES` stored bytes, each read
     /// and decoded on the corpus's runtime while the caller works on the one before. Iteration
     /// stops after the first error.
     pub fn windows(&self, mut blocks: Vec<u64>, window: usize) -> Windows<'_> {
@@ -194,9 +197,6 @@ impl Corpus {
         }
     }
 }
-
-/// Stored block bytes [Corpus::windows] aims to read per window.
-const WINDOW_BYTES: usize = 32 << 20;
 
 /// A window spanning at least this many corpus blocks per block it lists is read with point reads.
 const SPARSE_SPAN: u64 = 4;
