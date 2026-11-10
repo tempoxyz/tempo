@@ -163,6 +163,15 @@ impl Collider {
         writes
     }
 
+    /// Each storage group's account and slots, deleted ones included: deep groups hold the
+    /// leaves embedded in their parents.
+    pub fn storage_groups(&self) -> impl Iterator<Item = (Address, &[B256])> {
+        self.groups.iter().filter_map(|group| match group.trie {
+            Trie::Accounts => None,
+            Trie::Storage(address) => Some((address, group.members.as_slice())),
+        })
+    }
+
     /// Adds the groups and members other recorded, as test commands step copies of the server's
     /// collider concurrently. A group is identified by its trie and first member, and grows to at
     /// most MAX_MEMBERS from other's; new groups stop at MAX_GROUPS.

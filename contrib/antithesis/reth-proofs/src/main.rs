@@ -40,6 +40,7 @@ use antithesis_sdk::{
 };
 use antithesis_trie_shapes::{
     harness::{self, BlockRoot, ProofTarget, Request, Response, Summary},
+    proofs::Proved,
     Collider, ShapeTracker, Write,
 };
 use engine::{Engine, Settings};
@@ -295,7 +296,8 @@ impl Round {
     }
 }
 
-/// Serves one `eth_getMultiProof` request at a block of the view's round.
+/// Serves one `eth_getMultiProof` request, with the witness of the same reads, at a block of
+/// the view's round.
 fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Result<Response> {
     if round != view.round {
         return Ok(Response::Rejected { reason: format!("round {round} is over") });
@@ -319,12 +321,16 @@ fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Resul
     )
     .database_provider_ro()
     .map_err(eyre::Report::from)
-    .and_then(|provider| proof::get_multi_proof(&provider, targets));
+    .and_then(|provider| {
+        let proofs = proof::get_multi_proof(&provider, targets)?;
+        let witness = proof::witness(&provider, &proofs)?;
+        Ok(Proved { proofs, witness })
+    });
     let error = result.as_ref().err().map(|error| format!("{error:#}"));
     invariant!(
         error.is_none(),
-        "eth_getMultiProof at block {number} (db tip {db_tip}, state tip {state_tip}) for \
-         {targets:?}: {}",
+        "eth_getMultiProof and witness at block {number} (db tip {db_tip}, state tip \
+         {state_tip}) for {targets:?}: {}",
         error.as_deref().unwrap_or_default()
     );
     Ok(Response::Proofs { proofs: serde_json::to_value(result?)? })

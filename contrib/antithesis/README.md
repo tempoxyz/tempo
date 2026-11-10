@@ -5,7 +5,7 @@ Each directory is one Antithesis target with its own workload image, config imag
 
 | Target | What it tests | Workflow |
 |---|---|---|
-| [`reth-proofs`](reth-proofs) | `eth_getMultiProof`-style account and storage proofs against the state root | [`antithesis-reth-proofs.yml`](../../.github/workflows/antithesis-reth-proofs.yml) |
+| [`reth-proofs`](reth-proofs) | `eth_getMultiProof`-style account and storage proofs, and the same proofs rebuilt from an execution witness, against the state root | [`antithesis-reth-proofs.yml`](../../.github/workflows/antithesis-reth-proofs.yml) |
 | [`reth-state-root`](reth-state-root) | Sparse-trie state root computation, persistence and restart recovery | [`antithesis-reth-state-root.yml`](../../.github/workflows/antithesis-reth-state-root.yml) |
 | [`zones`](zones) | A Tempo L1 and zones network running deposits, withdrawals and transfers | [`antithesis-zones.yml`](../../.github/workflows/antithesis-zones.yml) |
 

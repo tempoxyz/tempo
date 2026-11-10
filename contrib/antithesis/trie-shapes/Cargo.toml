@@ -18,7 +18,7 @@ reth-trie-common = { workspace = true, features = ["serde", "account-ext"] }
 antithesis_sdk = { workspace = true, features = ["full", "rand_core_v0_9"] }
 eyre.workspace = true
 rand_09.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]

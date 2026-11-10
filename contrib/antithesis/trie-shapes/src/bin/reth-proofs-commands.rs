@@ -8,11 +8,10 @@ use antithesis_sdk::{
 };
 use antithesis_trie_shapes::{
     harness::{self, BlockRoot, Client, Request, Response},
-    proofs,
+    proofs::{self, Proved},
 };
 use eyre::{bail, eyre, Result, WrapErr};
 use rand_09::Rng;
-use reth_trie_common::AccountProof;
 use serde_json::json;
 
 /// Requests proofs at count random blocks of the summary's round, for targets drawn from its
@@ -23,14 +22,12 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
     let mut rng = AntithesisRng;
     for _ in 0..count {
         let BlockRoot { number, root } = summary.roots[rng.random_range(0..summary.roots.len())];
-        let targets = proofs::targets(&mut rng, &summary.accounts);
+        let targets = proofs::targets(&mut rng, &summary.accounts, &summary.collider);
         let request =
             Request::GetProof { round: summary.round, block: number, targets: targets.clone() };
-        let proofs = match client.call(&request)? {
+        let Proved { proofs, witness } = match client.call(&request)? {
             None => return harness::unavailable().map(|()| false),
-            Some(Response::Proofs { proofs }) => {
-                serde_json::from_value::<Vec<AccountProof>>(proofs)?
-            }
+            Some(Response::Proofs { proofs }) => serde_json::from_value(proofs)?,
             Some(Response::Rejected { reason }) => {
                 return harness::rejected(&reason).map(|()| false)
             }
@@ -44,6 +41,15 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
                 "error": result.as_ref().err().map(|error| format!("{error:#}"))})
         );
         result.wrap_err_with(|| format!("proofs at block {number}"))?;
+        let result = proofs::from_witness(root, &targets, &witness)
+            .and_then(|proofs| proofs::check(root, &targets, &proofs));
+        assert_always!(
+            result.is_ok(),
+            "Proofs rebuilt from the execution witness verify against the model's state root",
+            &json!({"block": number, "targets": targets,
+                "error": result.as_ref().err().map(|error| format!("{error:#}"))})
+        );
+        result.wrap_err_with(|| format!("witness proofs at block {number}"))?;
     }
     Ok(true)
 }

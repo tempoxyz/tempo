@@ -33,6 +33,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [[bin]]
 name = "tempo-zones-antithesis"
 path = "src/main.rs"
