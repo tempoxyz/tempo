@@ -10,7 +10,7 @@ with the prover setting applied to both phases:
 
 The two settings are never compared with each other. Runs start from:
 
-- **PR comments**: `derek bench zones [prover=true|false] [preset=NAME] [baseline=REF] [feature=REF] [no-slack]`,
+- **PR comments**: `derek bench zones [prover=true|false] [preset=NAME] [baseline=REF] [feature=REF] [slack]`,
   parsed by `bench.yml` like the e2e and replay commands. The feature is the pinned PR
   head, which must be a `tempoxyz/tempo` branch; the baseline defaults to its merge base
   with main.

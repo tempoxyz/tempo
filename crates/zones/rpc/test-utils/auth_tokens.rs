@@ -116,7 +116,7 @@ pub(crate) fn sign_keychain_signature(
     Ok((signature, key_id))
 }
 
-fn p256_public_key(signing_key: &P256SigningKey) -> (B256, B256) {
+pub(crate) fn p256_public_key(signing_key: &P256SigningKey) -> (B256, B256) {
     let encoded = EncodedPoint::from(signing_key.verifying_key());
     (
         B256::from_slice(encoded.x().expect("x coordinate present")),

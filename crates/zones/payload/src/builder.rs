@@ -580,7 +580,7 @@ fn is_l1_storage_unavailable(error: &(dyn Error + 'static)) -> bool {
     while let Some(error) = current {
         if error
             .downcast_ref::<L1StateError>()
-            .is_some_and(L1StateError::is_storage_unavailable)
+            .is_some_and(L1StateError::is_unavailable)
             || error
                 .to_string()
                 .contains(L1_STORAGE_UNAVAILABLE_ERROR_PREFIX)
@@ -883,6 +883,26 @@ mod tests {
 
     use crate::abi::{self, DepositType, IZoneInbox};
     use zone_l1::PreparedL1Block;
+
+    #[test]
+    fn stringified_l1_unavailability_is_recognized() {
+        for error in [
+            zone_precompiles::L1StateError::StorageUnavailable {
+                account: Address::ZERO,
+                slot: B256::ZERO,
+                block_number: 1,
+                reason: "RPC unavailable".into(),
+            },
+            zone_precompiles::L1StateError::AccountUnavailable {
+                account: Address::ZERO,
+                block_number: 1,
+                reason: "RPC unavailable".into(),
+            },
+        ] {
+            let stringified = std::io::Error::other(error.to_string());
+            assert!(super::is_l1_storage_unavailable(&stringified), "{error}");
+        }
+    }
 
     #[test]
     fn withdrawal_batch_boundary_conditions() {
