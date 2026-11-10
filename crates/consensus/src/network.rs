@@ -96,7 +96,10 @@ pub(crate) async fn instantiate(
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
         tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
-        max_peers_per_set: config.max_peers_per_set,
+        max_peers_per_set: config
+            .max_peers_per_set
+            .try_into()
+            .expect("a u32 always fits in usize on supported targets"),
         handshake_timeout: config.handshake_timeout.into_duration(),
         dial_timeout: config.dial_timeout.into_duration(),
         max_concurrent_handshakes: config.max_concurrent_handshakes,

@@ -102,12 +102,7 @@ pub async fn run_consensus_stack(
     }
 
     let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
-    let max_message_size = network::max_message_size(
-        config
-            .max_peers_per_set
-            .try_into()
-            .wrap_err("consensus.max-peers-per-set must fit in u32")?,
-    );
+    let max_message_size = network::max_message_size(config.max_peers_per_set);
 
     let (mut network, oracle) = network::instantiate(
         &context,
