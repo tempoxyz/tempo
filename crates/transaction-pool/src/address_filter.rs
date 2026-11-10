@@ -5,7 +5,6 @@ use alloy_consensus::Transaction;
 use alloy_primitives::{Address, map::AddressSet};
 use reth_transaction_pool::PoolTransaction;
 use std::{iter, str::FromStr};
-use tempo_primitives::transaction::TempoSignature;
 
 /// Addresses checked against every address a transaction names.
 ///
@@ -76,20 +75,7 @@ impl AddressFilter {
         let configurable_owners = inner
             .as_aa()
             .into_iter()
-            .flat_map(|aa| {
-                let outer = match aa.signature() {
-                    TempoSignature::Keychain(keychain) => {
-                        keychain.signature.as_configurable_account()
-                    }
-                    signature => signature.as_configurable_account(),
-                };
-                let grant = aa
-                    .tx()
-                    .key_authorization
-                    .as_ref()
-                    .and_then(|auth| auth.signature().as_configurable_account());
-                outer.into_iter().chain(grant)
-            })
+            .flat_map(|aa| aa.configurable_account_signatures())
             .flat_map(|signature| signature.config().owners.iter().map(|owner| owner.owner));
 
         self.find_match(
