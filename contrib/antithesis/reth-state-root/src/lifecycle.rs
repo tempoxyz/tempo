@@ -17,7 +17,7 @@ pub(crate) struct Campaign {
 impl Campaign {
     /// Capture the original configuration before per-round paths and input are changed.
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        let root = config.datadir.clone().unwrap_or_else(|| PathBuf::from("/data/reth-trie"));
+        let root = config.datadir.clone().unwrap_or_else(|| PathBuf::from("/data/reth-state-root"));
         fs::create_dir_all(&root)?;
         Ok(Self {
             active: root.join("active"),
