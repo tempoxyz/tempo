@@ -648,13 +648,16 @@ where
             Some(published) => {
                 let transactions = self.get_all(inserted.keys().copied().collect());
                 let mut stale = Vec::new();
-                let mut taken = B256Set::default();
-                for invalidations in published {
+                // Transactions any missed update mined follow reth's mined path, even when an
+                // earlier one invalidated them.
+                let mut taken: B256Set = published
+                    .iter()
+                    .flat_map(|invalidations| invalidations.mined.iter().copied())
+                    .collect();
+                for invalidations in &published {
                     let live: Vec<_> = transactions
                         .iter()
-                        .filter(|tx| {
-                            !taken.contains(tx.hash()) && !invalidations.mined.contains(tx.hash())
-                        })
+                        .filter(|tx| !taken.contains(tx.hash()))
                         .collect();
                     // Expiry is left to maintenance: revalidation would admit the transaction
                     // again until it expires.
@@ -2385,6 +2388,24 @@ mod tests {
         assert_eq!(stale[0].0, 3);
         assert_eq!(stale[0].1.1.hash(), pooled.hash());
         assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn fence_keeps_insertion_a_later_missed_update_mined() {
+        let (pool, pooled, fee_payer) = pool_with_sponsored_transaction();
+        let since = pool.admission_fence.generation();
+        add_validated(&pool, pooled.clone());
+
+        let mut evicting = crate::maintain::PoolInvalidations::default();
+        evicting.updates.user_token_changes.insert(fee_payer);
+        pool.admission_fence.publish(Arc::new(evicting));
+        let mut mining = crate::maintain::PoolInvalidations::default();
+        mining.mined.insert(*pooled.hash());
+        pool.admission_fence.publish(Arc::new(mining));
+
+        let result = inserted(&pooled);
+        assert!(pool.take_stale_insertions(since, [(0, &result)]).is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
     }
 
     #[tokio::test]

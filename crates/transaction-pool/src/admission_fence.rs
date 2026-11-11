@@ -56,7 +56,7 @@ impl AdmissionFence {
     pub(crate) fn published_since(&self, since: u64) -> Option<Vec<Arc<PoolInvalidations>>> {
         let recent = self.recent.lock();
         let missed = self.generation.load(Ordering::SeqCst).checked_sub(since)?;
-        if usize::try_from(missed).ok()? > recent.len() {
+        if usize::try_from(missed).map_or(true, |missed| missed > recent.len()) {
             return None;
         }
         Some(
