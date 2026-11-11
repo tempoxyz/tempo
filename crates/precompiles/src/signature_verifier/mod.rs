@@ -101,7 +101,7 @@ impl SignatureVerifier {
     ///
     /// Before T15, whether primitive `signature` recovers to `account`. (+T15) by type (TIP-1168):
     /// - primitive: recovers to `account`, and `account` has no configuration commitment
-    /// - keychain: as [`Self::verify_keychain_admin`], reverts included
+    /// - keychain: as `verifyKeychainAdmin`, reverts included
     /// - configurable account: as `verifyConfigurableAccount`, reverts included
     pub fn verify(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
         if !self.storage.spec().is_t15() {
