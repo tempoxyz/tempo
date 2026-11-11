@@ -3,7 +3,7 @@
 use alloy::{
     primitives::{Address, B256, U256},
     providers::Provider as _,
-    rpc::types::{BlockId, BlockNumberOrTag, Filter},
+    rpc::types::{BlockId, BlockNumberOrTag, Filter, Log},
     sol_types::SolEvent as _,
 };
 use antithesis_sdk::{assert_always, assert_reachable, assert_sometimes};
@@ -115,7 +115,7 @@ impl Context {
         self.ledger
             .append(&Record::HandoffRequest(request.clone()))?;
         // The rpc-only node refuses relays; even that attempt retains its durable intent.
-        let tx = if relayed {
+        let (tx, applied) = if relayed {
             let node = random_index(self.zones.len());
             // zone-rpc exposes the typed response, but no alloy client extension for this RPC.
             let response: SetLeaderResponse = self.zones[node]
@@ -125,7 +125,22 @@ impl Context {
                 println!("rotate-leader: {target} already leads");
                 return Ok(());
             };
-            tx
+            request.l1_tx = Some(tx);
+            self.ledger
+                .append(&Record::HandoffRequest(request.clone()))?;
+            // The relay waits for a receipt, but a successful same-target no-op emits no event.
+            // Query logs because the Ethereum provider cannot decode Tempo relay receipts.
+            let logs = self
+                .l1
+                .get_logs(
+                    &Filter::new()
+                        .address(self.portal)
+                        .event_signature(ZonePortal::LeaderUpdated::SIGNATURE_HASH)
+                        .from_block(request.from_l1_block),
+                )
+                .await
+                .wrap_err("failed reading relayed handoff event")?;
+            (tx, handoff_applied(&logs, self.portal, tx))
         } else {
             let pending = ZonePortal::new(self.portal, self.wallet(&admin, &self.l1_url))
                 .setLeader(target, epoch)
@@ -139,11 +154,15 @@ impl Context {
                 .with_timeout(Some(RECEIPT_TIMEOUT))
                 .get_receipt()
                 .await?;
-            receipt.transaction_hash
+            let tx = receipt.transaction_hash;
+            (tx, handoff_applied(receipt.inner.logs(), self.portal, tx))
         };
         drop(_lease);
-        request.l1_tx = Some(tx);
-        self.ledger.append_once(&Record::HandoffRequest(request))?;
+        // Reverted races and same-target no-ops cannot produce a finalized handoff event.
+        if !applied {
+            println!("rotate-leader: {target} not applied ({tx})");
+            return Ok(());
+        }
         let mut update = None;
         poll_until(BRIDGE_WAIT, async || {
             update = self
@@ -355,11 +374,20 @@ impl Context {
         );
         assert_sometimes!(
             competing_requests(&requests),
-            "Competing handoffs request the same observed epoch",
+            "Submitted handoffs target different leaders at the same observed epoch",
             &json!({ "requests": requests })
         );
         Ok(())
     }
+}
+
+fn handoff_applied(logs: &[Log], portal: Address, tx: B256) -> bool {
+    logs.iter().any(|log| {
+        !log.removed
+            && log.address() == portal
+            && log.transaction_hash == Some(tx)
+            && ZonePortal::LeaderUpdated::decode_log(&log.inner).is_ok()
+    })
 }
 
 fn order_history(history: &mut Vec<Update>) {
@@ -410,6 +438,9 @@ fn competing_requests(requests: &[Request]) -> bool {
     requests.iter().enumerate().any(|(index, first)| {
         requests[index + 1..].iter().any(|second| {
             first.id != second.id
+                && first.l1_tx.is_some()
+                && second.l1_tx.is_some()
+                && first.l1_tx != second.l1_tx
                 && first.expected_epoch == second.expected_epoch
                 && first.target != second.target
         })
@@ -441,8 +472,54 @@ mod tests {
             target: Address::repeat_byte(target),
             relayed: false,
             from_l1_block: 10,
-            l1_tx: None,
+            l1_tx: Some(B256::from(U256::from(id))),
         }
+    }
+
+    #[test]
+    fn mined_handoff_requires_its_portals_event() {
+        let portal = Address::repeat_byte(9);
+        let tx = B256::repeat_byte(1);
+        let event = ZonePortal::LeaderUpdated {
+            previousLeader: Address::repeat_byte(1),
+            newLeader: Address::repeat_byte(2),
+            epoch: 2,
+            activationTempoBlock: 10,
+        };
+        let mut logs = [Log {
+            inner: alloy::primitives::Log {
+                address: portal,
+                data: event.encode_log_data(),
+            },
+            transaction_hash: Some(tx),
+            ..Default::default()
+        }];
+        // Reverted receipts and successful no-ops have no matching event to wait for.
+        assert!(!handoff_applied(&[], portal, tx));
+        assert!(handoff_applied(&logs, portal, tx));
+        assert!(!handoff_applied(&logs, portal, B256::repeat_byte(2)));
+        assert!(!handoff_applied(&logs, Address::repeat_byte(8), tx));
+        logs[0].removed = true;
+        assert!(!handoff_applied(&logs, portal, tx));
+        logs[0].removed = false;
+        logs[0].inner.data = Default::default();
+        assert!(!handoff_applied(&logs, portal, tx));
+    }
+
+    #[test]
+    fn competing_requests_require_two_distinct_submitted_transactions() {
+        let mut requests = [request(1, 2, 2), request(2, 2, 3)];
+        requests[0].l1_tx = None;
+        requests[1].l1_tx = None;
+        assert!(!competing_requests(&requests));
+        requests[0].l1_tx = Some(B256::repeat_byte(1));
+        assert!(!competing_requests(&requests));
+        requests[1].l1_tx = requests[0].l1_tx;
+        assert!(!competing_requests(&requests));
+        requests[1].l1_tx = Some(B256::repeat_byte(2));
+        assert!(competing_requests(&requests));
+        requests[0].l1_tx = None;
+        assert!(!competing_requests(&requests));
     }
 
     #[test]
@@ -517,7 +594,8 @@ mod tests {
         assert!(!competing_requests(&[request(1, 2, 2), request(2, 2, 2)]));
         assert!(!competing_requests(&[request(1, 2, 2), request(1, 2, 3)]));
         // Even an unknown request for the same target does not identify the winning transaction.
-        let intent = request(1, 2, 2);
+        let mut intent = request(1, 2, 2);
+        intent.l1_tx = None;
         let event = update(3, 20, 1, 2);
         assert_ne!(intent.l1_tx, Some(event.l1_tx));
     }
