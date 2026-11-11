@@ -97,11 +97,12 @@ impl SignatureVerifier {
         self.verify_keychain_admin_signature(account, hash, &sig)
     }
 
-    /// Returns whether `account` approves `hash`: from T15, the one check for any account and
-    /// signature type.
+    /// Returns whether `account` approves `hash`. From T15, the one check to use for any account
+    /// and signature type: it follows `account`'s current state, so it stays correct when the
+    /// account migrates or changes owners. Use `recover` only to learn which key signed.
     ///
     /// Before T15, whether a primitive `signature` recovers to `account`.
-    /// From T15, by signature type, against `account`'s current state (TIP-1168):
+    /// From T15, by signature type (TIP-1168):
     /// - primitive: recovers to `account`, and `account` has no configuration commitment
     /// - keychain: as `verifyKeychainAdmin`, reverts included
     /// - configurable account: as `verifyConfigurableAccount`, reverts included
