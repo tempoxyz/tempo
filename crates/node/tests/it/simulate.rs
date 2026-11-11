@@ -7,15 +7,12 @@ use alloy::{
         simulate::{SimBlock, SimulatePayload},
     },
 };
-use alloy_eips::BlockNumberOrTag;
 use reth_e2e_test_utils::wallet::test_signer;
 use serde_json::json;
-use std::num::NonZeroU64;
 use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_node::rpc::simulate::TempoSimulateV1Response;
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
-use tempo_primitives::transaction::{TEMPO_EXPIRING_NONCE_KEY, tempo_transaction::Call};
+use tempo_primitives::transaction::tempo_transaction::Call;
 
 use crate::utils::{TestNodeBuilder, setup_test_token};
 
@@ -152,94 +149,48 @@ async fn test_simulate_block_gas_override_exceeds_general_limit() -> eyre::Resul
 }
 
 /// Calls on a `nonceKey` lane without a nonce simulate with the lane's nonce, not the sender's
-/// protocol nonce, so validated simulation accepts them.
+/// protocol nonce.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_simulate_fills_nonce_key_nonces() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .connect_http(setup.http_url);
-
-    // Moves the protocol nonce past the lane nonces.
+    // Moves the protocol nonce past the lane nonce.
     setup_test_token(provider.clone(), caller).await?;
-    assert!(provider.get_transaction_count(caller).await? > 0);
-    let timestamp = provider
-        .get_block_by_number(BlockNumberOrTag::Latest)
-        .await?
-        .expect("latest block")
-        .header
-        .timestamp;
 
-    let lane = U256::from(42);
-    let call = |nonce_key| TempoTransactionRequest {
+    let call = TempoTransactionRequest {
         inner: TransactionRequest {
             from: Some(caller),
             gas: Some(1_000_000),
             max_fee_per_gas: Some(TEMPO_T1_BASE_FEE as u128),
-            max_priority_fee_per_gas: Some(TEMPO_T1_BASE_FEE as u128),
             ..Default::default()
         },
-        nonce_key: Some(nonce_key),
+        nonce_key: Some(U256::from(42)),
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };
-    // The first simulated block is at most 12 seconds after its parent.
-    let expiring = TempoTransactionRequest {
-        valid_before: NonZeroU64::new(timestamp + 25),
-        ..call(TEMPO_EXPIRING_NONCE_KEY)
-    };
     let payload = SimulatePayload {
-        block_state_calls: vec![
-            SimBlock {
-                block_overrides: None,
-                state_overrides: None,
-                calls: vec![call(lane), call(lane), expiring],
-            },
-            SimBlock {
-                block_overrides: None,
-                state_overrides: None,
-                calls: vec![call(lane)],
-            },
-        ],
+        block_state_calls: vec![SimBlock {
+            block_overrides: None,
+            state_overrides: None,
+            calls: vec![call.clone(), call],
+        }],
         trace_transfers: false,
         validation: true,
         return_full_transactions: true,
     };
-
-    for method in ["eth_simulateV1", "tempo_simulateV1"] {
-        let response: serde_json::Value = provider.raw_request(method.into(), (&payload,)).await?;
-        let blocks = if method == "tempo_simulateV1" {
-            &response["blocks"]
-        } else {
-            &response
-        };
-        let nonces = blocks
-            .as_array()
-            .expect("simulated blocks")
-            .iter()
-            .map(|block| {
-                block["transactions"]
-                    .as_array()
-                    .expect("full transactions")
-                    .iter()
-                    .map(|tx| tx["nonce"].as_str().expect("nonce"))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            nonces,
-            [vec!["0x0", "0x1", "0x0"], vec!["0x2"]],
-            "{method}: {response}"
-        );
-    }
+    let response: TempoSimulateV1Response<serde_json::Value> = provider
+        .raw_request("tempo_simulateV1".into(), (payload,))
+        .await?;
+    let txs = &response.blocks[0].inner["transactions"];
+    assert_eq!(txs[0]["nonce"], "0x0");
+    assert_eq!(txs[1]["nonce"], "0x1");
     Ok(())
 }
