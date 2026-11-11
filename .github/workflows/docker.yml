@@ -30,6 +30,9 @@ on:
       tempo_image_tag:
         description: Published image tag (unique per build attempt for Network E2E)
         value: ${{ jobs.build-and-push.outputs.tempo_image_tag }}
+      tempo_fuzz_image_tag:
+        description: Published fuzz image tag of a merge-queue build, for corpus replay (empty otherwise)
+        value: ${{ jobs.build-and-push.outputs.tempo_fuzz_image_tag }}
   # We're building nightly only once a day to let the rollout cook for 24h without interruptions
   schedule:
     - cron: "5 9 * * *"
@@ -50,6 +53,7 @@ jobs:
     environment: ${{ startsWith(github.ref, 'refs/tags/tempo/v') && 'release' || '' }}
     outputs:
       tempo_image_tag: ${{ steps.source.outputs.image_tag || steps.meta-tempo.outputs.version }}
+      tempo_fuzz_image_tag: ${{ github.event_name == 'merge_group' && steps.source.outputs.image_tag != '' && format('{0}-fuzz', steps.source.outputs.image_tag) || '' }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     # Compilation runs on the Depot builders; this runner only waits on bake.
     runs-on: depot-ubuntu-latest-4
@@ -261,9 +265,11 @@ jobs:
           labels: |
             ${{ steps.docker-labels.outputs.value }}
             ${{ steps.source.outputs.revision_label }}
+          # Merge-queue builds never move the nightly's fuzz tag.
           tags: |
-            type=raw,value=fuzz
+            type=raw,value=fuzz,enable=${{ github.event_name != 'merge_group' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }}-fuzz
+            type=raw,value=${{ steps.source.outputs.image_tag }}-fuzz,enable=${{ github.event_name == 'merge_group' && steps.source.outputs.image_tag != '' }}
 
       - name: Log in to Container Registry
         uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -289,7 +295,7 @@ jobs:
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
             ${{ steps.meta-tempo-fuzz.outputs.bake-file }}
-          targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
+          targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || github.event_name == 'merge_group' && 'merge-queue' || 'default' }}
           project: 0c6tg19qsp
           push: true
           no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
@@ -375,7 +381,7 @@ jobs:
             tags_var="${target^^}_TAGS"
             tags_var="${tags_var//-/_}"
             digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA")"
-            # tempo-fuzz is built only with the nightly.
+            # tempo-fuzz is built only with the nightly and in the merge queue.
             if [ "$target" = tempo-fuzz ] && [ -z "$digest" ]; then
               continue
             fi

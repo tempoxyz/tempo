@@ -10,6 +10,11 @@ group "default" {
   targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask"]
 }
 
+# Merge-queue builds also build tempo-fuzz, for the corpus replay network-e2e.yml dispatches.
+group "merge-queue" {
+  targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask", "tempo-fuzz"]
+}
+
 group "nightly" {
   targets = ["tempo", "tempo-devnet", "tempo-localnet", "tempo-xtask", "tempo-fuzz"]
 }
@@ -64,7 +69,8 @@ target "tempo-xtask" {
 }
 
 # tempo with the corpus and fuzz features, for corpus replay and fuzzing jobs. Built only
-# with the nightly and pushed as tempo:fuzz, so production images keep their features.
+# with the nightly (pushed as tempo:fuzz) and in the merge queue (tempo:<build tag>-fuzz),
+# so production images keep their features.
 target "tempo-fuzz" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo"

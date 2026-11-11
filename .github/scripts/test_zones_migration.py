@@ -121,6 +121,26 @@ class DockerWorkflowTests(unittest.TestCase):
                 self.assertIn('!cancelled()', jobs['build-and-push']['if'])
 
 
+class CorpusReplayDispatchTests(unittest.TestCase):
+    def test_replay_filter_keeps_the_corpus_crates(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/network-e2e.yml').read_text())
+        step = next(s for s in workflow['jobs']['detect']['steps'] if s.get('id') == 'paths')
+        patterns = yaml.safe_load(step['with']['filters'])['replay']
+
+        def matched(path):
+            return (any(fnmatch.fnmatchcase(path, p) for p in patterns if not p.startswith('!'))
+                    and not any(fnmatch.fnmatchcase(path, p[1:]) for p in patterns if p.startswith('!')))
+
+        for path in ('crates/corpus/src/lib.rs', 'crates/fuzz-types/src/lib.rs', 'crates/evm/src/lib.rs',
+                     'bin/tempo/Cargo.toml', 'Cargo.lock', 'docker-bake.hcl', '.github/workflows/docker.yml'):
+            with self.subTest(path=path):
+                self.assertTrue(matched(path))
+        for path in ('docs/README.md', 'crates/fuzz-harness/src/lib.rs', 'crates/invariants/src/lib.rs',
+                     'crates/node/tests/it/main.rs', 'tips/tip-1234.md'):
+            with self.subTest(path=path):
+                self.assertFalse(matched(path))
+
+
 class DockerIgnoreTests(unittest.TestCase):
     def test_all_dockerfiles_use_the_same_context_filter(self):
         dockerfiles = sorted((ROOT / 'zones/docker').glob('Dockerfile*'))

@@ -25,6 +25,8 @@ jobs:
       draft: ${{ steps.target.outputs.draft }}
       # Missing detector output is not proof that image inputs are unchanged.
       images_required: ${{ steps.paths.outputs.changes == '' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'images') }}
+      # Corpus replay runs only in the merge queue; missing detector output never skips it.
+      replay_required: ${{ github.event_name == 'merge_group' && (steps.paths.outputs.changes == '' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'replay')) }}
       sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Secure runner
@@ -79,6 +81,18 @@ jobs:
               - '!crates/fuzz-types/**'
               - '!crates/invariants/**'
               - '!crates/nitro-attestation/fuzz/**'
+            # Corpus replay runs the fuzz image, which also links the corpus crates.
+            replay:
+              - '**'
+              - '!docs/**'
+              - '!contrib/**'
+              - '!localnet/**'
+              - '!tips/*.md'
+              - '!crates/node/tests/it/**'
+              - '!crates/zones/node/tests/**'
+              - '!crates/fuzz-harness/**'
+              - '!crates/invariants/**'
+              - '!crates/nitro-attestation/fuzz/**'
       - name: Detect Reth revision changes
         id: reth
         uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -106,6 +120,7 @@ jobs:
       ${{ !cancelled() &&
           ((github.event_name == 'merge_group' &&
             (needs.detect.result != 'success' || needs.detect.outputs.images_required != 'false')) ||
+           (github.event_name == 'merge_group' && needs.detect.outputs.replay_required == 'true') ||
            (needs.detect.result == 'success' && needs.detect.outputs.required == 'true')) }}
     permissions:
       actions: read
@@ -200,3 +215,96 @@ jobs:
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`,
             });
             if (!skipped) core.setFailed('Network E2E could not be started');
+
+  # Replays the cmin corpora of mainnet and moderato with the merge group's fuzz image in Argo
+  # (corpus-replay in tempo-mainnet-reexecute and tempo-moderato-reexecute). Pull requests pass
+  # these statuses at once so they can be required: the replay runs only in the merge queue.
+  dispatch-corpus-replay:
+    name: Dispatch corpus replay
+    needs: [detect, build]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      id-token: write
+    env:
+      # The contexts Argo's corpus-replay template reports with block-list cmin.
+      CONTEXTS: "Workflows / mainnet-corpus-replay-cmin,Workflows / moderato-corpus-replay-cmin"
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Initialize statuses for this dispatch attempt
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          IFS=, read -ra contexts <<< "$CONTEXTS"
+          for context in "${contexts[@]}"; do
+            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+              -f state=pending -f context="$context" \
+              -f description="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT: Preparing dispatch" \
+              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent
+          done
+      - name: Submit corpus replay event
+        id: submit
+        if: github.event_name == 'merge_group' && needs.detect.result == 'success' && needs.detect.outputs.replay_required == 'true' && needs.build.result == 'success'
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          SHA: ${{ needs.detect.outputs.sha }}
+          BRANCH: ${{ github.ref_name }}
+          FUZZ_IMAGE_TAG: ${{ needs.build.outputs.tempo_fuzz_image_tag }}
+        run: |
+          set -euo pipefail
+          # Never dispatch with an empty, mutable, or independently reconstructed tag.
+          [[ "$FUZZ_IMAGE_TAG" =~ ^network-e2e-[0-9]{1,20}-[0-9]{1,5}-fuzz$ ]]
+          trap 'rm -f "$RUNNER_TEMP/corpus-replay.key" "$RUNNER_TEMP/corpus-replay.crt"' EXIT
+          umask 077
+          printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/corpus-replay.key"
+          printf '%s' "$EVENTS_CERT" > "$RUNNER_TEMP/corpus-replay.crt"
+          payload=$(jq -n --arg sha "$SHA" --arg branch "$BRANCH" \
+            --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --arg tag "$FUZZ_IMAGE_TAG" \
+            '{repository:"tempoxyz/tempo", event:"tempo_corpus_replay", data:{sha:$sha, branch:$branch, run:$run, tag:$tag}}')
+          curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
+            --retry 3 --retry-all-errors ${{ secrets.EVENTS_ARGS }} \
+            --key "$RUNNER_TEMP/corpus-replay.key" --cert "$RUNNER_TEMP/corpus-replay.crt" \
+            -H 'Content-Type: application/json' --data "$payload"
+      - name: Report skipped replay or dispatch failure
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          DETECT_RESULT: ${{ needs.detect.result }}
+          REQUIRED: ${{ needs.detect.outputs.replay_required }}
+          SUBMIT_RESULT: ${{ steps.submit.outcome }}
+        with:
+          script: |
+            if (process.env.SUBMIT_RESULT === 'success') return; // Argo owns the result now.
+            const queue = context.eventName === 'merge_group';
+            const skipped = !queue || (process.env.DETECT_RESULT === 'success' && process.env.REQUIRED === 'false');
+            const reason = !queue ? 'Runs in the merge queue'
+              : skipped ? 'No relevant changes' : 'Build or dispatch failed';
+            const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
+            const contexts = process.env.CONTEXTS.split(',');
+            const latest = {};
+            for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
+              ...context.repo, ref: process.env.SHA, per_page: 100,
+            })) {
+              for (const status of page.data) {
+                if (contexts.includes(status.context) && !(status.context in latest)) latest[status.context] = status;
+              }
+              if (contexts.every(c => c in latest)) break;
+            }
+            for (const statusContext of contexts) {
+              // In the queue a newer attempt may own this SHA; pull requests have no Argo run to race.
+              if (queue && !latest[statusContext]?.description?.startsWith(`${owner}: `)) continue;
+              await github.rest.repos.createCommitStatus({
+                ...context.repo, sha: process.env.SHA, context: statusContext,
+                state: skipped ? 'success' : 'failure',
+                description: `${owner}: ${reason}`,
+                target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`,
+              });
+            }
+            if (!skipped) core.setFailed('Corpus replay could not be started');

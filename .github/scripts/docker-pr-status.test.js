@@ -357,7 +357,14 @@ for (const mode of ['', 'nightly', 'profiling']) {
       assert.ok(yaml.includes("BUILD_TAG: ${{ (github.event_name == 'merge_group' || github.event_name == 'pull_request_target') && format('network-e2e-{0}-{1}', github.run_id, github.run_attempt) || '' }}"));
       const publish = yaml.split('      - name: Publish event (sha tag)\n')[1].split('        shell:')[0];
       assert.ok(publish.includes("github.event_name != 'pull_request_target'"));
-      const attemptTags = yaml.split('\n').filter(line => line.includes('type=raw,value=${{ steps.source.outputs.image_tag }}'));
+      const allAttemptTags = yaml.split('\n').filter(line => line.includes('type=raw,value=${{ steps.source.outputs.image_tag }}'));
+      // The fuzz image is never in the PR image report; its attempt tag is merge-queue only.
+      const attemptTags = allAttemptTags.filter(line => !line.includes('}}-fuzz,'));
+      if (file === 'docker.yml') {
+        const fuzz = allAttemptTags.filter(line => line.includes('}}-fuzz,'));
+        assert.equal(fuzz.length, 1);
+        assert.ok(fuzz[0].endsWith(",enable=${{ github.event_name == 'merge_group' && steps.source.outputs.image_tag != '' }}"));
+      }
       assert.equal(attemptTags.length, expected.images.length);
       for (const line of attemptTags) assert.ok(line.endsWith(",enable=${{ steps.source.outputs.image_tag != '' }}"));
     }
