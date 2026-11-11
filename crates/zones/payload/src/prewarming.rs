@@ -27,82 +27,33 @@ use zone_precompiles::{L1StateError, L1StorageReader};
 const MAX_COMMITMENT_FETCHES: usize = 64;
 
 /// Immutable canonical inputs used to construct isolated prewarming workers.
-#[derive(Clone)]
-pub(crate) struct PrewarmingExecutionContext<Provider, L1 = L1StateProvider> {
-    pub(crate) provider: Provider,
-    pub(crate) evm_config: ZoneEvmConfig<L1>,
-    pub(crate) parent_hash: B256,
-    pub(crate) parent_header: SealedHeader<TempoHeader>,
-    pub(crate) next_block_env_attributes: TempoNextBlockEnvAttributes,
-    pub(crate) chain_id: u64,
+///
+/// Workers read Tempo commitments through a [`CommitmentPrewarmReader`], so the commitments they
+/// miss are fetched in parallel instead of one by one during canonical execution.
+pub(crate) struct PrewarmingExecutionContext<Provider> {
+    provider: Provider,
+    evm_config: ZoneEvmConfig<CommitmentPrewarmReader>,
+    parent_header: SealedHeader<TempoHeader>,
+    next_block_env_attributes: TempoNextBlockEnvAttributes,
+    chain_id: u64,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
 where
-    Provider: StateProviderFactory + Clone + 'static,
+    Provider: StateProviderFactory + Send + Sync + 'static,
 {
-    /// Enqueue one disposable simulation per deposit directly on the prewarming pool.
-    pub(crate) fn start(
-        self,
-        task_executor: &TaskExecutor,
-        prepared: &PreparedL1Block,
-    ) -> Prewarming {
-        let handle = Prewarming::default();
-        if prepared.queued_deposits.is_empty() {
-            return handle;
-        }
-
-        let context = Arc::new(self);
-        let pool = task_executor.prewarming_pool();
-        let mut decryptions = prepared.decryptions.iter();
-
-        // The pool bounds concurrency; cancelled queued jobs skip EVM initialization.
-        for deposit in &prepared.queued_deposits {
-            let decryptions = (deposit.depositType == DepositType::Deposit)
-                .then(|| decryptions.next().cloned())
-                .flatten()
-                .into_iter()
-                .collect();
-            let partial = PreparedL1Block {
-                header: prepared.header.clone(),
-                enabled_tokens: prepared.enabled_tokens.clone(),
-                queued_deposits: vec![deposit.clone()],
-                decryptions,
-                recipients: Vec::new(),
-                follows_checkpoint_blocks: false,
-            };
-            let context = context.clone();
-            let cancel = handle.cancel.clone();
-            pool.spawn(move || {
-                if !cancel.is_cancelled() {
-                    // Queue-hash validation may fail, but preceding reads have already warmed the
-                    // shared cache.
-                    let _ =
-                        context.execute(build_advance_tempo_tx_owned(partial, context.chain_id));
-                }
-            });
-        }
-
-        handle
-    }
-
-    /// Enqueue one disposable simulation per pool transaction, reading commitments through a
-    /// [`CommitmentPrewarmReader`].
-    ///
-    /// Commitments the simulations miss are fetched in parallel at `tempo_block_number`, the
+    /// Creates the context and spawns the task fetching commitments at `tempo_block_number`, the
     /// Tempo block the next Zone block's transactions read at.
-    pub(crate) fn start_pool(
-        self,
+    pub(crate) fn new(
         task_executor: &TaskExecutor,
-        transactions: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        provider: Provider,
+        evm_config: &ZoneEvmConfig,
+        parent_header: SealedHeader<TempoHeader>,
+        next_block_env_attributes: TempoNextBlockEnvAttributes,
+        chain_id: u64,
         tempo_block_number: u64,
-    ) -> Prewarming {
-        let handle = Prewarming::default();
-        if transactions.is_empty() {
-            return handle;
-        }
-
-        let evm_config = self.evm_config.map_l1_reader(|provider| {
+    ) -> Arc<Self> {
+        let evm_config = evm_config.map_l1_reader(|provider| {
             let (fetches, fetch_task) = commitment_fetches(provider.clone(), tempo_block_number);
             task_executor.spawn_task(fetch_task);
             CommitmentPrewarmReader {
@@ -111,36 +62,79 @@ where
                 fetches,
             }
         });
-        let context = Arc::new(PrewarmingExecutionContext {
-            provider: self.provider,
+        Arc::new(Self {
+            provider,
             evm_config,
-            parent_hash: self.parent_hash,
-            parent_header: self.parent_header,
-            next_block_env_attributes: self.next_block_env_attributes,
-            chain_id: self.chain_id,
+            parent_header,
+            next_block_env_attributes,
+            chain_id,
+        })
+    }
+
+    /// Enqueues one disposable simulation per deposit.
+    pub(crate) fn start(
+        self: &Arc<Self>,
+        task_executor: &TaskExecutor,
+        prepared: &PreparedL1Block,
+    ) -> Prewarming {
+        let mut decryptions = prepared.decryptions.iter();
+        let partials = prepared.queued_deposits.iter().map(|deposit| {
+            let decryptions = (deposit.depositType == DepositType::Deposit)
+                .then(|| decryptions.next().cloned())
+                .flatten()
+                .into_iter()
+                .collect();
+            PreparedL1Block {
+                header: prepared.header.clone(),
+                enabled_tokens: prepared.enabled_tokens.clone(),
+                queued_deposits: vec![deposit.clone()],
+                decryptions,
+                recipients: Vec::new(),
+                follows_checkpoint_blocks: false,
+            }
         });
+        // Queue-hash validation may fail, but preceding reads have already warmed the shared
+        // cache.
+        self.spawn(task_executor, partials, |partial, context| {
+            build_advance_tempo_tx_owned(partial, context.chain_id)
+        })
+    }
+
+    /// Enqueues one disposable simulation per pool transaction.
+    pub(crate) fn start_pool(
+        self: &Arc<Self>,
+        task_executor: &TaskExecutor,
+        transactions: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) -> Prewarming {
+        // Pool transactions may be invalid on the parent state; the reads before the failure
+        // still count.
+        self.spawn(task_executor, transactions, |transaction, _| {
+            transaction.to_consensus()
+        })
+    }
+
+    /// Enqueues one simulation per item on the prewarming pool, which bounds concurrency.
+    /// Cancelled queued jobs skip conversion and EVM initialization.
+    fn spawn<T: Send + 'static>(
+        self: &Arc<Self>,
+        task_executor: &TaskExecutor,
+        items: impl IntoIterator<Item = T>,
+        into_tx: fn(T, &Self) -> Recovered<TempoTxEnvelope>,
+    ) -> Prewarming {
+        let handle = Prewarming::default();
         let pool = task_executor.prewarming_pool();
-        for transaction in transactions {
-            let context = context.clone();
+        for item in items {
+            let context = self.clone();
             let cancel = handle.cancel.clone();
             pool.spawn(move || {
                 if !cancel.is_cancelled() {
-                    // Pool transactions may be invalid on the parent state; the reads before the
-                    // failure still count.
-                    let _ = context.execute(transaction.to_consensus());
+                    let _ = context.execute(into_tx(item, &context));
                 }
             });
         }
-
         handle
     }
-}
 
-impl<Provider, L1> PrewarmingExecutionContext<Provider, L1>
-where
-    Provider: StateProviderFactory + Clone + 'static,
-    L1: L1StorageReader + Unpin,
-{
     /// Executes `transaction` alone on the parent state and discards the result.
     fn execute(
         &self,
@@ -148,7 +142,7 @@ where
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let state = StateProviderDatabase::new(
             self.provider
-                .state_by_block_hash(self.parent_hash)?
+                .state_by_block_hash(self.parent_header.hash())?
                 .into_evm_state_provider(),
         );
 

@@ -272,14 +272,15 @@ where
         let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
         let (prewarming, _pool_prewarming) = match tempo_import {
             TempoImport::Full(prepared) => {
-                let context = PrewarmingExecutionContext {
-                    provider: self.provider.clone(),
-                    evm_config: self.evm_config.clone(),
-                    parent_hash: parent_header.hash(),
-                    parent_header: (*parent_header).clone(),
+                let context = PrewarmingExecutionContext::new(
+                    &self.task_executor,
+                    self.provider.clone(),
+                    &self.evm_config,
+                    (*parent_header).clone(),
                     next_block_env_attributes,
                     chain_id,
-                };
+                    prepared.header.number(),
+                );
                 let mut size = 0usize;
                 let transactions = self
                     .pool
@@ -292,8 +293,8 @@ where
                     })
                     .collect();
                 (
-                    context.clone().start(&self.task_executor, prepared),
-                    context.start_pool(&self.task_executor, transactions, prepared.header.number()),
+                    context.start(&self.task_executor, prepared),
+                    context.start_pool(&self.task_executor, transactions),
                 )
             }
             TempoImport::CheckpointOnly(_) => Default::default(),
