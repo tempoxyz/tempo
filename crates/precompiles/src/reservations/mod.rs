@@ -97,6 +97,8 @@ struct Authorization {
     /// Amount `key_id`'s limit counted in that period and not yet given back. Spend the root key
     /// adds is never counted, so it is never given back.
     counted: U96,
+    /// Whether `holdStandIn` placed the hold, so its captures may owe up to the offline cap.
+    stand_in: bool,
 }
 
 impl Authorization {
@@ -130,6 +132,8 @@ pub struct Reservations {
     shortfalls: Mapping<Address, Mapping<Address, Shortfall>>,
     /// Overcapture bound an owner sets, keyed by owner, payee, then token.
     capture_tolerances: Mapping<Address, Mapping<Address, Mapping<Address, Tolerance>>>,
+    /// Debt an owner accepts from stand-in holds and charges, keyed by owner, payee, then token.
+    offline_caps: Mapping<Address, Mapping<Address, Mapping<Address, u128>>>,
 }
 
 impl Reservations {
@@ -215,8 +219,14 @@ impl Reservations {
         Ok(Some((creditor, U256::from(repaid))))
     }
 
-    fn hold(&mut self, owner: Address, call: IReservations::holdCall) -> Result<()> {
-        let held = amount_u96(call.amount)?;
+    /// Places `hold`, or `holdStandIn` when `stand_in`, which reserves only what is available.
+    fn hold(
+        &mut self,
+        owner: Address,
+        call: IReservations::holdCall,
+        stand_in: bool,
+    ) -> Result<()> {
+        amount_u96(call.amount)?;
         let now = self.now();
         if call.expiresAt <= now || call.expiresAt > now.saturating_add(MAX_HOLD_DURATION) {
             return Err(ReservationsError::invalid_amount().into());
@@ -229,35 +239,51 @@ impl Reservations {
         }
 
         let mut position = self.positions[owner][call.token].read()?;
-        if call.amount > available(&token, owner)? {
+        let free = available(&token, owner)?;
+        // A stand-in approval already happened offline, so the chain records it whatever is left.
+        let held = if stand_in {
+            call.amount.min(free)
+        } else if call.amount > free {
             return Err(ReservationsError::insufficient_available().into());
-        }
+        } else {
+            call.amount
+        };
         position.reserved = position
             .reserved
-            .checked_add(call.amount)
+            .checked_add(held)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
-        let spend =
-            AccountKeychain::new().spend_limit(owner, call.token, U256::from(call.amount))?;
-        token.decrement_balance(owner, U256::from(call.amount))?;
+        let spend = AccountKeychain::new().spend_limit(owner, call.token, U256::from(held))?;
+        token.decrement_balance(owner, U256::from(held))?;
         self.positions[owner][call.token].write(position)?;
         let mut auth = Authorization {
             token: call.token,
-            held,
+            // Fits: `held` is at most `call.amount`, checked above.
+            held: U96::from(held),
             payee,
             expires_at: call.expiresAt,
             burn_epoch: self.shortfalls[owner][call.token].epoch.read()?,
             key_id: spend.map_or(Address::ZERO, |spend| spend.key_id),
+            stand_in,
             ..Default::default()
         };
-        record_spend(&mut auth, spend, call.amount);
+        record_spend(&mut auth, spend, held);
         self.authorizations[owner][call.id].write(auth)?;
         self.emit_event(ReservationsEvent::hold_placed(
             owner,
             call.id,
             call.token,
             payee,
-            call.amount,
+            held,
             call.expiresAt,
+        ))?;
+        if !stand_in {
+            return Ok(());
+        }
+        self.emit_event(ReservationsEvent::stand_in_hold_placed(
+            owner,
+            call.id,
+            call.token,
+            call.amount,
         ))
     }
 
@@ -344,7 +370,13 @@ impl Reservations {
         }
     }
 
-    fn charge(&mut self, owner: Address, call: IReservations::chargeCall) -> Result<()> {
+    /// Pays `charge`, or `chargeStandIn` when `stand_in`, whose shortfall may owe up to the offline cap.
+    fn charge(
+        &mut self,
+        owner: Address,
+        call: IReservations::chargeCall,
+        stand_in: bool,
+    ) -> Result<()> {
         let amount = amount_u96(call.amount)?;
         let mut token = TIP20Token::from_address(call.token)?;
         let payee = resolve_payee(call.payee)?;
@@ -368,6 +400,7 @@ impl Reservations {
                 amount: call.amount,
                 released: 0,
                 spend: call.amount,
+                stand_in,
             },
             position,
         )?;
@@ -473,6 +506,15 @@ impl Reservations {
         })
     }
 
+    fn set_offline_cap(
+        &mut self,
+        owner: Address,
+        call: IReservations::setOfflineCapCall,
+    ) -> Result<()> {
+        let payee = resolve_counterparty_as_root(owner, call.payee, call.token)?;
+        self.offline_caps[owner][payee][call.token].write(call.cap)
+    }
+
     fn get_hold(&self, owner: Address, id: B256) -> Result<IReservations::Hold> {
         let auth = self.authorizations[owner][id].read()?;
         Ok(IReservations::Hold {
@@ -489,6 +531,10 @@ impl Reservations {
 
     fn debt_cap(&self, owner: Address, creditor: Address, token: Address) -> Result<u128> {
         self.debt_caps[owner][Recipient::resolve(creditor)?.target][token].read()
+    }
+
+    fn offline_cap(&self, owner: Address, payee: Address, token: Address) -> Result<u128> {
+        self.offline_caps[owner][Recipient::resolve(payee)?.target][token].read()
     }
 
     fn capture_tolerance(
@@ -567,6 +613,7 @@ impl Reservations {
                 amount,
                 released,
                 spend: excess,
+                stand_in: auth.stand_in,
             },
             position,
         )?;
@@ -615,6 +662,7 @@ impl Reservations {
                 amount,
                 released,
                 spend: 0,
+                stand_in: auth.stand_in,
             },
             position,
         )?;
@@ -628,7 +676,8 @@ impl Reservations {
     }
 
     /// Pays `payment.amount` from `owner`'s available balance plus the `released` reservation to
-    /// `payee` and records the shortfall as debt towards `payee`, within the owner's cap. Writes
+    /// `payee` and records the shortfall as debt towards `payee`, within the owner's debt cap or,
+    /// for a stand-in payment, the larger of it and the offline cap. Writes
     /// `position` and returns the released reservation to the balance once every check passed.
     ///
     /// Counts `spend`, debt included, against the access key signing for `owner`. Returns the
@@ -645,6 +694,7 @@ impl Reservations {
             amount,
             released,
             spend,
+            stand_in,
         } = payment;
         let token_address = token.address();
         let paid = amount.min(available(token, owner)?.saturating_add(released));
@@ -658,7 +708,11 @@ impl Reservations {
                 .debt
                 .checked_add(debt)
                 .ok_or_else(ReservationsError::debt_cap_exceeded)?;
-            if position.debt > self.debt_caps[owner][payee][token_address].read()? {
+            // The offline cap is read only when the debt cap alone falls short.
+            if position.debt > self.debt_caps[owner][payee][token_address].read()?
+                && (!stand_in
+                    || position.debt > self.offline_caps[owner][payee][token_address].read()?)
+            {
                 return Err(ReservationsError::debt_cap_exceeded().into());
             }
         }
@@ -856,6 +910,8 @@ struct Payment {
     released: u128,
     /// Amount to count against the signing access key's limit.
     spend: u128,
+    /// Whether the payment settles a stand-in approval, whose debt may reach the offline cap.
+    stand_in: bool,
 }
 
 #[cfg(test)]
@@ -918,6 +974,14 @@ mod tests {
         }
 
         fn hold_until(&mut self, id: B256, amount: u128, expires_at: u64) -> Result<()> {
+            self.place(id, amount, expires_at, false)
+        }
+
+        fn hold_stand_in(&mut self, id: B256, amount: u128) -> Result<()> {
+            self.place(id, amount, EXPIRY, true)
+        }
+
+        fn place(&mut self, id: B256, amount: u128, expires_at: u64, stand_in: bool) -> Result<()> {
             self.reservations.hold(
                 self.owner,
                 IReservations::holdCall {
@@ -927,6 +991,7 @@ mod tests {
                     expiresAt: expires_at,
                     payee: self.payee,
                 },
+                stand_in,
             )
         }
 
@@ -965,6 +1030,14 @@ mod tests {
         }
 
         fn charge(&mut self, id: B256, amount: u128, payee: Address) -> Result<()> {
+            self.pay(id, amount, payee, false)
+        }
+
+        fn charge_stand_in(&mut self, id: B256, amount: u128) -> Result<()> {
+            self.pay(id, amount, self.payee, true)
+        }
+
+        fn pay(&mut self, id: B256, amount: u128, payee: Address, stand_in: bool) -> Result<()> {
             self.reservations.charge(
                 self.owner,
                 IReservations::chargeCall {
@@ -973,6 +1046,7 @@ mod tests {
                     amount,
                     payee,
                 },
+                stand_in,
             )
         }
 
@@ -992,6 +1066,17 @@ mod tests {
                 self.owner,
                 IReservations::setDebtCapCall {
                     creditor,
+                    token: self.token.address(),
+                    cap,
+                },
+            )
+        }
+
+        fn set_offline_cap(&mut self, payee: Address, cap: u128) -> Result<()> {
+            self.reservations.set_offline_cap(
+                self.owner,
+                IReservations::setOfflineCapCall {
+                    payee,
                     token: self.token.address(),
                     cap,
                 },
@@ -1169,6 +1254,7 @@ mod tests {
                             expiresAt: EXPIRY,
                             payee: f.payee,
                         },
+                        false,
                     )
                     .unwrap_err(),
                 TIP20Error::invalid_token().into()
@@ -1273,6 +1359,7 @@ mod tests {
                     expiresAt: EXPIRY,
                     payee: Address::random(),
                 },
+                false,
             )?;
             f.capture(other, 50)?;
             f.set_capture_tolerance(f.payee, false, 0)?;
@@ -2410,6 +2497,185 @@ mod tests {
     }
 
     #[test]
+    fn test_stand_in_hold_reserves_what_is_available() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(300)?;
+            let id = B256::random();
+            f.hold_stand_in(id, 400)?;
+
+            assert_eq!(f.reserved()?, 300);
+            assert_eq!(f.available()?, 0);
+            assert_eq!(f.reservations.get_hold(f.owner, id)?.amount, 300);
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::hold_placed(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    f.payee,
+                    300,
+                    EXPIRY,
+                ),
+                ReservationsEvent::stand_in_hold_placed(f.owner, id, f.token.address(), 400),
+            ]);
+
+            // With nothing available the hold reserves nothing and stays live.
+            let empty = B256::random();
+            f.hold_stand_in(empty, 50)?;
+            assert_eq!(f.reservations.get_hold(f.owner, empty)?.amount, 0);
+            assert_eq!(f.reserved()?, 300);
+            assert_eq!(
+                f.hold_stand_in(B256::random(), 0).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_stand_in_capture_owes_up_to_the_offline_cap() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(300)?;
+            let id = B256::random();
+            f.hold_stand_in(id, 400)?;
+            assert_eq!(
+                f.capture(id, 400).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+            f.set_offline_cap(f.payee, 100)?;
+            assert_eq!(
+                f.capture(id, 401).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+            f.reservations.clear_emitted_events();
+            f.capture(id, 400)?;
+
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(
+                f.debt()?,
+                IReservations::debtOfReturn {
+                    creditor: f.payee,
+                    amount: 100
+                }
+            );
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::hold_captured(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    400,
+                    100,
+                )]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_offline_cap_leaves_ordinary_payments_at_the_debt_cap() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(300)?;
+            f.set_offline_cap(f.payee, 100)?;
+            let id = B256::random();
+            f.hold(id, 300)?;
+            assert_eq!(
+                f.capture(id, 350).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+            assert_eq!(
+                f.charge(B256::random(), 350, f.payee).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+
+            // A debt cap above the offline cap still bounds stand-in payments.
+            f.set_debt_cap(f.payee, 150)?;
+            let stand_in = B256::random();
+            f.hold_stand_in(stand_in, 200)?;
+            f.reservations.release(f.owner, id)?;
+            f.capture(stand_in, 450)?;
+            assert_eq!(f.debt()?.amount, 150);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_stand_in_charge_owes_up_to_the_offline_cap() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(300)?;
+            let id = B256::random();
+            assert_eq!(
+                f.charge_stand_in(id, 350).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+            f.set_offline_cap(f.payee, 50)?;
+            f.charge_stand_in(id, 350)?;
+
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
+            assert_eq!(f.debt()?.amount, 50);
+            assert_eq!(f.captured(id)?, (350, 0));
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::charged(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    f.payee,
+                    350,
+                    50,
+                )]);
+            assert_eq!(
+                f.charge_stand_in(B256::random(), 1).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_stand_in_hold_counts_only_what_it_reserves() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(300)?;
+            f.set_offline_cap(f.payee, 100)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 1_000)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+            let id = B256::random();
+            f.hold_stand_in(id, 400)?;
+            assert_eq!(remaining()?, U256::from(700));
+            // The shortfall is new spend when captured, debt included.
+            f.capture(id, 400)?;
+            assert_eq!(remaining()?, U256::from(600));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_offline_cap_requires_root_key() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            assert_eq!(
+                f.set_offline_cap(Address::ZERO, 1).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            assert_eq!(
+                f.set_offline_cap(f.owner, 1).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            f.set_offline_cap(f.payee, 7)?;
+            assert_eq!(
+                f.reservations
+                    .offline_cap(f.owner, f.payee, f.token.address())?,
+                7
+            );
+
+            authorize_card_key(f.owner, Address::random(), f.token.address(), 1_000)?;
+            assert_eq!(
+                f.set_offline_cap(f.payee, 100).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_set_debt_cap_requires_root_key() -> eyre::Result<()> {
         at_t15(|| {
             let mut f = Fixture::new(1_000)?;
@@ -2812,10 +3078,12 @@ mod tests {
         keychain.set_tx_origin(account)?;
         let selectors = [
             IReservations::holdCall::SELECTOR,
+            IReservations::holdStandInCall::SELECTOR,
             IReservations::adjustCall::SELECTOR,
             IReservations::captureCall::SELECTOR,
             IReservations::capturePartCall::SELECTOR,
             IReservations::chargeCall::SELECTOR,
+            IReservations::chargeStandInCall::SELECTOR,
             IReservations::releaseCall::SELECTOR,
         ];
         keychain.authorize_key(

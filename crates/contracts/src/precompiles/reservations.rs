@@ -38,6 +38,13 @@ crate::sol! {
         function captureForPart(address owner, bytes32 id, uint128 amount, bool isFinal) external;
         /// Pays `amount` to `payee` without a hold, from available balance and then capped debt.
         function charge(address token, bytes32 id, uint128 amount, address payee) external;
+        /// Records an approval the payee made in stand-in: reserves what is available of `amount`
+        /// and marks the hold, so that its final capture may leave the rest as debt up to the
+        /// larger of the debt cap and the offline cap.
+        function holdStandIn(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee) external;
+        /// `charge` for an approval the payee made in stand-in: the shortfall may become debt up to
+        /// the larger of the debt cap and the offline cap.
+        function chargeStandIn(address token, bytes32 id, uint128 amount, address payee) external;
         /// Releases the caller's hold.
         function release(bytes32 id) external;
         /// Sets how much debt in `token` the caller accepts towards `creditor`. Root key only.
@@ -47,6 +54,9 @@ crate::sol! {
         /// reverts `ToleranceExceeded`. Unbounded by default and when `bounded` is false, which
         /// needs a zero `toleranceBps`. Root key only.
         function setCaptureTolerance(address payee, address token, bool bounded, uint32 toleranceBps) external;
+        /// Sets how much debt in `token` the caller accepts towards `payee` from its stand-in holds
+        /// and charges, when above the debt cap. Root key only.
+        function setOfflineCap(address payee, address token, uint128 cap) external;
         /// Releases an expired hold of `owner`. Callable by anyone.
         function releaseExpired(address owner, bytes32 id) external;
         /// Moves `amount` from the payee (caller) back to `owner`, up to the captured total.
@@ -59,8 +69,10 @@ crate::sol! {
         function debtCap(address owner, address creditor, address token) external view returns (uint128);
         function captureTolerance(address owner, address payee, address token) external view returns (bool bounded, uint32 toleranceBps);
         function captured(address owner, bytes32 id) external view returns (uint128 captured, uint128 refunded);
+        function offlineCap(address owner, address payee, address token) external view returns (uint128);
 
         event HoldPlaced(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint64 expiresAt);
+        event StandInHoldPlaced(address indexed owner, bytes32 indexed id, address indexed token, uint128 approved);
         event HoldAdjusted(address indexed owner, bytes32 indexed id, address indexed token, uint128 amount);
         event HoldReleased(address indexed owner, bytes32 indexed id, address indexed token);
         event HoldCaptured(address indexed owner, bytes32 indexed id, address indexed token, uint128 amount, uint128 debt);
