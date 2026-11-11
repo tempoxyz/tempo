@@ -8,7 +8,7 @@ use crate::{
     delayed_pool::DelayedPool,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool,
+    tt_2d_pool::{AA2dPool, AASequenceId},
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
 use alloy_consensus::Transaction;
@@ -687,7 +687,7 @@ where
         if transaction.is_aa_2d() {
             self.aa_2d_pool
                 .read()
-                .get_transactions_by_sender_iter(lane.address)
+                .get_lane_transactions(lane)
                 .filter(later)
                 .map(|tx| *tx.hash())
                 .collect()
@@ -1781,22 +1781,9 @@ where
         address: Address,
         nonce_key: U256,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let in_lane = |tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>| {
-            !tx.transaction.is_expiring_nonce() && tx.transaction.nonce_key() == Some(nonce_key)
-        };
-        let mut txs: Vec<_> = self
-            .aa_2d_pool
-            .read()
-            .get_transactions_by_sender_iter(address)
-            .filter(in_lane)
-            .collect();
-        txs.extend(
-            self.delayed_pool
-                .read()
-                .transactions()
-                .filter(|tx| tx.sender() == address && in_lane(tx))
-                .cloned(),
-        );
+        let lane = AASequenceId::new(address, nonce_key);
+        let mut txs: Vec<_> = self.aa_2d_pool.read().get_lane_transactions(lane).collect();
+        txs.extend(self.delayed_pool.read().lane_transactions(lane));
         txs
     }
 }

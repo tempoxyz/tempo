@@ -667,6 +667,16 @@ impl AA2dPool {
         regular.chain(expiring)
     }
 
+    /// Returns all transactions in the `lane` sequential 2D nonce lane, by nonce.
+    pub(crate) fn get_lane_transactions(
+        &self,
+        lane: AASequenceId,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
+        self.by_id
+            .range(lane.range())
+            .map(|(_, tx)| tx.inner.transaction.clone())
+    }
+
     /// Returns pending transactions in the address's sequential 2D nonce lane.
     pub(crate) fn get_pending_transactions_by_address_and_nonce_key(
         &self,
@@ -2613,7 +2623,7 @@ impl AASequenceId {
     }
 
     /// Returns a range of transactions for this sequence.
-    const fn range(self) -> std::ops::RangeInclusive<AA2dTransactionId> {
+    pub(crate) const fn range(self) -> std::ops::RangeInclusive<AA2dTransactionId> {
         AA2dTransactionId::new(self, 0)..=AA2dTransactionId::new(self, u64::MAX)
     }
 }

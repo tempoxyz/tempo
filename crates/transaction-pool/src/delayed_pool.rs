@@ -17,7 +17,11 @@ use alloy_primitives::{
 use reth_primitives_traits::InMemorySize;
 use reth_transaction_pool::{GetPooledTransactionLimit, PoolTransaction, ValidPoolTransaction};
 use reth_trie_common::bundle_state::BundleAccount;
-use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+    sync::Arc,
+};
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tokio::sync::mpsc;
 
@@ -48,7 +52,9 @@ pub struct DelayedPool {
     /// Held transactions by hash.
     by_hash: B256Map<HeldTransaction>,
     /// Held transaction hash by the nonce it uses; there is at most one per nonce.
-    by_nonce: HashMap<HeldNonce, TxHash>,
+    ///
+    /// Ordered so that a sequential nonce lane can be read as a range.
+    by_nonce: BTreeMap<HeldNonce, TxHash>,
     /// Held transactions ordered by `valid_after`, for release.
     by_valid_after: BTreeSet<(u64, TxHash)>,
     /// Held transactions ordered by priority fee, lowest first, for eviction when full.
@@ -371,6 +377,17 @@ impl DelayedPool {
             .and_then(|hash| self.get(hash))
     }
 
+    /// Returns the held transactions in the `lane` sequential nonce lane, by nonce.
+    pub(crate) fn lane_transactions(
+        &self,
+        lane: AASequenceId,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
+        let range = lane.range();
+        self.by_nonce
+            .range(HeldNonce::Sequence(*range.start())..=HeldNonce::Sequence(*range.end()))
+            .filter_map(|(_, hash)| self.get(hash))
+    }
+
     /// Returns all held transactions.
     pub(crate) fn transactions(
         &self,
@@ -495,7 +512,7 @@ struct HeldTransaction {
 }
 
 /// The nonce a held transaction consumes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum HeldNonce {
     /// Sender, nonce key (zero for protocol nonces) and nonce.
     Sequence(AA2dTransactionId),
