@@ -110,4 +110,8 @@ pub(crate) struct AdmissionMetrics {
     /// Transactions validated again before insertion because a canonical update landed while
     /// they validated.
     pub(crate) revalidated: Counter,
+
+    /// Valid transactions rejected because a canonical update landed during every validation
+    /// attempt.
+    pub(crate) rejected: Counter,
 }

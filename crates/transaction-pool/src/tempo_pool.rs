@@ -7,7 +7,7 @@ use crate::{
     best::MergeBestTransactions,
     metrics::AdmissionMetrics,
     ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
@@ -46,9 +46,8 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{Block, TempoHeader};
 
-/// Validations of a transaction before admission inserts it even though a canonical update landed
-/// during the last one. Maintenance or block building rejects it later if that update
-/// invalidated it.
+/// Validations of a transaction before admission rejects it because the admission epoch advanced
+/// during each of them.
 const ADMISSION_ATTEMPTS: usize = 3;
 
 /// Transaction pool operations for Tempo nonce lanes.
@@ -867,7 +866,7 @@ where
                 // canonical update, so either this sees the advance or that repair sees what is
                 // inserted under this guard.
                 let epoch = self.admission_epoch.read();
-                if *epoch == seen || attempts == ADMISSION_ATTEMPTS {
+                if *epoch == seen {
                     let outcomes = origins.into_iter().zip(outcomes);
                     // Fully delegate to protocol pool for non-2D transactions
                     return if has_2d {
@@ -883,6 +882,24 @@ where
                     };
                 }
                 seen = *epoch;
+            }
+            if attempts == ADMISSION_ATTEMPTS {
+                // No attempt validated these against the state the pool is repaired for.
+                return origins
+                    .into_iter()
+                    .zip(outcomes)
+                    .map(|(origin, outcome)| match outcome {
+                        TransactionValidationOutcome::Valid { transaction, .. } => {
+                            self.admission_metrics.rejected.increment(1);
+                            Err(PoolError::other(
+                                *transaction.transaction().hash(),
+                                TempoPoolTransactionError::StateChangedDuringValidation,
+                            ))
+                        }
+                        // Forwarded for event listener updates.
+                        invalid => self.add_validated_transaction(origin, invalid),
+                    })
+                    .collect();
             }
             attempts += 1;
 
@@ -2474,20 +2491,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admission_keeps_outcome_of_last_attempt() {
-        let (provider, pool, pooled) = pool_with_valid_transaction();
+    async fn admission_inserts_on_last_attempt_within_one_epoch() {
+        let (_, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        for _ in 1..ADMISSION_ATTEMPTS {
+            run_validation(&mut admission).await;
+            pool.advance_admission_epoch();
+        }
+
+        let added = admission.await.expect("the last validation stands");
+        assert_eq!(added.hash, *pooled.hash());
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_after_epoch_advances_during_every_attempt() {
+        let (_, pool, pooled) = pool_with_valid_transaction();
         let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
         tokio::pin!(admission);
         for _ in 0..ADMISSION_ATTEMPTS {
             run_validation(&mut admission).await;
             pool.advance_admission_epoch();
         }
-        // One more validation would reject the transaction.
-        mine_sender_nonce(&provider, &pooled);
 
-        let added = admission.await.expect("the last validation stands");
-        assert_eq!(added.hash, *pooled.hash());
-        assert!(pool.get(pooled.hash()).is_some());
+        let mut pending = pool.pending_transactions_listener();
+        let err = admission
+            .await
+            .expect_err("no validation held for a whole epoch");
+        assert!(pending.try_recv().is_err());
+        let PoolErrorKind::Other(err) = err.kind else {
+            panic!("unexpected error {err:?}");
+        };
+        assert!(matches!(
+            err.downcast_ref(),
+            Some(TempoPoolTransactionError::StateChangedDuringValidation)
+        ));
+        assert!(pool.get(pooled.hash()).is_none());
     }
 
     #[tokio::test]
