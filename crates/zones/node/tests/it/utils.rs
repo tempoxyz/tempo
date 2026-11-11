@@ -14,11 +14,15 @@ use eyre::WrapErr;
 use futures::future::try_join_all;
 use k256::{ProjectivePoint, Scalar, SecretKey};
 use p256::ecdsa::SigningKey as P256SigningKey;
+use reth_ethereum::provider::db::{tables, transaction::DbTxMut};
 use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::{args::RpcServerArgs, exit::NodeExitFuture};
 use reth_primitives_traits::SealedHeader;
-use reth_provider::{BlockNumReader, CanonStateSubscriptions, ChainSpecProvider, HeaderProvider};
+use reth_provider::{
+    BlockNumReader, CanonStateSubscriptions, ChainSpecProvider, DBProvider,
+    DatabaseProviderFactory, HeaderProvider,
+};
 use reth_rpc_builder::RpcModuleSelection;
 use reth_tasks::Runtime;
 use sha2::{Digest, Sha256};
@@ -616,6 +620,10 @@ pub(crate) trait TestNodeHandle: Send {
 
     fn node_exit_future_mut(&mut self) -> &mut NodeExitFuture;
 
+    /// Deletes a persisted block's hash-to-number index entry, leaving its transactions and
+    /// receipts readable by transaction hash. Returns `false` while the block is not persisted.
+    fn drop_persisted_block_hash_index(&self, block_hash: B256) -> eyre::Result<bool>;
+
     fn spawn_sequencer(
         &self,
         config: zone_sequencer::ZoneSequencerConfig,
@@ -642,6 +650,23 @@ where
 
     fn node_exit_future_mut(&mut self) -> &mut NodeExitFuture {
         &mut self.node_exit_future
+    }
+
+    fn drop_persisted_block_hash_index(&self, block_hash: B256) -> eyre::Result<bool> {
+        let provider = self.node.provider();
+        if provider
+            .database_provider_ro()?
+            .block_number(block_hash)?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let provider_rw = provider.database_provider_rw()?;
+        provider_rw
+            .tx_ref()
+            .delete::<tables::HeaderNumbers>(block_hash, None)?;
+        provider_rw.commit()?;
+        Ok(true)
     }
 
     fn spawn_sequencer(
@@ -705,6 +730,11 @@ pub(crate) struct ZoneTestNode {
 impl ZoneTestNode {
     pub(crate) fn proof_directory(&self) -> std::path::PathBuf {
         self.node_handle.proof_directory()
+    }
+
+    /// See [`TestNodeHandle::drop_persisted_block_hash_index`].
+    pub(crate) fn drop_persisted_block_hash_index(&self, block_hash: B256) -> eyre::Result<bool> {
+        self.node_handle.drop_persisted_block_hash_index(block_hash)
     }
 
     /// Returns the HTTP RPC URL for connecting providers to this node.
@@ -1109,6 +1139,7 @@ impl ZoneTestNode {
             None,
             None,
             None,
+            false,
         )
         .await
     }
@@ -1136,6 +1167,7 @@ impl ZoneTestNode {
             None,
             Some(deposit_allowlist),
             None,
+            false,
         )
         .await
     }
@@ -1319,10 +1351,13 @@ impl ZoneTestNode {
             None,
             None,
             None,
+            false,
         )
         .await
     }
 
+    /// With `uncached_storage_reads`, every block is persisted at once and the RPC state cache
+    /// is disabled, so RPC lookups read storage the way cold historical lookups do.
     #[allow(clippy::too_many_arguments)]
     async fn launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
         l1_ws_url: String,
@@ -1337,6 +1372,7 @@ impl ZoneTestNode {
         prover_config: Option<ZoneProverConfig>,
         deposit_allowlist: Option<zone_node::DepositAllowlist>,
         deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
+        uncached_storage_reads: bool,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
         let is_local_dummy_l1 = l1_ws_url == DUMMY_L1_URL;
@@ -1466,9 +1502,12 @@ impl ZoneTestNode {
                 // A node attached to a real portal may have the standalone sequencer started
                 // after launch. Match production by making every settleable block durable
                 // immediately. Synthetic P2P nodes need the same policy for replication.
-                if p2p_enabled || !portal_address.is_zero() {
+                if p2p_enabled || !portal_address.is_zero() || uncached_storage_reads {
                     c.engine.persistence_threshold = 0;
                     c.engine.memory_block_buffer_target = Some(0);
+                }
+                if uncached_storage_reads {
+                    c.rpc.rpc_state_cache.set_zero_lengths();
                 }
                 c
             });
@@ -4365,6 +4404,7 @@ async fn start_real_p2p_cluster_inner(
                 prover_config.clone(),
                 deposit_allowlists[index].clone(),
                 None,
+                false,
             )
         },
     ))
@@ -4389,6 +4429,7 @@ async fn start_real_p2p_cluster_inner(
                         .as_ref()
                         .is_some_and(|setup| setup.rpc_relays_writes)
                         .then_some(allowlist_admin),
+                    false,
                 )
                 .await?,
             zone_chain_id: allowlist_admin.zone_chain_id,
@@ -5101,15 +5142,41 @@ fn build_redacted_rpc_ctx(
 /// - A redacted RPC server on a random port
 /// - Sequencer credentials for testing access control
 pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTestCtx> {
-    let sequencer_signer = alloy_signer_local::PrivateKeySigner::random();
-    let sequencer_address = sequencer_signer.address();
-
     let zone = ZoneTestNode::launch(
         DUMMY_L1_URL.to_string(),
         Address::ZERO,
         next_unique_chain_id(),
     )
     .await?;
+    start_redacted_rpc_for(zone).await
+}
+
+/// Like [`start_zone_with_redacted_rpc`], but the node persists every block at once and runs
+/// without an RPC state cache, so lookups read storage the way cold historical ones do.
+pub(crate) async fn start_zone_with_uncached_redacted_rpc() -> eyre::Result<RedactedRpcTestCtx> {
+    let zone = ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+        DUMMY_L1_URL.to_string(),
+        Address::ZERO,
+        next_unique_chain_id(),
+        None,
+        alloy_signer_local::PrivateKeySigner::random(),
+        8,
+        None,
+        true,
+        Vec::new(),
+        None,
+        None,
+        None,
+        true,
+    )
+    .await?;
+    start_redacted_rpc_for(zone).await
+}
+
+async fn start_redacted_rpc_for(zone: ZoneTestNode) -> eyre::Result<RedactedRpcTestCtx> {
+    let sequencer_signer = alloy_signer_local::PrivateKeySigner::random();
+    let sequencer_address = sequencer_signer.address();
+
     let fixture = L1Fixture::new();
 
     fixture.seed_l1_cache(

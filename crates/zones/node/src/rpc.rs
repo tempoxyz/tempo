@@ -1189,6 +1189,15 @@ where
 
     fn transaction_receipt(&self, hash: B256, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
+            // Check the sender before loading the receipt, so receipt load errors (such as
+            // pruned sibling receipts) never reveal another account's transaction.
+            let tx = EthTransactions::transaction_by_hash(&self.eth.api, hash)
+                .await
+                .map_err(internal)?;
+            if tx.is_none_or(|tx| tx.into_recovered().signer() != auth.caller) {
+                return Ok(raw_null());
+            }
+
             let receipt = EthTransactions::transaction_receipt(&self.eth.api, hash)
                 .await
                 .map_err(internal)?;
@@ -1196,10 +1205,6 @@ where
             let Some(mut receipt) = receipt else {
                 return Ok(raw_null());
             };
-
-            if receipt.from() != auth.caller {
-                return Ok(raw_null());
-            }
 
             receipt = zone_rpc::filter::filter_receipt_logs(receipt);
 
