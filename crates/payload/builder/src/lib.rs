@@ -16,7 +16,10 @@ use crate::{
         block_transaction_length,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
+    prewarming::{
+        BestTransactionsLookahead, BestTransactionsParallel, PrewarmedTransaction,
+        PrewarmingExecutionContext,
+    },
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
@@ -66,8 +69,7 @@ use tempo_payload_types::{
 };
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
-    transaction::TempoPoolTransactionError,
+    TempoTransactionPool, best::BestTransaction, transaction::TempoPoolTransactionError,
 };
 use tokio::sync::{Semaphore, oneshot};
 use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
@@ -83,25 +85,28 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 const BUILD_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Source of transactions for payload building.
-enum PayloadTransactions {
-    Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
-    Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),
-    Parallel(BestTransactionsPrewarming),
+enum PayloadTransactions<Provider> {
+    /// Executed by the builder in pool order, with or without prewarming.
+    Sequential(BestTransactionsLookahead<Provider>),
+    /// Executed ahead of the builder, which replays them.
+    Parallel(BestTransactionsParallel<Provider>),
 }
 
-impl PayloadTransactions {
+impl<Provider> PayloadTransactions<Provider>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
     /// Returns the next transaction, if available.
     ///
-    /// `should_stop` is checked before every candidate and while waiting for prewarming, and
-    /// selection returns `None` once it reports true. Neither a slow prewarming coordinator nor
-    /// a long run of skipped transactions can then keep the builder past its deadline.
-    fn next(&mut self, mut should_stop: impl FnMut() -> bool) -> Option<PrewarmedTransaction> {
+    /// `should_stop` is checked before every candidate and while waiting for an execution, and
+    /// selection returns `None` once it reports true. Neither a slow execution nor a long run of
+    /// skipped transactions can then keep the builder past its deadline.
+    fn next(&mut self, should_stop: impl FnMut() -> bool) -> Option<PrewarmedTransaction> {
         match self {
             Self::Sequential(txs) => txs
-                .next_with(|inner| if should_stop() { None } else { inner.next() })
+                .next_until(should_stop)
                 .map(PrewarmedTransaction::without_replay),
-            Self::Prewarming(txs) => txs.next_with(|inner| inner.next_until(&mut should_stop)),
-            Self::Parallel(planner) => planner.next_until(should_stop),
+            Self::Parallel(txs) => txs.next_until(should_stop),
         }
     }
 
@@ -109,21 +114,16 @@ impl PayloadTransactions {
     fn mark_invalid(&mut self, tx: &PrewarmedTransaction, kind: InvalidPoolTransactionError) {
         match self {
             Self::Sequential(txs) => txs.mark_invalid(&tx.tx, kind),
-            Self::Prewarming(txs) => txs.mark_invalid(tx, kind),
-            Self::Parallel(prewarming) => prewarming.mark_invalid(tx, kind),
+            Self::Parallel(txs) => txs.mark_invalid(&tx.tx, kind),
         }
     }
 
     /// Notify the iterator of a new result.
     ///
-    /// Noop for [`Self::Parallel`], as it doesn't use the [`StateAwareBestTransactions`] iterator.
+    /// Noop for [`Self::Parallel`]: replaying a transaction checks its fee payer's balance.
     fn on_new_result(&mut self, result: &TempoTxResult) {
-        match self {
-            Self::Sequential(txs) => txs.on_new_result(result),
-            Self::Prewarming(txs) => txs.on_new_result(result),
-            Self::Parallel(_) => {
-                // Parallel does not use state-aware best transactions iterator.
-            }
+        if let Self::Sequential(txs) = self {
+            txs.on_new_result(result);
         }
     }
 }
@@ -251,11 +251,7 @@ where
         &self,
         config: PayloadConfig<Self::Attributes, TempoHeader>,
     ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
-        // An empty payload has nothing to prewarm. It is also what a build falls back to, so it
-        // must not wait on a prewarming coordinator.
-        let mut this = self.clone();
-        this.config.enable_prewarming = false;
-        this.build_payload(
+        self.build_payload(
             BuildArguments::new(
                 Default::default(),
                 None,
@@ -597,32 +593,27 @@ where
             ),
             executor.evm().block().timestamp.to(),
         );
-        let prewarm_ctx = PrewarmingExecutionContext::new(
-            self.provider.clone(),
-            self.executor.clone(),
-            execution_cache,
-            parent_header.hash(),
-            prewarm_evm_env,
-            self.evm_config.clone(),
-            self.config.enable_parallel,
-        );
-        let mut best_txs = if self.config.enable_prewarming {
-            if self.config.enable_parallel {
-                PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
-                    prewarm_ctx,
-                    raw_best_txs,
-                ))
-            } else {
-                PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
-                    hardfork.fallback_fee_tokens(),
-                ))
-            }
-        } else {
-            PayloadTransactions::Sequential(StateAwareBestTransactions::new(
-                Box::new(raw_best_txs),
+        let raw_best_txs = Box::new(raw_best_txs);
+        let prewarm_ctx = self.config.enable_prewarming.then(|| {
+            PrewarmingExecutionContext::new(
+                self.provider.clone(),
+                self.executor.clone(),
+                execution_cache,
+                parent_header.hash(),
+                prewarm_evm_env,
+                self.evm_config.clone(),
+                self.config.enable_parallel,
+            )
+        });
+        let mut best_txs = match prewarm_ctx {
+            Some(prewarm_ctx) if self.config.enable_parallel => PayloadTransactions::Parallel(
+                BestTransactionsParallel::new(raw_best_txs, prewarm_ctx),
+            ),
+            prewarm_ctx => PayloadTransactions::Sequential(BestTransactionsLookahead::new(
+                raw_best_txs,
                 hardfork.fallback_fee_tokens(),
-            ))
+                prewarm_ctx,
+            )),
         };
         self.metrics
             .pool_fetch_duration_seconds
