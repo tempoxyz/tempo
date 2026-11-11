@@ -11,25 +11,28 @@ use crate::{
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
-    Address, B256, TxHash,
+    Address, B256, TxHash, U256,
     map::{AddressMap, B256Map, Entry, HashMap},
 };
 use reth_primitives_traits::InMemorySize;
 use reth_transaction_pool::{GetPooledTransactionLimit, PoolTransaction, ValidPoolTransaction};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 use tokio::sync::mpsc;
 
 /// Default number of seconds before `valid_after` at which a held transaction is released.
 pub const DEFAULT_DELAYED_LEAD_SECS: u64 = 2;
 
 /// Default maximum number of held transactions.
-pub const DEFAULT_DELAYED_MAX_COUNT: usize = 4096;
+pub const DEFAULT_DELAYED_MAX_COUNT: NonZeroUsize = NonZeroUsize::new(4096).unwrap();
 
 /// Default maximum total size of held transactions, in megabytes.
-pub const DEFAULT_DELAYED_MAX_SIZE_MB: usize = 8;
+pub const DEFAULT_DELAYED_MAX_SIZE_MB: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 /// Default maximum number of held transactions per authority.
-pub const DEFAULT_DELAYED_MAX_PER_AUTHORITY: usize = 4;
+pub const DEFAULT_DELAYED_MAX_PER_AUTHORITY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
+/// Bytes in a megabyte, for converting size limits given in megabytes.
+pub const BYTES_PER_MB: NonZeroUsize = NonZeroUsize::new(1024 * 1024).unwrap();
 
 /// Bound on hashes buffered per listener of newly held transactions.
 const HELD_LISTENER_BUFFER_SIZE: usize = 2048;
@@ -46,6 +49,8 @@ pub struct DelayedPool {
     by_nonce: HashMap<HeldNonce, TxHash>,
     /// Held transactions ordered by `valid_after`, for release.
     by_valid_after: BTreeSet<(u64, TxHash)>,
+    /// Held transactions ordered by priority fee, lowest first, for eviction when full.
+    by_priority: BTreeSet<(u128, TxHash)>,
     /// Number of held transactions per authority.
     by_authority: AddressMap<usize>,
     /// Total size of held transactions in bytes.
@@ -82,22 +87,24 @@ impl DelayedPool {
         })
     }
 
-    /// Holds a validated transaction until `valid_after`.
+    /// Holds a validated transaction until `valid_after` and returns the held transactions it
+    /// evicted.
     ///
-    /// `authorities` are the authorities recovered during validation; the sender always counts
-    /// as one. The caller ensures no sub-pool holds the transaction's hash.
+    /// When the pool is full, the lowest-priority held transactions are evicted to make room,
+    /// but only for a transaction whose priority fee is higher than each of theirs; otherwise it
+    /// is rejected with [`Error::PoolFull`]. `authorities` are the authorities recovered during
+    /// validation; the sender always counts as one. The caller ensures no sub-pool holds the
+    /// transaction's hash.
     pub(crate) fn insert(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
         valid_after: u64,
         mut authorities: Vec<Address>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>, Error> {
         let hash = *transaction.hash();
-        let tx_size = transaction.transaction.size();
-        if self.by_hash.len() >= self.config.max_count
-            || self.size.saturating_add(tx_size) > self.config.max_size
-        {
-            return Err(Error::PoolFull);
+        let held_nonce = HeldNonce::of(&transaction.transaction);
+        if self.by_nonce.contains_key(&held_nonce) {
+            return Err(Error::NonceConflict);
         }
 
         authorities.push(transaction.sender());
@@ -108,19 +115,41 @@ impl DelayedPool {
                 .get(*authority)
                 .copied()
                 .unwrap_or_default()
-                >= self.config.max_per_authority
+                >= self.config.max_per_authority.get()
         }) {
             return Err(Error::AuthorityLimit(*authority));
         }
 
-        match self.by_nonce.entry(HeldNonce::of(&transaction.transaction)) {
-            Entry::Occupied(_) => return Err(Error::NonceConflict),
-            Entry::Vacant(entry) => entry.insert(hash),
-        };
+        let tx_size = transaction.transaction.size();
+        let max_size = self.config.max_size.get();
+        if tx_size > max_size {
+            return Err(Error::PoolFull);
+        }
+        let priority = transaction.transaction.priority_fee_or_price();
+        let (mut count, mut size) = (self.by_hash.len(), self.size);
+        let mut to_evict = Vec::new();
+        for (evict_priority, evict_hash) in &self.by_priority {
+            if count < self.config.max_count.get() && size + tx_size <= max_size {
+                break;
+            }
+            if *evict_priority >= priority {
+                return Err(Error::PoolFull);
+            }
+            count -= 1;
+            size -= self.by_hash[evict_hash].transaction.transaction.size();
+            to_evict.push(*evict_hash);
+        }
+        let evicted = to_evict
+            .iter()
+            .filter_map(|evict_hash| self.remove(evict_hash))
+            .collect();
+
+        self.by_nonce.insert(held_nonce, hash);
         for authority in &authorities {
             *self.by_authority.entry(*authority).or_default() += 1;
         }
         self.by_valid_after.insert((valid_after, hash));
+        self.by_priority.insert((priority, hash));
         self.size += tx_size;
 
         if transaction.propagate {
@@ -140,7 +169,7 @@ impl DelayedPool {
             },
         );
         self.update_metrics();
-        Ok(())
+        Ok(evicted)
     }
 
     /// Returns held transactions whose `valid_after` is within the lead time of
@@ -169,6 +198,8 @@ impl DelayedPool {
         self.by_nonce
             .remove(&HeldNonce::of(&transaction.transaction));
         self.by_valid_after.remove(&(valid_after, *hash));
+        self.by_priority
+            .remove(&(transaction.transaction.priority_fee_or_price(), *hash));
         for authority in &authorities {
             if let Entry::Occupied(mut entry) = self.by_authority.entry(*authority) {
                 *entry.get_mut() -= 1;
@@ -223,6 +254,20 @@ impl DelayedPool {
         self.by_hash
             .get(hash)
             .map(|held| Arc::clone(&held.transaction))
+    }
+
+    /// Returns the held transaction from `sender` at `nonce` in the `nonce_key` lane, zero
+    /// for protocol nonces.
+    pub(crate) fn get_by_nonce(
+        &self,
+        sender: Address,
+        nonce_key: U256,
+        nonce: u64,
+    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let id = AA2dTransactionId::new(AASequenceId::new(sender, nonce_key), nonce);
+        self.by_nonce
+            .get(&HeldNonce::Sequence(id))
+            .and_then(|hash| self.get(hash))
     }
 
     /// Returns all held transactions.
@@ -304,12 +349,12 @@ pub struct Config {
     /// many seconds, and released by the first block that brings it within that window.
     pub lead_secs: u64,
     /// Maximum number of held transactions.
-    pub max_count: usize,
+    pub max_count: NonZeroUsize,
     /// Maximum total size of held transactions in bytes.
-    pub max_size: usize,
+    pub max_size: NonZeroUsize,
     /// Maximum number of held transactions per authority: the sender and every authority
     /// recovered from the transaction's authorization lists.
-    pub max_per_authority: usize,
+    pub max_per_authority: NonZeroUsize,
 }
 
 impl Default for Config {
@@ -317,7 +362,7 @@ impl Default for Config {
         Self {
             lead_secs: DEFAULT_DELAYED_LEAD_SECS,
             max_count: DEFAULT_DELAYED_MAX_COUNT,
-            max_size: DEFAULT_DELAYED_MAX_SIZE_MB * 1024 * 1024,
+            max_size: DEFAULT_DELAYED_MAX_SIZE_MB.saturating_mul(BYTES_PER_MB),
             max_per_authority: DEFAULT_DELAYED_MAX_PER_AUTHORITY,
         }
     }
@@ -326,7 +371,8 @@ impl Default for Config {
 /// Why the [`DelayedPool`] rejected a transaction.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
-    /// The pool holds the maximum number or total size of transactions.
+    /// The pool holds the maximum number or total size of transactions, none of them with a
+    /// lower priority fee than the rejected one.
     #[error("delayed transaction pool is full")]
     PoolFull,
     /// The authority already has the maximum number of held transactions.
@@ -382,6 +428,17 @@ mod tests {
         Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
     }
 
+    /// Inserts into `pool` and returns the hashes of the evicted transactions.
+    fn insert(
+        pool: &mut DelayedPool,
+        tx: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        valid_after: u64,
+        authorities: Vec<Address>,
+    ) -> Result<Vec<TxHash>, Error> {
+        pool.insert(tx, valid_after, authorities)
+            .map(|evicted| hashes(&evicted))
+    }
+
     fn hashes(txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) -> Vec<TxHash> {
         txs.iter().map(|tx| *tx.hash()).collect()
     }
@@ -417,12 +474,18 @@ mod tests {
             .build();
         let next = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
 
-        assert_eq!(pool.insert(valid(first), 100, Vec::new()), Ok(()));
         assert_eq!(
-            pool.insert(valid(replacement), 100, Vec::new()),
+            insert(&mut pool, valid(first), 100, Vec::new()),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            insert(&mut pool, valid(replacement), 100, Vec::new()),
             Err(Error::NonceConflict)
         );
-        assert_eq!(pool.insert(valid(next), 100, Vec::new()), Ok(()));
+        assert_eq!(
+            insert(&mut pool, valid(next), 100, Vec::new()),
+            Ok(Vec::new())
+        );
         assert_eq!(pool.len(), 2);
     }
 
@@ -436,26 +499,31 @@ mod tests {
                 .valid_before(valid_before)
                 .build();
             assert!(tx.is_expiring_nonce());
-            assert_eq!(pool.insert(valid(tx), 100, Vec::new()), Ok(()));
+            assert_eq!(
+                insert(&mut pool, valid(tx), 100, Vec::new()),
+                Ok(Vec::new())
+            );
         }
     }
 
     #[test]
     fn rejects_when_count_or_size_is_full() {
         let mut pool = DelayedPool::new(Config {
-            max_count: 1,
+            max_count: NonZeroUsize::MIN,
             ..Default::default()
         });
         assert_eq!(
-            pool.insert(
+            insert(
+                &mut pool,
                 valid(TxBuilder::aa(Address::random()).build()),
                 100,
                 Vec::new()
             ),
-            Ok(())
+            Ok(Vec::new())
         );
         assert_eq!(
-            pool.insert(
+            insert(
+                &mut pool,
                 valid(TxBuilder::aa(Address::random()).build()),
                 100,
                 Vec::new()
@@ -465,12 +533,16 @@ mod tests {
 
         let tx = TxBuilder::aa(Address::random()).build();
         let mut pool = DelayedPool::new(Config {
-            max_size: tx.size(),
+            max_size: NonZeroUsize::new(tx.size()).unwrap(),
             ..Default::default()
         });
-        assert_eq!(pool.insert(valid(tx), 100, Vec::new()), Ok(()));
         assert_eq!(
-            pool.insert(
+            insert(&mut pool, valid(tx), 100, Vec::new()),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            insert(
+                &mut pool,
                 valid(TxBuilder::aa(Address::random()).build()),
                 100,
                 Vec::new()
@@ -482,7 +554,7 @@ mod tests {
     #[test]
     fn limits_transactions_per_authority() {
         let mut pool = DelayedPool::new(Config {
-            max_per_authority: 1,
+            max_per_authority: NonZeroUsize::MIN,
             ..Default::default()
         });
         let sender = Address::random();
@@ -490,9 +562,13 @@ mod tests {
         let first = TxBuilder::aa(sender).build();
         let first_hash = *first.hash();
 
-        assert_eq!(pool.insert(valid(first), 100, vec![authority]), Ok(()));
         assert_eq!(
-            pool.insert(
+            insert(&mut pool, valid(first), 100, vec![authority]),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            insert(
+                &mut pool,
                 valid(TxBuilder::aa(sender).nonce(1).build()),
                 100,
                 Vec::new()
@@ -501,14 +577,14 @@ mod tests {
         );
         let other_sender = TxBuilder::aa(Address::random()).build();
         assert_eq!(
-            pool.insert(valid(other_sender.clone()), 100, vec![authority]),
+            insert(&mut pool, valid(other_sender.clone()), 100, vec![authority]),
             Err(Error::AuthorityLimit(authority))
         );
 
         pool.remove(&first_hash).expect("first transaction is held");
         assert_eq!(
-            pool.insert(valid(other_sender), 100, vec![authority]),
-            Ok(())
+            insert(&mut pool, valid(other_sender), 100, vec![authority]),
+            Ok(Vec::new())
         );
     }
 
@@ -520,8 +596,8 @@ mod tests {
         });
         let early = valid(TxBuilder::aa(Address::random()).build());
         let late = valid(TxBuilder::aa(Address::random()).build());
-        pool.insert(Arc::clone(&late), 110, Vec::new()).unwrap();
-        pool.insert(Arc::clone(&early), 105, Vec::new()).unwrap();
+        insert(&mut pool, Arc::clone(&late), 110, Vec::new()).unwrap();
+        insert(&mut pool, Arc::clone(&early), 105, Vec::new()).unwrap();
 
         assert!(pool.due(102).is_empty());
         assert_eq!(hashes(&pool.due(103)), vec![*early.hash()]);
@@ -532,19 +608,22 @@ mod tests {
     #[test]
     fn remove_frees_every_index() {
         let mut pool = DelayedPool::new(Config {
-            max_per_authority: 1,
+            max_per_authority: NonZeroUsize::MIN,
             ..Default::default()
         });
         let sender = Address::random();
         let tx = TxBuilder::aa(sender).build();
         let hash = *tx.hash();
-        pool.insert(valid(tx.clone()), 105, Vec::new()).unwrap();
+        insert(&mut pool, valid(tx.clone()), 105, Vec::new()).unwrap();
 
         assert_eq!(hashes(&pool.remove_transactions([&hash])), vec![hash]);
         assert!(!pool.contains(&hash));
         assert_eq!((pool.len(), pool.size()), (0, 0));
         assert!(pool.due(u64::MAX).is_empty());
-        assert_eq!(pool.insert(valid(tx), 105, Vec::new()), Ok(()));
+        assert_eq!(
+            insert(&mut pool, valid(tx), 105, Vec::new()),
+            Ok(Vec::new())
+        );
     }
 
     #[test]
@@ -557,7 +636,7 @@ mod tests {
         ];
         let other = valid(TxBuilder::aa(Address::random()).build());
         for tx in ours.iter().chain([&other]) {
-            pool.insert(Arc::clone(tx), 105, Vec::new()).unwrap();
+            insert(&mut pool, Arc::clone(tx), 105, Vec::new()).unwrap();
         }
 
         let mut removed = hashes(&pool.remove_transactions_by_sender(sender));
@@ -582,12 +661,65 @@ mod tests {
         );
         local.propagate = false;
 
-        pool.insert(Arc::clone(&propagated), 105, Vec::new())
-            .unwrap();
-        pool.insert(Arc::new(local), 105, Vec::new()).unwrap();
+        insert(&mut pool, Arc::clone(&propagated), 105, Vec::new()).unwrap();
+        insert(&mut pool, Arc::new(local), 105, Vec::new()).unwrap();
 
         assert_eq!(listener.try_recv(), Ok(*propagated.hash()));
         assert_eq!(listener.try_recv(), Err(mpsc::error::TryRecvError::Empty));
         assert_eq!(pool.pooled_transactions().count(), 1);
+    }
+
+    #[test]
+    fn evicts_lower_priority_transactions_when_full() {
+        let mut pool = DelayedPool::new(Config {
+            max_count: NonZeroUsize::MIN,
+            ..Default::default()
+        });
+        let cheap = valid(
+            TxBuilder::aa(Address::random())
+                .max_priority_fee(1_000_000_000)
+                .build(),
+        );
+        let equal = valid(
+            TxBuilder::aa(Address::random())
+                .max_priority_fee(1_000_000_000)
+                .build(),
+        );
+        let expensive = valid(
+            TxBuilder::aa(Address::random())
+                .max_priority_fee(2_000_000_000)
+                .build(),
+        );
+        insert(&mut pool, Arc::clone(&cheap), 105, Vec::new()).unwrap();
+
+        assert_eq!(
+            insert(&mut pool, equal, 105, Vec::new()),
+            Err(Error::PoolFull)
+        );
+        let evicted = pool
+            .insert(Arc::clone(&expensive), 105, Vec::new())
+            .expect("a higher priority fee evicts the cheapest held transaction");
+        assert_eq!(hashes(&evicted), vec![*cheap.hash()]);
+        assert!(!pool.contains(cheap.hash()));
+        assert!(pool.contains(expensive.hash()));
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn looks_up_held_transactions_by_nonce() {
+        let mut pool = DelayedPool::default();
+        let sender = Address::random();
+        let protocol = valid(TxBuilder::aa(sender).nonce(3).build());
+        let lane = valid(TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(3).build());
+        insert(&mut pool, Arc::clone(&protocol), 105, Vec::new()).unwrap();
+        insert(&mut pool, Arc::clone(&lane), 105, Vec::new()).unwrap();
+
+        let hash_at = |nonce_key, nonce| {
+            pool.get_by_nonce(sender, nonce_key, nonce)
+                .map(|tx| *tx.hash())
+        };
+        assert_eq!(hash_at(U256::ZERO, 3), Some(*protocol.hash()));
+        assert_eq!(hash_at(U256::ONE, 3), Some(*lane.hash()));
+        assert_eq!(hash_at(U256::ZERO, 2), None);
     }
 }

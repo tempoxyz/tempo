@@ -302,8 +302,14 @@ where
                         .iter()
                         .map(|tx| tx.nonce())
                         .max();
+                    let delayed_nonces: Vec<u64> = this
+                        .pool()
+                        .get_delayed_transactions_by_address_and_nonce_key(from, nonce_key)
+                        .iter()
+                        .map(|tx| tx.nonce())
+                        .collect();
 
-                    next_lane_nonce(on_chain_nonce, highest_pending_nonce)
+                    next_lane_nonce(on_chain_nonce, highest_pending_nonce, &delayed_nonces)
                         .map_err(Self::Error::from)
                 })
                 .await?
@@ -626,21 +632,25 @@ where
     }
 }
 
-/// Returns the next lane nonce, accounting for pending transactions without regressing state.
+/// Returns the next lane nonce, accounting for pending and delayed transactions without regressing
+/// state.
 fn next_lane_nonce(
     on_chain_nonce: u64,
     highest_pending_nonce: Option<u64>,
+    delayed_nonces: &[u64],
 ) -> Result<u64, EthApiError> {
-    match highest_pending_nonce {
+    let nonce_max = || EthApiError::InvalidTransaction(RpcInvalidTransactionError::NonceMaxValue);
+    let mut nonce = match highest_pending_nonce {
         Some(pending) if pending >= on_chain_nonce => {
-            pending
-                .checked_add(1)
-                .ok_or(EthApiError::InvalidTransaction(
-                    RpcInvalidTransactionError::NonceMaxValue,
-                ))
+            pending.checked_add(1).ok_or_else(nonce_max)?
         }
-        _ => Ok(on_chain_nonce),
+        _ => on_chain_nonce,
+    };
+    // Delayed transactions continue the lane once released, so their nonces are taken.
+    while delayed_nonces.contains(&nonce) {
+        nonce = nonce.checked_add(1).ok_or_else(nonce_max)?;
     }
+    Ok(nonce)
 }
 
 #[cfg(test)]
@@ -649,10 +659,23 @@ mod tests {
 
     #[test]
     fn next_lane_nonce_handles_stale_entries_and_overflow() {
-        assert_eq!(next_lane_nonce(5, Some(3)).unwrap(), 5);
+        assert_eq!(next_lane_nonce(5, Some(3), &[]).unwrap(), 5);
 
         assert!(matches!(
-            next_lane_nonce(0, Some(u64::MAX)),
+            next_lane_nonce(0, Some(u64::MAX), &[]),
+            Err(EthApiError::InvalidTransaction(
+                RpcInvalidTransactionError::NonceMaxValue
+            ))
+        ));
+    }
+
+    #[test]
+    fn next_lane_nonce_skips_delayed_nonces() {
+        assert_eq!(next_lane_nonce(5, None, &[5, 6, 8]).unwrap(), 7);
+        assert_eq!(next_lane_nonce(5, Some(6), &[7]).unwrap(), 8);
+        assert_eq!(next_lane_nonce(5, None, &[4, 9]).unwrap(), 5);
+        assert!(matches!(
+            next_lane_nonce(u64::MAX, None, &[u64::MAX]),
             Err(EthApiError::InvalidTransaction(
                 RpcInvalidTransactionError::NonceMaxValue
             ))

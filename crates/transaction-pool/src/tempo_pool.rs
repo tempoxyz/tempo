@@ -63,6 +63,15 @@ pub trait TempoTransactionPoolExt: TransactionPool {
     /// transactions never do, so the node forwards these hashes to the network itself. Hashes are
     /// dropped while the receiver's buffer is full.
     fn delayed_transactions_listener(&self) -> mpsc::Receiver<TxHash>;
+
+    /// Returns the delayed transactions in the address's sequential 2D nonce lane.
+    ///
+    /// Their nonces are taken: they enter the lane when released.
+    fn get_delayed_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
 }
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -683,7 +692,8 @@ where
                 .as_ref()
                 .map(|auths| protocol_pool.get_sender_ids(auths.iter().copied())),
         });
-        self.delayed_pool
+        let evicted = self
+            .delayed_pool
             .write()
             .insert(
                 Arc::clone(&tx),
@@ -701,6 +711,9 @@ where
         };
         protocol_pool.notify_event_listeners(&added);
         protocol_pool.on_new_transaction(added.into_new_transaction_event());
+        if !evicted.is_empty() {
+            protocol_pool.notify_on_transaction_updates(Vec::new(), evicted);
+        }
 
         // Reth has no queued reason for a transaction that is not valid yet.
         Ok(AddedTransactionOutcome {
@@ -1246,8 +1259,9 @@ where
 
     fn queued_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut queued = self.protocol_pool.queued_transactions();
+        // Held transactions are left out: reth's maintenance evicts external queued transactions
+        // older than its queued lifetime, which a held transaction can reach before release.
         queued.extend(self.aa_2d_pool.read().queued_transactions());
-        queued.extend(self.delayed_pool.read().transactions().cloned());
         queued
     }
 
@@ -1480,7 +1494,14 @@ where
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         // With 2D nonces, there's no concept of a single "highest" nonce across all nonce_keys
         // Return the highest protocol nonce (nonce_key=0) only
-        self.protocol_pool.get_highest_transaction_by_sender(sender)
+        let highest = self.protocol_pool.get_highest_transaction_by_sender(sender);
+        self.delayed_pool
+            .read()
+            .transactions()
+            .filter(|tx| tx.sender() == sender && !tx.transaction.is_aa_2d())
+            .cloned()
+            .chain(highest)
+            .max_by_key(|tx| tx.nonce())
     }
 
     fn get_highest_consecutive_transaction_by_sender(
@@ -1489,8 +1510,28 @@ where
         on_chain_nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         // This is complex with 2D nonces - delegate to protocol pool
-        self.protocol_pool
-            .get_highest_consecutive_transaction_by_sender(sender, on_chain_nonce)
+        let delayed_pool = self.delayed_pool.read();
+        if delayed_pool.len() == 0 {
+            return self
+                .protocol_pool
+                .get_highest_consecutive_transaction_by_sender(sender, on_chain_nonce);
+        }
+
+        // Held protocol-nonce transactions take their nonces, so they extend the sequence.
+        let mut highest = None;
+        let mut nonce = on_chain_nonce;
+        while let Some(tx) = self
+            .protocol_pool
+            .get_transaction_by_sender_and_nonce(sender, nonce)
+            .or_else(|| delayed_pool.get_by_nonce(sender, U256::ZERO, nonce))
+        {
+            highest = Some(tx);
+            let Some(next) = nonce.checked_add(1) else {
+                break;
+            };
+            nonce = next;
+        }
+        highest
     }
 
     fn get_transaction_by_sender_and_nonce(
@@ -1498,9 +1539,14 @@ where
         sender: Address,
         nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // Only returns transactions from protocol pool (nonce_key=0)
+        // Only returns protocol-nonce transactions (nonce_key=0)
         self.protocol_pool
             .get_transaction_by_sender_and_nonce(sender, nonce)
+            .or_else(|| {
+                self.delayed_pool
+                    .read()
+                    .get_by_nonce(sender, U256::ZERO, nonce)
+            })
     }
 
     fn get_transactions_by_origin(
@@ -1661,6 +1707,23 @@ where
 
     fn delayed_transactions_listener(&self) -> mpsc::Receiver<TxHash> {
         self.delayed_pool.write().held_transactions_listener()
+    }
+
+    fn get_delayed_transactions_by_address_and_nonce_key(
+        &self,
+        address: Address,
+        nonce_key: U256,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        self.delayed_pool
+            .read()
+            .transactions()
+            .filter(|tx| {
+                tx.sender() == address
+                    && !tx.transaction.is_expiring_nonce()
+                    && tx.transaction.nonce_key() == Some(nonce_key)
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -3898,7 +3961,10 @@ mod tests {
             tx_hashes(&pool.get_queued_transactions_by_sender(sender)),
             vec![hash]
         );
-        assert_eq!(tx_hashes(&pool.queued_transactions()), vec![hash]);
+        assert!(
+            pool.queued_transactions().is_empty(),
+            "held transactions must stay out of reth's stale-queued eviction"
+        );
         assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
         assert_eq!(pool.pooled_transaction_hashes(), vec![hash]);
         assert_eq!(pool.pooled_transaction_hashes_max(1), vec![hash]);
@@ -4107,7 +4173,7 @@ mod tests {
             sender,
             tip,
             delayed_pool::Config {
-                max_per_authority: 1,
+                max_per_authority: std::num::NonZeroUsize::MIN,
                 ..Default::default()
             },
         );
@@ -4133,5 +4199,106 @@ mod tests {
             err.downcast_ref::<delayed_pool::Error>(),
             Some(&delayed_pool::Error::AuthorityLimit(sender))
         );
+    }
+
+    #[tokio::test]
+    async fn nonce_lookups_include_held_transactions() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let held = TxBuilder::aa(sender).valid_after(tip + 60).build();
+        let held_hash = *held.hash();
+        let held_lane = TxBuilder::aa(sender)
+            .nonce_key(U256::ONE)
+            .valid_after(tip + 60)
+            .build();
+        let held_lane_hash = *held_lane.hash();
+        for tx in [held, held_lane] {
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction should be held");
+        }
+
+        let hash =
+            |tx: Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>>| tx.map(|tx| *tx.hash());
+        assert_eq!(
+            hash(pool.get_transaction_by_sender_and_nonce(sender, 0)),
+            Some(held_hash)
+        );
+        assert_eq!(
+            hash(pool.get_highest_transaction_by_sender(sender)),
+            Some(held_hash)
+        );
+        assert_eq!(
+            hash(pool.get_highest_consecutive_transaction_by_sender(sender, 0)),
+            Some(held_hash)
+        );
+        assert_eq!(
+            tx_hashes(&pool.get_delayed_transactions_by_address_and_nonce_key(sender, U256::ONE)),
+            vec![held_lane_hash]
+        );
+        assert!(
+            pool.get_delayed_transactions_by_address_and_nonce_key(sender, U256::from(2))
+                .is_empty()
+        );
+
+        // A live transaction after the held one extends the consecutive sequence.
+        let live = TxBuilder::aa(sender).nonce(1).build();
+        let live_hash = *live.hash();
+        pool.add_transaction(TransactionOrigin::External, live)
+            .await
+            .expect("transaction should be admitted");
+        assert_eq!(
+            hash(pool.get_highest_consecutive_transaction_by_sender(sender, 0)),
+            Some(live_hash)
+        );
+        assert_eq!(
+            hash(pool.get_highest_transaction_by_sender(sender)),
+            Some(live_hash)
+        );
+    }
+
+    #[tokio::test]
+    async fn full_delayed_pool_evicts_lower_fee_transaction() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (provider, pool) = create_validating_pool(
+            sender,
+            tip,
+            delayed_pool::Config {
+                max_count: std::num::NonZeroUsize::MIN,
+                ..Default::default()
+            },
+        );
+        let cheap = TxBuilder::aa(sender).valid_after(tip + 60).build();
+        let cheap_hash = *cheap.hash();
+        pool.add_transaction(TransactionOrigin::External, cheap)
+            .await
+            .expect("transaction should be held");
+        let mut events = pool.transaction_event_listener(cheap_hash).unwrap();
+
+        let other = Address::random();
+        provider.add_account(other, ExtendedAccount::new(0, U256::ZERO));
+        set_fee_token_balance(
+            &provider,
+            PATH_USD_ADDRESS,
+            other,
+            U256::from(1_000_000_000_000u64),
+        );
+        let expensive = TxBuilder::aa(other)
+            .max_priority_fee(2_000_000_000)
+            .valid_after(tip + 60)
+            .build();
+        let expensive_hash = *expensive.hash();
+        pool.add_transaction(TransactionOrigin::External, expensive)
+            .await
+            .expect("a higher fee evicts the cheaper held transaction");
+
+        assert!(!pool.contains(&cheap_hash));
+        assert!(pool.delayed_pool.read().contains(&expensive_hash));
+        assert!(matches!(
+            events.next().now_or_never().flatten(),
+            Some(TransactionEvent::Discarded)
+        ));
     }
 }

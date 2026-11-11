@@ -763,9 +763,14 @@ where
             .expired_eviction_duration_seconds
             .record(invalidation_start.elapsed());
 
-        // 6. Release held transactions that are about to become valid. Runs after the scans above
-        // so transactions they evicted are not revalidated.
-        pool.release_delayed_transactions(tip_timestamp).await;
+        // 6. Release held transactions that are about to become valid. Starts after the scans
+        // above so transactions they evicted are not revalidated, and runs in its own task so
+        // revalidation doesn't hold up the next block. Overlapping releases skip transactions an
+        // earlier one already took.
+        {
+            let pool = pool.clone();
+            tokio::spawn(async move { pool.release_delayed_transactions(tip_timestamp).await });
+        }
 
         // 7. Evict stale pending transactions (must happen after AA pool promotions in step 1)
         // Only runs once per interval (~30 min) to avoid overhead on every block.

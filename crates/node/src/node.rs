@@ -43,7 +43,7 @@ use reth_transaction_pool::{
     TransactionOrigin, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
     error::InvalidPoolTransactionError,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
@@ -56,7 +56,7 @@ use tempo_transaction_pool::{
     TempoTransactionPoolExt,
     amm::AmmLiquidityCache,
     delayed_pool::{
-        self, DEFAULT_DELAYED_LEAD_SECS, DEFAULT_DELAYED_MAX_COUNT,
+        self, BYTES_PER_MB, DEFAULT_DELAYED_LEAD_SECS, DEFAULT_DELAYED_MAX_COUNT,
         DEFAULT_DELAYED_MAX_PER_AUTHORITY, DEFAULT_DELAYED_MAX_SIZE_MB,
     },
     ordering::TempoTipOrdering,
@@ -108,11 +108,11 @@ pub struct TempoNodeArgs {
 
     /// Maximum number of transactions in the delayed sub-pool.
     #[arg(long = "txpool.delayed-max-count", default_value_t = DEFAULT_DELAYED_MAX_COUNT)]
-    pub delayed_max_count: usize,
+    pub delayed_max_count: NonZeroUsize,
 
     /// Maximum total size of transactions in the delayed sub-pool, in megabytes.
     #[arg(long = "txpool.delayed-max-size", default_value_t = DEFAULT_DELAYED_MAX_SIZE_MB)]
-    pub delayed_max_size_mb: usize,
+    pub delayed_max_size_mb: NonZeroUsize,
 
     /// Maximum number of transactions in the delayed sub-pool per authority: the sender and each
     /// authority recovered from the transaction's authorization lists.
@@ -120,7 +120,7 @@ pub struct TempoNodeArgs {
         long = "txpool.delayed-max-per-authority",
         default_value_t = DEFAULT_DELAYED_MAX_PER_AUTHORITY
     )]
-    pub delayed_max_per_authority: usize,
+    pub delayed_max_per_authority: NonZeroUsize,
 
     /// Comma-separated addresses or a file containing comma/newline-separated addresses checked
     /// against each transaction's sender, fee payer, direct call targets, authorization delegates
@@ -207,7 +207,7 @@ impl TempoNodeArgs {
             delayed_pool_config: delayed_pool::Config {
                 lead_secs: self.delayed_lead_secs,
                 max_count: self.delayed_max_count,
-                max_size: self.delayed_max_size_mb.saturating_mul(1024 * 1024),
+                max_size: self.delayed_max_size_mb.saturating_mul(BYTES_PER_MB),
                 max_per_authority: self.delayed_max_per_authority,
             },
             address_filter: self.txpool_filter.clone().unwrap_or_default(),
@@ -1258,11 +1258,22 @@ mod tests {
             args.node.pool_builder().delayed_pool_config,
             delayed_pool::Config {
                 lead_secs: 1,
-                max_count: 10,
-                max_size: 3 * 1024 * 1024,
-                max_per_authority: 2,
+                max_count: NonZeroUsize::new(10).unwrap(),
+                max_size: NonZeroUsize::new(3 * 1024 * 1024).unwrap(),
+                max_per_authority: NonZeroUsize::new(2).unwrap(),
             }
         );
+
+        for flag in [
+            "--txpool.delayed-max-count",
+            "--txpool.delayed-max-size",
+            "--txpool.delayed-max-per-authority",
+        ] {
+            assert!(
+                Args::try_parse_from(["tempo", flag, "0"]).is_err(),
+                "{flag} must reject 0"
+            );
+        }
     }
 
     #[test]
