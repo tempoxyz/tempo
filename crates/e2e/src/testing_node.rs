@@ -346,7 +346,7 @@ where
             signer: self.private_key.clone(),
             share: self.share.clone(),
             mailbox_size: commonware_utils::NZUsize!(1024),
-            max_peers: commonware_utils::NZUsize!(128),
+            max_peers: commonware_utils::NZU32!(128),
             deque_size: 10,
             verification_mode: self.verification_mode,
             // Simulated time costs wall time under the `external` runtime, so

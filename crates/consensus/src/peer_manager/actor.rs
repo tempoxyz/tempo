@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
-    num::NonZeroUsize,
+    num::NonZeroU32,
     pin::Pin,
     sync::Arc,
     time::Duration,
@@ -52,7 +52,7 @@ where
     execution_node: Arc<TExecutionNode>,
     epoch_strategy: FixedEpocher,
     latest_observed_finalized_tip: (Height, Digest),
-    max_peers: NonZeroUsize,
+    max_peers: NonZeroU32,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
     peers: Gauge,
@@ -253,7 +253,7 @@ where
         // The P2P network panics on a set larger than `max_peers`. Warn with
         // a third of the budget left.
         let size = peers.len();
-        if size > self.max_peers.get() * 2 / 3 {
+        if size > self.max_peers.get() as usize * 2 / 3 {
             warn!(
                 peers = size,
                 max_peers = self.max_peers,
@@ -782,7 +782,7 @@ mod tests {
                             Height::new(consensus_tip),
                             Digest(B256::repeat_byte(0xFF)),
                         ),
-                        max_peers: commonware_utils::NZUsize!(128),
+                        max_peers: commonware_utils::NZU32!(128),
                     },
                 )
                 .unwrap();
@@ -817,7 +817,7 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
-                    max_peers: commonware_utils::NZUsize!(128),
+                    max_peers: commonware_utils::NZU32!(128),
                 },
             );
             let error = result
@@ -840,7 +840,7 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
-                    max_peers: commonware_utils::NZUsize!(128),
+                    max_peers: commonware_utils::NZU32!(128),
                 },
             )
             .unwrap();

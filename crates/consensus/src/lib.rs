@@ -136,10 +136,7 @@ pub async fn run_consensus_stack(
         share,
 
         mailbox_size: config.mailbox_size,
-        max_peers: config
-            .max_peers_per_set
-            .try_into()
-            .expect("u32 fits in usize"),
+        max_peers: config.max_peers_per_set,
         deque_size: config.deque_size,
         verification_mode: config.verification_mode,
 
