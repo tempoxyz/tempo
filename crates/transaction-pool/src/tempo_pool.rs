@@ -113,7 +113,8 @@ where
     /// filter before prewarming so skipped transactions are never prewarmed.
     ///
     /// A 2D nonce transaction whose first call is a CREATE also bumps the sender's protocol
-    /// nonce, so it is skipped while the sender has protocol nonce transactions in the pool.
+    /// nonce, so it is skipped while the sender has a pending protocol nonce transaction that is
+    /// includable at `timestamp`.
     pub fn best_transactions_for_block(
         &self,
         attributes: BestTransactionsAttributes,
@@ -126,9 +127,10 @@ where
                 tx.transaction.is_includable_at(timestamp)
                     && !(tx.transaction.is_aa_2d()
                         && tx.transaction.is_create()
-                        && !protocol_pool
-                            .get_transactions_by_sender(tx.sender())
-                            .is_empty())
+                        && protocol_pool
+                            .get_pending_transactions_by_sender(tx.sender())
+                            .iter()
+                            .any(|pending| pending.transaction.is_includable_at(timestamp)))
             })
     }
 
@@ -2069,6 +2071,52 @@ mod tests {
             hashes,
             vec![create_hash, other_sender_create_hash, other_lane_call_hash]
         );
+    }
+
+    #[test_case::test_case(5, None; "queued_nonce_gap")]
+    #[test_case::test_case(0, Some(100); "not_yet_valid")]
+    fn best_transactions_for_block_ignores_unexecutable_protocol_nonce_for_2d_create(
+        protocol_nonce: u64,
+        valid_after: Option<u64>,
+    ) {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let create = TxBuilder::aa(sender)
+            .nonce_key(U256::ONE)
+            .calls(vec![Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: Default::default(),
+            }])
+            .build();
+        let create_hash = *create.hash();
+        add_validated(&pool, create);
+        let mut protocol = TxBuilder::aa(sender).nonce(protocol_nonce);
+        if let Some(valid_after) = valid_after {
+            protocol = protocol.valid_after(valid_after);
+        }
+        let protocol = protocol.build();
+        let protocol_hash = *protocol.hash();
+        let validated = TransactionValidationOutcome::Valid {
+            balance: U256::MAX,
+            state_nonce: 0,
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(protocol, None),
+            propagate: true,
+            authorities: None,
+        };
+        pool.add_validated_transaction(TransactionOrigin::External, validated)
+            .unwrap();
+        assert!(pool.get(&protocol_hash).is_some());
+
+        // The sender's protocol nonce transaction cannot run in this block, so it must not
+        // hold back the CREATE.
+        let hashes: Vec<_> = pool
+            .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), 50)
+            .without_updates()
+            .map(|tx| *tx.hash())
+            .collect();
+        assert_eq!(hashes, vec![create_hash]);
     }
 
     #[test_case::test_case(U256::ZERO; "protocol")]
