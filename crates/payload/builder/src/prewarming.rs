@@ -56,6 +56,7 @@ impl BestTransactionsPrewarming {
         };
 
         let prewarm_executor = prewarm.executor();
+        let prewarm = Arc::new(prewarm);
         prewarm
             .executor()
             .spawn_blocking_named("builder-prewarm", move || {
@@ -121,7 +122,7 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
+                    let tx = Self::prewarm_transaction(pool, &prewarm, tx, expiring_nonce_offset);
                     if let Some(transactions_tx) = transactions_tx {
                         let _ = transactions_tx.send(Some(tx));
                     }
@@ -167,7 +168,7 @@ impl BestTransactionsPrewarming {
     #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
     fn prewarm_transaction<Provider>(
         pool: &WorkerStatefulPool,
-        prewarm: PrewarmingExecutionContext<Provider>,
+        prewarm: &PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
     ) -> PrewarmedTransaction
@@ -324,7 +325,9 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     transactions_tx: Sender<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
-    prewarm: PrewarmingExecutionContext<Provider>,
+    /// Shared with every prewarm job, so scheduling a transaction clones a pointer instead of the
+    /// provider, EVM environment and EVM config.
+    prewarm: Arc<PrewarmingExecutionContext<Provider>>,
     next_expiring_nonce_offset: usize,
 }
 
@@ -1168,7 +1171,7 @@ mod tests {
             let sender = Address::random();
             let failed = BestTransactionsPrewarming::prewarm_transaction(
                 &pool,
-                context.clone(),
+                &context,
                 test_payment_tx(sender, 0),
                 None,
             );
@@ -1183,7 +1186,7 @@ mod tests {
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(
                 &pool,
-                context,
+                &context,
                 test_payment_tx(sender, 500_000),
                 None,
             );
