@@ -22,13 +22,13 @@ use crate::{
     },
     prewarming::{
         BestTransactionsLookahead, BestTransactionsParallel, PrewarmedTransaction,
-        PrewarmingExecutionContext,
+        PrewarmingExecutionContext, SkipIncluded,
     },
     state_hook::{MergingStateHook, STATE_UPDATE_BATCH_SIZE},
 };
-use alloy_consensus::{BlockHeader as _, TxReceipt};
+use alloy_consensus::{BlockHeader as _, TxReceipt, transaction::TxHashRef as _};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
-use alloy_primitives::{Address, B256, Bloom, Bytes, TxHash, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, TxHash, U256, map::B256Set};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -187,6 +187,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// Limits the builds running on worker threads. This counts builds that missed their
     /// deadline, which keep their thread until the transaction they are executing returns.
     build_workers: Arc<Semaphore>,
+    /// Transactions of the block this builder built last.
+    last_built: Arc<Mutex<Option<BuiltTransactions>>>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -259,6 +261,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
             build_workers: Arc::new(Semaphore::new(config.max_build_tasks)),
+            last_built: Arc::default(),
         }
     }
 }
@@ -657,7 +660,25 @@ where
             ),
             executor.evm().block().timestamp.to(),
         );
-        let raw_best_txs = Box::new(raw_best_txs);
+        // Pool maintenance removes a block's transactions only once the block is canonical, so a
+        // build on the block this builder built last can still find them in the pool. None of
+        // them can be included again, so skip them before they are prewarmed or executed.
+        let included_in_parent = self
+            .last_built
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|built| built.block_hash == parent_header.hash())
+            .map(|built| built.hashes.clone());
+        let raw_best_txs: Box<dyn BestTransactions<Item = BestTransaction>> =
+            match included_in_parent {
+                Some(included) => Box::new(SkipIncluded::new(
+                    raw_best_txs,
+                    included,
+                    self.skipped.included_in_parent.clone(),
+                )),
+                None => Box::new(raw_best_txs),
+            };
         // Without an execution cache, sequential prewarming has nowhere to keep what it reads and
         // only competes with the builder for CPU. Parallel planning needs it for replay.
         let enable_prewarming = self.config.enable_prewarming
@@ -869,6 +890,7 @@ where
             transactions,
             senders,
             encoded_block_transactions,
+            transaction_hashes,
         } = roots_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
@@ -1092,6 +1114,14 @@ where
                 &serde_json::json!({ "block_number": block.number(), "error": post_execution.err().map(|err| err.to_string()) })
             );
         }
+
+        *self
+            .last_built
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(BuiltTransactions {
+            block_hash: block.hash(),
+            hashes: Arc::new(transaction_hashes),
+        });
 
         let block = Arc::new(block);
         let execution_block_encoder = ExecutionBlockEncoder::new(
@@ -1505,6 +1535,7 @@ where
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
+                let mut transaction_hashes = B256Set::default();
 
                 let mut buf = Vec::new();
 
@@ -1514,6 +1545,7 @@ where
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
                     encoded_block_transactions.push(&tx, &buf);
+                    transaction_hashes.insert(*tx.tx_hash());
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -1533,6 +1565,7 @@ where
                     transactions,
                     senders,
                     encoded_block_transactions: encoded_block_transactions.finish(),
+                    transaction_hashes,
                 });
             });
 
@@ -1746,6 +1779,15 @@ pub(crate) struct RootsTaskResult {
     /// Since roots task already encodes every transaction for the transaction trie,
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
+    /// The hashes of the transactions included in the block.
+    transaction_hashes: B256Set,
+}
+
+/// Hashes of the transactions in a block that the builder built.
+#[derive(Debug)]
+struct BuiltTransactions {
+    block_hash: B256,
+    hashes: Arc<B256Set>,
 }
 
 #[cfg(test)]

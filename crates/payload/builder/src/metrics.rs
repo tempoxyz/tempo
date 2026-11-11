@@ -119,6 +119,7 @@ pub(crate) struct PoolTxSkippedCounters {
     pub(crate) invalid_tx: Counter,
     pub(crate) invalid_replay: Counter,
     pub(crate) execution_timeout: Counter,
+    pub(crate) included_in_parent: Counter,
 }
 
 impl Default for PoolTxSkippedCounters {
@@ -133,6 +134,7 @@ impl Default for PoolTxSkippedCounters {
             invalid_tx: counter("invalid_tx"),
             invalid_replay: counter("invalid_replay"),
             execution_timeout: counter("execution_timeout"),
+            included_in_parent: counter("included_in_parent"),
         }
     }
 }

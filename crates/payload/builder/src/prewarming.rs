@@ -9,7 +9,8 @@ use std::{
 };
 
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, map::B256Set};
+use metrics::Counter;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
 use reth_evm_ethereum::EvmFactory as _;
@@ -508,6 +509,62 @@ impl Lane {
                 || Self::Sender(tx.transaction.sender()),
                 |id| Self::Sequence(*id.seq_id()),
             )
+    }
+}
+
+/// Best transactions without those that the parent block already includes.
+///
+/// A skipped transaction is not marked invalid: it was valid, and the transactions after it in
+/// its lane follow the parent block.
+pub(crate) struct SkipIncluded<Txs> {
+    inner: Txs,
+    included: Arc<B256Set>,
+    skipped: Counter,
+}
+
+impl<Txs> SkipIncluded<Txs> {
+    /// Skips the transactions of `inner` whose hash is in `included`, counting them in `skipped`.
+    pub(crate) const fn new(inner: Txs, included: Arc<B256Set>, skipped: Counter) -> Self {
+        Self {
+            inner,
+            included,
+            skipped,
+        }
+    }
+}
+
+impl<Txs> Iterator for SkipIncluded<Txs>
+where
+    Txs: Iterator<Item = BestTransaction>,
+{
+    type Item = BestTransaction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // A run of skipped transactions is at most as long as the parent block.
+        loop {
+            let tx = self.inner.next()?;
+            if !self.included.contains(tx.hash()) {
+                return Some(tx);
+            }
+            self.skipped.increment(1);
+        }
+    }
+}
+
+impl<Txs> BestTransactions for SkipIncluded<Txs>
+where
+    Txs: BestTransactions<Item = BestTransaction>,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.inner.mark_invalid(transaction, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
     }
 }
 
@@ -1068,6 +1125,31 @@ mod tests {
                 Some(*expected.hash())
             );
         }
+    }
+
+    #[test]
+    fn skip_included_drops_transactions_of_the_parent_block() {
+        let sender = Address::random();
+        let txs = (0..4)
+            .map(|nonce| test_tx(sender, nonce))
+            .collect::<Vec<_>>();
+        let included = [&txs[0], &txs[2]]
+            .into_iter()
+            .map(|tx| *tx.hash())
+            .collect::<B256Set>();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut source = SkipIncluded::new(
+            TestBestTransactions::new(txs.clone(), log.clone()),
+            Arc::new(included),
+            Counter::noop(),
+        );
+
+        let yielded = std::iter::from_fn(|| source.next())
+            .map(|tx| *tx.hash())
+            .collect::<Vec<_>>();
+        assert_eq!(yielded, [*txs[1].hash(), *txs[3].hash()]);
+        // Included transactions are skipped, not invalidated, so their lane goes on.
+        assert_eq!(log.lock().unwrap().invalid, 0);
     }
 
     #[test]
