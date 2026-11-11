@@ -18,8 +18,8 @@ use crate::{
     },
     rpc::{
         NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
-        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_zone_rpc_module, rpc_connection_config,
-        start_redacted_rpc,
+        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_get_code_module,
+        operator_zone_rpc_module, rpc_connection_config, start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
     shadow_prover::RpcFollowerShadowProver,
@@ -830,6 +830,12 @@ where
             provider.clone(),
         );
         let portal_address = self.portal_address;
+        let get_code_l1_state = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            self.l1_state_cache.clone(),
+            l1_provider.clone(),
+            tokio::runtime::Handle::current(),
+        );
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
@@ -881,6 +887,12 @@ where
                 container
                     .modules
                     .merge_configured(operator_zone_api.into_rpc())?;
+                container
+                    .modules
+                    .replace_configured(operator_get_code_module(
+                        container.registry.eth_api().clone(),
+                        get_code_l1_state,
+                    )?)?;
                 container.modules.merge_configured(
                     NodeZoneDebugApi::new(container.registry.eth_api().clone(), debug_l1_provider)
                         .into_rpc(),
@@ -1805,7 +1817,10 @@ where
         if let Some(encryptor) = self.withdrawal_reveal_encryptor.clone() {
             payload_factory = payload_factory.with_withdrawal_reveal_encryptor(encryptor);
         }
-        let mut pool_builder = ZonePoolBuilder::new(executor_builder.enabled_tokens.clone());
+        let mut pool_builder = ZonePoolBuilder::new(
+            executor_builder.enabled_tokens.clone(),
+            self.l1_state_cache.clone(),
+        );
         if let Some(allowlist) = self
             .sequencer_config
             .as_ref()
@@ -1982,15 +1997,18 @@ where
 #[non_exhaustive]
 pub struct ZonePoolBuilder {
     enabled_tokens: EnabledTokenRegistry,
+    l1_state_cache: L1StateCache,
     /// Allowlist that transfer calls must satisfy. `None` admits every transfer.
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
 }
 
 impl ZonePoolBuilder {
-    /// Create a pool builder using the shared enabled-token registry.
-    pub fn new(enabled_tokens: EnabledTokenRegistry) -> Self {
+    /// Create a pool builder using the shared enabled-token registry, and the shared L1 state
+    /// cache, whose recorded Tempo changes revalidate pooled transactions.
+    pub fn new(enabled_tokens: EnabledTokenRegistry, l1_state_cache: L1StateCache) -> Self {
         Self {
             enabled_tokens,
+            l1_state_cache,
             transfer_allowlist: None,
         }
     }
@@ -2118,6 +2136,13 @@ where
         ctx.task_executor().spawn_critical_task(
             "txpool maintenance - tempo pool",
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
+        );
+        ctx.task_executor().spawn_critical_task(
+            "txpool maintenance - mirrored commitments",
+            crate::pool_maintenance::maintain_mirrored_commitments(
+                transaction_pool.clone(),
+                self.l1_state_cache,
+            ),
         );
 
         info!(target: "reth::cli", "Transaction pool initialized");

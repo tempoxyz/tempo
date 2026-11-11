@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.18.2"
+version = "1.18.3"
 edition = "2024"
 rust-version = "1.96.0"
 authors = ["Tempo Contributors"]
@@ -12,7 +12,6 @@ publish = false
 
 [workspace]
 members = [
-  "contrib/antithesis/reth-proofs",
   "contrib/antithesis/reth-state-root",
   "contrib/antithesis/trie-shapes",
   "bin/tempo",
@@ -46,6 +45,7 @@ members = [
   "crates/transaction-pool",
   "crates/state-bloat",
   "xtask",
+  "xtask/zones-antithesis",
   "bin/tempo-zone",
   "bin/prover/enclave",
   "bin/prover/utils",

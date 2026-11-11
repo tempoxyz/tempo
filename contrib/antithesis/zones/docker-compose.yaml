@@ -1,6 +1,7 @@
 # Multi-sequencer zone on a dev-mode Tempo L1:
 #
-# - l1: Tempo dev node; zone nodes read finalized state over WebSocket
+# - l1: Tempo dev node that persists every block, so finalized blocks survive a kill; zone
+#   nodes read finalized state over WebSocket
 # - provision: creates the zone on L1 with three sequencers (2-of-3 settlement) and writes
 #   genesis, keys and the manifest to the shared volume, then exits
 # - zone-0..2: the sequencer quorum; zone-0 is the initial leader
@@ -49,6 +50,13 @@ services:
       - 500ms
       - --dev.finality-depth
       - "1"
+      # Persist each block as soon as it is canonical. With Tempo's default threshold a killed L1
+      # restarts behind blocks it already reported finalized and rebuilds them, which zones
+      # treat as a finality violation and halt on.
+      - --engine.persistence-threshold
+      - "0"
+      - --engine.memory-block-buffer-target
+      - "0"
       - --datadir
       - /data
       - --http

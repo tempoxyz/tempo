@@ -36,13 +36,13 @@ tempo-invariants.workspace = true
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
 tempo-evm.workspace = true
+tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 
 [dev-dependencies]
 commonware-codec.workspace = true
 criterion.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
-tempo-precompiles.workspace = true
 
 [[bench]]
 name = "execute"
