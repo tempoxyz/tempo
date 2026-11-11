@@ -16,7 +16,13 @@ use tempo_contracts::{
     zones::{IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS, ZonePortal},
 };
 
-use super::{Context, Record, is_rpc_error, poll_until, random_below, shuffled};
+use super::{
+    Context, Record,
+    intents::pending,
+    is_rpc_error, random_below,
+    recovery::{bounded_check, recover_until},
+    shuffled,
+};
 
 /// How long `check-settled` waits for the system to recover once faults stop.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -29,6 +35,18 @@ const BALANCE_READS: usize = 32;
 
 impl Context {
     pub(super) async fn check_consistency(&self) -> eyre::Result<()> {
+        match async {
+            self.reconcile_handoffs().await?;
+            self.check_handoff_history().await
+        }
+        .await
+        {
+            Err(error) if is_rpc_error(&error) => {
+                println!("check-consistency: handoff history unavailable: {error:#}");
+            }
+            result => result?,
+        }
+
         // A zone block must come from the sequencer the portal names leader at the Tempo block
         // the zone block anchors to: a handoff takes effect at its activation block. Checked at
         // each node's tip, where a handoff shows first, and at one earlier block. A node that
@@ -197,38 +215,50 @@ impl Context {
     }
 
     pub(super) async fn check_settled(&self) -> eyre::Result<()> {
-        let mut state = None;
-        poll_until(SETTLE_TIMEOUT, async || {
-            let current = self.settlement().await?;
-            let done = current.is_settled();
-            state = Some(current);
-            Ok(done)
+        bounded_check(SETTLE_TIMEOUT, async {
+            let deadline = tokio::time::Instant::now() + SETTLE_TIMEOUT;
+            let state = recover_until(deadline, async || {
+                // A killed driver's signed send remains an obligation even without a receipt.
+                // Reconciliation replays identical bytes; timeout/cancellation cannot forget it.
+                if !self.reconcile_intents().await? {
+                    return Ok(None);
+                }
+                self.reconcile_handoffs().await?;
+                self.check_handoff_history().await?;
+                // Take an immutable obligation snapshot after reconciliation. A concurrent
+                // driver's new intent cannot slip into it and be silently ignored below.
+                let records = self.ledger.records()?;
+                if !pending(&records)?.is_empty() {
+                    return Ok(None);
+                }
+                let current = self.settlement(records).await?;
+                Ok(current.is_settled().then_some(current))
+            })
+            .await?;
+            assert_always!(
+                state.unsettled_deposits.is_empty(),
+                "Every confirmed deposit is credited or bounced back",
+                &json!({ "missing": state.unsettled_deposits })
+            );
+            assert_always!(
+                state.unpaid_withdrawals.is_empty(),
+                "Every confirmed withdrawal is paid on L1",
+                &json!({ "missing": state.unpaid_withdrawals })
+            );
+            assert_always!(
+                state.converged,
+                "Zone nodes converge once faults stop",
+                &json!({ "tips": state.tips })
+            );
+            println!(
+                "check-settled: {} deposits and {} withdrawals unsettled, converged={}",
+                state.unsettled_deposits.len(),
+                state.unpaid_withdrawals.len(),
+                state.converged
+            );
+            Ok(())
         })
-        .await?;
-        let state =
-            state.ok_or_else(|| eyre::eyre!("no zone node answered within {SETTLE_TIMEOUT:?}"))?;
-        assert_always!(
-            state.unsettled_deposits.is_empty(),
-            "Every confirmed deposit is credited or bounced back",
-            &json!({ "missing": state.unsettled_deposits })
-        );
-        assert_always!(
-            state.unpaid_withdrawals.is_empty(),
-            "Every confirmed withdrawal is paid on L1",
-            &json!({ "missing": state.unpaid_withdrawals })
-        );
-        assert_always!(
-            state.converged,
-            "Zone nodes converge once faults stop",
-            &json!({ "tips": state.tips })
-        );
-        println!(
-            "check-settled: {} deposits and {} withdrawals unsettled, converged={}",
-            state.unsettled_deposits.len(),
-            state.unpaid_withdrawals.len(),
-            state.converged
-        );
-        Ok(())
+        .await
     }
 
     pub(super) async fn check_ledger(&self) -> eyre::Result<()> {
@@ -294,7 +324,8 @@ impl Context {
 
     /// What is still in flight: confirmed deposits the zone has not processed, confirmed
     /// withdrawals L1 has not paid, and whether every zone node has the highest tip any reports.
-    async fn settlement(&self) -> eyre::Result<Settlement> {
+    /// `records` is a reconciled snapshot; parallel drivers need not stop writing the journal.
+    async fn settlement(&self, records: Vec<Record>) -> eyre::Result<Settlement> {
         let mut tips = BTreeMap::new();
         for (url, zone) in self.zone_urls.iter().zip(&self.zones) {
             let block = zone
@@ -364,7 +395,6 @@ impl Context {
             }
         }
 
-        let records = self.ledger.records()?;
         // Nodes may agree on a common rollback; a confirmed transaction's block is a floor.
         let last_zone_block = records
             .iter()
@@ -397,12 +427,10 @@ impl Context {
                         unsettled_deposits.push(record);
                     }
                 }
-                Record::Withdrawal { to, amount, .. } => {
-                    if !take(&mut paid, (to, amount)) {
-                        unpaid_withdrawals.push(record);
-                    }
+                Record::Withdrawal { to, amount, .. } if !take(&mut paid, (to, amount)) => {
+                    unpaid_withdrawals.push(record);
                 }
-                Record::Account { .. } | Record::Transfer { .. } => {}
+                _ => {}
             }
         }
         Ok(Settlement {

@@ -48,16 +48,45 @@ images it is given, so they must be in the image rather than copied in when a co
 | `parallel_driver_transfer` | TIP-20 transfer inside the zone to a new or existing account |
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
-| `parallel_driver_rotate_leader` | Hands leadership to another sequencer, through the admin or a zone node's `zone_setLeader` relay, then waits for the new leader to produce and settle |
-| `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, settled workload transactions stay final, and every zone block comes from the leader the portal names at its Tempo anchor |
-| `eventually_settled` | After faults stop, every confirmed deposit is credited and every confirmed withdrawal is paid, and all nodes converge |
+| `parallel_driver_rotate_leader` | Hands leadership to another sequencer, through the admin or a zone node's `zone_setLeader` relay, then observes production and settlement if its term is not superseded |
+| `serial_driver_recovery` | Pauses faults for 360 seconds, then proves a fresh canary settles on finalized L1 and all nodes preserve its receipt and the prior settled prefix within 300 seconds |
+| `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, settled workload transactions stay final, and every zone block comes from the leader the portal names at its Tempo anchor; reconciles persistent handoff history |
+| `eventually_settled` | After faults stop, resolves every durable signed intent first, then every confirmed deposit is credited or refunded and every confirmed withdrawal is paid, and all nodes converge |
 | `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
 
 Half of all recipients are accounts nobody has used before, so the L1 and zone state tries keep
 growing during a run. Account keys are hashes of their index, counting from 1000, and are
 recorded in an append-only ledger in `/state`, which also holds a lock file per account so
-only one command sends from an account at a time. Drivers record a deposit, withdrawal or
-transfer only once its receipt confirms it; the checks compare those records with both chains.
+only one command sends from an account at a time. Drivers durably journal signed transaction
+bytes before broadcasting, then record their exact
+receipt outcome and confirmed deposit, withdrawal or transfer obligations. A killed driver or
+ambiguous RPC error leaves a pending intent: reconciliation rebroadcasts the identical bytes and
+never replaces the nonce or creates a second payment. Unknown intents cannot be omitted from
+`eventually_settled`, which checks a reconciled obligation snapshot rather than requiring
+parallel drivers to stop writing. Leadership requests and observed updates also survive driver cancellation;
+consistency and recovery check their history and activation boundaries.
+
+### Mid-run recovery
+
+`serial_driver_recovery` invokes the binary at `ANTITHESIS_STOP_FAULTS`, if nonempty, with `360`
+seconds. The platform restores killed containers and network connectivity and resumes faults
+automatically when the window expires. Locally, with the variable unset, the same check runs
+without requesting a pause. There is no external-faults toggle.
+
+The probe has one 300-second async deadline covering startup, reconciliation, sends and reads;
+individual HTTP requests are also bounded. It first requires every configured node, including
+the RPC-only follower, to answer and agree with a baseline portal settlement read at a single
+**finalized L1 block hash**. After resolving old signed intents it journals a new canary before sending it. A lost send
+reply is reconciled by that exact transaction ID and bytes, never a replacement canary.
+Success requires a newer finalized portal settlement at or beyond that canary, the portal's
+exact block hash on every node at that same checkpoint, the unchanged baseline prefix, and the
+canary's unchanged successful receipt/block hash everywhere. The producer must be the eligible
+leader at the zone block's L1 anchor. The settled checkpoint must also anchor at or beyond
+the baseline L1 height: old-leader catch-up below that anchor is not recovery progress. The
+canary itself may precede that anchor; a superseded intermediate leader need not produce.
+Agreement on an old tip, an unfinalized settlement, a missing follower, an error or a timeout
+cannot pass. Cancellation of the probe leaves its signed canary in the journal for the next
+reconciliation; the platform quiet window still expires automatically.
 
 Run a command against the local stack the way the platform does:
 
