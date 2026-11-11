@@ -7,13 +7,16 @@ pub(crate) use actor::Actor;
 use commonware_cryptography::ed25519::PublicKey;
 pub(crate) use ingress::Mailbox;
 
-use commonware_consensus::types::{FixedEpocher, ViewDelta};
+use commonware_consensus::types::{FixedEpocher, Height, ViewDelta};
 use commonware_p2p::Blocker;
 use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
-use crate::{consensus::application::TempoFactory, epoch::scheme_provider::SchemeProvider};
+use crate::{
+    consensus::{Digest, application::TempoFactory},
+    epoch::scheme_provider::SchemeProvider,
+};
 
 pub(crate) struct Config<TContext, TBlocker>
 where
@@ -34,6 +37,10 @@ where
     pub(crate) partition_prefix: String,
     pub(crate) views_to_track: ViewDelta,
     pub(crate) inactive_time_before_leader_skip: Duration,
+
+    /// An execution-finalized boundary, used as the floor of the next epoch until marshal
+    /// finalizes it during chain recovery
+    pub(crate) recovery_boundary: Option<(Height, Digest)>,
 }
 
 pub(crate) fn init<TContext, TBlocker>(

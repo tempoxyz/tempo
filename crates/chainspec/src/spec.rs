@@ -7,7 +7,7 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use core::num::NonZeroU64;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
@@ -41,6 +41,9 @@ macro_rules! tempo_genesis_info {
                 /// Optional override for the general (non-payment) gas limit.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 general_gas_limit: Option<u64>,
+                /// Restarts consensus after an epoch lost its signing key.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                recovery: Option<Recovery>,
                 $(
                     #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,12 +70,21 @@ tempo_hardfork::tempo_post_genesis_hardforks!(tempo_genesis_info);
 
 impl TempoGenesisInfo {
     /// Extract Tempo genesis info from genesis extra_fields
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `recovery` entry is malformed. It is parsed on its own, so a bad entry
+    /// cannot silently reset the other fields to their defaults.
     fn extract_from(genesis: &Genesis) -> Self {
-        genesis
-            .config
-            .extra_fields
-            .deserialize_as::<Self>()
-            .unwrap_or_default()
+        let mut fields = genesis.config.extra_fields.clone();
+        let recovery = fields.remove("recovery").map(|value| {
+            serde_json::from_value::<Recovery>(value)
+                .unwrap_or_else(|error| panic!("chainspec `recovery` entry is malformed: {error}"))
+        });
+
+        let mut info = fields.deserialize_as::<Self>().unwrap_or_default();
+        info.recovery = recovery;
+        info
     }
 
     pub fn epoch_length(&self) -> Option<NonZeroU64> {
@@ -82,6 +94,30 @@ impl TempoGenesisInfo {
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
     }
+
+    /// Returns the chain recovery, or `None` when the chain never recovered from a lost epoch key.
+    pub fn recovery(&self) -> Option<&Recovery> {
+        self.recovery.as_ref()
+    }
+}
+
+/// Restarts consensus after the epoch containing [`Self::finalized_height`] lost its signing key.
+///
+/// Every node fills the rest of that epoch with the same empty blocks, writes [`Self::outcome`]
+/// into the boundary block that ends it, and starts the next epoch from that outcome. The
+/// boundary carries no finalization certificate; its hash is trusted because it is pinned here.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Recovery {
+    /// Height of the last block finalized before consensus halted.
+    pub finalized_height: u64,
+    /// Hash of the block at [`Self::finalized_height`].
+    pub finalized_hash: B256,
+    /// Hash of the boundary block that ends the halted epoch, as every node must build it.
+    pub boundary_hash: B256,
+    /// Encoded `OnchainDkgOutcome` written into the boundary block's `extra_data`. It is
+    /// the outcome for the epoch after the halted one.
+    pub outcome: Bytes,
 }
 
 /// Tempo chain specification parser.
@@ -461,7 +497,7 @@ mod tests {
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
     };
     use alloy_genesis::Genesis;
-    use alloy_primitives::hex;
+    use alloy_primitives::{B256, hex};
     use commonware_codec::Encode as _;
     use reth_chainspec::EthChainSpec;
     #[cfg(feature = "cli")]
@@ -582,6 +618,51 @@ mod tests {
 
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
         assert!(chainspec.network_identity.is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "chainspec `recovery` entry is malformed")]
+    fn malformed_recovery_fails_loudly() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "epochLength": 10,
+                "recovery": { "finalizedHeight": "13" },
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+
+        super::TempoChainSpec::from_genesis(genesis);
+    }
+
+    #[test]
+    fn recovery_is_read_from_genesis_config() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "epochLength": 10,
+                "recovery": {
+                    "finalizedHeight": 13,
+                    "finalizedHash": B256::repeat_byte(1),
+                    "boundaryHash": B256::repeat_byte(2),
+                    "outcome": "0x0102",
+                },
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(
+            chainspec.info.recovery(),
+            Some(&super::Recovery {
+                finalized_height: 13,
+                finalized_hash: B256::repeat_byte(1),
+                boundary_hash: B256::repeat_byte(2),
+                outcome: alloy_primitives::bytes!("0102"),
+            })
+        );
     }
 
     #[test]

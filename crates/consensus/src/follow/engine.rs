@@ -24,7 +24,7 @@ use commonware_runtime::{
     spawn_cell,
 };
 use commonware_utils::NZUsize;
-use eyre::{WrapErr as _, eyre};
+use eyre::{WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_core::{CryptoRng, Rng};
 use reth_engine_primitives::ConsensusEngineHandle;
@@ -44,6 +44,7 @@ use crate::{
     epoch::SchemeProvider,
     feed::{self, FeedStateHandle},
     follow::upstream,
+    recovery::Recovery,
     storage,
 };
 
@@ -96,11 +97,35 @@ impl<TUpstream> Config<TUpstream> {
     where
         TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + Send + 'static,
     {
+        // Followers only need to trust the identity a chain recovery hands the next epoch. Unlike
+        // validators they do not rebuild its fill blocks: once a finalization from that epoch
+        // verifies, the resolver fetches the uncertified fill blocks below it by hash from the
+        // upstream node or devp2p, and the execution layer checks them like any other block.
+        let mut network_identity = self.network_identity;
+        if let Some(recovery) =
+            Recovery::from_chainspec(&self.execution_node.chain_spec(), &self.epoch_strategy)
+                .wrap_err("invalid chain recovery in chainspec")?
+        {
+            // A configured identity from a later full DKG ceremony still takes precedence.
+            let recovered = recovery.network_identity();
+            if recovered.from_epoch > network_identity.from_epoch {
+                network_identity = recovered;
+            } else {
+                ensure!(
+                    recovered.from_epoch < network_identity.from_epoch
+                        || recovered.identity == network_identity.identity,
+                    "the configured network identity for epoch `{}` differs from the chain \
+                    recovery's",
+                    recovered.from_epoch,
+                );
+            }
+        }
+
         let scheme_provider = SchemeProvider::new();
         // Pin the binary's identity before marshal or any actor registers an epoch scheme.
         scheme_provider.register(
-            Epoch::new(self.network_identity.from_epoch),
-            Scheme::certificate_verifier(crate::config::NAMESPACE, self.network_identity.identity),
+            Epoch::new(network_identity.from_epoch),
+            Scheme::certificate_verifier(crate::config::NAMESPACE, network_identity.identity),
         );
 
         let page_cache_ref = CacheRef::new(
@@ -192,7 +217,7 @@ impl<TUpstream> Config<TUpstream> {
             driver::Config {
                 execution_provider: self.execution_node.provider.clone(),
                 scheme_provider: scheme_provider.clone(),
-                network_identity: self.network_identity,
+                network_identity,
                 last_finalized_height,
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),

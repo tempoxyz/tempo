@@ -97,7 +97,7 @@ async fn follower_rpc_survives_execution_node_handle_drop() {
     executor_handle.join().unwrap();
 }
 
-trait FeedStateProvider {
+pub(crate) trait FeedStateProvider {
     fn feed_state(&self) -> FeedStateHandle;
 
     fn execution_node(&self) -> Arc<tempo_node::TempoFullNode>;
@@ -163,8 +163,9 @@ where
 }
 
 #[derive(Default)]
-struct FollowerBuilder {
+pub(crate) struct FollowerBuilder {
     name: Option<String>,
+    epoch_length: Option<u64>,
     partition_prefix: Option<String>,
     runtime: Option<ExecutionRuntimeHandle>,
     donor: Option<TestingNode<Context>>,
@@ -177,7 +178,15 @@ impl FollowerBuilder {
         Self::default()
     }
 
-    fn runtime(self, runtime: ExecutionRuntimeHandle) -> Self {
+    /// Overrides the epoch length of [`EPOCH_LENGTH`].
+    pub(crate) fn epoch_length(self, epoch_length: u64) -> Self {
+        Self {
+            epoch_length: Some(epoch_length),
+            ..self
+        }
+    }
+
+    pub(crate) fn runtime(self, runtime: ExecutionRuntimeHandle) -> Self {
         Self {
             runtime: Some(runtime),
             ..self
@@ -207,7 +216,7 @@ impl FollowerBuilder {
     ///
     /// The donor must already be stopped; both `consensus_handle` and
     /// `execution_node` must be `None`.
-    fn donor(self, donor: TestingNode<Context>) -> Self {
+    pub(crate) fn donor(self, donor: TestingNode<Context>) -> Self {
         assert!(
             donor.consensus_handle.is_none(),
             "donor consensus must be stopped before donation"
@@ -224,7 +233,7 @@ impl FollowerBuilder {
         }
     }
 
-    async fn follow<TContext>(
+    pub(crate) async fn follow<TContext>(
         self,
         context: &mut TContext,
         upstream: impl FeedStateProvider,
@@ -234,6 +243,7 @@ impl FollowerBuilder {
     {
         let Self {
             name,
+            epoch_length,
             partition_prefix,
             runtime,
             donor,
@@ -324,7 +334,10 @@ impl FollowerBuilder {
                 }),
             feed_state: feed_state.clone(),
             partition_prefix,
-            epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
+            epoch_strategy: FixedEpocher::new(
+                std::num::NonZeroU64::new(epoch_length.unwrap_or(EPOCH_LENGTH))
+                    .expect("epoch length must not be zero"),
+            ),
             mailbox_size: commonware_utils::NZUsize!(16_384),
             upstream_request_timeout: Duration::from_secs(2),
             fcu_heartbeat_interval: Duration::from_secs(300),
@@ -348,7 +361,7 @@ impl FollowerBuilder {
     }
 }
 
-struct Follower {
+pub(crate) struct Follower {
     name: String,
     feed: FeedStateHandle,
     execution_node: ExecutionNode,
@@ -356,11 +369,20 @@ struct Follower {
 }
 
 impl Follower {
-    fn builder() -> FollowerBuilder {
+    /// The hash of the block the follower's execution layer has at `height`.
+    pub(crate) fn block_hash(&self, height: u64) -> Option<alloy_primitives::B256> {
+        reth_ethereum::storage::BlockHashReader::block_hash(
+            &self.execution_node.node.provider,
+            height,
+        )
+        .unwrap()
+    }
+
+    pub(crate) fn builder() -> FollowerBuilder {
         FollowerBuilder::new()
     }
 
-    async fn connect_peers<T: Clock>(&self, peers: &[TestingNode<T>]) {
+    pub(crate) async fn connect_peers<T: Clock>(&self, peers: &[TestingNode<T>]) {
         for peer in peers {
             if let Some(execution_node) = &peer.execution_node {
                 self.execution_node.connect_peer(execution_node).await;

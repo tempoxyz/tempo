@@ -331,19 +331,22 @@ where
                 .expect("epoch strategy valid for all epochs and heights")
         }) {
             Some(boundary_height) => {
-                let (_, digest) = self
-                    .config
-                    .marshal
-                    .get_info(boundary_height)
-                    .await
-                    .ok_or_else(|| {
-                        eyre!(
-                            "cannot start a consensus for epoch `{epoch}`, \
-                            because we do not have information on the \
-                            finalized block of its boundary height \
-                            `{boundary_height}`"
-                        )
-                    })?;
+                let digest = match self.config.marshal.get_info(boundary_height).await {
+                    Some((_, digest)) => digest,
+                    // Marshal finalizes the recovery boundary only as an ancestor of this
+                    // epoch's first finalized block.
+                    None => match self.config.recovery_boundary {
+                        Some((height, digest)) if height == boundary_height => digest,
+                        _ => {
+                            return Err(eyre!(
+                                "cannot start a consensus for epoch `{epoch}`, \
+                                because we do not have information on the \
+                                finalized block of its boundary height \
+                                `{boundary_height}`"
+                            ));
+                        }
+                    },
+                };
 
                 let header = self.get_header(boundary_height).await?;
                 (Floor::Genesis(digest), header.timestamp())
