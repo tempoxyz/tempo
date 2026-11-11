@@ -4631,3 +4631,45 @@ fn test_state_gas_batch_create_accounting() {
         );
     }
 }
+
+/// `seen[old_hash]` is a different slot from `ring[idx]`, so reading the ring entry does not warm
+/// it: its SLOAD in the eviction path is cold. T15 charges it as cold; earlier forks keep the
+/// warm price.
+#[test]
+fn test_expiring_nonce_intrinsic_gas_charges_cold_evicted_seen_slot() {
+    let mut evm = test_evm(TempoHardfork::T15);
+    let old_hash = B256::repeat_byte(0xaa);
+    let evicted_seen_sload = StorageCtx::enter_evm(&mut evm, || {
+        let nonces = NonceManager::new();
+        assert_eq!(nonces.expiring_nonce_ring[0].read().unwrap(), B256::ZERO);
+        let before = StorageCtx::default().gas_used();
+        nonces.expiring_nonce_seen[old_hash].read().unwrap();
+        StorageCtx::default().gas_used() - before
+    });
+    assert_eq!(evicted_seen_sload, u64::from(COLD_SLOAD_COST));
+
+    let expiring_nonce_gas = |spec| {
+        let env = aa_env(
+            TempoTransaction {
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                calls: vec![call(Bytes::new())],
+                ..Default::default()
+            },
+            secp256k1_signature(),
+        );
+        nonce_intrinsic_gas(&test_evm(spec), env.as_aa().unwrap())
+    };
+    let cold_sloads = 3 * u64::from(COLD_SLOAD_COST);
+    let sstores = 3 * u64::from(WARM_SSTORE_RESET);
+    assert_eq!(
+        expiring_nonce_gas(TempoHardfork::T15),
+        (cold_sloads + sstores, 0)
+    );
+    for spec in [TempoHardfork::T1, TempoHardfork::T13, TempoHardfork::T14] {
+        assert_eq!(
+            expiring_nonce_gas(spec),
+            (2 * u64::from(COLD_SLOAD_COST) + 100 + sstores, 0),
+            "{spec:?}"
+        );
+    }
+}
