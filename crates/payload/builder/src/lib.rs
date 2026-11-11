@@ -88,11 +88,17 @@ enum PayloadTransactions {
 
 impl PayloadTransactions {
     /// Returns the next transaction, if available.
-    fn next(&mut self) -> Option<PrewarmedTransaction> {
+    ///
+    /// `should_stop` is checked before every candidate and while waiting for prewarming, and
+    /// selection returns `None` once it reports true. Neither a slow prewarming coordinator nor
+    /// a long run of skipped transactions can then keep the builder past its deadline.
+    fn next(&mut self, mut should_stop: impl FnMut() -> bool) -> Option<PrewarmedTransaction> {
         match self {
-            Self::Sequential(txs) => txs.next().map(PrewarmedTransaction::without_replay),
-            Self::Prewarming(txs) => txs.next(),
-            Self::Parallel(planner) => planner.next(),
+            Self::Sequential(txs) => txs
+                .next_with(|inner| if should_stop() { None } else { inner.next() })
+                .map(PrewarmedTransaction::without_replay),
+            Self::Prewarming(txs) => txs.next_with(|inner| inner.next_until(&mut should_stop)),
+            Self::Parallel(planner) => planner.next_until(should_stop),
         }
     }
 
@@ -541,7 +547,24 @@ where
                 }
             }
 
-            let Some(mut pool_tx) = best_txs.next() else {
+            // Selection can wait on prewarming or skip many candidates, so it re-checks both
+            // conditions above itself. Once one of them holds it returns `None`, and the next
+            // iteration ends the build.
+            let should_stop = || {
+                cancel.is_cancelled()
+                    || build_plan.is_some_and(|plan| {
+                        let budget_decision = plan.decision(
+                            start.elapsed(),
+                            normal_transaction_fill_idle_elapsed,
+                            ValidationLatencyWorkload::new(
+                                cumulative_gas_used,
+                                pool_transactions_included as usize,
+                            ),
+                        );
+                        plan.exhausted(&budget_decision)
+                    })
+            };
+            let Some(mut pool_tx) = best_txs.next(should_stop) else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
