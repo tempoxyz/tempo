@@ -2603,3 +2603,33 @@ async fn paused_subscriber_wedges_at_lookahead_then_resumes_contiguously() {
     assert_eq!(queue.last_enqueued(), Some(NumHash::new(tip, parent)));
     assert!(asserter.read_q().is_empty());
 }
+
+#[test]
+fn plain_confirmation_releases_deposit_enqueue_times() {
+    let deposit_events = || {
+        L1PortalEvents::from_deposits(vec![L1Deposit::Deposit(Deposit {
+            token: Address::ZERO,
+            sender: Address::ZERO,
+            amount: 1,
+            fee: 0,
+            tempo_refund_recipient: Address::ZERO,
+            key_index: U256::ZERO,
+            ephemeral_pubkey_x: B256::ZERO,
+            ephemeral_pubkey_y_parity: 0x02,
+            ciphertext: Vec::new(),
+            nonce: [0; 12],
+            tag: [0; 16],
+        })])
+    };
+    let queue = DepositQueue::new();
+    let mut header = make_test_header(10);
+    for number in 11..=20 {
+        queue
+            .try_enqueue_sealed(seal(header.clone()), deposit_events())
+            .unwrap();
+        let front = queue.peek().unwrap().header.num_hash();
+        queue.confirm(front).unwrap();
+        assert_eq!(queue.deposits_observed_len(), 0);
+        header = make_chained_header(number, header.hash_slow());
+    }
+}

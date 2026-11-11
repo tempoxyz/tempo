@@ -172,6 +172,14 @@ impl PendingDeposits {
     /// mismatch is an internal consumer-ordering error and leaves the queue
     /// unchanged.
     pub(crate) fn confirm(&mut self, expected: NumHash) -> eyre::Result<L1BlockDeposits> {
+        let block = self.pop_confirmed(expected)?;
+        self.deposits_observed_at.remove(&expected.number);
+        Ok(block)
+    }
+
+    /// Pop the queue front after checking it matches `expected`, keeping its enqueue time for
+    /// the operational confirmations that report it.
+    fn pop_confirmed(&mut self, expected: NumHash) -> eyre::Result<L1BlockDeposits> {
         let front = self
             .pending
             .front()
@@ -251,7 +259,7 @@ impl PendingDeposits {
     ///
     /// Returns when each consumed L1 block carrying user deposits was enqueued, oldest first.
     pub(crate) fn confirm_operational(&mut self, expected: NumHash) -> eyre::Result<Vec<Instant>> {
-        self.confirm(expected)?;
+        self.pop_confirmed(expected)?;
         self.deferred = None;
         Ok(self.take_deposits_observed_through(expected.number))
     }
@@ -273,7 +281,7 @@ impl PendingDeposits {
                 front.hash,
                 expected.hash,
             );
-            self.confirm(front)
+            self.pop_confirmed(front)
                 .expect("front was just read and matches by construction");
         }
 
@@ -472,6 +480,11 @@ impl DepositQueue {
     /// reflects the last block ever enqueued — not just what's still pending.
     pub fn last_enqueued(&self) -> Option<NumHash> {
         self.inner.lock().last_enqueued()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn deposits_observed_len(&self) -> usize {
+        self.inner.lock().deposits_observed_at.len()
     }
 
     #[cfg(test)]

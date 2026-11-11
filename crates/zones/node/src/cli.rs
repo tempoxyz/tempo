@@ -205,8 +205,9 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
     cli.run_with_components::<ZoneNode>(components, async move |mut builder, args| {
         info!(target: "reth::cli", "Launching Tempo Zone node");
 
+        // Held for the whole closure so every exit path, including startup errors, stops the agent.
         #[cfg(feature = "pyroscope")]
-        let pyroscope_agent = args.pyroscope.start()?;
+        let _pyroscope = PyroscopeGuard(args.pyroscope.start()?);
 
         if args.block_interval_ms.is_some() {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
@@ -258,7 +259,7 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         node = configure_sequencing(&args, zone_id, zone_chain_id, &data_dir, node).await?;
 
         // Install or skip the checker ExEx based on the configured mode.
-        let exit = match args.checker_mode {
+        match args.checker_mode {
             CheckerMode::Off => {
                 let handle = builder
                     .node(node)
@@ -285,35 +286,41 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
                     .wait_for_node_exit()
                     .await
             }
-        };
-
-        // A running agent must be stopped first: shutdown alone joins a worker that only exits
-        // on the stop signal. Stop can still block forever if the final snapshot fails, so it
-        // runs on its own thread and node exit waits at most PYROSCOPE_STOP_TIMEOUT.
-        #[cfg(feature = "pyroscope")]
-        if let Some(agent) = pyroscope_agent {
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                match agent.stop() {
-                    Ok(agent) => agent.shutdown(),
-                    Err(error) => {
-                        warn!(target: "reth::cli", %error, "Failed to stop Pyroscope agent")
-                    }
-                }
-                let _ = done_tx.send(());
-            });
-            if done_rx.recv_timeout(PYROSCOPE_STOP_TIMEOUT).is_err() {
-                warn!(target: "reth::cli", "Pyroscope agent did not stop in time; exiting without it");
-            }
         }
-
-        exit
     })
 }
 
 /// Longest node exit waits for the Pyroscope agent to flush and stop.
 #[cfg(feature = "pyroscope")]
 const PYROSCOPE_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Stops a running Pyroscope agent when dropped, waiting at most [`PYROSCOPE_STOP_TIMEOUT`].
+///
+/// Dropping a running agent without `stop()` joins a worker that only exits on the stop signal,
+/// and `stop()` itself can block forever if the final snapshot fails, so the stop runs on its own
+/// thread.
+#[cfg(feature = "pyroscope")]
+struct PyroscopeGuard(
+    Option<pyroscope::PyroscopeAgent<pyroscope::pyroscope::PyroscopeAgentRunning>>,
+);
+
+#[cfg(feature = "pyroscope")]
+impl Drop for PyroscopeGuard {
+    fn drop(&mut self) {
+        let Some(agent) = self.0.take() else { return };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            match agent.stop() {
+                Ok(agent) => agent.shutdown(),
+                Err(error) => warn!(target: "reth::cli", %error, "Failed to stop Pyroscope agent"),
+            }
+            let _ = done_tx.send(());
+        });
+        if done_rx.recv_timeout(PYROSCOPE_STOP_TIMEOUT).is_err() {
+            warn!(target: "reth::cli", "Pyroscope agent did not stop in time; exiting without it");
+        }
+    }
+}
 
 /// Prometheus builder that exports the `tempo_zone_latency_*` histograms with buckets, so
 /// long-window percentiles can be computed from `_bucket` series.
