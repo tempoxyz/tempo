@@ -19,13 +19,16 @@ impl AuthorityCounts {
         self.0.get(authority).copied().unwrap_or_default()
     }
 
-    /// Returns an authority of `transaction` that already has `max` counted transactions.
-    pub(crate) fn at_capacity(
+    /// Returns an authority of `transaction` whose transactions counted here and in `other`
+    /// together number at least `max`.
+    pub(crate) fn at_capacity_with(
         &self,
+        other: &Self,
         max: usize,
         transaction: &TempoPooledTransaction,
     ) -> Option<Address> {
-        distinct_authorities(transaction).find(|authority| self.get(authority) >= max)
+        distinct_authorities(transaction)
+            .find(|authority| self.get(authority) + other.get(authority) >= max)
     }
 
     /// Counts `transaction` against each of its authorities.

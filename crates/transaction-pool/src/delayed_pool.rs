@@ -16,7 +16,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, B256Map, B256Set},
+    map::{AddressMap, B256Map, B256Set, Entry},
 };
 use reth_primitives_traits::InMemorySize;
 use reth_transaction_pool::{GetPooledTransactionLimit, PoolTransaction, ValidPoolTransaction};
@@ -33,8 +33,8 @@ pub const DEFAULT_DELAYED_MAX_COUNT: NonZeroUsize = NonZeroUsize::new(4096).unwr
 /// Default maximum total size of held transactions, in megabytes.
 pub const DEFAULT_DELAYED_MAX_SIZE_MB: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
-/// Default maximum number of held transactions per authority.
-pub const DEFAULT_DELAYED_MAX_PER_AUTHORITY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+/// Default maximum number of held transactions per sender.
+pub const DEFAULT_DELAYED_MAX_PER_SENDER: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
 /// Bytes in a megabyte, for converting size limits given in megabytes.
 pub const BYTES_PER_MB: NonZeroUsize = NonZeroUsize::new(1024 * 1024).unwrap();
@@ -53,8 +53,11 @@ pub struct DelayedPool {
     by_valid_after: BTreeSet<(u64, TxHash)>,
     /// Held transactions ordered by priority fee, lowest first, for eviction when full.
     by_priority: BTreeSet<(u128, TxHash)>,
-    /// Number of held transactions per authority, limited by [`Config::max_per_authority`].
+    /// Number of held transactions per authority, which the 2D pool adds to its own counts for
+    /// the per-authority limit.
     by_authority: AuthorityCounts,
+    /// Number of held transactions per sender, limited by [`Config::max_per_sender`].
+    by_sender: AddressMap<usize>,
     /// Hashes handed out by [`Self::take_due`] and not yet removed.
     releasing: B256Set,
     /// Total size of held transactions in bytes.
@@ -112,11 +115,11 @@ impl DelayedPool {
             return Err(Error::NonceConflict);
         }
 
-        if let Some(authority) = self.by_authority.at_capacity(
-            self.config.max_per_authority.get(),
-            &transaction.transaction,
-        ) {
-            return Err(Error::AuthorityLimit(authority));
+        let sender = transaction.sender();
+        if self.by_sender.get(&sender).copied().unwrap_or_default()
+            >= self.config.max_per_sender.get()
+        {
+            return Err(Error::SenderLimit(sender));
         }
 
         let tx_size = transaction.transaction.size();
@@ -145,6 +148,7 @@ impl DelayedPool {
 
         self.by_expiring_nonce.insert(expiring_nonce, hash);
         self.by_authority.add(&transaction.transaction);
+        *self.by_sender.entry(sender).or_default() += 1;
         self.by_valid_after.insert((valid_after, hash));
         self.by_priority.insert((priority, hash));
         self.size += tx_size;
@@ -194,6 +198,12 @@ impl DelayedPool {
         self.by_priority
             .remove(&(transaction.transaction.priority_fee_or_price(), *hash));
         self.by_authority.remove(&transaction.transaction);
+        if let Entry::Occupied(mut entry) = self.by_sender.entry(transaction.sender()) {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
         self.size -= transaction.transaction.size();
         self.update_metrics();
         Some(transaction)
@@ -254,6 +264,16 @@ impl DelayedPool {
     }
 
     /// Returns whether a transaction with the given hash is held.
+    /// Returns whether a held transaction uses the expiring nonce with this hash.
+    pub(crate) fn contains_expiring_nonce(&self, expiring_nonce_hash: &B256) -> bool {
+        self.by_expiring_nonce.contains_key(expiring_nonce_hash)
+    }
+
+    /// Returns the number of held transactions per authority.
+    pub(crate) const fn authority_counts(&self) -> &AuthorityCounts {
+        &self.by_authority
+    }
+
     pub(crate) fn contains(&self, hash: &TxHash) -> bool {
         self.by_hash.contains_key(hash)
     }
@@ -340,9 +360,11 @@ pub struct Config {
     pub max_count: NonZeroUsize,
     /// Maximum total size of held transactions in bytes.
     pub max_size: NonZeroUsize,
-    /// Maximum number of held transactions per authority: the sender, the key authorization
-    /// signer, a sponsoring fee payer and the access key.
-    pub max_per_authority: NonZeroUsize,
+    /// Maximum number of held transactions per sender.
+    ///
+    /// Fee payers, key authorization signers and access keys are limited only by the 2D pool's
+    /// per-authority limit, which counts held and live transactions together.
+    pub max_per_sender: NonZeroUsize,
 }
 
 impl Default for Config {
@@ -351,7 +373,7 @@ impl Default for Config {
             lead_secs: DEFAULT_DELAYED_LEAD_SECS,
             max_count: DEFAULT_DELAYED_MAX_COUNT,
             max_size: DEFAULT_DELAYED_MAX_SIZE_MB.saturating_mul(BYTES_PER_MB),
-            max_per_authority: DEFAULT_DELAYED_MAX_PER_AUTHORITY,
+            max_per_sender: DEFAULT_DELAYED_MAX_PER_SENDER,
         }
     }
 }
@@ -363,9 +385,9 @@ pub enum Error {
     /// lower priority fee than the rejected one.
     #[error("delayed transaction pool is full")]
     PoolFull,
-    /// One of the transaction's authorities already has the maximum number of held transactions.
-    #[error("authority {0} has the maximum number of delayed transactions")]
-    AuthorityLimit(Address),
+    /// The sender already has the maximum number of held transactions.
+    #[error("sender {0} has the maximum number of delayed transactions")]
+    SenderLimit(Address),
     /// A held transaction already uses this expiring nonce; held transactions cannot be replaced.
     #[error("a delayed transaction with the same expiring nonce is already held")]
     NonceConflict,
@@ -525,34 +547,32 @@ mod tests {
     }
 
     #[test]
-    fn limits_transactions_per_authority() {
+    fn limits_transactions_per_sender_only() {
         let mut pool = DelayedPool::new(Config {
-            max_per_authority: NonZeroUsize::MIN,
+            max_per_sender: NonZeroUsize::MIN,
             ..Default::default()
         });
         let sender = Address::random();
+        let first = expiring(sender).build();
+        let first_hash = *first.hash();
+
+        assert_eq!(insert(&mut pool, valid(first), 100), Ok(Vec::new()));
+        let second = expiring(sender).valid_before(201).build();
+        assert_eq!(
+            insert(&mut pool, valid(second.clone()), 100),
+            Err(Error::SenderLimit(sender))
+        );
+
+        // A fee payer backing several senders' held transactions is not limited here.
         let fee_payer = PrivateKeySigner::random();
-        let sponsored = valid(sponsor(expiring(Address::random()).build(), &fee_payer));
-        let sponsored_hash = *sponsored.hash();
+        for _ in 0..3 {
+            let sponsored = sponsor(expiring(Address::random()).build(), &fee_payer);
+            assert_eq!(insert(&mut pool, valid(sponsored), 100), Ok(Vec::new()));
+        }
+        assert_eq!(pool.authority_counts().get(&fee_payer.address()), 3);
 
-        assert_eq!(
-            insert(&mut pool, valid(expiring(sender).build()), 100),
-            Ok(Vec::new())
-        );
-        assert_eq!(
-            insert(&mut pool, valid(expiring(sender).build()), 100),
-            Err(Error::AuthorityLimit(sender))
-        );
-        assert_eq!(insert(&mut pool, sponsored, 100), Ok(Vec::new()));
-        let other = sponsor(expiring(Address::random()).build(), &fee_payer);
-        assert_eq!(
-            insert(&mut pool, valid(other.clone()), 100),
-            Err(Error::AuthorityLimit(fee_payer.address()))
-        );
-
-        pool.remove(&sponsored_hash)
-            .expect("sponsored transaction is held");
-        assert_eq!(insert(&mut pool, valid(other), 100), Ok(Vec::new()));
+        pool.remove(&first_hash).expect("first transaction is held");
+        assert_eq!(insert(&mut pool, valid(second), 100), Ok(Vec::new()));
     }
 
     #[test]
@@ -575,7 +595,7 @@ mod tests {
     #[test]
     fn remove_frees_every_index() {
         let mut pool = DelayedPool::new(Config {
-            max_per_authority: NonZeroUsize::MIN,
+            max_per_sender: NonZeroUsize::MIN,
             ..Default::default()
         });
         let tx = expiring(Address::random()).build();

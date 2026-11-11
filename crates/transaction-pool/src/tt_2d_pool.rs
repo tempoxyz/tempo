@@ -1,6 +1,9 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{
-    authority_counts::AuthorityCounts, metrics::AA2dPoolMetrics, ordering::TempoTipOrdering,
+    authority_counts::AuthorityCounts,
+    delayed_pool::{self, DelayedPool},
+    metrics::AA2dPoolMetrics,
+    ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
 };
 use alloy_consensus::Transaction;
@@ -114,7 +117,15 @@ pub struct AA2dPool {
     /// Base fee used for transaction insertion and eviction-order priorities.
     base_fee: u64,
     /// Tracks the number of transactions per authority for DoS protection.
+    ///
+    /// Limits apply to these together with the held transactions' counts.
     txs_by_authority: AuthorityCounts,
+    /// Expiring nonce transactions whose `valid_after` is too far ahead of the tip, held out of
+    /// the pending set until then.
+    ///
+    /// Kept under this pool's lock so that holding, admitting and releasing a transaction check
+    /// its hash and expiring nonce against the held and live transactions in one step.
+    delayed: DelayedPool,
     /// Pending and queued regular transactions per `(sender, nonce_key)` lane.
     txs_by_lane: HashMap<AASequenceId, usize>,
     /// Number of pending transactions, including expiring nonce transactions.
@@ -155,6 +166,7 @@ impl AA2dPool {
             queued_eviction_order: Default::default(),
             base_fee: 0,
             txs_by_authority: Default::default(),
+            delayed: Default::default(),
             txs_by_lane: Default::default(),
             pending_count: 0,
             queued_count: 0,
@@ -162,6 +174,69 @@ impl AA2dPool {
             queued_size: Default::default(),
             new_transaction_notifier,
         }
+    }
+
+    /// Returns the held transactions.
+    pub(crate) const fn delayed(&self) -> &DelayedPool {
+        &self.delayed
+    }
+
+    /// Returns the held transactions mutably.
+    pub(crate) const fn delayed_mut(&mut self) -> &mut DelayedPool {
+        &mut self.delayed
+    }
+
+    /// Replaces the held transactions, such as with an empty set with other limits.
+    pub(crate) fn set_delayed(&mut self, delayed: DelayedPool) {
+        self.delayed = delayed;
+    }
+
+    /// Holds a validated expiring nonce transaction until `valid_after` and returns the held
+    /// transactions it evicted.
+    ///
+    /// Rejected as already imported if this pool holds or has live a transaction with the same
+    /// hash or expiring nonce. Held transactions count toward
+    /// [`AA2dPoolConfig::max_txs_per_authority`] together with the live ones, and separately
+    /// toward the held set's own limit.
+    pub(crate) fn hold_transaction(
+        &mut self,
+        transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        valid_after: u64,
+    ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
+        let hash = *transaction.hash();
+        if self.contains(&hash)
+            || self.delayed.contains(&hash)
+            || transaction
+                .transaction
+                .expiring_nonce_hash()
+                .is_some_and(|expiring_nonce| self.expiring_nonce_txs.contains_key(&expiring_nonce))
+        {
+            return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
+        }
+        if let Some(authority) = self.delayed.authority_counts().at_capacity_with(
+            &self.txs_by_authority,
+            self.config.max_txs_per_authority,
+            &transaction.transaction,
+        ) {
+            return Err(PoolError::new(
+                hash,
+                PoolErrorKind::SpammerExceededCapacity(authority),
+            ));
+        }
+        self.delayed
+            .insert(transaction, valid_after)
+            // Reported with the live pool's kinds so RPC returns the standard txpool errors.
+            .map_err(|err| {
+                let kind = match err {
+                    delayed_pool::Error::PoolFull => PoolErrorKind::DiscardedOnInsert,
+                    delayed_pool::Error::SenderLimit(sender) => {
+                        PoolErrorKind::SpammerExceededCapacity(sender)
+                    }
+                    // Like a live expiring nonce collision: held transactions cannot be replaced.
+                    delayed_pool::Error::NonceConflict => PoolErrorKind::AlreadyImported,
+                };
+                PoolError::new(hash, kind)
+            })
     }
 
     /// Broadcasts a new pending transaction to all active [`BestAA2dTransactions`] iterators.
@@ -236,6 +311,12 @@ impl AA2dPool {
             transaction.transaction.is_aa(),
             "only AA transactions are supported"
         );
+        if self.delayed.contains(transaction.hash()) {
+            return Err(PoolError::new(
+                *transaction.hash(),
+                PoolErrorKind::AlreadyImported,
+            ));
+        }
         // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
         // Only treat as expiring nonce if T1 hardfork is active.
         //
@@ -307,10 +388,11 @@ impl AA2dPool {
                 // authorities are checked with the replaced transaction's slots released.
                 let replaced_tx = &entry.get().inner.transaction.transaction;
                 self.txs_by_authority.remove(replaced_tx);
-                if let Some(authority) = self
-                    .txs_by_authority
-                    .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
-                {
+                if let Some(authority) = self.txs_by_authority.at_capacity_with(
+                    self.delayed.authority_counts(),
+                    self.config.max_txs_per_authority,
+                    &transaction.transaction,
+                ) {
                     self.txs_by_authority.add(replaced_tx);
                     return Err(PoolError::new(
                         *transaction.hash(),
@@ -330,10 +412,11 @@ impl AA2dPool {
             }
             Entry::Vacant(entry) => {
                 // Check the per-authority limit for new (non-replacement) transactions
-                if let Some(authority) = self
-                    .txs_by_authority
-                    .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
-                {
+                if let Some(authority) = self.txs_by_authority.at_capacity_with(
+                    self.delayed.authority_counts(),
+                    self.config.max_txs_per_authority,
+                    &transaction.transaction,
+                ) {
                     return Err(PoolError::new(
                         *transaction.hash(),
                         PoolErrorKind::SpammerExceededCapacity(authority),
@@ -485,6 +568,10 @@ impl AA2dPool {
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         let tx_hash = *transaction.hash();
         let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
+        // At most one transaction, held or live, uses an expiring nonce.
+        if self.delayed.contains_expiring_nonce(&expiring_nonce_hash) {
+            return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
+        }
 
         let expiring_nonce_entry = match self.expiring_nonce_txs.entry(expiring_nonce_hash) {
             hash_map::Entry::Occupied(_) => {
@@ -494,10 +581,11 @@ impl AA2dPool {
         };
 
         // Check the per-authority limit
-        if let Some(authority) = self
-            .txs_by_authority
-            .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
-        {
+        if let Some(authority) = self.txs_by_authority.at_capacity_with(
+            self.delayed.authority_counts(),
+            self.config.max_txs_per_authority,
+            &transaction.transaction,
+        ) {
             return Err(PoolError::new(
                 tx_hash,
                 PoolErrorKind::SpammerExceededCapacity(authority),
@@ -7325,6 +7413,68 @@ mod tests {
         assert!(pool.by_hash.contains_key(&tx1_hash));
         assert_eq!(pool.expiring_nonce_txs.len(), 1);
         assert_expiring_eviction_index_len(&pool, 1);
+        pool.assert_invariants();
+    }
+
+    fn hold(
+        pool: &mut AA2dPool,
+        tx: TempoPooledTransaction,
+    ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
+        pool.hold_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)),
+            u64::MAX,
+        )
+    }
+
+    /// A held transaction and a live one never share a hash or an expiring nonce, whichever
+    /// arrives first.
+    #[test]
+    fn held_and_live_transactions_never_share_an_expiring_nonce() {
+        let held = TxBuilder::aa(Address::random())
+            .nonce_key(U256::MAX)
+            .build();
+        let variant = sponsor(held.clone(), &PrivateKeySigner::random());
+        assert_ne!(held.hash(), variant.hash());
+        assert_eq!(held.expiring_nonce_hash(), variant.expiring_nonce_hash());
+
+        let mut pool = AA2dPool::default();
+        hold(&mut pool, held.clone()).unwrap();
+        for tx in [held.clone(), variant.clone()] {
+            let err = add_expiring(&mut pool, tx).unwrap_err();
+            assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
+        }
+        let err = hold(&mut pool, held.clone()).unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 0));
+        pool.assert_invariants();
+
+        let mut pool = AA2dPool::default();
+        add_expiring(&mut pool, held).unwrap();
+        let err = hold(&mut pool, variant).unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
+        assert_eq!(pool.delayed().len(), 0);
+        pool.assert_invariants();
+    }
+
+    /// Held transactions count toward the per-authority limit together with live ones.
+    #[test]
+    fn authority_limit_counts_held_and_live_transactions() {
+        let mut pool = authority_limit_pool(2);
+        let sender = Address::random();
+        let expiring = |valid_before| {
+            TxBuilder::aa(sender)
+                .nonce_key(U256::MAX)
+                .valid_before(valid_before)
+                .build()
+        };
+
+        hold(&mut pool, expiring(1_001)).unwrap();
+        add_expiring(&mut pool, expiring(1_002)).unwrap();
+
+        let err = add_expiring(&mut pool, expiring(1_003)).unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
+        let err = hold(&mut pool, expiring(1_004)).unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
         pool.assert_invariants();
     }
 
