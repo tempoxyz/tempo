@@ -342,8 +342,7 @@ fn implicit_root_admin_status_ends_with_the_commitment_from_t14() {
     }
 }
 
-/// A configurable account signature over [`HASH`] that encodes longer than any primitive one, and its
-/// account.
+/// A configurable account signature over [`HASH`], longer than any primitive one, and its account.
 fn oversized_configurable_signature() -> (Address, Bytes) {
     // Eight P256 approvals over a full owner list encode longer than any primitive signature.
     let mut signers: Vec<Key> = (0..MAX_CONFIGURABLE_ACCOUNT_SIGNATURES)
@@ -456,8 +455,7 @@ fn verify_follows_the_account_state_from_t15() {
     let access_key = Key::random(Secp256k1);
     let primitive = TempoSignature::Primitive(root.sign(HASH)).to_bytes();
     let root_keychain = keychain_signature(&root, account);
-    // `verify` results at `spec` for `signature`, with `grant` to the access key and a commitment
-    // on each of `committed`.
+    // `verify` at `spec`, with `grant` to the access key and a commitment on each of `committed`.
     let verify = |spec, signature: &Bytes, grant, committed: &[Address]| {
         let mut storage = storage_at(spec, account, access_key.address(), grant, committed);
         StorageCtx::enter(&mut storage, || {

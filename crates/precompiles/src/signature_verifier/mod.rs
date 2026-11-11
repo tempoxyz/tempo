@@ -101,9 +101,8 @@ impl SignatureVerifier {
         self.verify_keychain_admin_signature(account, hash, &sig)
     }
 
-    /// Returns whether `account` approves `hash`: the one check to use for any account and
-    /// signature type. It follows `account`'s current state, so it stays correct when the account
-    /// migrates or changes owners (TIP-1168).
+    /// Returns whether `account` approves `hash` under its current state: the one check for any
+    /// account and signature type, correct even after it migrates or changes owners (TIP-1168).
     ///
     /// By signature type, including the routed checks' reverts:
     /// - primitive: recovers to `account`, and `account` has no configuration commitment
