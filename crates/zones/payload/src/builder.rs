@@ -74,6 +74,29 @@ const BLOCK_SIZE_SAFETY_MARGIN: usize = 1024 * 1024;
 /// Diagnostic retained when upstream Tempo precompile storage stringifies an [`L1StateError`].
 const L1_STORAGE_UNAVAILABLE_ERROR_PREFIX: &str = "Tempo L1 storage unavailable";
 
+/// TIP-1094 FF1 address key. It decrypts every deposit address of its version, so its `Debug`
+/// output is redacted like the zone's other sequencer keys.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct VirtualAddressKey(B256);
+
+impl VirtualAddressKey {
+    /// Wrap a 32-byte FF1 key.
+    pub const fn new(key: B256) -> Self {
+        Self(key)
+    }
+
+    /// The raw key.
+    pub const fn expose(&self) -> B256 {
+        self.0
+    }
+}
+
+impl core::fmt::Debug for VirtualAddressKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("VirtualAddressKey(<redacted>)")
+    }
+}
+
 /// Factory for constructing the zone payload builder.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -81,7 +104,7 @@ pub struct ZonePayloadFactory {
     withdrawal_batch_interval_blocks: u64,
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
-    virtual_address_key: Option<B256>,
+    virtual_address_key: Option<VirtualAddressKey>,
 }
 
 impl ZonePayloadFactory {
@@ -97,7 +120,7 @@ impl ZonePayloadFactory {
 
     /// TIP-1094: initialize `key` as address key version 1 in the first block this node
     /// builds once T15 is active and version 1 is still uninitialized.
-    pub fn with_virtual_address_key(mut self, key: B256) -> Self {
+    pub fn with_virtual_address_key(mut self, key: VirtualAddressKey) -> Self {
         self.virtual_address_key = Some(key);
         self
     }
@@ -177,7 +200,7 @@ pub struct ZonePayloadBuilder<Provider> {
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
     metrics: ZonePayloadBuilderMetrics,
     /// TIP-1094 address key version 1, initialized once when still unset.
-    virtual_address_key: Option<B256>,
+    virtual_address_key: Option<VirtualAddressKey>,
 }
 
 impl<Provider> PayloadBuilder for ZonePayloadBuilder<Provider>
@@ -331,7 +354,11 @@ where
         {
             info!(target: "zone::payload", "Initializing TIP-1094 address key version 1");
             builder
-                .execute_transaction(build_initialize_virtual_address_key_tx(1, key, chain_id))
+                .execute_transaction(build_initialize_virtual_address_key_tx(
+                    1,
+                    key.expose(),
+                    chain_id,
+                ))
                 .map(|_| ())
                 .map_err(PayloadBuilderError::evm)?;
         }

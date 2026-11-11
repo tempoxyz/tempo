@@ -1454,7 +1454,8 @@ impl ZoneTestNode {
                 .with_deposit_decryption_keys(std::iter::once(L1Fixture::encryption_key()));
         }
         if let Some(key) = virtual_address_key {
-            zone_node = zone_node.with_virtual_address_key(key);
+            zone_node =
+                zone_node.with_virtual_address_key(zone_payload::VirtualAddressKey::new(key));
         }
         if is_local_dummy_l1 {
             zone_node = zone_node

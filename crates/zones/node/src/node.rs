@@ -284,7 +284,7 @@ pub struct ZoneNode {
     /// Encrypts authenticated-withdrawal sender reveal data during payload construction.
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
     /// TIP-1094 address key version 1 this node initializes when it builds blocks.
-    virtual_address_key: Option<alloy_primitives::B256>,
+    virtual_address_key: Option<zone_payload::VirtualAddressKey>,
     /// Redacted RPC config.
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Optional sequencer config. When set, sequencer tasks are spawned.
@@ -423,7 +423,7 @@ impl ZoneNode {
     ///
     /// The key is written to zone state in a block's calldata, so every replica, prover and RPC
     /// node of the zone is inside its confidentiality boundary.
-    pub fn with_virtual_address_key(mut self, key: alloy_primitives::B256) -> Self {
+    pub fn with_virtual_address_key(mut self, key: zone_payload::VirtualAddressKey) -> Self {
         self.virtual_address_key = Some(key);
         self
     }

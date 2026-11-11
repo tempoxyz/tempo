@@ -6089,6 +6089,23 @@ contract ZonePortalTest is BaseTest {
         _routeVirtual(_virtualDestination(testZoneId, 3), false, bytes32(0));
     }
 
+    function test_depositVirtual_rejectsPortalOriginators() public {
+        _enableVirtualDeposits();
+        address destination = _virtualDestination(testZoneId, 1);
+        vm.startPrank(address(pathUSD));
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, destination, false, bytes32(0));
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        portal.depositVirtual(
+            address(0x5Ad0000000000000000000000000000000000002),
+            VIRTUAL_GROSS,
+            destination,
+            false,
+            bytes32(0)
+        );
+        vm.stopPrank();
+    }
+
     function test_depositVirtual_rejectsDepositsBelowFees() public {
         _enableVirtualDeposits();
         vm.fee(1e12);

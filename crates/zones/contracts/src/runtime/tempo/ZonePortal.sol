@@ -22,7 +22,8 @@ import {
     Withdrawal,
     WithdrawalBounceBackDeposit,
     ZONE_FACTORY_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS
+    ZONE_PORTAL_IMPL_ADDRESS,
+    ZONE_PORTAL_PREFIX
 } from "../interfaces/IZone.sol";
 import { getBlockHash } from "../libraries/BlockHashHistory.sol";
 import { DepositQueueLib } from "../libraries/DepositQueueLib.sol";
@@ -1062,7 +1063,11 @@ contract ZonePortal is IZonePortal {
         if (version < minimumAddressVersion()) revert AddressVersionRetired(version);
 
         // Existing deposit checks, applied to the debited account.
-        if (originator == address(0)) revert InvalidBouncebackRecipient();
+        // A portal is the originator when a zone withdrawal pays out to a deposit address. A refund
+        // to a portal would credit no one, so revert and let the withdrawal bounce back instead.
+        if (originator == address(0) || bytes12(bytes20(originator)) == ZONE_PORTAL_PREFIX) {
+            revert InvalidBouncebackRecipient();
+        }
         _requireAllowedDepositor(originator);
         _requireAllowed(originator);
         _validateDepositsActive(token);
