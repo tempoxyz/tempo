@@ -1032,8 +1032,8 @@ Authorization token signatures follow the same format as Tempo transaction signa
 | secp256k1 | 65 bytes, no prefix | Standard `ecrecover` |
 | P256 | Prefix `0x01`, 130 bytes | Public key embedded in signature |
 | WebAuthn | Prefix `0x02`, variable length | P256 key via WebAuthn assertion |
-| Keychain V1 | Prefix `0x03` | Wraps inner sig + `user_address`, authenticates as root account |
-| Keychain V2 | Prefix `0x04` | Same as V1 but binds `user_address` into signing hash |
+| Keychain V1 | Prefix `0x03` | Not accepted: its signing hash does not bind `user_address`. Rejected as an invalid signature. |
+| Keychain V2 | Prefix `0x04` | Wraps inner sig + `user_address` (binding it into the signing hash), authenticates as root account |
 | Configurable account | Prefix `0x05` | Owner quorum of a configurable account, authenticates as the account |
 
 Keychain keys allow session keys and scoped access keys to authenticate to the RPC with the same permissions as the root account. The zone has its own independent `AccountKeychain` instance, not mirrored from Tempo. Users must register keychain keys on the zone directly.
