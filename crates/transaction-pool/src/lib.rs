@@ -30,7 +30,7 @@ pub mod tt_2d_pool;
 pub use best::{StateAwareBestTransactions, StateAwarePoolTransaction};
 pub use maintain::TempoPoolUpdates;
 
-pub use metrics::{AA2dPoolMetrics, DelayedPoolMetrics, TempoPoolMaintenanceMetrics};
+pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
 pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_AUTHORITY};
 
 #[cfg(test)]

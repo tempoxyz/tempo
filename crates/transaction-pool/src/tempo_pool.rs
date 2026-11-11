@@ -592,10 +592,6 @@ where
         authorities: Option<Vec<Address>>,
     ) -> PoolResult<AddedTransactionOutcome> {
         let hash = *transaction.hash();
-        if self.protocol_pool.contains(&hash) {
-            return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
-        }
-
         let protocol_pool = self.protocol_pool.inner();
         let transaction_id = TransactionId::new(
             protocol_pool.get_sender_id(transaction.sender()),
@@ -905,8 +901,7 @@ where
             return Vec::new();
         }
 
-        // Fully delegate to the protocol pool unless a transaction is 2D, which includes every
-        // transaction that may be delayed.
+        // Fully delegate to protocol pool for non-2D transactions
         if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
             return self
                 .protocol_pool
