@@ -276,7 +276,7 @@ where
         let head = tokio::task::spawn_blocking(move || {
             store
                 .prune_through(finalized_zone_height)
-                .unwrap_or_else(|error| panic!("failed to prune block proofs: {error:#}"));
+                .wrap_err("failed to prune block proofs")?;
             Ok::<_, eyre::Report>(provider.best_block_number()?)
         })
         .await
@@ -362,7 +362,7 @@ where
         })
         .await
         .expect("proof persistence task panicked")
-        .unwrap_or_else(|error| panic!("failed to persist block proof: {error:#}"));
+        .wrap_err("failed to persist block proof")?;
         info!(
             target: "zone::sequencer::proofs",
             zone_block = number,
@@ -744,6 +744,42 @@ mod tests {
         store.prune_through(2).unwrap();
         // The collection response owns the input even if pruning runs before the caller resumes.
         assert_eq!(*retained, expected);
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_is_returned_and_collector_keeps_serving() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("proofs");
+        let proof = proof(1, B256::repeat_byte(1));
+        let (_, requests) = mpsc::channel(1);
+        let collector = ProofCollector {
+            config: ProofCollectorConfig {
+                directory: directory.clone(),
+                debug_api: Arc::new(StubDebugApi(proof.witness.clone())),
+                portal_address: Address::ZERO,
+                l1_provider: ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect_mocked_client(Asserter::new())
+                    .erased(),
+                retain_for_shadow_proving: false,
+            },
+            provider: MockEthProvider::<TempoPrimitives>::new()
+                .with_chain_spec((*t15_chain_spec(0)).clone()),
+            store: Arc::new(ProofStore::open(directory.clone(), 0).unwrap()),
+            requests,
+            optional_attempted_through: 0,
+        };
+
+        // A regular file in place of the proof directory makes every write fail.
+        fs::remove_dir(&directory).unwrap();
+        fs::write(&directory, b"").unwrap();
+        let error = collector.persist(proof.clone()).await.unwrap_err();
+        assert_eq!(error.to_string(), "failed to persist block proof");
+        assert!(collector.store.state.read().proofs.is_empty());
+
+        fs::remove_file(&directory).unwrap();
+        fs::create_dir(&directory).unwrap();
+        let persisted = collector.persist(proof.clone()).await.unwrap().unwrap();
+        assert_eq!(*persisted, proof);
     }
 
     #[test]
