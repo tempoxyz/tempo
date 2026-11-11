@@ -188,7 +188,7 @@ impl AA2dPool {
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let due = self.delayed.take_due(tip_timestamp);
         for tx in &due {
-            self.untrack_delayed(tx);
+            self.txs_by_authority.remove(&tx.transaction);
         }
         due
     }
@@ -199,32 +199,8 @@ impl AA2dPool {
         hash: &TxHash,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let removed = self.delayed.remove(hash)?;
-        self.untrack_delayed(&removed);
+        self.txs_by_authority.remove(&removed.transaction);
         Some(removed)
-    }
-
-    /// Counts a transaction that entered the delayed set against its authorities and tracks its
-    /// `expiring_nonce_seen` slot, so [`Self::on_state_updates`] removes it once a block uses its
-    /// expiring nonce.
-    fn track_delayed(&mut self, transaction: &ValidPoolTransaction<TempoPooledTransaction>) {
-        self.txs_by_authority.add(&transaction.transaction);
-        if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
-            let previous = self
-                .slot_to_nonce_entry
-                .insert(slot, NonceSlotEntry::Delayed(*transaction.hash()));
-            debug_assert!(
-                previous.is_none(),
-                "delayed expiring nonce slot is already tracked"
-            );
-        }
-    }
-
-    /// Reverts [`Self::track_delayed`] for a transaction that left the delayed set.
-    fn untrack_delayed(&mut self, transaction: &ValidPoolTransaction<TempoPooledTransaction>) {
-        self.txs_by_authority.remove(&transaction.transaction);
-        if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
-            self.remove_nonce_slot_entry(slot, NonceSlotEntry::Delayed(*transaction.hash()));
-        }
     }
 
     /// Delays a validated expiring nonce transaction until `valid_after` and returns the delayed
@@ -261,10 +237,10 @@ impl AA2dPool {
             .map_err(|delayed_pool::Error::PoolFull| {
                 PoolError::new(hash, PoolErrorKind::DiscardedOnInsert)
             })?;
+        self.txs_by_authority.add(&transaction.transaction);
         for tx in &evicted {
-            self.untrack_delayed(tx);
+            self.txs_by_authority.remove(&tx.transaction);
         }
-        self.track_delayed(&transaction);
         Ok(evicted)
     }
 
@@ -1674,7 +1650,6 @@ impl AA2dPool {
         let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
         let mut included_expiring_nonce_hashes =
             std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
-        let mut consumed_delayed = Vec::new();
 
         // Process known nonce slot changes. A slot tracks either a 2D nonce lane or an expiring
         // nonce transaction, so one lookup per changed slot is enough.
@@ -1690,11 +1665,6 @@ impl AA2dPool {
                 {
                     included_expiring_nonce_hashes.push(*expiring_nonce_hash);
                 }
-                // A block used a delayed transaction's expiring nonce: it was included or a
-                // variant with the same expiring nonce was, so it can never be valid again.
-                Some(NonceSlotEntry::Delayed(hash)) if !value.present_value.is_zero() => {
-                    consumed_delayed.push(*hash);
-                }
                 _ => {}
             }
         }
@@ -1704,12 +1674,6 @@ impl AA2dPool {
         // Remove included expiring nonce transactions
         for expiring_nonce_hash in included_expiring_nonce_hashes.drain(..) {
             if let Some(tx) = self.remove_expiring_nonce_tx(&expiring_nonce_hash) {
-                mined.push(tx);
-            }
-        }
-        // Removed like included live expiring nonce transactions, without a discarded event.
-        for hash in consumed_delayed {
-            if let Some(tx) = self.remove_delayed(&hash) {
                 mined.push(tx);
             }
         }
@@ -2188,7 +2152,7 @@ impl IndependentTransactions {
 /// What a tracked `NonceManager` storage slot belongs to.
 ///
 /// A slot is either the `nonces` entry of a regular 2D nonce lane or the `expiring_nonce_seen`
-/// entry of a live or delayed expiring nonce transaction. The two mappings live at different storage roots, so a
+/// entry of an expiring nonce transaction. The two mappings live at different storage roots, so a
 /// slot can never be both; insertion asserts this in debug builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NonceSlotEntry {
@@ -2196,8 +2160,6 @@ enum NonceSlotEntry {
     Sequence(AASequenceId),
     /// `expiring_nonce_seen[hash]`, identifying the expiring nonce transaction it tracks.
     ExpiringNonce(B256),
-    /// `expiring_nonce_seen[hash]` of a delayed transaction, identified by its transaction hash.
-    Delayed(TxHash),
 }
 
 /// Default maximum number of transactions per authority in the AA 2D pool.
@@ -7527,49 +7489,6 @@ mod tests {
         tx: TempoPooledTransaction,
     ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
         pool.add_delayed_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)))
-    }
-
-    /// Returns a state update marking `transaction`'s expiring nonce as seen.
-    fn expiring_nonce_seen(transaction: &TempoPooledTransaction) -> AddressMap<BundleAccount> {
-        let mut storage = HashMap::default();
-        storage.insert(
-            transaction.expiring_nonce_slot().unwrap(),
-            StorageSlot::new_changed(U256::ZERO, U256::from(200u64)),
-        );
-        let mut state = AddressMap::default();
-        state.insert(
-            NONCE_PRECOMPILE_ADDRESS,
-            BundleAccount::new(None, None, storage, AccountStatus::Changed),
-        );
-        state
-    }
-
-    /// A block that uses a delayed transaction's expiring nonce removes it without a discarded
-    /// event.
-    #[test]
-    fn state_update_removes_delayed_transaction_whose_expiring_nonce_was_seen() {
-        let mut pool = AA2dPool::default();
-        let sender = Address::random();
-        let transaction = TxBuilder::aa(sender)
-            .nonce_key(U256::MAX)
-            .valid_after(100)
-            .valid_before(200)
-            .build();
-        let hash = *transaction.hash();
-        let state = expiring_nonce_seen(&transaction);
-        delay(&mut pool, transaction).unwrap();
-
-        let (promoted, mined, discarded) = pool.on_state_updates(&state);
-        assert!(promoted.is_empty());
-        assert!(discarded.is_empty());
-        assert_eq!(
-            mined.iter().map(|tx| *tx.hash()).collect::<Vec<_>>(),
-            vec![hash]
-        );
-        assert!(!pool.delayed().contains(&hash));
-        assert!(pool.slot_to_nonce_entry.is_empty());
-        assert_eq!(pool.txs_by_authority.get(&sender), 0);
-        pool.assert_invariants();
     }
 
     /// A delayed transaction and a live one never share a hash or an expiring nonce, whichever
