@@ -421,11 +421,12 @@ fn nonce_intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> (u64, u
     let params = &host.version().gas_params;
 
     if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
-        if spec.is_t15() {
-            (T15_EXPIRING_NONCE_GAS, 0)
+        let gas = if spec.is_t15() {
+            T15_EXPIRING_NONCE_GAS
         } else {
-            (EXPIRING_NONCE_GAS, 0)
-        }
+            EXPIRING_NONCE_GAS
+        };
+        (gas, 0)
     } else if spec.is_t1() && tx.nonce == 0 {
         // TIP-1000: Storage pricing updates for launch
         // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas

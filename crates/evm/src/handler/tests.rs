@@ -4673,3 +4673,42 @@ fn test_expiring_nonce_intrinsic_gas_charges_cold_evicted_seen_slot() {
         );
     }
 }
+
+/// Runs the real eviction path of `check_and_mark_expiring_nonce` twice from the same state, once
+/// with `seen[tx_hash]`, `ring[idx]` and `seen[old_hash]` cold and once with them warmed first:
+/// the gap is three cold surcharges, so all three SLOADs that [`T15_EXPIRING_NONCE_GAS`] prices
+/// are cold.
+#[test]
+fn test_expiring_nonce_eviction_path_sload_cost() {
+    let old_hash = B256::repeat_byte(0xaa);
+    let tx_hash = B256::repeat_byte(0xbb);
+    let eviction_gas = |prewarm: bool| {
+        let mut evm = test_evm(TempoHardfork::T15);
+        let mut block = *evm.block();
+        block.timestamp = U256::from(10);
+        evm.set_block(block);
+        StorageCtx::enter_evm(&mut evm, || {
+            let mut nonces = NonceManager::new();
+            nonces.expiring_nonce_ring[0].write(old_hash).unwrap();
+            nonces.expiring_nonce_seen[old_hash].write(5).unwrap();
+        });
+        evm.state_mut().commit_transaction();
+        evm.state_mut().clear_transaction_state();
+        StorageCtx::enter_evm(&mut evm, || {
+            let mut nonces = NonceManager::new();
+            assert_eq!(nonces.expiring_nonce_ring_ptr.read().unwrap(), 0);
+            if prewarm {
+                nonces.expiring_nonce_seen[tx_hash].read().unwrap();
+                nonces.expiring_nonce_ring[0].read().unwrap();
+                nonces.expiring_nonce_seen[old_hash].read().unwrap();
+            }
+            let before = StorageCtx::default().gas_used();
+            nonces.check_and_mark_expiring_nonce(tx_hash, 20).unwrap();
+            assert_eq!(nonces.expiring_nonce_seen[old_hash].read().unwrap(), 0);
+            assert_eq!(nonces.expiring_nonce_ring[0].read().unwrap(), tx_hash);
+            StorageCtx::default().gas_used() - before
+        })
+    };
+    let cold_surcharge = u64::from(COLD_SLOAD_COST - WARM_STORAGE_READ_COST);
+    assert_eq!(eviction_gas(false) - eviction_gas(true), 3 * cold_surcharge);
+}
