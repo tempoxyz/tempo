@@ -6,15 +6,12 @@ use crate::{
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::B256;
-use async_trait::async_trait;
-use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use bytes::Bytes;
 use eyre::{OptionExt, WrapErr};
 use futures::TryStreamExt;
 use object_store::{
-    ClientConfigKey, CredentialProvider, ObjectStore, ObjectStoreExt, PutMode, RetryConfig,
-    UpdateVersion,
-    aws::{AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
+    ClientConfigKey, ObjectStore, ObjectStoreExt, PutMode, RetryConfig, UpdateVersion,
+    aws::{AmazonS3Builder, AmazonS3ConfigKey},
     path::Path,
 };
 use serde::{Deserialize, Serialize};
@@ -23,10 +20,6 @@ use slatedb::{
     admin::Admin,
     config::{
         CheckpointOptions, CheckpointScope, DbReaderOptions, FlushOptions, FlushType, ScanOptions,
-    },
-    db_cache::{
-        DEFAULT_BLOCK_CACHE_CAPACITY, DbCache, SplitCache,
-        moka::{MokaCache, MokaCacheOptions},
     },
 };
 use std::{sync::Arc, time::Duration};
@@ -53,10 +46,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// conditional write after a timeout. SlateDB's wrapper retries on top of that and is the
 /// one layer that recognises a conditional write that landed before its response was lost.
 pub const SLATEDB_RETRIES: Option<u32> = Some(3);
-/// Capacity of a reader's cache of SST indexes and filters. A block list's scattered reads
-/// touch more of them than SlateDB's default 128 MiB holds, so each new scan fetched them
-/// again: on mainnet's 46,695-block cmin list this took replay from 390s to 39s.
-const META_CACHE_BYTES: u64 = 1024 * 1024 * 1024;
 /// How long a replaced checkpoint stays readable after a newer one is published.
 const RETIRED_CHECKPOINT_LIFETIME: Duration = Duration::from_secs(60 * 60);
 /// Lifetime of a replay's lease checkpoint. [Store::renew_lease] extends it every third of
@@ -166,30 +155,6 @@ pub struct Store {
     local: bool,
 }
 
-#[derive(Debug)]
-struct Credentials(SharedCredentialsProvider);
-
-#[async_trait]
-impl CredentialProvider for Credentials {
-    type Credential = AwsCredential;
-
-    async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
-        let credential =
-            self.0
-                .provide_credentials()
-                .await
-                .map_err(|source| object_store::Error::Generic {
-                    store: "AWS credential chain",
-                    source: Box::new(source),
-                })?;
-        Ok(Arc::new(AwsCredential {
-            key_id: credential.access_key_id().to_owned(),
-            secret_key: credential.secret_access_key().to_owned(),
-            token: credential.session_token().map(str::to_owned),
-        }))
-    }
-}
-
 /// Bounds every request to at most three attempts of at most `request` each, without
 /// replacing other client options read from the environment.
 fn bounded(builder: AmazonS3Builder, request: Duration) -> AmazonS3Builder {
@@ -238,15 +203,11 @@ impl Store {
                 let bucket = url.host_str().ok_or_eyre("missing S3 bucket")?;
                 let prefix = url.path().trim_matches('/');
                 eyre::ensure!(!prefix.is_empty(), "a non-root corpus prefix is required");
-                let sdk = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-                let credentials = sdk
-                    .credentials_provider()
-                    .ok_or_eyre("AWS credential provider unavailable")?;
+                // object_store resolves credentials and region itself (env vars, web identity,
+                // ECS, IMDS) with its own HTTP client. The AWS SDK chain needs an SDK HTTP client
+                // this crate does not compile in, and panics in debug builds without one.
                 let mut builder = bounded(
-                    AmazonS3Builder::from_env()
-                        .with_bucket_name(bucket)
-                        .with_region(sdk.region().map(|r| r.as_ref()).unwrap_or("us-east-1"))
-                        .with_credentials(Arc::new(Credentials(credentials))),
+                    AmazonS3Builder::from_env().with_bucket_name(bucket),
                     REQUEST_TIMEOUT,
                 );
                 if let Some(endpoint) = endpoint {
@@ -359,24 +320,16 @@ impl Store {
             .as_ref()
             .ok_or_eyre("corpus has no published checkpoint")?
             .parse()?;
-        let moka = |max_capacity| -> Option<Arc<dyn DbCache>> {
-            Some(Arc::new(MokaCache::new_with_opts(MokaCacheOptions {
-                max_capacity,
-                ..Default::default()
-            })))
-        };
-        let cache = SplitCache::new()
-            .with_block_cache(moka(DEFAULT_BLOCK_CACHE_CAPACITY))
-            .with_meta_cache(moka(META_CACHE_BYTES));
-        let reader = DbReader::builder(self.data(), self.objects.clone())
-            .with_reader_mode(DbReaderMode::Checkpoint(checkpoint))
-            .with_options(DbReaderOptions {
+        let reader = DbReader::open(
+            self.data(),
+            self.objects.clone(),
+            DbReaderMode::Checkpoint(checkpoint),
+            DbReaderOptions {
                 object_store_max_retries: SLATEDB_RETRIES,
                 ..Default::default()
-            })
-            .with_db_cache(Arc::new(cache), 0)
-            .build()
-            .await?;
+            },
+        )
+        .await?;
         let checked = async {
             let context = reader
                 .get(CONTEXT_KEY)
@@ -659,8 +612,11 @@ pub struct PayloadScan {
 }
 
 impl PayloadScan {
-    /// Opens both scans over the records from `first` through `last`.
-    pub async fn open(reader: &DbReader, first: &Record, last: &Record) -> eyre::Result<Self> {
+    /// Opens both scans over `records`, which must be non-empty.
+    pub async fn open(reader: &DbReader, records: &[Record]) -> eyre::Result<Self> {
+        let (Some(first), Some(last)) = (records.first(), records.last()) else {
+            eyre::bail!("empty payload range")
+        };
         let tx_end = last
             .first_tx
             .checked_add(last.transactions)
@@ -737,10 +693,7 @@ pub async fn for_each_published(
     let mut pages = MetadataPages::open(reader, from, to.next).await?;
     while pages.cursor.next < to.next {
         let records = pages.next_page().await?;
-        let (Some(first), Some(last)) = (records.first(), records.last()) else {
-            eyre::bail!("empty metadata page")
-        };
-        let mut payloads = PayloadScan::open(reader, first, last).await?;
+        let mut payloads = PayloadScan::open(reader, &records).await?;
         for record in &records {
             let (block, cases) = payloads.next(record).await?;
             if resolve {
@@ -848,21 +801,6 @@ pub async fn tip_timestamp(reader: &DbReader, cursor: &Cursor) -> eyre::Result<u
         .ok_or_else(|| eyre::eyre!("missing block record at {number}"))?;
     let block: Block = alloy_rlp::decode_exact(&decode(&bytes, &record)?.block.rlp)?;
     Ok(block.header.timestamp())
-}
-
-/// The cursor before `block`, which must be in `context`'s range or its end.
-pub async fn cursor_at(reader: &DbReader, context: &Context, block: u64) -> eyre::Result<Cursor> {
-    if block == context.start {
-        return Cursor::initial(context);
-    }
-    let previous = metadata(reader, block - 1).await?;
-    let mut cursor = Cursor {
-        next: previous.number,
-        tx: previous.first_tx,
-        parent: previous.parent,
-    };
-    cursor.advance(&previous)?;
-    Ok(cursor)
 }
 
 pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {

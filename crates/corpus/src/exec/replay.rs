@@ -12,7 +12,6 @@ use alloy_primitives::B256;
 use bytes::Bytes;
 use crossbeam_channel::{RecvTimeoutError, Sender, TrySendError};
 use eyre::OptionExt;
-use futures::{StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 use reth_chainspec::EthChainSpec;
 use reth_cli_util::cancellation::CancellationToken;
@@ -22,7 +21,7 @@ use std::{
     ops::Range,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -39,11 +38,6 @@ use tracing::info;
 /// ~16 maximum-size batches or two maximum-size records. Not an RSS cap: decoded
 /// state, SlateDB scan/cache buffers and SDK allocations are excluded.
 const REPLAY_BUDGET: usize = 2 * MAX_RECORD_BYTES;
-/// Unselected blocks a payload batch reads through to the next selected one: opening a scan
-/// costs far more than reading a run of small skipped blocks.
-const MAX_SKIPPED_RUN: usize = 1024;
-/// Block-list metadata spans read concurrently: each opens its own scan.
-const METADATA_SPANS: usize = 16;
 
 struct Ready {
     record: Record,
@@ -56,8 +50,7 @@ struct Ready {
 }
 
 /// Replays a published corpus range with `workers` execution threads. With `standalone`,
-/// only transactions with ordinals in that range are replayed, each independently. With `blocks`
-/// (sorted), only those blocks of the range are replayed.
+/// only transactions with ordinals in that range are replayed, each independently.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: Store,
@@ -67,7 +60,6 @@ pub fn run(
     consensus: TempoConsensus,
     workers: usize,
     standalone: Option<(u64, u64)>,
-    blocks: Option<&[u64]>,
     cancellation: CancellationToken,
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
@@ -116,10 +108,10 @@ pub fn run(
     let done_transactions = AtomicU64::new(0);
     let done_gas = AtomicU64::new(0);
     let finished = AtomicBool::new(false);
-    let total_blocks = match (standalone, blocks) {
-        (Some(_), _) => 0,
-        (None, Some(blocks)) => blocks.len() as u64,
-        (None, None) => range.end - range.start,
+    let total_blocks = if standalone.is_some() {
+        0
+    } else {
+        range.end - range.start
     };
     let result = std::thread::scope(|scope| -> eyre::Result<()> {
         scope.spawn(|| {
@@ -158,7 +150,6 @@ pub fn run(
                     &catalog,
                     range.clone(),
                     standalone,
-                    blocks,
                     sender,
                     budget.clone(),
                     &cancellation,
@@ -286,19 +277,106 @@ pub fn run(
     }
 }
 
+/// Opens the corpus and checks it was captured under `config`'s fork schedule.
+async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre::Result<DbReader> {
+    let reader = store.reader(catalog).await?;
+    let tip_timestamp = store::tip_timestamp(&reader, &catalog.cursor).await?;
+    eyre::ensure!(
+        store::forks_agree(
+            &catalog.context.forks,
+            &config.chain_spec().display_hardforks().to_string(),
+            tip_timestamp,
+        ),
+        "corpus fork schedule mismatch"
+    );
+    Ok(reader)
+}
+
+/// Replays the listed `blocks` of a published corpus on `workers` threads, as [`run`] does a
+/// range.
+pub fn run_blocks(
+    store: Store,
+    mut catalog: Catalog,
+    blocks: &[u64],
+    config: TempoEvmConfig,
+    consensus: TempoConsensus,
+    workers: usize,
+) -> eyre::Result<()> {
+    eyre::ensure!(workers > 0, "num-tasks must be positive");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    // A lease of our own, as in [run]; workers stop once it may expire.
+    let lease = store.lease_published(&runtime, &mut catalog, || {})?;
+    let reader = runtime.block_on(open(&store, &catalog, &config))?;
+    let started = Instant::now();
+    let next = AtomicUsize::new(0);
+    let replay =
+        || -> eyre::Result<()> {
+            while let Some(&block) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                eyre::ensure!(
+                    !lease.expiring(),
+                    "replay lease expires before it can be renewed"
+                );
+                let replayed =
+                    runtime.block_on(async {
+                        let (record, input) = store::published(&reader, block).await?;
+                        let mut cases = Vec::with_capacity(record.cases.len());
+                        for ordinal in record.first_tx..record.first_tx + record.transactions {
+                            let key = store::transaction_key(ordinal);
+                            cases.push(reader.get(key).await?.ok_or_else(|| {
+                                eyre::eyre!("missing transaction record {ordinal}")
+                            })?);
+                        }
+                        eyre::Ok((record, input, cases))
+                    });
+                if let Err(error) = replayed.and_then(|(record, input, cases)| {
+                    verify(&config, &consensus, &input, &cases, &record)
+                }) {
+                    // Stop the other workers too.
+                    next.store(blocks.len(), Ordering::Relaxed);
+                    return Err(error.wrap_err(format!("block {block}")));
+                }
+            }
+            Ok(())
+        };
+    let result = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..workers).map(|_| scope.spawn(replay)).collect();
+        threads.into_iter().try_for_each(|thread| {
+            thread
+                .join()
+                .map_err(|_| eyre::eyre!("corpus worker panicked"))?
+        })
+    });
+    let closed = runtime.block_on(reader.close());
+    let expiring = lease.expiring();
+    let released = lease.release(&runtime, &store);
+    let finished = result.and(closed.map_err(eyre::Report::from));
+    if expiring {
+        released.and(finished)?;
+    } else {
+        finished.and(released)?;
+    }
+    info!(
+        blocks = blocks.len(),
+        workers,
+        seconds = started.elapsed().as_secs_f64(),
+        "Corpus replay verified"
+    );
+    Ok(())
+}
+
 /// Fetching owns serialized reservations until ownership moves to a worker.
 async fn feed_pages(
     reader: &Arc<DbReader>,
-    mut pages: mpsc::Receiver<Vec<(Record, bool)>>,
+    mut pages: mpsc::Receiver<Vec<Record>>,
     tasks: &mut JoinSet<eyre::Result<()>>,
     sender: Sender<Ready>,
     budget: Arc<Semaphore>,
     cancellation: &CancellationToken,
 ) -> eyre::Result<()> {
     let space = Arc::new(Notify::new());
-    // Each record with whether to replay it; unselected ones are read only to keep scans
-    // contiguous.
-    let mut records = Vec::<(Record, bool)>::new().into_iter().peekable();
+    let mut records = Vec::<Record>::new().into_iter().peekable();
     let mut closed = false;
     let fetch_tasks = env_usize("TEMPO_CORPUS_FETCH_TASKS").unwrap_or(64);
     // Reserve whole read batches before opening scans, then transfer exact byte
@@ -309,27 +387,17 @@ async fn feed_pages(
     loop {
         eyre::ensure!(!cancellation.is_cancelled(), "corpus replay cancelled");
         while tasks.len() < fetch_tasks {
-            while records.next_if(|(_, selected)| !selected).is_some() {}
-            let Some(first) = records.next() else { break };
-            let (mut end, mut bytes, mut skipped) = (first.0.number + 1, first.0.bytes, 0);
-            let (mut batch, mut kept) = (vec![first], (1, bytes));
+            let Some(record) = records.next() else { break };
+            let (mut end, mut bytes) = (record.number + 1, record.bytes);
+            let mut batch = vec![record];
             // Batches never span pages, so an unfiltered page under the byte limit is one
             // scan task; read parallelism comes from pages in flight under the byte budget.
-            while let Some(next) = records.next_if(|(next, selected)| {
-                next.number == end
-                    && bytes + next.bytes <= batch_limit
-                    && (*selected || skipped < MAX_SKIPPED_RUN)
-            }) {
-                (end, bytes) = (next.0.number + 1, bytes + next.0.bytes);
-                skipped = if next.1 { 0 } else { skipped + 1 };
+            while let Some(next) =
+                records.next_if(|next| next.number == end && bytes + next.bytes <= batch_limit)
+            {
+                (end, bytes) = (next.number + 1, bytes + next.bytes);
                 batch.push(next);
-                if batch.last().is_some_and(|(_, selected)| *selected) {
-                    kept = (batch.len(), bytes);
-                }
             }
-            // Never read the unselected tail.
-            batch.truncate(kept.0);
-            bytes = kept.1;
             // A batch over the limit is a single record; one over the whole budget would wait
             // for permits that never exist.
             eyre::ensure!(
@@ -346,15 +414,10 @@ async fn feed_pages(
                 let mut reservation = budget.acquire_many_owned(permits).await?;
                 let budget_wait = waiting.elapsed();
                 let mut queue_wait = Duration::ZERO;
-                let mut payloads =
-                    store::PayloadScan::open(&reader, &batch[0].0, &batch[batch.len() - 1].0)
-                        .await?;
-                for (record, selected) in batch {
+                let mut payloads = store::PayloadScan::open(&reader, &batch).await?;
+                for record in batch {
                     let (block, cases) = payloads.next(&record).await?;
                     let permit = reservation.split(record.bytes).expect("batch sum reserved");
-                    if !selected {
-                        continue;
-                    }
                     let mut ready = Ready {
                         record,
                         bytes: block,
@@ -446,13 +509,11 @@ async fn transaction_range(
     Ok(bounds[0]..bounds[1] + 1)
 }
 
-#[expect(clippy::too_many_arguments, reason = "the replay pipeline settings")]
 async fn feed_catalog(
     reader: &Arc<DbReader>,
     catalog: &Catalog,
     range: Range<u64>,
     standalone: Option<(u64, u64)>,
-    blocks: Option<&[u64]>,
     sender: Sender<Ready>,
     budget: Arc<Semaphore>,
     cancellation: &CancellationToken,
@@ -462,15 +523,7 @@ async fn feed_catalog(
     let mut tasks = JoinSet::new();
     let (pages, receiver) = mpsc::channel(1);
     let result = tokio::try_join!(
-        read_catalog(
-            reader,
-            catalog,
-            range,
-            standalone,
-            blocks,
-            pages,
-            cancellation
-        ),
+        read_catalog(reader, catalog, range, standalone, pages, cancellation),
         feed_pages(reader, receiver, &mut tasks, sender, budget, cancellation),
     );
     // The sibling future is dropped on error. Abort and join its payload tasks
@@ -484,87 +537,36 @@ async fn read_catalog(
     catalog: &Catalog,
     range: Range<u64>,
     standalone: Option<(u64, u64)>,
-    blocks: Option<&[u64]>,
-    pages: mpsc::Sender<Vec<(Record, bool)>>,
+    pages: mpsc::Sender<Vec<Record>>,
     cancellation: &CancellationToken,
 ) -> eyre::Result<(u64, u64, u64)> {
-    // A block list reads only the metadata around its blocks: each block carries its own
-    // witness and expectations, so the stretches between them need no coverage check.
-    let spans = blocks.map_or_else(|| vec![range.clone()], spans);
-    let totals = futures::stream::iter(spans)
-        .map(|span| {
-            read_span(
-                reader,
-                catalog,
-                span,
-                standalone,
-                blocks,
-                &pages,
-                cancellation,
-            )
-        })
-        .buffer_unordered(METADATA_SPANS)
-        .try_fold((0, 0, 0), |a, b| async move {
-            Ok((a.0 + b.0, a.1 + b.1, a.2 + b.2))
-        })
-        .await?;
-    eyre::ensure!(
-        standalone.is_some()
-            || totals.0 == blocks.map_or(range.end - range.start, |blocks| blocks.len() as u64),
-        "metadata block coverage mismatch"
-    );
-    Ok(totals)
-}
-
-/// The block ranges whose metadata a replay of the sorted `blocks` reads: runs of them with
-/// gaps of at most `MAX_SKIPPED_RUN` blocks.
-fn spans(blocks: &[u64]) -> Vec<Range<u64>> {
-    let mut spans = Vec::<Range<u64>>::new();
-    for &block in blocks {
-        match spans.last_mut() {
-            Some(span) if block - span.end <= MAX_SKIPPED_RUN as u64 => span.end = block + 1,
-            _ => spans.push(block..block + 1),
-        }
-    }
-    spans
-}
-
-/// Sends the metadata of `span` in pages, each record marked with whether to replay it, and
-/// checks it covers the span exactly. Returns the selected blocks, transactions and gas.
-async fn read_span(
-    reader: &DbReader,
-    catalog: &Catalog,
-    span: Range<u64>,
-    standalone: Option<(u64, u64)>,
-    blocks: Option<&[u64]>,
-    pages: &mpsc::Sender<Vec<(Record, bool)>>,
-    cancellation: &CancellationToken,
-) -> eyre::Result<(u64, u64, u64)> {
-    let cursor = store::cursor_at(reader, &catalog.context, span.start).await?;
+    let cursor = if range.start == catalog.context.start {
+        store::Cursor::initial(&catalog.context)?
+    } else {
+        let previous = store::metadata(reader, range.start - 1).await?;
+        let mut cursor = store::Cursor {
+            next: previous.number,
+            tx: previous.first_tx,
+            parent: previous.parent,
+        };
+        cursor.advance(&previous)?;
+        cursor
+    };
     let initial_tx = cursor.tx;
-    let (mut totals, mut covered) = ((0, 0, 0), 0);
-    let mut metadata = store::MetadataPages::open(reader, cursor, span.end).await?;
-    while metadata.cursor.next < span.end {
-        // Reserve before reading: at most one queued metadata page per span in flight,
+    let mut totals = (0, 0, 0);
+    let mut metadata = store::MetadataPages::open(reader, cursor, range.end).await?;
+    while metadata.cursor.next < range.end {
+        // Reserve before reading: only one queued/in-progress metadata page,
         // in addition to the current page and descriptors owned by bounded tasks.
         let slot = pages.reserve().await?;
         eyre::ensure!(!cancellation.is_cancelled(), "metadata read cancelled");
         let mut page = metadata.next_page().await?;
-        // Coverage of the skipped blocks is still checked as their metadata is read.
-        covered += page.iter().map(|r| r.transactions).sum::<u64>();
         if let Some((from, to)) = standalone {
             page.retain(|r| {
                 r.transactions > 0 && r.first_tx < to && r.first_tx + r.transactions > from
             });
         }
-        let page: Vec<_> = page
-            .into_iter()
-            .map(|r| {
-                let selected = blocks.is_none_or(|blocks| blocks.binary_search(&r.number).is_ok());
-                (r, selected)
-            })
-            .collect();
-        for (record, _) in page.iter().filter(|(_, selected)| *selected) {
+        for record in &page {
             totals.0 += 1;
             totals.1 += standalone.map_or(record.transactions, |(from, to)| {
                 to.min(record.first_tx + record.transactions) - from.max(record.first_tx)
@@ -575,19 +577,22 @@ async fn read_span(
         slot.send(page);
     }
     let cursor = metadata.cursor;
-    if span.end == catalog.cursor.next {
+    if range.end == catalog.cursor.next {
         eyre::ensure!(cursor == catalog.cursor, "final metadata boundary mismatch");
     } else {
-        let next = store::metadata(reader, span.end).await?;
+        let next = store::metadata(reader, range.end).await?;
         eyre::ensure!(
             cursor.parent == next.parent && cursor.tx == next.first_tx,
             "metadata boundary mismatch"
         );
     }
     eyre::ensure!(
-        covered == cursor.tx - initial_tx
-            && (blocks.is_some() || totals.1 == standalone.map_or(covered, |(from, to)| to - from)),
+        totals.1 == standalone.map_or(cursor.tx - initial_tx, |(from, to)| to - from),
         "metadata transaction coverage mismatch"
+    );
+    eyre::ensure!(
+        standalone.is_some() || totals.0 == range.end - range.start,
+        "metadata block coverage mismatch"
     );
     Ok(totals)
 }
@@ -647,22 +652,4 @@ pub fn verify(
         "transaction/gas totals mismatch"
     );
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn spans_merge_blocks_across_short_gaps() {
-        let far = 2 + MAX_SKIPPED_RUN as u64;
-        assert_eq!(spans(&[]), []);
-        assert_eq!(
-            spans(&[1, 2, far, far + 1 + MAX_SKIPPED_RUN as u64 + 1]),
-            [
-                1..far + 1,
-                far + MAX_SKIPPED_RUN as u64 + 2..far + MAX_SKIPPED_RUN as u64 + 3
-            ]
-        );
-    }
 }

@@ -355,7 +355,7 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
 
 /// A block list section naming `catalog`'s corpus and `blocks` of it, one per line. A block list
 /// file holds one section per corpus.
-pub fn block_list<'a>(catalog: &Catalog, blocks: impl IntoIterator<Item = &'a u64>) -> String {
+pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
     let context = &catalog.context;
     let header = format!(
         "# corpus {}..{} parent {} tip {} checkpoint {}\n",
@@ -366,43 +366,28 @@ pub fn block_list<'a>(catalog: &Catalog, blocks: impl IntoIterator<Item = &'a u6
         catalog.checkpoint.as_deref().unwrap_or("none")
     );
     blocks
-        .into_iter()
+        .iter()
         .fold(header, |text, block| text + &format!("{block}\n"))
 }
 
 /// The blocks a block list file lists for `catalog`'s corpus: those under its section header, and
-/// any before the first header, which must be in its range. Other `#` lines are comments.
+/// any before the first header. Fails if one of them is outside the corpus's range.
 pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
-    // A corpus grows at its tip, so a section names it by the parent of its first block, and one
-    // that ends where this corpus does must also share its tip: another history can share the
-    // parent. A section that shares only the parent may be a longer corpus, so its blocks past
-    // this corpus's end are skipped. Sections written before that name it by the tip it had then,
-    // which matches only an unextended corpus. Other `#` lines are comments.
-    let end = format!("..{}", catalog.cursor.next);
+    // A corpus grows at its tip, so a section names it by the parent of its first block. Sections
+    // written before that name it by the tip it had then, which matches only an unextended corpus.
     let parent = format!(" parent {} ", context.parent);
     let tip = format!(" tip {} ", B256::from(catalog.cursor.parent));
-    // Whether the current section is ours, and whether it may run past this corpus's end.
-    let (mut blocks, mut ours, mut longer) = (Vec::new(), true, false);
+    let (mut blocks, mut ours) = (Vec::new(), true);
     for line in fs::read_to_string(path)?.lines().map(str::trim) {
-        if let Some(header) = line.strip_prefix("# corpus ") {
-            let same_tip = header.contains(&tip);
-            (ours, longer) = if header.contains(" parent ") {
-                let same_end = header
-                    .split_once(' ')
-                    .is_some_and(|(range, _)| range.ends_with(&end));
-                (
-                    header.contains(&parent) && (same_tip || !same_end),
-                    !same_tip,
-                )
+        if let Some(header) = line.strip_prefix('#') {
+            ours = if header.contains(" parent ") {
+                header.contains(&parent)
             } else {
-                (same_tip, false)
+                header.contains(&tip)
             };
-        } else if ours && !line.is_empty() && !line.starts_with('#') {
+        } else if ours && !line.is_empty() {
             let block: u64 = line.parse()?;
-            if longer && block >= catalog.cursor.next {
-                continue;
-            }
             eyre::ensure!(
                 (context.start..catalog.cursor.next).contains(&block),
                 "block {block} is outside the corpus"
@@ -416,54 +401,6 @@ pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::tests::catalog;
-
-    #[test]
-    fn read_blocks_skips_comments_and_other_sections() -> eyre::Result<()> {
-        let mut ours = catalog(10, 10, 0);
-        ours.cursor.next = 20;
-        let mut other = catalog(15, 5, 0);
-        other.cursor.next = 20;
-        // Same tip, another start parent.
-        other.context.parent = B256::repeat_byte(1).to_string();
-        // Same start parent and end, another tip.
-        let mut fork = ours.clone();
-        fork.cursor.parent = [1; 32];
-        let list = format!(
-            "{}# dex hits\n13\n{}16\n{}",
-            block_list(&ours, &[12]),
-            block_list(&other, &[17]),
-            block_list(&fork, &[18]),
-        );
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("blocks");
-        fs::write(&path, list)?;
-        assert_eq!(read_blocks(&path, &ours)?, [12, 13]);
-        assert_eq!(read_blocks(&path, &other)?, [17, 16]);
-        assert_eq!(read_blocks(&path, &fork)?, [18]);
-        Ok(())
-    }
-
-    #[test]
-    fn read_blocks_skips_blocks_past_a_shorter_corpus() -> eyre::Result<()> {
-        let mut short = catalog(10, 10, 0);
-        short.cursor.next = 20;
-        // Same start, extended further.
-        let mut long = short.clone();
-        long.cursor.next = 30;
-        long.cursor.parent = [1; 32];
-        let list = format!(
-            "{}{}",
-            block_list(&short, &[12]),
-            block_list(&long, &[14, 25])
-        );
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("blocks");
-        fs::write(&path, list)?;
-        assert_eq!(read_blocks(&path, &short)?, [12, 14]);
-        assert_eq!(read_blocks(&path, &long)?, [12, 14, 25]);
-        Ok(())
-    }
 
     #[test]
     fn window_len_cuts() {
