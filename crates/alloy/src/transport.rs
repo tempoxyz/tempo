@@ -15,6 +15,10 @@
 //!
 //! Sign-and-relay can forward original request headers to the sponsor; sign-only never forwards
 //! them to sponsor signing and preserves them only for the final default-transport broadcast.
+//!
+//! The preflight is stateless and does not authenticate the sender: keychain access keys and
+//! configurable-account commitments are only checked against chain state by the node. Sponsors
+//! must verify the claimed account themselves before identity-dependent work.
 
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_eips::Decodable2718;

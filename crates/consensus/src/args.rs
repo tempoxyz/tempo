@@ -229,12 +229,66 @@ pub struct Args {
     /// Initial and minimum network reservation before the target block boundary.
     ///
     /// Must be smaller than `--consensus.target-block-time`. The reservation
-    /// adapts from finalized successors, capped at this floor plus half the
-    /// initial allowance, at most 300 ms unless the floor is already larger.
+    /// adapts from finalized successors up to `--consensus.network-budget-max`.
     /// It includes propagation, voting, unprojected validation and preparation.
     /// An injected estimator overrides this flag and the target block time.
     #[arg(long = "consensus.network-budget", default_value = format!("{}ms", DEFAULT_NETWORK_BUDGET.as_millis()))]
     pub network_budget: PositiveDuration,
+
+    /// Largest network reservation the proposal budget estimator may learn.
+    ///
+    /// Bounds the reservation learned from finalized successors of this node's
+    /// proposals. It never falls below `--consensus.network-budget`. Set this cap
+    /// equal to that floor to keep the reservation fixed. The cap must be smaller
+    /// than `--consensus.target-block-time`.
+    ///
+    /// Defaults to the floor plus half the remaining target interval, capped at
+    /// 300ms but never below the floor. `None` selects this derived default.
+    #[arg(long = "consensus.network-budget-max")]
+    pub network_budget_max: Option<PositiveDuration>,
+
+    /// Percentile of recent own-proposal network times the proposal budget
+    /// estimator reserves, from 50 to 100.
+    ///
+    /// Samples measure time from a proposal window's budgeted close to its
+    /// finalized successor's header timestamp, not solely propagation. The
+    /// reservation also obeys its floor, cap, warm-up and rate limit, and may be
+    /// raised by fast rise. This percentile is not a guarantee of the share of
+    /// blocks finishing within `--consensus.target-block-time`.
+    #[arg(
+        long = "consensus.network-reserve-percentile",
+        default_value_t = tempo_payload_types::DEFAULT_NETWORK_RESERVE_PERCENTILE
+    )]
+    pub network_reserve_percentile: u8,
+
+    /// Let the two most recent own-proposal network times lift the reservation
+    /// above the window percentile.
+    ///
+    /// When enabled, the smaller of the two latest accepted samples can raise
+    /// the reservation target above the configured percentile, within the same
+    /// floor, cap and rate limit. A single outlier does not activate this rule.
+    /// Pass `--consensus.network-reserve-fast-rise=false` to disable the rule.
+    #[arg(
+        long = "consensus.network-reserve-fast-rise",
+        value_name = "BOOL",
+        num_args(0..=1),
+        default_missing_value = "true",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
+    pub network_reserve_fast_rise: bool,
+
+    /// How far an own proposal may run past its return budget and still teach the
+    /// network reservation.
+    ///
+    /// The default tolerance is 5ms. Proposals exceeding this tolerance do not
+    /// contribute network samples; without fresh samples the reservation returns
+    /// toward `--consensus.network-budget`.
+    #[arg(
+        long = "consensus.return-budget-overrun-tolerance",
+        default_value = "5ms"
+    )]
+    pub return_budget_overrun_tolerance: PositiveDuration,
 
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
@@ -475,6 +529,30 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    /// Returns unvalidated adaptive proposal-budget inputs using the configured
+    /// flags, a derived cap when none is supplied, and the default build multiplier.
+    pub fn estimator_config(&self) -> tempo_payload_types::EstimatorConfig {
+        let mut config = tempo_payload_types::EstimatorConfig::new(
+            self.target_block_time.into_duration(),
+            self.network_budget.into_duration(),
+        );
+        if let tempo_payload_types::NetworkReservation::Adaptive {
+            network_budget_max,
+            network_reserve_percentile,
+            network_reserve_fast_rise,
+            return_budget_overrun_tolerance,
+        } = &mut config.network_reservation_policy
+        {
+            if let Some(max) = self.network_budget_max {
+                *network_budget_max = max.into_duration();
+            }
+            *network_reserve_percentile = self.network_reserve_percentile;
+            *network_reserve_fast_rise = self.network_reserve_fast_rise;
+            *return_budget_overrun_tolerance = self.return_budget_overrun_tolerance.into_duration();
+        }
+        config
+    }
+
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
     /// would panic on when the first epoch is entered, so a misconfiguration
     /// fails at startup with a descriptive error instead.
