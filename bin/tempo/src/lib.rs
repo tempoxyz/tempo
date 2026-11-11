@@ -1422,6 +1422,25 @@ mod tests {
         };
         assert!(node_cmd.ext.node_args.builder_disable_prewarming);
 
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--builder.disable-prewarming=false",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_prewarming
+        );
+
         let cli =
             TempoCli::try_parse_from(["tempo", "node", "--dev", "--builder.parallel"]).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
