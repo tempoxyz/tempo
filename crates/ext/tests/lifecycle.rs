@@ -38,7 +38,23 @@ impl Fixture {
         let KeyPair { pk, sk } = KeyPair::generate_unencrypted_keypair().unwrap();
         let pk_base64 = pk.to_base64();
 
+        // Stub tempoup so `tempo update` doesn't download and install the
+        // real release from the network.
+        let stub_dir = tmp.path().join("stub-bin");
+        fs::create_dir_all(&stub_dir).unwrap();
+        let tempoup = stub_dir.join("tempoup");
+        fs::write(&tempoup, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&tempoup, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = env::var_os("PATH").unwrap_or_default();
+        let path =
+            env::join_paths(std::iter::once(stub_dir).chain(env::split_paths(&path))).unwrap();
+
         let prev_env = vec![
+            ("PATH", env::var("PATH").ok()),
             ("TEMPO_HOME", env::var("TEMPO_HOME").ok()),
             ("TEMPO_EXT_BASE_URL", env::var("TEMPO_EXT_BASE_URL").ok()),
             (
@@ -48,6 +64,7 @@ impl Fixture {
         ];
 
         unsafe {
+            env::set_var("PATH", path);
             env::set_var("TEMPO_HOME", &home);
             env::set_var(
                 "TEMPO_EXT_BASE_URL",
