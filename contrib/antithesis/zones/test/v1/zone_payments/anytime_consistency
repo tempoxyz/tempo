@@ -1,2 +1,2 @@
 #!/bin/sh
-exec tempo-zone-xtask antithesis check-consistency
+exec tempo-zones-antithesis check-consistency
