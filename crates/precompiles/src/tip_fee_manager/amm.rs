@@ -517,6 +517,11 @@ impl TipFeeManager {
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
         self.pools[pool_id].write(pool)?;
 
+        // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
+        if self.storage.spec().is_t14() {
+            StorageCtx.set_tip1060_storage_credit_minting(false);
+        }
+
         // Transfer tokens to user
         let _ = user_token.transfer(
             self.address,
@@ -733,9 +738,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
+        STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{
+            ContractStorage, StorageCtx, evm::EvmPrecompileStorageProvider,
+            hashmap::HashMapStorageProvider,
+        },
+        storage_credits::StorageCredits,
         test_util::TIP20Setup,
         tip_fee_manager::TIPFeeAMMError,
         tip20::TIP20Error,
@@ -1719,6 +1728,63 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    /// Draining FeeManager custody through `burn` must not mint a storage credit from T14 on, since
+    /// `collect_fee_pre_tx` can create that balance slot without paying for it.
+    #[test]
+    fn test_burn_clearing_fee_manager_balance_mints_no_credit_from_t14() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            let mut evm = crate::tests::test_evm(spec, false);
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+            let admin = Address::random();
+
+            let minted = StorageCtx::enter(&mut storage, || -> eyre::Result<U256> {
+                let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                    .with_issuer(admin)
+                    .apply()?
+                    .address();
+                let mut validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                    .with_issuer(admin)
+                    .with_mint(admin, uint!(100000_U256))
+                    .apply()?;
+
+                let mut amm = TipFeeManager::new();
+                let liquidity = amm.mint(
+                    admin,
+                    user_token,
+                    validator_token.address(),
+                    uint!(100000_U256),
+                    admin,
+                )?;
+                let pool_id = amm.pool_id(user_token, validator_token.address());
+                let (_, payout) =
+                    amm.calculate_burn_amounts(&amm.pools[pool_id].read()?, pool_id, liquidity)?;
+                // Leave FeeManager custody equal to the payout, so the burn clears its balance slot.
+                validator_token.balances[TIP_FEE_MANAGER_ADDRESS].write(payout)?;
+
+                let credit_slot = StorageCredits::slot(validator_token.address());
+                let before = StorageCtx.sload(STORAGE_CREDITS_ADDRESS, credit_slot)?;
+                amm.burn(
+                    admin,
+                    user_token,
+                    validator_token.address(),
+                    liquidity,
+                    admin,
+                )?;
+                assert_eq!(
+                    validator_token.balance_of(ITIP20::balanceOfCall {
+                        account: TIP_FEE_MANAGER_ADDRESS
+                    })?,
+                    U256::ZERO
+                );
+                Ok(StorageCtx.sload(STORAGE_CREDITS_ADDRESS, credit_slot)? - before)
+            })?;
+
+            let expected = if spec.is_t14() { U256::ZERO } else { U256::ONE };
+            assert_eq!(minted, expected, "{spec:?}");
+        }
+        Ok(())
     }
 
     #[test]
