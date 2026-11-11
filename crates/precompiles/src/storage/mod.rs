@@ -195,6 +195,12 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
+    /// Returns whether [`call`](Self::call) can run a callee: the provider serves a precompile
+    /// call frame of a live EVM. `false` means every call fails with a fatal error.
+    fn can_call(&self) -> bool {
+        false
+    }
+
     /// Calls `target` from the running precompile, as `STATICCALL` when `is_static` and as a
     /// zero-value `CALL` otherwise. The callee sees the precompile as its caller, runs one call
     /// level deeper and inherits a static context.
@@ -204,9 +210,23 @@ pub trait PrecompileStorageProvider {
     /// the callee leaves unused is returned, unless it halted.
     ///
     /// A callee that reverts or halts is rolled back on its own and reported as
-    /// [`CallOutcome::Failure`], so the precompile decides how to continue. An `Err` is never a
-    /// callee failure: it is this frame running out of gas, a database error or a fatal error, and
-    /// must be propagated. Providers without a live EVM call frame reject every call.
+    /// [`CallOutcome::Failure`], so the precompile decides how to continue. So is a call made
+    /// while [`MAX_NESTED_CALLS`](evm::MAX_NESTED_CALLS) nested calls are running: the callee
+    /// does not run and no gas is forwarded. Whoever calls the precompile picks its gas and how
+    /// deep it runs, so a precompile must stay correct when the callee fails.
+    ///
+    /// An `Err` is never a callee failure: it is this frame running out of gas, a database error
+    /// or a fatal error, and must be propagated. Providers without a precompile call frame (see
+    /// [`can_call`](Self::can_call)) reject every call with a fatal error, which aborts the block
+    /// rather than reverting the transaction.
+    ///
+    /// The gas a successful callee reports (its refund and EIP-8037 state gas) is merged into
+    /// this frame. A later [`checkpoint_revert`](Self::checkpoint_revert) rolls back the callee's
+    /// state but keeps that gas, as it keeps the gas of the precompile's own writes. Fail the
+    /// precompile call to undo both.
+    ///
+    /// A transaction that makes a nested call cannot be rebuilt from its recorded storage
+    /// actions, see [`StorageActions::take_replay`].
     fn call(
         &mut self,
         _target: Address,
@@ -310,8 +330,9 @@ pub trait PrecompileStorageProvider {
 pub enum CallOutcome {
     /// The callee returned this data and its state changes are kept.
     Success(Bytes),
-    /// The callee reverted or halted and its state changes were rolled back. Holds its revert
-    /// data, which is empty for a halt.
+    /// The callee reverted or halted and its state changes were rolled back, or it did not run
+    /// because too many nested calls were running. Holds its revert data, which is empty unless
+    /// it reverted.
     Failure(Bytes),
 }
 

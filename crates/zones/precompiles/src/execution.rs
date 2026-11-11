@@ -294,6 +294,32 @@ mod tests {
     }
 
     #[test]
+    fn zone_precompile_cannot_make_nested_calls() {
+        let execute = |_: &[u8], _| {
+            // The Zone installs no call frame, so a nested call is a fatal error.
+            let mut storage = StorageCtx::default();
+            assert!(!storage.can_call());
+            assert!(matches!(
+                storage.call(Address::ZERO, Bytes::new(), 0, false),
+                Err(TempoPrecompileError::Fatal(_))
+            ));
+            Ok(storage.success_output(Bytes::new()))
+        };
+
+        let mut ctx = test_context();
+        let (output, _) = call(
+            &mut ctx,
+            TempoHardfork::T8,
+            &[],
+            Address::ZERO,
+            100_000,
+            NoCallRules,
+            execute,
+        );
+        output.unwrap();
+    }
+
+    #[test]
     fn fixed_gas_disables_storage_credits_and_discards_refunds() {
         let storage_owner = Address::repeat_byte(0x33);
         let credit_slot = U256::from_be_slice(storage_owner.as_slice());
