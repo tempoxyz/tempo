@@ -1,2 +1,2 @@
 #!/bin/sh
-exec tempo-zone-xtask antithesis rotate-leader
+exec tempo-zones-antithesis rotate-leader

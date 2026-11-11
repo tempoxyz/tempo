@@ -229,10 +229,9 @@ impl Inner {
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
         let (block, execution_block_encoded) = payload.into_consensus_execution_payload();
-        let proposal = Block::from_execution_block_unchecked_with_encoded_cache(
-            block,
-            execution_block_encoded,
-        );
+        let proposal =
+            Block::try_from_execution_block_with_encoded_cache(block, execution_block_encoded)
+                .wrap_err("built an invalid proposal")?;
         let proposal_elapsed = window_opened.elapsed();
         // Reserve the full validation estimate when pacing an early-finished proposal.
         let return_after = return_budget.saturating_sub(validation_latency_elapsed);

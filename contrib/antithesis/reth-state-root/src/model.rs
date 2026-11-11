@@ -155,66 +155,6 @@ pub(crate) fn tries(state: &Model) -> Vec<(Option<Address>, Leaves)> {
 }
 
 #[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
-pub(crate) fn generate(
-    rng: &mut impl Rng,
-    state: &Model,
-    collider: &mut Collider,
-    updates: usize,
-) -> Vec<Update> {
-    let mut state = state.clone();
-    let mut addresses = state.keys().copied().collect::<Vec<_>>();
-    let mut generated = Vec::with_capacity(updates);
-    while generated.len() < updates {
-        if collide_next(rng, generated.len(), updates) {
-            generated.extend(collide(rng, &mut state, collider, updates - generated.len()));
-            // Collided accounts join the active set, so later writes revisit them too.
-            addresses = state.keys().copied().collect();
-            continue;
-        }
-        generated.push({
-            // Bound the active account set while sampling full-width random keys.
-            let address =
-                if !addresses.is_empty() && (addresses.len() >= 16 || rng.random_ratio(3, 4)) {
-                    addresses[rng.random_range(0..addresses.len())]
-                } else {
-                    random_address(rng)
-                };
-            let operation = if !state.contains_key(&address) || rng.random_ratio(1, 4) {
-                let mut account =
-                    state.get(&address).map(|entry| entry.account.clone()).unwrap_or_default();
-                account.nonce += 1;
-                account.balance = U256::from(rng.random_range(1..=1_000_000u64));
-                Update::Account { address, account }
-            } else {
-                // Revisit old slots as well as drawing new full-width keys, so overwrites
-                // and deletions remain common even in a small bounded account set.
-                let known_slots = &state[&address].touched_slots;
-                let slot = if !known_slots.is_empty() && rng.random_bool(0.5) {
-                    *known_slots
-                        .iter()
-                        .nth(rng.random_range(0..known_slots.len()))
-                        .expect("sampled existing slot")
-                } else {
-                    random_slot(rng)
-                };
-                let value = if rng.random_ratio(1, 3) {
-                    U256::ZERO
-                } else {
-                    U256::from(rng.random::<u64>())
-                };
-                Update::Storage { address, slot, value }
-            };
-            if !state.contains_key(&address) {
-                addresses.push(address);
-            }
-            operation.apply(&mut state);
-            operation
-        });
-    }
-    generated
-}
-
-#[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
 pub(crate) fn apply(
     state: &mut Model,
     number: u64,
