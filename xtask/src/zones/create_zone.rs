@@ -735,6 +735,10 @@ mod tests {
         "--sequencer=0x1000000000000000000000000000000000000001",
     ];
 
+    const ONE_SIGNATURE_ERROR: &str = "threshold 1 settles every batch with one sequencer \
+                                       signature; add more --sequencer addresses, raise \
+                                       --threshold, or pass --allow-single-sequencer";
+
     fn parse(extra: &[&str]) -> Result<CreateZone, clap::Error> {
         CreateZone::try_parse_from(BASE_ARGS.iter().chain(extra))
     }
@@ -839,7 +843,7 @@ mod tests {
     fn single_sequencer_requires_explicit_opt_in() {
         let command = parse(&["--private-key", "unused"]).unwrap();
         let error = command.validate_sequencer_set().unwrap_err().to_string();
-        assert!(error.contains("--allow-single-sequencer"), "{error}");
+        assert_eq!(error, ONE_SIGNATURE_ERROR);
 
         let command = parse(&["--private-key", "unused", "--allow-single-sequencer"]).unwrap();
         command.validate_sequencer_set().unwrap();
@@ -856,7 +860,7 @@ mod tests {
         ];
         let command = parse(&args).unwrap();
         let error = command.validate_sequencer_set().unwrap_err().to_string();
-        assert!(error.contains("--allow-single-sequencer"), "{error}");
+        assert_eq!(error, ONE_SIGNATURE_ERROR);
 
         let command = parse(&[&args[..], &["--allow-single-sequencer"]].concat()).unwrap();
         command.validate_sequencer_set().unwrap();
@@ -884,10 +888,32 @@ mod tests {
         ])
         .unwrap();
         let error = command.validate_sequencer_set().unwrap_err().to_string();
-        assert!(
-            error.contains("threshold must be between 1 and the number of sequencers (2), got 3"),
-            "{error}"
+        assert_eq!(
+            error,
+            "threshold must be between 1 and the number of sequencers (2), got 3"
         );
+
+        // The range check runs before the opt-in check.
+        let command = parse(&["--private-key", "unused", "--threshold=0"]).unwrap();
+        let error = command.validate_sequencer_set().unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "threshold must be between 1 and the number of sequencers (1), got 0"
+        );
+    }
+
+    #[test]
+    fn single_signature_opt_in_keeps_the_majority_default() {
+        let command = parse(&[
+            "--private-key",
+            "unused",
+            "--sequencer=0x2000000000000000000000000000000000000002",
+            "--sequencer=0x3000000000000000000000000000000000000003",
+            "--allow-single-sequencer",
+        ])
+        .unwrap();
+        command.validate_sequencer_set().unwrap();
+        assert_eq!(command.factory_params().threshold, 2);
     }
 
     #[test]
