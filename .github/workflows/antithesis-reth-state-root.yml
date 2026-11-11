@@ -19,6 +19,11 @@ on:
       - "contrib/antithesis/trie-shapes/**"
       - ".github/workflows/antithesis-reth-state-root.yml"
   workflow_dispatch:
+    inputs:
+      guidance_probe:
+        description: Build the isolated guidance probe instead of the trie images (no test run)
+        type: boolean
+        default: false
 
 # Do not cancel a publication between the workload push and its paired config push.
 concurrency:
@@ -31,6 +36,7 @@ env:
 jobs:
   build-and-push:
     name: Build and push Antithesis trie images
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.guidance_probe != true }}
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
@@ -118,3 +124,154 @@ jobs:
             echo "Workload: \`$REGISTRY/tempo-reth-state-root-antithesis@$IMAGE_DIGEST\`"
             echo "Config: \`$REGISTRY/tempo-reth-state-root-antithesis-config@$CONFIG_DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  guidance-probe:
+    name: Build and push Antithesis guidance probe images
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.guidance_probe == true }}
+    runs-on: depot-ubuntu-latest-16
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve unique tag
+        id: tags
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          branch=$(printf '%s' "$REF_NAME" | tr -c 'a-zA-Z0-9._-' '-' | cut -c1-60)
+          printf 'tag=%s-%s-%s-%s\n' "$branch" "${SHA:0:9}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Log in to the Antithesis registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ANTITHESIS_REGISTRY_KEY }}
+
+      - name: Build and push guidance probe workload
+        id: image
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: contrib/antithesis/guidance-probe
+          file: contrib/antithesis/guidance-probe/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/tempo-antithesis-guidance-probe:${{ steps.tags.outputs.tag }}
+
+      - name: Validate published guidance probe runtime
+        timeout-minutes: 5
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          image="$REGISTRY/tempo-antithesis-guidance-probe@$DIGEST"
+          containers=()
+          cleanup() {
+            if (( ${#containers[@]} )); then
+              docker rm -f "${containers[@]}" > /dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          docker pull "$image"
+          for mode in dynamic constant; do
+            container="guidance-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$mode"
+            containers+=("$container")
+            stdout="$RUNNER_TEMP/$container-stdout.jsonl"
+            stderr="$RUNNER_TEMP/$container-stderr.log"
+            sdk="$RUNNER_TEMP/$container-sdk.jsonl"
+            docker run --network none --pull=never -d --name "$container" \
+              -e "PROBE_MODE=$mode" -e ANTITHESIS_SDK_LOCAL_OUTPUT=/tmp/sdk.jsonl \
+              "$image" > /dev/null
+            sleep 1
+            [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == true ]]
+            docker logs "$container" > "$stdout" 2> "$stderr"
+            [[ ! -s "$stdout" ]]
+            timeout 10s docker exec "$container" /opt/antithesis/test/v1/main/first_start_workload
+            sleep 1
+            docker logs "$container" > "$stdout" 2> "$stderr"
+            grep -Eq '"actual_state":[0-9]+' "$stdout"
+            docker stop --time 5 "$container" > /dev/null
+            [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container")" == 0 ]]
+            docker cp "$container:/tmp/sdk.jsonl" "$sdk"
+            grep -F '"antithesis_setup"' "$sdk" > /dev/null
+            grep -F '"antithesis_guidance"' "$sdk" \
+              | grep -F '"guidance_type":"json"' \
+              | grep -F '"hit":true' \
+              | grep -E '"guidance_data":\{"label":"[0-3][0-9a-f]"\}' > /dev/null
+            printf 'Validated %s mode: gated startup, first command, telemetry, SDK JSON guidance, clean shutdown (%s)\n' "$mode" "$image"
+          done
+
+      - name: Prepare digest-paired probe configurations
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          image="$REGISTRY/tempo-antithesis-guidance-probe@$DIGEST"
+          for mode in dynamic constant; do
+            dir="$RUNNER_TEMP/antithesis-guidance-probe-$mode-config"
+            mkdir -p "$dir"
+            source="contrib/antithesis/guidance-probe/config/$mode/docker-compose.yaml"
+            grep -Fq 'guidance-probe:0.1.0' "$source"
+            sed "s|guidance-probe:0\.1\.0|$image|g" "$source" > "$dir/docker-compose.yaml"
+            if grep -Fq 'guidance-probe:0.1.0' "$dir/docker-compose.yaml"; then
+              printf 'Unresolved guidance probe image in %s config\n' "$mode" >&2
+              exit 1
+            fi
+            printf 'FROM scratch\nCOPY docker-compose.yaml /\n' > "$dir/Dockerfile.config"
+          done
+
+      - name: Build and push dynamic guidance config
+        id: dynamic_config
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: ${{ runner.temp }}/antithesis-guidance-probe-dynamic-config
+          file: ${{ runner.temp }}/antithesis-guidance-probe-dynamic-config/Dockerfile.config
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/tempo-antithesis-guidance-probe-dynamic-config:${{ steps.tags.outputs.tag }}
+
+      - name: Build and push constant guidance config
+        id: constant_config
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: ${{ runner.temp }}/antithesis-guidance-probe-constant-config
+          file: ${{ runner.temp }}/antithesis-guidance-probe-constant-config/Dockerfile.config
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/tempo-antithesis-guidance-probe-constant-config:${{ steps.tags.outputs.tag }}
+
+      - name: Record immutable guidance probe images
+        env:
+          TAG: ${{ steps.tags.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          DYNAMIC_CONFIG_DIGEST: ${{ steps.dynamic_config.outputs.digest }}
+          CONSTANT_CONFIG_DIGEST: ${{ steps.constant_config.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for digest in "$IMAGE_DIGEST" "$DYNAMIC_CONFIG_DIGEST" "$CONSTANT_CONFIG_DIGEST"; do
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          done
+          {
+            printf '### Antithesis guidance probe image set\n\n'
+            printf 'Tag: `%s`\n' "$TAG"
+            printf 'Workload (both configs): `%s/tempo-antithesis-guidance-probe@%s`\n' "$REGISTRY" "$IMAGE_DIGEST"
+            printf 'Dynamic config: `%s/tempo-antithesis-guidance-probe-dynamic-config@%s`\n' "$REGISTRY" "$DYNAMIC_CONFIG_DIGEST"
+            printf 'Constant config: `%s/tempo-antithesis-guidance-probe-constant-config@%s`\n' "$REGISTRY" "$CONSTANT_CONFIG_DIGEST"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

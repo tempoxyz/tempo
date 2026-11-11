@@ -1,0 +1,9 @@
+services:
+  driver:
+    image: guidance-probe:0.1.0
+    container_name: driver
+    hostname: driver
+    platform: linux/amd64
+    environment:
+      PROBE_MODE: "constant"
+    stop_grace_period: 5s

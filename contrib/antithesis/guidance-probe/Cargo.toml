@@ -1,0 +1,18 @@
+[package]
+name = "guidance-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+antithesis_sdk = { version = "=0.3.0", default-features = false, features = ["full"] }
+libc = "=0.2.190"
+
+[profile.release]
+opt-level = 3
+debug = 1
+strip = false
+lto = false
+
+# Keep this experiment outside Tempo workspace coverage and dependency features.
+[workspace]
