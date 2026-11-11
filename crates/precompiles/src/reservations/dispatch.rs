@@ -35,6 +35,9 @@ impl Precompile for Reservations {
                     setDebtCap(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_debt_cap(sender, c)
                     }),
+                    setCaptureTolerance(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_capture_tolerance(sender, c)
+                    }),
                     releaseExpired(call) => mutate(call, msg_sender, |_, c| {
                         self.release_expired(c.owner, c.id)
                     }),
@@ -44,6 +47,9 @@ impl Precompile for Reservations {
                     available(call) => view(call, |c| self.available_of(c.owner, c.token)),
                     debtOf(call) => view(call, |c| self.debt_of(c.owner, c.token)),
                     debtCap(call) => view(call, |c| self.debt_cap(c.owner, c.creditor, c.token)),
+                    captureTolerance(call) => view(call, |c| {
+                        self.capture_tolerance(c.owner, c.payee, c.token)
+                    }),
                     captured(call) => view(call, |c| self.captured(c.owner, c.id)),
                 }
             }

@@ -42,6 +42,11 @@ crate::sol! {
         function release(bytes32 id) external;
         /// Sets how much debt in `token` the caller accepts towards `creditor`. Root key only.
         function setDebtCap(address creditor, address token, uint128 cap) external;
+        /// Bounds the caller's final captures in `token` for `payee` when `bounded`: one taking the
+        /// hold's captured total past its authorized total by more than `toleranceBps` basis points
+        /// reverts `ToleranceExceeded`. Unbounded by default and when `bounded` is false, which
+        /// needs a zero `toleranceBps`. Root key only.
+        function setCaptureTolerance(address payee, address token, bool bounded, uint32 toleranceBps) external;
         /// Releases an expired hold of `owner`. Callable by anyone.
         function releaseExpired(address owner, bytes32 id) external;
         /// Moves `amount` from the payee (caller) back to `owner`, up to the captured total.
@@ -52,6 +57,7 @@ crate::sol! {
         function available(address owner, address token) external view returns (uint128);
         function debtOf(address owner, address token) external view returns (address creditor, uint128 amount);
         function debtCap(address owner, address creditor, address token) external view returns (uint128);
+        function captureTolerance(address owner, address payee, address token) external view returns (bool bounded, uint32 toleranceBps);
         function captured(address owner, bytes32 id) external view returns (uint128 captured, uint128 refunded);
 
         event HoldPlaced(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint64 expiresAt);
@@ -72,5 +78,6 @@ crate::sol! {
         error PolicyForbids();
         error Unauthorized();
         error InvalidAmount();
+        error ToleranceExceeded();
     }
 }

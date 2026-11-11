@@ -32,6 +32,9 @@ use tempo_precompiles_macros::{Storable, contract};
 /// and would only lock funds; the bound also caps how long a hold outlives a policy change.
 pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
 
+/// Basis points in one whole, for capture tolerances.
+const BPS: u64 = 10_000;
+
 /// Reserved and owed amounts of one owner in one token, packed in one slot.
 ///
 /// Reserved funds are moved out of the owner's TIP-20 `balances` slot, so debits never read this.
@@ -54,6 +57,15 @@ struct Shortfall {
     unbacked: u128,
     /// Count of burns that lowered `reserved`; holds placed before the latest share `unbacked`.
     epoch: u32,
+}
+
+/// How far an owner lets final captures for one payee in one token exceed the hold, in one slot.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct Tolerance {
+    /// Whether the bound applies; captures are unbounded otherwise.
+    bounded: bool,
+    /// Basis points a final capture's captured total may exceed the hold's authorized total by.
+    bps: u32,
 }
 
 /// One authorization of an owner, from its hold to its refunds, in five slots.
@@ -116,6 +128,8 @@ pub struct Reservations {
     authorizations: Mapping<Address, Mapping<B256, Authorization>>,
     /// Burned part of the live holds, keyed by owner then token.
     shortfalls: Mapping<Address, Mapping<Address, Shortfall>>,
+    /// Overcapture bound an owner sets, keyed by owner, payee, then token.
+    capture_tolerances: Mapping<Address, Mapping<Address, Mapping<Address, Tolerance>>>,
 }
 
 impl Reservations {
@@ -440,17 +454,23 @@ impl Reservations {
     }
 
     fn set_debt_cap(&mut self, owner: Address, call: IReservations::setDebtCapCall) -> Result<()> {
-        // Card access keys must never raise the debt they can create.
-        if AccountKeychain::new().signing_access_key(owner)?.is_some() {
-            return Err(ReservationsError::unauthorized().into());
-        }
-        // Debt is owed to resolved payees, so a cap for a virtual address applies to its master.
-        let creditor = Recipient::resolve(call.creditor)?.target;
-        if creditor.is_zero() || creditor == owner {
-            return Err(ReservationsError::unauthorized().into());
-        }
-        TIP20Token::from_address(call.token)?;
+        let creditor = resolve_counterparty_as_root(owner, call.creditor, call.token)?;
         self.debt_caps[owner][creditor][call.token].write(call.cap)
+    }
+
+    fn set_capture_tolerance(
+        &mut self,
+        owner: Address,
+        call: IReservations::setCaptureToleranceCall,
+    ) -> Result<()> {
+        let payee = resolve_counterparty_as_root(owner, call.payee, call.token)?;
+        if !call.bounded && call.toleranceBps != 0 {
+            return Err(ReservationsError::invalid_amount().into());
+        }
+        self.capture_tolerances[owner][payee][call.token].write(Tolerance {
+            bounded: call.bounded,
+            bps: call.toleranceBps,
+        })
     }
 
     fn get_hold(&self, owner: Address, id: B256) -> Result<IReservations::Hold> {
@@ -469,6 +489,20 @@ impl Reservations {
 
     fn debt_cap(&self, owner: Address, creditor: Address, token: Address) -> Result<u128> {
         self.debt_caps[owner][Recipient::resolve(creditor)?.target][token].read()
+    }
+
+    fn capture_tolerance(
+        &self,
+        owner: Address,
+        payee: Address,
+        token: Address,
+    ) -> Result<IReservations::captureToleranceReturn> {
+        let tolerance =
+            self.capture_tolerances[owner][Recipient::resolve(payee)?.target][token].read()?;
+        Ok(IReservations::captureToleranceReturn {
+            bounded: tolerance.bounded,
+            toleranceBps: tolerance.bps,
+        })
     }
 
     fn debt_of(&self, owner: Address, token: Address) -> Result<IReservations::debtOfReturn> {
@@ -506,6 +540,17 @@ impl Reservations {
             .checked_add(amount_u96(amount)?)
             .ok_or_else(ReservationsError::invalid_amount)?;
         let held = auth.held.to::<u128>();
+        // Only a capture above what is still held can pass the owner's tolerance for this payee.
+        if amount > held {
+            let tolerance = self.capture_tolerances[owner][auth.payee][auth.token].read()?;
+            let authorized = U256::from(auth.captured.to::<u128>()) + U256::from(held);
+            if tolerance.bounded
+                && U256::from(captured.to::<u128>()) * U256::from(BPS)
+                    > authorized * (U256::from(BPS) + U256::from(tolerance.bps))
+            {
+                return Err(ReservationsError::tolerance_exceeded().into());
+            }
+        }
         let mut token = TIP20Token::from_address(auth.token)?;
         // The payee may have become forbidden since the hold was placed.
         token.ensure_transfer_authorized(owner, auth.payee)?;
@@ -756,6 +801,26 @@ fn settle_limit(owner: Address, auth: &mut Authorization) -> Result<()> {
 }
 
 /// Converts a non-zero ABI amount to its stored width.
+/// Resolves `account`, a creditor or payee the owner sets terms for, through the address registry
+/// as a payee is, for an owner signing with its root key and a TIP-20 `token`. Card access keys
+/// must never loosen the terms on their own spending.
+fn resolve_counterparty_as_root(
+    owner: Address,
+    account: Address,
+    token: Address,
+) -> Result<Address> {
+    if AccountKeychain::new().signing_access_key(owner)?.is_some() {
+        return Err(ReservationsError::unauthorized().into());
+    }
+    // Debt is owed to resolved payees, so terms for a virtual address apply to its master.
+    let resolved = Recipient::resolve(account)?.target;
+    if resolved.is_zero() || resolved == owner {
+        return Err(ReservationsError::unauthorized().into());
+    }
+    TIP20Token::from_address(token)?;
+    Ok(resolved)
+}
+
 fn amount_u96(amount: u128) -> Result<U96> {
     if amount == 0 {
         return Err(ReservationsError::invalid_amount().into());
@@ -929,6 +994,18 @@ mod tests {
                     creditor,
                     token: self.token.address(),
                     cap,
+                },
+            )
+        }
+
+        fn set_capture_tolerance(&mut self, payee: Address, bounded: bool, bps: u32) -> Result<()> {
+            self.reservations.set_capture_tolerance(
+                self.owner,
+                IReservations::setCaptureToleranceCall {
+                    payee,
+                    token: self.token.address(),
+                    bounded,
+                    toleranceBps: bps,
                 },
             )
         }
@@ -1154,6 +1231,90 @@ mod tests {
             assert_eq!(
                 f.capture(B256::random(), 1).unwrap_err(),
                 ReservationsError::hold_not_found().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_final_capture_stays_within_the_tolerance() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            f.set_capture_tolerance(f.payee, true, 2_000)?;
+            let id = B256::random();
+            f.hold(id, 500)?;
+            assert_eq!(
+                f.capture(id, 601).unwrap_err(),
+                ReservationsError::tolerance_exceeded().into()
+            );
+            assert_eq!(f.reserved()?, 500);
+            f.capture(id, 600)?;
+            assert_eq!(f.balance(f.payee)?, U256::from(600));
+
+            // The bound covers the whole authorization: non-final parts plus the final capture.
+            let split = B256::random();
+            f.hold(split, 250)?;
+            f.capture_part(split, 100, false)?;
+            assert_eq!(
+                f.capture_part(split, 201, true).unwrap_err(),
+                ReservationsError::tolerance_exceeded().into()
+            );
+            f.capture_part(split, 200, true)?;
+            assert_eq!(f.captured(split)?, (300, 0));
+
+            // The bound is per payee, and an unbounded one lets captures exceed the hold again.
+            let other = B256::random();
+            f.reservations.hold(
+                f.owner,
+                IReservations::holdCall {
+                    token: f.token.address(),
+                    id: other,
+                    amount: 10,
+                    expiresAt: EXPIRY,
+                    payee: Address::random(),
+                },
+            )?;
+            f.capture(other, 50)?;
+            f.set_capture_tolerance(f.payee, false, 0)?;
+            let unbounded = B256::random();
+            f.hold(unbounded, 10)?;
+            f.capture(unbounded, 50)?;
+            assert_eq!(f.balance(f.owner)?, U256::from(0));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_capture_tolerance_requires_root_key() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            assert_eq!(
+                f.set_capture_tolerance(Address::ZERO, true, 1).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            assert_eq!(
+                f.set_capture_tolerance(f.owner, true, 1).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            assert_eq!(
+                f.set_capture_tolerance(f.payee, false, 1).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            f.set_capture_tolerance(f.payee, true, 2_000)?;
+            assert_eq!(
+                f.reservations
+                    .capture_tolerance(f.owner, f.payee, f.token.address())?,
+                IReservations::captureToleranceReturn {
+                    bounded: true,
+                    toleranceBps: 2_000
+                }
+            );
+
+            let key = Address::random();
+            let _keychain = authorize_card_key(f.owner, key, f.token.address(), 1_000)?;
+            assert_eq!(
+                f.set_capture_tolerance(f.payee, false, 0).unwrap_err(),
+                ReservationsError::unauthorized().into()
             );
             Ok(())
         })
