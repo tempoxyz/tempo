@@ -1,8 +1,12 @@
 //! Antithesis workload for the sparse-trie, proof, overlay and persistence pipeline.
 //!
 //! `serve` runs the server: it owns the database, the engine, the model and the journal that
-//! replays blocks after a restart, and builds blocks only when a test command asks. Every other
-//! subcommand is a test template command; see the antithesis-trie-shapes harness.
+//! replays blocks after a restart, and builds blocks only when a test command asks. Each block's
+//! root comes from the sparse-trie state root task and is checked against the model's; test
+//! commands also check the root the overlay serves at the tip, and ask for `eth_getMultiProof`
+//! at any block of the round, served through the provider the RPC uses concurrently with block
+//! production, to verify against the model's root at that block. Every other subcommand is a test
+//! template command; see the antithesis-trie-shapes harness.
 
 macro_rules! invariant {
     ($condition:expr, $message:literal $(, $argument:expr)* $(,)?) => {{
@@ -17,11 +21,13 @@ macro_rules! invariant {
 }
 
 mod engine;
+mod generate;
 mod input;
 mod journal;
 mod lifecycle;
 mod model;
 mod persistence;
+mod proof;
 
 use alloy_primitives::{keccak256, B256, U256};
 use antithesis_instrumentation as _;
@@ -29,15 +35,16 @@ use antithesis_sdk::{
     assert_always_or_unreachable, assert_sometimes, assert_unreachable, random::AntithesisRng,
 };
 use antithesis_trie_shapes::{
-    harness::{self, BlockRoot, Client, Request, Response, Summary},
+    harness::{self, BlockRoot, ProofTarget, Request, Response, Summary},
+    proofs::Proved,
     Collider, ShapeTracker, Write,
 };
 use engine::{Engine, Settings};
-use eyre::{bail, ensure, eyre, Context, Result};
+use eyre::{ensure, eyre, Context, Result};
 use journal::RoundJournal;
 use lifecycle::{clear_tables, persist_json, Campaign};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
-use model::{apply, generate, root, write_updates, Model};
+use model::{apply, root, write_updates, Model};
 use rand_09::Rng;
 use reth_db::{init_db, DatabaseEnv};
 use reth_db_api::{cursor::DbCursorRO, tables, transaction::DbTx};
@@ -62,7 +69,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, RwLock,
+    },
 };
 
 /// Most driver writes queued at once; submissions past it are rejected.
@@ -80,6 +90,8 @@ struct Config {
     blocks: u64,
     /// Updates in a block: queued driver writes first, padded with random ones.
     updates: usize,
+    /// Most accounts the random padding creates.
+    accounts: usize,
     proof_workers: usize,
     timeout_secs: u64,
     persistence_threshold: u64,
@@ -107,6 +119,7 @@ impl Default for Config {
             datadir: Some(PathBuf::from("/data/reth-state-root")),
             blocks: 64,
             updates: 64,
+            accounts: 256,
             proof_workers: 2,
             timeout_secs: 60,
             persistence_threshold: tree.persistence_threshold(),
@@ -127,14 +140,24 @@ struct Server {
     snapshotter: Snapshotter,
     /// None only while one round is retired and the next opens.
     round: Mutex<Option<Round>>,
+    /// The active round's view, which proof requests read without waiting for block production.
+    /// Retiring a round takes it out, which waits for the proof requests reading it.
+    view: RwLock<Option<Arc<View>>>,
 }
 
 impl Server {
     fn handle(&self, request: Request) -> Result<Response> {
+        if let Request::GetProof { round, block, targets } = request {
+            let view = self.view.read().map_err(|_| eyre!("view lock poisoned"))?;
+            let Some(view) = view.as_deref() else {
+                return Ok(Response::Rejected { reason: format!("round {round} is over") });
+            };
+            return prove(view, round, block, &targets);
+        }
         let mut guard = self.round.lock().map_err(|_| eyre!("round lock poisoned"))?;
         let round = guard.as_mut().ok_or_else(|| eyre!("no active round"))?;
         match request {
-            Request::StateSummary => Ok(Response::Summary(round.summary())),
+            Request::StateSummary => round.summary(),
             Request::SubmitWrites { round: id, writes, collider } => {
                 if id != round.id {
                     return Ok(Response::Rejected { reason: format!("round {id} is over") });
@@ -150,6 +173,8 @@ impl Server {
                 if round.engine.head() == self.config.blocks {
                     let finished = guard.take().expect("active round");
                     let number = finished.number + 1;
+                    // Wait for proof requests at this round to release its database handles.
+                    *self.view.write().map_err(|_| eyre!("view lock poisoned"))? = None;
                     finished.finish(&self.snapshotter)?;
                     invariant!(
                         Arc::strong_count(&self.db) == 1,
@@ -162,13 +187,14 @@ impl Server {
                     if self.config.rounds.is_some_and(|rounds| number >= rounds) {
                         std::process::exit(0);
                     }
-                    *guard = Some(Round::open(self, number)?);
+                    let next = Round::open(self, number)?;
+                    *self.view.write().map_err(|_| eyre!("view lock poisoned"))? =
+                        Some(Arc::clone(&next.view));
+                    *guard = Some(next);
                 }
                 guard.as_mut().expect("active round").build_block(&self.config)
             }
-            Request::GetProof { .. } => {
-                Ok(Response::Rejected { reason: "reth-state-root serves no proofs".into() })
-            }
+            Request::GetProof { .. } => unreachable!("served above"),
             Request::CheckRoot => round.check_root(),
             Request::Flush => {
                 round.persist(true)?;
@@ -195,6 +221,7 @@ struct Round {
     collider_path: PathBuf,
     shapes: ShapeTracker,
     pending: Vec<Write>,
+    view: Arc<View>,
 }
 
 impl Round {
@@ -227,12 +254,24 @@ impl Round {
         let journal = RoundJournal::open(&datadir, config.blocks)?;
         let base = engine.head();
         let mut state = Model::default();
-        journal.replay(1..=base, &mut state)?;
+        // Recovered blocks stay provable, at the model's root after each.
+        let mut blocks = Vec::with_capacity(base as usize + 1);
+        let mut recovered_root = root(&state);
+        for number in 0..=base {
+            if number > 0 {
+                journal.replay(number..=number, &mut state)?;
+                recovered_root = root(&state);
+            }
+            let header = engine
+                .factory()
+                .sealed_header(number)?
+                .ok_or_else(|| eyre!("missing header {number}"))?;
+            invariant!(recovered_root == header.state_root(), "recovered root at {number}");
+            blocks.push((header.hash(), recovered_root));
+        }
         if base > 0 {
             verify(engine.factory(), &state, base, base)?;
         }
-        let recovered_root = root(&state);
-        invariant!(recovered_root == engine.parent().state_root(), "recovered root at {base}");
         println!("{}", json!({"recovery": "complete", "head": base, "root": recovered_root}));
         assert_sometimes!(base > 0, "Restart recovers persisted blocks");
         let collider_path = datadir.join("collider.json");
@@ -244,8 +283,16 @@ impl Round {
         // The replayed tries are the baseline the next block's transitions are measured from.
         let mut shapes = ShapeTracker::default();
         shapes.observe(model::tries(&state));
+        let id = AntithesisRng.random();
+        let view = Arc::new(View {
+            round: id,
+            factory: engine.factory().clone(),
+            blocks: RwLock::new(blocks),
+            db_tip: AtomicU64::new(base),
+            state_tip: AtomicU64::new(base),
+        });
         Ok(Self {
-            id: AntithesisRng.random(),
+            id,
             number,
             engine,
             journal,
@@ -255,29 +302,41 @@ impl Round {
             collider_path,
             shapes,
             pending: Vec::new(),
+            view,
         })
     }
 
-    fn summary(&self) -> Summary {
+    fn summary(&self) -> Result<Response> {
         let (db_tip, state_tip) = self.engine.tips();
-        let head = self.engine.head();
-        Summary {
+        let roots = self
+            .view
+            .blocks
+            .read()
+            .map_err(|_| eyre!("block list poisoned"))?
+            .iter()
+            .enumerate()
+            .map(|(number, (_, root))| BlockRoot { number: number as u64, root: *root })
+            .collect();
+        Ok(Response::Summary(Summary {
             round: self.id,
-            head,
+            head: self.engine.head(),
             db_tip,
             state_tip,
-            roots: vec![BlockRoot { number: head, root: self.engine.parent().state_root() }],
+            roots,
             accounts: model::sample(&mut AntithesisRng, &self.state),
             collider: self.collider.clone(),
-        }
+        }))
     }
 
     /// Advances persistence, verifying the persisted state after every acknowledged save.
     fn persist(&mut self, flush: bool) -> Result<()> {
-        let Self { engine, journal, persisted_state, .. } = self;
+        let Self { engine, journal, persisted_state, view, .. } = self;
         engine.persist(flush, |factory, previous, db_tip, state_tip| {
             journal.replay((previous + 1)..=db_tip, persisted_state)?;
-            verify(factory, persisted_state, db_tip, state_tip)
+            verify(factory, persisted_state, db_tip, state_tip)?;
+            view.db_tip.store(db_tip, Ordering::Release);
+            view.state_tip.store(state_tip, Ordering::Release);
+            Ok(())
         })
     }
 
@@ -298,7 +357,13 @@ impl Round {
                     .collect::<Vec<_>>();
                 assert_sometimes!(!updates.is_empty(), "A block includes driver writes");
                 let padding = config.updates.saturating_sub(updates.len());
-                updates.extend(generate(&mut rng, &scratch, &mut self.collider, padding));
+                updates.extend(generate::writes(
+                    &mut rng,
+                    &scratch,
+                    &mut self.collider,
+                    config.accounts,
+                    padding,
+                ));
                 let operations = input::operations(&mut rng, updates);
                 // Sync the replay record before mutating the model or starting production tasks.
                 // Save the collider first: a kill before the journal record regenerates the block,
@@ -339,7 +404,13 @@ impl Round {
         );
         // Rebuild from the plain model, independently of production hashed state and trie updates.
         let expected_root = root(&self.state);
-        self.engine.produce(&operations, bundle, updates, expected_root)?;
+        let hash = self.engine.produce(&operations, bundle, updates, expected_root)?;
+        // Publish the block only once the overlay manager can serve it.
+        self.view
+            .blocks
+            .write()
+            .map_err(|_| eyre!("block list poisoned"))?
+            .push((hash, expected_root));
         Ok(Response::Block { round: self.id, number, root: expected_root })
     }
 
@@ -379,6 +450,59 @@ impl Round {
         );
         Ok(())
     }
+}
+
+/// What proof requests read, without waiting for block production.
+struct View {
+    /// The round's ID.
+    round: u64,
+    factory: ProviderFactory<Node>,
+    /// Hash and model state root of every block of the round, by number.
+    blocks: RwLock<Vec<(B256, B256)>>,
+    /// Highest block whose block data is persisted.
+    db_tip: AtomicU64,
+    /// Highest block whose state and trie are persisted; masked blocks lie between the tips.
+    state_tip: AtomicU64,
+}
+
+/// Serves one `eth_getMultiProof` request, with the witness of the same reads, at a block of
+/// the view's round.
+fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Result<Response> {
+    if round != view.round {
+        return Ok(Response::Rejected { reason: format!("round {round} is over") });
+    }
+    // Persistence may advance during the request; the tips only classify coverage.
+    let db_tip = view.db_tip.load(Ordering::Acquire);
+    let state_tip = view.state_tip.load(Ordering::Acquire);
+    let Some((hash, _)) =
+        view.blocks.read().map_err(|_| eyre!("block list poisoned"))?.get(number as usize).copied()
+    else {
+        return Ok(Response::Rejected { reason: format!("no block {number}") });
+    };
+    assert_sometimes!(number > db_tip, "Proof served from in-memory blocks");
+    assert_sometimes!(number > state_tip && number <= db_tip, "Proof served from masked blocks");
+    assert_sometimes!(number == state_tip && number > 0, "Proof served at the persisted state tip");
+    assert_sometimes!(number < state_tip, "Proof served from reverted historical state");
+    // The provider BlockchainProvider resolves for a block hash, in memory or persisted.
+    let result = OverlayStateProviderFactory::new(
+        view.factory.clone(),
+        view.factory.overlay_manager().overlay_builder(hash),
+    )
+    .database_provider_ro()
+    .map_err(eyre::Report::from)
+    .and_then(|provider| {
+        let proofs = proof::get_multi_proof(&provider, targets)?;
+        let witness = proof::witness(&provider, &proofs)?;
+        Ok(Proved { proofs, witness })
+    });
+    let error = result.as_ref().err().map(|error| format!("{error:#}"));
+    invariant!(
+        error.is_none(),
+        "eth_getMultiProof and witness at block {number} (db tip {db_tip}, state tip \
+         {state_tip}) for {targets:?}: {}",
+        error.as_deref().unwrap_or_default()
+    );
+    Ok(Response::Proofs { proofs: serde_json::to_value(result?)? })
 }
 
 #[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
@@ -502,31 +626,29 @@ fn serve(config: Option<String>) -> Result<()> {
     ensure!(config.rounds != Some(0), "rounds must be positive");
     ensure!((1..=1024).contains(&config.blocks), "blocks must be 1..=1024");
     ensure!((1..=4096).contains(&config.updates), "updates must be 1..=4096");
+    ensure!((1..=4096).contains(&config.accounts), "accounts must be 1..=4096");
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
     recorder.install()?;
     let campaign = Campaign::new(&config)?;
     let runtime = engine::runtime(&config.settings())?;
     let db = Arc::new(init_db(campaign.database_path()?, Default::default())?);
-    let mut server = Server { config, campaign, runtime, db, snapshotter, round: Mutex::new(None) };
-    server.round = Mutex::new(Some(Round::open(&server, 0)?));
+    let mut server = Server {
+        config,
+        campaign,
+        runtime,
+        db,
+        snapshotter,
+        round: Mutex::new(None),
+        view: RwLock::new(None),
+    };
+    let round = Round::open(&server, 0)?;
+    server.view = RwLock::new(Some(Arc::clone(&round.view)));
+    server.round = Mutex::new(Some(round));
     harness::serve(
         &json!({"workload": "reth-state-root", "database_initialized": true}),
         move |request| server.handle(request),
     )
-}
-
-/// anytime_root: checks the root the overlay serves at the tip against the model's.
-fn anytime_root() -> Result<()> {
-    let Some(mut client) = Client::connect()? else { return harness::unavailable() };
-    match client.call(&Request::CheckRoot)? {
-        None => harness::unavailable(),
-        Some(Response::Root { number, root }) => {
-            println!("{}", json!({"root": {"number": number, "root": root}}));
-            Ok(())
-        }
-        Some(other) => bail!("unexpected answer to check_root: {other:?}"),
-    }
 }
 
 fn main() -> Result<()> {
@@ -543,12 +665,6 @@ fn main() -> Result<()> {
     let command = arguments.next().unwrap_or_default();
     let result = match command.as_str() {
         "serve" => serve(arguments.next()),
-        "first_genesis" => harness::first_genesis(),
-        "parallel_driver_writes" => harness::parallel_driver_writes(),
-        "parallel_driver_blocks" => harness::parallel_driver_blocks(),
-        "anytime_root" => anytime_root(),
-        "eventually_persisted" => harness::persisted().map(drop),
-        "finally_recovered" => harness::finally(|| Ok(harness::persisted()?.is_some())),
         other => Err(eyre!("unknown command {other:?}")),
     };
     assert_always_or_unreachable!(

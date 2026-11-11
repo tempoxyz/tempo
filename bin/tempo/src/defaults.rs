@@ -186,7 +186,7 @@ fn init_txpool_defaults() {
         .with_no_locals(true)
         .with_max_queued_lifetime(Duration::from_secs(120))
         .with_max_new_pending_txs_notifications(150000)
-        .with_max_account_slots(150000)
+        .with_max_account_slots(64)
         .with_pending_tx_listener_buffer_size(50000)
         .with_new_tx_listener_buffer_size(50000)
         .with_disable_transactions_backup(true)

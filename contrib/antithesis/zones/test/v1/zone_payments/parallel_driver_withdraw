@@ -1,2 +1,2 @@
 #!/bin/sh
-exec tempo-zone-xtask antithesis withdraw
+exec tempo-zones-antithesis withdraw
