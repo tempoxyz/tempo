@@ -418,10 +418,10 @@ pub struct SignedKeyAuthorization {
     /// Key authorization for provisioning access keys
     #[cfg_attr(feature = "serde", serde(flatten))]
     #[deref]
-    pub authorization: KeyAuthorization,
+    authorization: KeyAuthorization,
 
     /// Direct primitive or configurable account signature authorizing this key.
-    pub signature: AccountSignature,
+    signature: AccountSignature,
 
     /// Cached signer recovered from `signature`.
     ///
@@ -440,6 +440,16 @@ impl SignedKeyAuthorization {
             signature: signature.into(),
             signer: OnceLock::new(),
         }
+    }
+
+    /// Returns the key authorization.
+    pub const fn authorization(&self) -> &KeyAuthorization {
+        &self.authorization
+    }
+
+    /// Returns the signature authorizing the key.
+    pub const fn signature(&self) -> &AccountSignature {
+        &self.signature
     }
 
     /// Recover the signer of the [`KeyAuthorization`]. Returns `Err` for a configurable account

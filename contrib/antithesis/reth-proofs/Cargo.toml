@@ -1,0 +1,48 @@
+[package]
+name = "reth-proofs-antithesis"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+fuzz = ["reth-db/fuzz", "reth-trie/fuzz"]
+
+[dependencies]
+reth-chain-state.workspace = true
+reth-chainspec.workspace = true
+reth-db-common.workspace = true
+reth-db.workspace = true
+reth-engine-primitives.workspace = true
+reth-engine-tree.workspace = true
+reth-ethereum-primitives.workspace = true
+# Keep account encoding aligned with Tempo's account-ext primitives, as in reth-state-root.
+reth-evm.workspace = true
+reth-evm-ethereum.workspace = true
+reth-execution-types.workspace = true
+reth-node-builder.workspace = true
+reth-node-core.workspace = true
+reth-primitives-traits.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }
+reth-stages-types.workspace = true
+reth-storage-overlay = { workspace = true, features = ["rayon"] }
+reth-tasks = { workspace = true, features = ["rayon", "test-utils"] }
+reth-trie.workspace = true
+# Proofs travel to the test commands as JSON.
+reth-trie-common = { workspace = true, features = ["serde"] }
+alloy-consensus.workspace = true
+alloy-primitives = { workspace = true, features = ["asm-keccak"] }
+alloy-rlp.workspace = true
+alloy-trie.workspace = true
+evm2 = { workspace = true, features = ["std"] }
+eyre.workspace = true
+rand_09.workspace = true
+antithesis-instrumentation.workspace = true
+antithesis-trie-shapes.workspace = true
+antithesis_sdk = { workspace = true, features = ["full", "rand_core_v0_9"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec reth-proofs-commands eventually_persisted
