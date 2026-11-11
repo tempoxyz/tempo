@@ -28,11 +28,11 @@ const MAX_COMMITMENT_FETCHES: usize = 64;
 
 /// Immutable canonical inputs used to construct isolated prewarming workers.
 ///
-/// Workers read Tempo commitments through a [`CommitmentPrewarmReader`], so the commitments they
+/// Workers read Tempo commitments through a [`L1PrewarmReader`], so the commitments they
 /// miss are fetched in parallel instead of one by one during canonical execution.
 pub(crate) struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
-    evm_config: ZoneEvmConfig<CommitmentPrewarmReader>,
+    evm_config: ZoneEvmConfig<L1PrewarmReader>,
     parent_header: SealedHeader<TempoHeader>,
     next_block_env_attributes: TempoNextBlockEnvAttributes,
     chain_id: u64,
@@ -56,7 +56,7 @@ where
         let evm_config = evm_config.map_l1_reader(|provider| {
             let (fetches, fetch_task) = commitment_fetches(provider.clone(), tempo_block_number);
             task_executor.spawn_task(fetch_task);
-            CommitmentPrewarmReader {
+            L1PrewarmReader {
                 provider: provider.clone(),
                 tempo_block_number,
                 fetches,
@@ -177,14 +177,14 @@ impl Drop for Prewarming {
 /// the read returns zero, which is exact for accounts never configured on Tempo, such as fresh
 /// addresses. Storage reads go to the cache-backed provider unchanged.
 #[derive(Clone)]
-struct CommitmentPrewarmReader {
+struct L1PrewarmReader {
     provider: L1StateProvider,
     /// Tempo block the next Zone block's transactions read commitments at.
     tempo_block_number: u64,
     fetches: mpsc::UnboundedSender<Address>,
 }
 
-impl L1StorageReader for CommitmentPrewarmReader {
+impl L1StorageReader for L1PrewarmReader {
     fn read_l1_storage(
         &self,
         account: Address,
@@ -286,7 +286,7 @@ mod tests {
             cache.set(cached, slot, TEMPO_BLOCK - 1, value);
         }
         let (fetches, sent) = mpsc::unbounded();
-        let reader = CommitmentPrewarmReader {
+        let reader = L1PrewarmReader {
             provider,
             tempo_block_number: TEMPO_BLOCK,
             fetches,
