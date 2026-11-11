@@ -384,7 +384,7 @@ where
         let resolver = resolver_mux.register(epoch.get()).await.unwrap();
 
         let application = self.config.application.for_timestamp(boundary_timestamp);
-        let deferred = matches!(application, Application::Deferred(_));
+        let deferred = matches!(application, Application::Deferred(..));
         self.metrics
             .deferred_verification
             .metric()
