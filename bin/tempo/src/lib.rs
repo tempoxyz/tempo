@@ -509,21 +509,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     };
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
-        if let Some(value) = args.consensus.message_backlog {
-            warn!(
-                flag = "--consensus.message-backlog",
-                value,
-                "deprecated flag ignored; P2P queue capacities are derived from peer-set limits and channel quotas"
-            );
-        }
-        if let Some(value) = args.consensus.inactive_views_until_leader_skip {
-            warn!(
-                flag = "--consensus.inactive-views-until-leader-skip",
-                value,
-                "deprecated flag ignored; leader skipping is driven by --consensus.inactive-time-before-leader-skip"
-            );
-        }
-
         // Register before launch because each RLPx session negotiates its
         // subprotocols during the handshake. The startup channel passes the
         // consensus half of the transport to the consensus thread.
@@ -1353,7 +1338,6 @@ mod tests {
         );
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
         assert!(node_cmd.ext.node_args.builder_disable_prewarming);
-        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
         assert!(!node_cmd.ext.node_args.builder_parallel);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
@@ -1453,27 +1437,6 @@ mod tests {
                 .node_args
                 .payload_builder_builder()
                 .enable_parallel
-        );
-
-        let cli = TempoCli::try_parse_from([
-            "tempo",
-            "node",
-            "--dev",
-            "--builder.enable-prewarming",
-            "--builder.disable-prewarming",
-        ])
-        .unwrap();
-        let Commands::Node(node_cmd) = cli.command else {
-            panic!("expected node command");
-        };
-        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
-        assert!(node_cmd.ext.node_args.builder_disable_prewarming);
-        assert!(
-            !node_cmd
-                .ext
-                .node_args
-                .payload_builder_builder()
-                .enable_prewarming
         );
     }
 
