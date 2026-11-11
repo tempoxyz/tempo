@@ -259,6 +259,16 @@ impl AA2dPool {
             .aa_transaction_id()
             .expect("Transaction added to AA2D pool must be an AA transaction");
 
+        // Validation can read a lane nonce older than the pool's independent transaction, which
+        // sits at the newest on-chain nonce the pool has seen. Below it, keep the validation nonce:
+        // after a reorg, orphaned transactions are re-added at the reverted nonce.
+        let on_chain_nonce = match self.independent_transactions.get(&tx_id.seq_id) {
+            Some(independent) if tx_id.nonce >= independent.transaction.nonce() => {
+                on_chain_nonce.max(independent.transaction.nonce())
+            }
+            _ => on_chain_nonce,
+        };
+
         if transaction.nonce() < on_chain_nonce {
             // outdated transaction
             return Err(PoolError::new(
@@ -355,18 +365,10 @@ impl AA2dPool {
         }
 
         // clean up replaced
-        let mut on_chain_nonce = on_chain_nonce;
         if let Some(replaced) = &replaced {
-            // The lane's independent transaction is at the latest on-chain nonce the pool has
-            // seen, which can be ahead of the nonce validation read.
-            if let Some(independent) = self.independent_transactions.get(&tx_id.seq_id) {
-                on_chain_nonce = on_chain_nonce.max(independent.transaction.nonce());
-            }
-            // it's already replaced in the by id set; if it was the independent transaction, the
-            // replacement is re-added below only if it is pending at the on-chain nonce
+            // we only need to remove it from the hash list, because we already replaced it in the by id set,
+            // and if this is the independent transaction, it will be replaced by the new transaction below
             self.by_hash.remove(replaced.inner.transaction.hash());
-            self.independent_transactions
-                .remove(tx_id.seq_id, Some(tx_id.nonce));
             // Remove from eviction set
             self.remove_eviction_key(replaced);
         }
@@ -5322,6 +5324,7 @@ mod tests {
             TxBuilder::aa(sender).nonce_key(nonce_key).nonce(6).build(),
             TransactionOrigin::Local,
         );
+        let next_hash = *next.hash();
         let replacement = wrap_valid_tx(
             TxBuilder::aa(sender)
                 .nonce_key(nonce_key)
@@ -5349,10 +5352,44 @@ mod tests {
             pool.independent_transactions[&seq_id].transaction.nonce(),
             5
         );
-        assert!(
-            pool.best_transactions()
-                .any(|tx| tx.hash() == &replacement_hash)
+        let best: Vec<_> = pool.best_transactions().map(|tx| *tx.hash()).collect();
+        assert!(best.contains(&replacement_hash));
+        if replaced_nonce == 5 {
+            assert!(best.contains(&next_hash));
+        }
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_contiguous_insert_with_outdated_nonce_is_pending() {
+        let sender = Address::random();
+        let nonce_key = U256::ONE;
+        let head = wrap_valid_tx(
+            TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build(),
+            TransactionOrigin::Local,
         );
+        let next = wrap_valid_tx(
+            TxBuilder::aa(sender).nonce_key(nonce_key).nonce(6).build(),
+            TransactionOrigin::Local,
+        );
+        let tail = wrap_valid_tx(
+            TxBuilder::aa(sender).nonce_key(nonce_key).nonce(7).build(),
+            TransactionOrigin::Local,
+        );
+        let tail_hash = *tail.hash();
+        let mut pool = AA2dPool::default();
+
+        pool.add_transaction(Arc::new(head), 5, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(next), 5, TempoHardfork::T1)
+            .unwrap();
+
+        let added = pool
+            .add_transaction(Arc::new(tail), 4, TempoHardfork::T1)
+            .unwrap();
+        assert!(added.as_pending().is_some());
+        assert_eq!(pool.pending_and_queued_txn_count(), (3, 0));
+        assert!(pool.best_transactions().any(|tx| tx.hash() == &tail_hash));
         pool.assert_invariants();
     }
 
