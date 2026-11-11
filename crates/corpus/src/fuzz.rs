@@ -33,6 +33,16 @@ const WORKERS: usize = 4;
 /// Stored block bytes [Corpus::windows] aims to read per window.
 const WINDOW_BYTES: usize = 32 << 20;
 
+/// Blocks of a window read and decoded at once.
+const CONCURRENT_BLOCKS: usize = 32;
+
+/// A window spanning at least this many corpus blocks per block it lists is read with point reads.
+const SPARSE_SPAN: u64 = 4;
+
+/// A run of neighbouring blocks shorter than this stays in a sparse window, where the window's
+/// parallel point reads cover it, rather than getting a scan of its own.
+const MIN_RUN: usize = 32;
+
 /// A corpus, open at its published checkpoint. A fill extending it meanwhile does not change
 /// what this reads.
 pub struct Corpus {
@@ -49,8 +59,6 @@ impl Corpus {
     /// Opens the published blocks of the corpus at `url` (`s3://bucket/prefix` or
     /// `file:///directory`), with S3 reads going to `endpoint` when given.
     pub fn open(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
-        // The workers renew the lease while the caller is not reading, and decode the windows it
-        // reads ahead ([Self::windows]).
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(WORKERS)
             .enable_all()
@@ -80,6 +88,7 @@ impl Corpus {
         })
     }
 
+    /// The catalog of the published checkpoint this reads.
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
     }
@@ -113,10 +122,9 @@ impl Corpus {
             .map(|block| Ok((block, self.input(block)?)))
     }
 
-    /// Each of `blocks`, in block order and once each, with its stored input size and harness
-    /// input, in windows of up to `window` blocks and about `WINDOW_BYTES` stored bytes, each read
-    /// and decoded on the corpus's runtime while the caller works on the one before. Iteration
-    /// stops after the first error.
+    /// Each of `blocks` once, in block order, with its stored size and harness input, in windows
+    /// of up to `window` blocks and about `WINDOW_BYTES` stored bytes. Each window is read ahead
+    /// on the corpus's runtime while the caller works on the one before. Stops after an error.
     pub fn windows(&self, mut blocks: Vec<u64>, window: usize) -> Windows<'_> {
         blocks.sort_unstable();
         blocks.dedup();
@@ -125,14 +133,13 @@ impl Corpus {
         let task = AbortOnDropHandle::new(self.runtime.spawn(async move {
             // Each window is sized from the stored bytes per block of the one before, starting
             // from one block, so heavy blocks come in fewer at a time.
-            let (mut rest, mut size) = (&blocks[..], 1);
+            let (mut rest, mut target_len) = (&blocks[..], 1);
             while !rest.is_empty() {
-                let (blocks, tail) = rest.split_at(window_len(rest, size, window as u64));
+                let (blocks, tail) = rest.split_at(window_len(rest, target_len, window as u64));
                 rest = tail;
                 let read = async {
-                    // A dense window is scanned whole, which yields exactly `blocks` in order. A
-                    // sparse one is read with a point read per block, inside its task, since a
-                    // point read decompresses SST blocks too.
+                    // A dense window is scanned whole, yielding exactly `blocks` in order. A
+                    // sparse one gets a point read per block in its task, which decompresses too.
                     let scanned = if dense(blocks) {
                         store::scan_blocks(&reader, blocks).await?
                     } else {
@@ -161,7 +168,7 @@ impl Corpus {
                                 })
                             }))
                         })
-                        .buffered(32)
+                        .buffered(CONCURRENT_BLOCKS)
                         .map(|joined| joined.unwrap_or_else(|error| Err(error.into())))
                         .try_fold(Vec::with_capacity(blocks.len()), |mut inputs, input| {
                             inputs.push(input);
@@ -174,7 +181,7 @@ impl Corpus {
                     && let Some(next) = (WINDOW_BYTES * inputs.len())
                         .checked_div(inputs.iter().map(|input| input.size).sum())
                 {
-                    size = next.clamp(1, window.max(1));
+                    target_len = next.clamp(1, window.max(1));
                 }
                 let failed = read.is_err();
                 if sender.send(read).await.is_err() || failed {
@@ -190,50 +197,27 @@ impl Corpus {
     }
 }
 
-/// A window spanning at least this many corpus blocks per block it lists is read with point reads.
-const SPARSE_SPAN: u64 = 4;
-
-/// Whether `blocks`, sorted, are close enough together to scan whole rather than read one by one.
-fn dense(blocks: &[u64]) -> bool {
-    blocks
-        .first()
-        .zip(blocks.last())
-        .is_none_or(|(first, last)| last - first < SPARSE_SPAN * blocks.len() as u64)
-}
-
-/// A run of neighbouring blocks shorter than this stays in a sparse window, where the window's
-/// parallel point reads cover it, rather than getting a scan of its own.
-const MIN_RUN: usize = 32;
-
-/// How many of `blocks`, sorted, the next window takes, out of at most `size`. A dense run of at
-/// least `MIN_RUN` blocks ends at the first gap longer than `window`, so it is scanned without the
-/// gap. Other blocks before such a run are read on their own, so the run starts the next window.
-/// Any other window takes all `size`.
-fn window_len(blocks: &[u64], size: usize, window: u64) -> usize {
-    let cap = size.min(blocks.len());
-    let near = |pair: &[u64]| pair[1] - pair[0] <= window;
-    let long_run = |at: usize| {
-        let head = &blocks[at..blocks.len().min(at + MIN_RUN)];
-        head.len() == MIN_RUN && head.windows(2).all(near) && dense(head)
-    };
-    // Where each run ends: the blocks after a gap longer than `window`.
-    let mut gaps = (1..cap).filter(|&at| !near(&blocks[at - 1..=at]));
-    if long_run(0) {
-        let end = gaps.next().unwrap_or(cap);
-        return if dense(&blocks[..end]) { end } else { cap };
+impl Drop for Corpus {
+    fn drop(&mut self) {
+        if let Some(lease) = self.lease.take()
+            && let Err(error) = lease.release(&self.runtime, &self.store)
+        {
+            warn!(%error, "Releasing the corpus lease failed; it expires on its own");
+        }
     }
-    gaps.find(|&at| long_run(at)).unwrap_or(cap)
 }
 
 /// A corpus block read by [Corpus::windows].
 pub struct BlockInput {
+    /// The block's number.
     pub block: u64,
     /// Its stored input size in bytes.
     pub size: usize,
+    /// Its harness input.
     pub input: TempoHarnessInput,
 }
 
-/// Windows of a [Corpus]'s blocks, from [Corpus::windows]. Dropping it stops the reads still running.
+/// Windows of a [Corpus]'s blocks, from [Corpus::windows]. Dropping it stops the reads running.
 pub struct Windows<'a> {
     corpus: &'a Corpus,
     /// `None` once an error was returned.
@@ -255,14 +239,31 @@ impl Iterator for Windows<'_> {
     }
 }
 
-impl Drop for Corpus {
-    fn drop(&mut self) {
-        if let Some(lease) = self.lease.take()
-            && let Err(error) = lease.release(&self.runtime, &self.store)
-        {
-            warn!(%error, "Releasing the corpus lease failed; it expires on its own");
-        }
+/// Whether `blocks`, sorted, are close enough together to scan whole rather than read one by one.
+fn dense(blocks: &[u64]) -> bool {
+    blocks
+        .first()
+        .zip(blocks.last())
+        .is_none_or(|(first, last)| last - first < SPARSE_SPAN * blocks.len() as u64)
+}
+
+/// How many of sorted `blocks` the next window takes, `target_len` unless cut short. A dense run
+/// of `MIN_RUN` or more ends at the first gap longer than `window`, so its scan skips the gap.
+/// Blocks before such a run are read alone, so the run starts the next window.
+fn window_len(blocks: &[u64], target_len: usize, window: u64) -> usize {
+    let cap = target_len.min(blocks.len());
+    let near = |pair: &[u64]| pair[1] - pair[0] <= window;
+    let long_run = |at: usize| {
+        let head = &blocks[at..blocks.len().min(at + MIN_RUN)];
+        head.len() == MIN_RUN && head.windows(2).all(near) && dense(head)
+    };
+    // Where each run ends: the blocks after a gap longer than `window`.
+    let mut gaps = (1..cap).filter(|&at| !near(&blocks[at - 1..=at]));
+    if long_run(0) {
+        let end = gaps.next().unwrap_or(cap);
+        return if dense(&blocks[..end]) { end } else { cap };
     }
+    gaps.find(|&at| long_run(at)).unwrap_or(cap)
 }
 
 /// The harness chain of `catalog`'s corpus, taken from the known chain whose forks agree with it
@@ -348,7 +349,7 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
                 .map(|(n, hash)| (*n, B256::from(*hash)))
                 .collect(),
         },
-        blocks: NonEmpty::try_from(vec![block]).map_err(|err| eyre::eyre!(err))?,
+        blocks: NonEmpty::try_from(vec![block]).map_err(|error| eyre::eyre!(error))?,
     }))
 }
 
@@ -370,7 +371,7 @@ pub fn block_list(catalog: &Catalog, blocks: &[u64]) -> String {
 }
 
 /// The blocks a block list file lists for `catalog`'s corpus: those under its section header, and
-/// any before the first header, which must be in its range.
+/// any before the first header. Fails if one of them is outside the corpus's range.
 pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
     let context = &catalog.context;
     // A corpus grows at its tip, so a section names it by the parent of its first block. Sections
