@@ -27,9 +27,6 @@ use zone_precompiles::{L1StateError, L1StorageReader};
 const MAX_COMMITMENT_FETCHES: usize = 64;
 
 /// Immutable canonical inputs used to construct isolated prewarming workers.
-///
-/// Workers read Tempo commitments through a [`L1PrewarmReader`], so the commitments they
-/// miss are fetched in parallel instead of one by one during canonical execution.
 pub(crate) struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     evm_config: ZoneEvmConfig<L1PrewarmReader>,
@@ -42,8 +39,7 @@ impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Send + Sync + 'static,
 {
-    /// Creates the context and spawns the task fetching commitments at `tempo_block_number`, the
-    /// Tempo block the next Zone block's transactions read at.
+    /// Creates the context and spawns its [`L1PrewarmReader`] fetch task.
     pub(crate) fn new(
         task_executor: &TaskExecutor,
         provider: Provider,
@@ -112,8 +108,7 @@ where
         })
     }
 
-    /// Enqueues one simulation per item on the prewarming pool, which bounds concurrency.
-    /// Cancelled queued jobs skip conversion and EVM initialization.
+    /// Enqueues one simulation per item. Cancelled queued jobs are skipped.
     fn spawn<T: Send + 'static>(
         self: &Arc<Self>,
         task_executor: &TaskExecutor,

@@ -266,9 +266,8 @@ where
             PayloadBuilderError::Internal(err.into())
         })?;
 
-        // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency):
-        // the deposits, and the pool transactions that fit the block, whose Tempo commitments are
-        // then fetched in parallel instead of one by one during canonical execution.
+        // Prewarm L1 reads of the deposits and the pool transactions that fit the block, in parallel
+        // with canonical `advanceTempo`.
         let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
         let (prewarming, _pool_prewarming) = match tempo_import {
             TempoImport::Full(prepared) => {
