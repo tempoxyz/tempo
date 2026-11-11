@@ -61,6 +61,9 @@ crate::sol! {
             UnregisteredMaster,
             InvalidMaster,
             MintFailed,
+            /// The sequencer rejected the deposit (`QueuedDeposit.rejected`), for example because
+            /// its originator or recipient is not on the sequencer's deposit allowlist.
+            Rejected,
         }
 
         /// A user deposit or internal withdrawal bounce-back passed to `advanceTempo`.

@@ -1353,17 +1353,25 @@ impl Harness {
     }
 
     fn advance_virtual(&mut self, deposits: Vec<VirtualDeposit>) -> PrecompileResult {
+        self.advance_virtual_flagged(deposits.into_iter().map(|d| (d, false)).collect())
+    }
+
+    /// Advances with virtual deposits, each paired with the sequencer's `rejected` flag.
+    fn advance_virtual_flagged(
+        &mut self,
+        deposits: Vec<(VirtualDeposit, bool)>,
+    ) -> PrecompileResult {
         let mut head = B256::ZERO;
         let queued = deposits
             .into_iter()
-            .map(|deposit| {
+            .map(|(deposit, rejected)| {
                 head = keccak256(
                     (DepositType::ZoneVirtual, deposit.clone(), head).abi_encode_params(),
                 );
                 QueuedDeposit {
                     depositType: DepositType::ZoneVirtual,
                     depositData: deposit.abi_encode().into(),
-                    rejected: false,
+                    rejected,
                 }
             })
             .collect();
@@ -1490,4 +1498,94 @@ fn virtual_address_keys_initialize_once_and_in_order() -> eyre::Result<()> {
     let mut legacy = Harness::new_with_hardfork(TempoHardfork::T14)?;
     assert!(legacy.init_key(1)?.is_revert());
     Ok(())
+}
+
+#[test]
+fn rejected_virtual_deposit_refunds_the_originator_without_crediting() -> eyre::Result<()> {
+    let mut harness = Harness::t15()?;
+    assert!(harness.init_key(1)?.is_success());
+    let master = harness.register(BOB)?;
+
+    let output = harness.advance_virtual_flagged(vec![
+        (
+            virtual_deposit(deposit_address(1, 0, master, 1), None),
+            true,
+        ),
+        (
+            virtual_deposit(deposit_address(1, 0, master, 2), None),
+            false,
+        ),
+    ])?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(
+        harness.balance(PATH_USD_ADDRESS, BOB)?,
+        U256::from(VIRTUAL_AMOUNT)
+    );
+    harness.assert_single_bounce_back(PATH_USD_ADDRESS, VIRTUAL_AMOUNT, ALICE)?;
+    Ok(())
+}
+
+#[test]
+fn rejected_flag_is_ignored_on_withdrawal_bounce_backs() -> eyre::Result<()> {
+    let mut harness = Harness::new()?;
+    let nonce = 7u64;
+    harness.seed_fallback_recipient(nonce, BOB)?;
+    let deposit = WithdrawalBounceBackDeposit {
+        token: PATH_USD_ADDRESS,
+        to: Address::left_padding_from(&nonce.to_be_bytes()),
+        amount: 321,
+    };
+    harness.set_queue_hash(keccak256(
+        (
+            DepositType::WithdrawalBounceBack,
+            deposit.clone(),
+            B256::ZERO,
+        )
+            .abi_encode_params(),
+    ));
+
+    let output = harness.call(
+        Address::ZERO,
+        harness
+            .advance_call(
+                vec![QueuedDeposit {
+                    depositType: DepositType::WithdrawalBounceBack,
+                    rejected: true,
+                    depositData: deposit.abi_encode().into(),
+                }],
+                Vec::new(),
+            )
+            .abi_encode(),
+    )?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(321));
+    assert!(harness.pending_withdrawals()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn node_side_resolution_matches_the_inbox() -> eyre::Result<()> {
+    let mut harness = Harness::t15()?;
+    assert!(harness.init_key(1)?.is_success());
+    let master = harness.register(BOB)?;
+
+    let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        let resolve = |destination| {
+            super::virtual_deposit_recipient(Address::ZERO, destination, |address, slot| {
+                Slot::<U256>::new(slot, address).read()
+            })
+        };
+        assert_eq!(resolve(deposit_address(1, 0, master, 3))?, Some(BOB));
+        for destination in [
+            deposit_address(1, 0, 1_000, 0),
+            deposit_address(2, 0, master, 0),
+            deposit_address(1, 9, master, 0),
+            deposit_address(0, 0, master, 0),
+            BOB,
+        ] {
+            assert_eq!(resolve(destination)?, None, "{destination}");
+        }
+        Ok(())
+    })
 }

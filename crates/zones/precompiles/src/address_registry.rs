@@ -94,7 +94,7 @@ impl ZoneAddressRegistry {
 }
 
 /// The zone ID encoded in the portal address; zero in no-L1 development mode.
-pub(crate) fn zone_id(portal: Address) -> u32 {
+pub fn zone_id(portal: Address) -> u32 {
     portal
         .zone_portal_id()
         .and_then(|id| u32::try_from(id).ok())
@@ -102,7 +102,7 @@ pub(crate) fn zone_id(portal: Address) -> u32 {
 }
 
 /// Recipients may not be zero, a TIP-20 token, a TIP-1022 virtual address or a deposit address.
-pub(crate) fn is_valid_recipient(recipient: &Address) -> bool {
+pub fn is_valid_recipient(recipient: &Address) -> bool {
     !recipient.is_zero()
         && !recipient.is_tip20()
         && !recipient.is_virtual()
@@ -141,6 +141,17 @@ fn recipient_slot(master_id: FixedBytes<4>) -> tempo_precompiles::Result<U256> {
     let mut key = B256::ZERO;
     key[..4].copy_from_slice(master_id.as_slice());
     mapping_slot(key, b"tempo.zvda.masterRegistry")
+}
+
+/// Storage slot of the recipient bound to `master_id`, computed without a storage context, for
+/// node-side reads of committed zone state. Must equal `recipient_slot`.
+pub fn recipient_storage_slot(master_id: FixedBytes<4>) -> U256 {
+    let mut key = B256::ZERO;
+    key[..4].copy_from_slice(master_id.as_slice());
+    let mut data = [0u8; 64];
+    data[..32].copy_from_slice(key.as_slice());
+    data[32..].copy_from_slice(keccak256(b"tempo.zvda.masterRegistry").as_slice());
+    keccak256(data).into()
 }
 
 fn request_slot(request_hash: B256) -> tempo_precompiles::Result<U256> {

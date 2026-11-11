@@ -1084,7 +1084,8 @@ where
                 self.portal_address,
                 proof_collector.clone(),
             )
-            .with_deposit_allowlist(config.deposit_allowlist.clone());
+            .with_deposit_allowlist(config.deposit_allowlist.clone())
+            .with_zone_storage(crate::engine::zone_storage_reader(provider.clone()));
             task_executor.spawn_critical_task("zone-engine", engine.run());
 
             Self::launch_sequencer_tasks(

@@ -171,9 +171,20 @@ impl ZoneInbox {
                         key,
                     )
                 }
-                DecodedQueuedDeposit::ZoneVirtual(deposit) => {
-                    self.process_virtual_deposit(&mut outbox, zone_id, current_hash, deposit)
-                }
+                DecodedQueuedDeposit::ZoneVirtual {
+                    deposit,
+                    rejected: true,
+                } => self.fail_virtual_deposit(
+                    &mut outbox,
+                    current_hash,
+                    deposit,
+                    Address::ZERO,
+                    VirtualDepositFailureReason::Rejected,
+                ),
+                DecodedQueuedDeposit::ZoneVirtual {
+                    deposit,
+                    rejected: false,
+                } => self.process_virtual_deposit(&mut outbox, zone_id, current_hash, deposit),
             }?;
         }
 
@@ -605,11 +616,62 @@ fn address_key_slots(version: u8) -> tempo_precompiles::Result<(U256, U256)> {
     Ok((flag, flag.wrapping_add(U256::ONE)))
 }
 
+/// TIP-1094 key slots (initialized flag, key) for `version` in `ZONE_INBOX_ADDRESS` storage,
+/// computed without a storage context for node-side reads. Must equal `address_key_slots`.
+pub fn virtual_address_key_slots(version: u8) -> (U256, U256) {
+    let mut data = [0u8; 64];
+    data[31] = version;
+    data[32..].copy_from_slice(keccak256(b"tempo.zvda.addressKeys").as_slice());
+    let flag: U256 = keccak256(data).into();
+    (flag, flag.wrapping_add(U256::ONE))
+}
+
+/// Resolves a virtual deposit's destination to the recipient `advanceTempo` would credit, reading
+/// committed zone storage through `read(address, slot)` at the parent of the block that will
+/// process it.
+///
+/// Returns `None` when the inbox refunds the deposit on its own (invalid or foreign address,
+/// uninitialized key version, unregistered or invalid master). Sequencers use this to apply their
+/// deposit allowlist and set `QueuedDeposit.rejected`; it mirrors `resolve_virtual_deposit`.
+pub fn virtual_deposit_recipient<E>(
+    portal: Address,
+    destination: Address,
+    mut read: impl FnMut(Address, U256) -> Result<U256, E>,
+) -> Result<Option<Address>, E> {
+    let zone_id = address_registry::zone_id(portal);
+    let Some(address) = ZoneDepositAddress::decode(&destination)
+        .filter(|address| address.version != 0 && address.zone_id == zone_id)
+    else {
+        return Ok(None);
+    };
+    let (flag_slot, key_slot) = virtual_address_key_slots(address.version);
+    if read(ZONE_INBOX_ADDRESS, flag_slot)?.is_zero() {
+        return Ok(None);
+    }
+    let key = B256::from(read(ZONE_INBOX_ADDRESS, key_slot)?);
+    let plaintext = ff1::decrypt(&key.0, address.version, zone_id, address.ciphertext.0);
+    let master_id = FixedBytes::<4>::from_slice(&plaintext[..4]);
+    let recipient = Address::from_word(B256::from(read(
+        tempo_contracts::zones::ZONE_ADDRESS_REGISTRY_ADDRESS,
+        address_registry::recipient_storage_slot(master_id),
+    )?));
+    Ok(
+        (!recipient.is_zero() && address_registry::is_valid_recipient(&recipient))
+            .then_some(recipient),
+    )
+}
+
 /// A queue entry whose nested ABI payload has been validated before execution begins.
 enum DecodedQueuedDeposit {
     WithdrawalBounceBack(WithdrawalBounceBackDeposit),
     Deposit(Deposit),
-    ZoneVirtual(VirtualDeposit),
+    /// `rejected` is the sequencer's verdict: a rejected virtual deposit is refunded without being
+    /// resolved. The flag is read only for virtual deposits; encrypted deposits are rejected by
+    /// withholding decryption data, and bounce-backs cannot be rejected.
+    ZoneVirtual {
+        deposit: VirtualDeposit,
+        rejected: bool,
+    },
 }
 
 impl DecodedQueuedDeposit {
@@ -621,7 +683,7 @@ impl DecodedQueuedDeposit {
             Self::Deposit(deposit) => {
                 (DepositType::Deposit, deposit.clone(), tail).abi_encode_params()
             }
-            Self::ZoneVirtual(deposit) => {
+            Self::ZoneVirtual { deposit, .. } => {
                 (DepositType::ZoneVirtual, deposit.clone(), tail).abi_encode_params()
             }
         };
@@ -639,6 +701,7 @@ fn decode_deposits(
     deposits
         .into_iter()
         .map(|queued| {
+            let rejected = queued.rejected;
             match queued.depositType {
                 DepositType::WithdrawalBounceBack => {
                     WithdrawalBounceBackDeposit::abi_decode_with_config(&queued.depositData, config)
@@ -650,7 +713,7 @@ fn decode_deposits(
                 }
                 DepositType::ZoneVirtual if virtual_deposits => {
                     VirtualDeposit::abi_decode_with_config(&queued.depositData, config)
-                        .map(DecodedQueuedDeposit::ZoneVirtual)
+                        .map(|deposit| DecodedQueuedDeposit::ZoneVirtual { deposit, rejected })
                 }
                 _ => return Err(ZonePrecompileError::MalformedCalldata),
             }

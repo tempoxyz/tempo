@@ -234,10 +234,6 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         if !additional_decryption_keys.is_empty() {
             node = node.with_deposit_decryption_keys(additional_decryption_keys);
         }
-        validate_virtual_deposit_allowlist(
-            args.deposit_allowlist,
-            args.virtual_address_key.is_some(),
-        )?;
         if let Some(key) = args.virtual_address_key {
             node = node.with_virtual_address_key(key);
         }
@@ -291,22 +287,6 @@ fn validate_l1_access(l1_access: CliL1Access, has_l1_rpc_url: bool) -> eyre::Res
         ),
         CliL1Access::Unused => {}
     }
-    Ok(())
-}
-
-/// Rejects a virtual address key on a sequencer that enforces the deposit allowlist.
-///
-/// Virtual deposits carry no sequencer decryption data, so the allowlist cannot bounce them and
-/// would credit unlisted senders and recipients. Without a key, every virtual deposit is refunded
-/// with `KeyUnconfigured` (TIP-1094).
-fn validate_virtual_deposit_allowlist(
-    deposit_allowlist: bool,
-    has_virtual_address_key: bool,
-) -> eyre::Result<()> {
-    eyre::ensure!(
-        !(deposit_allowlist && has_virtual_address_key),
-        "--sequencer.virtual-address-key cannot be combined with --deposits.allowlist: the allowlist cannot reject virtual deposits"
-    );
     Ok(())
 }
 
@@ -945,14 +925,6 @@ mod tests {
                 .to_string(),
             "--l1.offline cannot be combined with L1_HTTP_RPC_URL"
         );
-    }
-
-    #[test]
-    fn virtual_address_key_conflicts_with_deposit_allowlist() {
-        validate_virtual_deposit_allowlist(false, true).unwrap();
-        validate_virtual_deposit_allowlist(true, false).unwrap();
-        validate_virtual_deposit_allowlist(false, false).unwrap();
-        assert!(validate_virtual_deposit_allowlist(true, true).is_err());
     }
 
     #[tokio::test]

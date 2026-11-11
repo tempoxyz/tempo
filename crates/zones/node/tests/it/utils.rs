@@ -1085,6 +1085,34 @@ impl ZoneTestNode {
         .await
     }
 
+    /// Start a zone node with a virtual address key whose engine also applies
+    /// \`deposit_allowlist\`.
+    pub(crate) async fn start_from_l1_with_virtual_address_key_and_deposit_allowlist(
+        l1_http_url: &url::Url,
+        l1_ws_url: &url::Url,
+        portal_address: Address,
+        key: B256,
+        deposit_allowlist: zone_node::DepositAllowlist,
+    ) -> eyre::Result<Self> {
+        let (genesis, _) = build_l1_anchored_genesis(l1_http_url, portal_address).await?;
+        Self::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+            l1_ws_url.to_string(),
+            portal_address,
+            next_unique_chain_id(),
+            Some(genesis),
+            l1_dev_signer(),
+            8,
+            None,
+            true,
+            Vec::new(),
+            None,
+            Some(deposit_allowlist),
+            None,
+            Some(key),
+        )
+        .await
+    }
+
     /// Run the scheduled T12 -> T13 transition against a real L1 and return the proof chain spec.
     pub(crate) async fn start_from_l1_with_t13(
         l1_http_url: &url::Url,
@@ -1559,7 +1587,8 @@ impl ZoneTestNode {
                 portal_address,
                 None,
             )
-            .with_deposit_allowlist(deposit_allowlist);
+            .with_deposit_allowlist(deposit_allowlist)
+            .with_zone_storage(zone_node::engine::zone_storage_reader(provider.clone()));
             node_handle
                 .node
                 .task_executor

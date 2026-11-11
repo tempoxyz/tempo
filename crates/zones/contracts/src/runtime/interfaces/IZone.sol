@@ -106,7 +106,8 @@ enum VirtualDepositFailureReason {
     KeyUnconfigured,
     UnregisteredMaster,
     InvalidMaster,
-    MintFailed
+    MintFailed,
+    Rejected // The sequencer set QueuedDeposit.rejected (e.g. deposit allowlist)
 }
 
 /// @notice TIP-1094 queue entry for a TIP-20 transfer to a zone deposit address
