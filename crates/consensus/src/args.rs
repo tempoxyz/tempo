@@ -15,8 +15,6 @@ use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_payload_types::estimator::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
 
-const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
-    reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Capacity of the shared queue carrying gossiped frames into consensus.
@@ -134,8 +132,14 @@ pub struct Args {
     #[arg(long = "consensus.metrics-address", default_value = "127.0.0.1:8001")]
     pub metrics_address: SocketAddr,
 
-    #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
-    pub max_message_size_bytes: u32,
+    /// Deprecated compatibility flag. The p2p message size limit is derived from the largest
+    /// payload consensus sends, so this value is ignored.
+    #[arg(
+        long = "consensus.max-message-size-bytes",
+        value_name = "BYTES",
+        help = "Deprecated: ignored; the p2p message size limit is derived from the largest consensus payload."
+    )]
+    pub max_message_size_bytes: Option<u32>,
 
     /// The number of worker threads assigned to consensus.
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
@@ -402,7 +406,7 @@ pub struct Args {
     /// allowed peer. The default matches the capacity of the previous fixed
     /// 16,384-message backlog on the 128/s channels.
     #[arg(long = "consensus.max-peers-per-set", default_value = "128")]
-    pub max_peers_per_set: NonZeroUsize,
+    pub max_peers_per_set: NonZeroU32,
 
     /// Maximum number of concurrent handshake attempts allowed.
     #[arg(

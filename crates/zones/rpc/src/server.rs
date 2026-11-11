@@ -327,6 +327,10 @@ pub(crate) async fn authenticate_token(
 
     let signature =
         TempoSignature::from_bytes(&token.signature).map_err(|_| AuthError::InvalidSignature)?;
+    // The legacy keychain signature does not cover `user_address`.
+    if signature.is_legacy_keychain() {
+        return Err(AuthError::InvalidSignature.into());
+    }
     let caller = signature
         .recover_signer(&token.digest)
         .map_err(|_| AuthError::InvalidSignature)?;
@@ -771,6 +775,47 @@ mod tests {
             err,
             AuthenticateError::Invalid(crate::auth::AuthError::RetiredRootKey)
         ));
+    }
+
+    #[tokio::test]
+    async fn legacy_keychain_tokens_are_rejected() {
+        let access_signer = P256SigningKey::random(&mut OsRng);
+        let root_account = Address::repeat_byte(0x55);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+        let token_and_api = |version| {
+            let (signature, key_id) =
+                sign_keychain_signature(digest, &access_signer, root_account, version)
+                    .expect("signing failed");
+            let token = build_token_with_signature(signature, &fields);
+            let api = TestApi::with_key_info(
+                root_account,
+                key_id,
+                KeyInfo {
+                    signatureType: KeyInfoSignatureType::P256,
+                    keyId: key_id,
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    isRevoked: false,
+                },
+            );
+            (token, api)
+        };
+
+        let (token, api_v1) = token_and_api(0x03);
+        let err = authenticate_token(&token, &test_config(), &api_v1)
+            .await
+            .expect_err("legacy keychain token must be rejected");
+        assert!(matches!(
+            err,
+            AuthenticateError::Invalid(AuthError::InvalidSignature)
+        ));
+
+        let (token, api_v2) = token_and_api(0x04);
+        let auth = authenticate_token(&token, &test_config(), &api_v2)
+            .await
+            .expect("the same key authenticates with a V2 token");
+        assert_eq!(auth.caller, root_account);
     }
 
     #[tokio::test]

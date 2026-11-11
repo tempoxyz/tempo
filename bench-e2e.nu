@@ -33,7 +33,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--consensus.no-legacy-archive"
     "--consensus.verification-mode" "deferred"
     "--engine.share-execution-cache-with-payload-builder"
-    "--builder.enable-prewarming"
+    "--builder.disable-prewarming=false"
     "--rpc.max-connections" "10000"
     "--txpool.pending-max-count" "200000"
     "--txpool.basefee-max-count" "200000"
@@ -87,7 +87,9 @@ def supported-node-arg-filter [tempo_bin: string, args: list<string>] {
         }
 
         let key = ($arg | split row "=" | first)
-        if ($help | str contains $key) {
+        # Binaries before the flag took a value parse it as a bare switch and reject =false.
+        let value_unsupported = ($key == "--builder.disable-prewarming" and ($arg | str contains "=") and not ($help | str contains $"($key)[="))
+        if ($help | str contains $key) and not $value_unsupported {
             $supported = ($supported | append $arg)
         } else {
             print $"Skipping unsupported tempo node arg for ($tempo_bin): ($key)"
