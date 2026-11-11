@@ -64,10 +64,9 @@ pub trait TempoTransactionPoolExt: TransactionPool {
     /// dropped while the receiver's buffer is full.
     fn delayed_transactions_listener(&self) -> mpsc::Receiver<TxHash>;
 
-    /// Returns the delayed transactions in the address's sequential 2D nonce lane.
-    ///
-    /// Their nonces are taken: they enter the lane when released.
-    fn get_delayed_transactions_by_address_and_nonce_key(
+    /// Returns every transaction in the address's sequential 2D nonce lane: pending, queued and
+    /// delayed. Delayed ones enter the lane when released, so their nonces are taken too.
+    fn get_transactions_by_address_and_nonce_key(
         &self,
         address: Address,
         nonce_key: U256,
@@ -167,7 +166,7 @@ where
     /// fails revalidation, if the live pool already holds a transaction with the same nonce, or
     /// if a limit rejects it. Called by pool maintenance on each new block.
     pub(crate) async fn release_delayed_transactions(&self, tip_timestamp: u64) {
-        let due = self.delayed_pool.read().due(tip_timestamp);
+        let due = self.delayed_pool.write().take_due(tip_timestamp);
         if due.is_empty() {
             return;
         }
@@ -190,14 +189,7 @@ where
                 continue;
             }
 
-            let has_nonce_conflict = if held.transaction.is_aa_2d() {
-                self.aa_2d_pool.read().contains_nonce(&held.transaction)
-            } else {
-                self.protocol_pool
-                    .get_transaction_by_sender_and_nonce(held.sender(), held.nonce())
-                    .is_some()
-            };
-            if !outcome.is_valid() || has_nonce_conflict {
+            if !outcome.is_valid() || self.has_live_nonce_conflict(&held.transaction) {
                 discarded.push(held);
                 continue;
             }
@@ -660,6 +652,55 @@ where
         self.remove_transactions(to_remove)
     }
 
+    /// Returns whether a live sub-pool holds a transaction that uses the same nonce.
+    fn has_live_nonce_conflict(&self, transaction: &TempoPooledTransaction) -> bool {
+        if transaction.is_aa_2d() {
+            self.aa_2d_pool.read().contains_nonce(transaction)
+        } else {
+            self.protocol_pool
+                .get_transaction_by_sender_and_nonce(transaction.sender(), transaction.nonce())
+                .is_some()
+        }
+    }
+
+    /// Removes held transactions whose nonce the committed `state` used, notifying listeners,
+    /// and returns them. Both live pools drop such transactions in the same block.
+    pub(crate) fn remove_consumed_delayed_transactions(
+        &self,
+        state: &AddressMap<BundleAccount>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let mut removed = Vec::new();
+        let held = self.delayed_pool.write().remove_consumed(state);
+        self.notify_held_removed(&mut removed, held);
+        removed
+    }
+
+    /// Returns the hashes of live transactions after `transaction` in its sequential nonce lane.
+    fn live_lane_descendants(&self, transaction: &TempoPooledTransaction) -> Vec<TxHash> {
+        let Some(lane) = crate::delayed_pool::sequence_lane(transaction) else {
+            return Vec::new();
+        };
+        let later = |tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>| {
+            crate::delayed_pool::sequence_lane(&tx.transaction) == Some(lane)
+                && tx.nonce() > transaction.nonce()
+        };
+        if transaction.is_aa_2d() {
+            self.aa_2d_pool
+                .read()
+                .get_transactions_by_sender_iter(lane.address)
+                .filter(later)
+                .map(|tx| *tx.hash())
+                .collect()
+        } else {
+            self.protocol_pool
+                .get_transactions_by_sender(lane.address)
+                .iter()
+                .filter(|tx| later(tx))
+                .map(|tx| *tx.hash())
+                .collect()
+        }
+    }
+
     /// Holds a validated transaction in the delayed sub-pool until `valid_after`.
     ///
     /// Listeners see it as queued: it fires no pending notification, and is announced to peers
@@ -675,6 +716,10 @@ where
         let hash = *transaction.hash();
         if self.protocol_pool.contains(&hash) || self.aa_2d_pool.read().contains(&hash) {
             return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
+        }
+        // It would be dropped at release anyway.
+        if self.has_live_nonce_conflict(&transaction) {
+            return Err(PoolError::new(hash, PoolErrorKind::ReplacementUnderpriced));
         }
 
         let protocol_pool = self.protocol_pool.inner();
@@ -700,7 +745,19 @@ where
                 valid_after,
                 authorities.unwrap_or_default(),
             )
-            .map_err(|err| PoolError::new(hash, PoolErrorKind::Other(Box::new(err))))?;
+            // Reported with the live pool's kinds so RPC returns the standard txpool errors.
+            .map_err(|err| {
+                let kind = match err {
+                    crate::delayed_pool::Error::PoolFull => PoolErrorKind::DiscardedOnInsert,
+                    crate::delayed_pool::Error::AuthorityLimit(authority) => {
+                        PoolErrorKind::SpammerExceededCapacity(authority)
+                    }
+                    crate::delayed_pool::Error::NonceConflict => {
+                        PoolErrorKind::ReplacementUnderpriced
+                    }
+                };
+                PoolError::new(hash, kind)
+            })?;
 
         let added = AddedTransaction::Parked {
             transaction: tx,
@@ -1326,7 +1383,12 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let held = self.delayed_pool.write().remove_transactions(hashes.iter());
+        let mut held = self.delayed_pool.write().remove_transactions(hashes.iter());
+        // Live transactions after a removed held one in its lane descend from it.
+        let mut hashes = hashes;
+        for tx in &held {
+            hashes.extend(self.live_lane_descendants(&tx.transaction));
+        }
         let mut txs = self
             .aa_2d_pool
             .write()
@@ -1335,6 +1397,11 @@ where
             self.protocol_pool
                 .remove_transactions_and_descendants(hashes),
         );
+        let held_descendants = self
+            .delayed_pool
+            .write()
+            .remove_descendants(txs.iter().chain(&held));
+        held.extend(held_descendants);
         self.notify_held_removed(&mut txs, held);
         txs
     }
@@ -1709,21 +1776,28 @@ where
         self.delayed_pool.write().held_transactions_listener()
     }
 
-    fn get_delayed_transactions_by_address_and_nonce_key(
+    fn get_transactions_by_address_and_nonce_key(
         &self,
         address: Address,
         nonce_key: U256,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        self.delayed_pool
+        let in_lane = |tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>| {
+            !tx.transaction.is_expiring_nonce() && tx.transaction.nonce_key() == Some(nonce_key)
+        };
+        let mut txs: Vec<_> = self
+            .aa_2d_pool
             .read()
-            .transactions()
-            .filter(|tx| {
-                tx.sender() == address
-                    && !tx.transaction.is_expiring_nonce()
-                    && tx.transaction.nonce_key() == Some(nonce_key)
-            })
-            .cloned()
-            .collect()
+            .get_transactions_by_sender_iter(address)
+            .filter(in_lane)
+            .collect();
+        txs.extend(
+            self.delayed_pool
+                .read()
+                .transactions()
+                .filter(|tx| tx.sender() == address && in_lane(tx))
+                .cloned(),
+        );
+        txs
     }
 }
 
@@ -4192,13 +4266,10 @@ mod tests {
             .await
             .expect_err("authority limit is reached");
         assert!(!err.is_bad_transaction());
-        let PoolErrorKind::Other(err) = &err.kind else {
-            panic!("unexpected error kind: {err:?}");
-        };
-        assert_eq!(
-            err.downcast_ref::<delayed_pool::Error>(),
-            Some(&delayed_pool::Error::AuthorityLimit(sender))
-        );
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::SpammerExceededCapacity(authority) if authority == sender
+        ));
     }
 
     #[tokio::test]
@@ -4234,11 +4305,11 @@ mod tests {
             Some(held_hash)
         );
         assert_eq!(
-            tx_hashes(&pool.get_delayed_transactions_by_address_and_nonce_key(sender, U256::ONE)),
+            tx_hashes(&pool.get_transactions_by_address_and_nonce_key(sender, U256::ONE)),
             vec![held_lane_hash]
         );
         assert!(
-            pool.get_delayed_transactions_by_address_and_nonce_key(sender, U256::from(2))
+            pool.get_transactions_by_address_and_nonce_key(sender, U256::from(2))
                 .is_empty()
         );
 
@@ -4256,6 +4327,19 @@ mod tests {
             hash(pool.get_highest_transaction_by_sender(sender)),
             Some(live_hash)
         );
+
+        // A live lane transaction queued behind the held one shares the lane.
+        let live_lane = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(1).build();
+        let live_lane_hash = *live_lane.hash();
+        pool.add_transaction(TransactionOrigin::External, live_lane)
+            .await
+            .expect("transaction should be admitted");
+        let mut lane =
+            tx_hashes(&pool.get_transactions_by_address_and_nonce_key(sender, U256::ONE));
+        lane.sort();
+        let mut expected = vec![held_lane_hash, live_lane_hash];
+        expected.sort();
+        assert_eq!(lane, expected);
     }
 
     #[tokio::test]
@@ -4300,5 +4384,64 @@ mod tests {
             events.next().now_or_never().flatten(),
             Some(TransactionEvent::Discarded)
         ));
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[tokio::test]
+    async fn descendant_removal_covers_held_and_live_transactions(nonce_key: U256) {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let held = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .valid_after(tip + 60)
+            .build();
+        let held_next = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(1)
+            .valid_after(tip + 60)
+            .build();
+        let live = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
+        let mut expected = vec![*held.hash(), *held_next.hash(), *live.hash()];
+        let root = *held.hash();
+        for tx in [held, held_next, live] {
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction should be admitted");
+        }
+
+        let mut removed = tx_hashes(&pool.remove_transactions_and_descendants(vec![root]));
+        removed.sort();
+        expected.sort();
+        assert_eq!(removed, expected);
+        assert_eq!(pool.pool_size().total, 0);
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[tokio::test]
+    async fn rejects_held_transaction_whose_nonce_is_live(nonce_key: U256) {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        pool.add_transaction(
+            TransactionOrigin::External,
+            TxBuilder::aa(sender).nonce_key(nonce_key).build(),
+        )
+        .await
+        .expect("transaction should be admitted");
+
+        let err = pool
+            .add_transaction(
+                TransactionOrigin::External,
+                TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .valid_after(tip + 60)
+                    .build(),
+            )
+            .await
+            .expect_err("the nonce is already live");
+        assert!(matches!(err.kind, PoolErrorKind::ReplacementUnderpriced));
     }
 }

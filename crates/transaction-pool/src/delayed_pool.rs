@@ -12,11 +12,13 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, B256Map, Entry, HashMap},
+    map::{AddressMap, B256Map, B256Set, Entry, HashMap},
 };
 use reth_primitives_traits::InMemorySize;
 use reth_transaction_pool::{GetPooledTransactionLimit, PoolTransaction, ValidPoolTransaction};
+use reth_trie_common::bundle_state::BundleAccount;
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
+use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tokio::sync::mpsc;
 
 /// Default number of seconds before `valid_after` at which a held transaction is released.
@@ -51,8 +53,15 @@ pub struct DelayedPool {
     by_valid_after: BTreeSet<(u64, TxHash)>,
     /// Held transactions ordered by priority fee, lowest first, for eviction when full.
     by_priority: BTreeSet<(u128, TxHash)>,
-    /// Number of held transactions per authority.
+    /// Number of held transactions per sender.
+    by_sender: AddressMap<usize>,
+    /// Number of held transactions that name an address as an authority other than their sender.
+    ///
+    /// Kept apart from [`Self::by_sender`] so that replaying an address's published authorization
+    /// cannot use up that address's own sends.
     by_authority: AddressMap<usize>,
+    /// Hashes handed out by [`Self::take_due`] and not yet removed.
+    releasing: B256Set,
     /// Total size of held transactions in bytes.
     size: usize,
     /// Receive the hashes of propagatable transactions as they are held.
@@ -93,7 +102,7 @@ impl DelayedPool {
     /// When the pool is full, the lowest-priority held transactions are evicted to make room,
     /// but only for a transaction whose priority fee is higher than each of theirs; otherwise it
     /// is rejected with [`Error::PoolFull`]. `authorities` are the authorities recovered during
-    /// validation; the sender always counts as one. The caller ensures no sub-pool holds the
+    /// validation, counted apart from the sender. The caller ensures no sub-pool holds the
     /// transaction's hash.
     pub(crate) fn insert(
         &mut self,
@@ -107,7 +116,12 @@ impl DelayedPool {
             return Err(Error::NonceConflict);
         }
 
-        authorities.push(transaction.sender());
+        let sender = transaction.sender();
+        let max_per_authority = self.config.max_per_authority.get();
+        if self.by_sender.get(&sender).copied().unwrap_or_default() >= max_per_authority {
+            return Err(Error::AuthorityLimit(sender));
+        }
+        authorities.retain(|authority| *authority != sender);
         authorities.sort_unstable();
         authorities.dedup();
         if let Some(authority) = authorities.iter().find(|authority| {
@@ -115,7 +129,7 @@ impl DelayedPool {
                 .get(*authority)
                 .copied()
                 .unwrap_or_default()
-                >= self.config.max_per_authority.get()
+                >= max_per_authority
         }) {
             return Err(Error::AuthorityLimit(*authority));
         }
@@ -145,6 +159,7 @@ impl DelayedPool {
             .collect();
 
         self.by_nonce.insert(held_nonce, hash);
+        *self.by_sender.entry(sender).or_default() += 1;
         for authority in &authorities {
             *self.by_authority.entry(*authority).or_default() += 1;
         }
@@ -173,16 +188,21 @@ impl DelayedPool {
     }
 
     /// Returns held transactions whose `valid_after` is within the lead time of
-    /// `tip_timestamp`, earliest first. They stay held until removed.
-    pub(crate) fn due(
-        &self,
+    /// `tip_timestamp`, earliest first, skipping those an earlier call returned. They stay held
+    /// until removed, so only one release revalidates each transaction.
+    pub(crate) fn take_due(
+        &mut self,
         tip_timestamp: u64,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let release_until = tip_timestamp.saturating_add(self.config.lead_secs);
-        self.by_valid_after
+        let due: Vec<_> = self
+            .by_valid_after
             .range(..=(release_until, B256::repeat_byte(0xff)))
+            .filter(|(_, hash)| !self.releasing.contains(hash))
             .map(|(_, hash)| Arc::clone(&self.by_hash[hash].transaction))
-            .collect()
+            .collect();
+        self.releasing.extend(due.iter().map(|tx| *tx.hash()));
+        due
     }
 
     /// Removes the held transaction with the given hash, if any.
@@ -198,6 +218,13 @@ impl DelayedPool {
         self.by_nonce
             .remove(&HeldNonce::of(&transaction.transaction));
         self.by_valid_after.remove(&(valid_after, *hash));
+        self.releasing.remove(hash);
+        if let Entry::Occupied(mut entry) = self.by_sender.entry(transaction.sender()) {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
         self.by_priority
             .remove(&(transaction.transaction.priority_fee_or_price(), *hash));
         for authority in &authorities {
@@ -225,6 +252,80 @@ impl DelayedPool {
             .into_iter()
             .filter_map(|hash| self.remove(hash))
             .collect()
+    }
+
+    /// Removes and returns the held transactions whose nonce `state` shows as used: a protocol
+    /// nonce below the sender's account nonce, a 2D nonce below its lane's nonce, or an expiring
+    /// nonce marked seen.
+    pub(crate) fn remove_consumed(
+        &mut self,
+        state: &AddressMap<BundleAccount>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        if self.by_hash.is_empty() {
+            return Vec::new();
+        }
+        let nonce_state = state.get(&NONCE_PRECOMPILE_ADDRESS);
+        let slot_value = |slot: U256| {
+            nonce_state
+                .and_then(|account| account.storage.get(&slot))
+                .map(|value| value.present_value)
+        };
+        let consumed: Vec<_> = self
+            .by_hash
+            .iter()
+            .filter(|(_, held)| {
+                let tx = &held.transaction.transaction;
+                if tx.is_expiring_nonce() {
+                    tx.expiring_nonce_slot()
+                        .and_then(slot_value)
+                        .is_some_and(|seen| !seen.is_zero())
+                } else if tx.is_aa_2d() {
+                    tx.nonce_key_slot()
+                        .and_then(slot_value)
+                        .is_some_and(|lane_nonce| lane_nonce > U256::from(tx.nonce()))
+                } else {
+                    state
+                        .get(&tx.sender())
+                        .and_then(|account| account.info.as_ref())
+                        .is_some_and(|info| info.nonce > tx.nonce())
+                }
+            })
+            .map(|(hash, _)| *hash)
+            .collect();
+        self.remove_transactions(&consumed)
+    }
+
+    /// Removes and returns the held transactions that come after any of `removed` in the same
+    /// sequential nonce lane: same sender and nonce key, higher nonce.
+    pub(crate) fn remove_descendants<'a>(
+        &mut self,
+        removed: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        if self.by_hash.is_empty() {
+            return Vec::new();
+        }
+        let mut lowest_removed: HashMap<AASequenceId, u64> = HashMap::default();
+        for tx in removed {
+            if let Some(lane) = sequence_lane(&tx.transaction) {
+                let lowest = lowest_removed.entry(lane).or_insert(u64::MAX);
+                *lowest = (*lowest).min(tx.nonce());
+            }
+        }
+        if lowest_removed.is_empty() {
+            return Vec::new();
+        }
+        let descendants: Vec<_> = self
+            .by_hash
+            .iter()
+            .filter(|(_, held)| {
+                let tx = &held.transaction.transaction;
+                sequence_lane(tx)
+                    .and_then(|lane| lowest_removed.get(&lane))
+                    .is_some_and(|lowest| tx.nonce() > *lowest)
+            })
+            .map(|(hash, _)| *hash)
+            .collect();
+        self.remove_transactions(&descendants)
     }
 
     /// Removes the held transactions sent by `sender` and returns them.
@@ -352,8 +453,8 @@ pub struct Config {
     pub max_count: NonZeroUsize,
     /// Maximum total size of held transactions in bytes.
     pub max_size: NonZeroUsize,
-    /// Maximum number of held transactions per authority: the sender and every authority
-    /// recovered from the transaction's authorization lists.
+    /// Maximum number of held transactions per sender, and separately per authority recovered
+    /// from held transactions' authorization lists.
     pub max_per_authority: NonZeroUsize,
 }
 
@@ -375,10 +476,11 @@ pub enum Error {
     /// lower priority fee than the rejected one.
     #[error("delayed transaction pool is full")]
     PoolFull,
-    /// The authority already has the maximum number of held transactions.
+    /// The sender already sends, or the authority is already named by, the maximum number of
+    /// held transactions.
     #[error("authority {0} has the maximum number of delayed transactions")]
     AuthorityLimit(Address),
-    /// A held transaction already uses this nonce; held transactions cannot be replaced.
+    /// A held or live transaction already uses this nonce; held transactions cannot be replaced.
     #[error("a delayed transaction with the same nonce is already held")]
     NonceConflict,
 }
@@ -387,7 +489,8 @@ pub enum Error {
 struct HeldTransaction {
     transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     valid_after: u64,
-    /// Sorted, deduplicated authorities counted against [`Config::max_per_authority`].
+    /// Sorted, deduplicated authorities other than the sender, counted against
+    /// [`Config::max_per_authority`].
     authorities: Vec<Address>,
 }
 
@@ -417,12 +520,24 @@ impl HeldNonce {
     }
 }
 
+/// Returns the transaction's sequential nonce lane (sender and nonce key, zero for protocol
+/// nonces), or `None` for an expiring nonce transaction, which has no lane.
+pub(crate) fn sequence_lane(transaction: &TempoPooledTransaction) -> Option<AASequenceId> {
+    (!transaction.is_expiring_nonce()).then(|| {
+        AASequenceId::new(
+            transaction.sender(),
+            transaction.nonce_key().unwrap_or_default(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
     use alloy_primitives::U256;
     use reth_transaction_pool::TransactionOrigin;
+    use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
 
     fn valid(tx: TempoPooledTransaction) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
@@ -599,9 +714,9 @@ mod tests {
         insert(&mut pool, Arc::clone(&late), 110, Vec::new()).unwrap();
         insert(&mut pool, Arc::clone(&early), 105, Vec::new()).unwrap();
 
-        assert!(pool.due(102).is_empty());
-        assert_eq!(hashes(&pool.due(103)), vec![*early.hash()]);
-        assert_eq!(hashes(&pool.due(108)), vec![*early.hash(), *late.hash()]);
+        assert!(pool.take_due(102).is_empty());
+        assert_eq!(hashes(&pool.take_due(103)), vec![*early.hash()]);
+        assert_eq!(hashes(&pool.take_due(108)), vec![*late.hash()]);
         assert_eq!(pool.len(), 2, "due must not remove transactions");
     }
 
@@ -619,7 +734,7 @@ mod tests {
         assert_eq!(hashes(&pool.remove_transactions([&hash])), vec![hash]);
         assert!(!pool.contains(&hash));
         assert_eq!((pool.len(), pool.size()), (0, 0));
-        assert!(pool.due(u64::MAX).is_empty());
+        assert!(pool.take_due(u64::MAX).is_empty());
         assert_eq!(
             insert(&mut pool, valid(tx), 105, Vec::new()),
             Ok(Vec::new())
@@ -721,5 +836,117 @@ mod tests {
         assert_eq!(hash_at(U256::ZERO, 3), Some(*protocol.hash()));
         assert_eq!(hash_at(U256::ONE, 3), Some(*lane.hash()));
         assert_eq!(hash_at(U256::ZERO, 2), None);
+    }
+
+    #[test]
+    fn naming_an_authority_does_not_use_up_its_own_sends() {
+        let mut pool = DelayedPool::new(Config {
+            max_per_authority: NonZeroUsize::MIN,
+            ..Default::default()
+        });
+        let victim = Address::random();
+        let replayed = valid(TxBuilder::aa(Address::random()).build());
+
+        assert_eq!(
+            insert(&mut pool, replayed, 105, vec![victim]),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            insert(
+                &mut pool,
+                valid(TxBuilder::aa(victim).build()),
+                105,
+                Vec::new()
+            ),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            insert(
+                &mut pool,
+                valid(TxBuilder::aa(Address::random()).build()),
+                105,
+                vec![victim]
+            ),
+            Err(Error::AuthorityLimit(victim))
+        );
+    }
+
+    #[test]
+    fn take_due_hands_out_each_transaction_once() {
+        let mut pool = DelayedPool::new(Config {
+            lead_secs: 0,
+            ..Default::default()
+        });
+        let first = valid(TxBuilder::aa(Address::random()).build());
+        let second = valid(TxBuilder::aa(Address::random()).build());
+        insert(&mut pool, Arc::clone(&first), 100, Vec::new()).unwrap();
+
+        assert_eq!(hashes(&pool.take_due(100)), vec![*first.hash()]);
+        insert(&mut pool, Arc::clone(&second), 100, Vec::new()).unwrap();
+        assert_eq!(hashes(&pool.take_due(100)), vec![*second.hash()]);
+        assert!(pool.take_due(100).is_empty());
+        assert_eq!(pool.len(), 2, "taken transactions stay held until removed");
+    }
+
+    #[test]
+    fn removes_held_transactions_whose_nonce_was_used() {
+        let mut pool = DelayedPool::default();
+        let sender = Address::random();
+        let used_lane = valid(TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(1).build());
+        let next_lane = valid(TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(2).build());
+        let expiring = valid(
+            TxBuilder::aa(sender)
+                .nonce_key(U256::MAX)
+                .valid_before(200)
+                .build(),
+        );
+        for tx in [&used_lane, &next_lane, &expiring] {
+            insert(&mut pool, Arc::clone(tx), 105, Vec::new()).unwrap();
+        }
+
+        let mut storage = HashMap::default();
+        storage.insert(
+            used_lane.transaction.nonce_key_slot().unwrap(),
+            StorageSlot::new_changed(U256::ZERO, U256::from(2)),
+        );
+        storage.insert(
+            expiring.transaction.expiring_nonce_slot().unwrap(),
+            StorageSlot::new_changed(U256::ZERO, U256::ONE),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+
+        let mut removed = hashes(&pool.remove_consumed(&state));
+        removed.sort();
+        let mut expected = vec![*used_lane.hash(), *expiring.hash()];
+        expected.sort();
+        assert_eq!(removed, expected);
+        assert!(pool.contains(next_lane.hash()));
+    }
+
+    #[test]
+    fn removes_held_descendants_in_the_same_lane() {
+        let mut pool = DelayedPool::default();
+        let sender = Address::random();
+        let first = valid(TxBuilder::aa(sender).nonce_key(U256::ONE).build());
+        let second = valid(TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(1).build());
+        let other_lane = valid(
+            TxBuilder::aa(sender)
+                .nonce_key(U256::from(2))
+                .nonce(1)
+                .build(),
+        );
+        for tx in [&second, &other_lane] {
+            insert(&mut pool, Arc::clone(tx), 105, Vec::new()).unwrap();
+        }
+
+        assert_eq!(
+            hashes(&pool.remove_descendants([&first])),
+            vec![*second.hash()]
+        );
+        assert!(pool.contains(other_lane.hash()));
     }
 }

@@ -549,9 +549,11 @@ where
 
         // 1. Update 2D nonce pool before scan-based maintenance.
         // This removes mined 2D nonce transactions and promotes newly
-        // unblocked transactions before later pool scans.
+        // unblocked transactions before later pool scans. Held transactions whose nonce the
+        // block used are dropped too.
         let nonce_pool_start = Instant::now();
         removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
+        removed_txs.push(pool.remove_consumed_delayed_transactions(bundle_state));
         metrics
             .nonce_pool_update_duration_seconds
             .record(nonce_pool_start.elapsed());
@@ -765,8 +767,8 @@ where
 
         // 6. Release held transactions that are about to become valid. Starts after the scans
         // above so transactions they evicted are not revalidated, and runs in its own task so
-        // revalidation doesn't hold up the next block. Overlapping releases skip transactions an
-        // earlier one already took.
+        // revalidation doesn't hold up the next block. A release still in flight keeps the
+        // transactions it took, so later ones don't revalidate them again.
         {
             let pool = pool.clone();
             tokio::spawn(async move { pool.release_delayed_transactions(tip_timestamp).await });
