@@ -111,14 +111,25 @@ where
     /// expired by `timestamp`, and their nonce-dependent successors, are skipped for this
     /// iterator only. Future-valid transactions remain in the pool for later blocks. Apply this
     /// filter before prewarming so skipped transactions are never prewarmed.
+    ///
+    /// A 2D nonce transaction whose first call is a CREATE also bumps the sender's protocol
+    /// nonce, so it is skipped while the sender has protocol nonce transactions in the pool.
     pub fn best_transactions_for_block(
         &self,
         attributes: BestTransactionsAttributes,
         timestamp: u64,
     ) -> impl BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
     + use<Client, EvmConfig> {
+        let protocol_pool = self.protocol_pool.clone();
         self.best_transactions_with_attributes(attributes)
-            .filter_transactions(move |tx| tx.transaction.is_includable_at(timestamp))
+            .filter_transactions(move |tx| {
+                tx.transaction.is_includable_at(timestamp)
+                    && !(tx.transaction.is_aa_2d()
+                        && tx.transaction.is_create()
+                        && !protocol_pool
+                            .get_transactions_by_sender(tx.sender())
+                            .is_empty())
+            })
     }
 
     /// Returns the configured client
@@ -1988,6 +1999,76 @@ mod tests {
             .map(|tx| *tx.hash())
             .collect();
         assert_eq!(hashes, all_hashes);
+    }
+
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[test_case::test_case(U256::MAX; "expiring")]
+    fn best_transactions_for_block_selects_2d_create_after_protocol_nonce(nonce_key: U256) {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let create_calls = vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Default::default(),
+        }];
+        // A first-call CREATE on a 2D nonce key also bumps the sender's protocol nonce.
+        let create = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .calls(create_calls.clone())
+            .valid_before(100)
+            .max_priority_fee(10)
+            .build();
+        let protocol = TxBuilder::aa(sender).max_priority_fee(1).build();
+        let other_sender_create = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .calls(create_calls)
+            .valid_before(100)
+            .max_priority_fee(5)
+            .build();
+        let other_lane_call = TxBuilder::aa(sender)
+            .nonce_key(U256::from(2))
+            .max_priority_fee(3)
+            .build();
+        let (create_hash, protocol_hash, other_sender_create_hash, other_lane_call_hash) = (
+            *create.hash(),
+            *protocol.hash(),
+            *other_sender_create.hash(),
+            *other_lane_call.hash(),
+        );
+        for tx in [create, protocol, other_sender_create, other_lane_call] {
+            add_validated(&pool, tx);
+        }
+
+        let hashes: Vec<_> = pool
+            .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), 50)
+            .without_updates()
+            .map(|tx| *tx.hash())
+            .collect();
+        assert_eq!(
+            hashes,
+            vec![
+                other_sender_create_hash,
+                other_lane_call_hash,
+                protocol_hash
+            ]
+        );
+        assert!(
+            pool.get(&create_hash).is_some(),
+            "filtering must not evict transactions"
+        );
+
+        // Once the sender has no protocol-nonce transactions left, the CREATE is selectable.
+        let removed = pool.remove_transactions(vec![protocol_hash]);
+        assert_eq!(tx_hashes(&removed), vec![protocol_hash]);
+        let hashes: Vec<_> = pool
+            .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), 50)
+            .without_updates()
+            .map(|tx| *tx.hash())
+            .collect();
+        assert_eq!(
+            hashes,
+            vec![create_hash, other_sender_create_hash, other_lane_call_hash]
+        );
     }
 
     #[test_case::test_case(U256::ZERO; "protocol")]
