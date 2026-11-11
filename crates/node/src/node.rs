@@ -11,8 +11,11 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
-use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
+use reth_chainspec::{ChainKind, ChainSpecProvider, EthChainSpec, Hardforks, NamedChain};
+use reth_ethereum::{
+    network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives},
+    tasks::Runtime,
+};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
@@ -36,12 +39,15 @@ use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
-use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
+use reth_storage_api::{
+    AccountInfoReader, BlockReaderIdExt, EmptyBodyStorage, StateProviderFactory,
+};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
-    Pool, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
+    Pool, PoolConfig, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
     TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
+    validate::EthTransactionValidatorBuilder,
 };
 use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
@@ -779,6 +785,84 @@ pub struct TempoPoolBuilder {
 }
 
 impl TempoPoolBuilder {
+    /// Builds the Tempo transaction pool over `client` from an ETH validator builder that already
+    /// carries the caller's node-level settings (input size, fee cap, gas limits).
+    ///
+    /// Spawns the validation tasks on `executor`. Pool maintenance is not spawned: callers that
+    /// follow the canonical chain must spawn it themselves.
+    pub fn build_with_validator<Client>(
+        self,
+        client: Client,
+        validator: EthTransactionValidatorBuilder<Client, TempoEvmConfig>,
+        executor: Runtime,
+        pool_config: PoolConfig,
+        lazy_kzg_settings: bool,
+    ) -> eyre::Result<TempoTransactionPool<Client>>
+    where
+        Client: StateProviderFactory
+            + BlockReaderIdExt<Header = TempoHeader>
+            + ChainSpecProvider<ChainSpec = TempoChainSpec>
+            + Clone
+            + 'static,
+    {
+        // this store is effectively a noop
+        let blob_store = InMemoryBlobStore::default();
+        let validator = validator
+            .disable_balance_check()
+            .with_custom_tx_type(TempoTxType::AA as u8)
+            .no_eip4844()
+            .build_with_tasks(executor.clone(), blob_store.clone());
+
+        if !lazy_kzg_settings {
+            let kzg_settings = validator.validator().kzg_settings().clone();
+            executor.spawn_blocking_task(async move {
+                let _ = kzg_settings.get();
+                debug!(target: "reth::cli", "Initialized KZG settings");
+            });
+        }
+
+        let aa_2d_config = AA2dPoolConfig {
+            price_bump_config: pool_config.price_bumps,
+            pending_limit: pool_config.pending_limit,
+            queued_limit: pool_config.queued_limit,
+            max_txs_per_sender: pool_config.max_account_slots,
+            max_txs_per_lane: self.max_txs_per_lane,
+        };
+        let aa_2d_pool = AA2dPool::new(aa_2d_config);
+        let amm_liquidity_cache = AmmLiquidityCache::new(&client)?;
+
+        let Self {
+            aa_valid_after_max_secs,
+            max_tempo_authorizations,
+            max_txs_per_lane: _,
+            disable_fee_amm_check,
+            address_filter,
+            additional_stateless_validation,
+            additional_stateful_validation,
+        } = self;
+        let validator = validator.map(move |mut v| {
+            v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
+            v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
+            TempoTransactionValidator::new(
+                v,
+                aa_valid_after_max_secs,
+                max_tempo_authorizations,
+                amm_liquidity_cache.clone(),
+            )
+            .with_disable_fee_amm_check(disable_fee_amm_check)
+            .with_address_filter(address_filter.clone())
+        });
+        let protocol_pool = Pool::new(
+            validator,
+            TempoTipOrdering::default(),
+            blob_store,
+            pool_config,
+        );
+
+        // Wrap the protocol pool in our hybrid TempoTransactionPool
+        Ok(TempoTransactionPool::new(protocol_pool, aa_2d_pool))
+    }
+
     /// Sets the maximum number of transactions per regular 2D nonce lane.
     pub const fn with_max_txs_per_lane(mut self, max: usize) -> Self {
         self.max_txs_per_lane = max;
@@ -926,8 +1010,6 @@ where
         let mut pool_config = ctx.pool_config();
         pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
 
-        // this store is effectively a noop
-        let blob_store = InMemoryBlobStore::default();
         let validator =
             TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
                 .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
@@ -935,61 +1017,16 @@ where
                 .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
                 .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
                 .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
-                .disable_balance_check()
                 .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
-                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
-                .with_custom_tx_type(TempoTxType::AA as u8)
-                .no_eip4844()
-                .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
-
-        if !ctx.config().debug.lazy_kzg_settings {
-            let kzg_settings = validator.validator().kzg_settings().clone();
-            ctx.task_executor().spawn_blocking_task(async move {
-                let _ = kzg_settings.get();
-                debug!(target: "reth::cli", "Initialized KZG settings");
-            });
-        }
-
-        let aa_2d_config = AA2dPoolConfig {
-            price_bump_config: pool_config.price_bumps,
-            pending_limit: pool_config.pending_limit,
-            queued_limit: pool_config.queued_limit,
-            max_txs_per_sender: pool_config.max_account_slots,
-            max_txs_per_lane: self.max_txs_per_lane,
-        };
-        let aa_2d_pool = AA2dPool::new(aa_2d_config);
-        let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
-
-        let Self {
-            aa_valid_after_max_secs,
-            max_tempo_authorizations,
-            max_txs_per_lane: _,
-            disable_fee_amm_check,
-            address_filter,
-            additional_stateless_validation,
-            additional_stateful_validation,
-        } = self;
-        let validator = validator.map(move |mut v| {
-            v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
-            v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
-            TempoTransactionValidator::new(
-                v,
-                aa_valid_after_max_secs,
-                max_tempo_authorizations,
-                amm_liquidity_cache.clone(),
-            )
-            .with_disable_fee_amm_check(disable_fee_amm_check)
-            .with_address_filter(address_filter.clone())
-        });
-        let protocol_pool = Pool::new(
+                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks);
+        let lazy_kzg_settings = ctx.config().debug.lazy_kzg_settings;
+        let transaction_pool = self.build_with_validator(
+            ctx.provider().clone(),
             validator,
-            TempoTipOrdering::default(),
-            blob_store,
+            ctx.task_executor().clone(),
             pool_config.clone(),
-        );
-
-        // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+            lazy_kzg_settings,
+        )?;
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
