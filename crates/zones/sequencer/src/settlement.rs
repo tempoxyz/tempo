@@ -61,6 +61,7 @@ use reth_storage_api::BlockNumReader;
 use schnellru::{ByLength, LruMap};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt, rpc::TempoCallBuilderExt};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
 use tempo_primitives::{Block, TempoReceipt};
 use tokio::time::{Instant, sleep};
 use tracing::{info, instrument, warn};
@@ -73,6 +74,8 @@ use crate::nonce_keys::SUBMIT_BATCH_NONCE_KEY;
 pub enum BatchSubmitError {
     PortalAdvanced,
     PreparedAnchorInvalid(eyre::Report),
+    /// A settlement signer's root key was retired by `upgradeAccount`, so the portal rejects it.
+    RootKeyRetired(Address),
     /// The attestation was generated using a prover selected under a different L1 policy.
     ProverHardforkChanged {
         proved: TempoHardfork,
@@ -94,6 +97,10 @@ impl fmt::Display for BatchSubmitError {
                 formatter.write_str("portal already committed the batch height")
             }
             Self::PreparedAnchorInvalid(error) => error.fmt(formatter),
+            Self::RootKeyRetired(signer) => write!(
+                formatter,
+                "sequencer root key {signer} was retired by upgradeAccount and can no longer settle"
+            ),
             Self::ProverHardforkChanged { proved, current } => write!(
                 formatter,
                 "prover hardfork changed from {proved} to {current}; regenerate the proof"
@@ -107,7 +114,9 @@ impl std::error::Error for BatchSubmitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::PreparedAnchorInvalid(error) | Self::Other(error) => Some(error.as_ref()),
-            Self::PortalAdvanced | Self::ProverHardforkChanged { .. } => None,
+            Self::PortalAdvanced | Self::RootKeyRetired(_) | Self::ProverHardforkChanged { .. } => {
+                None
+            }
         }
     }
 }
@@ -454,8 +463,16 @@ impl BatchSubmitter {
         let anchor_block_hash = prepared.anchor.block_hash();
         let anchors_to_current_tip = anchor_block_number == current_l1_block;
 
+        // A signer can migrate after signing; rebuild the certificate instead of retrying it.
+        let signers = match certificate {
+            Some(certificate) => certificate.signatures.keys().copied().collect(),
+            None => Vec::from_iter(signer.map(PrivateKeySigner::address)),
+        };
+        if let Some(&retired) = retired_roots(&self.l1_provider, signers).await?.first() {
+            return Err(BatchSubmitError::RootKeyRetired(retired));
+        }
         let signatures = if let Some(certificate) = certificate {
-            certificate.signatures.clone()
+            certificate.signatures.values().cloned().collect()
         } else {
             // Legacy mode, where the 1-of-1 sequencer will self-sign the attestation
             let signer = signer
@@ -1245,6 +1262,27 @@ pub(crate) async fn wait_for_l1_block(
     }
 }
 
+/// Returns the `accounts` whose primitive root key `upgradeAccount` retired (TIP-1112). The
+/// portal rejects a settlement certificate carrying a signature from any of them.
+pub async fn retired_roots(
+    l1_provider: &DynProvider<TempoNetwork>,
+    accounts: impl IntoIterator<Item = Address>,
+) -> Result<Vec<Address>> {
+    let precompile = IConfigurableAccount::new(CONFIGURABLE_ACCOUNT_ADDRESS, l1_provider);
+    let mut retired = Vec::new();
+    for account in accounts {
+        let commitment = precompile.getConfigCommitment(account).call_raw().await?;
+        // Before T14 the precompile is absent and the call returns nothing.
+        if commitment.is_empty() {
+            continue;
+        }
+        if !B256::abi_decode_validate(&commitment)?.is_zero() {
+            retired.push(account);
+        }
+    }
+    Ok(retired)
+}
+
 fn decode_batch_submitted_log(log: &alloy_primitives::Log) -> Option<Result<BatchSubmitted>> {
     match log.topics().first() {
         Some(topic) if topic == &BatchSubmitted::SIGNATURE_HASH => Some(
@@ -1300,7 +1338,7 @@ impl SettlementAbi {
         ))
     }
 
-    pub(crate) fn from_hardfork(hardfork: TempoHardfork) -> Self {
+    fn from_hardfork(hardfork: TempoHardfork) -> Self {
         if hardfork >= TempoHardfork::T13 {
             Self::T13
         } else {
@@ -2717,7 +2755,7 @@ mod tests {
             height: batch.zone_height,
             digest: B256::ZERO,
             attestation,
-            signatures: Vec::new(),
+            signatures: Default::default(),
         };
 
         let error = submitter

@@ -1503,6 +1503,16 @@ async fn set_leader(
             "target is not a registered portal sequencer",
         ));
     }
+    // Tempo rejects the settlement transactions of a root key retired by `upgradeAccount`.
+    if !zone_sequencer::retired_roots(relayer, [target])
+        .await
+        .map_err(internal)?
+        .is_empty()
+    {
+        return Err(JsonRpcError::invalid_params(
+            "target's root key is retired, so it cannot settle",
+        ));
+    }
 
     // Read the finalized epoch for the compare-and-set guard. A duplicate fanout to
     // the already-active leader is answered without a transaction; races remain safe

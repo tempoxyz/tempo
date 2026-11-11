@@ -458,7 +458,10 @@ impl TempoConsensusSpec for TempoChainSpec {
 mod tests {
     use crate::{
         TempoHardfork,
-        spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
+        spec::{
+            DEV, MODERATO, PRESTO, TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP,
+            TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks,
+        },
     };
     use alloy_genesis::Genesis;
     use alloy_primitives::hex;
@@ -635,6 +638,17 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(0), latest);
         assert_eq!(chainspec.tempo_hardfork_at(1000), latest);
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), latest);
+    }
+
+    /// T14 retires migrated root keys, but only the T15 `ZonePortal` runtime stops counting them
+    /// in settlement, so T14 must never be live ahead of T15.
+    #[test]
+    fn t15_activates_no_later_than_t14() {
+        for chainspec in [&PRESTO, &MODERATO, &DEV] {
+            if let Some(t14) = chainspec.info.fork_time(TempoHardfork::T14) {
+                assert!(chainspec.is_t15_active_at_timestamp(t14));
+            }
+        }
     }
 
     #[test]

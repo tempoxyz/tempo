@@ -1574,60 +1574,76 @@ contract ZonePortalTest is BaseTest {
         _expectInvalidQuorumCertificate(portal, signers[0], batch, validSignatures);
     }
 
+    function _mockConfigCommitment(address account, bytes memory output) internal {
+        vm.mockCall(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            abi.encodeCall(IConfigurableAccount.getConfigCommitment, (account)),
+            output
+        );
+    }
+
     /// @notice TIP-1112: once a sequencer upgrades to a configurable account, its original
     /// primitive key no longer counts toward a settlement certificate.
     function test_submitBatch_rejectsRetiredSequencerRootKey() public {
         address[] memory signers = _activateSequencerSet(2);
         QuorumBatch memory batch = _quorumBatch();
         bytes32 digest = _attestationDigestFor(portal, block.chainid, _attestationFor(batch));
+        _mockConfigCommitment(signers[1], abi.encode(keccak256("migrated")));
 
-        vm.mockCall(
-            CONFIGURABLE_ACCOUNT_ADDRESS,
-            abi.encodeCall(IConfigurableAccount.getConfigCommitment, (signers[1])),
-            abi.encode(keccak256("migrated"))
-        );
-        _expectInvalidQuorumCertificate(
-            portal, signers[0], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_B_KEY)
-        );
+        // A quorum of unretired signers does not rescue a certificate carrying the retired key.
+        bytes[] memory signatures = new bytes[](3);
+        signatures[0] = _sign(SIGNER_A_KEY, digest);
+        signatures[1] = _sign(SIGNER_C_KEY, digest);
+        signatures[2] = _sign(SIGNER_B_KEY, digest);
+        _expectInvalidQuorumCertificate(portal, signers[0], batch, signatures);
 
-        // The signers that have not migrated still settle the same batch.
+        // Retirement only removes the vote: the migrated sequencer may still submit the
+        // certificate of the others.
         _submitQuorumBatch(
-            portal, signers[0], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_C_KEY)
+            portal, signers[1], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_C_KEY)
         );
         assertEq(portal.zoneHeight(), batch.nextZoneHeight);
     }
 
-    function test_submitBatch_rejectsCertificateWhenCommitmentReadReverts() public {
+    function test_submitBatch_rejectsCertificateWhenCommitmentReadFails() public {
         address[] memory signers = _activateSequencerSet(2);
         QuorumBatch memory batch = _quorumBatch();
-        bytes32 digest = _attestationDigestFor(portal, block.chainid, _attestationFor(batch));
+        bytes[] memory signatures =
+            _quorumSignatures(_attestationDigestFor(portal, block.chainid, _attestationFor(batch)));
+
+        // A zero commitment of the wrong length is malformed, not unretired.
+        _mockConfigCommitment(signers[1], new bytes(64));
+        _expectInvalidQuorumCertificate(portal, signers[0], batch, signatures);
 
         vm.mockCallRevert(
             CONFIGURABLE_ACCOUNT_ADDRESS,
             abi.encodeCall(IConfigurableAccount.getConfigCommitment, (signers[0])),
-            ""
+            abi.encode(bytes32(0))
         );
-        _expectInvalidQuorumCertificate(
-            portal, signers[0], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_B_KEY)
-        );
+        _mockConfigCommitment(signers[1], abi.encode(bytes32(0)));
+        _expectInvalidQuorumCertificate(portal, signers[0], batch, signatures);
     }
 
-    /// @notice Before T14 the configurable-account precompile is absent and returns no data, so
-    /// no sequencer root key counts as retired.
-    function test_submitBatch_settlesWhenConfigurableAccountsAreAbsent() public {
-        address[] memory signers = _activateSequencerSet(2);
-        QuorumBatch memory batch = _quorumBatch();
-        bytes32 digest = _attestationDigestFor(portal, block.chainid, _attestationFor(batch));
+    /// @notice A sole sequencer that migrates halts settlement until the admin replaces it.
+    function test_submitBatch_rejectsRetiredSoleSequencer() public {
+        vm.roll(block.number + 1);
+        BlockTransition memory blockTransition = BlockTransition({
+            prevBlockHash: portal.blockHash(), nextBlockHash: keccak256("state")
+        });
+        DepositQueueTransition memory depositQueueTransition;
+        _mockConfigCommitment(sequencer, abi.encode(keccak256("migrated")));
 
-        vm.mockCall(
-            CONFIGURABLE_ACCOUNT_ADDRESS,
-            abi.encodeWithSelector(IConfigurableAccount.getConfigCommitment.selector),
+        vm.expectRevert(IZonePortal.InvalidQuorumCertificate.selector);
+        _submitBatch(
+            portal,
+            uint64(block.number - 1),
+            0,
+            blockTransition,
+            depositQueueTransition,
+            bytes32(0),
+            "",
             ""
         );
-        _submitQuorumBatch(
-            portal, signers[0], batch, _quorumSignatures(digest, SIGNER_A_KEY, SIGNER_B_KEY)
-        );
-        assertEq(portal.zoneHeight(), batch.nextZoneHeight);
     }
 
     function test_adminCanPauseAndResumeDeposits() public {

@@ -1527,9 +1527,8 @@ contract ZonePortal is IZonePortal {
                 return false;
             }
             if (signer == address(0) || !isSequencer(signer)) return false;
-            // TIP-1020 recovery is stateless, so TIP-1112 leaves retiring migrated roots to its
-            // consumers: a sequencer that upgraded to a configurable account no longer votes
-            // with its original primitive key.
+            // TIP-1020 recovery is stateless, so TIP-1112 leaves rejecting the retired primitive
+            // key of a sequencer that upgraded to a configurable account to this consumer.
             if (_isRetiredRoot(signer)) return false;
             for (uint256 j = 0; j < i; ++j) {
                 if (recovered[j] == signer) return false;
@@ -1541,16 +1540,17 @@ contract ZonePortal is IZonePortal {
     }
 
     /// @dev True when `signer` has a TIP-1108 configuration commitment, meaning `upgradeAccount`
-    ///      retired its primitive root key. Before T14 the precompile is absent and the call
-    ///      returns nothing, so no root is retired. Fails closed on a revert or malformed result.
+    ///      retired its primitive root key. Fails closed on a revert or malformed result. Empty
+    ///      return data means the precompile is absent, so nothing is retired: Tempo installs
+    ///      this runtime at T15, after the precompile, so that only happens where the artifact
+    ///      is deployed without it (Foundry, pre-T14 benchmark chains).
     function _isRetiredRoot(address signer) internal view returns (bool) {
         (bool success, bytes memory output) = CONFIGURABLE_ACCOUNT_ADDRESS.staticcall(
             abi.encodeCall(IConfigurableAccount.getConfigCommitment, (signer))
         );
         if (!success) return true;
         if (output.length == 0) return false;
-        if (output.length != 32) return true;
-        return abi.decode(output, (bytes32)) != bytes32(0);
+        return output.length != 32 || abi.decode(output, (bytes32)) != 0;
     }
 
     function _domainSeparator() internal view returns (bytes32) {

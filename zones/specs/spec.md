@@ -360,9 +360,9 @@ Zones do not publish transaction data to Tempo, so a single-sequencer deployment
 
 When the settlement threshold is greater than one, a compromised sequencer's individual settlement key alone cannot certify a batch. Follower sequencers reconstruct the commitment from their own validated state and sign only an exact match.
 
-The sequencer nodes share a TOML manifest supplied with `--sequencer.manifest`. It lists each node's name, network address, Commonware Ed25519 public key, individual secp256k1 settlement address, and optional `rpc_only` status. The Ed25519 key authenticates P2P traffic; the secp256k1 key signs EIP-712 settlement attestations and its address must be registered in the portal's active sequencer set. These keys are independent.
+The sequencer nodes share a TOML manifest supplied with `--sequencer.manifest`. It lists each node's name, network address, Commonware Ed25519 public key, individual secp256k1 settlement address, and optional `rpc_only` status. The Ed25519 key authenticates P2P traffic; the secp256k1 key signs EIP-712 settlement attestations and its address must be registered in the portal's active sequencer set. These keys are independent. Upgrading a settlement address to a configurable account retires its key: the portal stops counting its signatures and Tempo rejects its transactions, so that node can neither vote nor lead until the admin registers a new address for it. Operators SHOULD rotate a sequencer out of the set before migrating its account.
 
-At startup, each node checks that its local keys identify the same manifest member, every quorum member is an active portal sequencer, and `sequencerThreshold` is nonzero and reachable by the manifest quorum. An `rpc_only` node replicates the chain and forwards transactions but has no settlement key, is not a portal sequencer, never signs an attestation, and does not count toward the threshold.
+At startup, each node checks that its local keys identify the same manifest member, every quorum member is an active portal sequencer, and `sequencerThreshold` is nonzero and reachable by the manifest quorum members whose root keys are not retired. An `rpc_only` node replicates the chain and forwards transactions but has no settlement key, is not a portal sequencer, never signs an attestation, and does not count toward the threshold.
 
 #### RPC-Only Followers
 

@@ -24,6 +24,7 @@ use zone_prover::VerifierMode;
 use zone_sequencer::{
     BatchAnchorConfig, SettlementAbi,
     attestation::{AttestationDomain, SettlementAttestation},
+    retired_roots,
 };
 
 /// Shared signing and L1-validation context for settlement attestations.
@@ -131,9 +132,19 @@ pub(crate) async fn validate_registered_sequencer_set(
             "manifest quorum node `{name}` ({address}) is not a registered ZonePortal sequencer"
         );
     }
+    // The portal does not count a root key retired by `upgradeAccount` (TIP-1112).
+    let retired = retired_roots(
+        l1_provider,
+        quorum
+            .iter()
+            .map(|(_, address)| *address)
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .wrap_err("failed reading the quorum's retired root keys")?;
     eyre::ensure!(
-        threshold > 0 && usize::from(threshold) <= quorum.len(),
-        "ZonePortal settlement threshold {threshold} is not reachable by the manifest's {} quorum nodes",
+        threshold > 0 && usize::from(threshold) + retired.len() <= quorum.len(),
+        "ZonePortal settlement threshold {threshold} is not reachable by the manifest's {} quorum nodes, of which {retired:?} have retired root keys",
         quorum.len()
     );
     if registered_count > U256::from(quorum.len()) {

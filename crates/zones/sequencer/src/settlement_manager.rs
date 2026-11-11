@@ -4,18 +4,14 @@ use std::{
     time::Duration,
 };
 
-use alloy_network::TransactionBuilder as _;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_signer_local::PrivateKeySigner;
-use alloy_sol_types::{SolCall as _, SolValue as _};
+use alloy_sol_types::SolValue as _;
 use eyre::OptionExt as _;
 use parking_lot::Mutex;
-use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
-use tempo_contracts::{
-    precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount},
-    zones::ZonePortal,
-};
+use tempo_alloy::TempoNetwork;
+use tempo_contracts::zones::ZonePortal;
 use tokio::sync::mpsc;
 use tracing::info;
 use zone_chainspec::ZoneChainSpec;
@@ -28,8 +24,7 @@ use crate::{
         AttestationDomain, SettlementAttestation, SettlementCertificate,
         SignedSettlementAttestation,
     },
-    prover_config::active_l1_hardfork,
-    settlement::{BatchSubmitError, wait_for_l1_block},
+    settlement::{BatchSubmitError, retired_roots, wait_for_l1_block},
 };
 
 const SETTLEMENT_REBROADCAST_INTERVAL: Duration = Duration::from_millis(500);
@@ -93,22 +88,14 @@ impl SettlementManager {
         }
         let config = status.config;
         let mut threshold = status.threshold;
-        let mut retires_roots = status.retires_roots;
 
         self.validate_anchor(prepared).await?;
         let attestation = settlement_attestation(self.domain, &config, prepared, verifier_mode);
         let signed =
             SignedSettlementAttestation::sign(attestation.clone(), self.domain, &self.signer)?;
         let digest = self.domain.settlement_digest(&attestation);
-        // From T15 the portal rejects a certificate carrying a root key that `upgradeAccount`
-        // retired (TIP-1112), so only signatures from unretired sequencers are collected. The
-        // earlier portal runtime still counts them.
-        let mut signatures = BTreeMap::new();
-        if retires_roots && self.is_retired_root(self.signer.address()).await? {
-            tracing::warn!(target: "zone::p2p", signer = %self.signer.address(), "Own sequencer root key is retired; settling with follower signatures only");
-        } else {
-            signatures.insert(self.signer.address(), signed.signature);
-        }
+        let mut signatures = BTreeMap::from([(self.signer.address(), signed.signature)]);
+        let mut retired = Vec::new();
         let mut pending = self.pending.subscribe(digest)?;
 
         self.broadcast(&attestation, digest)?;
@@ -119,63 +106,55 @@ impl SettlementManager {
         rebroadcast.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
-            while signatures.len() < threshold {
-                tokio::select! {
-                    signature = pending.receiver.recv() => {
-                        let signature = signature.ok_or_eyre("settlement signature route closed")?;
-                        if signature.attestation != attestation {
-                            tracing::warn!(target: "zone::p2p", %digest, "Rejected mismatched settlement signature");
-                            continue;
-                        }
-                        match signature.recover_signer(self.domain) {
-                            Ok(signer) if signatures.contains_key(&signer) => {}
-                            Ok(signer) => {
-                                if retires_roots && self.is_retired_root(signer).await? {
-                                    tracing::warn!(target: "zone::p2p", %signer, "Rejected settlement signature from retired root key");
-                                } else {
-                                    signatures.insert(signer, signature.signature);
-                                }
-                            }
-                            Err(error) => tracing::warn!(target: "zone::p2p", %error, "Rejected settlement signature"),
-                        }
+            if signatures.len() >= threshold {
+                // The portal rejects a certificate carrying a root key that `upgradeAccount`
+                // retired (TIP-1112), and a signer can migrate after signing.
+                let newly_retired =
+                    retired_roots(&self.l1_provider, signatures.keys().copied()).await?;
+                if newly_retired.is_empty() {
+                    break;
+                }
+                // This key also signs the L1 transaction, which Tempo now rejects.
+                if newly_retired.contains(&self.signer.address()) {
+                    return Err(BatchSubmitError::RootKeyRetired(self.signer.address()));
+                }
+                tracing::warn!(
+                    target: "zone::p2p",
+                    signers = ?newly_retired,
+                    "Dropped settlement signatures from retired root keys"
+                );
+                signatures.retain(|signer, _| !newly_retired.contains(signer));
+                retired.extend(newly_retired);
+                continue;
+            }
+            tokio::select! {
+                signature = pending.receiver.recv() => {
+                    let signature = signature.ok_or_eyre("settlement signature route closed")?;
+                    if signature.attestation != attestation {
+                        tracing::warn!(target: "zone::p2p", %digest, "Rejected mismatched settlement signature");
+                        continue;
                     }
-                    _ = rebroadcast.tick() => {
-                        self.validate_anchor(prepared).await?;
-                        let live = self.settlement_status().await?;
-                        if live.portal_zone_height >= U256::from(prepared.batch.zone_height) {
-                            return Err(BatchSubmitError::PortalAdvanced);
-                        }
-                        if live.config != config {
-                            return Err(eyre::eyre!(
-                                "portal settlement configuration changed while collecting signatures"
-                            )
-                            .into());
-                        }
-                        threshold = live.threshold;
-                        retires_roots = live.retires_roots;
-                        self.broadcast(&attestation, digest)?;
+                    match signature.recover_signer(self.domain) {
+                        Ok(signer) if retired.contains(&signer) => {}
+                        Ok(signer) => { signatures.entry(signer).or_insert(signature.signature); }
+                        Err(error) => tracing::warn!(target: "zone::p2p", %error, "Rejected settlement signature"),
                     }
                 }
-            }
-
-            // A signer can migrate, or T15 can activate, after its signature was collected; the
-            // portal would then reject the whole certificate, so recheck before handing it over.
-            retires_roots = self.settlement_status().await?.retires_roots;
-            if !retires_roots {
-                break;
-            }
-            let mut retired = Vec::new();
-            for signer in signatures.keys() {
-                if self.is_retired_root(*signer).await? {
-                    retired.push(*signer);
+                _ = rebroadcast.tick() => {
+                    self.validate_anchor(prepared).await?;
+                    let live = self.settlement_status().await?;
+                    if live.portal_zone_height >= U256::from(prepared.batch.zone_height) {
+                        return Err(BatchSubmitError::PortalAdvanced);
+                    }
+                    if live.config != config {
+                        return Err(eyre::eyre!(
+                            "portal settlement configuration changed while collecting signatures"
+                        )
+                        .into());
+                    }
+                    threshold = live.threshold;
+                    self.broadcast(&attestation, digest)?;
                 }
-            }
-            if retired.is_empty() {
-                break;
-            }
-            for signer in retired {
-                tracing::warn!(target: "zone::p2p", %signer, "Dropped settlement signature from root key retired during collection");
-                signatures.remove(&signer);
             }
         }
 
@@ -183,30 +162,13 @@ impl SettlementManager {
             height: prepared.batch.zone_height,
             digest,
             attestation,
-            signatures: signatures.into_values().collect(),
+            signatures,
         })
-    }
-
-    /// Whether `signer`'s primitive root key was retired by `upgradeAccount`, as the portal checks
-    /// before counting its settlement signature.
-    async fn is_retired_root(&self, signer: Address) -> Result<bool, BatchSubmitError> {
-        let request = TempoTransactionRequest::default()
-            .with_to(CONFIGURABLE_ACCOUNT_ADDRESS)
-            .with_input(
-                IConfigurableAccount::getConfigCommitmentCall { account: signer }.abi_encode(),
-            );
-        let output = self
-            .l1_provider
-            .call(request)
-            .await
-            .map_err(|error| eyre::eyre!(error))?;
-        Ok(retired_from_commitment_output(&output)?)
     }
 
     async fn settlement_status(&self) -> Result<SettlementStatus, BatchSubmitError> {
         let portal = ZonePortal::new(self.domain.portal_address, self.l1_provider.clone());
-        let hardfork = active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?;
-        let settlement_abi = SettlementAbi::from_hardfork(hardfork);
+        let settlement_abi = SettlementAbi::from_l1(&self.l1_provider, &self.chain_spec).await?;
         let (sequencer_set_version, threshold, verifier, portal_zone_height) = self
             .l1_provider
             .multicall()
@@ -238,7 +200,6 @@ impl SettlementManager {
             },
             threshold,
             portal_zone_height,
-            retires_roots: hardfork.is_t15(),
         })
     }
 
@@ -305,18 +266,6 @@ impl SettlementManager {
     }
 }
 
-/// Interprets a `getConfigCommitment` call result the way the portal does: before T14 the
-/// precompile is absent and returns nothing, so no root key is retired.
-fn retired_from_commitment_output(output: &[u8]) -> eyre::Result<bool> {
-    match output.len() {
-        0 => Ok(false),
-        32 => Ok(B256::from_slice(output) != B256::ZERO),
-        len => Err(eyre::eyre!(
-            "malformed configuration commitment of {len} bytes"
-        )),
-    }
-}
-
 /// Portal configuration that must remain fixed while collecting signatures.
 #[derive(PartialEq, Eq)]
 struct SettlementConfig {
@@ -329,8 +278,6 @@ struct SettlementStatus {
     config: SettlementConfig,
     threshold: usize,
     portal_zone_height: U256,
-    /// Whether the live portal runtime (T15) rejects signatures from retired root keys.
-    retires_roots: bool,
 }
 
 fn settlement_attestation(
@@ -412,8 +359,10 @@ struct PendingSettlement {
 #[cfg(test)]
 mod tests {
     use alloy_signer_local::PrivateKeySigner;
+    use alloy_transport::mock::Asserter;
 
     use super::*;
+    use crate::monitor::tests::{mock_prepare_reads, mock_settlements};
 
     fn domain() -> AttestationDomain {
         AttestationDomain {
@@ -446,12 +395,60 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn retired_root_follows_commitment_output() {
-        assert!(!retired_from_commitment_output(&[]).unwrap());
-        assert!(!retired_from_commitment_output(&[0; 32]).unwrap());
-        assert!(retired_from_commitment_output(B256::repeat_byte(1).as_slice()).unwrap());
-        assert!(retired_from_commitment_output(&[1; 31]).is_err());
+    #[tokio::test]
+    async fn prepare_drops_signatures_from_retired_roots() {
+        let l1 = Asserter::new();
+        let (manager, mut proposals) = mock_settlements(domain(), &l1);
+        let prepared = mock_prepare_reads(&l1, 2);
+        let local = manager.signer.address();
+        let (retired, unretired) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+        // Each full quorum is rechecked in address order: first with the retired follower.
+        for follower in [retired.address(), unretired.address()] {
+            let mut quorum = [local, follower];
+            quorum.sort();
+            for signer in quorum {
+                l1.push_success(&B256::repeat_byte(u8::from(signer == retired.address())));
+            }
+        }
+
+        let task = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.prepare(&prepared, VerifierMode::NoProof).await })
+        };
+        let Some(P2pCommand::BroadcastSettlementProposal(encoded)) = proposals.recv().await else {
+            panic!("expected a settlement proposal");
+        };
+        let attestation = SettlementAttestation::decode(&encoded).unwrap();
+        let digest = domain().settlement_digest(&attestation);
+        for follower in [&retired, &unretired] {
+            let signed =
+                SignedSettlementAttestation::sign(attestation.clone(), domain(), follower).unwrap();
+            manager.pending.route(digest, signed).unwrap();
+        }
+
+        let certificate = task.await.unwrap().unwrap();
+        let mut signers = [local, unretired.address()];
+        signers.sort();
+        assert!(certificate.signatures.into_keys().eq(signers));
+        assert!(l1.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_fails_when_the_local_root_key_is_retired() {
+        let l1 = Asserter::new();
+        let (manager, _proposals) = mock_settlements(domain(), &l1);
+        let prepared = mock_prepare_reads(&l1, 1);
+        l1.push_success(&B256::repeat_byte(1));
+
+        let error = manager
+            .prepare(&prepared, VerifierMode::NoProof)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            BatchSubmitError::RootKeyRetired(signer) if signer == manager.signer.address()
+        ));
+        assert!(l1.read_q().is_empty());
     }
 
     #[test]

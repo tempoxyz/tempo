@@ -860,6 +860,7 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     self.metrics.prover_hardfork_rebuild_total.increment(1);
                     return Err(error.into());
                 }
+                Err(error @ BatchSubmitError::RootKeyRetired(_)) => return Err(error.into()),
                 Err(BatchSubmitError::Other(error)) => {
                     self.metrics
                         .batch_submit_latency_seconds
@@ -1055,8 +1056,9 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::attestation::AttestationDomain;
     use alloy_consensus::{Header as ConsensusHeader, SignableTransaction, TxLegacy};
     use alloy_primitives::{Bytes, Log, Signature, U256};
     use alloy_provider::Provider as _;
@@ -1070,6 +1072,7 @@ mod tests {
         Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
     };
     use zone_chainspec::test_utils::set_tempo_fork;
+    use zone_p2p::P2pCommand;
     use zone_prover::{NITRO_VERIFIER_CONFIG_V1, ProofBundle};
 
     fn mock_provider(asserter: Asserter) -> DynProvider<TempoNetwork> {
@@ -1196,6 +1199,42 @@ mod tests {
         }
     }
 
+    /// A settlement manager on the mocked `l1`, and the proposals it broadcasts.
+    pub(crate) fn mock_settlements(
+        domain: AttestationDomain,
+        l1: &Asserter,
+    ) -> (SettlementManager, mpsc::Receiver<P2pCommand>) {
+        let (commands, proposals) = mpsc::channel(1);
+        let settlements = SettlementManager::new(
+            domain,
+            None,
+            PrivateKeySigner::random(),
+            Default::default(),
+            mock_provider(l1.clone()),
+            test_monitor(l1.clone(), TestZoneProvider::new())
+                .config
+                .chain_spec,
+            BatchAnchorConfig::default(),
+            commands,
+        );
+        (settlements, proposals)
+    }
+
+    /// Queues the L1 reads of one [`SettlementManager::prepare`] up to signature collection, and
+    /// returns the batch they serve.
+    pub(crate) fn mock_prepare_reads(l1: &Asserter, threshold: u64) -> PreparedBatch {
+        l1.push_success(&mock_l1_header(1_000));
+        l1.push_success(&abi_encode_multicall(vec![
+            abi_encode_u64(1),
+            abi_encode_u64(threshold),
+            Address::ZERO.abi_encode().into(),
+            abi_encode_u64(0),
+        ]));
+        l1.push_success(&serde_json::json!("0x7b"));
+        l1.push_success(&mock_l1_header(1_000));
+        prepared(test_batch_data())
+    }
+
     fn prepared(batch: BatchData) -> PreparedBatch {
         PreparedBatch {
             anchor: crate::BatchAnchor::Direct {
@@ -1301,42 +1340,18 @@ mod tests {
             }));
             tx
         });
-        let (commands, mut proposals) = tokio::sync::mpsc::channel(1);
-        let settlements = SettlementManager::new(
+        let (settlements, mut proposals) = mock_settlements(
             crate::attestation::AttestationDomain {
                 l1_chain_id: 1337,
                 portal_address: monitor.config.portal_address,
                 zone_id: 7,
             },
-            None,
-            PrivateKeySigner::random(),
-            Default::default(),
-            mock_provider(l1.clone()),
-            monitor.config.chain_spec.clone(),
-            BatchAnchorConfig::default(),
-            commands,
+            &l1,
         );
         monitor.config.settlements = Some(settlements);
-        let header = tempo_alloy::rpc::TempoHeaderResponse {
-            inner: alloy_rpc_types_eth::Header {
-                hash: B256::ZERO,
-                inner: TempoHeader::default(),
-                total_difficulty: None,
-                size: None,
-            },
-            timestamp_millis: 0,
-        };
         // `NoProof` prepares once. A configured prover also prepares a Nitro certificate first.
         for _ in 0..(1 + usize::from(proof_tx.is_some())) {
-            l1.push_success(&mock_l1_header(1_000));
-            l1.push_success(&abi_encode_multicall(vec![
-                abi_encode_u64(1),
-                abi_encode_u64(2),
-                Address::ZERO.abi_encode().into(),
-                abi_encode_u64(0),
-            ]));
-            l1.push_success(&serde_json::json!("0x7b"));
-            l1.push_success(&header);
+            mock_prepare_reads(&l1, 2);
         }
 
         let task = tokio::spawn(async move {

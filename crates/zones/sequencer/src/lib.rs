@@ -50,7 +50,7 @@ pub use prover::{
 pub use prover_config::{HardforkProverAddress, ProverAddresses};
 pub use settlement::{
     BatchAnchor, BatchAnchorConfig, BatchData, BatchSubmitter, PortalZoneAnchor, PreparedBatch,
-    SettlementAbi, resolve_portal_zone_anchor,
+    SettlementAbi, resolve_portal_zone_anchor, retired_roots,
 };
 pub use settlement_manager::SettlementManager;
 pub use withdrawals::{

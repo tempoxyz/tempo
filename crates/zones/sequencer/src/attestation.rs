@@ -1,5 +1,7 @@
 //! EIP-712 replication ACKs and settlement attestations.
 
+use std::collections::BTreeMap;
+
 use alloy_primitives::{Address, B256, Bytes, Signature};
 use alloy_signer::SignerSync as _;
 use alloy_signer_local::PrivateKeySigner;
@@ -197,13 +199,13 @@ impl SignedSettlementAttestation {
     }
 }
 
-/// A settlement statement and its distinct signer signatures.
+/// A settlement statement and its signatures by signer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettlementCertificate {
     pub height: u64,
     pub digest: B256,
     pub attestation: SettlementAttestation,
-    pub signatures: Vec<Bytes>,
+    pub signatures: BTreeMap<Address, Bytes>,
 }
 
 #[cfg(test)]
