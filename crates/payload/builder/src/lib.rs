@@ -462,6 +462,9 @@ where
             ),
             executor.evm().block().timestamp.to(),
         );
+        let prewarm_hints = (self.config.enable_prewarming && !self.config.enable_parallel)
+            .then(|| state_root_handle.as_mut()?.take_hint_stream())
+            .flatten();
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
@@ -470,6 +473,7 @@ where
             prewarm_evm_env,
             self.evm_config.clone(),
             self.config.enable_parallel,
+            prewarm_hints,
         );
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {

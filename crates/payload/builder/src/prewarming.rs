@@ -9,8 +9,11 @@ use std::{
 
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, B256};
-use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
-use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
+use reth_engine_tree::tree::{CachedStateProvider, SavedCache, StateRootHintStream};
+use reth_evm::{
+    BlockExecutorFactory, ConfigureEvm, Evm as _, EvmEnv, EvmEnvFor,
+    database::StateProviderDatabase,
+};
 use reth_evm_ethereum::EvmFactory as _;
 use reth_storage_api::{EvmStateProviderBox, StateProvider as _, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerStatefulPool};
@@ -191,6 +194,26 @@ impl BestTransactionsPrewarming {
                 tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
                 let tx_env = Recovered::new_unchecked(tx_env, tx.transaction.sender());
 
+                // Without replay only the warmed state is used, which a derived access gives
+                // without executing the transaction.
+                if !prewarm.parallel
+                    && let Some(access) = prewarm
+                        .evm_config
+                        .tx_state_access(&prewarm.evm_env, &tx_env)
+                {
+                    if let Err(err) = access.load(evm.state_db_mut()) {
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            "Failed to load derived state access of transaction"
+                        );
+                    }
+                    if let Some(hints) = &prewarm.hints {
+                        hints.on_access_hint(access.write_proof_targets().0.into());
+                    }
+                    return None;
+                }
+
                 let result = match evm.transact(&tx_env).map(|executed| executed.detach()) {
                     Ok(executed) => executed,
                     Err(err) => {
@@ -358,12 +381,16 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_config: TempoEvmConfig,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    /// Sends the writes of derived transaction state accesses to the sparse trie task, `None`
+    /// when the build has no sparse trie task or prewarms in parallel.
+    hints: Option<StateRootHintStream>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
+    #[expect(clippy::too_many_arguments, reason = "one argument per context field")]
     pub(crate) fn new(
         provider: Provider,
         executor: TaskExecutor,
@@ -372,6 +399,7 @@ where
         evm_env: EvmEnvFor<TempoEvmConfig>,
         evm_config: TempoEvmConfig,
         parallel: bool,
+        hints: Option<StateRootHintStream>,
     ) -> Self {
         Self {
             provider,
@@ -382,6 +410,7 @@ where
             evm_config,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            hints,
         }
     }
 
@@ -515,8 +544,9 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
 mod tests {
     use super::*;
     use alloy_consensus::{BlockHeader, Header, SignableTransaction, TxLegacy};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
-    use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
+    use reth_engine_tree::tree::{StateRootHandle, StateRootMessage, StateRootTaskCancelGuard};
+    use reth_evm::NextBlockEnvAttributes;
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
@@ -768,6 +798,7 @@ mod tests {
             evm_config,
             stop: Arc::default(),
             parallel,
+            hints: None,
         }
     }
 
@@ -1139,6 +1170,44 @@ mod tests {
                 U256::from(100)
             );
         });
+    }
+
+    #[test]
+    fn sequential_prewarm_hints_derived_writes_without_executing() {
+        let (updates_tx, updates_rx) = crossbeam_channel::unbounded();
+        let mut state_root = StateRootHandle::new(
+            B256::ZERO,
+            updates_tx,
+            StateRootTaskCancelGuard::channel().0,
+            mpsc::channel().1,
+            mpsc::channel().1,
+        );
+        let mut context = prewarming_context(TaskExecutor::test(), false);
+        context.hints = Some(state_root.take_hint_stream());
+        let sender = Address::repeat_byte(0x31);
+        let pool = WorkerStatefulPool::new(Arc::new(WorkerPool::new(1, "prewarm-hints-test")));
+
+        let prewarmed = pool.install_fn(|| {
+            BestTransactionsPrewarming::prewarm_transaction(
+                &pool,
+                context,
+                test_payment_tx(sender, 500_000),
+                None,
+            )
+        });
+
+        assert!(prewarmed.replay.is_none());
+        let Ok(StateRootMessage::PrefetchProofs(targets)) = updates_rx.try_recv() else {
+            panic!("expected proof targets of the derived writes")
+        };
+        let sender_balance = B256::from(sender.mapping_slot(tip20_slots::BALANCES));
+        assert!(
+            targets.storage_targets[&keccak256(PATH_USD_ADDRESS)]
+                .iter()
+                .any(|target| target.key() == keccak256(sender_balance))
+        );
+        // Executing the transaction would have sent nothing to the sparse trie task.
+        assert!(updates_rx.try_recv().is_err());
     }
 
     #[test]

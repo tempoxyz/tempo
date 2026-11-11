@@ -19,6 +19,7 @@ mod instructions;
 #[cfg(feature = "jit")]
 pub mod jit;
 mod signature_gas;
+mod state_access;
 #[cfg(test)]
 mod test_utils;
 mod transaction;
@@ -54,7 +55,9 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
 use evm2::{ExecutionConfig, env::BlockEnv, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
-use reth_evm::{BlockExecutorFactory, ConfigureEvm, EvmEnvFor, SenderRecoveryCache};
+use reth_evm::{
+    BlockExecutorFactory, ConfigureEvm, EvmEnvFor, SenderRecoveryCache, TxEnvFor, TxStateAccess,
+};
 use reth_evm_ethereum::{EthBlockExecutionCtx, EthEvmEnv};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_chainspec::{
@@ -353,6 +356,14 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: attributes.shared_gas_limit,
             consensus_context: attributes.consensus_context,
         })
+    }
+
+    fn tx_state_access(
+        &self,
+        evm_env: &EvmEnvFor<Self>,
+        tx: &TxEnvFor<Self>,
+    ) -> Option<TxStateAccess> {
+        state_access::payment_state_access(evm_env, tx)
     }
 }
 
