@@ -24,6 +24,10 @@ impl SignatureVerifier {
         self.__initialize()
     }
 
+    /// Returns the address of the key that produced the primitive `signature` over `hash`.
+    ///
+    /// Only says which key signed: a migrated account's retired root key still recovers to its
+    /// address (TIP-1113). Use [`Self::verify`] to check whether an account approves a hash.
     pub fn recover(&self, hash: B256, signature: &[u8]) -> Result<Address> {
         // Parse and validate signature (handles size checks + type disambiguation).
         let sig = PrimitiveSignature::from_bytes(signature)
@@ -99,7 +103,7 @@ impl SignatureVerifier {
 
     /// Returns whether `account` approves `hash`: the one check to use for any account and
     /// signature type. It follows `account`'s current state, so it stays correct when the account
-    /// migrates or changes owners (TIP-1168). Use `recover` only to learn which key signed.
+    /// migrates or changes owners (TIP-1168).
     ///
     /// By signature type, including the routed checks' reverts:
     /// - primitive: recovers to `account`, and `account` has no configuration commitment

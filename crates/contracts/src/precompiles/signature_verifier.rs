@@ -9,6 +9,8 @@ crate::sol! {
         /// @param hash The message hash that was signed
         /// @param signature The encoded signature (see Tempo Transaction spec for formats)
         /// @return Address of the signer if valid, reverts otherwise
+        /// @dev Only says which key signed: a migrated account's retired root key still recovers to
+        /// its address (TIP-1113). Use `verify` to check whether an account approves a hash.
         function recover(bytes32 hash, bytes calldata signature) external view returns (address signer);
 
         /// @notice Checks whether account approves hash: the one check to use for any account
@@ -17,7 +19,6 @@ crate::sol! {
         /// - primitive: recovers to account, and account has no configuration commitment
         /// - keychain: same as `verifyKeychainAdmin`
         /// - configurable account: same as `verifyConfigurableAccount`
-        /// Use `recover` only to learn which key signed, whatever the account's state.
         /// @param account The account expected to approve
         /// @param hash The message hash that was signed
         /// @param signature A primitive, keychain or configurable account signature
