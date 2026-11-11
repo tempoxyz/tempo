@@ -703,6 +703,14 @@ def txgen-zone-count [preset_name: string, automatic: int] {
     $env.TXGEN_ZONE_COUNT? | default ($pinned | default $automatic) | into int
 }
 
+# Settlement fixtures anchor batches to Tempo block `block.number - offset`; the portal needs that
+# block's hash from EIP-2935. Nodes whose history contract lags the head need a larger offset.
+def txgen-zone-anchor-offset [] {
+    let offset = ($env.TXGEN_ZONE_ANCHOR_OFFSET? | default "1" | into int)
+    if $offset < 1 { error make {msg: "TXGEN_ZONE_ANCHOR_OFFSET must be positive"} }
+    $offset
+}
+
 # Sends zone settlement and Earn deposits from users[0] with ordered nonces.
 def txgen-single-sender-templates [templates: record] {
     $templates | items { |name, template|
@@ -785,7 +793,7 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
     let spec = (open $spec_path)
     let token = "0x20c0000000000000000000000000000000000000"
-    mut steps = [$spec.setup.steps.0]
+    mut steps = [($spec.setup.steps.0 | update deploy.constructor_args.0 (txgen-zone-anchor-offset))]
     # Each portal deploys through CreateX (salt = zone, so its address doesn't depend on a nonce)
     # on its own 2D nonce lane, which its funding step reuses: portals deploy in parallel from
     # one sender instead of queueing on the deployer's protocol nonce.
@@ -884,7 +892,7 @@ def txgen-prepare-zone-to-zone-preset [spec_path: string, count: int, accounts: 
     let withdraw_call = ($spec.templates.zone_withdraw.calls | first)
     # Closed portals only pay plain withdrawals to their allowlisted account (the deployer).
     let allowlisted = {var: setup.settlement.sender}
-    mut steps = ($spec.setup.steps | take 3)
+    mut steps = ($spec.setup.steps | take 3 | update 0 { update deploy.constructor_args.0 (txgen-zone-anchor-offset) })
     for zone in 0..<$zones {
         $steps = ($steps | append ($spec.setup.steps.3 | update id $"portal_($zone)" | update deploy.constructor_args.6 $closed))
     }

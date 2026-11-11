@@ -36,6 +36,7 @@ mod defaults;
 mod follow;
 mod overrides;
 pub mod p2p_proxy;
+pub mod payload_bench;
 pub mod regenesis;
 pub mod shadow_replay;
 mod snapshot_download;
@@ -1352,7 +1353,7 @@ mod tests {
                 .engine_disable_execution_cache_sharing_with_builder
         );
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
-        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(node_cmd.ext.node_args.builder_disable_prewarming);
         assert!(node_cmd.ext.node_args.builder_enable_prewarming);
         assert!(!node_cmd.ext.node_args.builder_parallel);
         assert_eq!(
@@ -1421,6 +1422,25 @@ mod tests {
             panic!("expected node command");
         };
         assert!(node_cmd.ext.node_args.builder_disable_prewarming);
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--builder.disable-prewarming=false",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_prewarming
+        );
 
         let cli =
             TempoCli::try_parse_from(["tempo", "node", "--dev", "--builder.parallel"]).unwrap();

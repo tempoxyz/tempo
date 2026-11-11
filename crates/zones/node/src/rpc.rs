@@ -27,7 +27,7 @@ use alloy_rpc_types_eth::{
 use alloy_sol_types::SolCall;
 use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use reth_chainspec::Hardforks;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
@@ -37,10 +37,15 @@ use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
 use reth_rpc_builder::EthHandlers;
 use reth_rpc_eth_api::{
-    EthApiTypes, EthFilterApiServer, RpcConvert,
+    AsEthApiError, EthApiTypes, EthFilterApiServer, RpcConvert,
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
-use reth_rpc_eth_types::{EthApiError, logs_utils};
+use reth_rpc_eth_types::{
+    EthApiError,
+    error::{RpcInvalidTransactionError, RpcPoolError},
+    logs_utils,
+};
+use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
 use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
@@ -51,6 +56,7 @@ use tempo_alloy::{
 use tempo_chainspec::{
     TempoHardforks,
     constants::gas,
+    is_valid_native_account,
     spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
 };
 use tempo_contracts::precompiles::{
@@ -58,7 +64,9 @@ use tempo_contracts::precompiles::{
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
 };
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
-use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
+use tempo_primitives::{
+    TempoHeader, TempoPrimitives, TempoTxEnvelope, account::CONFIGURABLE_ACCOUNT_CODE,
+};
 use tokio::{
     sync::Mutex,
     time::{MissedTickBehavior, interval},
@@ -72,6 +80,7 @@ use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
+use zone_precompiles::is_zone_precompile;
 use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
@@ -85,6 +94,19 @@ use zone_rpc::{
 };
 
 use crate::{follower::PeerTipRegistry, role::SharedRoleStatus};
+
+/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
+///
+/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
+/// collection timeout.
+const MULTI_PROOF_RETRIES: usize = 7;
+/// Delay before each `eth_getMultiProof` retry.
+const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
+/// Smallest request worth splitting off.
+const MULTI_PROOF_MIN_CHUNK: usize = 128;
+/// Most `eth_getMultiProof` requests in flight per witness. Each holds one of the L1 node's shared
+/// tracing permits.
+const MULTI_PROOF_MAX_PARALLEL: usize = 8;
 
 /// Multi-sequencer handles for the sequencer RPC methods.
 ///
@@ -249,6 +271,67 @@ where
     Ok(module)
 }
 
+/// Operator `eth_getCode`, which returns what zone execution sees (TIP-1154): the account marker
+/// code for an account without zone code whose Tempo commitment at the block's anchor is nonzero,
+/// so off-chain verifiers that check code before `ecrecover` reject a retired original key.
+pub(crate) fn operator_get_code_module<E>(
+    eth_api: E,
+    l1_state: L1StateProvider,
+) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
+where
+    E: FullEthApi + Clone + 'static,
+    E::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
+{
+    let mut module = RpcModule::new(());
+    module.register_async_method("eth_getCode", move |params, _, _| {
+        let eth_api = eth_api.clone();
+        let l1_state = l1_state.clone();
+        async move {
+            let mut params = params.sequence();
+            let address: Address = params.next()?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(
+                params.optional_next::<BlockId>()?.unwrap_or_default(),
+            );
+            let code = EthState::get_code(&eth_api, address, Some(block_id))
+                .await
+                .map_err(Into::into)?;
+            if !code.is_empty() {
+                return Ok(code);
+            }
+            let commitment = async {
+                let provider = eth_api.provider();
+                let header = provider
+                    .header_by_id(block_id)?
+                    .ok_or_eyre("zone block not found")?;
+                let spec = provider.chain_spec().tempo_hardfork_at(header.timestamp());
+                // The same accounts zone execution reads a Tempo commitment for.
+                if !spec.is_t14()
+                    || !is_valid_native_account(address, spec)
+                    || is_zone_precompile(address, spec)
+                {
+                    return eyre::Ok(B256::ZERO);
+                }
+                let anchor = provider.state_by_block_id(block_id)?.tempo_block_number()?;
+                Ok(tokio::time::timeout(
+                    L1_COMMITMENT_READ_TIMEOUT,
+                    l1_state.read_l1_commitment_async(address, anchor),
+                )
+                .await
+                .wrap_err("timed out reading the Tempo commitment")??)
+            }
+            .await
+            .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
+            Ok::<_, ErrorObjectOwned>(if commitment.is_zero() {
+                code
+            } else {
+                CONFIGURABLE_ACCOUNT_CODE
+            })
+        }
+    })?;
+    Ok(module)
+}
+
 /// Operator Web3 API backed by the globally initialized Zone version metadata.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct OperatorWeb3Api;
@@ -372,14 +455,6 @@ where
     }
 }
 
-/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
-///
-/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
-/// collection timeout.
-const MULTI_PROOF_RETRIES: usize = 7;
-/// Delay before each `eth_getMultiProof` retry.
-const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
-
 /// Fetch all L1 read proofs at the checkpoint selected by the opening advanceTempo transaction.
 async fn collect_tempo_witness(
     provider: &DynProvider<TempoNetwork>,
@@ -417,46 +492,84 @@ async fn collect_tempo_witness(
         // An account-only read still needs the account proof, which every target carries.
         targets.entry(read.account).or_default().extend(read.slot);
     }
-    let targets = targets
-        .into_iter()
-        .map(|(account, slots)| (account, slots.into_iter().collect::<Vec<_>>()))
-        .collect::<Vec<_>>();
     // The L1 RPC may balance connections across nodes whose heads differ by a few
     // milliseconds, so the node serving this request can lack a block the subscriber already
     // saw finalized. Retry only that answer (`block not found`); return every other error.
-    let proofs = (|| {
-        provider
-            .client()
-            .request::<_, Vec<EIP1186AccountProofResponse>>(
-                "eth_getMultiProof",
-                (targets.clone(), BlockId::number(tempo_block_number)),
+    let nodes = futures::stream::iter(multi_proof_chunks(targets))
+        .map(|chunk| {
+            (move || {
+                provider
+                    .client()
+                    .request::<_, Vec<EIP1186AccountProofResponse>>(
+                        "eth_getMultiProof",
+                        (chunk.clone(), BlockId::number(tempo_block_number)),
+                    )
+            })
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(MULTI_PROOF_RETRY_DELAY)
+                    .with_max_times(MULTI_PROOF_RETRIES),
             )
-    })
-    .retry(
-        ConstantBuilder::default()
-            .with_delay(MULTI_PROOF_RETRY_DELAY)
-            .with_max_times(MULTI_PROOF_RETRIES),
-    )
-    .when(|error| {
-        error.as_error_resp().is_some_and(|response| {
-            response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+            .when(|error| {
+                error.as_error_resp().is_some_and(|response| {
+                    response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+                })
+            })
         })
-    })
-    .await
-    .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
+        .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
+        // Merge responses as they arrive.
+        .try_fold(BTreeMap::new(), |mut nodes, proofs| {
+            for proof in proofs {
+                for node in proof.account_proof.into_iter().chain(
+                    proof
+                        .storage_proof
+                        .into_iter()
+                        .flat_map(|proof| proof.proof),
+                ) {
+                    nodes.entry(keccak256(&node)).or_insert(node);
+                }
+            }
+            futures::future::ready(Ok(nodes))
+        })
+        .await
+        .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
+    Ok((initial_header, nodes.into_values().collect()))
+}
 
-    let mut nodes = BTreeMap::new();
-    for proof in proofs {
-        for node in proof.account_proof.into_iter().chain(
-            proof
-                .storage_proof
-                .into_iter()
-                .flat_map(|proof| proof.proof),
-        ) {
-            nodes.entry(keccak256(&node)).or_insert(node);
+/// Split proof targets into even parallel `eth_getMultiProof` requests, each within reth's
+/// [`DEFAULT_MAX_PROOF_SLOTS`] limit on targets and slots.
+fn multi_proof_chunks(
+    targets: BTreeMap<Address, BTreeSet<B256>>,
+) -> Vec<Vec<(Address, Vec<B256>)>> {
+    let total = targets.len().max(targets.values().map(BTreeSet::len).sum());
+    let parallel = total
+        .div_ceil(MULTI_PROOF_MIN_CHUNK)
+        .clamp(1, MULTI_PROOF_MAX_PARALLEL);
+    let size = total.div_ceil(parallel).min(DEFAULT_MAX_PROOF_SLOTS);
+
+    let mut chunks = Vec::new();
+    let mut chunk = Vec::new();
+    let mut chunk_slots = 0;
+    for (account, slots) in targets {
+        let mut slots = slots.into_iter().peekable();
+        // Runs once for an account-only target.
+        loop {
+            let piece = slots.by_ref().take(size).collect::<Vec<_>>();
+            if chunk.len() == size || chunk_slots + piece.len() > size {
+                chunks.push(std::mem::take(&mut chunk));
+                chunk_slots = 0;
+            }
+            chunk_slots += piece.len();
+            chunk.push((account, piece));
+            if slots.peek().is_none() {
+                break;
+            }
         }
     }
-    Ok((initial_header, nodes.into_values().collect()))
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
 }
 
 /// Build storage targets for SPF reads not necessarily covered by execution.
@@ -727,6 +840,18 @@ fn map_eth_filter_error(err: EthFilterError) -> JsonRpcError {
         EthFilterError::FilterNotFound(_) => filter_not_found_error(),
         other => internal(other),
     }
+}
+
+/// Maps a transaction submission error, dropping the balance and cost from insufficient-funds
+/// rejections because they belong to the fee payer, which can be a sponsor other than the caller.
+fn map_send_raw_transaction_error(err: impl AsEthApiError + std::fmt::Display) -> JsonRpcError {
+    if let Some(EthApiError::PoolError(RpcPoolError::Invalid(
+        RpcInvalidTransactionError::InsufficientFunds { .. },
+    ))) = err.as_err()
+    {
+        return JsonRpcError::internal("insufficient funds for gas * price + value");
+    }
+    internal(err)
 }
 
 fn stale_filter_owner_ids(
@@ -1205,7 +1330,7 @@ where
 
             let hash = EthTransactions::send_raw_transaction(&self.eth.api, data)
                 .await
-                .map_err(internal)?;
+                .map_err(map_send_raw_transaction_error)?;
             to_raw(&hash)
         })
     }
@@ -1216,7 +1341,7 @@ where
 
             let mut receipt = EthTransactions::send_raw_transaction_sync(&self.eth.api, data, None)
                 .await
-                .map_err(internal)?;
+                .map_err(map_send_raw_transaction_error)?;
 
             receipt = zone_rpc::filter::filter_receipt_logs(receipt);
 
@@ -1824,8 +1949,92 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("checkpoint hash mismatch"));
+
+        // Large reads fan out into parallel requests.
+        fail.store(false, Ordering::Relaxed);
+        requests.lock().unwrap().clear();
+        let many_reads = (0..300u16)
+            .map(|i| zone_evm::TempoStorageRead {
+                account: Address::left_padding_from(&i.to_be_bytes()),
+                slot: None,
+            })
+            .collect::<HashSet<_>>();
+        let (_, nodes) =
+            collect_tempo_witness(&provider, initial, Some(&first_tx_input), &many_reads).await?;
+        assert_eq!(nodes, vec![Bytes::from(vec![1])]);
+        {
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            let requested = requests
+                .iter()
+                .flat_map(|request| request[0].as_array().unwrap().clone())
+                .map(|target| target[0].as_str().unwrap().to_owned())
+                .collect::<HashSet<_>>();
+            assert_eq!(requested.len(), many_reads.len());
+        }
         handle.stop()?;
         Ok(())
+    }
+
+    #[test]
+    fn multi_proof_chunks_split_work_within_reth_limits() {
+        let accounts = |n: u32| {
+            (0..n)
+                .map(|i| {
+                    (
+                        Address::left_padding_from(&i.to_be_bytes()),
+                        BTreeSet::new(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let sizes =
+            |chunks: &[Vec<(Address, Vec<B256>)>]| chunks.iter().map(Vec::len).collect::<Vec<_>>();
+
+        // Small reads stay in one request.
+        assert_eq!(sizes(&multi_proof_chunks(accounts(100))), vec![100]);
+        // Larger reads spread evenly over the parallel requests.
+        assert_eq!(sizes(&multi_proof_chunks(accounts(300))), vec![100; 3]);
+        assert_eq!(
+            sizes(&multi_proof_chunks(accounts(1024))),
+            vec![128; MULTI_PROOF_MAX_PARALLEL]
+        );
+        // Past the parallel budget, requests are capped at reth's limit and queue.
+        let chunks = multi_proof_chunks(accounts(20_000));
+        assert_eq!(chunks.len(), 20_000usize.div_ceil(DEFAULT_MAX_PROOF_SLOTS));
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() <= DEFAULT_MAX_PROOF_SLOTS)
+        );
+        assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), 20_000);
+
+        // An account with too many slots is split across requests.
+        let account = Address::repeat_byte(0xaa);
+        let slots = (0..3000u32)
+            .map(|i| B256::left_padding_from(&i.to_be_bytes()))
+            .collect::<BTreeSet<_>>();
+        let mut targets = accounts(10);
+        targets.insert(account, slots.clone());
+        let chunks = multi_proof_chunks(targets);
+        assert!(chunks.iter().all(|chunk| {
+            chunk.iter().map(|(_, slots)| slots.len()).sum::<usize>() <= DEFAULT_MAX_PROOF_SLOTS
+        }));
+        let requested = chunks
+            .iter()
+            .flatten()
+            .filter(|(target, _)| *target == account)
+            .flat_map(|(_, slots)| slots.iter().copied())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(requested, slots);
+        assert_eq!(
+            chunks
+                .iter()
+                .flatten()
+                .filter(|(_, slots)| slots.is_empty())
+                .count(),
+            10
+        );
     }
 
     #[tokio::test]

@@ -1082,12 +1082,22 @@ where
                         .inspect_err(|_| {
                             fetch_failures.increment(1);
                         })?;
-                    let block_hash = header_resp.hash();
+                    // Use the recomputed hash, not the one reported by the RPC.
+                    let sealed = SealedHeader::seal_slow(header_resp.inner.inner);
+                    if sealed.number() != block_number {
+                        fetch_failures.increment(1);
+                        return Err(eyre::eyre!(
+                            "L1 header number mismatch: requested {block_number}, got {}",
+                            sealed.number()
+                        )
+                        .into());
+                    }
+                    let block = NumHash::new(block_number, sealed.hash());
                     let receipts = fetch_and_verify_receipts_for_header(
                         provider,
-                        NumHash::new(block_number, block_hash),
-                        header_resp.receipts_root(),
-                        header_resp.logs_bloom(),
+                        block,
+                        sealed.receipts_root(),
+                        sealed.logs_bloom(),
                     )
                     .await
                     .inspect_err(|_| {
@@ -1095,7 +1105,7 @@ where
                     })?;
                     // Abort before enqueueing work or advancing caches if a portal log fails to decode.
                     let processed_events = self
-                        .extract_events(NumHash::new(block_number, block_hash), &receipts)
+                        .extract_events(block, &receipts)
                         .inspect_err(|_| {
                             subscriber_metrics.decode_fence_failures.increment(1);
                         })
@@ -1106,12 +1116,11 @@ where
                     let elapsed = start.elapsed();
                     debug!(
                         block_number,
-                        %block_hash,
+                        block_hash = %block.hash,
                         elapsed_ms = elapsed.as_millis() as u64,
                         receipts = receipts.len(),
                         "Fetched, validated, and decoded L1 block data"
                     );
-                    let sealed = SealedHeader::seal_slow(header_resp.inner.inner);
                     Ok::<_, L1SubscriberError>((sealed, processed_events))
                 }
             })
