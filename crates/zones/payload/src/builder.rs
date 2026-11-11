@@ -266,54 +266,37 @@ where
             PayloadBuilderError::Internal(err.into())
         })?;
 
-        // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency).
-        let prewarming = match tempo_import {
-            TempoImport::Full(prepared) => Some(
-                PrewarmingExecutionContext {
+        // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency):
+        // the deposits, and the pool transactions that fit the block, whose Tempo commitments are
+        // then fetched in parallel instead of one by one during canonical execution.
+        let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
+        let (prewarming, _pool_prewarming) = match tempo_import {
+            TempoImport::Full(prepared) => {
+                let context = PrewarmingExecutionContext {
                     provider: self.provider.clone(),
                     evm_config: self.evm_config.clone(),
                     parent_hash: parent_header.hash(),
                     parent_header: (*parent_header).clone(),
-                    next_block_env_attributes: next_block_env_attributes.clone(),
+                    next_block_env_attributes,
                     chain_id,
-                }
-                .start(&self.task_executor, prepared),
-            ),
-            TempoImport::CheckpointOnly(_) => None,
-        };
-        let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
-        // Simulate the pool transactions that fit the block, so the Tempo commitments they read
-        // are fetched in parallel instead of one by one during canonical execution.
-        let _pool_prewarming = match tempo_import {
-            TempoImport::Full(prepared) => {
+                };
                 let mut size = 0usize;
                 let transactions = self
                     .pool
                     .best_transactions_with_attributes(BestTransactionsAttributes::new(
                         base_fee, None,
                     ))
-                    .map_while(|tx| {
+                    .take_while(|tx| {
                         size = size.saturating_add(tx.transaction.encoded_length());
-                        (size <= pool_tx_size_budget).then(|| tx.to_consensus())
+                        size <= pool_tx_size_budget
                     })
                     .collect();
-                Some(
-                    PrewarmingExecutionContext {
-                        provider: self.provider.clone(),
-                        evm_config: self.evm_config.clone(),
-                        parent_hash: parent_header.hash(),
-                        parent_header: (*parent_header).clone(),
-                        next_block_env_attributes,
-                        chain_id,
-                    }
-                    .start_pool(
-                        &self.task_executor,
-                        transactions,
-                        prepared.header.number(),
-                    ),
+                (
+                    context.clone().start(&self.task_executor, prepared),
+                    context.start_pool(&self.task_executor, transactions, prepared.header.number()),
                 )
             }
-            TempoImport::CheckpointOnly(_) => None,
+            TempoImport::CheckpointOnly(_) => Default::default(),
         };
 
         // Execute advanceTempo system transaction — exactly one per zone block.
