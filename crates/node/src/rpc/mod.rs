@@ -302,7 +302,7 @@ where
                         .map(|tx| tx.nonce())
                         .collect();
 
-                    next_lane_nonce(on_chain_nonce, &lane_nonces).map_err(Self::Error::from)
+                    next_lane_nonce(on_chain_nonce, lane_nonces).map_err(Self::Error::from)
                 })
                 .await?
             };
@@ -628,9 +628,16 @@ where
 ///
 /// Pending, queued and delayed transactions all take their nonces; walking from the on-chain nonce
 /// skips stale entries below it.
-fn next_lane_nonce(on_chain_nonce: u64, lane_nonces: &[u64]) -> Result<u64, EthApiError> {
+fn next_lane_nonce(on_chain_nonce: u64, mut lane_nonces: Vec<u64>) -> Result<u64, EthApiError> {
+    lane_nonces.sort_unstable();
     let mut nonce = on_chain_nonce;
-    while lane_nonces.contains(&nonce) {
+    for taken in lane_nonces {
+        if taken < nonce {
+            continue;
+        }
+        if taken > nonce {
+            break;
+        }
         nonce = nonce.checked_add(1).ok_or(EthApiError::InvalidTransaction(
             RpcInvalidTransactionError::NonceMaxValue,
         ))?;
@@ -644,11 +651,12 @@ mod tests {
 
     #[test]
     fn next_lane_nonce_skips_taken_nonces() {
-        assert_eq!(next_lane_nonce(5, &[3, 4]).unwrap(), 5);
-        assert_eq!(next_lane_nonce(5, &[5, 6, 8]).unwrap(), 7);
-        assert_eq!(next_lane_nonce(5, &[6]).unwrap(), 5);
+        assert_eq!(next_lane_nonce(5, vec![3, 4]).unwrap(), 5);
+        assert_eq!(next_lane_nonce(5, vec![5, 6, 8]).unwrap(), 7);
+        assert_eq!(next_lane_nonce(5, vec![6]).unwrap(), 5);
+        assert_eq!(next_lane_nonce(5, vec![7, 5, 6, 6, 9]).unwrap(), 8);
         assert!(matches!(
-            next_lane_nonce(u64::MAX, &[u64::MAX]),
+            next_lane_nonce(u64::MAX, vec![u64::MAX]),
             Err(EthApiError::InvalidTransaction(
                 RpcInvalidTransactionError::NonceMaxValue
             ))
