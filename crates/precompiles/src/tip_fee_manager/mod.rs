@@ -9,7 +9,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping, StorageCtx},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
-    tip20::{ITIP20, TIP20Token, validate_usd_currency},
+    tip20::{ITIP20, Recipient, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::AuthRole,
 };
@@ -290,6 +290,7 @@ impl TipFeeManager {
     ///
     /// # Errors
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
+    /// - `PolicyForbids` — `validator`'s receive policy would block the payout (T15+)
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
         // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
         StorageCtx.set_tip1060_storage_credit_minting(false);
@@ -297,6 +298,14 @@ impl TipFeeManager {
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
             return Ok(());
+        }
+
+        // T15+: a payout diverted by the validator's receive policy could never be claimed.
+        if self.storage.spec().is_t15() {
+            TIP20Token::from_address(token)?.ensure_receive_policy_authorized(
+                self.address,
+                Recipient::resolve(validator)?.target,
+            )?;
         }
         self.collected_fees[validator][token].write(U256::ZERO)?;
 
@@ -329,12 +338,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
+        RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{
+            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+        },
     };
 
     #[test]
@@ -1545,6 +1556,90 @@ mod tests {
             assert_eq!(
                 fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?,
                 r2,
+            );
+
+            Ok(())
+        })
+    }
+    fn reject_all_senders(receiver: Address) -> Result<()> {
+        TIP403Registry::new().set_receive_policy(
+            receiver,
+            ITIP403Registry::setReceivePolicyCall {
+                senderPolicyId: REJECT_ALL_POLICY_ID,
+                tokenFilterId: ALLOW_ALL_POLICY_ID,
+                recoveryAuthority: Address::ZERO,
+            },
+        )
+    }
+
+    #[test]
+    fn test_distribute_fees_to_receive_blocked_validator_reverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+        let validator = Address::random();
+        let fee_amount = U256::from(500);
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, fee_amount)
+                .apply()?;
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.collected_fees[validator][token.address()].write(fee_amount)?;
+            reject_all_senders(validator)?;
+
+            let result = fee_manager.distribute_fees(validator, token.address());
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            assert_eq!(
+                fee_manager.collected_fees[validator][token.address()].read()?,
+                fee_amount
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: RECEIVE_POLICY_GUARD_ADDRESS
+                })?,
+                U256::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_distribute_fees_to_receive_blocked_validator_diverts_pre_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let admin = Address::random();
+        let validator = Address::random();
+        let fee_amount = U256::from(500);
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, fee_amount)
+                .apply()?;
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.collected_fees[validator][token.address()].write(fee_amount)?;
+            reject_all_senders(validator)?;
+
+            fee_manager.distribute_fees(validator, token.address())?;
+
+            assert_eq!(
+                fee_manager.collected_fees[validator][token.address()].read()?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: validator })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: RECEIVE_POLICY_GUARD_ADDRESS
+                })?,
+                fee_amount
             );
 
             Ok(())
