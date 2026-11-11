@@ -58,7 +58,7 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
-    TempoStateAccess, TempoTxResult,
+    TempoStateAccess, TempoTxResult, transaction_error::FeePaymentError,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -696,7 +696,11 @@ where
                             // instead. Pool maintenance evicts the same failures (such as an
                             // insolvent fee payer or a retired key) once a block lands, so this
                             // only does it sooner.
-                            invalid_pool_transactions.push(*tx.hash());
+                            if evicts_failed_pool_transaction(
+                                TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+                            ) {
+                                invalid_pool_transactions.push(*tx.hash());
+                            }
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
                             #[cfg(feature = "fuzz")]
@@ -1264,6 +1268,19 @@ pub(crate) struct RootsTaskResult {
     encoded_block_transactions: EncodedBlockTransactionList,
 }
 
+/// Returns `true` if a pool transaction that failed execution with `error` should leave the
+/// pool. A FeeAMM liquidity failure depends on this build's beneficiary and on fee swaps earlier
+/// in the block, while the pool keeps a transaction any recent validator token can accept, so it
+/// stays pooled for other proposers and later blocks.
+fn evicts_failed_pool_transaction(error: Option<&TempoInvalidTransaction>) -> bool {
+    !matches!(
+        error,
+        Some(TempoInvalidTransaction::CollectFeePreTx(
+            FeePaymentError::InsufficientAmmLiquidity { .. }
+        ))
+    )
+}
+
 /// Returns `true` if the build's parent is the pool's tip or descends from it, so a transaction
 /// that fails against the parent's state would also fail once the pool catches up.
 /// `ancestor_hash` returns the hash of the parent's ancestor at a block number.
@@ -1292,6 +1309,36 @@ mod tests {
             last_seen_block_hash: hash,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_evicts_failed_pool_transaction() {
+        let liquidity =
+            TempoInvalidTransaction::CollectFeePreTx(FeePaymentError::InsufficientAmmLiquidity {
+                user_token: None,
+                validator_token: None,
+                fee: U256::from(1000),
+            });
+        assert!(!evicts_failed_pool_transaction(Some(&liquidity)));
+
+        let evicted = [
+            TempoInvalidTransaction::InvalidFeePayerSignature,
+            TempoInvalidTransaction::InvalidFeeToken(Address::repeat_byte(0x30)),
+            TempoInvalidTransaction::CollectFeePreTx(
+                FeePaymentError::InsufficientFeeTokenBalance {
+                    fee: U256::from(1000),
+                    balance: U256::ZERO,
+                },
+            ),
+        ];
+        for error in evicted {
+            assert!(
+                evicts_failed_pool_transaction(Some(&error)),
+                "{error} should be evicted"
+            );
+        }
+        // Generic EVM validation errors carry no Tempo error.
+        assert!(evicts_failed_pool_transaction(None));
     }
 
     #[test]
