@@ -14,7 +14,7 @@ use commonware_consensus::{
     marshal::Update,
     types::{Epocher, FixedEpocher, Height},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digestible as _, ed25519::PublicKey};
 use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
 use commonware_runtime::{
     Clock, ContextCell, Metrics, Spawner, spawn_cell,
@@ -212,13 +212,12 @@ where
             read_header_at_height(self.execution_node.as_ref(), highest_finalized)
                 .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "boundary block at `{latest_boundary}` did not contain a valid DKG outcome"
-                    )
-                })?;
+        let onchain_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+            latest_boundary_header.extra_data().as_ref(),
+        ))
+        .wrap_err_with(|| {
+            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+        })?;
 
         let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
             .resolve_at_hash(

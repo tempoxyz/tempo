@@ -3,6 +3,7 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Height, View},
 };
+use commonware_cryptography::Digestible as _;
 use commonware_runtime::{Runner as _, deterministic};
 use commonware_utils::Acknowledgement as _;
 use futures::{StreamExt as _, executor::block_on};
@@ -186,7 +187,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
                 parent: (View::new(view.saturating_sub(1)), GENESIS),
             },
             attributes: Box::new(attributes()),
-            deferred_extra_data: None,
+            deferred_ceremony_output: None,
             response,
         })
     }

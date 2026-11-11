@@ -26,10 +26,10 @@
 //!
 //! Builds fetch and deliver their parent, then issue the forkchoice update
 //! with payload attributes on VALID, using the finalized state captured when
-//! the build was scheduled. A proposal whose extra data depends on the
-//! post-state of its parent, such as the DKG outcome of a boundary block,
-//! first waits for that data. The build holds the slot while it waits, so no
-//! other forkchoice update can move the finalized state that it captured.
+//! the build was scheduled. A boundary proposal first waits for the DKG
+//! ceremony output, which consensus produces while the parent is delivered.
+//! The build holds the slot while it waits, so no other forkchoice update can
+//! move the finalized state that it captured.
 //!
 //! # Block verification
 //!
@@ -75,10 +75,10 @@
 //! failing, and no later call can succeed. A non-`VALID` forkchoice update
 //! and a non-`VALID` finalized delivery are fatal as well.
 
+use commonware_cryptography::Digested;
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap, VecDeque},
-    sync::Arc,
     task::Poll,
     time::{Duration, Instant},
 };
@@ -89,7 +89,7 @@ use commonware_consensus::{
     marshal::Update,
     types::{Height, Round, View},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digestible as _, ed25519::PublicKey};
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as RuntimeMetrics, Spawner, spawn_cell,
 };
@@ -217,7 +217,7 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 
     /// Parent subscriptions for verification and convergence walks. Each
     /// walk owns the abort handle for its subscription.
-    parent_fetches: AbortablePool<'static, (WalkOwner, Option<Arc<Block>>)>,
+    parent_fetches: AbortablePool<'static, (WalkOwner, Option<Digested<Block>>)>,
 
     /// The walk that delivers the pending head so that a forkchoice update can
     /// select it as HEAD. Starts once the pending head's body is known and is
@@ -238,7 +238,7 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// discarded. A delivered block is handed back as the job's output so
     /// that its body can be retained for a later build: the proposer is never
     /// asked to verify its own proposal, so no validation request delivers it.
-    payload_jobs: FuturesUnordered<BoxFuture<'static, Option<Arc<Block>>>>,
+    payload_jobs: FuturesUnordered<BoxFuture<'static, Option<Digested<Block>>>>,
 
     /// The last accepted forkchoice.
     local_state: LocalState,
@@ -257,7 +257,7 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 
     /// Own proposals have not been delivered through verification. Retain their
     /// bodies until finality so a later build can deliver its selected parent.
-    built_blocks: HashMap<Digest, Arc<Block>>,
+    built_blocks: HashMap<Digest, Digested<Block>>,
 
     /// The node's ed25519 public key if the node is participating in
     /// consensus. Not set if not, for example for followers.
@@ -767,7 +767,7 @@ where
         match status {
             PayloadStatusEnum::Valid => {
                 if walk.cursor.digest() == finalized_digest
-                    || walk.cursor.parent_digest() == finalized_digest
+                    || walk.cursor.inner().parent_digest() == finalized_digest
                 {
                     // Every cursor belongs to the target's ancestry, so
                     // reaching finality proves the target connects to it.
@@ -906,6 +906,19 @@ where
                 target.head.1, target.head.0, target.finalized.1, target.finalized.0,
             )
         };
+        #[cfg(feature = "fuzz")]
+        if let Some(Ok(updated)) = &response {
+            antithesis_sdk::assert_always!(
+                !updated.is_invalid(),
+                "Execution layer never rejects a consensus forkchoice update as invalid",
+                &serde_json::json!({
+                    "head_height": target.head.0.get(),
+                    "head_digest": target.head.1.to_string(),
+                    "finalized_height": target.finalized.0.get(),
+                    "status": updated.payload_status.to_string(),
+                })
+            );
+        }
         let accepted = match response {
             // No update was submitted because the execution layer is ahead
             // of tracked finality.
@@ -973,10 +986,20 @@ where
         request: FinalizedBlockRequest,
         status: eyre::Result<PayloadStatusEnum>,
     ) -> eyre::Result<()> {
-        let block = request.block.as_ref();
+        let block = request.block.inner();
         debug_assert!(
             block.height() >= self.delivered_finalized_tip.1,
             "finalized blocks are delivered in height order",
+        );
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            !matches!(status, Ok(PayloadStatusEnum::Invalid { .. })),
+            "Execution layer never rejects a finalized block as invalid",
+            &serde_json::json!({
+                "height": block.height().get(),
+                "digest": block.digest().to_string(),
+                "status": format!("{status:?}"),
+            })
         );
         match status {
             Ok(PayloadStatusEnum::Valid) => {}
@@ -1100,6 +1123,7 @@ where
         let _entered = cause.enter();
         if let Some(public_key) = self.public_key.as_ref()
             && block
+                .inner()
                 .header()
                 .consensus_context
                 .is_some_and(|context| context.proposer.to_inner() == *public_key)
@@ -1175,7 +1199,7 @@ where
             let (ack, _wait) = Exact::handle();
             let request = FinalizedBlockRequest {
                 cause: span,
-                block: Arc::new(block),
+                block,
                 acknowledgment: ack,
             };
             let fut = execute_finalization(self.execution_node.clone(), request);
@@ -1321,6 +1345,26 @@ where
     fn record_finalized_tip(&mut self, round: Round, height: Height, digest: Digest) {
         self.record_convergence_target(round, (round.view(), digest));
         if round > self.network_finalized_tip.0 {
+            #[cfg(feature = "fuzz")]
+            {
+                let (_, previous_height, previous_digest) = self.network_finalized_tip;
+                let details = serde_json::json!({
+                    "round": round.to_string(),
+                    "digest": digest.to_string(),
+                    "previous_digest": previous_digest.to_string(),
+                });
+                antithesis_sdk::assert_always_greater_than_or_equal_to!(
+                    height.get(),
+                    previous_height.get(),
+                    "Finalized height never decreases as finalized rounds advance",
+                    &details
+                );
+                antithesis_sdk::assert_always!(
+                    height != previous_height || digest == previous_digest,
+                    "Finalized block never conflicts with an earlier finalized block at the same height",
+                    &details
+                );
+            }
             if digest != self.network_finalized_tip.2 {
                 self.pending_head.executed = None;
             }
@@ -1496,7 +1540,7 @@ where
         }
     }
 
-    fn start_convergence(&mut self, block: Arc<Block>) {
+    fn start_convergence(&mut self, block: Digested<Block>) {
         self.pending_head.height = Some(block.height());
         self.convergence = Some(AncestryWalk::new(Span::current(), block));
     }
@@ -1506,7 +1550,7 @@ where
         &mut self,
         digest: Digest,
         round: Round,
-        block: Option<Arc<Block>>,
+        block: Option<Digested<Block>>,
     ) {
         match block {
             Some(block) if block.height() > self.network_finalized_tip.1 => {
@@ -1533,7 +1577,7 @@ where
 
     /// A local lookup either supplies the next cursor or starts a marshal
     /// subscription for the missing parent.
-    fn handle_parent_lookup(&mut self, owner: WalkOwner, block: Option<Arc<Block>>) {
+    fn handle_parent_lookup(&mut self, owner: WalkOwner, block: Option<Digested<Block>>) {
         let walk = match owner {
             WalkOwner::Verification(round) => match &mut self.active_verification {
                 Some(active) if active.round == round => Some(&mut active.walk),
@@ -1560,7 +1604,7 @@ where
     /// Dropping or restarting a walk aborts its outstanding fetch, so a
     /// completion cannot be delivered to a replacement for the same owner.
     #[instrument(skip_all, fields(%owner))]
-    fn handle_parent_fetched(&mut self, owner: WalkOwner, block: Option<Arc<Block>>) {
+    fn handle_parent_fetched(&mut self, owner: WalkOwner, block: Option<Digested<Block>>) {
         let walk = match owner {
             WalkOwner::Verification(round) => match &mut self.active_verification {
                 Some(active) if active.round == round => Some(&mut active.walk),
@@ -1744,7 +1788,7 @@ async fn get_block(
     marshal: impl Marshal,
     execution_node: impl ExecutionLayer,
     height: Height,
-) -> eyre::Result<Block> {
+) -> eyre::Result<Digested<Block>> {
     if let Some(block) = marshal.get_block(height).await {
         return Ok(block);
     }
@@ -1772,7 +1816,7 @@ async fn get_block(
         );
     };
 
-    Ok(block)
+    Ok(Digested::from(block))
 }
 
 /// Looks up a block in the execution layer before subscribing through marshal.
@@ -1784,7 +1828,7 @@ async fn fetch_block(
     marshal: impl Marshal,
     digest: Digest,
     round: Round,
-) -> Option<Arc<Block>> {
+) -> Option<Digested<Block>> {
     match look_up_block(execution_node, marshal.clone(), digest).await {
         Some(block) => Some(block),
         None => marshal.subscribe_by_digest(digest, round).await.ok(),
@@ -1803,15 +1847,15 @@ async fn look_up_block(
     execution_node: impl ExecutionLayer,
     marshal: impl Marshal,
     digest: Digest,
-) -> Option<Arc<Block>> {
+) -> Option<Digested<Block>> {
     match execution_node.block_by_digest(digest) {
-        Ok(Some(block)) => return Some(Arc::new(block)),
+        Ok(Some(block)) => return Some(Digested::from(block)),
         Ok(None) => {}
         Err(error) => {
             warn!(%error, "execution-layer block lookup failed; falling back to marshal");
         }
     }
-    marshal.get_block(&digest).await.map(Arc::new)
+    marshal.get_block(&digest).await
 }
 
 /// Logs the error that shuts the executor down.
@@ -1827,7 +1871,7 @@ fn log_fatal(error: &Report) {
 
 struct FinalizedBlockRequest {
     cause: Span,
-    block: Arc<Block>,
+    block: Digested<Block>,
     acknowledgment: Exact,
 }
 
@@ -1838,7 +1882,7 @@ struct FinalizedBlockRequest {
 struct PendingNotarizedBlock {
     digest: Digest,
     round: Round,
-    fetch: BoxFuture<'static, Option<Arc<Block>>>,
+    fetch: BoxFuture<'static, Option<Digested<Block>>>,
 }
 
 impl PendingNotarizedBlock {
@@ -1858,7 +1902,7 @@ impl PendingNotarizedBlock {
 }
 
 impl Future for PendingNotarizedBlock {
-    type Output = (Digest, Round, Option<Arc<Block>>);
+    type Output = (Digest, Round, Option<Digested<Block>>);
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -1892,7 +1936,7 @@ impl Verification {
     fn new(
         round: Round,
         cause: Span,
-        candidate: Arc<Block>,
+        candidate: Digested<Block>,
         response: oneshot::Sender<Option<Duration>>,
     ) -> Self {
         Self {
@@ -1954,7 +1998,7 @@ enum VerificationEvent {
     /// Its requester went away.
     Canceled,
     /// Its local parent lookup resolved.
-    ParentLookedUp(Option<Arc<Block>>),
+    ParentLookedUp(Option<Digested<Block>>),
 }
 
 /// One ancestry walk, shared by verification and pending-head convergence.
@@ -1982,9 +2026,9 @@ enum VerificationEvent {
 /// parent drops the previous cursor.
 struct AncestryWalk {
     cause: Span,
-    target: Arc<Block>,
+    target: Digested<Block>,
     /// The block the walk probes next, or probed last.
-    cursor: Arc<Block>,
+    cursor: Digested<Block>,
     /// The step owns the local lookup or the abort handle for a pooled
     /// parent subscription. Changing steps cancels any outstanding fetch.
     step: WalkStep,
@@ -2002,7 +2046,7 @@ enum WalkStep {
     /// The parent above the finalized tip is being looked up to continue
     /// execution or prove ancestry; `None` if neither the execution layer
     /// nor marshal storage has it.
-    LookUpParent(BoxFuture<'static, Option<Arc<Block>>>),
+    LookUpParent(BoxFuture<'static, Option<Digested<Block>>>),
     /// The parent is not held locally and is subscribed for with the marshal
     /// actor, which may have to fetch it from peers. The receiver closes if
     /// the marshal actor gives up on it.
@@ -2046,7 +2090,7 @@ impl std::fmt::Display for WalkOwner {
 }
 
 impl AncestryWalk {
-    fn new(cause: Span, target: Arc<Block>) -> Self {
+    fn new(cause: Span, target: Digested<Block>) -> Self {
         Self {
             cause,
             cursor: target.clone(),
@@ -2070,7 +2114,7 @@ impl AncestryWalk {
     fn parent(&self) -> (Round, Digest) {
         let context = self.cursor.context();
         let round = Round::new(context.round.epoch(), context.parent.0);
-        (round, self.cursor.parent_digest())
+        (round, self.cursor.inner().parent_digest())
     }
 
     fn parent_height(&self) -> Height {
@@ -2078,7 +2122,7 @@ impl AncestryWalk {
     }
 
     /// Marks the cursor as in flight and returns it for delivery.
-    fn probe(&mut self) -> Arc<Block> {
+    fn probe(&mut self) -> Digested<Block> {
         self.step = WalkStep::InFlight;
         self.cursor.clone()
     }
@@ -2103,7 +2147,7 @@ impl AncestryWalk {
         let cursor_is_not_tip =
             self.cursor.height() == finalized_height && self.cursor.digest() != finalized_digest;
         let parent_is_not_tip = self.cursor.height().previous() == Some(finalized_height)
-            && self.cursor.parent_digest() != finalized_digest;
+            && self.cursor.inner().parent_digest() != finalized_digest;
 
         cursor_is_not_tip || parent_is_not_tip
     }
@@ -2114,7 +2158,7 @@ impl AncestryWalk {
 
     /// Polls the local parent lookup. The actor applies the result before
     /// polling the walk again, advancing the cursor or starting a fetch.
-    fn poll_lookup(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Option<Arc<Block>>> {
+    fn poll_lookup(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Option<Digested<Block>>> {
         match &mut self.step {
             WalkStep::LookUpParent(lookup) => lookup.poll_unpin(cx),
             WalkStep::Probe
@@ -2126,7 +2170,7 @@ impl AncestryWalk {
     }
 
     /// Drives the local lookup until it returns a parent or reports a miss.
-    async fn next_lookup(&mut self) -> Option<Arc<Block>> {
+    async fn next_lookup(&mut self) -> Option<Digested<Block>> {
         poll_fn(|cx| self.poll_lookup(cx)).await
     }
 
@@ -2142,7 +2186,7 @@ impl AncestryWalk {
         marshal: impl Marshal,
         owner: WalkOwner,
         finalized_round: Round,
-        fetches: &mut AbortablePool<'static, (WalkOwner, Option<Arc<Block>>)>,
+        fetches: &mut AbortablePool<'static, (WalkOwner, Option<Digested<Block>>)>,
     ) {
         let (round, digest) = self.parent();
         if round <= finalized_round {
@@ -2158,7 +2202,7 @@ impl AncestryWalk {
     }
 
     /// Makes the found parent the cursor.
-    fn on_fetched(&mut self, block: Arc<Block>) {
+    fn on_fetched(&mut self, block: Digested<Block>) {
         self.cursor = block;
         self.step = WalkStep::Probe;
     }
@@ -2389,9 +2433,9 @@ async fn execute_forkchoice(
 /// Owns the execution slot while fetching and delivering the parent, then
 /// starts the payload build if the parent is VALID.
 ///
-/// A build with [`Build::deferred_extra_data`] resolves that extra data
-/// between the VALID answer and the forkchoice update. The wait counts against
-/// the build budget.
+/// A build with [`Build::deferred_ceremony_output`] resolves the DKG ceremony
+/// output between the VALID answer and the forkchoice update. The wait counts
+/// against the build budget.
 #[instrument(skip_all, parent = &cause, fields(
     round = %build.context.round,
     parent = %build.context.parent.1,
@@ -2402,12 +2446,12 @@ async fn execute_build(
     cause: Span,
     mut target: LocalState,
     build: Box<Build>,
-    retained_parent: Option<Arc<Block>>,
+    retained_parent: Option<Digested<Block>>,
 ) -> BuildOutcome {
     let Build {
         context,
         attributes,
-        deferred_extra_data,
+        deferred_ceremony_output,
         mut response,
     } = *build;
     let mut attributes = *attributes;
@@ -2435,7 +2479,7 @@ async fn execute_build(
         };
     };
     target.head = (block.height(), parent_digest);
-    let status = match deliver_block(&execution_node, Arc::clone(&block))
+    let status = match deliver_block(&execution_node, block.clone())
         .await
         .wrap_err("failed delivering build parent")
     {
@@ -2454,28 +2498,28 @@ async fn execute_build(
             delivery_attempted: true,
         };
     }
-    if let Some(deferred) = deferred_extra_data {
-        let extra_data = select! {
+    if let Some(deferred) = deferred_ceremony_output {
+        let output = select! {
             biased;
 
             () = response.cancellation() => {
-                info!("build subscriber went away while the build waited for extra data");
+                info!("build subscriber went away while the build waited for the DKG ceremony output");
                 return BuildOutcome::Aborted {
                     delivery_attempted: true,
                 };
             },
-            extra_data = deferred.resolve(block) => extra_data,
+            output = deferred.resolve(block) => output,
         };
-        let extra_data = match extra_data {
-            Ok(extra_data) => extra_data,
+        let output = match output {
+            Ok(output) => output,
             Err(error) => {
-                warn!(%error, "failed to get the extra data of the proposal");
+                warn!(%error, "failed to get the DKG ceremony output of the proposal");
                 return BuildOutcome::Aborted {
                     delivery_attempted: true,
                 };
             }
         };
-        attributes = attributes.with_extra_data(extra_data);
+        attributes = attributes.with_dkg_ceremony_output(output);
     }
     BuildOutcome::Forkchoice(
         execute_forkchoice(
@@ -2515,7 +2559,7 @@ async fn execute_finalization(
         %owner,
         block.digest = %block.digest(),
         block.height = %block.height(),
-        block.parent_digest = %block.parent_digest(),
+        block.parent_digest = %block.inner().parent_digest(),
         proposal.epoch = block.context().round.epoch().get(),
         proposal.view = block.context().round.view().get(),
     ),
@@ -2524,7 +2568,7 @@ async fn execute_delivery(
     execution_node: impl ExecutionLayer,
     owner: WalkOwner,
     cause: Span,
-    block: Arc<Block>,
+    block: Digested<Block>,
 ) -> ExecutionTaskOutcome {
     let digest = block.digest();
     let started = Instant::now();
@@ -2542,9 +2586,9 @@ async fn execute_delivery(
 /// returns the reported payload status.
 async fn deliver_block(
     execution_node: &impl ExecutionLayer,
-    block: Arc<Block>,
+    block: Digested<Block>,
 ) -> eyre::Result<PayloadStatusEnum> {
-    let block = Arc::unwrap_or_clone(block).into_execution_block();
+    let block = block.inner().execution_block();
     let payload_status = execution_node
         .new_payload(TempoExecutionData { block })
         .await
@@ -2629,7 +2673,7 @@ async fn run_payload_job(
         payload_id,
         mut response,
     }: StartPayloadJob,
-) -> Option<Arc<Block>> {
+) -> Option<Digested<Block>> {
     let payload = select! {
         payload = execution_node
             .resolve_payload(payload_id)
@@ -2655,10 +2699,15 @@ async fn run_payload_job(
             }
             // The application received the block and may propose it; hand
             // the body to the actor loop for a later build on this proposal.
-            let (execution_block, _) = retained.into_consensus_execution_payload();
-            Some(Arc::new(Block::from_execution_block_unchecked(
+            let (execution_block, execution_block_encoded) =
+                retained.into_consensus_execution_payload();
+            Block::try_from_execution_block_with_encoded_cache(
                 execution_block,
-            )))
+                execution_block_encoded,
+            )
+            .inspect_err(|error| warn!(%error, "built payload failed validation; not retaining it"))
+            .ok()
+            .map(Digested::from)
         }
         Some(Err(error)) => {
             warn!(

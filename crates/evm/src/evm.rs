@@ -195,8 +195,10 @@ mod runtime_tests {
             StorageChange, SystemTx,
         },
         interpreter::{InstrStop, op as opcode},
+        version::GasId,
     };
     use indexmap::IndexMap;
+    use reth_evm::BlockExecutorFactory;
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::{
@@ -976,6 +978,7 @@ mod runtime_tests {
                         action.address(),
                     );
                 }
+                StorageAction::ConfigCommitment(..) => {}
             }
         }
 
@@ -1100,6 +1103,9 @@ mod runtime_tests {
                         labels.address(action.address()),
                         labels.slot(action.address(), slot),
                     )
+                }
+                StorageAction::ConfigCommitment(address, before, after) => {
+                    format!("ConfigCommitment({}, {before}, {after})", labels.address(address))
                 }
             })
             .collect()
@@ -1544,8 +1550,6 @@ mod runtime_tests {
     /// The factory must preserve the resolved environment's nondefault gas cap.
     #[test]
     fn test_tempo_evm_respects_gas_cap() {
-        use reth_evm::BlockExecutorFactory;
-
         let spec = TempoHardfork::T1A;
         let mut version = *crate::tempo_execution_config(spec, 1).version();
         let cap = spec.tx_gas_limit_cap().unwrap();
@@ -1591,8 +1595,6 @@ mod runtime_tests {
     /// Test that T1 has significantly higher state creation costs.
     #[test]
     fn test_tempo_evm_t1_state_creation_costs() {
-        use evm2::version::GasId;
-
         let evm = configured_evm(TempoHardfork::T1, 0, false, InMemoryDB::default());
         let gas_params = &evm.version().gas_params;
 

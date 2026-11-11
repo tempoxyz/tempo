@@ -348,7 +348,6 @@ where
             mailbox_size: commonware_utils::NZUsize!(1024),
             max_peers: commonware_utils::NZUsize!(128),
             deque_size: 10,
-            max_message_size: crate::MAX_MESSAGE_SIZE,
             verification_mode: self.verification_mode,
             // Simulated time costs wall time under the `external` runtime, so
             // these are tighter than production: every offline leader costs a
@@ -437,6 +436,13 @@ where
 
         // Wait for the consensus handle to actually finish
         let _ = handle.await;
+
+        // The handle resolves in the executor pass that drops the engine's root
+        // future, and that drop is what aborts every actor beneath it, so the
+        // actors (and the storage they hold open) are only dropped in the next
+        // pass. Storage refuses to reopen a blob that is still open, so wait until
+        // that pass has run before anyone reopens the node's partitions.
+        drain_aborted_tasks().await;
 
         debug!(%self.uid, "stopped consensus for testing node");
     }
@@ -652,5 +658,29 @@ where
 
         debug!(%self.uid, target, "execution layer unwound successfully");
         (current, target)
+    }
+}
+
+/// Returns once the deterministic executor has polled every task that is ready
+/// now, and then every task those polls woke.
+///
+/// The deterministic executor polls the tasks that are ready at the start of a
+/// pass as one shuffled batch, and a task woken during a pass runs in the next
+/// one. Yielding requeues this task behind the current batch, so after the first
+/// yield every aborted task queued alongside this one has been polled and
+/// dropped. The second yield covers tasks those drops abort in turn, such as
+/// [`commonware_runtime::AbortOnDrop`] guards they owned.
+async fn drain_aborted_tasks() {
+    for _ in 0..2 {
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if yielded {
+                return std::task::Poll::Ready(());
+            }
+            yielded = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        })
+        .await;
     }
 }

@@ -19,7 +19,7 @@ use tempo_node::node::TempoNode;
 /// Historical execution corpus commands.
 #[derive(Debug, Subcommand)]
 pub enum CorpusCommand {
-    /// Capture a finite archive range into `--corpus s3://bucket/prefix`, resuming a partial fill.
+    /// Capture archive blocks into `--corpus s3://bucket/prefix`, appending to an existing corpus.
     Fill(Box<FillCommand>),
     /// Replay a corpus range without opening a database.
     Replay(ReplayCommand),
@@ -51,21 +51,23 @@ fn workers(workers: Option<usize>) -> usize {
         .max(1)
 }
 
-/// Capture a pinned exclusive-end range from an archive datadir.
+/// Capture archive blocks from an archive datadir up to a pinned exclusive end, appending
+/// after the blocks a corpus already published.
 #[derive(Debug, Parser)]
 pub struct FillCommand {
     #[command(flatten)]
     env: EnvironmentArgs<TempoChainSpecParser>,
-    /// First block (genesis is context, not a captured block).
+    /// First block of a new corpus (genesis is context, not a captured block); an existing
+    /// corpus must start here.
     #[arg(long, default_value = "1")]
     from: u64,
-    /// Exclusive end, clamped to the available head.
+    /// Exclusive end, clamped to the available head; defaults to the head.
     #[arg(long)]
-    to: u64,
+    to: Option<u64>,
     /// Destination s3://bucket/prefix. Existing incompatible data is rejected.
     #[arg(long)]
     corpus: String,
-    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
+    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
     #[arg(long)]
     s3_endpoint: Option<String>,
     /// Re-read and fully replay published records instead of checking metadata only.
@@ -116,13 +118,13 @@ pub struct ReplayCommand {
     /// Source s3://bucket/prefix.
     #[arg(long)]
     corpus: String,
-    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
+    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
     #[arg(long)]
     s3_endpoint: Option<String>,
     /// First block; defaults to the corpus start.
     #[arg(long)]
     from: Option<u64>,
-    /// Exclusive end; defaults to the corpus end.
+    /// Exclusive end; defaults to the end of the published blocks.
     #[arg(long)]
     to: Option<u64>,
     /// Replay only transactions with ordinal in [tx-from, tx-to), each independently.
@@ -146,19 +148,19 @@ impl ReplayCommand {
             .catalog()
             .await?
             .ok_or_else(|| eyre::eyre!("no corpus catalog at {}", self.corpus))?;
-        eyre::ensure!(catalog.complete, "corpus is not complete");
         let context = &catalog.context;
         eyre::ensure!(
             context.chain_id == self.chain.chain_id()
                 && context.genesis == self.chain.genesis_hash().to_string(),
             "corpus chain context mismatch"
         );
+        let published = &catalog.cursor;
         let from = self.from.unwrap_or(context.start);
-        let end = self.to.unwrap_or(context.end).min(context.end);
+        let end = self.to.unwrap_or(published.next).min(published.next);
         let standalone = self.tx_from.zip(self.tx_to);
         if let Some((from, to)) = standalone {
             eyre::ensure!(
-                from >= context.first_tx && from < to && to <= context.end_tx,
+                from >= context.first_tx && from < to && to <= published.tx,
                 "transaction ordinal range outside the corpus"
             );
         } else {
@@ -205,14 +207,18 @@ pub struct GcCommand {
     /// Corpus s3://bucket/prefix or file:///directory; must be complete.
     #[arg(long)]
     corpus: String,
-    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
+    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
     #[arg(long)]
     s3_endpoint: Option<String>,
+    /// Take over a corpus an interrupted gc left marked as collecting. Only when no gc is
+    /// still running on it.
+    #[arg(long)]
+    force: bool,
 }
 
 impl GcCommand {
     async fn execute(self) -> eyre::Result<()> {
         let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
-        gc::gc(&store).await
+        gc::gc(&store, self.force).await
     }
 }

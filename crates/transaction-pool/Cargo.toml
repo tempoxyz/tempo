@@ -50,9 +50,12 @@ parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 metrics.workspace = true
+antithesis_sdk = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:serde_json"]
 test-utils = [
 	"reth-chainspec/test-utils",
 	"reth-ethereum-primitives/test-utils",

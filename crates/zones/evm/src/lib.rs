@@ -23,6 +23,7 @@ use crate::{
     precompiles::{L1StorageReader, ZonePrecompiles},
     zone_evm::{zone_execution_config, zone_tx_registry},
 };
+use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, B256};
 use alloy_provider::{Provider, ProviderBuilder};
 use evm2::evm::DynDatabase;
@@ -31,8 +32,10 @@ use reth_evm::{
     BlockAssembler, BlockAssemblerInput, BlockExecutorFactory, ConfigureEngineEvm, ConfigureEvm,
     EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
 };
+use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use std::{
+    borrow::Cow,
     collections::HashSet,
     fmt,
     num::NonZeroU32,
@@ -47,7 +50,9 @@ use tempo_evm::{
 };
 use tempo_payload_types::TempoExecutionData;
 use tempo_precompiles::{error::Result as TempoResult, storage::actions::StorageActions};
-use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{
+    Block, TempoEvmKind, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+};
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::state::{L1StateCache, L1StateProvider, L1StateProviderConfig};
 
@@ -271,9 +276,10 @@ where
             db,
             self.zone_factory.l1_reader.clone(),
             self.zone_factory.portal_address,
+            env.spec,
         );
         let l1 = db.l1_state().clone();
-        let ext = TempoEvmExt::default().with_fee_manager(ZoneProtocolFeeManager::new());
+        let ext = TempoEvmExt::new(TempoEvmKind::Zone, ZoneProtocolFeeManager::new());
         let precompiles = ZonePrecompiles::<TempoEvmTypes, L1>::new(
             env.spec,
             ext.actions.clone(),
@@ -311,7 +317,9 @@ where
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.inner.evm_env(header)
+        let mut env = self.inner.evm_env(header)?;
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, env.spec);
+        Ok(env)
     }
 
     fn next_evm_env(
@@ -327,6 +335,7 @@ where
             .next_block_base_fee(parent, attributes.timestamp)
             .unwrap_or_default();
         env.block.basefee = alloy_primitives::U256::from_limbs([basefee, 0, 0, 0]);
+        tempo_chainspec::gas_params::apply_zone(&mut env.version, env.spec);
         Ok(env)
     }
 
@@ -337,10 +346,6 @@ where
     where
         Self: 'a,
     {
-        use alloy_consensus::BlockHeader;
-        use reth_evm_ethereum::EthBlockExecutionCtx;
-        use std::borrow::Cow;
-
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
@@ -378,7 +383,7 @@ where
         &self,
         payload: &TempoExecutionData,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.inner.evm_env_for_payload(payload)
+        self.evm_env(payload.block.header())
     }
 
     fn context_for_payload<'a>(
@@ -428,18 +433,37 @@ impl<L1: L1StorageReader> L1StorageReader for RecordingL1StorageReader<L1> {
         self.reads
             .lock()
             .expect("L1 read recorder lock poisoned")
-            .insert(TempoStorageRead { account, slot });
+            .insert(TempoStorageRead {
+                account,
+                slot: Some(slot),
+            });
         Ok(value)
+    }
+
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, zone_precompiles::L1StateError> {
+        let commitment = self.inner.read_l1_commitment(account, block_number)?;
+        self.reads
+            .lock()
+            .expect("L1 read recorder lock poisoned")
+            .insert(TempoStorageRead {
+                account,
+                slot: None,
+            });
+        Ok(commitment)
     }
 }
 
-/// A Tempo L1 storage slot accessed while replaying a Zone block.
+/// A Tempo L1 account, or one of its storage slots, accessed while replaying a Zone block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TempoStorageRead {
     /// Tempo account whose storage was accessed.
     pub account: Address,
-    /// Storage slot that was accessed.
-    pub slot: B256,
+    /// Accessed storage slot, or `None` for an account-only read of the TIP-1108 commitment.
+    pub slot: Option<B256>,
 }
 
 #[cfg(test)]
@@ -463,6 +487,7 @@ mod tests {
     use tempo_precompiles::{
         TIP403_REGISTRY_ADDRESS,
         storage::StorageKey,
+        tip20::{self, ITIP20},
         tip403_registry::{ITIP403Registry, tip403_registry_slots},
         zone_factory::ZonePortalStorage,
     };
@@ -486,7 +511,10 @@ mod tests {
         assert_eq!(reader.read_l1_storage(account, slot, 10).unwrap(), value);
         assert_eq!(
             reader.take_reads(),
-            HashSet::from_iter([TempoStorageRead { account, slot }])
+            HashSet::from_iter([TempoStorageRead {
+                account,
+                slot: Some(slot)
+            }])
         );
 
         let failing = RecordingL1StorageReader::new(MockL1Reader::failing_storage());
@@ -511,21 +539,6 @@ mod tests {
 
     #[test]
     fn advance_tempo_keeps_overlay_reads_on_child_anchor() {
-        check_registry_reads_after_advance(true, false);
-    }
-
-    #[test]
-    fn discarded_advance_tempo_preserves_parent_registry_anchor() {
-        check_registry_reads_after_advance(false, false);
-    }
-
-    #[test]
-    fn advance_tempo_ignores_registry_entries_cached_at_parent_anchor() {
-        check_registry_reads_after_advance(true, true);
-        check_registry_reads_after_advance(false, true);
-    }
-
-    fn check_registry_reads_after_advance(commit_advance: bool, warm_parent_cache: bool) {
         const PARENT: u64 = 0;
         const CHILD: u64 = 1;
         let portal = Address::repeat_byte(0x42);
@@ -575,16 +588,131 @@ mod tests {
                 .abi_encode()
                 .into(),
         );
-        let genesis = TempoHeader::default();
-        let genesis_hash = genesis.hash_slow();
-        let child = TempoHeader {
+        let child = child_header(TempoHeader::default().hash_slow(), CHILD);
+        // T9 initializes tokens through the registry, which `enable_tokens` then restores.
+        let mut evm = genesis_zone_evm(&reader, portal, token, TempoHardfork::T9);
+        let counter_tx = system_tx_env(
+            TIP403_REGISTRY_ADDRESS,
+            ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
+        );
+
+        let tx = advance_tempo_tx(&child, vec![enabled_token]);
+        let result = evm
+            .transact(&tx)
+            .expect("advanceTempo execution must not fail")
+            .commit();
+        assert!(result.status, "advanceTempo reverted: {result:?}");
+        assert_eq!(
+            evm.database_as::<L1OverlayDB<InMemoryDB, MockL1Reader>>()
+                .unwrap()
+                .l1_state()
+                .get_anchor(),
+            None,
+            "transaction completion must clear the shared L1 anchor"
+        );
+
+        let requests = reader.storage_requests();
+        let portal = ZonePortalStorage::new(portal);
+        let child_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), CHILD);
+        let parent_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), PARENT);
+        assert!(!reader.requested(CHILD, &portal.role[sequencer]));
+        assert!(!reader.requested(PARENT, &portal.role[sequencer]));
+        assert!(requests.contains(&child_policy_request));
+        assert!(!requests.contains(&parent_policy_request));
+        assert!(reader.requested(CHILD, &portal.current_deposit_queue_hash));
+
+        // A second transaction must read the checkpoint accepted by EVM2, not the backing DB.
+        // The counter is not read by advanceTempo, so this also exercises an uncached L1 slot.
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)
+                .unwrap(),
+            U256::from(CHILD),
+        );
+        let reads_before = reader.storage_requests().len();
+        let result = evm.transact(&counter_tx).unwrap().discard();
+        assert!(result.status, "registry read reverted: {result:?}");
+        assert_eq!(
+            ITIP403Registry::policyIdCounterCall::abi_decode_returns(&result.output).unwrap(),
+            200,
+        );
+        assert!(reader.storage_requests()[reads_before..].contains(&(
+            TIP403_REGISTRY_ADDRESS,
+            B256::from(counter_slot),
+            CHILD,
+        )));
+
+        let result = evm.transact(&policy_id_tx).unwrap().discard();
+        assert!(result.status, "registry read reverted: {result:?}");
+        let policy =
+            ITIP403Registry::tokenTransferPolicyIdCall::abi_decode_returns(&result.output).unwrap();
+        assert!(policy.isSet);
+        assert_eq!(policy.policyId, 0xbbbb);
+
+        // Later transactions at the same anchor reuse the cached registry entries.
+        let reads_before = reader.storage_requests().len();
+        for tx in [&counter_tx, &policy_id_tx] {
+            assert!(evm.transact(tx).unwrap().discard().status);
+        }
+        assert_eq!(reader.storage_requests().len(), reads_before);
+    }
+
+    #[test]
+    fn tip20_pause_flag_follows_l1_at_the_active_anchor_from_t15() {
+        const CHILD: u64 = 1;
+        let portal = Address::repeat_byte(0x42);
+        let token = address!("0x20C00000000000000000000000000000000000AA");
+        let enabled_token = IZoneInbox::EnabledToken {
+            token,
+            name: "Paused Token".into(),
+            symbol: "PSD".into(),
+            currency: "USD".into(),
+        };
+        let reader = MockL1Reader::default();
+        reader.insert(
+            portal,
+            ZonePortalStorage::new(portal).token_enablement_hash.slot(),
+            CHILD,
+            enabled_token.hash_with_previous(B256::ZERO).into(),
+        );
+        // Paused on L1 at the child checkpoint, while the local Zone flag stays unset.
+        reader.insert(token, tip20::slots::PAUSED, CHILD, U256::ONE);
+
+        let child = child_header(TempoHeader::default().hash_slow(), CHILD);
+        let paused_tx = system_tx_env(token, ITIP20::pausedCall {}.abi_encode().into());
+        let paused = |evm: &mut ZoneEvm<'_>| {
+            let result = evm.transact(&paused_tx).unwrap().discard();
+            assert!(result.status, "paused() reverted: {result:?}");
+            ITIP20::pausedCall::abi_decode_returns(&result.output).unwrap()
+        };
+        for (spec, paused_at_child) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
+            let mut evm = genesis_zone_evm(&reader, portal, token, spec);
+            let tx = advance_tempo_tx(&child, vec![enabled_token.clone()]);
+            assert!(evm.transact(&tx).unwrap().commit().status);
+            assert_eq!(paused(&mut evm), paused_at_child, "{spec:?}");
+        }
+    }
+
+    /// Returns a Tempo header for checkpoint `number` whose parent hashes to `parent_hash`.
+    fn child_header(parent_hash: B256, number: u64) -> TempoHeader {
+        TempoHeader {
             inner: alloy_consensus::Header {
-                parent_hash: genesis_hash,
-                number: CHILD,
+                parent_hash,
+                number,
                 ..Default::default()
             },
             ..Default::default()
-        };
+        }
+    }
+
+    /// Returns a Zone EVM at `spec` anchored to the default Tempo genesis header, with `token`
+    /// and the TIP-403 registry deployed.
+    fn genesis_zone_evm(
+        reader: &MockL1Reader,
+        portal: Address,
+        token: Address,
+        spec: TempoHardfork,
+    ) -> ZoneEvm<'static> {
         let mut db = InMemoryDB::default();
         db.insert_account_info(&TEMPO_STATE_ADDRESS, Default::default());
         db.insert_account_info(
@@ -598,13 +726,9 @@ mod tests {
         db.insert_account_storage(
             &TEMPO_STATE_ADDRESS,
             &TEMPO_BLOCK_HASH,
-            &genesis_hash.into(),
+            &TempoHeader::default().hash_slow().into(),
         );
-        db.insert_account_storage(
-            &TEMPO_STATE_ADDRESS,
-            &TEMPO_BLOCK_NUMBER_SLOT,
-            &U256::from(PARENT),
-        );
+        db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
 
         let mut zone_genesis = tempo_chainspec::spec::DEV.genesis().clone();
         zone_genesis.config.chain_id =
@@ -614,100 +738,26 @@ mod tests {
             reader.clone(),
             portal,
         );
-        // T9 initializes tokens through the registry, which `enable_tokens` then restores.
-        let mut env = TempoEvmEnv {
-            spec: TempoHardfork::T9,
+        let env = TempoEvmEnv {
+            spec,
             ..Default::default()
         };
-        env.block.timestamp = U256::from(child.inner.timestamp);
-        env.block.ext.timestamp_millis_part = child.timestamp_millis_part;
-        let mut evm = BlockExecutorFactory::evm_with_env(&config, db, env);
-        let counter_tx = system_tx_env(
-            TIP403_REGISTRY_ADDRESS,
-            ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
-        );
+        BlockExecutorFactory::evm_with_env(&config, db, env)
+    }
+
+    /// Returns the system `advanceTempo` transaction importing `header`.
+    fn advance_tempo_tx(
+        header: &TempoHeader,
+        enabled_tokens: Vec<IZoneInbox::EnabledToken>,
+    ) -> Recovered<TempoTxEnv> {
         let calldata = IZoneInbox::advanceTempoCall {
-            header: alloy_rlp::encode(&child).into(),
+            header: alloy_rlp::encode(header).into(),
             deposits: Vec::new(),
             decryptions: Vec::new(),
-            enabledTokens: vec![enabled_token],
+            enabledTokens: enabled_tokens,
         }
         .abi_encode();
-
-        if warm_parent_cache {
-            let result = evm.transact(&policy_id_tx).unwrap().discard();
-            assert!(result.status, "registry read reverted: {result:?}");
-        }
-        let reads_before_advance = reader.storage_requests().len();
-
-        let tx = system_tx_env(ZONE_INBOX_ADDRESS, calldata.into());
-        let executed = evm
-            .transact(&tx)
-            .expect("advanceTempo execution must not fail");
-        let result = if commit_advance {
-            executed.commit()
-        } else {
-            executed.discard()
-        };
-        assert!(result.status, "advanceTempo reverted: {result:?}");
-        assert_eq!(
-            evm.database_as::<L1OverlayDB<InMemoryDB, MockL1Reader>>()
-                .unwrap()
-                .l1_state()
-                .get_anchor(),
-            None,
-            "transaction completion must clear the shared L1 anchor"
-        );
-
-        let requests = reader.storage_requests()[reads_before_advance..].to_vec();
-        let portal = ZonePortalStorage::new(portal);
-        let child_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), CHILD);
-        let parent_policy_request = (TIP403_REGISTRY_ADDRESS, B256::from(policy_slot), PARENT);
-        assert!(!reader.requested(CHILD, &portal.role[sequencer]));
-        assert!(!reader.requested(PARENT, &portal.role[sequencer]));
-        assert!(requests.contains(&child_policy_request));
-        assert!(!requests.contains(&parent_policy_request));
-        assert!(reader.requested(CHILD, &portal.current_deposit_queue_hash));
-
-        // A second transaction must read the checkpoint accepted by EVM2, not the backing DB.
-        // The counter is not read by advanceTempo, so this also exercises an uncached L1 slot.
-        let expected_anchor = if commit_advance { CHILD } else { PARENT };
-        assert_eq!(
-            evm.state_mut()
-                .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)
-                .unwrap(),
-            U256::from(expected_anchor),
-        );
-        let reads_before = reader.storage_requests().len();
-        let result = evm.transact(&counter_tx).unwrap().discard();
-        assert!(result.status, "registry read reverted: {result:?}");
-        assert_eq!(
-            ITIP403Registry::policyIdCounterCall::abi_decode_returns(&result.output).unwrap(),
-            if commit_advance { 200 } else { 100 },
-        );
-        assert!(reader.storage_requests()[reads_before..].contains(&(
-            TIP403_REGISTRY_ADDRESS,
-            B256::from(counter_slot),
-            expected_anchor,
-        )));
-
-        // The slot loaded by advanceTempo at the child anchor must be re-read at the active anchor.
-        let result = evm.transact(&policy_id_tx).unwrap().discard();
-        assert!(result.status, "registry read reverted: {result:?}");
-        let policy =
-            ITIP403Registry::tokenTransferPolicyIdCall::abi_decode_returns(&result.output).unwrap();
-        assert!(policy.isSet);
-        assert_eq!(
-            policy.policyId,
-            if commit_advance { 0xbbbb } else { 0xaaaa }
-        );
-
-        // Transactions at an unchanged anchor keep the cached registry entries.
-        let reads_before = reader.storage_requests().len();
-        for tx in [&counter_tx, &policy_id_tx] {
-            assert!(evm.transact(tx).unwrap().discard().status);
-        }
-        assert_eq!(reader.storage_requests().len(), reads_before);
+        system_tx_env(ZONE_INBOX_ADDRESS, calldata.into())
     }
 
     #[test]
@@ -740,6 +790,41 @@ mod tests {
             let evm = BlockExecutorFactory::evm_with_env(&config, InMemoryDB::default(), env);
             assert_eq!(evm.config_spec_id(), expected);
         }
+    }
+
+    #[test]
+    fn zone_envs_carry_the_zone_gas_schedule() {
+        let mut genesis = tempo_chainspec::spec::DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(tempo_chainspec::spec::DEV.chain_id(), 1).unwrap();
+        let config = ZoneEvmConfig::new(
+            Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap()),
+            MockL1Reader::default(),
+            Address::ZERO,
+        );
+        let header = TempoHeader::default();
+        let zone = config.evm_env(&header).unwrap();
+        let tempo = config.inner.evm_env(&header).unwrap();
+        assert!(zone.spec.is_t14());
+        let payload = tempo_payload_types::TempoExecutionData {
+            block: reth_primitives_traits::SealedBlock::seal_slow(Block {
+                header,
+                body: Default::default(),
+            })
+            .into(),
+        };
+        assert_eq!(
+            config
+                .evm_env_for_payload(&payload)
+                .unwrap()
+                .version
+                .gas_params,
+            zone.version.gas_params
+        );
+        assert_eq!(
+            zone.version.gas_params.cold_account_additional_cost(),
+            tempo.version.gas_params.cold_account_additional_cost()
+                + tempo_chainspec::constants::gas::L1_COMMITMENT_READ_GAS
+        );
     }
 
     #[tokio::test]

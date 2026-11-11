@@ -57,10 +57,7 @@ alloy-eips.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-fuzz-types.workspace = true
 
-async-trait.workspace = true
 bincode.workspace = true
-aws-config = "1.8"
-aws-credential-types = "1.2"
 bytes.workspace = true
 eyre.workspace = true
 futures.workspace = true
@@ -71,6 +68,7 @@ serde.workspace = true
 serde_json.workspace = true
 slatedb = { version = "=0.17.0", default-features = false, features = ["aws", "moka", "zstd"] }
 tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 url.workspace = true
 wincode = { version = "0.6", features = ["derive"] }
