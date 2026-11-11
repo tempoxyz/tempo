@@ -924,6 +924,18 @@ where
             let anchor = sealed.num_hash();
             let portal_evidence =
                 portal_logs.map(|logs| (sealed.parent_hash(), sealed.timestamp_millis(), logs));
+            // Validate continuity before publishing any effect, so a rejected header leaves none.
+            let checkpoint = if self.deposit_queue.last_enqueued().is_none() {
+                let state = self.zone_provider.latest().map_err(eyre::Report::from)?;
+                Some(state.tempo_num_hash().map_err(eyre::Report::from)?)
+            } else {
+                None
+            };
+            self.deposit_queue
+                .ensure_accepts(&sealed, checkpoint)
+                .wrap_err_with(|| {
+                    format!("unexpected discontinuity while enqueueing L1 block {block_number}")
+                })?;
             // Publish the leadership transition _before_ the activation block becomes
             // consumable.
             if let Some(sink) = &self.leadership_sink {

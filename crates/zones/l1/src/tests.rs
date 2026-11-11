@@ -13,6 +13,9 @@ use tempo_alloy::rpc::{TempoHeaderResponse, TempoTransactionReceipt};
 use tempo_contracts::precompiles::{ITIP20, TIP403_REGISTRY_ADDRESS};
 use tempo_primitives::{TempoReceipt, TempoTxType};
 
+/// Checkpoint hash of [`test_subscriber`], which headers from [`make_test_header`] extend.
+const TEST_CHECKPOINT_HASH: B256 = B256::with_last_byte(1);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DepositHashFixture {
@@ -165,7 +168,7 @@ fn test_subscriber_with_checkpoint(checkpoint: NumHash) -> L1Subscriber<MockEthP
 }
 
 fn test_subscriber(block_number: u64) -> L1Subscriber<MockEthProvider> {
-    test_subscriber_with_checkpoint(NumHash::new(block_number, B256::with_last_byte(1)))
+    test_subscriber_with_checkpoint(NumHash::new(block_number, TEST_CHECKPOINT_HASH))
 }
 
 #[tokio::test]
@@ -501,6 +504,7 @@ fn make_test_header(number: u64) -> TempoHeader {
     TempoHeader {
         inner: Header {
             number,
+            parent_hash: TEST_CHECKPOINT_HASH,
             ..Default::default()
         },
         ..Default::default()
@@ -2549,4 +2553,151 @@ async fn paused_subscriber_wedges_at_lookahead_then_resumes_contiguously() {
     assert_eq!(tracker.latest(), Some(NumHash::new(tip, parent)));
     assert_eq!(queue.last_enqueued(), Some(NumHash::new(tip, parent)));
     assert!(asserter.read_q().is_empty());
+}
+
+/// Sync a header whose receipts carry a leader, key and pause event, and assert that the
+/// rejected header left none of them behind.
+async fn assert_sync_rejects_without_effects(
+    mut subscriber: L1Subscriber<MockEthProvider>,
+    mut header: TempoHeader,
+) {
+    let portal = subscriber.config.portal_address;
+    let queue = subscriber.deposit_queue.clone();
+    let queue_tip = queue.last_enqueued();
+    let sink = Arc::new(RecordingLeadershipSink {
+        queue: queue.clone(),
+        seen: parking_lot::Mutex::new(Vec::new()),
+        fail: false,
+    });
+    subscriber.leadership_sink = Some(sink.clone());
+    let private_key = k256::SecretKey::from_slice(&[0x42; 32]).unwrap();
+    let (x, y_parity) =
+        crate::precompiles::ecies::compressed_x_and_parity(private_key.public_key().as_affine());
+    let keys = EncryptionKeyRing::new([private_key]);
+    subscriber.encryption_keys = Some(keys.clone());
+
+    let number = header.inner.number;
+    let key_index = U256::from(7);
+    let logs = vec![
+        leader_updated_log(
+            portal,
+            Address::ZERO,
+            address!("0x0000000000000000000000000000000000002222"),
+            2,
+            number,
+        ),
+        encryption_key_updated_log(
+            portal,
+            x,
+            y_parity,
+            encryption_key_address(x, y_parity).unwrap(),
+            key_index,
+            number,
+        ),
+        Log {
+            inner: alloy_primitives::Log {
+                address: portal,
+                data: crate::abi::ZonePortal::PortalPaused {
+                    account: Address::ZERO,
+                }
+                .encode_log_data(),
+            },
+            ..Default::default()
+        },
+    ];
+    let receipt = make_receipt_with_logs(number, B256::ZERO, logs);
+    header.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
+    header.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
+
+    let asserter = Asserter::new();
+    let l1_provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
+    asserter.push_success(&Some(header_response(header.clone())));
+    asserter.push_success(&Some(header_response(header)));
+    asserter.push_success(&Some(vec![receipt]));
+
+    let err = subscriber
+        .sync_to_finalized(&l1_provider, number)
+        .await
+        .unwrap_err();
+    assert!(err.should_retry(), "{err}");
+    assert!(
+        format!("{err:#}").contains("finalized L1 parent mismatch"),
+        "{err:#}"
+    );
+    assert!(sink.seen.lock().is_empty());
+    assert!(keys.key(key_index).is_err());
+    assert_eq!(subscriber.block_tracker.portal_pause_block(), None);
+    assert_eq!(queue.last_enqueued(), queue_tip);
+}
+
+#[tokio::test]
+async fn sync_rejects_wrong_parent_header_without_applying_its_effects() {
+    let subscriber = test_subscriber(9);
+    subscriber
+        .deposit_queue
+        .enqueue(make_test_header(10), L1PortalEvents::default());
+
+    assert_sync_rejects_without_effects(
+        subscriber,
+        make_chained_header(11, B256::with_last_byte(0xff)),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn sync_rejects_header_not_extending_checkpoint_on_resume_without_effects() {
+    let subscriber = test_subscriber(9);
+    assert_eq!(subscriber.deposit_queue.last_enqueued(), None);
+
+    assert_sync_rejects_without_effects(
+        subscriber,
+        make_chained_header(10, B256::with_last_byte(0xff)),
+    )
+    .await;
+}
+
+#[test]
+fn finalized_queue_pre_check_matches_enqueue_without_mutation() {
+    let queue = DepositQueue::new();
+    let checkpoint = NumHash::new(9, TEST_CHECKPOINT_HASH);
+    let h10 = seal(make_test_header(10));
+
+    // Before the first enqueue, the persisted checkpoint stands in for the queue tip.
+    queue.ensure_accepts(&h10, Some(checkpoint)).unwrap();
+    let wrong_parent = seal(make_chained_header(10, B256::with_last_byte(0xff)));
+    let err = queue
+        .ensure_accepts(&wrong_parent, Some(checkpoint))
+        .unwrap_err();
+    assert!(err.to_string().contains("finalized L1 parent mismatch"));
+    let err = queue
+        .ensure_accepts(&seal(make_test_header(11)), Some(checkpoint))
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("non-contiguous finalized L1 block")
+    );
+    assert_eq!(queue.last_enqueued(), None);
+
+    // Once a block is enqueued, the queue tip wins over the checkpoint.
+    assert!(
+        queue
+            .try_enqueue_sealed(h10.clone(), L1PortalEvents::default())
+            .unwrap()
+    );
+    queue.ensure_accepts(&h10, Some(checkpoint)).unwrap();
+    let h11 = seal(make_chained_header(11, h10.hash()));
+    queue.ensure_accepts(&h11, None).unwrap();
+    let err = queue
+        .ensure_accepts(
+            &seal(make_chained_header(11, B256::with_last_byte(0xff))),
+            None,
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("finalized L1 parent mismatch"));
+    let mut conflicting = make_test_header(10);
+    conflicting.inner.gas_limit += 1;
+    let err = queue.ensure_accepts(&seal(conflicting), None).unwrap_err();
+    assert!(err.to_string().contains("conflicting finalized L1 block"));
+    assert_eq!(queue.last_enqueued(), Some(h10.num_hash()));
 }
