@@ -9,10 +9,10 @@ use crate::{
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, U256};
-use futures::{StreamExt, TryStreamExt, future::Either, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 use reth_chainspec::{EthChainSpec, ForkCondition};
 use slatedb::DbReader;
-use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
+use std::{collections::BTreeMap, fs, iter, path::Path, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -100,8 +100,7 @@ impl Corpus {
             .runtime
             .block_on(store::published(&self.reader, block))?
             .1;
-        let input = harness_input(&stored, self.chain_spec.clone())?;
-        Ok(TempoHarnessInput::Blockchain(input))
+        harness_input(&stored, self.chain_spec.clone())
     }
 
     /// Each of `blocks` with its harness input, in the order given.
@@ -131,25 +130,20 @@ impl Corpus {
                 let (blocks, tail) = rest.split_at(window_len(rest, size, window as u64));
                 rest = tail;
                 let read = async {
-                    if blocks.is_empty() {
-                        return Ok(Vec::new());
-                    }
-                    // A dense window is scanned whole. A sparse one is read with a point read per
-                    // block, inside its task, since a point read decompresses SST blocks too.
-                    let payloads = if dense(blocks) {
-                        let scanned = store::scan_blocks(&reader, blocks).await?;
-                        Either::Left(stream::iter(
-                            scanned
-                                .into_iter()
-                                .map(|payload| (payload.0.number, Some(payload))),
-                        ))
+                    // A dense window is scanned whole, which yields exactly `blocks` in order. A
+                    // sparse one is read with a point read per block, inside its task, since a
+                    // point read decompresses SST blocks too.
+                    let scanned = if dense(blocks) {
+                        store::scan_blocks(&reader, blocks).await?
                     } else {
-                        Either::Right(stream::iter(
-                            blocks.iter().copied().map(|block| (block, None)),
-                        ))
+                        Vec::new()
                     };
+                    let payloads = scanned
+                        .into_iter()
+                        .map(Some)
+                        .chain(iter::repeat_with(|| None));
                     // Each block decodes in its own task, so a window decodes on every worker.
-                    payloads
+                    stream::iter(blocks.iter().copied().zip(payloads))
                         .map(|(block, payload)| {
                             let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
                             // Aborted when dropped, so a dropped or failed window stops its reads.
@@ -163,9 +157,7 @@ impl Corpus {
                                 eyre::Ok(BlockInput {
                                     block,
                                     size: record.block_bytes,
-                                    input: TempoHarnessInput::Blockchain(harness_input(
-                                        &stored, chain_spec,
-                                    )?),
+                                    input: harness_input(&stored, chain_spec)?,
                                 })
                             }))
                         })
@@ -203,10 +195,10 @@ const SPARSE_SPAN: u64 = 4;
 
 /// Whether `blocks`, sorted, are close enough together to scan whole rather than read one by one.
 fn dense(blocks: &[u64]) -> bool {
-    match (blocks.first(), blocks.last()) {
-        (Some(first), Some(last)) => last - first < SPARSE_SPAN * blocks.len() as u64,
-        _ => true,
-    }
+    blocks
+        .first()
+        .zip(blocks.last())
+        .is_none_or(|(first, last)| last - first < SPARSE_SPAN * blocks.len() as u64)
 }
 
 /// A run of neighbouring blocks shorter than this stays in a sparse window, where the window's
@@ -224,24 +216,13 @@ fn window_len(blocks: &[u64], size: usize, window: u64) -> usize {
         let head = &blocks[at..blocks.len().min(at + MIN_RUN)];
         head.len() == MIN_RUN && head.windows(2).all(near) && dense(head)
     };
-    let run_end = |at: usize| {
-        blocks[at..cap]
-            .windows(2)
-            .position(|pair| !near(pair))
-            .map_or(cap, |gap| at + gap + 1)
-    };
+    // Where each run ends: the blocks after a gap longer than `window`.
+    let mut gaps = (1..cap).filter(|&at| !near(&blocks[at - 1..=at]));
     if long_run(0) {
-        let end = run_end(0);
+        let end = gaps.next().unwrap_or(cap);
         return if dense(&blocks[..end]) { end } else { cap };
     }
-    let mut at = 0;
-    while at < cap {
-        at = run_end(at);
-        if at < cap && long_run(at) {
-            return at;
-        }
-    }
-    cap
+    gaps.find(|&at| long_run(at)).unwrap_or(cap)
 }
 
 /// A corpus block read by [Corpus::windows].
@@ -312,29 +293,27 @@ fn chain_spec_input(catalog: &Catalog, tip: u64) -> eyre::Result<ChainSpecInput>
 
 /// `stored`'s block on the exact pre-state it read. Its code must be resolved
 /// ([`store::resolve_code`]).
-fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<TempoBlockchainInput> {
-    let mut accounts = BTreeMap::<Address, AccountInput>::new();
-    for (address, info) in &stored.accounts {
-        let Some(info) = info else {
-            accounts.insert(Address::from(*address), AccountInput::default());
-            continue;
-        };
-        let account = info.account();
-        let code = match account.bytecode_hash {
-            Some(hash) => code::code_bytes(&hash.0)
-                .ok_or_else(|| eyre::eyre!("unresolved corpus code {hash}"))?,
-            None => Bytes::new(),
-        };
-        accounts.insert(
-            Address::from(*address),
-            AccountInput {
-                balance: account.balance,
-                nonce: account.nonce,
-                code,
-                storage: BTreeMap::new(),
-            },
-        );
-    }
+fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<TempoHarnessInput> {
+    let mut accounts = stored
+        .accounts
+        .iter()
+        .map(|(address, info)| {
+            let account = match info.as_ref().map(|info| info.account()) {
+                Some(account) => AccountInput {
+                    balance: account.balance,
+                    nonce: account.nonce,
+                    code: match account.bytecode_hash {
+                        Some(hash) => code::code_bytes(&hash.0)
+                            .ok_or_else(|| eyre::eyre!("unresolved corpus code {hash}"))?,
+                        None => Bytes::new(),
+                    },
+                    storage: BTreeMap::new(),
+                },
+                None => AccountInput::default(),
+            };
+            Ok((Address::from(*address), account))
+        })
+        .collect::<eyre::Result<BTreeMap<_, _>>>()?;
     for ((address, slot), value) in &stored.storage {
         accounts
             .entry(Address::from(*address))
@@ -359,7 +338,7 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
             .map(Address::from)
             .collect(),
     };
-    Ok(TempoBlockchainInput {
+    Ok(TempoHarnessInput::Blockchain(TempoBlockchainInput {
         chain_spec,
         pre_state: PreState::Exact {
             state: StateInput { accounts },
@@ -370,7 +349,7 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
                 .collect(),
         },
         blocks: NonEmpty::try_from(vec![block]).map_err(|err| eyre::eyre!(err))?,
-    })
+    }))
 }
 
 /// A block list section naming `catalog`'s corpus and `blocks` of it, one per line. A block list
@@ -423,44 +402,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn window_ends_long_run_at_gap() {
-        let blocks: Vec<u64> = (0..40).chain(1_000..1_040).collect();
-        assert_eq!(window_len(&blocks, 128, 64), 40);
-        assert_eq!(window_len(&blocks[40..], 128, 64), 40);
-    }
-
-    #[test]
-    fn window_keeps_spread_blocks_together() {
-        let blocks: Vec<u64> = (0..20).map(|i| i * 1_000).collect();
-        assert_eq!(window_len(&blocks, 16, 64), 16);
-    }
-
-    #[test]
-    fn window_keeps_short_runs_together() {
-        let blocks: Vec<u64> = (0..20).flat_map(|i| [i * 1_000, i * 1_000 + 1]).collect();
-        assert_eq!(window_len(&blocks, 32, 64), 32);
-        assert_eq!(window_len(&blocks[1..], 32, 64), 32);
-    }
-
-    #[test]
-    fn window_reads_blocks_before_long_run() {
-        let blocks: Vec<u64> = [0, 1_000, 1_001, 2_000]
+    fn window_len_cuts() {
+        let runs: Vec<u64> = (0..40).chain(1_000..1_040).collect();
+        let run_then_spread: Vec<u64> = (0..40).chain([1_000, 2_000]).collect();
+        let spread: Vec<u64> = (0..20).map(|i| i * 1_000).collect();
+        let short_runs: Vec<u64> = (0..20).flat_map(|i| [i * 1_000, i * 1_000 + 1]).collect();
+        let before_run: Vec<u64> = [0, 1_000, 1_001, 2_000]
             .into_iter()
             .chain(5_000..5_040)
             .collect();
-        assert_eq!(window_len(&blocks, 128, 64), 4);
-    }
-
-    #[test]
-    fn window_keeps_sparse_run_across_gap() {
-        let blocks: Vec<u64> = (0..40).map(|i| i * 50).chain([10_000]).collect();
-        assert_eq!(window_len(&blocks, 128, 64), 41);
-    }
-
-    #[test]
-    fn window_respects_size() {
-        let blocks: Vec<u64> = (0..100).collect();
-        assert_eq!(window_len(&blocks, 7, 64), 7);
-        assert_eq!(window_len(&blocks[..3], 7, 64), 3);
+        let sparse_run: Vec<u64> = (0..40).map(|i| i * 50).chain([10_000]).collect();
+        let sparse_tail: Vec<u64> = (0..32)
+            .chain((1..=40).map(|i| 31 + i * 60))
+            .chain([10_000])
+            .collect();
+        let contiguous: Vec<u64> = (0..100).collect();
+        for (case, blocks, size, len) in [
+            ("long run ends at gap", &runs[..], 128, 40),
+            ("next long run ends at gap", &runs[40..], 128, 40),
+            (
+                "run ends before spread blocks",
+                &run_then_spread[..],
+                128,
+                40,
+            ),
+            ("spread blocks stay together", &spread[..], 16, 16),
+            ("short runs stay together", &short_runs[..], 32, 32),
+            ("short runs stay together, offset", &short_runs[1..], 32, 32),
+            ("blocks before long run go alone", &before_run[..], 128, 4),
+            ("sparse run keeps across gap", &sparse_run[..], 128, 41),
+            ("run with sparse tail keeps gap", &sparse_tail[..], 128, 73),
+            ("long run respects size", &contiguous[..], 7, 7),
+            ("fewer blocks than size", &contiguous[..3], 7, 3),
+        ] {
+            assert_eq!(window_len(blocks, size, 64), len, "{case}");
+        }
     }
 }
