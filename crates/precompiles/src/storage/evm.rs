@@ -2,7 +2,7 @@ use crate::{
     configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     error::TempoPrecompileError,
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        CallOutcome, ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
         account_config_commitment, actions::StorageAction,
     },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
@@ -10,10 +10,10 @@ use crate::{
 use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
 use bitflags::bitflags;
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, Version,
+    Evm, EvmFeatures, EvmTypes, ExecutionError, Version,
     bytecode::Bytecode,
     evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
-    interpreter::{GasTracker, gas},
+    interpreter::{GasTracker, Host, MessageExt, MessageKind, gas},
     version::{GasId, GasParams},
 };
 use std::{
@@ -40,6 +40,9 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
     /// Recorded storage actions.
     actions: StorageActions,
+    /// Address and call depth of the precompile call frame this provider serves, which nested
+    /// calls start from. `None` outside a precompile call.
+    frame: Option<(Address, u16)>,
 }
 
 impl<'evm, 'gas, 'db, T> EvmPrecompileStorageProvider<'evm, 'gas, 'db, T>
@@ -88,7 +91,15 @@ where
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
+            frame: None,
         }
+    }
+
+    /// Sets the precompile call frame this provider serves: the precompile's address and its
+    /// call depth. [`PrecompileStorageProvider::call`] fails without one.
+    pub(crate) fn with_frame(mut self, address: Address, depth: u16) -> Self {
+        self.frame = Some((address, depth));
+        self
     }
 
     /// Sets the storage actions for this provider.
@@ -281,7 +292,7 @@ where
     fn with_loaded_account<R>(
         &mut self,
         address: Address,
-        f: impl FnOnce(&AccountInfo) -> R,
+        f: impl FnOnce(&AccountInfo, Bytecode) -> R,
     ) -> Result<R, TempoPrecompileError> {
         let additional_cost = self.version.gas_params.cold_account_additional_cost();
 
@@ -308,10 +319,10 @@ where
             self.gas_tracker.deduct_gas(additional_cost)?;
         }
 
-        account.load_code()?;
+        let code = account.load_code()?;
 
         let default = AccountInfo::default();
-        Ok(f(account.get().unwrap_or(&default)))
+        Ok(f(account.get().unwrap_or(&default), code))
     }
 }
 
@@ -444,7 +455,7 @@ where
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        self.with_loaded_account(address, |info| f(info))
+        self.with_loaded_account(address, |info, _| f(info))
     }
 
     fn with_warm_caller_info(
@@ -640,6 +651,80 @@ where
         self.is_static
     }
 
+    fn call(
+        &mut self,
+        target: Address,
+        input: Bytes,
+        gas_limit: u64,
+        is_static: bool,
+    ) -> Result<CallOutcome, TempoPrecompileError> {
+        let Some((caller, depth)) = self.frame else {
+            return Err(TempoPrecompileError::Fatal(
+                "nested call outside a precompile call frame".to_string(),
+            ));
+        };
+        let depth = depth
+            .checked_add(1)
+            .ok_or_else(|| TempoPrecompileError::Fatal("call depth overflow".to_string()))?;
+
+        // As `CALL` does, charge the account access and run the code an EIP-7702 delegation
+        // points at.
+        let mut code = self.with_loaded_account(target, |_, code| code)?;
+        let mut code_address = target;
+        if self.version.feature(EvmFeatures::EIP7702)
+            && let Some(delegate) = code.eip7702_address()
+        {
+            code = self.with_loaded_account(delegate, |_, code| code)?;
+            code_address = delegate;
+        }
+
+        // EIP-150: forward at most all but one 64th of the remaining gas.
+        let gas_limit = gas_limit.min(
+            self.version
+                .gas_params
+                .call_stipend_reduction(self.gas_tracker.remaining()),
+        );
+        self.deduct_gas(gas_limit)?;
+
+        let mut message = MessageExt {
+            kind: if is_static {
+                MessageKind::StaticCall
+            } else {
+                MessageKind::Call
+            },
+            depth,
+            gas_limit,
+            reservoir: self.gas_tracker.reservoir(),
+            destination: target,
+            call_target: target,
+            caller,
+            input: input.into(),
+            value: U256::ZERO,
+            code,
+            code_address,
+            caller_is_static: self.is_static,
+            salt: B256::ZERO,
+            ext: Default::default(),
+            _non_exhaustive: (),
+        };
+        // The EVM runs the callee in the transaction's environment, rolls its state back if it
+        // fails and settles its gas, so only the gas it has left is merged back.
+        let result = self
+            .evm
+            .execute_message(&mut message)
+            .map_err(|error| match error {
+                ExecutionError::Database(error) => TempoPrecompileError::Database(error),
+                ExecutionError::Fatal(error) => TempoPrecompileError::Fatal(error.to_string()),
+            })?;
+        self.gas_tracker.merge_child_gas(result.gas, result.stop);
+
+        Ok(if result.is_success() {
+            CallOutcome::Success(result.output)
+        } else {
+            CallOutcome::Failure(result.output)
+        })
+    }
+
     #[inline]
     fn checkpoint(&mut self) -> StateCheckpoint {
         self.evm.state_mut().checkpoint()
@@ -674,7 +759,7 @@ where
     fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
         let spec = self.spec;
         let commitment =
-            self.with_loaded_account(address, |info| account_config_commitment(info, spec))??;
+            self.with_loaded_account(address, |info, _| account_config_commitment(info, spec))??;
         self.actions.record(StorageAction::ConfigCommitment(
             address, commitment, commitment,
         ));
@@ -891,7 +976,7 @@ mod tests {
     use crate::{
         STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
-        storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
+        storage::{CallOutcome, PrecompileStorageProvider, StorageActions, actions::StorageAction},
         storage_credits::{NonCreditableSlots, StorageCredits},
     };
     use alloy::primitives::{
@@ -901,14 +986,21 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use evm2::{
         BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId, Version,
-        evm::{InMemoryDB, precompile::NoPrecompiles},
+        bytecode::Bytecode,
+        evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
         interpreter::GasTracker,
         registry::TxRegistry,
+        utils::b256_to_word,
         version::{GasId, GasParams},
     };
     use std::{cell::RefCell, rc::Rc};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
+
+    /// The precompile whose call frame the nested-call tests run in.
+    const CALLING_PRECOMPILE: Address = Address::repeat_byte(0x7e);
+    /// The contract the nested-call tests call.
+    const CALLEE: Address = Address::repeat_byte(0xc0);
 
     struct TestTypes;
 
@@ -1963,5 +2055,129 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    fn evm_with_callee(code: Bytes) -> TestEvm {
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &CALLEE,
+            AccountInfo::default().with_code(Bytecode::new_raw(code)),
+        );
+        TestEvm::with_database(TempoHardfork::default(), false, database)
+    }
+
+    #[test]
+    fn test_call_runs_callee_with_precompile_as_caller() -> eyre::Result<()> {
+        // sstore(0, caller); mstore(0, caller); return(0, 32)
+        let mut evm = evm_with_callee(bytes!("335f55335f5260205ff3"));
+        let mut provider = evm
+            .provider_with_gas_limit(10_000_000, 0)
+            .with_frame(CALLING_PRECOMPILE, 0);
+        let caller = CALLING_PRECOMPILE.into_word();
+
+        let outcome = provider.call(CALLEE, Bytes::new(), u64::MAX, false)?;
+        assert_eq!(outcome, CallOutcome::Success(caller.into()));
+        assert_eq!(provider.sload(CALLEE, U256::ZERO)?, b256_to_word(caller));
+        Ok(())
+    }
+
+    #[test]
+    fn test_call_rolls_back_reverting_callee() -> eyre::Result<()> {
+        // sstore(0, 1); mstore8(0, 0xaa); revert(0, 1)
+        let mut evm = evm_with_callee(bytes!("60015f5560aa5f5360015ffd"));
+        let mut provider = evm
+            .provider_with_gas_limit(10_000_000, 0)
+            .with_frame(CALLING_PRECOMPILE, 0);
+        provider.sstore(CALLING_PRECOMPILE, U256::ZERO, U256::from(7))?;
+
+        let outcome = provider.call(CALLEE, Bytes::new(), u64::MAX, false)?;
+        assert_eq!(outcome, CallOutcome::Failure(bytes!("aa")));
+        // Only the callee's write is undone, and a revert returns the gas it did not use.
+        assert_eq!(provider.sload(CALLEE, U256::ZERO)?, U256::ZERO);
+        assert_eq!(
+            provider.sload(CALLING_PRECOMPILE, U256::ZERO)?,
+            U256::from(7)
+        );
+        assert!(provider.gas_used() < 5_000_000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_call_forwards_capped_gas_that_halting_callee_burns() -> eyre::Result<()> {
+        // invalid
+        let mut evm = evm_with_callee(bytes!("fe"));
+        let gas_params = evm.gas_params();
+        let warm_cost = gas_params.get(GasId::WarmStorageReadCost);
+        let cold_cost = gas_params.cold_account_additional_cost();
+        let gas_limit = 1_000_000;
+        let mut provider = evm
+            .provider_with_gas_limit(gas_limit, 0)
+            .with_frame(CALLING_PRECOMPILE, 0);
+
+        // Uncapped, the callee gets all but one 64th of what is left after the cold access.
+        let outcome = provider.call(CALLEE, Bytes::new(), u64::MAX, false)?;
+        assert_eq!(outcome, CallOutcome::Failure(Bytes::new()));
+        let kept = (gas_limit - warm_cost - cold_cost) / 64;
+        assert_eq!(provider.gas_used(), gas_limit - kept);
+
+        // Capped, it gets `gas_limit`, on top of the now warm access.
+        let outcome = provider.call(CALLEE, Bytes::new(), 1_000, false)?;
+        assert_eq!(outcome, CallOutcome::Failure(Bytes::new()));
+        assert_eq!(provider.gas_used(), gas_limit - kept + warm_cost + 1_000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_call_out_of_gas_for_account_access_fails_precompile() {
+        let mut evm = evm_with_callee(bytes!("00"));
+        let gas_params = evm.gas_params();
+        let gas_limit = gas_params.get(GasId::WarmStorageReadCost)
+            + gas_params.cold_account_additional_cost()
+            - 1;
+        let mut provider = evm
+            .provider_with_gas_limit(gas_limit, 0)
+            .with_frame(CALLING_PRECOMPILE, 0);
+
+        // The frame's own charge is an error, not a callee failure the precompile could ignore.
+        assert_eq!(
+            provider.call(CALLEE, Bytes::new(), u64::MAX, false),
+            Err(TempoPrecompileError::OutOfGas)
+        );
+    }
+
+    #[test]
+    fn test_call_keeps_static_context() -> eyre::Result<()> {
+        // sstore(0, 1); stop
+        let code = bytes!("60015f5500");
+
+        // A static frame makes every callee static, whatever the call kind.
+        let mut evm = evm_with_callee(code.clone());
+        let mut provider = evm.static_provider().with_frame(CALLING_PRECOMPILE, 0);
+        let outcome = provider.call(CALLEE, Bytes::new(), 1_000_000, false)?;
+        assert_eq!(outcome, CallOutcome::Failure(Bytes::new()));
+
+        let mut evm = evm_with_callee(code);
+        let mut provider = evm
+            .provider_with_gas_limit(10_000_000, 0)
+            .with_frame(CALLING_PRECOMPILE, 0);
+        let outcome = provider.call(CALLEE, Bytes::new(), 1_000_000, true)?;
+        assert_eq!(outcome, CallOutcome::Failure(Bytes::new()));
+        assert_eq!(provider.sload(CALLEE, U256::ZERO)?, U256::ZERO);
+
+        let outcome = provider.call(CALLEE, Bytes::new(), 1_000_000, false)?;
+        assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
+        assert_eq!(provider.sload(CALLEE, U256::ZERO)?, U256::ONE);
+        Ok(())
+    }
+
+    #[test]
+    fn test_call_needs_precompile_frame() {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        assert!(matches!(
+            provider.call(CALLEE, Bytes::new(), u64::MAX, false),
+            Err(TempoPrecompileError::Fatal(_))
+        ));
+        assert_eq!(provider.gas_used(), 0);
     }
 }

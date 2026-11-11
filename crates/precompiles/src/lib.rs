@@ -196,7 +196,9 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         }
     }
 
-    fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
+    /// Dispatches to the Tempo precompile at `address`. Takes no `self`: a nested call that the
+    /// precompile makes can re-enter this provider.
+    fn call_tempo(address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
             TIP20Token::from_address(address)
                 .expect("TIP-20 prefix already checked")
@@ -296,9 +298,10 @@ where
         let input = evm.message_input(message).to_vec();
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
-            .with_non_creditable_slots(self.non_creditable_slots.clone());
+            .with_non_creditable_slots(self.non_creditable_slots.clone())
+            .with_frame(message.call_target, message.depth);
         Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.call_target, &input, message.caller)
+            Self::call_tempo(message.call_target, &input, message.caller)
         }))
     }
 }
@@ -323,7 +326,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::storage::{CallOutcome, StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{
         primitives::{Bytes, U256, bytes},
         sol_types::SolCall,
@@ -552,6 +555,30 @@ mod tests {
                 "view function should succeed in static context"
             );
         }
+    }
+
+    #[test]
+    fn test_nested_call_reenters_tempo_precompile() {
+        let spec = TempoHardfork::T2;
+        let mut evm = test_evm(spec, true);
+        evm.set_precompiles(test_tempo_precompiles(spec));
+        let mut gas = GasTracker::new(1_000_000);
+        let mut storage = EvmPrecompileStorageProvider::new(&mut evm, &mut gas, spec, false)
+            .with_frame(TIP20_FACTORY_ADDRESS, 0);
+        let calldata = ITIP20::balanceOfCall {
+            account: Address::ZERO,
+        }
+        .abi_encode();
+
+        // The callee enters its own storage context while the factory's stays borrowed.
+        let outcome = StorageCtx::enter(&mut storage, || {
+            StorageCtx.call(PATH_USD_ADDRESS, calldata.into(), 500_000, true)
+        });
+        assert_eq!(
+            outcome,
+            Ok(CallOutcome::Success(U256::ZERO.to_be_bytes_vec().into()))
+        );
+        assert!(gas.spent() > 0);
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly

@@ -195,6 +195,30 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
+    /// Calls `target` from the running precompile, as `STATICCALL` when `is_static` and as a
+    /// zero-value `CALL` otherwise. The callee sees the precompile as its caller, runs one call
+    /// level deeper and inherits a static context.
+    ///
+    /// Gas follows `CALL`: the access to `target` (and to its EIP-7702 delegate) is charged
+    /// first, then at most `gas_limit`, capped at 63/64 of the remaining gas, is forwarded. What
+    /// the callee leaves unused is returned, unless it halted.
+    ///
+    /// A callee that reverts or halts is rolled back on its own and reported as
+    /// [`CallOutcome::Failure`], so the precompile decides how to continue. An `Err` is never a
+    /// callee failure: it is this frame running out of gas, a database error or a fatal error, and
+    /// must be propagated. Providers without a live EVM call frame reject every call.
+    fn call(
+        &mut self,
+        _target: Address,
+        _input: Bytes,
+        _gas_limit: u64,
+        _is_static: bool,
+    ) -> Result<CallOutcome> {
+        Err(TempoPrecompileError::Fatal(
+            "nested calls need an EVM call frame".to_string(),
+        ))
+    }
+
     /// Creates a new journal checkpoint so that all subsequent state-changing
     /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
     /// or reverted ([`checkpoint_revert`](Self::checkpoint_revert)).
@@ -278,6 +302,17 @@ pub trait PrecompileStorageProvider {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<()>;
+}
+
+/// Result of a nested call that a precompile made with [`PrecompileStorageProvider::call`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a failed callee is rolled back but does not fail the precompile on its own"]
+pub enum CallOutcome {
+    /// The callee returned this data and its state changes are kept.
+    Success(Bytes),
+    /// The callee reverted or halted and its state changes were rolled back. Holds its revert
+    /// data, which is empty for a halt.
+    Failure(Bytes),
 }
 
 /// Storage operations for a given (contract) address.

@@ -17,7 +17,7 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        CallOutcome, ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
         evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
 };
@@ -47,7 +47,8 @@ impl StorageCtx {
     /// # IMPORTANT
     ///
     /// The caller must ensure that:
-    /// 1. Only one `enter` call is active at a time, in the same thread.
+    /// 1. Only one `enter` call is active at a time, in the same thread. The exception is a
+    ///    callee of [`StorageCtx::call`], which enters its own context while the caller waits.
     /// 2. If multiple storage providers are instantiated in parallel threads,
     ///    they CANNOT point to the same storage addresses.
     pub fn enter<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
@@ -260,6 +261,21 @@ impl StorageCtx {
     /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
+    }
+
+    /// Calls `target` from the running precompile. See [`PrecompileStorageProvider::call`].
+    ///
+    /// The provider stays borrowed while the callee runs. A callee that is a Tempo precompile,
+    /// the caller included, runs in its own storage context over the same state, so the caller
+    /// must write its state before the call and read it again afterwards.
+    pub fn call(
+        &mut self,
+        target: Address,
+        input: Bytes,
+        gas_limit: u64,
+        is_static: bool,
+    ) -> Result<CallOutcome> {
+        Self::try_with_storage(|s| s.call(target, input, gas_limit, is_static))
     }
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
