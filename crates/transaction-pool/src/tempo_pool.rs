@@ -13,7 +13,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, B256Set, Entry, HashMap},
+    map::{AddressMap, AddressSet, Entry, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -151,22 +151,13 @@ where
 
     /// Updates the 2d nonce pool with the given state changes.
     ///
-    /// Returns the AA transactions removed because a block used their nonce. Those among
-    /// `block_transactions` are notified as mined via the vanilla pool updates; the others, such
-    /// as a transaction whose expiring nonce a variant with another fee payer used, are notified
-    /// as discarded.
+    /// Returns mined AA transactions.
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
         state: &AddressMap<BundleAccount>,
-        block_transactions: &B256Set,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined, mut discarded) = self.aa_2d_pool.write().on_state_updates(state);
-        discarded.extend(
-            mined
-                .iter()
-                .filter(|tx| !block_transactions.contains(tx.hash()))
-                .cloned(),
-        );
+        let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
+        // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
             .notify_on_transaction_updates(promoted, discarded);
@@ -1709,10 +1700,8 @@ mod tests {
 
     use crate::delayed_pool::DelayedPoolConfig;
     use reth_transaction_pool::TransactionListenerKind;
-    use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-    use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
     use tempo_primitives::TempoTxType;
 
     fn provider_with_spending_limit(
@@ -3949,46 +3938,6 @@ mod tests {
             next_event_for(&mut events, hash),
             Some(FullTransactionEvent::Invalid(_))
         ));
-    }
-
-    /// A block that uses delayed transactions' expiring nonces removes them, notifying the
-    /// ones it did not include, such as one whose variant with another fee payer it included, as
-    /// discarded.
-    #[tokio::test]
-    async fn state_update_discards_delayed_transactions_the_block_did_not_include() {
-        let sender = Address::random();
-        let tip = now_secs();
-        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
-        let included = delayed_tx(sender, tip).build();
-        let replaced = delayed_tx(sender, tip).valid_before(tip + 27).build();
-        let mut storage = HashMap::default();
-        for tx in [&included, &replaced] {
-            pool.add_transaction(TransactionOrigin::External, tx.clone())
-                .await
-                .expect("transaction should be delayed");
-            storage.insert(
-                tx.expiring_nonce_slot().unwrap(),
-                StorageSlot::new_changed(U256::ZERO, U256::from(tip + 28)),
-            );
-        }
-        let mut state = AddressMap::default();
-        state.insert(
-            NONCE_PRECOMPILE_ADDRESS,
-            BundleAccount::new(None, None, storage, AccountStatus::Changed),
-        );
-        let mut events = pool.all_transactions_event_listener();
-
-        let removed =
-            pool.notify_aa_pool_on_state_updates(&state, &B256Set::from_iter([*included.hash()]));
-
-        let mut removed = tx_hashes(&removed);
-        removed.sort();
-        let mut expected = vec![*included.hash(), *replaced.hash()];
-        expected.sort();
-        assert_eq!(removed, expected);
-        assert!(!pool.contains(included.hash()));
-        assert!(!pool.contains(replaced.hash()));
-        assert_eq!(discarded_hashes(&mut events), vec![*replaced.hash()]);
     }
 
     #[tokio::test]
