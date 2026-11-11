@@ -5,8 +5,8 @@ use crate::{
     transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
-    Address, B256, KECCAK256_EMPTY, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Set},
+    Address, B256, KECCAK256_EMPTY, Log, TxHash, U256,
+    map::{AddressMap, AddressSet, B256Set, HashMap},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -423,8 +423,9 @@ pub(crate) struct PoolInvalidations {
     pub(crate) changed_commitments: AddressSet,
     /// Accounts whose code changed, on either branch of a reorg.
     pub(crate) changed_code: AddressSet,
-    /// The new canonical segment, read for fallback fee-token balance changes.
-    pub(crate) chain: Arc<Chain<TempoPrimitives>>,
+    /// Fallback fee-token balance slots the new segment wrote, as `(original, present)` values.
+    /// Copied out so published updates don't keep the whole chain alive.
+    pub(crate) fallback_balances: AddressMap<HashMap<U256, (U256, U256)>>,
     /// Hardfork active at the new tip.
     pub(crate) spec: TempoHardfork,
 }
@@ -446,12 +447,30 @@ impl PoolInvalidations {
         {
             collect_account_changes(state, &mut changed_commitments, &mut changed_code);
         }
+        let bundle_state = new.execution_outcome().state().state();
+        let fallback_balances = if spec.is_t13() {
+            spec.fallback_fee_tokens()
+                .iter()
+                .filter_map(|token| {
+                    let account = bundle_state.get(token)?;
+                    let slots: HashMap<_, _> = account
+                        .storage
+                        .iter()
+                        .filter(|(_, value)| value.is_changed())
+                        .map(|(slot, value)| (*slot, (value.original_value(), value.present_value)))
+                        .collect();
+                    (!slots.is_empty()).then_some((*token, slots))
+                })
+                .collect()
+        } else {
+            Default::default()
+        };
         Self {
             updates: TempoPoolUpdates::from_chain(&new),
             mined: new.transaction_hashes().copied().collect(),
             changed_commitments,
             changed_code,
-            chain: new,
+            fallback_balances,
             spec,
         }
     }
@@ -463,20 +482,16 @@ impl PoolInvalidations {
         if !self.spec.is_t13() || !tx.is_fallback_fee_token() {
             return false;
         }
-        let bundle_state = self.chain.execution_outcome().state().state();
         tx.fee_balance_slot().is_some_and(|(selected_token, slot)| {
             // TIP-20 balance slots share a layout. Include credits and protocol
             // fee writes, which may change the choice without Transfer logs.
             let fee = tx.fee_token_cost();
             for token in self.spec.fallback_fee_tokens() {
-                if bundle_state
+                if self
+                    .fallback_balances
                     .get(token)
-                    .and_then(|account| account.storage.get(&slot))
-                    .is_some_and(|value| {
-                        let had_sufficient_balance = value.original_value() >= fee;
-                        let has_sufficient_balance = value.present_value >= fee;
-                        had_sufficient_balance != has_sufficient_balance
-                    })
+                    .and_then(|slots| slots.get(&slot))
+                    .is_some_and(|(original, present)| (*original >= fee) != (*present >= fee))
                 {
                     return true;
                 }
