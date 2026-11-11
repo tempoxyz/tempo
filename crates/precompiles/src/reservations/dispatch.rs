@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`Reservations`] precompile.
 
-use super::Reservations;
+use super::{Placement, Reservations};
 use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::primitives::Address;
 use evm2::precompiles::PrecompileResult;
@@ -16,7 +16,7 @@ impl Precompile for Reservations {
             calldata,
             |call| match call {
                 IReservations::IReservationsCalls {
-                    hold(call) => mutate(call, msg_sender, |sender, c| self.hold(sender, c, false)),
+                    hold(call) => mutate(call, msg_sender, |sender, c| self.hold(sender, c, Placement::Plain)),
                     holdStandIn(call) => mutate(call, msg_sender, |sender, c| {
                         let c = IReservations::holdCall {
                             token: c.token,
@@ -25,7 +25,36 @@ impl Precompile for Reservations {
                             expiresAt: c.expiresAt,
                             payee: c.payee,
                         };
-                        self.hold(sender, c, true)
+                        self.hold(sender, c, Placement::StandIn)
+                    }),
+                    holdCard(call) => mutate(call, msg_sender, |sender, c| {
+                        let placement = Placement::Card {
+                            issuer: c.issuer,
+                            card: c.card,
+                        };
+                        let c = IReservations::holdCall {
+                            token: c.token,
+                            id: c.id,
+                            amount: c.amount,
+                            expiresAt: c.expiresAt,
+                            payee: c.payee,
+                        };
+                        self.hold(sender, c, placement)
+                    }),
+                    holdWithLine(call) => mutate(call, msg_sender, |sender, c| {
+                        let placement = Placement::Line {
+                            part: c.linePart,
+                            line: c.line,
+                            lender: c.lender,
+                        };
+                        let c = IReservations::holdCall {
+                            token: c.token,
+                            id: c.id,
+                            amount: c.amount,
+                            expiresAt: c.expiresAt,
+                            payee: c.payee,
+                        };
+                        self.hold(sender, c, placement)
                     }),
                     adjust(call) => mutate(call, msg_sender, |sender, c| self.adjust(sender, c)),
                     capture(call) => mutate(call, msg_sender, |sender, c| {
@@ -64,6 +93,16 @@ impl Precompile for Reservations {
                         self.release_expired(c.owner, c.id)
                     }),
                     refund(call) => mutate(call, msg_sender, |sender, c| self.refund(sender, c)),
+                    openLine(call) => mutate(call, msg_sender, |sender, c| self.open_line(sender, c)),
+                    offerCredit(call) => mutate(call, msg_sender, |sender, c| {
+                        self.offer_credit(sender, c)
+                    }),
+                    grantCredit(call) => mutate(call, msg_sender, |sender, c| {
+                        self.grant_credit(sender, c)
+                    }),
+                    repayCredit(call) => mutate(call, msg_sender, |sender, c| {
+                        self.repay_credit(sender, c)
+                    }),
                     getHold(call) => view(call, |c| self.get_hold(c.owner, c.id)),
                     reserved(call) => view(call, |c| self.reserved_of(c.owner, c.token)),
                     available(call) => view(call, |c| self.available_of(c.owner, c.token)),
@@ -75,6 +114,11 @@ impl Precompile for Reservations {
                     captured(call) => view(call, |c| self.captured(c.owner, c.id)),
                     offlineCap(call) => view(call, |c| {
                         self.offline_cap(c.owner, c.payee, c.token)
+                    }),
+                    creditOf(call) => view(call, |c| self.credit_of(c.owner, c.lender, c.line)),
+                    getLine(call) => view(call, |c| self.get_line(c.lender, c.line)),
+                    creditOffer(call) => view(call, |c| {
+                        self.credit_offer(c.lender, c.line, c.owner)
                     }),
                 }
             }

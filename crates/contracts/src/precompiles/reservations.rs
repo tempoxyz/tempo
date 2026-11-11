@@ -42,6 +42,11 @@ crate::sol! {
         /// and marks the hold, so that its final capture may leave the rest as debt up to the
         /// larger of the debt cap and the offline cap.
         function holdStandIn(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee) external;
+        /// `hold` through the caller's card `card` issued by `issuer` (its `ICards` payee, which may
+        /// differ from the hold's `payee`, such as a savings facility paying the issuer; TIP-1169):
+        /// reverts `UnknownCard`, `CardInactive`, `TokenNotAllowed` or `CardLimitExceeded` from
+        /// `ICards` unless the card may hold `amount` of `token` now, and records the card's line.
+        function holdCard(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee, address issuer, bytes32 card) external;
         /// `charge` for an approval the payee made in stand-in: the shortfall may become debt up to
         /// the larger of the debt cap and the offline cap.
         function chargeStandIn(address token, bytes32 id, uint128 amount, address payee) external;
@@ -59,8 +64,23 @@ crate::sol! {
         function setOfflineCap(address payee, address token, uint128 cap) external;
         /// Releases an expired hold of `owner`. Callable by anyone.
         function releaseExpired(address owner, bytes32 id) external;
-        /// Moves `amount` from the payee (caller) back to `owner`, up to the captured total.
+        /// Moves `amount` from the payee (caller) back to `owner`, up to the captured total. The
+        /// part a credit line paid repays the line first.
         function refund(address owner, bytes32 id, uint128 amount) external;
+        /// Opens credit line `line` lending the caller's `token`; the caller is its lender.
+        function openLine(bytes32 line, address token) external;
+        /// Offers `owner` credit on the caller's line `line`, paid to `payee`, up to `limit`; zero
+        /// withdraws the offer. A granted limit above `limit` drops to it at once. Root key only.
+        function offerCredit(bytes32 line, address owner, address payee, uint128 limit) external;
+        /// Accepts credit on `lender`'s line `line` paid to `payee`, up to `limit`, within the
+        /// lender's offer, and reserves the lender's balance for the undrawn limit. Root key only.
+        function grantCredit(bytes32 line, address lender, address payee, uint128 limit) external;
+        /// Reserves `amount` for `payee` until `expiresAt` as `hold` does, with `linePart` of it on
+        /// `lender`'s line `line` instead of the caller's balance.
+        function holdWithLine(address token, bytes32 id, uint128 amount, uint128 linePart, bytes32 line, address lender, uint64 expiresAt, address payee) external;
+        /// Repays up to `amount` of what the caller owes on `lender`'s line `line` from its
+        /// available balance.
+        function repayCredit(address lender, bytes32 line, uint128 amount) external;
 
         function getHold(address owner, bytes32 id) external view returns (Hold memory);
         function reserved(address owner, address token) external view returns (uint128);
@@ -70,8 +90,15 @@ crate::sol! {
         function captureTolerance(address owner, address payee, address token) external view returns (bool bounded, uint32 toleranceBps);
         function captured(address owner, bytes32 id) external view returns (uint128 captured, uint128 refunded);
         function offlineCap(address owner, address payee, address token) external view returns (uint128);
+        /// What `owner` may borrow on `lender`'s line, owes on it, and has reserved on it in live holds.
+        function creditOf(address owner, address lender, bytes32 line) external view returns (uint128 limit, uint128 owed, uint128 held);
+        /// The line's token, zero when it is not open, and how much of the lender's balance it reserves.
+        function getLine(address lender, bytes32 line) external view returns (address token, uint128 lien);
+        /// The lender's standing offer to `owner` on the line; a zero limit when there is none.
+        function creditOffer(address lender, bytes32 line, address owner) external view returns (address payee, uint128 limit);
 
         event HoldPlaced(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint64 expiresAt);
+        event CardHoldPlaced(address indexed owner, bytes32 indexed id, bytes32 indexed card, uint64 line);
         event StandInHoldPlaced(address indexed owner, bytes32 indexed id, address indexed token, uint128 approved);
         event HoldAdjusted(address indexed owner, bytes32 indexed id, address indexed token, uint128 amount);
         event HoldReleased(address indexed owner, bytes32 indexed id, address indexed token);
@@ -80,6 +107,15 @@ crate::sol! {
         event Charged(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint128 debt);
         event Refunded(address indexed owner, bytes32 indexed id, uint128 amount);
         event DebtRepaid(address indexed owner, address indexed token, address indexed creditor, uint128 amount);
+        event LineOpened(address indexed lender, bytes32 indexed line, address indexed token);
+        /// The lender's balance the line reserves, emitted whenever it changes.
+        event LineReserved(address indexed lender, bytes32 indexed line, address indexed token, uint128 lien);
+        event CreditOffered(address indexed lender, bytes32 indexed line, address indexed owner, address payee, uint128 limit);
+        event CreditGranted(address indexed owner, address indexed lender, bytes32 indexed line, address payee, uint128 limit);
+        /// Follows `HoldPlaced` or `HoldAdjusted` with the part of the hold now on the line.
+        event CreditHeld(address indexed owner, bytes32 indexed id, address indexed lender, bytes32 line, uint128 amount);
+        event CreditDrawn(address indexed owner, bytes32 indexed id, address indexed lender, bytes32 line, uint128 amount);
+        event CreditRepaid(address indexed owner, address indexed lender, bytes32 line, uint128 amount);
 
         error HoldExists();
         error HoldNotFound();
@@ -91,5 +127,8 @@ crate::sol! {
         error Unauthorized();
         error InvalidAmount();
         error ToleranceExceeded();
+        error LineExists();
+        error LineNotFound();
+        error CreditNotOffered();
     }
 }

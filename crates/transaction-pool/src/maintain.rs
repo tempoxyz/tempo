@@ -227,14 +227,16 @@ impl TempoPoolUpdates {
                     None => {}
                 }
             }
-            // Hold changes, which all index the owner and token as topics 1 and 3. Releases and
-            // captures raise the available balance, which can change a fallback fee-token choice.
+            // Hold and line lien changes, which all index the account and token as topics 1 and 3.
+            // Releases and captures raise the available balance, which can change a fallback
+            // fee-token choice.
             else if log.address == RESERVATIONS_ADDRESS {
                 if let Some(&topic0) = log.topics().first()
                     && (topic0 == IReservations::HoldPlaced::SIGNATURE_HASH
                         || topic0 == IReservations::HoldAdjusted::SIGNATURE_HASH
                         || topic0 == IReservations::HoldReleased::SIGNATURE_HASH
-                        || topic0 == IReservations::HoldCaptured::SIGNATURE_HASH)
+                        || topic0 == IReservations::HoldCaptured::SIGNATURE_HASH
+                        || topic0 == IReservations::LineReserved::SIGNATURE_HASH)
                     && let [_, owner, _, token] = log.topics()
                 {
                     updates
@@ -1383,6 +1385,7 @@ mod tests {
             let placed_owner = Address::random();
             let adjusted_owner = Address::random();
             let released_owner = Address::random();
+            let lender = Address::random();
             let id = B256::random();
             let receipt = TempoReceipt {
                 tx_type: TempoTxType::Legacy,
@@ -1411,6 +1414,13 @@ mod tests {
                         token,
                     }
                     .into_log_data(),
+                    IReservations::LineReserved {
+                        lender,
+                        line: id,
+                        token,
+                        lien: 3,
+                    }
+                    .into_log_data(),
                 ]
                 .into_iter()
                 .map(|data| {
@@ -1428,7 +1438,8 @@ mod tests {
                 Some(&AddressSet::from_iter([
                     placed_owner,
                     adjusted_owner,
-                    released_owner
+                    released_owner,
+                    lender
                 ]))
             );
             assert!(updates.fee_balance_changes.is_empty());

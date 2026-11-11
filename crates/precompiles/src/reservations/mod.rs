@@ -10,11 +10,17 @@
 //!
 //! Open holds count as spend of the access key that placed them (TIP-1011 limits), and every
 //! amount a hold stops committing, or a payee refunds, is given back to that key's limit.
+//!
+//! Credit lines let a lender pay for an owner's holds: the lender reserves its own balance for
+//! every limit it lends and has not lent yet, a hold may put part of its amount on a line, and a
+//! capture draws that part from the lender's reservation once the owner's available balance is
+//! spent. Refunds of such a capture repay the line before landing as balance.
 
 pub mod dispatch;
 
 use crate::{
     account_keychain::{AccountKeychain, LimitSpend},
+    cards::Cards,
     error::{Result, TempoPrecompileError},
     storage::{ContractStorage, Handler, Mapping},
     tip20::{Recipient, TIP20Token},
@@ -99,6 +105,13 @@ struct Authorization {
     counted: U96,
     /// Whether `holdStandIn` placed the hold, so its captures may owe up to the offline cap.
     stand_in: bool,
+    /// Card line (TIP-1169) of a hold `holdCard` placed, whose committed amount this
+    /// authorization's follows; zero for other authorizations. Packed beside `counted`, which a
+    /// card mandate key with a spending limit writes on every hold anyway.
+    card_line: u64,
+    /// Whether `holdWithLine` placed the hold, so part of it is on a credit line recorded in
+    /// `Reservations::credit_holds`.
+    line: bool,
 }
 
 impl Authorization {
@@ -115,6 +128,68 @@ impl Authorization {
     fn committed(&self) -> u128 {
         self.held.to::<u128>() + (self.captured - self.refunded).to::<u128>()
     }
+}
+
+/// A lender's credit line in one token, in two slots.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct Line {
+    /// Token lent; zero while the line is not open.
+    token: Address,
+    /// Lender's balance reserved for the line, held in its `Position::reserved`.
+    lien: U96,
+    /// `Shortfall::epoch` when the lien last grew from zero; an earlier epoch means a burn took
+    /// part of it.
+    burn_epoch: u32,
+}
+
+/// One owner's credit on a lender's line, in two slots.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct Credit {
+    /// Payee the lender pays when a hold draws the line.
+    payee: Address,
+    /// Most the owner may owe and hold on the line together.
+    limit: U96,
+    /// Drawn and not yet repaid.
+    owed: U96,
+    /// Line parts of the owner's live holds.
+    held: U96,
+}
+
+impl Credit {
+    /// What the lender keeps reserved for this credit: the undrawn limit, and never less than the
+    /// open holds' line parts, so lowering a limit never strands an approved hold.
+    fn lien(&self) -> u128 {
+        (self.limit.saturating_sub(self.owed))
+            .max(self.held)
+            .to::<u128>()
+    }
+
+    /// What new holds may still put on the line.
+    fn headroom(&self) -> u128 {
+        self.limit
+            .to::<u128>()
+            .saturating_sub(self.owed.to::<u128>() + self.held.to::<u128>())
+    }
+}
+
+/// A lender's standing offer of credit to one owner, in one slot.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct CreditOffer {
+    /// Payee the lender agrees to pay.
+    payee: Address,
+    /// Most the owner may accept; zero without an offer.
+    limit: U96,
+}
+
+/// The credit line part of one authorization, in three slots.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct CreditHold {
+    lender: Address,
+    /// Part of the live hold on the line, included in `Authorization::held`.
+    held: U96,
+    line: B256,
+    /// Drawn from the line by captures of this id and not yet repaid by its refunds.
+    drawn: U96,
 }
 
 /// Account reservations precompile.
@@ -134,6 +209,15 @@ pub struct Reservations {
     capture_tolerances: Mapping<Address, Mapping<Address, Mapping<Address, Tolerance>>>,
     /// Debt an owner accepts from stand-in holds and charges, keyed by owner, payee, then token.
     offline_caps: Mapping<Address, Mapping<Address, Mapping<Address, u128>>>,
+    /// Credit lines keyed by lender then line id.
+    lines: Mapping<Address, Mapping<B256, Line>>,
+    /// Credit keyed by owner, lender, then line id.
+    credits: Mapping<Address, Mapping<Address, Mapping<B256, Credit>>>,
+    /// Credit offers keyed by lender, line id, then owner.
+    credit_offers: Mapping<Address, Mapping<B256, Mapping<Address, CreditOffer>>>,
+    /// Line parts of authorizations, keyed by owner then hold id; read only for holds placed with
+    /// `holdWithLine`.
+    credit_holds: Mapping<Address, Mapping<B256, CreditHold>>,
 }
 
 impl Reservations {
@@ -219,12 +303,13 @@ impl Reservations {
         Ok(Some((creditor, U256::from(repaid))))
     }
 
-    /// Places `hold`, or `holdStandIn` when `stand_in`, which reserves only what is available.
+    /// Places `hold`, `holdStandIn`, which reserves only what is available, `holdCard`, which
+    /// first checks the card, or `holdWithLine`, which puts part of the hold on a credit line.
     fn hold(
         &mut self,
         owner: Address,
         call: IReservations::holdCall,
-        stand_in: bool,
+        placement: Placement,
     ) -> Result<()> {
         amount_u96(call.amount)?;
         let now = self.now();
@@ -237,23 +322,41 @@ impl Reservations {
         if self.authorizations[owner][call.id].token.read()? != Address::ZERO {
             return Err(ReservationsError::hold_exists().into());
         }
+        let card = match placement {
+            Placement::Card { issuer, card } => Some((
+                card,
+                Cards::new().line_for_hold(owner, issuer, card, call.token, call.amount)?,
+            )),
+            Placement::Plain | Placement::StandIn | Placement::Line { .. } => None,
+        };
 
         let mut position = self.positions[owner][call.token].read()?;
         let free = available(&token, owner)?;
-        // A stand-in approval already happened offline, so the chain records it whatever is left.
-        let held = if stand_in {
-            call.amount.min(free)
-        } else if call.amount > free {
-            return Err(ReservationsError::insufficient_available().into());
-        } else {
-            call.amount
+        // `held` is what the hold commits, `reserved` the part of it taken from the owner's balance.
+        let (held, reserved) = match placement {
+            // A stand-in approval already happened offline, so the chain records it whatever is left.
+            Placement::StandIn => (call.amount.min(free), call.amount.min(free)),
+            Placement::Plain | Placement::Card { .. } if call.amount > free => {
+                return Err(ReservationsError::insufficient_available().into());
+            }
+            Placement::Plain | Placement::Card { .. } => (call.amount, call.amount),
+            Placement::Line { part, line, lender } => {
+                if part == 0 || part > call.amount {
+                    return Err(ReservationsError::invalid_amount().into());
+                }
+                if call.amount - part > free {
+                    return Err(ReservationsError::insufficient_available().into());
+                }
+                self.hold_line_part(owner, call.token, payee, lender, line, part)?;
+                (call.amount, call.amount - part)
+            }
         };
         position.reserved = position
             .reserved
-            .checked_add(held)
+            .checked_add(reserved)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         let spend = AccountKeychain::new().spend_limit(owner, call.token, U256::from(held))?;
-        token.decrement_balance(owner, U256::from(held))?;
+        token.decrement_balance(owner, U256::from(reserved))?;
         self.positions[owner][call.token].write(position)?;
         let mut auth = Authorization {
             token: call.token,
@@ -263,11 +366,14 @@ impl Reservations {
             expires_at: call.expiresAt,
             burn_epoch: self.shortfalls[owner][call.token].epoch.read()?,
             key_id: spend.map_or(Address::ZERO, |spend| spend.key_id),
-            stand_in,
+            stand_in: placement == Placement::StandIn,
+            card_line: card.map_or(0, |(_, line)| line),
+            line: matches!(placement, Placement::Line { .. }),
             ..Default::default()
         };
         record_spend(&mut auth, spend, held);
         self.authorizations[owner][call.id].write(auth)?;
+        follow_card(&auth, 0)?;
         self.emit_event(ReservationsEvent::hold_placed(
             owner,
             call.id,
@@ -276,15 +382,58 @@ impl Reservations {
             held,
             call.expiresAt,
         ))?;
-        if !stand_in {
-            return Ok(());
+        if let Some((card, line)) = card {
+            self.emit_event(ReservationsEvent::card_hold_placed(
+                owner, call.id, card, line,
+            ))?;
         }
-        self.emit_event(ReservationsEvent::stand_in_hold_placed(
-            owner,
-            call.id,
-            call.token,
-            call.amount,
-        ))
+        match placement {
+            Placement::Plain | Placement::Card { .. } => Ok(()),
+            Placement::StandIn => self.emit_event(ReservationsEvent::stand_in_hold_placed(
+                owner,
+                call.id,
+                call.token,
+                call.amount,
+            )),
+            Placement::Line { part, line, lender } => {
+                self.credit_holds[owner][call.id].write(CreditHold {
+                    lender,
+                    held: U96::from(part),
+                    line,
+                    drawn: U96::ZERO,
+                })?;
+                self.emit_event(ReservationsEvent::credit_held(
+                    owner, call.id, lender, line, part,
+                ))
+            }
+        }
+    }
+
+    /// Puts `part` of a new hold for `payee` on `owner`'s credit on `lender`'s line in `token`.
+    /// The lien already covers it, since it fits in the undrawn limit.
+    fn hold_line_part(
+        &mut self,
+        owner: Address,
+        token: Address,
+        payee: Address,
+        lender: Address,
+        line: B256,
+        part: u128,
+    ) -> Result<()> {
+        if self.lines[lender][line].token.read()? != token {
+            return Err(ReservationsError::line_not_found().into());
+        }
+        let mut credit = self.credits[owner][lender][line].read()?;
+        // The lender consented to pay only the payee it offered credit for.
+        if credit.payee != payee {
+            return Err(ReservationsError::credit_not_offered().into());
+        }
+        if part > credit.headroom() {
+            return Err(ReservationsError::insufficient_available().into());
+        }
+        // Fits: at most the limit, a `U96`.
+        credit.held += U96::from(part);
+        self.credits[owner][lender][line].write(credit)
     }
 
     fn adjust(&mut self, owner: Address, call: IReservations::adjustCall) -> Result<()> {
@@ -292,35 +441,88 @@ impl Reservations {
         ensure_key_may_act(owner, &auth)?;
         let held = amount_u96(call.amount)?;
         let previous = auth.held.to::<u128>();
+        let committed = auth.committed();
+        let mut line_hold = self.credit_hold(owner, call.id, &auth)?;
+        let line_before = line_hold.map_or(0, |hold| hold.held.to::<u128>());
         let mut position = self.positions[owner][auth.token].read()?;
         let decrease = previous.saturating_sub(call.amount);
         if call.amount > previous {
             let increase = call.amount - previous;
-            let mut token = TIP20Token::from_address(auth.token)?;
-            if increase > available(&token, owner)? {
-                return Err(ReservationsError::insufficient_available().into());
+            // A card hold grows only while its card is active and within its limit.
+            if auth.card_line != 0 {
+                Cards::new().ensure_may_grow(auth.card_line, increase)?;
             }
+            let mut token = TIP20Token::from_address(auth.token)?;
+            let free = available(&token, owner)?;
+            // A hold with a line part takes an increase from the owner's balance first, then the line.
+            let from_balance = match line_hold.as_mut() {
+                Some(hold) if increase > free => {
+                    let part = increase - free;
+                    self.hold_line_part(
+                        owner,
+                        auth.token,
+                        auth.payee,
+                        hold.lender,
+                        hold.line,
+                        part,
+                    )?;
+                    // Fits: at most the credit's limit, a `U96`.
+                    hold.held += U96::from(part);
+                    free
+                }
+                _ if increase > free => {
+                    return Err(ReservationsError::insufficient_available().into());
+                }
+                _ => increase,
+            };
             position.reserved = position
                 .reserved
-                .checked_add(increase)
+                .checked_add(from_balance)
                 .ok_or_else(TempoPrecompileError::under_overflow)?;
             let spend =
                 AccountKeychain::new().spend_limit(owner, auth.token, U256::from(increase))?;
             record_spend(&mut auth, spend, increase);
-            token.decrement_balance(owner, U256::from(increase))?;
+            token.decrement_balance(owner, U256::from(from_balance))?;
         } else {
-            let returned = self.unreserve(owner, &auth, &mut position, decrease)?;
+            // A decrease comes off the line part first, as the line pays after the balance.
+            let from_line = line_before.min(decrease);
+            if let Some(hold) = line_hold.as_mut() {
+                let mut token = TIP20Token::from_address(auth.token)?;
+                self.settle_line_part(owner, call.id, &mut token, auth.payee, hold, from_line, 0)?;
+            }
+            let returned = self.unreserve(
+                owner,
+                auth.token,
+                auth.burn_epoch,
+                &mut position,
+                decrease - from_line,
+            )?;
             return_to_balance(auth.token, owner, returned)?;
         }
         self.positions[owner][auth.token].write(position)?;
         auth.held = held;
         settle_limit(owner, &mut auth)?;
         self.authorizations[owner][call.id].write(auth)?;
+        follow_card(&auth, committed)?;
         self.emit_event(ReservationsEvent::hold_adjusted(
             owner,
             call.id,
             auth.token,
             call.amount,
+        ))?;
+        let Some(hold) = line_hold else {
+            return Ok(());
+        };
+        if hold.held.to::<u128>() == line_before {
+            return Ok(());
+        }
+        self.credit_holds[owner][call.id].write(hold)?;
+        self.emit_event(ReservationsEvent::credit_held(
+            owner,
+            call.id,
+            hold.lender,
+            hold.line,
+            hold.held.to(),
         ))
     }
 
@@ -390,6 +592,7 @@ impl Reservations {
         if auth.exists() {
             ensure_key_may_act(owner, &auth)?;
         }
+        let committed = auth.committed();
 
         let position = self.positions[owner][call.token].read()?;
         let (debt, spend) = self.pay(
@@ -401,6 +604,7 @@ impl Reservations {
                 released: 0,
                 spend: call.amount,
                 stand_in,
+                line: None,
             },
             position,
         )?;
@@ -418,6 +622,7 @@ impl Reservations {
             .checked_add(amount)
             .ok_or_else(ReservationsError::invalid_amount)?;
         self.authorizations[owner][call.id].write(auth)?;
+        follow_card(&auth, committed)?;
         self.emit_event(ReservationsEvent::charged(
             owner,
             call.id,
@@ -468,17 +673,40 @@ impl Reservations {
                 0
             };
         let moved = call.amount - offset;
+        // The part a credit line paid, and the owner still owes, repays the line first.
+        let mut line_hold = self.credit_hold(call.owner, call.id, &auth)?;
+        let repaid = match line_hold {
+            Some(hold) if moved != 0 && !hold.drawn.is_zero() => {
+                let owed = self.credits[call.owner][hold.lender][hold.line]
+                    .owed
+                    .read()?;
+                moved.min(hold.drawn.min(owed).to::<u128>())
+            }
+            _ => 0,
+        };
         if moved != 0 {
             AccountKeychain::new().authorize_transfer(payee, auth.token, U256::from(moved))?;
         }
         if offset != 0 {
             self.reduce_debt(call.owner, auth.token, position, payee, offset)?;
         }
-        token.reservation_transfer(payee, call.owner, U256::from(moved))?;
+        if let Some(hold) = line_hold.as_mut()
+            && repaid != 0
+        {
+            token.ensure_transfer_authorized(payee, hold.lender)?;
+            token.reservation_transfer(payee, hold.lender, U256::from(repaid))?;
+            self.repay_line(call.owner, hold.lender, hold.line, repaid)?;
+            // Fits: at most `hold.drawn`.
+            hold.drawn -= U96::from(repaid);
+            self.credit_holds[call.owner][call.id].write(*hold)?;
+        }
+        token.reservation_transfer(payee, call.owner, U256::from(moved - repaid))?;
+        let committed = auth.committed();
         // Refunds of non-final captures leave a live hold's amount committed.
         auth.refunded = refunded;
         settle_limit(call.owner, &mut auth)?;
         self.authorizations[call.owner][call.id].write(auth)?;
+        follow_card(&auth, committed)?;
         self.emit_event(ReservationsEvent::refunded(
             call.owner,
             call.id,
@@ -513,6 +741,180 @@ impl Reservations {
     ) -> Result<()> {
         let payee = resolve_counterparty_as_root(owner, call.payee, call.token)?;
         self.offline_caps[owner][payee][call.token].write(call.cap)
+    }
+
+    fn open_line(&mut self, lender: Address, call: IReservations::openLineCall) -> Result<()> {
+        TIP20Token::from_address(call.token)?;
+        if !self.lines[lender][call.line].token.read()?.is_zero() {
+            return Err(ReservationsError::line_exists().into());
+        }
+        self.lines[lender][call.line].token.write(call.token)?;
+        self.emit_event(ReservationsEvent::line_opened(
+            lender, call.line, call.token,
+        ))
+    }
+
+    /// Records the lender's offer and lowers a granted limit above it, releasing the lien for the
+    /// undrawn part. Owed amounts and open holds' line parts stay.
+    fn offer_credit(
+        &mut self,
+        lender: Address,
+        call: IReservations::offerCreditCall,
+    ) -> Result<()> {
+        // The offer commits the lender's balance once accepted, so only its root key makes one.
+        if AccountKeychain::new().signing_access_key(lender)?.is_some()
+            || call.owner.is_zero()
+            || call.owner == lender
+        {
+            return Err(ReservationsError::unauthorized().into());
+        }
+        let mut line = self.lines[lender][call.line].read()?;
+        if line.token.is_zero() {
+            return Err(ReservationsError::line_not_found().into());
+        }
+        let limit = U96::try_from(call.limit).map_err(|_| ReservationsError::invalid_amount())?;
+        // A withdrawn offer names no payee.
+        let payee = if limit.is_zero() {
+            Address::ZERO
+        } else {
+            resolve_payee(call.payee)?
+        };
+        self.credit_offers[lender][call.line][call.owner].write(CreditOffer { payee, limit })?;
+        self.emit_event(ReservationsEvent::credit_offered(
+            lender, call.line, call.owner, payee, call.limit,
+        ))?;
+        let mut credit = self.credits[call.owner][lender][call.line].read()?;
+        if credit.limit <= limit {
+            return Ok(());
+        }
+        let before = credit.lien();
+        credit.limit = limit;
+        // A lower limit never needs a larger lien.
+        let lowered = before
+            .checked_sub(credit.lien())
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        let returned = self.shrink_lien(lender, call.line, &mut line, lowered)?;
+        return_to_balance(line.token, lender, returned)?;
+        self.credits[call.owner][lender][call.line].write(credit)?;
+        self.emit_event(ReservationsEvent::credit_granted(
+            call.owner,
+            lender,
+            call.line,
+            credit.payee,
+            call.limit,
+        ))
+    }
+
+    /// Sets the owner's credit within the lender's offer, or below what it already has, and moves
+    /// the lender's lien to the new undrawn limit.
+    fn grant_credit(&mut self, owner: Address, call: IReservations::grantCreditCall) -> Result<()> {
+        if AccountKeychain::new().signing_access_key(owner)?.is_some() || call.lender == owner {
+            return Err(ReservationsError::unauthorized().into());
+        }
+        let mut line = self.lines[call.lender][call.line].read()?;
+        if line.token.is_zero() {
+            return Err(ReservationsError::line_not_found().into());
+        }
+        let limit = U96::try_from(call.limit).map_err(|_| ReservationsError::invalid_amount())?;
+        let payee = resolve_payee(call.payee)?;
+        let mut credit = self.credits[owner][call.lender][call.line].read()?;
+        let offer = self.credit_offers[call.lender][call.line][owner].read()?;
+        // The lender consents to each owner, payee and limit; lowering one's own limit needs none.
+        let offered = !offer.limit.is_zero() && offer.payee == payee && limit <= offer.limit;
+        let lowered = credit.payee == payee && limit <= credit.limit;
+        if !offered && !lowered {
+            return Err(ReservationsError::credit_not_offered().into());
+        }
+        let mut token = TIP20Token::from_address(line.token)?;
+        token.ensure_transfer_authorized(call.lender, payee)?;
+        let before = credit.lien();
+        credit.payee = payee;
+        credit.limit = limit;
+        let after = credit.lien();
+        if after > before {
+            if after - before > available(&token, call.lender)? {
+                return Err(ReservationsError::insufficient_available().into());
+            }
+            self.grow_lien(
+                call.lender,
+                call.line,
+                &mut line,
+                &mut token,
+                after - before,
+            )?;
+        } else {
+            let returned = self.shrink_lien(call.lender, call.line, &mut line, before - after)?;
+            return_to_balance(line.token, call.lender, returned)?;
+        }
+        // Accepting an offer uses it up, so a limit the lender later lowers stays lowered.
+        if !lowered {
+            self.credit_offers[call.lender][call.line][owner].delete()?;
+        }
+        self.credits[owner][call.lender][call.line].write(credit)?;
+        self.emit_event(ReservationsEvent::credit_granted(
+            owner,
+            call.lender,
+            call.line,
+            payee,
+            call.limit,
+        ))
+    }
+
+    /// Repays up to `amount` of what `owner` owes on the line from its available balance.
+    fn repay_credit(&mut self, owner: Address, call: IReservations::repayCreditCall) -> Result<()> {
+        amount_u96(call.amount)?;
+        let line_token = self.lines[call.lender][call.line].token.read()?;
+        if line_token.is_zero() {
+            return Err(ReservationsError::line_not_found().into());
+        }
+        let owed = self.credits[owner][call.lender][call.line].owed.read()?;
+        let repaid = call.amount.min(owed.to());
+        if repaid == 0 {
+            return Ok(());
+        }
+        let mut token = TIP20Token::from_address(line_token)?;
+        token.ensure_transfer_authorized(owner, call.lender)?;
+        if repaid > available(&token, owner)? {
+            return Err(ReservationsError::insufficient_available().into());
+        }
+        AccountKeychain::new().authorize_transfer(owner, line_token, U256::from(repaid))?;
+        token.reservation_transfer(owner, call.lender, U256::from(repaid))?;
+        self.repay_line(owner, call.lender, call.line, repaid)
+    }
+
+    fn credit_of(
+        &self,
+        owner: Address,
+        lender: Address,
+        line: B256,
+    ) -> Result<IReservations::creditOfReturn> {
+        let credit = self.credits[owner][lender][line].read()?;
+        Ok(IReservations::creditOfReturn {
+            limit: credit.limit.to(),
+            owed: credit.owed.to(),
+            held: credit.held.to(),
+        })
+    }
+
+    fn get_line(&self, lender: Address, line: B256) -> Result<IReservations::getLineReturn> {
+        let line = self.lines[lender][line].read()?;
+        Ok(IReservations::getLineReturn {
+            token: line.token,
+            lien: line.lien.to(),
+        })
+    }
+
+    fn credit_offer(
+        &self,
+        lender: Address,
+        line: B256,
+        owner: Address,
+    ) -> Result<IReservations::creditOfferReturn> {
+        let offer = self.credit_offers[lender][line][owner].read()?;
+        Ok(IReservations::creditOfferReturn {
+            payee: offer.payee,
+            limit: offer.limit.to(),
+        })
     }
 
     fn get_hold(&self, owner: Address, id: B256) -> Result<IReservations::Hold> {
@@ -601,10 +1003,23 @@ impl Reservations {
         // The payee may have become forbidden since the hold was placed.
         token.ensure_transfer_authorized(owner, auth.payee)?;
         let mut position = self.positions[owner][auth.token].read()?;
+        let line = self.credit_hold(owner, id, &auth)?.map(|hold| LineDraw {
+            id,
+            consumed: hold.held.to(),
+            hold,
+        });
+        let line_part = line.as_ref().map_or(0, |line| line.consumed);
         // Releasing the hold first returns the reservation it consumes to the spendable balance.
-        let released = self.unreserve(owner, &auth, &mut position, held)?;
+        let released = self.unreserve(
+            owner,
+            auth.token,
+            auth.burn_epoch,
+            &mut position,
+            held - line_part,
+        )?;
         // The hold already counted against the key's limit; only an excess is new spend.
         let excess = amount.saturating_sub(held);
+        let committed = auth.committed();
         let (debt, spend) = self.pay(
             &mut token,
             owner,
@@ -614,6 +1029,7 @@ impl Reservations {
                 released,
                 spend: excess,
                 stand_in: auth.stand_in,
+                line,
             },
             position,
         )?;
@@ -623,6 +1039,7 @@ impl Reservations {
         auth.captured = captured;
         settle_limit(owner, &mut auth)?;
         self.authorizations[owner][id].write(auth)?;
+        follow_card(&auth, committed)?;
         self.emit_event(ReservationsEvent::hold_captured(
             owner, id, auth.token, amount, debt,
         ))
@@ -652,7 +1069,23 @@ impl Reservations {
         // The payee may have become forbidden since the hold was placed.
         token.ensure_transfer_authorized(owner, auth.payee)?;
         let mut position = self.positions[owner][auth.token].read()?;
-        let released = self.unreserve(owner, &auth, &mut position, amount)?;
+        // A part takes the hold's balance part first and its line part after it.
+        let line_hold = self.credit_hold(owner, id, &auth)?;
+        let balance_part =
+            auth.held.to::<u128>() - line_hold.map_or(0, |hold| hold.held.to::<u128>());
+        let from_balance = amount.min(balance_part);
+        let line = line_hold.map(|hold| LineDraw {
+            id,
+            consumed: amount - from_balance,
+            hold,
+        });
+        let released = self.unreserve(
+            owner,
+            auth.token,
+            auth.burn_epoch,
+            &mut position,
+            from_balance,
+        )?;
         // A compliance burn can leave less than `amount` reserved; the rest is paid as in a capture.
         let (debt, _) = self.pay(
             &mut token,
@@ -663,6 +1096,7 @@ impl Reservations {
                 released,
                 spend: 0,
                 stand_in: auth.stand_in,
+                line,
             },
             position,
         )?;
@@ -695,10 +1129,32 @@ impl Reservations {
             released,
             spend,
             stand_in,
+            line,
         } = payment;
         let token_address = token.address();
         let paid = amount.min(available(token, owner)?.saturating_add(released));
-        let debt = amount - paid;
+        // The hold's line part pays after the owner's balance and before debt.
+        let drawn = match line {
+            Some(LineDraw {
+                id,
+                mut hold,
+                consumed,
+            }) => {
+                let drawn = self.settle_line_part(
+                    owner,
+                    id,
+                    token,
+                    payee,
+                    &mut hold,
+                    consumed,
+                    amount - paid,
+                )?;
+                self.credit_holds[owner][id].write(hold)?;
+                drawn
+            }
+            None => 0,
+        };
+        let debt = amount - paid - drawn;
         let new_creditor = position.debt == 0;
         if debt != 0 {
             if !new_creditor && self.creditors[owner][token_address].read()? != payee {
@@ -758,9 +1214,27 @@ impl Reservations {
     /// settled record of them, for refunds; one without is deleted, so its id can be held again.
     fn end_hold(&mut self, owner: Address, id: B256, mut auth: Authorization) -> Result<()> {
         let mut position = self.positions[owner][auth.token].read()?;
-        let returned = self.unreserve(owner, &auth, &mut position, auth.held.to())?;
+        let mut line_part = 0;
+        if let Some(mut hold) = self.credit_hold(owner, id, &auth)? {
+            line_part = hold.held.to::<u128>();
+            let mut token = TIP20Token::from_address(auth.token)?;
+            self.settle_line_part(owner, id, &mut token, auth.payee, &mut hold, line_part, 0)?;
+            if auth.captured.is_zero() {
+                self.credit_holds[owner][id].delete()?;
+            } else {
+                self.credit_holds[owner][id].write(hold)?;
+            }
+        }
+        let returned = self.unreserve(
+            owner,
+            auth.token,
+            auth.burn_epoch,
+            &mut position,
+            auth.held.to::<u128>() - line_part,
+        )?;
         return_to_balance(auth.token, owner, returned)?;
         self.positions[owner][auth.token].write(position)?;
+        let committed = auth.committed();
         auth.held = U96::ZERO;
         auth.expires_at = 0;
         settle_limit(owner, &mut auth)?;
@@ -769,32 +1243,196 @@ impl Reservations {
         } else {
             self.authorizations[owner][id].write(auth)?;
         }
+        follow_card(&auth, committed)?;
         self.emit_event(ReservationsEvent::hold_released(owner, id, auth.token))
     }
 
-    /// Removes `amount` of `auth`'s hold from `position` and returns the reserved amount it frees,
-    /// which the caller adds back to the spendable balance. A hold live at the latest burn first
-    /// consumes the burned part, which no longer exists, so the reservation behind the other
-    /// holds stays in place.
+    /// Removes `amount` of a hold or line lien in `token` from `position` and returns the reserved
+    /// amount it frees, which the caller adds back to the spendable balance. One placed before the
+    /// latest burn (`burn_epoch` below the shortfall's) first consumes the burned part, which no
+    /// longer exists, so the reservation behind the other holds stays in place.
     fn unreserve(
         &mut self,
         owner: Address,
-        auth: &Authorization,
+        token: Address,
+        burn_epoch: u32,
         position: &mut Position,
         amount: u128,
     ) -> Result<u128> {
         let mut from_unbacked = 0;
         if amount != 0 {
-            let mut shortfall = self.shortfalls[owner][auth.token].read()?;
-            if shortfall.unbacked != 0 && auth.burn_epoch < shortfall.epoch {
+            let mut shortfall = self.shortfalls[owner][token].read()?;
+            if shortfall.unbacked != 0 && burn_epoch < shortfall.epoch {
                 from_unbacked = shortfall.unbacked.min(amount);
                 shortfall.unbacked -= from_unbacked;
-                self.shortfalls[owner][auth.token].write(shortfall)?;
+                self.shortfalls[owner][token].write(shortfall)?;
             }
         }
         let returned = position.reserved.min(amount - from_unbacked);
         position.reserved -= returned;
         Ok(returned)
+    }
+
+    /// Returns the line part of `auth`, the authorization `id` of `owner`, if it has one.
+    fn credit_hold(
+        &self,
+        owner: Address,
+        id: B256,
+        auth: &Authorization,
+    ) -> Result<Option<CreditHold>> {
+        if !auth.line {
+            return Ok(None);
+        }
+        Ok(Some(self.credit_holds[owner][id].read()?))
+    }
+
+    /// Ends `consumed` of `hold`'s line part and draws up to `wanted` of it from the lender's
+    /// lien to `payee`, returning what was drawn. The lien shrinks to what the credit still needs
+    /// and the rest of what it frees returns to the lender's balance. The caller writes `hold`.
+    #[expect(clippy::too_many_arguments, reason = "one call per settled line part")]
+    fn settle_line_part(
+        &mut self,
+        owner: Address,
+        id: B256,
+        token: &mut TIP20Token,
+        payee: Address,
+        hold: &mut CreditHold,
+        consumed: u128,
+        wanted: u128,
+    ) -> Result<u128> {
+        if consumed == 0 {
+            return Ok(0);
+        }
+        let mut credit = self.credits[owner][hold.lender][hold.line].read()?;
+        let before = credit.lien();
+        let planned = wanted.min(consumed);
+        // `credit.held` includes this hold's line part, of which `consumed` is a part.
+        credit.held = credit
+            .held
+            .checked_sub(U96::from(consumed))
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        credit.owed = credit
+            .owed
+            .checked_add(U96::from(planned))
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        // Ending a line part lowers the lien by at least what it draws (see `Credit::lien`).
+        let mut line = self.lines[hold.lender][hold.line].read()?;
+        let lowered = before
+            .checked_sub(credit.lien())
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        let freed = self.shrink_lien(hold.lender, hold.line, &mut line, lowered)?;
+        // A compliance burn of the lender's balance can leave the lien short; a line pays only
+        // what it still reserves.
+        let drawn = planned.min(freed);
+        credit.owed -= U96::from(planned - drawn);
+        self.credits[owner][hold.lender][hold.line].write(credit)?;
+        hold.held -= U96::from(consumed);
+        // Fits: at most what was drawn on the credit.
+        hold.drawn += U96::from(drawn);
+        return_to_balance(line.token, hold.lender, freed)?;
+        if drawn == 0 {
+            return Ok(0);
+        }
+        token.ensure_transfer_authorized(hold.lender, payee)?;
+        token.reservation_transfer(hold.lender, payee, U256::from(drawn))?;
+        self.emit_event(ReservationsEvent::credit_drawn(
+            owner,
+            id,
+            hold.lender,
+            hold.line,
+            drawn,
+        ))?;
+        Ok(drawn)
+    }
+
+    /// Lowers what `owner` owes on the line by `amount`, which the lender already received, and
+    /// grows the lien towards the new undrawn limit from the lender's available balance.
+    fn repay_line(
+        &mut self,
+        owner: Address,
+        lender: Address,
+        id: B256,
+        amount: u128,
+    ) -> Result<()> {
+        let mut credit = self.credits[owner][lender][id].read()?;
+        let before = credit.lien();
+        credit.owed = credit
+            .owed
+            .checked_sub(U96::from(amount))
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.credits[owner][lender][id].write(credit)?;
+        let mut line = self.lines[lender][id].read()?;
+        let mut token = TIP20Token::from_address(line.token)?;
+        // A repayment first repays the lender's own debt, so the lien grows by what is left.
+        let growth = credit
+            .lien()
+            .checked_sub(before)
+            .ok_or_else(TempoPrecompileError::under_overflow)?
+            .min(available(&token, lender)?);
+        self.grow_lien(lender, id, &mut line, &mut token, growth)?;
+        self.emit_event(ReservationsEvent::credit_repaid(owner, lender, id, amount))
+    }
+
+    /// Moves `amount` of the lender's available balance into the line's lien.
+    fn grow_lien(
+        &mut self,
+        lender: Address,
+        id: B256,
+        line: &mut Line,
+        token: &mut TIP20Token,
+        amount: u128,
+    ) -> Result<()> {
+        if amount == 0 {
+            return Ok(());
+        }
+        let mut position = self.positions[lender][line.token].read()?;
+        position.reserved = position
+            .reserved
+            .checked_add(amount)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        token.decrement_balance(lender, U256::from(amount))?;
+        self.positions[lender][line.token].write(position)?;
+        if line.lien.is_zero() {
+            line.burn_epoch = self.shortfalls[lender][line.token].epoch.read()?;
+        }
+        line.lien = U96::try_from(amount)
+            .ok()
+            .and_then(|amount| line.lien.checked_add(amount))
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.lines[lender][id].write(*line)?;
+        self.emit_event(ReservationsEvent::line_reserved(
+            lender,
+            id,
+            line.token,
+            line.lien.to(),
+        ))
+    }
+
+    /// Lowers the line's lien by up to `amount` and returns the reservation it frees, which the
+    /// caller pays out or adds back to the lender's balance.
+    fn shrink_lien(
+        &mut self,
+        lender: Address,
+        id: B256,
+        line: &mut Line,
+        amount: u128,
+    ) -> Result<u128> {
+        let release = line.lien.to::<u128>().min(amount);
+        if release == 0 {
+            return Ok(0);
+        }
+        let mut position = self.positions[lender][line.token].read()?;
+        let freed = self.unreserve(lender, line.token, line.burn_epoch, &mut position, release)?;
+        self.positions[lender][line.token].write(position)?;
+        line.lien -= U96::from(release);
+        self.lines[lender][id].write(*line)?;
+        self.emit_event(ReservationsEvent::line_reserved(
+            lender,
+            id,
+            line.token,
+            line.lien.to(),
+        ))?;
+        Ok(freed)
     }
 
     fn live_hold(&self, owner: Address, id: B256) -> Result<Authorization> {
@@ -832,6 +1470,15 @@ fn record_spend(auth: &mut Authorization, spend: Option<LimitSpend>, amount: u12
     }
     let counted = auth.counted.to::<u128>().saturating_add(amount);
     auth.counted = U96::try_from(counted).unwrap_or(U96::MAX);
+}
+
+/// Moves the card line of `auth`, if any, from the authorization's earlier committed amount
+/// `before` to what it commits now.
+fn follow_card(auth: &Authorization, before: u128) -> Result<()> {
+    if auth.card_line == 0 {
+        return Ok(());
+    }
+    Cards::new().follow_commitment(auth.card_line, before, auth.committed())
 }
 
 /// Lowers `auth.counted` to at most what the authorization still commits (`Authorization::committed`),
@@ -912,6 +1559,34 @@ struct Payment {
     spend: u128,
     /// Whether the payment settles a stand-in approval, whose debt may reach the offline cap.
     stand_in: bool,
+    /// The hold's line part this payment ends, which pays after the owner's balance.
+    line: Option<LineDraw>,
+}
+
+/// The line part of a hold that a capture ends.
+struct LineDraw {
+    id: B256,
+    hold: CreditHold,
+    /// Part of `hold.held` the capture ends; it may draw up to this.
+    consumed: u128,
+}
+
+/// How a hold is placed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// `hold`: reserves the whole amount or reverts.
+    Plain,
+    /// `holdStandIn`: reserves what is available of an approval made offline.
+    StandIn,
+    /// `holdCard`: `hold` through the caller's card `card` issued by `issuer`, its `ICards` payee.
+    /// Never on a credit line.
+    Card { issuer: Address, card: B256 },
+    /// `holdWithLine`: reserves the amount less `part`, which goes on `lender`'s line `line`.
+    Line {
+        part: u128,
+        line: B256,
+        lender: Address,
+    },
 }
 
 #[cfg(test)]
@@ -920,6 +1595,7 @@ mod tests {
     use crate::{
         account_keychain::AccountKeychain,
         address_registry::{AddressRegistry, MasterId, TempoAddressExt, UserTag},
+        cards::{Cards, CardsError, ICards},
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
         tip20::{BURN_AT_ROLE, BURN_BLOCKED_ROLE, ITIP20, PAUSE_ROLE, TIP20Error, TIP20Event},
@@ -991,8 +1667,125 @@ mod tests {
                     expiresAt: expires_at,
                     payee: self.payee,
                 },
-                stand_in,
+                if stand_in {
+                    Placement::StandIn
+                } else {
+                    Placement::Plain
+                },
             )
+        }
+
+        /// Places a hold of `amount` with `part` of it on `lender`'s `line`.
+        fn hold_on_line(
+            &mut self,
+            id: B256,
+            amount: u128,
+            part: u128,
+            lender: Address,
+            line: B256,
+        ) -> Result<()> {
+            self.reservations.hold(
+                self.owner,
+                IReservations::holdCall {
+                    token: self.token.address(),
+                    id,
+                    amount,
+                    expiresAt: EXPIRY,
+                    payee: self.payee,
+                },
+                Placement::Line { part, line, lender },
+            )
+        }
+
+        /// Mints `balance` to a fresh lender, opens its line in the fixture's token, offers the
+        /// owner `limit` for the fixture's payee and grants it.
+        fn open_credit(&mut self, balance: u64, limit: u128) -> Result<(Address, B256)> {
+            let lender = Address::random();
+            let line = B256::random();
+            self.mint(lender, balance)?;
+            self.reservations.open_line(
+                lender,
+                IReservations::openLineCall {
+                    line,
+                    token: self.token.address(),
+                },
+            )?;
+            self.offer_credit(lender, line, self.payee, limit)?;
+            self.grant_credit(lender, line, self.payee, limit)?;
+            Ok((lender, line))
+        }
+
+        fn offer_credit(
+            &mut self,
+            lender: Address,
+            line: B256,
+            payee: Address,
+            limit: u128,
+        ) -> Result<()> {
+            self.reservations.offer_credit(
+                lender,
+                IReservations::offerCreditCall {
+                    line,
+                    owner: self.owner,
+                    payee,
+                    limit,
+                },
+            )
+        }
+
+        fn grant_credit(
+            &mut self,
+            lender: Address,
+            line: B256,
+            payee: Address,
+            limit: u128,
+        ) -> Result<()> {
+            self.reservations.grant_credit(
+                self.owner,
+                IReservations::grantCreditCall {
+                    line,
+                    lender,
+                    payee,
+                    limit,
+                },
+            )
+        }
+
+        fn repay_credit(&mut self, lender: Address, line: B256, amount: u128) -> Result<()> {
+            self.reservations.repay_credit(
+                self.owner,
+                IReservations::repayCreditCall {
+                    lender,
+                    line,
+                    amount,
+                },
+            )
+        }
+
+        /// The owner's limit, owed and held amounts on the line.
+        fn credit(&self, lender: Address, line: B256) -> Result<(u128, u128, u128)> {
+            let credit = self.reservations.credit_of(self.owner, lender, line)?;
+            Ok((credit.limit, credit.owed, credit.held))
+        }
+
+        fn mint(&mut self, to: Address, amount: u64) -> Result<()> {
+            self.token.mint(
+                self.admin,
+                ITIP20::mintCall {
+                    to,
+                    amount: U256::from(amount),
+                },
+            )
+        }
+
+        /// `account`'s reserved and available amounts of the fixture's token.
+        fn reservation_of(&self, account: Address) -> Result<(u128, u128)> {
+            Ok((
+                self.reservations
+                    .reserved_of(account, self.token.address())?,
+                self.reservations
+                    .available_of(account, self.token.address())?,
+            ))
         }
 
         fn adjust(&mut self, id: B256, amount: u128) -> Result<()> {
@@ -1254,7 +2047,7 @@ mod tests {
                             expiresAt: EXPIRY,
                             payee: f.payee,
                         },
-                        false,
+                        Placement::Plain,
                     )
                     .unwrap_err(),
                 TIP20Error::invalid_token().into()
@@ -1359,7 +2152,7 @@ mod tests {
                     expiresAt: EXPIRY,
                     payee: Address::random(),
                 },
-                false,
+                Placement::Plain,
             )?;
             f.capture(other, 50)?;
             f.set_capture_tolerance(f.payee, false, 0)?;
@@ -3004,6 +3797,269 @@ mod tests {
     }
 
     #[test]
+    fn test_card_hold_checks_the_card() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Inactive,
+                U96::MAX,
+            )?;
+            for (card, error) in [
+                (card, CardsError::card_inactive()),
+                (B256::random(), CardsError::unknown_card()),
+            ] {
+                assert_eq!(
+                    hold_card(&mut f, B256::random(), 10, card).unwrap_err(),
+                    error.into()
+                );
+            }
+            // A card on another account is unknown to this owner.
+            let foreign = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                Address::random(),
+                foreign,
+                ICards::Status::Active,
+                U96::MAX,
+            )?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 10, foreign).unwrap_err(),
+                CardsError::unknown_card().into()
+            );
+
+            update_card(
+                &mut cards,
+                &f,
+                card,
+                ICards::Status::Active,
+                U96::from(100),
+                NOW,
+            )?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 10, card).unwrap_err(),
+                CardsError::card_inactive().into()
+            );
+            update_card(
+                &mut cards,
+                &f,
+                card,
+                ICards::Status::Active,
+                U96::from(100),
+                0,
+            )?;
+            cards.set_program_tokens(
+                f.payee,
+                ICards::setProgramTokensCall {
+                    tokens: vec![Address::random()],
+                },
+            )?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 10, card).unwrap_err(),
+                CardsError::token_not_allowed().into()
+            );
+            cards.set_program_tokens(
+                f.payee,
+                ICards::setProgramTokensCall {
+                    tokens: vec![f.token.address()],
+                },
+            )?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 101, card).unwrap_err(),
+                CardsError::card_limit_exceeded().into()
+            );
+
+            let id = B256::random();
+            hold_card(&mut f, id, 100, card)?;
+            assert_eq!(f.reserved()?, 100);
+            assert_eq!(cards.get_card(f.payee, card)?.committed, U96::from(100));
+            assert!(f.reservations.emitted_events().contains(
+                &ReservationsEvent::card_hold_placed(f.owner, id, card, 1).into_log_data()
+            ));
+
+            // After a replacement only the new credential holds.
+            let next = B256::random();
+            cards.replace_card(f.payee, ICards::replaceCardCall { card, next })?;
+            f.reservations.release(f.owner, id)?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 10, card).unwrap_err(),
+                CardsError::card_inactive().into()
+            );
+            hold_card(&mut f, B256::random(), 10, next)?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_card_hold_may_pay_another_payee() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Active,
+                U96::from(100),
+            )?;
+            // The hold pays a facility that pays the card's issuer, as a savings leg does.
+            let issuer = f.payee;
+            let facility = Address::random();
+            let place = |f: &mut Fixture, issuer: Address, amount: u128| {
+                f.reservations.hold(
+                    f.owner,
+                    IReservations::holdCall {
+                        token: f.token.address(),
+                        id: B256::random(),
+                        amount,
+                        expiresAt: EXPIRY,
+                        payee: facility,
+                    },
+                    Placement::Card { issuer, card },
+                )
+            };
+            place(&mut f, issuer, 60)?;
+            assert_eq!(cards.get_card(issuer, card)?.committed, U96::from(60));
+            // The card is keyed by its issuer, never by the hold's payee.
+            assert_eq!(
+                place(&mut f, facility, 10).unwrap_err(),
+                CardsError::unknown_card().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_card_line_follows_what_its_holds_commit() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Active,
+                U96::from(100),
+            )?;
+            let payee = f.payee;
+            let committed =
+                |cards: &Cards, card| -> Result<U96> { Ok(cards.get_card(payee, card)?.committed) };
+
+            let first = B256::random();
+            hold_card(&mut f, first, 50, card)?;
+            f.adjust(first, 60)?;
+            assert_eq!(committed(&cards, card)?, U96::from(60));
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 50, card).unwrap_err(),
+                CardsError::card_limit_exceeded().into()
+            );
+            let second = B256::random();
+            hold_card(&mut f, second, 40, card)?;
+            assert_eq!(committed(&cards, card)?, U96::from(100));
+            f.reservations.release(f.owner, second)?;
+            assert_eq!(committed(&cards, card)?, U96::from(60));
+
+            // A frozen card's holds cannot grow, but they shrink, capture and refund.
+            update_card(
+                &mut cards,
+                &f,
+                card,
+                ICards::Status::Frozen,
+                U96::from(100),
+                0,
+            )?;
+            assert_eq!(
+                f.adjust(first, 61).unwrap_err(),
+                CardsError::card_inactive().into()
+            );
+            f.adjust(first, 55)?;
+            assert_eq!(committed(&cards, card)?, U96::from(55));
+            f.capture(first, 70)?;
+            assert_eq!(committed(&cards, card)?, U96::from(70));
+            f.refund(f.payee, first, 20)?;
+            assert_eq!(committed(&cards, card)?, U96::from(50));
+
+            // The replacement keeps the line's limit and what it committed.
+            let next = B256::random();
+            cards.replace_card(f.payee, ICards::replaceCardCall { card, next })?;
+            hold_card(&mut f, B256::random(), 50, next)?;
+            assert_eq!(committed(&cards, next)?, U96::from(100));
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 1, next).unwrap_err(),
+                CardsError::card_limit_exceeded().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_card_scoped_key_holds_only_through_cards() -> eyre::Result<()> {
+        at_t15(|| {
+            let f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_key_for(
+                f.owner,
+                key,
+                f.token.address(),
+                500,
+                &[
+                    IReservations::holdCardCall::SELECTOR,
+                    IReservations::captureCall::SELECTOR,
+                    IReservations::releaseCall::SELECTOR,
+                ],
+            )?;
+            let validate = |input: Vec<u8>| {
+                keychain.validate_call_scope_for_transaction(
+                    f.owner,
+                    key,
+                    &TxKind::Call(RESERVATIONS_ADDRESS),
+                    &input,
+                )
+            };
+            validate(
+                IReservations::holdCardCall {
+                    token: f.token.address(),
+                    id: B256::random(),
+                    amount: 1,
+                    expiresAt: EXPIRY,
+                    payee: f.payee,
+                    issuer: f.payee,
+                    card: B256::random(),
+                }
+                .abi_encode(),
+            )?;
+            assert_eq!(
+                validate(
+                    IReservations::holdCall {
+                        token: f.token.address(),
+                        id: B256::random(),
+                        amount: 1,
+                        expiresAt: EXPIRY,
+                        payee: f.payee,
+                    }
+                    .abi_encode()
+                )
+                .unwrap_err(),
+                AccountKeychainError::call_not_allowed().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_pre_t15_tip20_ignores_reservations() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         storage.set_timestamp(U256::from(NOW));
@@ -3033,6 +4089,730 @@ mod tests {
             })?;
             assert_eq!(f.balance(f.owner)?, U256::from(1_000));
             assert!(f.transfer(f.owner, Address::random(), 1_000)?);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_card_and_line_holds_add_no_authorization_slot() {
+        use __packing_authorization::{
+            CARD_LINE_LOC, COUNTED_LOC, LINE_LOC, SLOT_COUNT, STAND_IN_LOC,
+        };
+        assert_eq!(SLOT_COUNT, 5);
+        for loc in [STAND_IN_LOC, CARD_LINE_LOC, LINE_LOC] {
+            assert_eq!(loc.offset_slots, COUNTED_LOC.offset_slots);
+        }
+        const {
+            assert!(CARD_LINE_LOC.offset_bytes + CARD_LINE_LOC.size <= LINE_LOC.offset_bytes);
+            assert!(LINE_LOC.offset_bytes + LINE_LOC.size <= 32);
+        }
+    }
+
+    /// Has the fixture's payee issue `card` on `owner`'s account.
+    fn issue_card(
+        cards: &mut Cards,
+        f: &Fixture,
+        owner: Address,
+        card: B256,
+        status: ICards::Status,
+        limit: U96,
+    ) -> Result<()> {
+        cards.issue_card(
+            f.payee,
+            ICards::issueCardCall {
+                owner,
+                card,
+                status,
+                limit,
+                expiresAt: 0,
+                program: ICards::Program::Debit,
+                holder: B256::ZERO,
+            },
+        )
+    }
+
+    /// Has the fixture's payee set `card`'s status, limit and expiry.
+    fn update_card(
+        cards: &mut Cards,
+        f: &Fixture,
+        card: B256,
+        status: ICards::Status,
+        limit: U96,
+        expires_at: u64,
+    ) -> Result<()> {
+        cards.update_card(
+            f.payee,
+            ICards::updateCardCall {
+                card,
+                status,
+                limit,
+                expiresAt: expires_at,
+                program: ICards::Program::Debit,
+                holder: B256::ZERO,
+            },
+        )
+    }
+
+    /// Holds `amount` of the fixture's token through the owner's `card` under the fixture's payee.
+    fn hold_card(f: &mut Fixture, id: B256, amount: u128, card: B256) -> Result<()> {
+        f.reservations.hold(
+            f.owner,
+            IReservations::holdCall {
+                token: f.token.address(),
+                id,
+                amount,
+                expiresAt: EXPIRY,
+                payee: f.payee,
+            },
+            Placement::Card {
+                issuer: f.payee,
+                card,
+            },
+        )
+    }
+
+    #[test]
+    fn test_credit_line_liens_the_lender_and_pays_a_hold() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let (lender, line) = f.open_credit(5_000, 1_000)?;
+            // The undrawn limit is reserved on the lender's own balance, which still counts it.
+            assert_eq!(f.reservation_of(lender)?, (1_000, 4_000));
+            assert_eq!(f.balance(lender)?, U256::from(5_000));
+            assert_eq!(
+                f.reservations.get_line(lender, line)?,
+                IReservations::getLineReturn {
+                    token: f.token.address(),
+                    lien: 1_000
+                }
+            );
+            // The lender cannot transfer the liened part.
+            assert_eq!(
+                f.transfer(lender, Address::random(), 4_500).unwrap_err(),
+                TIP20Error::insufficient_balance(
+                    U256::from(4_000),
+                    U256::from(4_500),
+                    f.token.address()
+                )
+                .into()
+            );
+
+            let id = B256::random();
+            f.reservations.clear_emitted_events();
+            f.hold_on_line(id, 400, 400, lender, line)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::hold_placed(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    f.payee,
+                    400,
+                    EXPIRY,
+                ),
+                ReservationsEvent::credit_held(f.owner, id, lender, line, 400),
+            ]);
+            assert_eq!(f.credit(lender, line)?, (1_000, 0, 400));
+            assert_eq!(f.reserved()?, 0);
+            assert_eq!(f.reservations.get_hold(f.owner, id)?.amount, 400);
+
+            f.reservations.clear_emitted_events();
+            f.capture(id, 400)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::line_reserved(lender, line, f.token.address(), 600),
+                ReservationsEvent::credit_drawn(f.owner, id, lender, line, 400),
+                ReservationsEvent::hold_captured(f.owner, id, f.token.address(), 400, 0),
+            ]);
+            // The lender paid the payee; the owner owes the line and has no debt.
+            assert_eq!(f.balance(f.payee)?, U256::from(400));
+            assert_eq!(f.balance(lender)?, U256::from(4_600));
+            assert_eq!(f.reservation_of(lender)?, (600, 4_000));
+            assert_eq!(f.credit(lender, line)?, (1_000, 400, 0));
+            assert_eq!(f.debt()?.amount, 0);
+            // A credit to the owner does not repay the line.
+            f.mint(f.owner, 100)?;
+            assert_eq!(f.balance(f.owner)?, U256::from(100));
+            assert_eq!(f.credit(lender, line)?, (1_000, 400, 0));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_line_pays_after_the_balance_and_before_debt() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 300, 200, lender, line)?;
+            assert_eq!(f.reserved()?, 100);
+            assert_eq!(f.available()?, 0);
+            // Money arriving after the hold pays before the line.
+            f.mint(f.owner, 50)?;
+            f.capture(id, 300)?;
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
+            assert_eq!(f.credit(lender, line)?, (500, 150, 0));
+            assert_eq!(f.reservation_of(lender)?, (350, 500));
+
+            // Past the hold's line part, the rest is debt within the cap.
+            f.set_debt_cap(f.payee, 30)?;
+            let over = B256::random();
+            f.hold_on_line(over, 100, 100, lender, line)?;
+            f.reservations.clear_emitted_events();
+            f.capture(over, 130)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::line_reserved(lender, line, f.token.address(), 250),
+                ReservationsEvent::credit_drawn(f.owner, over, lender, line, 100),
+                ReservationsEvent::hold_captured(f.owner, over, f.token.address(), 130, 30),
+            ]);
+            assert_eq!(f.credit(lender, line)?, (500, 250, 0));
+            assert_eq!(f.debt()?.amount, 30);
+            assert_eq!(f.balance(f.payee)?, U256::from(400));
+
+            // A capture below the hold leaves the unused line part undrawn and the lien in place.
+            let under = B256::random();
+            f.hold_on_line(under, 200, 200, lender, line)?;
+            f.capture(under, 50)?;
+            assert_eq!(f.credit(lender, line)?, (500, 300, 0));
+            assert_eq!(f.reservation_of(lender)?, (200, 500));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_part_capture_takes_the_balance_part_first() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 300, 200, lender, line)?;
+            f.capture_part(id, 150, false)?;
+            assert_eq!(f.reserved()?, 0);
+            assert_eq!(f.credit(lender, line)?, (500, 50, 150));
+            assert_eq!(f.reservations.get_hold(f.owner, id)?.amount, 150);
+            f.capture(id, 150)?;
+            assert_eq!(f.credit(lender, line)?, (500, 200, 0));
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
+            assert_eq!(f.captured(id)?, (300, 0));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_repays_the_line_first() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 300, 200, lender, line)?;
+            f.capture(id, 300)?;
+            assert_eq!(f.credit(lender, line)?, (500, 200, 0));
+            assert_eq!(f.reservation_of(lender)?, (300, 500));
+
+            f.reservations.clear_emitted_events();
+            f.refund(f.payee, id, 50)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::line_reserved(lender, line, f.token.address(), 350),
+                ReservationsEvent::credit_repaid(f.owner, lender, line, 50),
+                ReservationsEvent::refunded(f.owner, id, 50),
+            ]);
+            // The line is repaid and its lien restored; nothing lands with the owner.
+            assert_eq!(f.credit(lender, line)?, (500, 150, 0));
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(f.balance(lender)?, U256::from(850));
+            assert_eq!(f.reservation_of(lender)?, (350, 500));
+
+            // Past what the line paid, the refund lands as balance.
+            f.refund(f.payee, id, 250)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(100));
+            assert_eq!(f.reservation_of(lender)?, (500, 500));
+            assert_eq!(f.balance(f.payee)?, U256::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_refund_repays_only_what_the_line_is_still_owed() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 200, 200, lender, line)?;
+            f.capture(id, 200)?;
+            f.mint(f.owner, 150)?;
+            f.repay_credit(lender, line, 150)?;
+            assert_eq!(f.credit(lender, line)?, (500, 50, 0));
+            f.refund(f.payee, id, 200)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(150));
+            assert_eq!(f.reservation_of(lender)?, (500, 500));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_repay_credit_from_the_available_balance() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 200, 200, lender, line)?;
+            f.capture(id, 200)?;
+            f.mint(f.owner, 300)?;
+            let held = B256::random();
+            f.hold(held, 250)?;
+            assert_eq!(
+                f.repay_credit(lender, line, 100).unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            f.reservations.release(f.owner, held)?;
+            f.reservations.clear_emitted_events();
+            // Repayment stops at what is owed.
+            f.repay_credit(lender, line, 1_000)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::line_reserved(lender, line, f.token.address(), 500),
+                ReservationsEvent::credit_repaid(f.owner, lender, line, 200),
+            ]);
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(100));
+            assert_eq!(f.reservation_of(lender)?, (500, 500));
+            // Nothing owed repays nothing.
+            f.repay_credit(lender, line, 10)?;
+            assert_eq!(f.balance(f.owner)?, U256::from(100));
+            assert_eq!(
+                f.repay_credit(lender, line, 0).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            assert_eq!(
+                f.repay_credit(lender, B256::random(), 10).unwrap_err(),
+                ReservationsError::line_not_found().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_line_holds_stay_within_the_limits() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            assert_eq!(
+                f.hold_on_line(B256::random(), 501, 501, lender, line)
+                    .unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            assert_eq!(
+                f.hold_on_line(B256::random(), 650, 500, lender, line)
+                    .unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            for part in [0, 101] {
+                assert_eq!(
+                    f.hold_on_line(B256::random(), 100, part, lender, line)
+                        .unwrap_err(),
+                    ReservationsError::invalid_amount().into()
+                );
+            }
+            assert_eq!(
+                f.hold_on_line(B256::random(), 100, 50, lender, B256::random())
+                    .unwrap_err(),
+                ReservationsError::line_not_found().into()
+            );
+            // A line in another token pays nothing in this one.
+            let other = TIP20Setup::create("Other USD", "OUSD", f.admin).apply()?;
+            let elsewhere = B256::random();
+            f.reservations.open_line(
+                lender,
+                IReservations::openLineCall {
+                    line: elsewhere,
+                    token: other.address(),
+                },
+            )?;
+            assert_eq!(
+                f.hold_on_line(B256::random(), 100, 50, lender, elsewhere)
+                    .unwrap_err(),
+                ReservationsError::line_not_found().into()
+            );
+            // The lender agreed to pay only its payee.
+            assert_eq!(
+                f.reservations
+                    .hold(
+                        f.owner,
+                        IReservations::holdCall {
+                            token: f.token.address(),
+                            id: B256::random(),
+                            amount: 100,
+                            expiresAt: EXPIRY,
+                            payee: Address::random(),
+                        },
+                        Placement::Line {
+                            part: 50,
+                            line,
+                            lender,
+                        },
+                    )
+                    .unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            // Holds share the line: the second gets only what the first left.
+            f.hold_on_line(B256::random(), 400, 400, lender, line)?;
+            assert_eq!(
+                f.hold_on_line(B256::random(), 101, 101, lender, line)
+                    .unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            f.hold_on_line(B256::random(), 100, 100, lender, line)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 500));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_grant_needs_the_lenders_offer() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let lender = Address::random();
+            let line = B256::random();
+            f.mint(lender, 1_000)?;
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 100).unwrap_err(),
+                ReservationsError::line_not_found().into()
+            );
+            let open = IReservations::openLineCall {
+                line,
+                token: f.token.address(),
+            };
+            f.reservations.open_line(lender, open.clone())?;
+            assert_eq!(
+                f.reservations.open_line(lender, open).unwrap_err(),
+                ReservationsError::line_exists().into()
+            );
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 100).unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            f.offer_credit(lender, line, f.payee, 300)?;
+            assert_eq!(
+                f.reservations.credit_offer(lender, line, f.owner)?,
+                IReservations::creditOfferReturn {
+                    payee: f.payee,
+                    limit: 300
+                }
+            );
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 301).unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            assert_eq!(
+                f.grant_credit(lender, line, Address::random(), 100)
+                    .unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            // The lender's offer does not let anyone else borrow on it.
+            assert_eq!(
+                f.reservations
+                    .grant_credit(
+                        Address::random(),
+                        IReservations::grantCreditCall {
+                            line,
+                            lender,
+                            payee: f.payee,
+                            limit: 100,
+                        },
+                    )
+                    .unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            assert_eq!(
+                f.reservations
+                    .grant_credit(
+                        lender,
+                        IReservations::grantCreditCall {
+                            line,
+                            lender,
+                            payee: f.payee,
+                            limit: 100,
+                        },
+                    )
+                    .unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            // Only the owner's root key accepts credit.
+            let key = Address::random();
+            authorize_card_key(f.owner, key, f.token.address(), 1_000)?;
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 100).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            AccountKeychain::new().set_transaction_key(Address::ZERO)?;
+            f.grant_credit(lender, line, f.payee, 300)?;
+            assert_eq!(f.credit(lender, line)?, (300, 0, 0));
+            assert_eq!(f.reservation_of(lender)?, (300, 700));
+            // The owner may lower its own limit without a new offer, never raise it.
+            f.offer_credit(lender, line, f.payee, 0)?;
+            assert_eq!(f.credit(lender, line)?, (0, 0, 0));
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 1).unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            f.grant_credit(lender, line, f.payee, 0)?;
+            // A grant past what the lender has available reverts.
+            f.offer_credit(lender, line, f.payee, 2_000)?;
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 1_001).unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            f.grant_credit(lender, line, f.payee, 1_000)?;
+            assert_eq!(f.reservation_of(lender)?, (1_000, 0));
+            // Acceptance consumes the offer: raising again needs a fresh one.
+            assert_eq!(
+                f.reservations.credit_offer(lender, line, f.owner)?,
+                IReservations::creditOfferReturn {
+                    payee: Address::ZERO,
+                    limit: 0
+                }
+            );
+            f.mint(lender, 1_000)?;
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 1_500).unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_offer_credit_requires_the_lenders_root_key() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let lender = Address::random();
+            let line = B256::random();
+            assert_eq!(
+                f.offer_credit(lender, line, f.payee, 100).unwrap_err(),
+                ReservationsError::line_not_found().into()
+            );
+            f.reservations.open_line(
+                lender,
+                IReservations::openLineCall {
+                    line,
+                    token: f.token.address(),
+                },
+            )?;
+            assert_eq!(
+                f.reservations
+                    .offer_credit(
+                        lender,
+                        IReservations::offerCreditCall {
+                            line,
+                            owner: lender,
+                            payee: f.payee,
+                            limit: 100,
+                        },
+                    )
+                    .unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            authorize_card_key(lender, Address::random(), f.token.address(), 1_000)?;
+            assert_eq!(
+                f.offer_credit(lender, line, f.payee, 100).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_lowering_a_limit_keeps_open_holds_funded() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let first = B256::random();
+            let second = B256::random();
+            f.hold_on_line(first, 200, 200, lender, line)?;
+            f.hold_on_line(second, 100, 100, lender, line)?;
+            // The lender cuts the line to 50: open holds keep their 300 reserved.
+            f.reservations.clear_emitted_events();
+            f.offer_credit(lender, line, f.payee, 50)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::credit_offered(lender, line, f.owner, f.payee, 50),
+                ReservationsEvent::line_reserved(lender, line, f.token.address(), 300),
+                ReservationsEvent::credit_granted(f.owner, lender, line, f.payee, 50),
+            ]);
+            assert_eq!(f.credit(lender, line)?, (50, 0, 300));
+            assert_eq!(f.reservation_of(lender)?, (300, 700));
+            assert_eq!(
+                f.hold_on_line(B256::random(), 1, 1, lender, line)
+                    .unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            // A capture still draws in full; the rest of the lien goes back as holds settle.
+            f.capture(first, 200)?;
+            assert_eq!(f.credit(lender, line)?, (50, 200, 100));
+            assert_eq!(f.reservation_of(lender)?, (100, 700));
+            f.reservations.release(f.owner, second)?;
+            assert_eq!(f.credit(lender, line)?, (50, 200, 0));
+            assert_eq!(f.reservation_of(lender)?, (0, 800));
+            // Repayments below the limit restore its undrawn part only.
+            f.mint(f.owner, 200)?;
+            f.repay_credit(lender, line, 180)?;
+            assert_eq!(f.credit(lender, line)?, (50, 20, 0));
+            assert_eq!(f.reservation_of(lender)?, (30, 950));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_adjust_moves_a_line_hold_after_the_balance() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 150, 100, lender, line)?;
+            assert_eq!(f.reserved()?, 50);
+            f.reservations.clear_emitted_events();
+            // An increase takes the free balance first, then the line.
+            f.adjust(id, 250)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::hold_adjusted(f.owner, id, f.token.address(), 250),
+                ReservationsEvent::credit_held(f.owner, id, lender, line, 150),
+            ]);
+            assert_eq!(f.reserved()?, 100);
+            assert_eq!(f.credit(lender, line)?, (500, 0, 150));
+            assert_eq!(
+                f.adjust(id, 601).unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            // A decrease comes off the line first.
+            f.adjust(id, 120)?;
+            assert_eq!(f.reserved()?, 100);
+            assert_eq!(f.credit(lender, line)?, (500, 0, 20));
+            f.adjust(id, 60)?;
+            assert_eq!(f.reserved()?, 60);
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            f.reservations.release(f.owner, id)?;
+            assert_eq!(f.reserved()?, 0);
+            assert_eq!(f.reservation_of(lender)?, (500, 500));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_line_holds_count_against_the_mandate_limit() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let key = Address::random();
+            let keychain = authorize_card_key(f.owner, key, f.token.address(), 500)?;
+            let remaining = remaining_limit(&keychain, f.owner, key, f.token.address());
+            let id = B256::random();
+            f.hold_on_line(id, 400, 300, lender, line)?;
+            assert_eq!(remaining()?, U256::from(100));
+            f.capture(id, 400)?;
+            assert_eq!(remaining()?, U256::from(100));
+            // A refund gives back the line's part as well, once it repaid the line.
+            f.refund(f.payee, id, 400)?;
+            assert_eq!(remaining()?, U256::from(500));
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(100));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_payee_captures_a_line_hold() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 200, 200, lender, line)?;
+            assert_eq!(
+                f.capture_for(f.payee, id, 201).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            f.capture_for(f.payee, id, 200)?;
+            assert_eq!(f.credit(lender, line)?, (500, 200, 0));
+            assert_eq!(f.balance(f.payee)?, U256::from(200));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_expired_line_hold_releases_the_line() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 200, 200, lender, line)?;
+            StorageCtx.set_timestamp(U256::from(EXPIRY));
+            f.reservations.release_expired(f.owner, id)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.reservation_of(lender)?, (500, 500));
+            // The id is free again, and a plain hold under it never reads the old line part.
+            f.mint(f.owner, 50)?;
+            f.hold_until(id, 50, EXPIRY + 10)?;
+            f.capture(id, 50)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_grant_consumes_the_offer() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let lender = Address::random();
+            let line = B256::random();
+            f.mint(lender, 1_000)?;
+            f.reservations.open_line(
+                lender,
+                IReservations::openLineCall {
+                    line,
+                    token: f.token.address(),
+                },
+            )?;
+            f.offer_credit(lender, line, f.payee, 300)?;
+            f.grant_credit(lender, line, f.payee, 200)?;
+            // The rest of the offer is gone once accepted.
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 300).unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            // Once the lender lowers the line, the owner cannot restore it alone.
+            f.offer_credit(lender, line, f.payee, 50)?;
+            assert_eq!(f.credit(lender, line)?, (50, 0, 0));
+            assert_eq!(f.reservation_of(lender)?, (50, 950));
+            assert_eq!(
+                f.grant_credit(lender, line, f.payee, 200).unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            // Re-granting the current limit needs no offer; a payee change needs one.
+            f.grant_credit(lender, line, f.payee, 50)?;
+            assert_eq!(
+                f.grant_credit(lender, line, Address::random(), 50)
+                    .unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            // A line bound to its payee funds no hold for another.
+            assert_eq!(
+                f.reservations
+                    .hold(
+                        f.owner,
+                        IReservations::holdCall {
+                            token: f.token.address(),
+                            id: B256::random(),
+                            amount: 10,
+                            expiresAt: EXPIRY,
+                            payee: Address::random(),
+                        },
+                        Placement::Line {
+                            part: 10,
+                            line,
+                            lender,
+                        },
+                    )
+                    .unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
             Ok(())
         })
     }
@@ -3073,19 +4853,36 @@ mod tests {
         token: Address,
         limit: u64,
     ) -> Result<AccountKeychain> {
+        authorize_key_for(
+            account,
+            key,
+            token,
+            limit,
+            &[
+                IReservations::holdCall::SELECTOR,
+                IReservations::holdStandInCall::SELECTOR,
+                IReservations::adjustCall::SELECTOR,
+                IReservations::captureCall::SELECTOR,
+                IReservations::capturePartCall::SELECTOR,
+                IReservations::chargeCall::SELECTOR,
+                IReservations::chargeStandInCall::SELECTOR,
+                IReservations::releaseCall::SELECTOR,
+            ],
+        )
+    }
+
+    /// Authorizes an access key on `account` with a `limit` on `token`, scoped to `selectors` of
+    /// the reservations precompile, and makes it sign the current transaction.
+    fn authorize_key_for(
+        account: Address,
+        key: Address,
+        token: Address,
+        limit: u64,
+        selectors: &[[u8; 4]],
+    ) -> Result<AccountKeychain> {
         let mut keychain = AccountKeychain::new();
         keychain.initialize()?;
         keychain.set_tx_origin(account)?;
-        let selectors = [
-            IReservations::holdCall::SELECTOR,
-            IReservations::holdStandInCall::SELECTOR,
-            IReservations::adjustCall::SELECTOR,
-            IReservations::captureCall::SELECTOR,
-            IReservations::capturePartCall::SELECTOR,
-            IReservations::chargeCall::SELECTOR,
-            IReservations::chargeStandInCall::SELECTOR,
-            IReservations::releaseCall::SELECTOR,
-        ];
         keychain.authorize_key(
             account,
             key,
@@ -3102,9 +4899,9 @@ mod tests {
                 allowedCalls: vec![IAccountKeychain::CallScope {
                     target: RESERVATIONS_ADDRESS,
                     selectorRules: selectors
-                        .into_iter()
+                        .iter()
                         .map(|selector| IAccountKeychain::SelectorRule {
-                            selector: selector.into(),
+                            selector: (*selector).into(),
                             recipients: vec![],
                         })
                         .collect(),
