@@ -419,7 +419,7 @@ impl<'a> TempoBlockExecutor<'a> {
     /// Installs shared Zone runtimes without modifying their existing storage.
     fn install_zone_runtimes(
         &mut self,
-        runtimes: impl IntoIterator<Item = InitialZoneFactoryAccount>,
+        runtimes: [InitialZoneFactoryAccount; 3],
     ) -> Result<(), BlockExecutionError> {
         let mut state = PendingState::default();
         for runtime in runtimes {
