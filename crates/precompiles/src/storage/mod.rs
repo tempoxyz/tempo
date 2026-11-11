@@ -350,3 +350,76 @@ pub fn account_config_commitment(info: &AccountInfo, hardfork: TempoHardfork) ->
     decode_config_commitment(&info.extension, hardfork)
         .map_err(|err| TempoPrecompileError::Fatal(err.to_string()))
 }
+
+/// Overlapping `#[contract]` storage layouts fail to compile.
+///
+/// Two fields in the same slot:
+///
+/// ```compile_fail,E0080
+/// # use alloy::primitives::U256;
+/// # use tempo_precompiles_macros::contract;
+/// # mod storage { pub use tempo_precompiles::storage::*; }
+/// # use tempo_precompiles::error;
+/// # fn main() {}
+/// #[contract]
+/// pub struct Layout {
+///     #[slot(5)]
+///     field_a: U256,
+///     #[slot(5)]
+///     field_b: U256,
+/// }
+/// ```
+///
+/// A manual slot inside a multi-slot field:
+///
+/// ```compile_fail,E0080
+/// # use alloy::primitives::U256;
+/// # use tempo_precompiles_macros::contract;
+/// # mod storage { pub use tempo_precompiles::storage::*; }
+/// # use tempo_precompiles::error;
+/// # fn main() {}
+/// #[contract]
+/// pub struct Layout {
+///     #[slot(5)]
+///     large_field: [U256; 3], // slots 5, 6, 7
+///     #[slot(6)]
+///     colliding_field: U256,
+/// }
+/// ```
+///
+/// A manual slot inside an auto-assigned multi-slot field:
+///
+/// ```compile_fail,E0080
+/// # use alloy::primitives::U256;
+/// # use tempo_precompiles_macros::contract;
+/// # mod storage { pub use tempo_precompiles::storage::*; }
+/// # use tempo_precompiles::error;
+/// # fn main() {}
+/// #[contract]
+/// pub struct Layout {
+///     large_field: [U256; 3], // slots 0, 1, 2
+///     #[slot(2)]
+///     colliding_field: U256,
+/// }
+/// ```
+///
+/// A base slot that overlaps packed auto-assigned fields:
+///
+/// ```compile_fail,E0080
+/// # use alloy::primitives::U256;
+/// # use tempo_precompiles_macros::contract;
+/// # mod storage { pub use tempo_precompiles::storage::*; }
+/// # use tempo_precompiles::error;
+/// # fn main() {}
+/// #[contract]
+/// pub struct Layout {
+///     a: u128, // slot 0, offset 0
+///     b: u128, // slot 0, offset 16
+///     c: u128, // slot 1, offset 0
+///     #[base_slot(1)]
+///     d: u128, // slot 1, offset 0
+///     e: u128,
+/// }
+/// ```
+#[cfg(doctest)]
+mod layout_collisions {}
