@@ -1,9 +1,8 @@
-//! Random writes and `eth_getMultiProof` targets, biased towards shared hashed-key prefixes.
+//! Random writes, biased towards shared hashed-key prefixes.
 //!
 //! Uniform keys rarely share more than a few leading nibbles, so the tries stay shallow. Collision
-//! groups from `antithesis-trie-shapes`, shared with reth-state-root, build deep branches and
-//! extensions and later grow, collapse and rewrite them; grinding neighbours of existing keys
-//! requests exclusion proofs that diverge inside them.
+//! groups from `antithesis-trie-shapes` build deep branches and extensions and later grow, collapse
+//! and rewrite them; new keys drawn near existing ones deepen the tries inside them.
 
 use crate::model::{collide, collide_next, random_address, random_slot, Model, Update};
 use alloy_primitives::{Address, U256};
