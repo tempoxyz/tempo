@@ -1133,7 +1133,7 @@ mod tests {
         let blocked_at = 1_728_000u64;
         let to = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
 
-        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             storage.set_timestamp(U256::from(blocked_at));
 
@@ -1164,7 +1164,7 @@ mod tests {
                 );
                 let mut guard = ReceivePolicyGuard::new();
                 let result = guard.claim(originator, to, receipt.abi_encode().into());
-                let expected: TempoPrecompileError = if spec.is_t14() {
+                let expected: TempoPrecompileError = if spec.is_t15() {
                     ReceivePolicyGuardError::invalid_claim_address().into()
                 } else {
                     AddrRegistryError::virtual_address_unregistered().into()

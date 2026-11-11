@@ -1435,7 +1435,7 @@ impl TIP20Token {
         let destination = match Recipient::resolve(to) {
             Err(TempoPrecompileError::AddrRegistryError(
                 AddrRegistryError::VirtualAddressUnregistered(_),
-            )) if self.storage.spec().is_t14() => {
+            )) if self.storage.spec().is_t15() => {
                 return Err(ReceivePolicyGuardError::invalid_claim_address().into());
             }
             result => result?,
