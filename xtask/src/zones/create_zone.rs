@@ -117,8 +117,9 @@ pub(crate) struct CreateZone {
     safe_output: Option<PathBuf>,
 
     /// Hash of an already executed createZone transaction, such as the Safe execution of a
-    /// --safe-address proposal. Verifies its ZoneCreated event against the other arguments and
-    /// writes genesis.json and zone.json without sending a transaction.
+    /// --safe-address proposal. Verifies its ZoneCreated event and the created portal's RPC URL,
+    /// allowed accounts and zone gateways against the other arguments, and writes genesis.json
+    /// and zone.json without sending a transaction.
     #[arg(long, value_name = "TX_HASH")]
     creation_tx: Option<TxHash>,
 
@@ -438,6 +439,55 @@ impl CreateZone {
         Ok(())
     }
 
+    /// Checks the creation-block portal state that ZoneCreated does not report: the RPC URL
+    /// and the role of every requested allowed account and zone gateway.
+    async fn ensure_requested_portal_state<P: Provider<TempoNetwork>>(
+        &self,
+        portal: &ZonePortal::ZonePortalInstance<P, TempoNetwork>,
+        block: BlockId,
+    ) -> eyre::Result<()> {
+        let mut mismatches = Vec::new();
+        let rpc_url = portal
+            .rpcUrl()
+            .block(block)
+            .call()
+            .await
+            .wrap_err("failed reading portal RPC URL")?;
+        if rpc_url != self.rpc_url {
+            mismatches.push(format!("RPC URL {rpc_url:?} (expected {:?})", self.rpc_url));
+        }
+        for (accounts, role, name) in [
+            (
+                &self.allowed_accounts,
+                ZonePortal::Role::Account,
+                "allowed account",
+            ),
+            (
+                &self.zone_gateways,
+                ZonePortal::Role::CallbackGateway,
+                "zone gateway",
+            ),
+        ] {
+            for account in accounts {
+                let has_role = portal
+                    .hasRole(*account, role)
+                    .block(block)
+                    .call()
+                    .await
+                    .wrap_err_with(|| format!("failed reading portal role of {account}"))?;
+                if !has_role {
+                    mismatches.push(format!("{name} {account} is missing its role"));
+                }
+            }
+        }
+        ensure!(
+            mismatches.is_empty(),
+            "portal reports {}",
+            mismatches.join(", ")
+        );
+        Ok(())
+    }
+
     pub(crate) async fn run(self) -> eyre::Result<()> {
         let leader = self.validate_sequencer_set()?;
 
@@ -501,6 +551,14 @@ impl CreateZone {
 
         let portal_contract = ZonePortal::new(portal, &provider);
         let creation_block_id = BlockId::number(creation_block);
+        self.ensure_requested_portal_state(&portal_contract, creation_block_id)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "transaction {} did not create the requested zone",
+                    receipt.transaction_hash
+                )
+            })?;
         let sequencer_set_version = portal_contract
             .sequencerSetVersion()
             .block(creation_block_id)
@@ -657,7 +715,10 @@ fn shell_quote(arg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::address;
+    use alloy::{
+        primitives::{Bytes, address},
+        providers::mock::Asserter,
+    };
     use clap::Parser;
 
     fn test_command() -> CreateZone {
@@ -809,6 +870,45 @@ mod tests {
         let mut event = created_event(&command);
         event.sequencers.reverse();
         assert!(command.ensure_requested_zone(&event).is_err());
+    }
+
+    #[tokio::test]
+    async fn created_portal_must_match_the_requested_accounts_gateways_and_rpc_url() {
+        let mut command = test_command();
+        command.allowed_accounts = vec![address!("0x8000000000000000000000000000000000000008")];
+        command.zone_gateways = vec![address!("0x9000000000000000000000000000000000000009")];
+        command.rpc_url = "https://zone.example".to_owned();
+
+        let check = async |rpc_url: &str, roles: [bool; 2]| {
+            let asserter = Asserter::new();
+            asserter.push_success(&Bytes::from(ZonePortal::rpcUrlCall::abi_encode_returns(
+                &rpc_url.to_owned(),
+            )));
+            for role in roles {
+                asserter.push_success(&Bytes::from(ZonePortal::hasRoleCall::abi_encode_returns(
+                    &role,
+                )));
+            }
+            let provider =
+                ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+            let portal = ZonePortal::new(Address::ZERO, &provider);
+            command
+                .ensure_requested_portal_state(&portal, BlockId::number(1))
+                .await
+        };
+
+        check("https://zone.example", [true, true]).await.unwrap();
+
+        let message = check("https://other.example", [false, false])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            "portal reports RPC URL \"https://other.example\" (expected \"https://zone.example\"), \
+             allowed account 0x8000000000000000000000000000000000000008 is missing its role, \
+             zone gateway 0x9000000000000000000000000000000000000009 is missing its role"
+        );
     }
 
     #[test]
