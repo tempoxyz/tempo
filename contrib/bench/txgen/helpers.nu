@@ -1302,6 +1302,13 @@ def txgen-after-vault [steps: list<any>, vault_setup: list<any>] {
     }
 }
 
+# The prepare_user step that funds users [0, end): it mints each user's pathUSD. All prepare_user
+# steps send from users[0] in one ordered nonce lane, so once the last one lands every earlier one
+# has, and a step that waits for it waits for the whole slice without one dependency per user.
+def txgen-after-user-funding [users: list<any>, end: int] {
+    $users | get ($end - 1) | get id
+}
+
 # A deployment-shapes file passed inline in TXGEN_NEOBANK_SHAPES_GZ_B64 (gzip, then base64), such as
 # one compiled outside this repository and sent through bench-env, written to output_dir. Null when
 # unset.
@@ -1411,9 +1418,13 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
         let treasury_end = ([$range.1 ($range.0 + $TXGEN_HELPER_BATCH_TREASURY_SIZE)] | math min)
         let keychain = if ($families | any { |entry| $entry.template | str starts-with "keychain_" }) {
             let keys = ($range | each { |user| $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START + $user | into string })
+            # Authorizing a key reserves its whole gas limit in pathUSD from the user, more than state
+            # bloat leaves users past the genesis accounts: wait for prepare_user to mint their balance.
+            let funded = (txgen-after-user-funding $users $range.1)
             [(txgen-neobank-instance-text $keychain_step $instance $index
                 | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_START}' $keys.0
-                | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_END}' $keys.1)]
+                | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_END}' $keys.1
+                | str replace --regex '(?m)^(    - id: .+)$' ('${1}' + (char nl) + $'      depends_on: [($funded)]'))]
         } else { [] }
         {
             accounts: {
@@ -1559,7 +1570,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let keychain_setup = if ($spec.mix | any { |entry| ($entry | get -o template | default "") | str starts-with "keychain_" }) {
         let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join access-key-mix.yml) | complete)
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
-        $result.stdout | from json
+        $result.stdout | from json | each { |step| $step | upsert depends_on [(txgen-after-user-funding $users $accounts)] }
     } else { [] }
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup) $vault_setup))},
