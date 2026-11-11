@@ -237,6 +237,8 @@ jobs:
 
       - name: Validate probe compose setup with snouty
         timeout-minutes: 5
+        env:
+          SNOUTY_CONTAINER_ENGINE: docker
         run: |
           set -euo pipefail
           tools_dir="$RUNNER_TEMP/guidance-probe-snouty"
