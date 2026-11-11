@@ -31,3 +31,20 @@ kills), which leaves restart recovery unexercised: "Restart recovers persisted b
 locally with `ANTITHESIS_TRIE_SOCKET=/tmp/trie.sock` set for both the server and the commands.
 
 The zones workload drivers live in `xtask/zones-antithesis`, also built uninstrumented; see [`zones/README.md`](zones/README.md).
+
+## Sparse branch tuple guidance
+
+The reth workload image instruments the pinned Reth dependency at dirty-branch RLP
+encoding with `sometimes_each!(branch_path_len, is_root, state_mask, revealed_mask,
+leaf_mask)`. The tuple is measured from the runtime arena, not the model's sorted
+keys. `branch_path_len` includes the branch's short key; `is_root` means that logical
+path is empty. Child masks use nibble positions: state is occupied, revealed is
+arena-backed, and leaf is a revealed leaf (including a lower-subtrie leaf root).
+
+The build-only patch is source-hash checked and adds no Cargo dependencies or changes
+to normal Tempo builds. A primitive C-ABI callback in the workload forwards every
+observation to SDK 0.3.0 JSON guidance under one stable identity. The macro is an
+experimental local approximation, not an official SDK assertion: packet delivery
+alone does not establish per-value scheduling. No deduplication or sampling is
+applied; output volume remains a known risk from earlier runs. CI checks actual
+runtime guidance before publishing the paired config image.

@@ -13,6 +13,8 @@
 !xtask/**
 !contrib/antithesis/reth-state-root/Cargo.toml
 !contrib/antithesis/reth-state-root/src/**
+!contrib/antithesis/reth-state-root/patch-sparse-trie.py
+!contrib/antithesis/reth-state-root/sparse-branch.patch
 !contrib/antithesis/reth-state-root/test/**
 !contrib/antithesis/trie-shapes/Cargo.toml
 !contrib/antithesis/trie-shapes/src/**

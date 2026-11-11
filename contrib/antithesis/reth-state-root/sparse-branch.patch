@@ -1,0 +1,63 @@
+--- a/crates/trie/sparse/src/arena/mod.rs
++++ b/crates/trie/sparse/src/arena/mod.rs
+@@ -1,3 +1,28 @@
++// Docker-only exploration hook; normal Reth builds do not contain this macro.
++macro_rules! sometimes_each {
++    ($branch_path_len:expr, $is_root:expr, $state_mask:expr, $revealed_mask:expr, $leaf_mask:expr) => {{
++        unsafe extern "C" {
++            fn antithesis_sparse_branch_shape(
++                branch_path_len: usize,
++                is_root: bool,
++                state_mask: u16,
++                revealed_mask: u16,
++                leaf_mask: u16,
++            );
++        }
++        // SAFETY: the workload exports this exact primitive-only C ABI signature.
++        unsafe {
++            antithesis_sparse_branch_shape(
++                $branch_path_len,
++                $is_root,
++                $state_mask,
++                $revealed_mask,
++                $leaf_mask,
++            );
++        }
++    }};
++}
++
+ mod branch_child_idx;
+ mod cursor;
+ mod node_arena;
+@@ -1109,6 +1134,31 @@
+ 
+             rlp_buf.clear();
+             let rlp_node = BranchNodeRef::new(rlp_node_buf, state_mask).rlp(rlp_buf);
++
++            {
++                // Observe live arena handles, not model keys or persistence hash/tree masks.
++                let branch = arena[head_idx].branch_ref();
++                let mut revealed_mask = TrieMask::default();
++                let mut leaf_mask = TrieMask::default();
++                for (nibble, child) in branch.child_iter() {
++                    if let Some(child_idx) = child.revealed_index() {
++                        revealed_mask.set_bit(nibble);
++                        let mut node = &arena[child_idx];
++                        while let ArenaSparseNode::Subtrie(subtrie) = node {
++                            node = &subtrie.arena[subtrie.root];
++                        }
++                        if matches!(node, ArenaSparseNode::Leaf { .. }) {
++                            leaf_mask.set_bit(nibble);
++                        }
++                    }
++                }
++                let branch_path_len = cursor.head_logical_branch_path_len(arena);
++                let is_root = branch_path_len == 0;
++                let state_mask = branch.state_mask.get();
++                let revealed_mask = revealed_mask.get();
++                let leaf_mask = leaf_mask.get();
++                sometimes_each!(branch_path_len, is_root, state_mask, revealed_mask, leaf_mask);
++            }
+ 
+             let rlp_node = if short_key.is_empty() {
+                 rlp_node

@@ -49,6 +49,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test pinned sparse dependency patch guards
+        run: python3 -B contrib/antithesis/reth-state-root/test_patch_sparse_trie.py
+
       - name: Resolve tags
         id: tags
         env:
@@ -83,6 +86,72 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.image_tags }}
+
+      - name: Smoke-test runtime guidance from the immutable workload
+        timeout-minutes: 7
+        env:
+          DIGEST: ${{ inputs.workload_digest || steps.image.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          image="$REGISTRY/tempo-reth-state-root-antithesis@$DIGEST"
+          docker pull "$image"
+          smoke="$RUNNER_TEMP/reth-state-root-smoke"
+          mkdir -p "$smoke"
+          container="reth-state-root-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          # A finite server round still needs driver requests to build and retire its blocks.
+          timeout --signal=TERM --kill-after=15s 300s docker run --rm --init \
+            --name "$container" --network none \
+            --mount "type=bind,src=$smoke,dst=/smoke" \
+            -e ANTITHESIS_SDK_LOCAL_OUTPUT=/smoke/guidance.jsonl \
+            -e SMOKE_CONFIG='{"rounds":1,"blocks":8,"updates":64,"accounts":64,"datadir":"/tmp/state","timeout_secs":30}' \
+            --entrypoint /bin/bash "$image" -ceu '
+              reth-state-root-antithesis serve "$SMOKE_CONFIG" &
+              server=$!
+              trap "kill $server 2>/dev/null || true" EXIT
+              # Keep command-process catalogue events out of the server-only SDK output.
+              env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands first_genesis
+              for _ in {1..8}; do
+                env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands parallel_driver_blocks
+              done
+              wait "$server"
+            '
+          python3 - "$smoke/guidance.jsonl" <<'PYTHON'
+          import json
+          import sys
+
+          fields = {"branch_path_len", "is_root", "state_mask", "revealed_mask", "leaf_mask"}
+          tuples = 0
+          setup = False
+          completed = False
+          with open(sys.argv[1], encoding="utf-8") as events:
+              for line in events:
+                  event = json.loads(line)
+                  setup |= event.get("antithesis_setup", {}).get("status") == "complete"
+                  assertion = event.get("antithesis_assert", {})
+                  if assertion.get("hit"):
+                      if assertion.get("assert_type") == "always":
+                          assert assertion["condition"], assertion
+                      if assertion.get("message") == "Trie workload completes a round":
+                          completed |= assertion.get("condition", False)
+                  guidance = event.get("antithesis_guidance", {})
+                  if guidance.get("message") != "Sparse trie branch shape" or not guidance.get("hit"):
+                      continue
+                  assert guidance.get("guidance_type") == "json" and guidance.get("maximize") is False, guidance
+                  data = guidance["guidance_data"]
+                  assert isinstance(data, dict) and set(data) == fields, data
+                  length = data["branch_path_len"]
+                  assert type(length) is int and 0 <= length < 64, data
+                  assert type(data["is_root"]) is bool and data["is_root"] == (length == 0), data
+                  for mask in ("state_mask", "revealed_mask", "leaf_mask"):
+                      assert type(data[mask]) is int and 0 <= data[mask] <= 0xffff, data
+                  assert data["revealed_mask"] & ~data["state_mask"] == 0, data
+                  assert data["leaf_mask"] & ~data["revealed_mask"] == 0, data
+                  tuples += 1
+          assert setup and completed, "Workload did not complete setup and a verified round"
+          assert tuples > 0, "No runtime sparse-trie branch tuples in the workload image"
+          print(f"Verified {tuples} runtime sparse-trie branch tuples from the immutable workload")
+          PYTHON
 
       - name: Prepare digest-paired configuration
         env:
@@ -123,4 +192,4 @@ jobs:
             echo "Tag: \`$TAG\`"
             echo "Workload: \`$REGISTRY/tempo-reth-state-root-antithesis@$IMAGE_DIGEST\`"
             echo "Config: \`$REGISTRY/tempo-reth-state-root-antithesis-config@$CONFIG_DIGEST\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
