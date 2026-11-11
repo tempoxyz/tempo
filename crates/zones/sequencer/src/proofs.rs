@@ -112,19 +112,33 @@ impl ProofCollectorHandle {
 
     /// Persist a received witness without recollecting it. The caller must bind its metadata
     /// to the imported block; this does not validate witness contents or completeness.
-    pub async fn persist_received(&self, proof: StoredBlockProof) -> Result<()> {
-        proof.validate()?;
-        let (response, result) = oneshot::channel();
-        self.requests
-            .send(ProofRequest::Persist {
-                proof: Box::new(proof),
-                response,
-            })
-            .await
-            .context("proof collector stopped")?;
-        result
-            .await
-            .context("proof collector stopped before persistence")?
+    ///
+    /// As in [`Self::collect_for_import`], a failure before T15 (by the block's `timestamp`) is
+    /// logged and counted instead of returned.
+    pub async fn persist_received(&self, proof: StoredBlockProof, timestamp: u64) -> Result<()> {
+        let (number, hash) = (proof.witness.block_number, proof.witness.block_hash);
+        let result = async {
+            proof.validate()?;
+            let (response, result) = oneshot::channel();
+            self.requests
+                .send(ProofRequest::Persist {
+                    proof: Box::new(proof),
+                    response,
+                })
+                .await
+                .context("proof collector stopped")?;
+            result
+                .await
+                .context("proof collector stopped before persistence")?
+        }
+        .await;
+        match result {
+            Err(error) if !self.witness_mandatory(timestamp) => {
+                skip_optional_witness(number, hash, &error);
+                Ok(())
+            }
+            result => result,
+        }
     }
 
     /// Collect an executed block's witness before it becomes canonical.
@@ -147,14 +161,7 @@ impl ProofCollectorHandle {
             Ok(Err(error)) => error,
             Err(elapsed) => eyre::Report::new(elapsed),
         };
-        metrics::counter!("zone_witness_collection_skipped_total").increment(1);
-        warn!(
-            target: "zone::sequencer::proofs",
-            number,
-            %hash,
-            error = ?error,
-            "Importing Zone block without a witness; its batch can only settle with NoProof"
-        );
+        skip_optional_witness(number, hash, &error);
         Ok(())
     }
 
@@ -644,6 +651,18 @@ enum ProofRequest {
         proof: Box<StoredBlockProof>,
         response: oneshot::Sender<Result<()>>,
     },
+}
+
+/// Records a pre-T15 block imported without its witness.
+fn skip_optional_witness(number: u64, hash: B256, error: &eyre::Report) {
+    metrics::counter!("zone_witness_collection_skipped_total").increment(1);
+    warn!(
+        target: "zone::sequencer::proofs",
+        number,
+        %hash,
+        error = ?error,
+        "Importing Zone block without a witness; its batch can only settle with NoProof"
+    );
 }
 
 fn sync_directory(directory: &Path) -> Result<()> {
