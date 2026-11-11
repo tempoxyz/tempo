@@ -1483,5 +1483,6 @@ mod tests {
             !watchdog.join().unwrap(),
             "the coordinator waited for a worker that another build keeps busy"
         );
+        drop(executor);
     }
 }
