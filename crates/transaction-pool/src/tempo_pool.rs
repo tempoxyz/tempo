@@ -14,7 +14,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, Entry, HashMap},
+    map::{AddressMap, AddressSet, B256Set, Entry, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -663,15 +663,25 @@ where
         }
     }
 
-    /// Removes held transactions whose nonce the committed `state` used, notifying listeners,
-    /// and returns them. Both live pools drop such transactions in the same block.
+    /// Removes held transactions whose nonce the committed `state` used and returns them. Both
+    /// live pools drop such transactions in the same block.
+    ///
+    /// Listeners see the ones in `mined`, the block's transaction hashes, as mined through
+    /// reth's canonical update, so only the others are notified as discarded.
     pub(crate) fn remove_consumed_delayed_transactions(
         &self,
         state: &AddressMap<BundleAccount>,
+        mined: &B256Set,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
-        let held = self.delayed_pool.write().remove_consumed(state);
-        self.notify_held_removed(&mut removed, held);
+        let (included, discarded) = self
+            .delayed_pool
+            .write()
+            .remove_consumed(state)
+            .into_iter()
+            .partition(|tx| mined.contains(tx.hash()));
+        self.notify_held_removed(&mut removed, discarded);
+        removed.extend(included);
         removed
     }
 
@@ -1996,7 +2006,9 @@ mod tests {
     };
 
     use crate::delayed_pool;
+    use reth_evm::cached::AccountInfo;
     use reth_transaction_pool::{TransactionEvent, TransactionListenerKind};
+    use reth_trie_common::bundle_state::AccountStatus;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
     use tempo_primitives::TempoTxType;
@@ -4403,6 +4415,48 @@ mod tests {
         expected.sort();
         assert_eq!(removed, expected);
         assert_eq!(pool.pool_size().total, 0);
+    }
+
+    #[tokio::test]
+    async fn held_transaction_mined_in_block_is_not_discarded() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let mined = TxBuilder::aa(sender).valid_after(tip + 60).build();
+        let consumed = TxBuilder::aa(sender).nonce(1).valid_after(tip + 60).build();
+        let (mined, consumed) = (*mined.hash(), {
+            let hash = *consumed.hash();
+            for tx in [mined, consumed] {
+                pool.add_transaction(TransactionOrigin::External, tx)
+                    .await
+                    .expect("transaction should be held");
+            }
+            hash
+        });
+        let mut events = pool.all_transactions_event_listener();
+
+        let mut state = AddressMap::default();
+        state.insert(
+            sender,
+            BundleAccount::new(
+                None,
+                Some(AccountInfo {
+                    nonce: 2,
+                    ..Default::default()
+                }),
+                Default::default(),
+                AccountStatus::Changed,
+            ),
+        );
+        let mut removed = tx_hashes(
+            &pool.remove_consumed_delayed_transactions(&state, &B256Set::from_iter([mined])),
+        );
+        removed.sort();
+        let mut expected = vec![mined, consumed];
+        expected.sort();
+        assert_eq!(removed, expected);
+        assert_eq!(pool.delayed_pool.read().len(), 0);
+        assert_eq!(discarded_hashes(&mut events), vec![consumed]);
     }
 
     #[test_case::test_case(U256::ZERO; "protocol")]
