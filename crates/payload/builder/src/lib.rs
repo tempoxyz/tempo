@@ -296,6 +296,7 @@ where
         // Snapshot before setup: the stop decision already charges start.elapsed().
         let payload_build_budget = attributes.payload_build_budget();
 
+        // Attributes are validated to be later than the parent; saturate in case a caller skips validation.
         let block_time_millis = attributes
             .timestamp_millis()
             .saturating_sub(parent_header.timestamp_millis())

@@ -32,7 +32,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
         attr: &TempoPayloadAttributes,
         header: &TempoHeader,
     ) -> Result<(), InvalidPayloadAttributesError> {
-        // Ensure the payload attributes timestamp is after the parent's, in milliseconds
+        // Mirrors the strict millisecond ordering TempoConsensus enforces against the parent.
         if attr.timestamp_millis() <= header.timestamp_millis() {
             return Err(InvalidPayloadAttributesError::InvalidTimestamp);
         }
