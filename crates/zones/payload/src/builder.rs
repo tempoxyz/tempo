@@ -288,8 +288,7 @@ where
                     .take_while(|tx| {
                         size = size.saturating_add(tx.transaction.encoded_length());
                         size <= pool_tx_size_budget
-                    })
-                    .collect();
+                    });
                 (
                     context.start(&self.task_executor, prepared),
                     context.start_pool(&self.task_executor, transactions),

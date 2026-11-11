@@ -98,7 +98,7 @@ where
     pub(crate) fn start_pool(
         self: &Arc<Self>,
         task_executor: &TaskExecutor,
-        transactions: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        transactions: impl IntoIterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     ) -> Prewarming {
         // Pool transactions may fail on the parent state, but reads before the failure count.
         self.spawn(task_executor, transactions, |transaction, _| {
@@ -247,10 +247,7 @@ mod tests {
     use alloy_rpc_types_eth::AccountInfo;
     use tempo_alloy::TempoNetwork;
     use tempo_primitives::account::encode_config_commitment;
-    use zone_l1::{
-        L1StateCache,
-        state::{L1StateProvider, L1StateProviderConfig},
-    };
+    use zone_l1::{L1StateCache, state::L1StateProviderConfig};
 
     const TEMPO_BLOCK: u64 = 10;
 
