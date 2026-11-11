@@ -1432,7 +1432,7 @@ mod tests {
             error.to_string(),
             "consensus archive exceeds declared size of 100000 bytes"
         );
-        assert!(written.len() <= 100_000);
+        assert_eq!(written.len(), 64 * 1024);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1444,6 +1444,56 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.to_string(), "timed out reading consensus archive");
+    }
+
+    async fn serve_http_body_once(body: &'static [u8]) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).await.unwrap();
+                assert_ne!(n, 0, "client closed before sending headers");
+                request.extend_from_slice(&buf[..n]);
+            }
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        format!("http://{addr}/consensus.tar.zst")
+    }
+
+    #[tokio::test]
+    async fn write_consensus_archive_to_temp_rejects_oversized_http_body() {
+        let url = serve_http_body_once(b"0123456789").await;
+
+        let error = write_consensus_archive_to_temp(&ConsensusArchiveSource::Url(url), 4)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.root_cause().to_string(),
+            "consensus archive exceeds declared size of 4 bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_consensus_archive_to_temp_copies_http_body_while_hashing() {
+        let url = serve_http_body_once(b"0123456789").await;
+
+        let (archive_file, hash) =
+            write_consensus_archive_to_temp(&ConsensusArchiveSource::Url(url), 10)
+                .await
+                .unwrap();
+
+        assert_eq!(fs::read(archive_file.path()).unwrap(), b"0123456789");
+        assert_eq!(hash, blake3::hash(b"0123456789"));
     }
 
     #[tokio::test]
