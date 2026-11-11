@@ -125,10 +125,16 @@ impl Corpus {
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
         let task = AbortOnDropHandle::new(self.runtime.spawn(async move {
             // Each window is sized from the stored bytes per block of the one before, starting
-            // from one block, so heavy blocks come in fewer at a time.
+            // from one block, so heavy blocks come in fewer at a time. It ends early at a gap
+            // longer than a whole window, so runs of neighbouring blocks are read as dense windows.
             let (mut rest, mut size) = (&blocks[..], 1);
             while !rest.is_empty() {
-                let (blocks, tail) = rest.split_at(size.min(rest.len()));
+                let len = size.min(rest.len());
+                let len = rest[..len]
+                    .windows(2)
+                    .position(|pair| pair[1] - pair[0] > window as u64)
+                    .map_or(len, |gap| gap + 1);
+                let (blocks, tail) = rest.split_at(len);
                 rest = tail;
                 let read = async {
                     let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
