@@ -182,6 +182,7 @@ jobs:
       - name: Validate exact published images
         env:
           CONFIG_DIGEST: ${{ inputs.validate_config_digest }}
+          SNOUTY_CONTAINER_ENGINE: docker
         run: |
           unset ZONES_IMAGE WORKLOAD_IMAGE
           dir="$RUNNER_TEMP/zones-validation"
