@@ -867,10 +867,6 @@ where
         size.queued += queued;
         size.queued_size += queued_size;
         size.total += pending + queued;
-        let delayed_pool = aa_2d_pool.delayed();
-        size.queued += delayed_pool.len();
-        size.queued_size += delayed_pool.size();
-        size.total += delayed_pool.len();
         size
     }
 
@@ -1151,21 +1147,14 @@ where
 
     fn queued_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut queued = self.protocol_pool.queued_transactions();
-        // Delayed transactions are left out: reth's maintenance evicts external queued transactions
-        // older than its queued lifetime, which a delayed transaction can reach before release.
         queued.extend(self.aa_2d_pool.read().queued_transactions());
         queued
     }
 
     fn pending_and_queued_txn_count(&self) -> (usize, usize) {
         let (protocol_pending, protocol_queued) = self.protocol_pool.pending_and_queued_txn_count();
-        let aa_2d_pool = self.aa_2d_pool.read();
-        let (aa_pending, aa_queued) = aa_2d_pool.pending_and_queued_txn_count();
-        let delayed = aa_2d_pool.delayed().len();
-        (
-            protocol_pending + aa_pending,
-            protocol_queued + aa_queued + delayed,
-        )
+        let (aa_pending, aa_queued) = self.aa_2d_pool.read().pending_and_queued_txn_count();
+        (protocol_pending + aa_pending, protocol_queued + aa_queued)
     }
 
     fn all_transactions(&self) -> AllPoolTransactions<Self::Transaction> {
@@ -1328,13 +1317,12 @@ where
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut txs = self.protocol_pool.get_queued_transactions_by_sender(sender);
-        let aa_2d_pool = self.aa_2d_pool.read();
         txs.extend(
-            aa_2d_pool
+            self.aa_2d_pool
+                .read()
                 .queued_transactions()
                 .filter(|tx| tx.sender() == sender),
         );
-        txs.extend(aa_2d_pool.delayed().transactions_by_sender(sender).cloned());
 
         txs
     }
@@ -3815,10 +3803,7 @@ mod tests {
         assert!(outcome.is_queued());
         assert!(pool.aa_2d_pool.read().delayed().contains(&hash));
         assert!(!pool.protocol_pool.contains(&hash));
-        assert_eq!(
-            pool.aa_2d_pool.read().pending_and_queued_txn_count(),
-            (0, 0)
-        );
+        assert!(pool.pending_transactions().is_empty());
 
         assert!(pool.contains(&hash));
         assert!(pool.get(&hash).is_some());
@@ -3833,12 +3818,9 @@ mod tests {
             tx_hashes(&pool.get_transactions_by_sender(sender)),
             vec![hash]
         );
-        assert_eq!(
-            tx_hashes(&pool.get_queued_transactions_by_sender(sender)),
-            vec![hash]
-        );
         assert!(
-            pool.queued_transactions().is_empty(),
+            pool.queued_transactions().is_empty()
+                && pool.get_queued_transactions_by_sender(sender).is_empty(),
             "delayed transactions must stay out of reth's stale-queued eviction"
         );
         assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));

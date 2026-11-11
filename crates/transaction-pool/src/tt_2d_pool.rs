@@ -277,7 +277,7 @@ impl AA2dPool {
 
     /// Updates all metrics to reflect the current state of the pool
     fn update_metrics(&self) {
-        let (pending, queued) = self.pending_and_queued_txn_count();
+        let (pending, queued) = (self.pending_count, self.queued_count);
         let total = self.by_id.len() + self.expiring_nonce_txs.len();
         self.metrics.set_transaction_counts(total, pending, queued);
     }
@@ -666,14 +666,19 @@ impl AA2dPool {
         }))
     }
 
-    /// Returns how many pending and queued transactions are in the pool.
+    /// Returns how many pending and queued transactions are in the pool. Delayed transactions
+    /// count as queued.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
-        (self.pending_count, self.queued_count)
+        (self.pending_count, self.queued_count + self.delayed.len())
     }
 
-    /// Returns the reported size of pending and queued transactions in bytes.
+    /// Returns the reported size of pending and queued transactions in bytes. Delayed
+    /// transactions count as queued.
     pub(crate) fn pending_and_queued_txn_size(&self) -> (usize, usize) {
-        (self.pending_size.into(), self.queued_size.into())
+        (
+            self.pending_size.into(),
+            usize::from(self.queued_size) + self.delayed.size(),
+        )
     }
 
     /// Scans the pool to recompute counts for invariant checks.
@@ -800,7 +805,10 @@ impl AA2dPool {
             .chain(self.delayed.transactions().map(|tx| *tx.hash()))
     }
 
-    /// Returns all transactions from that are queued.
+    /// Returns the live transactions that are queued.
+    ///
+    /// Delayed transactions are left out: reth's maintenance evicts external queued transactions
+    /// older than its queued lifetime, which a delayed transaction can reach before release.
     pub(crate) fn queued_transactions(
         &self,
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
@@ -2007,8 +2015,8 @@ impl AA2dPool {
         }
 
         // Verify pending/queued consistency
-        // pending_and_queued_txn_count includes expiring nonce txs in pending count
-        let (pending_count, queued_count) = self.pending_and_queued_txn_count();
+        // `pending_count` includes expiring nonce txs
+        let (pending_count, queued_count) = (self.pending_count, self.queued_count);
         let (scanned_pending, scanned_queued) = self.scan_pending_and_queued_txn_count();
         assert_eq!(
             (pending_count, queued_count),
@@ -2025,7 +2033,8 @@ impl AA2dPool {
             self.expiring_nonce_txs.len()
         );
 
-        let (pending_size, queued_size) = self.pending_and_queued_txn_size();
+        let (pending_size, queued_size): (usize, usize) =
+            (self.pending_size.into(), self.queued_size.into());
         let (scanned_pending_size, scanned_queued_size) = self.scan_pending_and_queued_txn_size();
         assert_eq!(
             (pending_size, queued_size),
@@ -7582,7 +7591,7 @@ mod tests {
         }
         let err = delay(&mut pool, delayed.clone()).unwrap_err();
         assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
-        assert_eq!(pool.pending_and_queued_txn_count(), (0, 0));
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
         pool.assert_invariants();
 
         let mut pool = AA2dPool::default();
