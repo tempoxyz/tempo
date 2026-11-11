@@ -1498,6 +1498,11 @@ impl ZoneTestNode {
             let mut cache = l1_state_cache.lock();
             seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
         }
+        // Fee collection reads the fee recipient's receive policy from Tempo. Before the first
+        // block, transactions are validated against the genesis beneficiary, the zero address.
+        for account in [sequencer_signer.address(), Address::ZERO] {
+            seed_no_receive_policy(&l1_state_cache, account);
+        }
 
         let node_handle = NodeBuilder::new(node_config)
             .testing_node(tasks.clone())
@@ -4511,6 +4516,10 @@ pub(crate) async fn start_local_p2p_cluster(seed_blocks: u64) -> eyre::Result<P2
             Address::ZERO,
             seed_blocks,
         );
+        // Followers collect fees for blocks other nodes produce.
+        for signer in &sequencer_signers {
+            seed_no_receive_policy(zone.l1_state_cache(), signer.address());
+        }
     }
     Ok(P2pCluster {
         nodes,
@@ -4518,6 +4527,18 @@ pub(crate) async fn start_local_p2p_cluster(seed_blocks: u64) -> eyre::Result<P2
         sequencer_signers,
         fixture,
     })
+}
+
+/// Seed the absence of `account`'s TIP-1028 receive policy on Tempo from the first anchor.
+fn seed_no_receive_policy(cache: &L1StateCache, account: Address) {
+    cache.lock().set(
+        TIP403_REGISTRY_ADDRESS,
+        account
+            .mapping_slot(tip403_registry_slots::RECEIVE_POLICIES)
+            .into(),
+        0,
+        B256::ZERO,
+    );
 }
 
 pub(crate) fn leader_p2p_config(listen: SocketAddr) -> eyre::Result<P2pConfig> {
