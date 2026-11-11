@@ -457,7 +457,7 @@ async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::ingress::Message, *};
     use alloy_primitives::B256;
     use commonware_runtime::{Runner as _, deterministic};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -479,33 +479,27 @@ mod tests {
 
             let (response, cancelled) = oneshot::channel();
             drop(cancelled);
-            actor
-                .waiters
-                .push(super::super::ingress::Message::GetFinalization {
-                    height: Height::new(1),
-                    response,
-                });
+            actor.waiters.push(Message::GetFinalization {
+                height: Height::new(1),
+                response,
+            });
             let (response, cancelled) = oneshot::channel();
             drop(cancelled);
-            actor
-                .waiters
-                .push(super::super::ingress::Message::GetBlock {
-                    digest: Digest(B256::with_last_byte(1)),
-                    response,
-                });
+            actor.waiters.push(Message::GetBlock {
+                digest: Digest(B256::with_last_byte(1)),
+                response,
+            });
             let (response, _waiting) = oneshot::channel();
-            actor
-                .waiters
-                .push(super::super::ingress::Message::GetFinalization {
-                    height: Height::new(2),
-                    response,
-                });
+            actor.waiters.push(Message::GetFinalization {
+                height: Height::new(2),
+                response,
+            });
 
             actor.drain_waiters();
 
             assert!(matches!(
                 actor.waiters.as_slice(),
-                [super::super::ingress::Message::GetFinalization { height, .. }]
+                [Message::GetFinalization { height, .. }]
                     if *height == Height::new(2)
             ));
         });
