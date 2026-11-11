@@ -15,9 +15,9 @@ crate::sol! {
         /// @param account The account expected to approve
         /// @param hash The message hash that was signed
         /// @param signature The encoded signature
-        /// @dev Checks that a primitive signature recovers to account. (+T15) checks account's
-        /// current state instead, by signature type (TIP-1168):
-        /// - primitive: recovers to account, which has no configuration commitment
+        /// @dev Before T15, whether a primitive signature recovers to account.
+        /// (+T15) by signature type, against account's current state (TIP-1168):
+        /// - primitive: recovers to account, and account has no configuration commitment
         /// - keychain: same as `verifyKeychainAdmin`
         /// - configurable account: same as `verifyConfigurableAccount`
         /// Use `recover` for a stateless check.
