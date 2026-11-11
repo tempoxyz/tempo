@@ -4531,13 +4531,60 @@ pub(crate) async fn start_local_p2p_cluster(seed_blocks: u64) -> eyre::Result<P2
 
 /// Seed the absence of `account`'s TIP-1028 receive policy on Tempo from the first anchor.
 fn seed_no_receive_policy(cache: &L1StateCache, account: Address) {
+    seed_receive_policy_config(cache, 0, account, B256::ZERO);
+}
+
+/// Seed `account`'s TIP-1028 receive policy on Tempo from `block_number`: senders are
+/// authorized by the simple policy `sender_policy_id` of type `sender_policy_type`, seeded
+/// separately with [`seed_raw_tip403_policy`], and every token is accepted.
+pub(crate) fn seed_raw_receive_policy(
+    cache: &L1StateCache,
+    block_number: u64,
+    account: Address,
+    sender_policy_id: u64,
+    sender_policy_type: PolicyType,
+) -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+    StorageCtx::enter(&mut storage, || -> tempo_precompiles::Result<()> {
+        let mut registry = TIP403Registry::new();
+        registry.policy_id_counter.write(sender_policy_id + 1)?;
+        registry.policy_records[sender_policy_id]
+            .base
+            .write(PolicyData {
+                policy_type: sender_policy_type as u8,
+                admin: Address::ZERO,
+            })?;
+        registry.set_receive_policy(
+            account,
+            ITIP403Registry::setReceivePolicyCall {
+                senderPolicyId: sender_policy_id,
+                tokenFilterId: ALLOW_ALL_POLICY_ID,
+                recoveryAuthority: Address::ZERO,
+            },
+        )
+    })?;
+    let config = storage.sload(
+        TIP403_REGISTRY_ADDRESS,
+        account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES),
+    )?;
+    seed_receive_policy_config(cache, block_number, account, config.into());
+    Ok(())
+}
+
+/// Seed the packed TIP-1028 receive policy configuration of `account` on Tempo.
+fn seed_receive_policy_config(
+    cache: &L1StateCache,
+    block_number: u64,
+    account: Address,
+    config: B256,
+) {
     cache.lock().set(
         TIP403_REGISTRY_ADDRESS,
         account
             .mapping_slot(tip403_registry_slots::RECEIVE_POLICIES)
             .into(),
-        0,
-        B256::ZERO,
+        block_number,
+        config,
     );
 }
 
@@ -5470,15 +5517,8 @@ impl L1Fixture {
         recipient: Address,
     ) -> eyre::Result<()> {
         self.seed_no_commitment_at(block_number, recipient);
-        // TODO(rusowsky): make `ReceivePolicy` public upstream to use the handlers
-        let receive_policy_slot = recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
         for cache in self.caches.lock().unwrap().iter() {
-            cache.lock().set(
-                TIP403_REGISTRY_ADDRESS,
-                receive_policy_slot.into(),
-                block_number,
-                B256::ZERO,
-            );
+            seed_receive_policy_config(cache, block_number, recipient, B256::ZERO);
         }
         Ok(())
     }

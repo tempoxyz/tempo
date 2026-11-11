@@ -5,8 +5,9 @@
 //! directly in tests (no L1 subscriber).
 
 use alloy::primitives::{Address, U256, address};
+use alloy_consensus::BlockHeader as _;
 use alloy_provider::{Provider, ProviderBuilder};
-use alloy_rpc_types_eth::TransactionRequest;
+use alloy_rpc_types_eth::{BlockNumberOrTag, TransactionRequest};
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::precompiles::{
     ITIP20,
@@ -16,8 +17,8 @@ use tempo_precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS, tip403_regist
 use zone_precompiles::ZONE_FEE_MANAGER_ADDRESS;
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, PolicySeed, TIP20_TX_GAS, l1_dev_signer, seed_raw_tip403_policy,
-    seed_raw_tip403_token_policy, start_local_zone_with_fixture,
+    DEFAULT_TIMEOUT, PolicySeed, TIP20_TX_GAS, l1_dev_signer, seed_raw_receive_policy,
+    seed_raw_tip403_policy, seed_raw_tip403_token_policy, signer_at, start_local_zone_with_fixture,
 };
 
 /// Deposit pathUSD to Alice, then transfer a portion to Bob on the zone.
@@ -160,6 +161,115 @@ async fn test_l1_blacklisted_sender_cannot_pay_for_empty_transaction() -> eyre::
     );
 
     Ok(())
+}
+
+/// From T15, the block beneficiary's receive policy decides whether a fee payer may pay it.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_beneficiary_receive_policy_blocks_fee_payment() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
+    let alice_signer = l1_dev_signer();
+    let alice = alice_signer.address();
+    let carol_signer = signer_at(1);
+    let carol = carol_signer.address();
+
+    let deposit_amount = 1_000_000u128;
+    let deposits = vec![
+        fixture.make_deposit(PATH_USD_ADDRESS, alice, alice, deposit_amount),
+        fixture.make_deposit(PATH_USD_ADDRESS, carol, carol, deposit_amount),
+    ];
+    fixture.inject_deposits(zone.deposit_queue(), deposits);
+    for account in [alice, carol] {
+        zone.wait_for_balance(
+            PATH_USD_ADDRESS,
+            account,
+            U256::from(deposit_amount),
+            DEFAULT_TIMEOUT,
+        )
+        .await?;
+    }
+    let anchor = zone.wait_for_tempo_block_number(1, DEFAULT_TIMEOUT).await?;
+    let sequencer = zone
+        .provider()
+        .get_block_by_number(BlockNumberOrTag::Latest)
+        .await?
+        .expect("latest zone block")
+        .header
+        .beneficiary();
+    assert_ne!(sequencer, Address::ZERO, "blocks must name their producer");
+
+    const SENDER_BLACKLIST_ID: u64 = 43;
+    seed_raw_tip403_policy(
+        zone.l1_state_cache(),
+        anchor,
+        &[PolicySeed::simple(
+            SENDER_BLACKLIST_ID,
+            PolicyType::BLACKLIST,
+            &[(alice, true), (carol, false)],
+        )],
+    )?;
+    seed_raw_receive_policy(
+        zone.l1_state_cache(),
+        anchor,
+        sequencer,
+        SENDER_BLACKLIST_ID,
+        PolicyType::BLACKLIST,
+    )?;
+    let sequencer_balance = zone.balance_of(PATH_USD_ADDRESS, sequencer).await?;
+
+    let alice_provider = ProviderBuilder::new()
+        .wallet(alice_signer)
+        .connect_http(zone.http_url().clone());
+    let nonce_before = alice_provider.get_transaction_count(alice).await?;
+    let error = alice_provider
+        .send_transaction(empty_transaction(alice))
+        .await
+        .expect_err("a fee the beneficiary does not accept must be rejected by the pool");
+    assert!(
+        error.to_string().contains("PolicyForbids"),
+        "unexpected pool rejection: {error}"
+    );
+    assert_eq!(
+        alice_provider.get_transaction_count(alice).await?,
+        nonce_before,
+        "rejected fee payment must not consume the sender nonce"
+    );
+    assert_eq!(
+        zone.balance_of(PATH_USD_ADDRESS, alice).await?,
+        U256::from(deposit_amount),
+        "rejected fee payment must leave the sender balance unchanged"
+    );
+    assert_eq!(
+        zone.balance_of(PATH_USD_ADDRESS, sequencer).await?,
+        sequencer_balance,
+        "rejected fee payment must not credit the beneficiary"
+    );
+
+    let carol_provider = ProviderBuilder::new()
+        .wallet(carol_signer)
+        .connect_http(zone.http_url().clone());
+    let pending = carol_provider
+        .send_transaction(empty_transaction(carol))
+        .await?;
+    fixture.inject_empty_block(zone.deposit_queue());
+    assert!(
+        pending.get_receipt().await?.status(),
+        "a fee payer the beneficiary accepts must be included"
+    );
+    assert!(
+        zone.balance_of(PATH_USD_ADDRESS, sequencer).await? > sequencer_balance,
+        "the accepted fee must credit the beneficiary"
+    );
+
+    Ok(())
+}
+
+fn empty_transaction(to: Address) -> TransactionRequest {
+    TransactionRequest::default()
+        .to(to)
+        .gas_limit(TIP20_TX_GAS)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
 }
 
 /// Whitelist policy: set entries are authorized, non-set entries are not (fail-closed).
