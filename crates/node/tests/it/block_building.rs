@@ -717,8 +717,9 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
 async fn test_build_past_its_deadline_returns_empty_block() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
+    // The build waits for transactions for as long as its budget lasts, far past its deadline.
     let mut setup = crate::utils::TestNodeBuilder::new()
-        .with_payload_build_timeout(Duration::ZERO)
+        .with_payload_build_limits(Duration::from_secs(10), Duration::ZERO)
         .build_with_node_access()
         .await?;
     let chain_id = setup.node.rpc_provider().get_chain_id().await?;

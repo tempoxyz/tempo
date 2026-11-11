@@ -436,17 +436,20 @@ impl DerefMut for TestNode {
 /// Returns the harness setup for `num_nodes` Tempo nodes on `chain_spec`.
 ///
 /// The nodes build their payloads with [`TempoPayloadAttributes::new`] for the payload timestamp,
-/// without a proposer key, consensus context or extra data. With a `payload_build_timeout`, every
-/// build has that long before the node returns an empty payload instead.
+/// without a proposer key, consensus context or extra data. With `payload_build_limits`, every
+/// build is paced by the first as its budget and has the second as its timeout, after which the
+/// node returns an empty payload instead.
 pub(crate) fn tempo_test_setup(
     num_nodes: usize,
     chain_spec: Arc<TempoChainSpec>,
-    payload_build_timeout: Option<Duration>,
+    payload_build_limits: Option<(Duration, Duration)>,
 ) -> E2ETestSetupBuilder<TempoNode> {
     E2ETestSetupBuilder::new_with_attributes_generator(num_nodes, chain_spec, move |timestamp| {
         let attributes = TempoPayloadAttributes::new(None, timestamp, 0, Bytes::new(), None);
-        match payload_build_timeout {
-            Some(timeout) => attributes.with_payload_build_timeout(timeout),
+        match payload_build_limits {
+            Some((budget, timeout)) => attributes
+                .with_payload_build_budget(budget)
+                .with_payload_build_timeout(timeout),
             None => attributes,
         }
     })
@@ -544,7 +547,7 @@ pub(crate) struct TestNodeBuilder {
     external_rpc: Option<Url>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
-    payload_build_timeout: Option<Duration>,
+    payload_build_limits: Option<(Duration, Duration)>,
 }
 
 impl TestNodeBuilder {
@@ -559,7 +562,7 @@ impl TestNodeBuilder {
             external_rpc: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
-            payload_build_timeout: None,
+            payload_build_limits: None,
         }
     }
 
@@ -604,9 +607,10 @@ impl TestNodeBuilder {
         self
     }
 
-    /// Give every payload build this long before the node returns an empty payload instead.
-    pub(crate) fn with_payload_build_timeout(mut self, timeout: Duration) -> Self {
-        self.payload_build_timeout = Some(timeout);
+    /// Pace every payload build by `budget`, and give it `timeout` before the node returns an
+    /// empty payload instead.
+    pub(crate) fn with_payload_build_limits(mut self, budget: Duration, timeout: Duration) -> Self {
+        self.payload_build_limits = Some((budget, timeout));
         self
     }
 
@@ -636,7 +640,7 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec), self.payload_build_timeout)
+        let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec), self.payload_build_limits)
             .with_dev_mode(true)
             .build_single()
             .await?;
@@ -666,7 +670,7 @@ impl TestNodeBuilder {
         let (nodes, _wallet) = tempo_test_setup(
             self.node_count,
             Arc::new(chain_spec),
-            self.payload_build_timeout,
+            self.payload_build_limits,
         )
         .with_dev_mode(true)
         .build()
@@ -699,7 +703,7 @@ impl TestNodeBuilder {
         let dynamic_validator = self.dynamic_validator.clone();
         let next_timestamp = self.first_block_timestamp.map(AtomicU64::new);
 
-        let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec), self.payload_build_timeout)
+        let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec), self.payload_build_limits)
             .with_dev_mining(self.block_time)
             .map_dev_payload_attributes(move |mut attributes| {
                 if let Some(next) = &next_timestamp {
