@@ -667,10 +667,9 @@ struct Metrics {
     /// Network reservation the most recent own proposal subtracted from the
     /// target block time.
     estimator_network_reserve_seconds: FloatGauge,
-    /// Learned network time before clamping, zero while the window holds no
-    /// completed proposal. The reservation moves toward it, clamped, by at
-    /// most one bounded step per own proposal.
-    estimator_network_observed_seconds: FloatGauge,
+    /// Unclamped adaptive network reservation target, including warm-up and
+    /// fast rise. Zero in fixed mode or without live network feedback.
+    estimator_network_target_seconds: FloatGauge,
     /// Proposal return budget of the most recent own proposal.
     estimator_proposal_return_budget_seconds: FloatGauge,
     /// Recent P90 execution-layer validation time.
@@ -702,11 +701,11 @@ impl Metrics {
             ),
             estimator_network_reserve_seconds: float_gauge(
                 "estimator_network_reserve_seconds",
-                "time reserved after the proposal window for propagation and votes",
+                "network allowance covering propagation, votes, unprojected validation and next-proposal preparation",
             ),
-            estimator_network_observed_seconds: float_gauge(
-                "estimator_network_observed_seconds",
-                "learned time after the proposal window before clamping",
+            estimator_network_target_seconds: float_gauge(
+                "estimator_network_target_seconds",
+                "unclamped adaptive network reservation target including warm-up and fast rise; zero in fixed mode or without live samples",
             ),
             estimator_proposal_return_budget_seconds: float_gauge(
                 "estimator_proposal_return_budget_seconds",
@@ -730,8 +729,8 @@ impl Metrics {
     fn observe_estimator(&self, snapshot: &EstimatorSnapshot) {
         self.estimator_network_reserve_seconds
             .set(snapshot.network_reserve.as_secs_f64());
-        self.estimator_network_observed_seconds
-            .set(snapshot.network_observed.map_or(0.0, |d| d.as_secs_f64()));
+        self.estimator_network_target_seconds
+            .set(snapshot.network_target.map_or(0.0, |d| d.as_secs_f64()));
         self.estimator_proposal_return_budget_seconds
             .set(snapshot.proposal_return_budget.as_secs_f64());
         self.estimator_validation_latency_p90_seconds.set(
