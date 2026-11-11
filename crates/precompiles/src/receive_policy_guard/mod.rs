@@ -11,7 +11,7 @@ use crate::{
     RECEIVE_POLICY_GUARD_ADDRESS,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
     tip20::{Recipient, TIP20Token},
 };
 use alloy::{
@@ -238,7 +238,13 @@ fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMod
     let receipt = ClaimReceiptV1::try_from(bytes)?;
     let receiver = AddressRegistry::new()
         .resolve_recipient(receipt.recipient)
-        .map_err(|_| ReceivePolicyGuardError::invalid_claim_address())?;
+        .map_err(|err| {
+            if err.is_system_error() && StorageCtx.spec().is_t15() {
+                err
+            } else {
+                ReceivePolicyGuardError::invalid_claim_address().into()
+            }
+        })?;
     let recovery_mode = RecoveryMode::from(&receipt, receiver);
 
     Ok((receipt, receiver, recovery_mode))
@@ -248,9 +254,10 @@ fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMod
 mod tests {
     use super::*;
     use crate::{
-        address_registry::AddressRegistry,
+        ADDRESS_REGISTRY_ADDRESS,
+        address_registry::{self, AddressRegistry},
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, StorageKey, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
         tip20::{BURN_BLOCKED_ROLE, ITIP20},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -1121,5 +1128,85 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_recipient_resolution_system_error_propagates_post_t15() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let (master_id, virtual_addr) = StorageCtx::enter(&mut storage, || {
+                register_virtual_master(&mut AddressRegistry::new())
+            })?;
+            storage.fail_next_sload_at(
+                ADDRESS_REGISTRY_ADDRESS,
+                master_id.mapping_slot(address_registry::slots::DATA),
+            );
+            let receipt: Bytes = ClaimReceiptV1::new(
+                Address::random(),
+                VIRTUAL_MASTER,
+                Address::random(),
+                virtual_addr,
+                1_728_000,
+                1,
+                BlockedReason::RECEIVE_POLICY as u8,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            )
+            .abi_encode()
+            .into();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut guard = ReceivePolicyGuard::new();
+                for result in [
+                    guard.claim(VIRTUAL_MASTER, VIRTUAL_MASTER, receipt.clone()),
+                    guard.burn_blocked_receipt(VIRTUAL_MASTER, receipt.clone()),
+                ] {
+                    let expected = if spec.is_t15() {
+                        TempoPrecompileError::Fatal("injected sload failure".into())
+                    } else {
+                        ReceivePolicyGuardError::invalid_claim_address().into()
+                    };
+                    assert_eq!(result.unwrap_err(), expected);
+                }
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_unregistered_virtual_recipient_is_invalid_claim_address() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let unregistered = Address::new_virtual([0xab; 4].into(), [0x01; 6].into());
+                let receipt: Bytes = ClaimReceiptV1::new(
+                    Address::random(),
+                    VIRTUAL_MASTER,
+                    Address::random(),
+                    unregistered,
+                    1_728_000,
+                    1,
+                    BlockedReason::RECEIVE_POLICY as u8,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                )
+                .abi_encode()
+                .into();
+
+                let mut guard = ReceivePolicyGuard::new();
+                for result in [
+                    guard.claim(VIRTUAL_MASTER, VIRTUAL_MASTER, receipt.clone()),
+                    guard.burn_blocked_receipt(VIRTUAL_MASTER, receipt),
+                ] {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        ReceivePolicyGuardError::invalid_claim_address().into()
+                    );
+                }
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
     }
 }
