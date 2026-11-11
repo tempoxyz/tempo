@@ -731,8 +731,8 @@ fn normalize_block_number(number: BlockNumberOrTag) -> BlockNumberOrTag {
     }
 }
 
-/// Applies [`normalize_block_number`] to a block id. Without it `pending` resolves to a block
-/// the engine has executed but not yet made canonical.
+/// Treats `pending` as `latest` in a block id, since zones have no real pending block. Without it
+/// `pending` resolves to a block the engine has executed but not yet made canonical.
 pub fn normalize_block_id(block: BlockId) -> BlockId {
     match block {
         BlockId::Number(number) => BlockId::Number(normalize_block_number(number)),
