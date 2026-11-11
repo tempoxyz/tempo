@@ -10,7 +10,10 @@ use alloy::{
 };
 use alloy_rpc_types_eth::BlockId;
 use eyre::{WrapErr as _, ensure, eyre};
-use std::path::PathBuf;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{cli::TempoHardforkArgs, spec::TEMPO_T0_BASE_FEE};
 use tempo_contracts::{
@@ -117,9 +120,9 @@ pub(crate) struct CreateZone {
     safe_output: Option<PathBuf>,
 
     /// Hash of an already executed createZone transaction, such as the Safe execution of a
-    /// --safe-address proposal. Verifies its ZoneCreated event and the created portal's RPC URL,
-    /// allowed accounts and zone gateways against the other arguments, and writes genesis.json
-    /// and zone.json without sending a transaction.
+    /// --safe-address proposal. Verifies its ZoneCreated event, the exact allowed accounts and
+    /// zone gateways it installed, and the portal's RPC URL against the other arguments, and
+    /// writes genesis.json and zone.json without sending a transaction.
     #[arg(long, value_name = "TX_HASH")]
     creation_tx: Option<TxHash>,
 
@@ -392,6 +395,12 @@ impl CreateZone {
             "transaction {tx_hash} emitted more than one ZoneCreated event"
         );
         self.ensure_requested_zone(&event)
+            .and_then(|()| {
+                self.ensure_requested_roles(
+                    receipt.logs().iter().map(|log| &log.inner),
+                    event.portal,
+                )
+            })
             .wrap_err_with(|| format!("transaction {tx_hash} did not create the requested zone"))?;
         Ok(event)
     }
@@ -439,51 +448,66 @@ impl CreateZone {
         Ok(())
     }
 
-    /// Checks the creation-block portal state that ZoneCreated does not report: the RPC URL
-    /// and the role of every requested allowed account and zone gateway.
-    async fn ensure_requested_portal_state<P: Provider<TempoNetwork>>(
+    /// Checks that the portal roles installed by the creation, as reported by its RoleUpdated
+    /// logs, are exactly the requested allowed accounts and zone gateways.
+    fn ensure_requested_roles<'a>(
+        &self,
+        logs: impl IntoIterator<Item = &'a alloy::primitives::Log>,
+        portal: Address,
+    ) -> eyre::Result<()> {
+        let mut roles = BTreeMap::new();
+        for log in logs.into_iter().filter(|log| log.address == portal) {
+            if let Ok(update) = ZonePortal::RoleUpdated::decode_log(log) {
+                roles.insert(update.account, update.next);
+            }
+        }
+        let mut mismatches = Vec::new();
+        for (requested, role, name) in [
+            (
+                &self.allowed_accounts,
+                ZonePortal::Role::Account,
+                "allowed accounts",
+            ),
+            (
+                &self.zone_gateways,
+                ZonePortal::Role::CallbackGateway,
+                "zone gateways",
+            ),
+        ] {
+            let requested: BTreeSet<_> = requested.iter().copied().collect();
+            let installed: BTreeSet<_> = roles
+                .iter()
+                .filter(|(_, next)| **next == role)
+                .map(|(account, _)| *account)
+                .collect();
+            if installed != requested {
+                mismatches.push(format!("{name} {installed:?} (expected {requested:?})"));
+            }
+        }
+        ensure!(
+            mismatches.is_empty(),
+            "portal roles report {}",
+            mismatches.join(", ")
+        );
+        Ok(())
+    }
+
+    /// Checks the portal's RPC URL at the creation block, which ZoneCreated does not report.
+    async fn ensure_requested_rpc_url<P: Provider<TempoNetwork>>(
         &self,
         portal: &ZonePortal::ZonePortalInstance<P, TempoNetwork>,
         block: BlockId,
     ) -> eyre::Result<()> {
-        let mut mismatches = Vec::new();
         let rpc_url = portal
             .rpcUrl()
             .block(block)
             .call()
             .await
             .wrap_err("failed reading portal RPC URL")?;
-        if rpc_url != self.rpc_url {
-            mismatches.push(format!("RPC URL {rpc_url:?} (expected {:?})", self.rpc_url));
-        }
-        for (accounts, role, name) in [
-            (
-                &self.allowed_accounts,
-                ZonePortal::Role::Account,
-                "allowed account",
-            ),
-            (
-                &self.zone_gateways,
-                ZonePortal::Role::CallbackGateway,
-                "zone gateway",
-            ),
-        ] {
-            for account in accounts {
-                let has_role = portal
-                    .hasRole(*account, role)
-                    .block(block)
-                    .call()
-                    .await
-                    .wrap_err_with(|| format!("failed reading portal role of {account}"))?;
-                if !has_role {
-                    mismatches.push(format!("{name} {account} is missing its role"));
-                }
-            }
-        }
         ensure!(
-            mismatches.is_empty(),
-            "portal reports {}",
-            mismatches.join(", ")
+            rpc_url == self.rpc_url,
+            "portal reports RPC URL {rpc_url:?} (expected {:?})",
+            self.rpc_url
         );
         Ok(())
     }
@@ -551,7 +575,7 @@ impl CreateZone {
 
         let portal_contract = ZonePortal::new(portal, &provider);
         let creation_block_id = BlockId::number(creation_block);
-        self.ensure_requested_portal_state(&portal_contract, creation_block_id)
+        self.ensure_requested_rpc_url(&portal_contract, creation_block_id)
             .await
             .wrap_err_with(|| {
                 format!(
@@ -872,42 +896,102 @@ mod tests {
         assert!(command.ensure_requested_zone(&event).is_err());
     }
 
-    #[tokio::test]
-    async fn created_portal_must_match_the_requested_accounts_gateways_and_rpc_url() {
+    fn role_log(
+        portal: Address,
+        account: Address,
+        next: ZonePortal::Role,
+    ) -> alloy::primitives::Log {
+        alloy::primitives::Log {
+            address: portal,
+            data: ZonePortal::RoleUpdated {
+                account,
+                prev: ZonePortal::Role::None,
+                next,
+            }
+            .encode_log_data(),
+        }
+    }
+
+    #[test]
+    fn created_roles_must_match_the_requested_accounts_and_gateways() {
+        let account = address!("0x8000000000000000000000000000000000000008");
+        let gateway = address!("0x9000000000000000000000000000000000000009");
+        let extra = address!("0x7000000000000000000000000000000000000007");
+        let portal = address!("0x6000000000000000000000000000000000000006");
         let mut command = test_command();
-        command.allowed_accounts = vec![address!("0x8000000000000000000000000000000000000008")];
-        command.zone_gateways = vec![address!("0x9000000000000000000000000000000000000009")];
+        command.allowed_accounts = vec![account];
+        command.zone_gateways = vec![gateway];
+
+        let installed = [
+            role_log(portal, gateway, ZonePortal::Role::CallbackGateway),
+            role_log(portal, account, ZonePortal::Role::Account),
+            // Logs from other contracts are ignored.
+            role_log(Address::ZERO, extra, ZonePortal::Role::Account),
+        ];
+        command.ensure_requested_roles(&installed, portal).unwrap();
+
+        // Extra holders installed by the creation are rejected.
+        let mut with_extra = installed.to_vec();
+        with_extra.push(role_log(portal, extra, ZonePortal::Role::Account));
+        with_extra.push(role_log(portal, extra, ZonePortal::Role::CallbackGateway));
+        assert_eq!(
+            command
+                .ensure_requested_roles(&with_extra, portal)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "portal roles report zone gateways {{{extra}, {gateway}}} (expected {{{gateway}}})"
+            )
+        );
+
+        // With no role flags, any installed holder is rejected.
+        let empty = test_command();
+        assert_eq!(
+            empty
+                .ensure_requested_roles(&installed, portal)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "portal roles report allowed accounts {{{account}}} (expected {{}}), \
+                 zone gateways {{{gateway}}} (expected {{}})"
+            )
+        );
+
+        // Missing holders are rejected.
+        assert_eq!(
+            command
+                .ensure_requested_roles(&installed[..1], portal)
+                .unwrap_err()
+                .to_string(),
+            format!("portal roles report allowed accounts {{}} (expected {{{account}}})")
+        );
+    }
+
+    #[tokio::test]
+    async fn created_portal_must_match_the_requested_rpc_url() {
+        let mut command = test_command();
         command.rpc_url = "https://zone.example".to_owned();
 
-        let check = async |rpc_url: &str, roles: [bool; 2]| {
+        let check = async |rpc_url: &str| {
             let asserter = Asserter::new();
             asserter.push_success(&Bytes::from(ZonePortal::rpcUrlCall::abi_encode_returns(
                 &rpc_url.to_owned(),
             )));
-            for role in roles {
-                asserter.push_success(&Bytes::from(ZonePortal::hasRoleCall::abi_encode_returns(
-                    &role,
-                )));
-            }
             let provider =
                 ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
             let portal = ZonePortal::new(Address::ZERO, &provider);
             command
-                .ensure_requested_portal_state(&portal, BlockId::number(1))
+                .ensure_requested_rpc_url(&portal, BlockId::number(1))
                 .await
         };
 
-        check("https://zone.example", [true, true]).await.unwrap();
-
-        let message = check("https://other.example", [false, false])
-            .await
-            .unwrap_err()
-            .to_string();
+        check("https://zone.example").await.unwrap();
         assert_eq!(
-            message,
-            "portal reports RPC URL \"https://other.example\" (expected \"https://zone.example\"), \
-             allowed account 0x8000000000000000000000000000000000000008 is missing its role, \
-             zone gateway 0x9000000000000000000000000000000000000009 is missing its role"
+            check("https://other.example")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "portal reports RPC URL \"https://other.example\" (expected \"https://zone.example\")"
         );
     }
 
