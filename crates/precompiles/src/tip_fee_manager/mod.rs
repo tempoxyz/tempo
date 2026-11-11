@@ -7,11 +7,12 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
+    receive_policy_guard::RECOVERY_ORIGINATOR,
     storage::{Handler, Mapping, StorageCtx},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
-    tip20::{ITIP20, Recipient, TIP20Token, validate_usd_currency},
+    tip20::{ITIP20, Recipient, TIP20Error, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
-    tip403_registry::AuthRole,
+    tip403_registry::{AuthRole, TIP403Registry},
 };
 use alloy::primitives::{Address, B256, U256, uint};
 pub use tempo_contracts::precompiles::{
@@ -290,7 +291,8 @@ impl TipFeeManager {
     ///
     /// # Errors
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
-    /// - `PolicyForbids` — `validator`'s receive policy would block the payout (T15+)
+    /// - `PolicyForbids` — `validator`'s receive policy would divert the payout into a receipt only
+    ///   the FeeManager could claim (T15+)
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
         // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
         StorageCtx.set_tip1060_storage_credit_minting(false);
@@ -300,13 +302,7 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        // T15+: a payout diverted by the validator's receive policy could never be claimed.
-        if self.storage.spec().is_t15() {
-            TIP20Token::from_address(token)?.ensure_receive_policy_authorized(
-                self.address,
-                Recipient::resolve(validator)?.target,
-            )?;
-        }
+        self.ensure_payout_claimable(token, validator)?;
         self.collected_fees[validator][token].write(U256::ZERO)?;
 
         // Transfer fees to validator
@@ -322,6 +318,25 @@ impl TipFeeManager {
         // Emit FeesDistributed event
         self.emit_event(FeeManagerEvent::fees_distributed(validator, token, amount))?;
 
+        Ok(())
+    }
+
+    /// T15+: rejects paying `to` in `token` when its receive policy would divert the payout into a
+    /// receipt whose only claimer is the FeeManager itself, which can never claim it. Diversions
+    /// with a receiver or third-party recovery authority stay claimable and are allowed.
+    ///
+    /// # Errors
+    /// - `PolicyForbids` — the payout would be diverted with Originator recovery
+    fn ensure_payout_claimable(&self, token: Address, to: Address) -> Result<()> {
+        if !self.storage.spec().is_t15() {
+            return Ok(());
+        }
+        let to = Recipient::resolve(to)?.target;
+        if let Some((_, RECOVERY_ORIGINATOR)) =
+            TIP403Registry::new().check_receive_policy(token, self.address, to)?
+        {
+            return Err(TIP20Error::policy_forbids().into());
+        }
         Ok(())
     }
 
@@ -341,11 +356,9 @@ mod tests {
         RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, reject_all_senders},
         tip20::{ITIP20, TIP20Token},
-        tip403_registry::{
-            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
-        },
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
     #[test]
@@ -1561,16 +1574,6 @@ mod tests {
             Ok(())
         })
     }
-    fn reject_all_senders(receiver: Address) -> Result<()> {
-        TIP403Registry::new().set_receive_policy(
-            receiver,
-            ITIP403Registry::setReceivePolicyCall {
-                senderPolicyId: REJECT_ALL_POLICY_ID,
-                tokenFilterId: ALLOW_ALL_POLICY_ID,
-                recoveryAuthority: Address::ZERO,
-            },
-        )
-    }
 
     #[test]
     fn test_distribute_fees_to_receive_blocked_validator_reverts_t15() -> eyre::Result<()> {
@@ -1586,7 +1589,7 @@ mod tests {
                 .apply()?;
             let mut fee_manager = TipFeeManager::new();
             fee_manager.collected_fees[validator][token.address()].write(fee_amount)?;
-            reject_all_senders(validator)?;
+            reject_all_senders(validator, Address::ZERO)?;
 
             let result = fee_manager.distribute_fees(validator, token.address());
             assert!(matches!(
@@ -1623,7 +1626,7 @@ mod tests {
                 .apply()?;
             let mut fee_manager = TipFeeManager::new();
             fee_manager.collected_fees[validator][token.address()].write(fee_amount)?;
-            reject_all_senders(validator)?;
+            reject_all_senders(validator, Address::ZERO)?;
 
             fee_manager.distribute_fees(validator, token.address())?;
 
@@ -1640,6 +1643,43 @@ mod tests {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
                 fee_amount
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_distribute_fees_to_self_recoverable_validator_diverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+        let validator = Address::random();
+        let fee_amount = U256::from(500);
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, fee_amount)
+                .apply()?;
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.collected_fees[validator][token.address()].write(fee_amount)?;
+            reject_all_senders(validator, validator)?;
+
+            fee_manager.distribute_fees(validator, token.address())?;
+
+            assert_eq!(
+                fee_manager.collected_fees[validator][token.address()].read()?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: RECEIVE_POLICY_GUARD_ADDRESS
+                })?,
+                fee_amount
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: validator })?,
+                U256::ZERO
             );
 
             Ok(())
