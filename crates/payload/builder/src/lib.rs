@@ -1441,6 +1441,9 @@ where
         if !roots_batch.is_empty() {
             let _ = roots_tx.send(roots_batch);
         }
+        // Without this the state root task would only see the last transactions once the block
+        // is finished, and the build would wait for it to catch up.
+        shared.flush_state();
 
         Ok(Some(BlockFill {
             block_build_stop_reason,
