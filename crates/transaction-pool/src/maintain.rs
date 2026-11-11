@@ -714,7 +714,7 @@ where
 
         // Delayed transactions that are about to become valid enter the live sub-pools the same
         // way: resubmitted, so they are validated against current state first.
-        revalidate_txs.extend(pool.take_due_delayed_transactions(tip_timestamp));
+        revalidate_txs.extend(pool.take_due_delayed_transactions());
 
         if !revalidate_txs.is_empty() {
             let pool = pool.clone();

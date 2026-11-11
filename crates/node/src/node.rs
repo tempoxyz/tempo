@@ -99,9 +99,8 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
     pub max_txs_per_lane: usize,
 
-    /// Maximum number of transactions in the delayed sub-pool, which holds expiring nonce AA
-    /// transactions that are not valid yet outside the pending and queued transactions and their
-    /// limits.
+    /// Maximum number of transactions in the delayed sub-pool, which holds transactions that are
+    /// not valid yet outside the pending and queued transactions and their limits.
     #[arg(long = "txpool.delayed-max-count", default_value_t = DEFAULT_DELAYED_MAX_COUNT)]
     pub delayed_max_count: NonZeroUsize,
 

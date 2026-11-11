@@ -1389,7 +1389,7 @@ async fn test_propagate_delayed_transactions() -> eyre::Result<()> {
         .header
         .timestamp();
 
-    // Not valid until well past the delayed pool's lead time, so both nodes delay it.
+    // Not valid until well past the tip, so both nodes delay it.
     let mut tx = create_expiring_nonce_tx(chain_id, tip_timestamp + 25, Address::random());
     tx.valid_after = Some(nonzero_timestamp(tip_timestamp + 15));
     let signature = sign_aa_tx_secp256k1(&tx, &wallet)?;

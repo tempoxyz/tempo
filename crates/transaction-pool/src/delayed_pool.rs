@@ -1,31 +1,26 @@
-//! Sub-pool for expiring nonce transactions whose `valid_after` is too far ahead of the tip to be
-//! included soon.
+//! Sub-pool for transactions whose `valid_after` is later than the tip.
 //!
 //! Delayed transactions are visible to lookups and gossip but stay out of the live sub-pools and
-//! their limits until pool maintenance releases them shortly before `valid_after`.
+//! their limits until a block reaches their `valid_after` and pool maintenance releases them.
 //!
-//! Only expiring nonce transactions are delayed. They are unique by their expiring nonce hash and
-//! belong to no sequential nonce lane, so delaying them never splits a sender's nonce sequence
-//! across sub-pools. Future-dated transactions with sequential nonces enter the live sub-pools.
+//! A released transaction goes through normal admission. While one with a sequential nonce is
+//! delayed, its successors wait in the live sub-pools as queued.
 
 use crate::{
-    authority_counts::AuthorityCounts, metrics::DelayedPoolMetrics,
+    authority_counts::AuthorityCounts, metrics::DelayedPoolMetrics, ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction, tt_2d_pool::DEFAULT_MAX_TXS_PER_AUTHORITY,
 };
-use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
     map::{B256Map, B256Set},
 };
 use reth_primitives_traits::InMemorySize;
 use reth_transaction_pool::{
-    GetPooledTransactionLimit, PoolResult, PoolTransaction, ValidPoolTransaction,
+    GetPooledTransactionLimit, PoolResult, PoolTransaction, Priority, TransactionOrdering,
+    ValidPoolTransaction,
     error::{PoolError, PoolErrorKind},
 };
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
-
-/// Number of seconds before `valid_after` at which a delayed transaction is released.
-const DEFAULT_DELAYED_LEAD_SECS: u64 = 2;
 
 /// Default maximum number of delayed transactions.
 pub const DEFAULT_DELAYED_MAX_COUNT: NonZeroUsize = NonZeroUsize::new(4096).unwrap();
@@ -33,21 +28,24 @@ pub const DEFAULT_DELAYED_MAX_COUNT: NonZeroUsize = NonZeroUsize::new(4096).unwr
 /// Maximum total size of delayed transactions in bytes.
 const DEFAULT_DELAYED_MAX_SIZE: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).unwrap();
 
-/// Delays expiring nonce transactions that pass validation but whose `valid_after` is later than
-/// the tip timestamp plus [`DelayedPoolConfig::lead_secs`].
+/// Delays transactions that pass validation but whose `valid_after` is later than the tip
+/// timestamp.
 #[derive(Debug, Default)]
 pub struct DelayedPool {
-    /// Lead time and limits.
+    /// Limits.
     config: DelayedPoolConfig,
     /// Delayed transactions by hash.
     by_hash: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    /// Expiring nonce hashes of delayed transactions. Copies of a transaction that differ only
-    /// in the fee payer signature share one, so only the first is delayed.
-    by_expiring_nonce: B256Set,
+    /// [`payload_hash`] of each delayed transaction. Copies of a transaction that differ only in
+    /// the fee payer signature share one, so only the first is delayed.
+    by_payload: B256Set,
     /// Delayed transactions ordered by `valid_after`, for release.
     by_valid_after: BTreeSet<(u64, TxHash)>,
-    /// Delayed transactions ordered by priority fee, lowest first, for eviction when full.
-    by_priority: BTreeSet<(u128, TxHash)>,
+    /// Delayed transactions ordered by the tip they pay at `base_fee`, lowest first, for
+    /// eviction when full. Rebuilt when the base fee changes.
+    by_priority: BTreeSet<(Priority<u64>, TxHash)>,
+    /// Base fee `by_priority` is ordered for.
+    base_fee: u64,
     /// Total size of delayed transactions in bytes.
     size: usize,
     /// Number of delayed transactions per authority, limited by
@@ -66,28 +64,22 @@ impl DelayedPool {
         }
     }
 
-    /// Returns the lead time and limits.
-    pub(crate) const fn config(&self) -> DelayedPoolConfig {
-        self.config
-    }
-
     /// Delays a validated transaction until its `valid_after` and returns the delayed transactions it
-    /// evicted. The caller ensures the transaction uses an expiring nonce.
+    /// evicted.
     ///
-    /// Rejected as already imported if it or a transaction with the same expiring nonce is
+    /// Rejected as already imported if it or a copy with another fee payer signature is
     /// delayed already, and with the authority if one of
     /// its authorities has [`DelayedPoolConfig::max_txs_per_authority`] delayed transactions.
-    /// When the pool is full, the lowest-priority delayed transactions are evicted to make room,
-    /// but only for a transaction whose priority fee is higher than each of theirs; otherwise it
-    /// is rejected as discarded on insert.
+    /// When the pool is full, the delayed transactions paying the lowest tip at the current
+    /// base fee are evicted to make room, but only for a transaction that pays more than each
+    /// of them; otherwise it is rejected as discarded on insert.
     pub(crate) fn insert(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
-        debug_assert!(transaction.transaction.is_expiring_nonce());
         let hash = *transaction.hash();
-        let expiring_nonce = transaction.transaction.precomputed_expiring_nonce_hash();
-        if self.by_expiring_nonce.contains(&expiring_nonce) {
+        let payload = payload_hash(&transaction);
+        if self.by_payload.contains(&payload) {
             return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
         }
         if let Some(authority) = self
@@ -105,7 +97,7 @@ impl DelayedPool {
         if tx_size > max_size {
             return Err(full());
         }
-        let priority = transaction.transaction.priority_fee_or_price();
+        let priority = self.priority(&transaction.transaction);
         let (mut count, mut size) = (self.by_hash.len(), self.size);
         let mut to_evict = Vec::new();
         for (evict_priority, evict_hash) in &self.by_priority {
@@ -129,23 +121,42 @@ impl DelayedPool {
         self.by_priority.insert((priority, hash));
         self.size += tx_size;
         self.txs_by_authority.add(&transaction.transaction);
-        self.by_expiring_nonce.insert(expiring_nonce);
+        self.by_payload.insert(payload);
 
         self.by_hash.insert(hash, transaction);
         self.update_metrics();
         Ok(evicted)
     }
 
-    /// Removes and returns the delayed transactions whose `valid_after` is within the lead time
-    /// of `tip_timestamp`, earliest first.
+    /// Sets the base fee delayed transactions are ranked at for eviction, reordering them if it
+    /// changed.
+    pub(crate) fn set_base_fee(&mut self, base_fee: u64) {
+        if self.base_fee == base_fee {
+            return;
+        }
+        self.base_fee = base_fee;
+        self.by_priority = self
+            .by_hash
+            .iter()
+            .map(|(hash, tx)| (self.priority(&tx.transaction), *hash))
+            .collect();
+    }
+
+    /// Returns the eviction rank of a transaction: the tip it pays at the current base fee, as
+    /// in the 2D pool.
+    fn priority(&self, transaction: &TempoPooledTransaction) -> Priority<u64> {
+        TempoTipOrdering::default().priority(transaction, self.base_fee)
+    }
+
+    /// Removes and returns the delayed transactions whose `valid_after` is at or before
+    /// `tip_timestamp`, earliest first.
     pub(crate) fn take_due(
         &mut self,
         tip_timestamp: u64,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let release_until = tip_timestamp.saturating_add(self.config.lead_secs);
         let due: Vec<_> = self
             .by_valid_after
-            .range(..=(release_until, B256::repeat_byte(0xff)))
+            .range(..=(tip_timestamp, B256::repeat_byte(0xff)))
             .map(|(_, hash)| *hash)
             .collect();
         self.metrics
@@ -163,11 +174,10 @@ impl DelayedPool {
         self.by_valid_after
             .remove(&(valid_after(&transaction), *hash));
         self.by_priority
-            .remove(&(transaction.transaction.priority_fee_or_price(), *hash));
+            .remove(&(self.priority(&transaction.transaction), *hash));
         self.size -= transaction.transaction.size();
         self.txs_by_authority.remove(&transaction.transaction);
-        self.by_expiring_nonce
-            .remove(&transaction.transaction.precomputed_expiring_nonce_hash());
+        self.by_payload.remove(&payload_hash(&transaction));
         self.update_metrics();
         Some(transaction)
     }
@@ -274,12 +284,9 @@ impl DelayedPool {
     }
 }
 
-/// Lead time and limits of the [`DelayedPool`].
+/// Limits of the [`DelayedPool`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DelayedPoolConfig {
-    /// A transaction is delayed while its `valid_after` is later than the tip timestamp plus this
-    /// many seconds, and released by the first block that brings it within that window.
-    pub lead_secs: u64,
     /// Maximum number of delayed transactions.
     pub max_count: NonZeroUsize,
     /// Maximum total size of delayed transactions in bytes.
@@ -289,29 +296,9 @@ pub struct DelayedPoolConfig {
     pub max_txs_per_authority: usize,
 }
 
-impl DelayedPoolConfig {
-    /// Returns whether a transaction must be delayed: it uses an expiring nonce and its
-    /// `valid_after` is later than `tip_timestamp` plus the lead time. Otherwise it can enter the
-    /// live sub-pools.
-    pub(crate) fn should_delay(
-        &self,
-        transaction: &TempoPooledTransaction,
-        tip_timestamp: u64,
-    ) -> bool {
-        transaction.is_expiring_nonce()
-            && transaction
-                .inner()
-                .valid_after()
-                .is_some_and(|valid_after| {
-                    valid_after > tip_timestamp.saturating_add(self.lead_secs)
-                })
-    }
-}
-
 impl Default for DelayedPoolConfig {
     fn default() -> Self {
         Self {
-            lead_secs: DEFAULT_DELAYED_LEAD_SECS,
             max_count: DEFAULT_DELAYED_MAX_COUNT,
             max_size: DEFAULT_DELAYED_MAX_SIZE,
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
@@ -319,9 +306,29 @@ impl Default for DelayedPoolConfig {
     }
 }
 
+/// Returns whether a transaction must be delayed: its `valid_after` is later than
+/// `tip_timestamp`. Otherwise it can enter the live sub-pools.
+pub(crate) fn should_delay(transaction: &TempoPooledTransaction, tip_timestamp: u64) -> bool {
+    transaction
+        .inner()
+        .valid_after()
+        .is_some_and(|valid_after| valid_after > tip_timestamp)
+}
+
+/// Returns the hash of a delayed transaction's signing payload and sender, which is the same for
+/// copies that differ only in the fee payer signature.
+///
+/// Only AA transactions have a `valid_after`; the transaction hash fallback keeps this total.
+fn payload_hash(transaction: &ValidPoolTransaction<TempoPooledTransaction>) -> B256 {
+    transaction
+        .transaction
+        .expiring_nonce_hash()
+        .unwrap_or(*transaction.hash())
+}
+
 /// Returns the timestamp a delayed transaction is indexed by in [`DelayedPool::by_valid_after`].
 ///
-/// Delayed transactions have a `valid_after` ([`DelayedPoolConfig::should_delay`]); the zero fallback
+/// Delayed transactions have a `valid_after` ([`should_delay`]); the zero fallback
 /// only keeps the index total, making such a transaction due at once.
 fn valid_after(transaction: &ValidPoolTransaction<TempoPooledTransaction>) -> u64 {
     transaction
@@ -364,27 +371,30 @@ mod tests {
     }
 
     #[test]
-    fn should_hold_respects_lead_time() {
-        let config = DelayedPoolConfig {
-            lead_secs: 2,
-            ..Default::default()
-        };
+    fn delays_transactions_valid_after_the_tip() {
         let sender = Address::random();
         let without_valid_after = TxBuilder::aa(sender).nonce_key(U256::MAX).valid_before(200);
 
-        assert!(!config.should_delay(&without_valid_after.build(), 100));
-        assert!(!config.should_delay(&expiring(sender).valid_after(102).build(), 100));
-        assert!(config.should_delay(&expiring(sender).valid_after(103).build(), 100));
+        assert!(!should_delay(&without_valid_after.build(), 100));
+        assert!(!should_delay(
+            &expiring(sender).valid_after(100).build(),
+            100
+        ));
+        assert!(should_delay(
+            &expiring(sender).valid_after(101).build(),
+            100
+        ));
     }
 
     #[test_case::test_case(U256::ZERO; "protocol")]
     #[test_case::test_case(U256::ONE; "2d")]
-    fn delays_only_expiring_nonce_transactions(nonce_key: U256) {
+    #[test_case::test_case(U256::MAX; "expiring")]
+    fn delays_transactions_with_any_nonce_key(nonce_key: U256) {
         let tx = TxBuilder::aa(Address::random())
             .nonce_key(nonce_key)
             .valid_after(1_000)
             .build();
-        assert!(!DelayedPoolConfig::default().should_delay(&tx, 100));
+        assert!(should_delay(&tx, 100));
     }
 
     #[test]
@@ -409,13 +419,15 @@ mod tests {
         assert_eq!(pool.len(), 1);
     }
 
-    /// A copy with another fee payer has a different hash but the same expiring nonce, so it
+    /// A copy with another fee payer has a different hash but the same signing payload, so it
     /// can't take another of the sender's slots.
-    #[test]
-    fn rejects_copy_with_another_fee_payer() {
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[test_case::test_case(U256::MAX; "expiring")]
+    fn rejects_copy_with_another_fee_payer(nonce_key: U256) {
         let mut pool = DelayedPool::default();
-        let tx = expiring(Address::random()).build();
-        let copy = sponsor(tx.clone(), &PrivateKeySigner::random());
+        let unsponsored = expiring(Address::random()).nonce_key(nonce_key).build();
+        let tx = sponsor(unsponsored.clone(), &PrivateKeySigner::random());
+        let copy = sponsor(unsponsored, &PrivateKeySigner::random());
         assert_ne!(tx.hash(), copy.hash());
         let tx = valid(tx);
         pool.insert(Arc::clone(&tx)).unwrap();
@@ -424,7 +436,7 @@ mod tests {
         assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
         assert_eq!(pool.len(), 1);
 
-        // Removing the transaction frees its expiring nonce.
+        // Removing the transaction lets a copy in.
         pool.remove(tx.hash()).unwrap();
         pool.insert(valid(copy)).unwrap();
     }
@@ -478,20 +490,17 @@ mod tests {
     }
 
     #[test]
-    fn take_due_removes_transactions_within_lead_time() {
-        let mut pool = DelayedPool::new(DelayedPoolConfig {
-            lead_secs: 2,
-            ..Default::default()
-        });
+    fn take_due_removes_transactions_valid_at_the_tip() {
+        let mut pool = DelayedPool::default();
         let early = valid(expiring(Address::random()).build());
         let late = valid(expiring(Address::random()).valid_after(110).build());
         insert(&mut pool, Arc::clone(&late)).unwrap();
         insert(&mut pool, Arc::clone(&early)).unwrap();
 
-        assert!(pool.take_due(102).is_empty());
-        assert_eq!(hashes(&pool.take_due(103)), vec![*early.hash()]);
+        assert!(pool.take_due(104).is_empty());
+        assert_eq!(hashes(&pool.take_due(105)), vec![*early.hash()]);
         assert!(!pool.contains(early.hash()));
-        assert_eq!(hashes(&pool.take_due(108)), vec![*late.hash()]);
+        assert_eq!(hashes(&pool.take_due(110)), vec![*late.hash()]);
         assert_eq!((pool.len(), pool.size()), (0, 0));
     }
 
@@ -539,5 +548,60 @@ mod tests {
         assert!(!pool.contains(cheap.hash()));
         assert!(pool.contains(expensive.hash()));
         assert_eq!(pool.len(), 1);
+    }
+
+    /// A bid that pays no tip at the base fee doesn't evict a transaction that does, however
+    /// high its priority fee cap.
+    #[test]
+    fn ranks_evictions_by_tip_at_the_base_fee() {
+        let mut pool = DelayedPool::new(DelayedPoolConfig {
+            max_count: NonZeroUsize::MIN,
+            ..Default::default()
+        });
+        pool.set_base_fee(600);
+        let paying = valid(
+            expiring(Address::random())
+                .max_fee(2_000)
+                .max_priority_fee(100)
+                .build(),
+        );
+        let at_floor = valid(
+            expiring(Address::random())
+                .max_fee(600)
+                .max_priority_fee(600)
+                .build(),
+        );
+        insert(&mut pool, Arc::clone(&paying)).unwrap();
+
+        assert_eq!(insert(&mut pool, at_floor), None);
+        assert!(pool.contains(paying.hash()));
+    }
+
+    #[test]
+    fn reorders_evictions_when_the_base_fee_changes() {
+        let mut pool = DelayedPool::new(DelayedPoolConfig {
+            max_count: NonZeroUsize::new(2).unwrap(),
+            ..Default::default()
+        });
+        let tx = |max_fee, max_priority_fee| {
+            valid(
+                expiring(Address::random())
+                    .max_fee(max_fee)
+                    .max_priority_fee(max_priority_fee)
+                    .build(),
+            )
+        };
+        // Pays the most while the base fee is low, the least once it nears its fee cap.
+        let capped = tx(700, 700);
+        let steady = tx(2_000, 300);
+        let newcomer = tx(2_000, 100);
+        for tx in [&capped, &steady] {
+            insert(&mut pool, Arc::clone(tx)).unwrap();
+        }
+        assert_eq!(insert(&mut pool, Arc::clone(&newcomer)), None);
+
+        pool.set_base_fee(650);
+        assert_eq!(insert(&mut pool, newcomer), Some(vec![*capped.hash()]));
+        assert!(pool.contains(steady.hash()));
     }
 }
