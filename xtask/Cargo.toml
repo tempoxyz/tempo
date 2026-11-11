@@ -33,7 +33,6 @@ alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
-antithesis_sdk = { workspace = true, features = ["full"] }
 bytes.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 commonware-codec.workspace = true

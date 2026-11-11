@@ -43,7 +43,7 @@ use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{Estimator, EstimatorConfig, TempoPayloadAttributes};
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::{
-    TempoTxEnvelope,
+    TempoAddressExt as _, TempoTxEnvelope,
     transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call},
 };
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
@@ -150,7 +150,13 @@ impl PayloadBench {
         let started = Instant::now();
         let transactions = match &self.txs_file {
             Some(path) => read_transactions(path)?,
-            None => self.generate_transfers(chain_spec.chain_id(), parent.timestamp())?,
+            None => {
+                ensure!(
+                    self.accounts > 0 && self.tokens > 0,
+                    "--accounts and --tokens must be greater than zero"
+                );
+                self.generate_transfers(chain_spec.chain_id(), parent.timestamp())?
+            }
         };
         info!(count = transactions.len(), elapsed = ?started.elapsed(), "Prepared transactions");
 
@@ -263,11 +269,7 @@ impl PayloadBench {
             .map(|_| -> eyre::Result<TempoPooledTransaction> {
                 let sender = &signers[rng.random_range(0..signers.len())];
                 let recipient = signers[rng.random_range(0..signers.len())].address();
-                let token = Address::from_word(
-                    U256::from(rng.random_range(0..self.tokens))
-                        .wrapping_add(U256::from_be_slice(PATH_USD_ADDRESS.as_slice()))
-                        .into(),
-                );
+                let token = Address::new_tip20(rng.random_range(0..self.tokens));
                 let tx = TempoTransaction {
                     chain_id,
                     max_priority_fee_per_gas: 100_000_000_000,

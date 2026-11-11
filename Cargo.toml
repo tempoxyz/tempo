@@ -12,7 +12,6 @@ publish = false
 
 [workspace]
 members = [
-  "contrib/antithesis/reth-proofs",
   "contrib/antithesis/reth-state-root",
   "contrib/antithesis/trie-shapes",
   "bin/tempo",
@@ -46,6 +45,7 @@ members = [
   "crates/transaction-pool",
   "crates/state-bloat",
   "xtask",
+  "xtask/zones-antithesis",
   "bin/tempo-zone",
   "bin/prover/enclave",
   "bin/prover/utils",

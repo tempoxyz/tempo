@@ -1,2 +1,2 @@
 #!/bin/sh
-exec reth-state-root-antithesis parallel_driver_writes
+exec reth-state-root-commands parallel_driver_writes
