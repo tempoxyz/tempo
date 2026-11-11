@@ -1,11 +1,7 @@
 name: Antithesis Zones Images
 
 # Builds the zones Antithesis node image, workload image (the node image plus the test
-<<<<<<< HEAD
 # template) and config image (contrib/antithesis/zones) and pushes them to the Antithesis registry,
-=======
-# template) and config image (zones/antithesis) and pushes them to the Antithesis registry,
->>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
 # ready for a run on the tempo tenant.
 
 permissions: {}
@@ -14,11 +10,7 @@ on:
   push:
     branches: [main]
     paths:
-<<<<<<< HEAD
       - "contrib/antithesis/zones/**"
-=======
-      - "zones/antithesis/**"
->>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
       - "bin/**"
       - "crates/**"
       - "xtask/**"
@@ -83,11 +75,7 @@ jobs:
         with:
           project: 0c6tg19qsp
           context: .
-<<<<<<< HEAD
           file: contrib/antithesis/zones/Dockerfile
-=======
-          file: zones/antithesis/Dockerfile
->>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.image_tags }}
@@ -105,11 +93,7 @@ jobs:
         run: |
           dir="$RUNNER_TEMP/antithesis-workload"
           mkdir -p "$dir"
-<<<<<<< HEAD
           cp -a contrib/antithesis/zones/test "$dir/test"
-=======
-          cp -a zones/antithesis/test "$dir/test"
->>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
           printf 'FROM %s\nCOPY --chmod=755 test/ /opt/antithesis/test/\n' \
             "$REGISTRY/tempo-zones-antithesis@$NODE_DIGEST" > "$dir/Dockerfile"
           image="$REGISTRY/tempo-zones-antithesis-workload"
@@ -133,19 +117,12 @@ jobs:
         run: |
           dir="$RUNNER_TEMP/antithesis-config"
           mkdir -p "$dir"
-<<<<<<< HEAD
           cp contrib/antithesis/zones/docker-compose.yaml "$dir/"
           # Digest only: Antithesis turns a tag@digest reference into a file name, which a long
           # branch tag pushes past the 255-byte limit, and the image is silently dropped.
           {
             echo "ZONES_IMAGE=$REGISTRY/tempo-zones-antithesis@$DIGEST"
             echo "WORKLOAD_IMAGE=$REGISTRY/tempo-zones-antithesis-workload@$WORKLOAD_DIGEST"
-=======
-          cp zones/antithesis/docker-compose.yaml "$dir/"
-          {
-            echo "ZONES_IMAGE=$REGISTRY/tempo-zones-antithesis:$TAG@$DIGEST"
-            echo "WORKLOAD_IMAGE=$REGISTRY/tempo-zones-antithesis-workload:$TAG@$WORKLOAD_DIGEST"
->>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
           } > "$dir/.env"
           printf 'FROM scratch\nCOPY docker-compose.yaml .env /\n' > "$dir/Dockerfile"
           docker build --platform linux/amd64 \
@@ -157,12 +134,7 @@ jobs:
             echo ""
             echo "| Image | Reference |"
             echo "|---|---|"
-<<<<<<< HEAD
             echo "| Node image | \`$REGISTRY/tempo-zones-antithesis@$DIGEST\` |"
             echo "| Workload image | \`$REGISTRY/tempo-zones-antithesis-workload@$WORKLOAD_DIGEST\` |"
-=======
-            echo "| Node image | \`$REGISTRY/tempo-zones-antithesis:$TAG@$DIGEST\` |"
-            echo "| Workload image | \`$REGISTRY/tempo-zones-antithesis-workload:$TAG@$WORKLOAD_DIGEST\` |"
->>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
             echo "| Config image | \`$REGISTRY/tempo-zones-antithesis-config:$TAG\` |"
           } >> "$GITHUB_STEP_SUMMARY"
