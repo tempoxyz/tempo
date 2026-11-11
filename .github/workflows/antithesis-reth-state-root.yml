@@ -100,6 +100,8 @@ jobs:
           container="reth-state-root-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
           # A finite server round still needs driver requests to build and retire its blocks.
+          # Variables in the single-quoted script expand in the container, not on the runner.
+          # shellcheck disable=SC2016
           timeout --signal=TERM --kill-after=15s 300s docker run --rm --init \
             --name "$container" --network none \
             --mount "type=bind,src=$smoke,dst=/smoke" \
