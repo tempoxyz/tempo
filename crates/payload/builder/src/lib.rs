@@ -6,6 +6,7 @@
 mod encode;
 mod metrics;
 mod prewarming;
+mod state_hook;
 
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
@@ -23,6 +24,7 @@ use crate::{
         BestTransactionsLookahead, BestTransactionsParallel, PrewarmedTransaction,
         PrewarmingExecutionContext,
     },
+    state_hook::{BatchedStateHook, STATE_UPDATE_BATCH_SIZE},
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
@@ -1213,11 +1215,12 @@ where
                     continue;
                 }
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
-                    // Hand over a partial batch, so that the roots task works through it during
-                    // the wait instead of after the block is filled.
+                    // Hand over partial batches, so that the roots and state root tasks work
+                    // through them during the wait instead of after the block is filled.
                     if !roots_batch.is_empty() {
                         let _ = roots_tx.send(core::mem::take(&mut roots_batch));
                     }
+                    shared.flush_state();
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -1580,8 +1583,8 @@ struct BlockFill {
 struct SharedBuildState {
     /// The pool transaction the build is executing and when it started.
     executing: Mutex<Option<(TxHash, Instant)>>,
-    /// Streams the state changes of the build to its state root task.
-    state_hook: Mutex<Option<StateRootUpdateHook>>,
+    /// Streams the state changes of the build to its state root task, a batch at a time.
+    state_hook: Mutex<Option<BatchedStateHook<StateRootUpdateHook>>>,
 }
 
 impl SharedBuildState {
@@ -1604,7 +1607,20 @@ impl SharedBuildState {
         (elapsed >= budget?).then_some((tx, elapsed))
     }
 
-    /// Ends the stream of state changes to the state root task.
+    /// Sends the state changes that are waiting for a full batch to the state root task.
+    fn flush_state(&self) {
+        if let Some(hook) = self
+            .state_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            hook.flush();
+        }
+    }
+
+    /// Ends the stream of state changes to the state root task, after sending what still waits
+    /// for a full batch.
     ///
     /// The task hashes the stream on a thread that all state root tasks share, and that thread
     /// stays with the task until the stream ends.
@@ -1627,7 +1643,8 @@ impl StateStream {
         *shared
             .state_hook
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
+            .unwrap_or_else(PoisonError::into_inner) =
+            Some(BatchedStateHook::new(hook, STATE_UPDATE_BATCH_SIZE));
         Self(shared.clone())
     }
 
@@ -1695,6 +1712,7 @@ mod tests {
     use super::*;
     use crossbeam_channel::TryRecvError;
     use reth_engine_tree::tree::{StateRootHandle, StateRootMessage, StateRootTaskCancelGuard};
+    use reth_execution_types::AccountUpdate;
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
@@ -1765,5 +1783,57 @@ mod tests {
             Err(TryRecvError::Disconnected)
         ));
         drop(stream);
+    }
+
+    #[test]
+    fn state_stream_sends_a_partial_batch_when_flushed_and_when_it_ends() {
+        let (updates_tx, updates_rx) = crossbeam_channel::unbounded();
+        let (cancel_guard, _cancel_rx) = StateRootTaskCancelGuard::channel();
+        let (_state_root_tx, state_root_rx) = std::sync::mpsc::channel();
+        let (_hashed_state_tx, hashed_state_rx) = std::sync::mpsc::channel();
+        let mut handle = StateRootHandle::new(
+            B256::ZERO,
+            updates_tx,
+            cancel_guard,
+            state_root_rx,
+            hashed_state_rx,
+        )
+        .into_payload_state_root_handle();
+        let shared = Arc::new(SharedBuildState::default());
+        let stream = StateStream::new(&shared, handle.take_state_hook());
+        let update = || StateUpdate {
+            accounts: vec![AccountUpdate {
+                address: Address::ZERO,
+                original: None,
+                current: None,
+                created: false,
+                wiped: false,
+                storage: Default::default(),
+            }],
+        };
+
+        // Fewer updates than a batch wait for more.
+        stream.on_state(update());
+        assert!(matches!(updates_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        // A build that waits for transactions hands them over.
+        shared.flush_state();
+        assert!(matches!(
+            updates_rx.try_recv(),
+            Ok(StateRootMessage::StateUpdate(_))
+        ));
+        assert!(matches!(updates_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        // The end of the stream sends what is left before it says so.
+        stream.on_state(update());
+        drop(stream);
+        assert!(matches!(
+            updates_rx.try_recv(),
+            Ok(StateRootMessage::StateUpdate(_))
+        ));
+        assert!(matches!(
+            updates_rx.try_recv(),
+            Ok(StateRootMessage::FinishedStateUpdates)
+        ));
     }
 }
