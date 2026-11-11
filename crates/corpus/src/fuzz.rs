@@ -125,24 +125,18 @@ impl Corpus {
         let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
         let task = AbortOnDropHandle::new(self.runtime.spawn(async move {
             // Each window is sized from the stored bytes per block of the one before, starting
-            // from one block, so heavy blocks come in fewer at a time. It ends early at a gap
-            // longer than a whole window, so runs of neighbouring blocks are read as dense windows.
+            // from one block, so heavy blocks come in fewer at a time.
             let (mut rest, mut size) = (&blocks[..], 1);
             while !rest.is_empty() {
-                let len = size.min(rest.len());
-                let len = rest[..len]
-                    .windows(2)
-                    .position(|pair| pair[1] - pair[0] > window as u64)
-                    .map_or(len, |gap| gap + 1);
-                let (blocks, tail) = rest.split_at(len);
+                let (blocks, tail) = rest.split_at(window_len(rest, size, window as u64));
                 rest = tail;
                 let read = async {
-                    let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
+                    if blocks.is_empty() {
                         return Ok(Vec::new());
-                    };
+                    }
                     // A dense window is scanned whole. A sparse one is read with a point read per
                     // block, inside its task, since a point read decompresses SST blocks too.
-                    let payloads = if last - first < SPARSE_SPAN * blocks.len() as u64 {
+                    let payloads = if dense(blocks) {
                         let scanned = store::scan_blocks(&reader, blocks).await?;
                         Either::Left(stream::iter(
                             scanned
@@ -206,6 +200,28 @@ impl Corpus {
 
 /// A window spanning at least this many corpus blocks per block it lists is read with point reads.
 const SPARSE_SPAN: u64 = 4;
+
+/// Whether `blocks`, sorted, are close enough together to scan whole rather than read one by one.
+fn dense(blocks: &[u64]) -> bool {
+    match (blocks.first(), blocks.last()) {
+        (Some(first), Some(last)) => last - first < SPARSE_SPAN * blocks.len() as u64,
+        _ => true,
+    }
+}
+
+/// How many of `blocks`, sorted, the next window takes, out of at most `size`. A dense run ends at
+/// the first gap longer than `window`, so it is scanned without the gap. Lone blocks before a run
+/// are read on their own, so the run starts the next window. Any other window takes all `size`.
+fn window_len(blocks: &[u64], size: usize, window: u64) -> usize {
+    let blocks = &blocks[..size.min(blocks.len())];
+    let near = |pair: &[u64]| pair[1] - pair[0] <= window;
+    match blocks.windows(2).position(|pair| !near(pair)) {
+        None => blocks.len(),
+        Some(0) => blocks.windows(2).position(near).unwrap_or(blocks.len()),
+        Some(gap) if dense(&blocks[..=gap]) => gap + 1,
+        Some(_) => blocks.len(),
+    }
+}
 
 /// A corpus block read by [Corpus::windows].
 pub struct BlockInput {
@@ -379,4 +395,41 @@ pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
         }
     }
     Ok(blocks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_ends_dense_run_at_gap() {
+        let blocks: Vec<u64> = (0..10).chain(1_000..1_010).collect();
+        assert_eq!(window_len(&blocks, 64, 64), 10);
+        assert_eq!(window_len(&blocks[10..], 64, 64), 10);
+    }
+
+    #[test]
+    fn window_keeps_spread_blocks_together() {
+        let blocks: Vec<u64> = (0..20).map(|i| i * 1_000).collect();
+        assert_eq!(window_len(&blocks, 16, 64), 16);
+    }
+
+    #[test]
+    fn window_reads_lone_blocks_before_run() {
+        let blocks: Vec<u64> = [0, 1_000, 2_000].into_iter().chain(5_000..5_010).collect();
+        assert_eq!(window_len(&blocks, 64, 64), 3);
+    }
+
+    #[test]
+    fn window_keeps_sparse_run_across_gap() {
+        let blocks: Vec<u64> = (0..5).map(|i| i * 50).chain([10_000]).collect();
+        assert_eq!(window_len(&blocks, 64, 64), 6);
+    }
+
+    #[test]
+    fn window_respects_size() {
+        let blocks: Vec<u64> = (0..100).collect();
+        assert_eq!(window_len(&blocks, 7, 64), 7);
+        assert_eq!(window_len(&blocks[..3], 7, 64), 3);
+    }
 }
