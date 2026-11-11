@@ -114,6 +114,14 @@ for name in $serial_names {
     assert equal $template.expiring_nonce false
 }
 assert equal ($serial.templates.zone_deposit_0.expiring_nonce) true
+assert equal ($serial.setup.steps | where id == settlement | first | get deploy.constructor_args) [1]
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "2"} {
+    let lagged = (open (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec zone-earn-serial).spec_path 1000 4 2 1337 --out-dir $serial_dir))
+    assert equal ($lagged.setup.steps | where id == settlement | first | get deploy.constructor_args) [2]
+}
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "0"} {
+    assert ((try { txgen-zone-anchor-offset; false } catch { true }))
+}
 rm -rf $serial_dir
 # Card settlement keeps 18 unsponsored shard senders that forward redemptions.
 let card_dir = (mktemp -d)
@@ -489,6 +497,11 @@ with-env {TXGEN_ZONE_TO_ZONE_ACCESS: open, TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
 with-env {TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
     let closed_mix = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 2 2 --out-dir $z2z_dir))
     assert equal ($closed_mix.templates.zone_withdraw_0.calls.0.args.2) {var: setup.settlement.sender}
+}
+assert equal ($z2z.setup.steps.0.deploy.constructor_args) [1]
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "2"} {
+    let lagged = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 2 2 --out-dir $z2z_dir))
+    assert equal ($lagged.setup.steps.0.deploy.constructor_args) [2]
 }
 with-env {TXGEN_ZONE_TO_ZONE_ACCESS: gated} {
     assert ((try { txgen-zone-to-zone-config; false } catch { true }))

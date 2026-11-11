@@ -37,10 +37,14 @@ use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
 use reth_rpc_builder::EthHandlers;
 use reth_rpc_eth_api::{
-    EthApiTypes, EthFilterApiServer, RpcConvert,
+    AsEthApiError, EthApiTypes, EthFilterApiServer, RpcConvert,
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
-use reth_rpc_eth_types::{EthApiError, logs_utils};
+use reth_rpc_eth_types::{
+    EthApiError,
+    error::{RpcInvalidTransactionError, RpcPoolError},
+    logs_utils,
+};
 use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
 use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
@@ -773,6 +777,18 @@ fn map_eth_filter_error(err: EthFilterError) -> JsonRpcError {
     }
 }
 
+/// Maps a transaction submission error, dropping the balance and cost from insufficient-funds
+/// rejections because they belong to the fee payer, which can be a sponsor other than the caller.
+fn map_send_raw_transaction_error(err: impl AsEthApiError + std::fmt::Display) -> JsonRpcError {
+    if let Some(EthApiError::PoolError(RpcPoolError::Invalid(
+        RpcInvalidTransactionError::InsufficientFunds { .. },
+    ))) = err.as_err()
+    {
+        return JsonRpcError::internal("insufficient funds for gas * price + value");
+    }
+    internal(err)
+}
+
 fn stale_filter_owner_ids(
     owner_ids: impl IntoIterator<Item = FilterId>,
     active_ids: &HashSet<FilterId>,
@@ -1249,7 +1265,7 @@ where
 
             let hash = EthTransactions::send_raw_transaction(&self.eth.api, data)
                 .await
-                .map_err(internal)?;
+                .map_err(map_send_raw_transaction_error)?;
             to_raw(&hash)
         })
     }
@@ -1260,7 +1276,7 @@ where
 
             let mut receipt = EthTransactions::send_raw_transaction_sync(&self.eth.api, data, None)
                 .await
-                .map_err(internal)?;
+                .map_err(map_send_raw_transaction_error)?;
 
             receipt = zone_rpc::filter::filter_receipt_logs(receipt);
 

@@ -2,7 +2,11 @@
 //!
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    num::{NonZeroU32, NonZeroUsize},
+    sync::Arc,
+    time::Duration,
+};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
@@ -65,6 +69,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub share: Option<Share>,
 
     pub mailbox_size: NonZeroUsize,
+    pub max_peers: NonZeroU32,
     pub deque_size: usize,
     pub verification_mode: VerificationMode,
 
@@ -215,6 +220,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_tip: (finalized_tip.1, finalized_tip.2),
+                max_peers: self.max_peers,
             },
         )
         .wrap_err("failed initializing peer manager")?;
