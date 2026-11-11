@@ -1429,9 +1429,30 @@ where
         sender: Address,
         on_chain_nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // This is complex with 2D nonces - delegate to protocol pool
-        self.protocol_pool
-            .get_highest_consecutive_transaction_by_sender(sender, on_chain_nonce)
+        // This is complex with 2D nonces - only protocol nonces (nonce_key=0) are considered
+        let mut highest = self
+            .protocol_pool
+            .get_highest_consecutive_transaction_by_sender(sender, on_chain_nonce);
+
+        // A delayed transaction continues the sequence like a pooled one, so the pending nonce
+        // RPC reports doesn't hand its nonce out again.
+        let delayed: HashMap<_, _> = self
+            .delayed_pool
+            .read()
+            .transactions_by_sender(sender)
+            .filter(|tx| !tx.transaction.is_aa_2d())
+            .map(|tx| (tx.nonce(), Arc::clone(tx)))
+            .collect();
+        loop {
+            let next_nonce = highest.as_ref().map_or(on_chain_nonce, |tx| tx.nonce() + 1);
+            let Some(tx) = delayed.get(&next_nonce) else {
+                return highest;
+            };
+            highest = self
+                .protocol_pool
+                .get_highest_consecutive_transaction_by_sender(sender, next_nonce + 1)
+                .or_else(|| Some(Arc::clone(tx)));
+        }
     }
 
     fn get_transaction_by_sender_and_nonce(
@@ -1439,9 +1460,16 @@ where
         sender: Address,
         nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // Only returns transactions from protocol pool (nonce_key=0)
+        // Only returns transactions with a protocol nonce (nonce_key=0)
         self.protocol_pool
             .get_transaction_by_sender_and_nonce(sender, nonce)
+            .or_else(|| {
+                self.delayed_pool
+                    .read()
+                    .transactions_by_sender(sender)
+                    .find(|tx| !tx.transaction.is_aa_2d() && tx.nonce() == nonce)
+                    .cloned()
+            })
     }
 
     fn get_transactions_by_origin(
@@ -3976,6 +4004,41 @@ mod tests {
             "protocol nonces belong to the protocol pool"
         );
         assert_eq!(pool.aa_2d_pool.read().contains(&hash), !nonce_key.is_zero());
+    }
+
+    /// The pending nonce reth's RPC reports comes from the highest consecutive transaction. A
+    /// delayed transaction with a protocol nonce counts, so a wallet doesn't reuse its nonce.
+    #[tokio::test]
+    async fn delayed_protocol_nonce_transaction_counts_toward_pending_nonce() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let nonces = |pool: &TempoTransactionPool<_>| {
+            (
+                pool.get_highest_consecutive_transaction_by_sender(sender, 0)
+                    .map(|tx| tx.nonce()),
+                pool.get_transaction_by_sender_and_nonce(sender, 0)
+                    .map(|tx| *tx.hash()),
+            )
+        };
+        assert_eq!(nonces(&pool), (None, None));
+
+        let delayed = TxBuilder::aa(sender).nonce(0).valid_after(tip + 60).build();
+        let delayed_hash = *delayed.hash();
+        pool.add_transaction(TransactionOrigin::External, delayed)
+            .await
+            .expect("transaction should be delayed");
+        assert!(pool.delayed_pool.read().contains(&delayed_hash));
+        assert_eq!(nonces(&pool), (Some(0), Some(delayed_hash)));
+
+        // Its successor waits in the protocol pool and extends the sequence.
+        pool.add_transaction(
+            TransactionOrigin::External,
+            TxBuilder::aa(sender).nonce(1).build(),
+        )
+        .await
+        .expect("transaction should be admitted");
+        assert_eq!(nonces(&pool), (Some(1), Some(delayed_hash)));
     }
 
     #[tokio::test]
