@@ -188,31 +188,29 @@ impl Estimator {
         self.lock_state().build_time.multiplier(now).get()
     }
 
-    /// Snapshots learned costs at monotonic `now`, excluding expired feedback.
-    /// Does not advance the network reservation. The return allowance is from
-    /// the most recent proposal, including its preparation cap.
+    /// Snapshots pacing estimates and the last prepared proposal's allowances.
+    ///
+    /// `now` is monotonic. Build estimates fall back to their configured initial
+    /// values when all build samples have expired; while any remain, earlier
+    /// samples can still influence the smoothed estimates. Validation uses a
+    /// height-bounded window, not a time limit. Network feedback expires at `now`,
+    /// but the reservation and return budget remain those of the last proposal.
+    /// Reading a snapshot removes expired network feedback without advancing the
+    /// reservation. Before the first proposal, allowances use the network floor
+    /// without a preparation cap.
     pub fn snapshot(&self, now: Instant) -> EstimatorSnapshot {
         let mut state = self.lock_state();
-        let mut snapshot = EstimatorSnapshot {
+        let network = state.network.snapshot(now);
+        EstimatorSnapshot {
             validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
             build_time_multiplier: state.build_time.multiplier(now).get(),
-            build_time_samples: 0,
             dry_build_finish: state.build_time.dry_finish(now),
-            dry_build_samples: 0,
-            network_observed: None,
-            network_last_sample: None,
-            network_reserve: Duration::ZERO,
-            network_samples: 0,
-            pending_proposals: 0,
-            proposal_return_budget: Duration::ZERO,
-        };
-        state.build_time.snapshot(now, &mut snapshot);
-        state.network.snapshot(now, &mut snapshot);
-        snapshot.proposal_return_budget = state.last_return_budget.unwrap_or_else(|| {
-            self.target_block_time
-                .saturating_sub(snapshot.network_reserve)
-        });
-        snapshot
+            network_target: network.target,
+            network_reserve: network.reservation,
+            proposal_return_budget: state
+                .last_return_budget
+                .unwrap_or_else(|| self.target_block_time.saturating_sub(network.reservation)),
+        }
     }
 
     /// Locks the shared state, blocking while another clone holds it.
@@ -342,33 +340,23 @@ impl FinishedBuild {
     }
 }
 
-/// Everything the estimator currently believes, for logs and metrics.
+/// Pacing estimates and proposal allowances exposed for metrics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EstimatorSnapshot {
     /// Recent P90 execution-layer validation time, if observed.
     pub validation_latency_p90: Option<Duration>,
     /// Build time multiplier in use.
     pub build_time_multiplier: f64,
-    /// Number of finished builds in the multiplier's window, which holds no
-    /// dry build.
-    pub build_time_samples: usize,
     /// Finish a build that waited for transactions reserves.
     pub dry_build_finish: Duration,
-    /// Number of dry builds the dry build finish is derived from.
-    pub dry_build_samples: usize,
-    /// Learned network time before clamping, if the window holds a completed
-    /// proposal: the window percentile, under fast rise lifted to the smaller of
-    /// the two newest samples. Clamped, this is the reservation's target.
-    pub network_observed: Option<Duration>,
-    /// Newest network sample in the window.
-    pub network_last_sample: Option<Duration>,
+    /// Unclamped adaptive network reservation target, or `None` in fixed mode
+    /// or without live network samples. During the first three samples it uses
+    /// the configured floor rather than the percentile; fast rise can lift it
+    /// to the smaller of the two newest samples even during that warm-up.
+    pub network_target: Option<Duration>,
     /// Network reservation the most recent own proposal used, or the floor
     /// before the first one.
     pub network_reserve: Duration,
-    /// Number of completed proposals in the window.
-    pub network_samples: usize,
-    /// Own proposals still waiting for the block built on top of them.
-    pub pending_proposals: usize,
     /// Last prepared return budget, including its preparation cap, or the
     /// target interval less the network floor before the first proposal.
     pub proposal_return_budget: Duration,

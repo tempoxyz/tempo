@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{BuildTimeMultiplier, EstimatorSnapshot, FinishedBuild};
+use super::{BuildTimeMultiplier, FinishedBuild};
 use crate::samples::{is_expired, record_sample, sample_percentile, step_toward};
 use tracing::debug;
 
@@ -89,21 +89,6 @@ impl BuildTimeTracker {
             samples = self.multiplier_scaled.samples.len(),
             "recorded build time multiplier sample"
         );
-    }
-
-    pub(super) fn snapshot(&self, now: Instant, snapshot: &mut EstimatorSnapshot) {
-        snapshot.build_time_samples = self
-            .multiplier_scaled
-            .samples
-            .iter()
-            .filter(|(at, _)| !is_expired(*at, now, SAMPLE_TTL))
-            .count();
-        snapshot.dry_build_samples = self
-            .dry_finish
-            .samples
-            .iter()
-            .filter(|(at, _)| !is_expired(*at, now, SAMPLE_TTL))
-            .count();
     }
 
     /// The learned multiplier at `now`.

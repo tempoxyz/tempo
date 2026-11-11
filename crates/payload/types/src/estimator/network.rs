@@ -1,7 +1,7 @@
 //! Network reservation learned from finalized successors of own proposals.
 
 use super::{
-    EstimatorSnapshot, ProposalKey, ProposalTiming,
+    ProposalKey, ProposalTiming,
     config::{EstimatorConfig, NetworkReservation},
 };
 use crate::samples::{is_expired, prune_samples, record_sample, sample_percentile, step_toward};
@@ -116,7 +116,7 @@ impl NetworkTracker {
             epoch = parent.epoch,
             view = parent.view,
             ?network_sample,
-            network_target = ?self.observed(),
+            network_target = ?self.reservation_target(),
             network_reserve = ?self.current_reservation,
             samples = self.samples.len(),
             "recorded network sample"
@@ -125,17 +125,16 @@ impl NetworkTracker {
     }
 
     /// Expires retained observations without advancing the reservation.
-    pub(super) fn snapshot(&mut self, now: Instant, snapshot: &mut EstimatorSnapshot) {
+    pub(super) fn snapshot(&mut self, now: Instant) -> NetworkSnapshot {
         self.prune(now);
-        snapshot.network_reserve = self.current_reservation;
-        snapshot.network_samples = self.samples.len();
-        snapshot.pending_proposals = self.pending.len();
-        snapshot.network_last_sample = self.samples.back().map(|(_, value)| *value);
-        snapshot.network_observed = self.observed();
+        NetworkSnapshot {
+            reservation: self.current_reservation,
+            target: self.reservation_target(),
+        }
     }
 
     /// Unclamped target, with warm-up and corroborated fast rise applied.
-    fn observed(&self) -> Option<Duration> {
+    fn reservation_target(&self) -> Option<Duration> {
         let NetworkReservation::Adaptive {
             network_reserve_percentile,
             network_reserve_fast_rise,
@@ -172,9 +171,9 @@ impl NetworkTracker {
             return self.minimum_reservation;
         };
         let target = self
-            .observed()
-            .map_or(self.minimum_reservation, |observed| {
-                observed.clamp(self.minimum_reservation, network_budget_max)
+            .reservation_target()
+            .map_or(self.minimum_reservation, |target| {
+                target.clamp(self.minimum_reservation, network_budget_max)
             });
         self.current_reservation = step_toward(
             self.current_reservation,
@@ -187,6 +186,12 @@ impl NetworkTracker {
         );
         self.current_reservation
     }
+}
+
+/// The last reservation and the current policy-adjusted target.
+pub(super) struct NetworkSnapshot {
+    pub(super) reservation: Duration,
+    pub(super) target: Option<Duration>,
 }
 
 #[derive(Debug)]

@@ -100,7 +100,7 @@ pub struct ValidationLatencyEstimate {
 
 impl ValidationLatencyEstimate {
     /// The recent P90 validation time this estimate is floored at.
-    pub fn elapsed(self) -> Duration {
+    pub(crate) fn elapsed(self) -> Duration {
         self.elapsed
     }
 
