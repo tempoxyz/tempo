@@ -124,6 +124,12 @@ pub(crate) async fn validate_registered_sequencer_set(
         "ZonePortal sequencer set changed during startup validation ({sequencer_set_version} -> {validated_version})"
     );
 
+    eyre::ensure!(
+        registered.len() == quorum.len(),
+        "ZonePortal returned {} sequencer membership answers for {} manifest quorum nodes",
+        registered.len(),
+        quorum.len()
+    );
     for ((node, address), is_registered) in quorum.iter().zip(registered) {
         let name = node.name();
         eyre::ensure!(
@@ -774,6 +780,41 @@ mod tests {
             err.to_string().contains(&format!(
                 "ZonePortal {portal_address} is not deployed at the current L1 tip"
             )),
+            "unexpected error: {err}"
+        );
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn short_membership_answer_is_rejected() {
+        let asserter = Asserter::new();
+        asserter.push_success(&Bytes::from_static(&[0x60]));
+        let metadata: Vec<Bytes> = vec![
+            1_u64.abi_encode().into(),
+            3_u64.abi_encode().into(),
+            U256::from(3).abi_encode().into(),
+        ];
+        asserter.push_success(&Bytes::from((U256::ZERO, metadata).abi_encode_params()));
+        // Two membership answers for three quorum members.
+        let registered: Vec<Bytes> = vec![true.abi_encode().into(); 2];
+        asserter.push_success(&Bytes::from((U256::ZERO, registered).abi_encode_params()));
+        asserter.push_success(&Bytes::from(1_u64.abi_encode()));
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter.clone())
+            .erased();
+
+        let err = validate_registered_sequencer_set(
+            &test_manifest(),
+            alloy_primitives::Address::repeat_byte(0x11),
+            &provider,
+        )
+        .await
+        .expect_err("a short membership answer must not skip the remaining quorum nodes");
+
+        assert!(
+            err.to_string().contains(
+                "ZonePortal returned 2 sequencer membership answers for 3 manifest quorum nodes"
+            ),
             "unexpected error: {err}"
         );
         assert!(asserter.read_q().is_empty());
