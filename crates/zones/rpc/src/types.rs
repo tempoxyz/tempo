@@ -4,9 +4,14 @@ use std::{future::Future, pin::Pin};
 
 use alloy_primitives::{Address, B256, Bytes, U64, U256};
 use alloy_rpc_types_debug::ExecutionWitness;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, value::RawValue};
 use tempo_primitives::TempoHeader;
+
+/// Maximum byte length of a string request ID.
+///
+/// The ID is echoed in every response, so it is bounded at parse time.
+pub const MAX_REQUEST_ID_LEN: usize = 128;
 
 /// Shorthand for the boxed future returned by [`ZoneRpcApi`](crate::handlers::ZoneRpcApi) methods.
 ///
@@ -47,7 +52,8 @@ pub struct JsonRpcRequest {
     pub method: String,
     /// The parameters (raw JSON).
     pub params: Option<Box<serde_json::value::RawValue>>,
-    /// The request ID.
+    /// The request ID: a string of at most [`MAX_REQUEST_ID_LEN`] bytes, a number, or null.
+    #[serde(deserialize_with = "deserialize_request_id")]
     pub id: Value,
 }
 
@@ -492,4 +498,56 @@ pub fn to_raw<T: serde::Serialize>(value: &T) -> Result<Box<RawValue>, JsonRpcEr
 /// Shorthand for wrapping any `Display` error into a [`JsonRpcError::internal`].
 pub fn internal(e: impl std::fmt::Display) -> JsonRpcError {
     JsonRpcError::internal(e.to_string())
+}
+
+/// Deserializes a request ID, accepting only a short string, a number, or null.
+fn deserialize_request_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Value, D::Error> {
+    let id = Value::deserialize(deserializer)?;
+    match &id {
+        Value::Null | Value::Number(_) => Ok(id),
+        Value::String(value) if value.len() <= MAX_REQUEST_ID_LEN => Ok(id),
+        _ => Err(de::Error::custom(format_args!(
+            "request id must be null, a number, or a string of at most {MAX_REQUEST_ID_LEN} bytes"
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn parse(id: &str) -> Result<JsonRpcRequest, serde_json::Error> {
+        serde_json::from_str(&format!(
+            r#"{{"jsonrpc":"2.0","method":"eth_chainId","id":{id}}}"#
+        ))
+    }
+
+    #[test]
+    fn request_id_accepts_string_number_null() {
+        let max = "a".repeat(MAX_REQUEST_ID_LEN);
+        for (raw, expected) in [
+            ("null".to_string(), Value::Null),
+            ("7".to_string(), json!(7)),
+            ("-7".to_string(), json!(-7)),
+            ("1.5".to_string(), json!(1.5)),
+            (r#""abc""#.to_string(), json!("abc")),
+            (format!(r#""{max}""#), json!(max)),
+        ] {
+            assert_eq!(parse(&raw).unwrap().id, expected, "id {raw}");
+        }
+    }
+
+    #[test]
+    fn request_id_rejects_other_ids() {
+        let long = format!(r#""{}""#, "a".repeat(MAX_REQUEST_ID_LEN + 1));
+        for raw in [long.as_str(), "true", r#"["a"]"#, r#"{"a":"b"}"#] {
+            let err = parse(raw).unwrap_err().to_string();
+            assert!(
+                err.starts_with("request id must be null, a number, or a string"),
+                "{err}"
+            );
+            assert!(!err.contains(raw), "{err}");
+        }
+    }
 }

@@ -558,6 +558,27 @@ async fn ws_invalid_json() {
 }
 
 #[tokio::test]
+async fn ws_oversized_request_id_is_parse_error() {
+    let ctx = TestContext::start(MockZoneRpcApi::default()).await;
+    let mut ws = connect_with_header(&ctx).await;
+    let id = "x".repeat(zone_rpc::types::MAX_REQUEST_ID_LEN + 1);
+
+    for request in [
+        serde_json::json!({"jsonrpc":"2.0","method":"eth_chainId","id":id}),
+        serde_json::json!([{"jsonrpc":"2.0","method":"eth_chainId","id":id}]),
+    ] {
+        ws.send(tungstenite::Message::Text(request.to_string().into()))
+            .await
+            .unwrap();
+        let resp = parse_response(ws.next().await.unwrap().unwrap());
+
+        assert_eq!(resp["error"]["code"], -32700);
+        assert_eq!(resp["id"], Value::Null);
+        assert!(!resp.to_string().contains(&id));
+    }
+}
+
+#[tokio::test]
 async fn ws_unknown_method() {
     let ctx = TestContext::start(MockZoneRpcApi::default()).await;
     let mut ws = connect_with_header(&ctx).await;
