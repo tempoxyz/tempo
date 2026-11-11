@@ -795,7 +795,7 @@ impl TempoPoolBuilder {
         client: Client,
         validator: EthTransactionValidatorBuilder<Client, TempoEvmConfig>,
         executor: Runtime,
-        pool_config: PoolConfig,
+        mut pool_config: PoolConfig,
         lazy_kzg_settings: bool,
     ) -> eyre::Result<TempoTransactionPool<Client>>
     where
@@ -805,6 +805,8 @@ impl TempoPoolBuilder {
             + Clone
             + 'static,
     {
+        pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
+
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
         let validator = validator
@@ -1007,8 +1009,7 @@ where
         ctx: &BuilderContext<Node>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::Pool> {
-        let mut pool_config = ctx.pool_config();
-        pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
+        let pool_config = ctx.pool_config();
 
         let validator =
             TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
