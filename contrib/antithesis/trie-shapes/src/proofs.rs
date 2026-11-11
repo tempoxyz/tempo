@@ -1,6 +1,6 @@
-//! The reth-proofs server's answer to a proof request, shared with its test commands. The checks
-//! of its proofs live in the commands binary (src/bin/reth-proofs-commands), so their assertions
-//! register only there.
+//! The reth-state-root server's answer to a proof request, shared with its test commands. The
+//! checks of its proofs live in the commands binary (src/bin/reth-state-root-commands), so their
+//! assertions register only there.
 
 use alloy_primitives::Bytes;
 use reth_trie_common::AccountProof;
