@@ -303,7 +303,6 @@ mod tests {
             reads,
             (Ok(commitment), Ok(B256::ZERO), Ok(B256::ZERO), Ok(value))
         );
-        // The dropped reader ends the channel. Deduplication happens in the fetch task.
         assert_eq!(sent.collect::<Vec<_>>().await, vec![fresh, fresh]);
     }
 
