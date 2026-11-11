@@ -203,30 +203,6 @@ impl AA2dPool {
         Some(removed)
     }
 
-    /// Removes the delayed transactions with the given hashes and returns them.
-    pub(crate) fn remove_delayed_transactions<'a>(
-        &mut self,
-        hashes: impl IntoIterator<Item = &'a TxHash>,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let removed = self.delayed.remove_transactions(hashes);
-        for tx in &removed {
-            self.untrack_delayed(tx);
-        }
-        removed
-    }
-
-    /// Removes the delayed transactions sent by `sender` and returns them.
-    pub(crate) fn remove_delayed_by_sender(
-        &mut self,
-        sender: Address,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let removed = self.delayed.remove_transactions_by_sender(sender);
-        for tx in &removed {
-            self.untrack_delayed(tx);
-        }
-        removed
-    }
-
     /// Counts a transaction that entered the delayed set against its authorities and tracks its
     /// `expiring_nonce_seen` slot, so [`Self::on_state_updates`] removes it once a block uses its
     /// expiring nonce.
@@ -1111,6 +1087,8 @@ impl AA2dPool {
                         .or_insert(id.nonce);
                 }
                 txs.push(tx);
+            } else if let Some(tx) = self.remove_delayed(tx_hash) {
+                txs.push(tx);
             }
         }
 
@@ -1217,6 +1195,9 @@ impl AA2dPool {
                 if let Some(id) = id {
                     self.remove_descendants(&id, &mut removed);
                 }
+            } else if let Some(tx) = self.remove_delayed(hash) {
+                // Delayed transactions use expiring nonces, so they have no descendants.
+                removed.push(tx);
             }
         }
         removed
@@ -1246,6 +1227,12 @@ impl AA2dPool {
                 removed.push(tx);
             }
         }
+        let delayed: Vec<_> = self
+            .delayed
+            .transactions_by_sender(sender_id)
+            .map(|tx| *tx.hash())
+            .collect();
+        removed.extend(delayed.iter().filter_map(|hash| self.remove_delayed(hash)));
         removed
     }
 

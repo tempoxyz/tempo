@@ -149,32 +149,6 @@ impl DelayedPool {
         Some(transaction)
     }
 
-    /// Removes the delayed transactions with the given hashes and returns them.
-    pub(crate) fn remove_transactions<'a>(
-        &mut self,
-        hashes: impl IntoIterator<Item = &'a TxHash>,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        if self.by_hash.is_empty() {
-            return Vec::new();
-        }
-        hashes
-            .into_iter()
-            .filter_map(|hash| self.remove(hash))
-            .collect()
-    }
-
-    /// Removes the delayed transactions sent by `sender` and returns them.
-    pub(crate) fn remove_transactions_by_sender(
-        &mut self,
-        sender: Address,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let hashes: Vec<_> = self
-            .transactions_by_sender(sender)
-            .map(|delayed| *delayed.hash())
-            .collect();
-        self.remove_transactions(&hashes)
-    }
-
     /// Returns whether a delayed transaction uses the expiring nonce with this hash.
     pub(crate) fn contains_expiring_nonce(&self, expiring_nonce_hash: &B256) -> bool {
         self.by_expiring_nonce.contains(expiring_nonce_hash)
@@ -409,35 +383,11 @@ mod tests {
         insert(&mut pool, valid(tx)).unwrap();
         assert!(pool.contains_expiring_nonce(&expiring_nonce));
 
-        assert_eq!(hashes(&pool.remove_transactions([&hash])), vec![hash]);
+        assert_eq!(*pool.remove(&hash).unwrap().hash(), hash);
         assert!(!pool.contains(&hash));
         assert_eq!((pool.len(), pool.size()), (0, 0));
         assert!(pool.take_due(u64::MAX).is_empty());
         assert!(!pool.contains_expiring_nonce(&expiring_nonce));
-    }
-
-    #[test]
-    fn removes_transactions_by_sender() {
-        let mut pool = DelayedPool::default();
-        let sender = Address::random();
-        let ours = [
-            valid(expiring(sender).build()),
-            valid(expiring(sender).valid_before(201).build()),
-        ];
-        let other = valid(expiring(Address::random()).build());
-        for tx in ours.iter().chain([&other]) {
-            insert(&mut pool, Arc::clone(tx)).unwrap();
-        }
-
-        let mut removed = hashes(&pool.remove_transactions_by_sender(sender));
-        removed.sort();
-        let mut expected = hashes(&ours);
-        expected.sort();
-        assert_eq!(removed, expected);
-        assert_eq!(
-            hashes(&pool.transactions().cloned().collect::<Vec<_>>()),
-            vec![*other.hash()]
-        );
     }
 
     #[test]

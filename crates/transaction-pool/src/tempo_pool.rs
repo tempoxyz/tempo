@@ -651,21 +651,6 @@ where
         })
     }
 
-    /// Notifies listeners that the delayed transactions were removed and appends them to `removed`.
-    fn notify_delayed_removed(
-        &self,
-        removed: &mut Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-        delayed: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    ) {
-        if delayed.is_empty() {
-            return;
-        }
-        self.protocol_pool
-            .inner()
-            .notify_on_transaction_updates(Vec::new(), delayed.clone());
-        removed.extend(delayed);
-    }
-
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
     ///
     /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
@@ -1212,15 +1197,8 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let (delayed, mut txs) = {
-            let mut aa_2d_pool = self.aa_2d_pool.write();
-            (
-                aa_2d_pool.remove_delayed_transactions(hashes.iter()),
-                aa_2d_pool.remove_transactions(hashes.iter()),
-            )
-        };
+        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
         txs.extend(self.protocol_pool.remove_transactions(hashes));
-        self.notify_delayed_removed(&mut txs, delayed);
         txs
     }
 
@@ -1228,19 +1206,14 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // Delayed transactions use expiring nonces, so none descends from another transaction.
-        let (delayed, mut txs) = {
-            let mut aa_2d_pool = self.aa_2d_pool.write();
-            (
-                aa_2d_pool.remove_delayed_transactions(hashes.iter()),
-                aa_2d_pool.remove_transactions_and_descendants(hashes.iter()),
-            )
-        };
+        let mut txs = self
+            .aa_2d_pool
+            .write()
+            .remove_transactions_and_descendants(hashes.iter());
         txs.extend(
             self.protocol_pool
                 .remove_transactions_and_descendants(hashes),
         );
-        self.notify_delayed_removed(&mut txs, delayed);
         txs
     }
 
@@ -1248,15 +1221,11 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let (delayed, mut txs) = {
-            let mut aa_2d_pool = self.aa_2d_pool.write();
-            (
-                aa_2d_pool.remove_delayed_by_sender(sender),
-                aa_2d_pool.remove_transactions_by_sender(sender),
-            )
-        };
+        let mut txs = self
+            .aa_2d_pool
+            .write()
+            .remove_transactions_by_sender(sender);
         txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
-        self.notify_delayed_removed(&mut txs, delayed);
         txs
     }
 
@@ -1264,12 +1233,7 @@ where
         &self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = {
-            let mut aa_2d_pool = self.aa_2d_pool.write();
-            let mut txs = aa_2d_pool.remove_delayed_transactions(hashes.iter());
-            txs.extend(aa_2d_pool.remove_transactions(hashes.iter()));
-            txs
-        };
+        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
         txs.extend(self.protocol_pool.prune_transactions(hashes));
         txs
     }
@@ -4062,16 +4026,11 @@ mod tests {
                 .expect("transaction should be delayed");
         }
         assert_eq!(pool.aa_2d_pool.read().delayed().len(), 3);
-        let mut events = pool.all_transactions_event_listener();
 
         assert_eq!(
             tx_hashes(&pool.remove_transactions(vec![removed])),
             vec![removed]
         );
-        assert!(matches!(
-            next_event_for(&mut events, removed),
-            Some(FullTransactionEvent::Discarded(_))
-        ));
 
         let all = pool.all_transactions();
         assert_eq!(
