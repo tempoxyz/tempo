@@ -53,12 +53,13 @@ use reth_storage_api::{
     EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
     StateRootProvider,
 };
-use reth_tasks::{CancelOnDrop, TaskExecutor};
+use reth_tasks::{CancelOnDrop, TaskExecutor, utils::increase_thread_priority};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
 use std::{
+    cell::Cell,
     num::NonZeroU64,
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
@@ -91,6 +92,9 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// How often a build that waits for its worker thread checks whether its job was cancelled.
 const BUILD_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+/// Name of the thread that builds payloads with a deadline.
+const BUILD_WORKER_THREAD: &str = "builder-worker";
 
 /// Consecutive pool transactions whose gas limit exceeds the remaining block gas before the builder
 /// treats the block as full.
@@ -355,8 +359,9 @@ where
         let worker_shared = shared.clone();
         let span = Span::current();
         self.executor
-            .spawn_blocking_named_or_tokio("builder-worker", move || {
+            .spawn_blocking_named_or_tokio(BUILD_WORKER_THREAD, move || {
                 let _permit = permit;
+                increase_build_worker_priority();
                 let _span = span.entered();
                 // Nobody is waiting if the build was abandoned.
                 let _ = outcome_tx.send(this.build_pool_payload(args, &worker_shared));
@@ -1688,6 +1693,20 @@ fn detach_state_root_task(
         task.try_take_hashed_state_rx(),
     ));
     Some(task)
+}
+
+/// Raises the priority of the [`BUILD_WORKER_THREAD`], once per thread.
+///
+/// A proposal waits for its build, which runs on one thread, while the node also serves RPC,
+/// imports pool transactions, computes proofs and prewarms on its other cores. At normal
+/// priority the build loses part of its budget to that work, as the engine and sparse trie
+/// threads would without the same raise. A build that runs on a shared blocking thread, because
+/// an abandoned build still holds the worker thread, keeps that thread's priority.
+fn increase_build_worker_priority() {
+    thread_local!(static RAISED: Cell<bool> = const { Cell::new(false) });
+    if std::thread::current().name() == Some(BUILD_WORKER_THREAD) && !RAISED.replace(true) {
+        increase_thread_priority();
+    }
 }
 
 /// Result produced by the roots task while finalizing payload block data.
