@@ -105,6 +105,12 @@ const MAX_CONSECUTIVE_GAS_LIMIT_SKIPS: u32 = 128;
 /// See [`MAX_CONSECUTIVE_GAS_LIMIT_SKIPS`]: at most 1% of the block gas can be left unused.
 const EARLY_STOP_REMAINING_GAS_DIVISOR: u64 = 100;
 
+/// Number of executed transactions sent to the roots task at once.
+///
+/// Every send wakes the roots task, so sending each transaction on its own costs the builder
+/// thread a wakeup per transaction.
+const ROOTS_BATCH_SIZE: usize = 64;
+
 /// Source of transactions for payload building.
 enum PayloadTransactions<Provider> {
     /// Executed by the builder in pool order, with or without prewarming.
@@ -1108,7 +1114,7 @@ where
         &self,
         executor: &mut TempoBlockExecutor<'_>,
         best_txs: &mut PayloadTransactions<Provider>,
-        roots_tx: &Sender<(BestTransaction, TempoReceipt)>,
+        roots_tx: &Sender<Vec<(BestTransaction, TempoReceipt)>>,
         cancel: &CancelOnDrop,
         shared: &SharedBuildState,
         limits: FillLimits,
@@ -1145,6 +1151,7 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut consecutive_gas_limit_skips = 0u32;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut roots_batch = Vec::with_capacity(ROOTS_BATCH_SIZE);
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -1206,6 +1213,11 @@ where
                     continue;
                 }
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
+                    // Hand over a partial batch, so that the roots task works through it during
+                    // the wait instead of after the block is filled.
+                    if !roots_batch.is_empty() {
+                        let _ = roots_tx.send(core::mem::take(&mut roots_batch));
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -1415,8 +1427,17 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let _ = roots_tx.send((tx, receipt));
+            roots_batch.push((tx, receipt));
+            if roots_batch.len() >= ROOTS_BATCH_SIZE {
+                let _ = roots_tx.send(core::mem::replace(
+                    &mut roots_batch,
+                    Vec::with_capacity(ROOTS_BATCH_SIZE),
+                ));
+            }
         };
+        if !roots_batch.is_empty() {
+            let _ = roots_tx.send(roots_batch);
+        }
 
         Ok(Some(BlockFill {
             block_build_stop_reason,
@@ -1438,11 +1459,11 @@ where
     fn spawn_roots_task(
         &self,
     ) -> (
-        Sender<(BestTransaction, TempoReceipt)>,
+        Sender<Vec<(BestTransaction, TempoReceipt)>>,
         oneshot::Receiver<RootsTaskResult>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
+            crossbeam_channel::unbounded::<Vec<(BestTransaction, TempoReceipt)>>();
         let (result_tx, result_rx) = oneshot::channel();
         let parent = Span::current();
 
@@ -1462,7 +1483,7 @@ where
 
                 let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
+                for (tx, receipt) in transactions_rx.into_iter().flatten() {
                     let (tx, sender) = tx.transaction.inner().clone().into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
