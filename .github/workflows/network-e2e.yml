@@ -298,8 +298,11 @@ jobs:
               if (contexts.every(c => c in latest)) break;
             }
             for (const statusContext of contexts) {
-              // In the queue a newer attempt may own this SHA; pull requests have no Argo run to race.
-              if (queue && !latest[statusContext]?.description?.startsWith(`${owner}: `)) continue;
+              const current = latest[statusContext];
+              // In the queue, skip only a status a newer attempt owns; a missing one still gets the failure.
+              if (queue && current && !current.description?.startsWith(`${owner}: `)) continue;
+              // A pull request never overwrites a status: its head SHA could be a merge-group commit.
+              if (!queue && current) continue;
               await github.rest.repos.createCommitStatus({
                 ...context.repo, sha: process.env.SHA, context: statusContext,
                 state: skipped ? 'success' : 'failure',
