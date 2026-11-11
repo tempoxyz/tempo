@@ -687,8 +687,8 @@ pub struct ConfigurableAccountWeightAccumulator {
     threshold: u8,
     prev_owner: Option<Address>,
     recovered_weight: u16,
-    /// Lightest recorded approval weight; `u8::MAX` until the first.
-    min_weight: u8,
+    /// Lightest recorded approval weight.
+    min_weight: Option<u8>,
     signer_count: usize,
 }
 
@@ -702,7 +702,7 @@ impl ConfigurableAccountWeightAccumulator {
             threshold,
             prev_owner: None,
             recovered_weight: 0,
-            min_weight: u8::MAX,
+            min_weight: None,
             signer_count: 0,
         })
     }
@@ -730,7 +730,7 @@ impl ConfigurableAccountWeightAccumulator {
         self.prev_owner = Some(owner);
 
         self.recovered_weight += u16::from(weight);
-        self.min_weight = self.min_weight.min(weight);
+        self.min_weight = Some(self.min_weight.map_or(weight, |min| min.min(weight)));
         Ok(())
     }
 
@@ -749,7 +749,10 @@ impl ConfigurableAccountWeightAccumulator {
         }
         // Dropping the lightest approval must fall below the threshold, so no approval can be
         // stripped from a valid quorum.
-        if self.recovered_weight >= u16::from(self.threshold) + u16::from(self.min_weight) {
+        if self
+            .min_weight
+            .is_some_and(|min| self.recovered_weight >= u16::from(self.threshold) + u16::from(min))
+        {
             return Err(ConfigurableAccountQuorumError::ExcessSignatures);
         }
         Ok(())

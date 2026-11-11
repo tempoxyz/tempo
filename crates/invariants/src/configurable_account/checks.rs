@@ -184,7 +184,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
         },
     },
     // Approvals are ascending owners that reach the threshold and fall below it without any one.
-    // <https://github.com/tempoxyz/tempo/blob/84040258b7d8696ff7c84cfb9622c5841e515bd4/tips/tip-1107.md#L519-L520>
+    // <https://github.com/tempoxyz/tempo/blob/be1afa64ce7582c8ed7dc9fffa932e141c1b0c3b/tips/tip-1107.md#L519>
     check! {
         id: "TEMPO-ACCOUNT-QUORUM-WEIGHT",
         over: |step: &AccountStep| quorums(step),
@@ -812,7 +812,7 @@ fn configs_written(s: &AccountStep, account: Address) -> Vec<ConfigurableAccount
 /// Why `q`'s approvals do not make a quorum of its configuration, `None` when they do.
 fn quorum_weight(q: &Quorum) -> Option<String> {
     let mut total = 0u32;
-    let mut lightest = u32::MAX;
+    let mut lightest: Option<u32> = None;
     let mut last: Option<Address> = None;
     let threshold = u32::from(q.config.threshold);
     for (index, approval) in q.approvals.iter().enumerate() {
@@ -840,13 +840,14 @@ fn quorum_weight(q: &Quorum) -> Option<String> {
             ));
         }
         total += u32::from(weight);
-        lightest = lightest.min(u32::from(weight));
+        lightest = Some(lightest.map_or(u32::from(weight), |l| l.min(u32::from(weight))));
     }
     if total < threshold {
         return Some(format!(
             "approvals weigh {total}, the threshold is {threshold}"
         ));
     }
-    (total - lightest >= threshold)
+    let lightest = lightest?;
+    (total >= threshold + lightest)
         .then(|| format!("approvals weigh {total}, threshold {threshold} met without {lightest}"))
 }
