@@ -1055,13 +1055,6 @@ where
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
-        if self.delayed_pool.read().contains(&tx_hash) {
-            return Some(
-                self.protocol_pool
-                    .inner()
-                    .subscribe_transaction_events(tx_hash),
-            );
-        }
         self.protocol_pool.transaction_event_listener(tx_hash)
     }
 
@@ -1908,7 +1901,7 @@ mod tests {
     };
 
     use crate::delayed_pool;
-    use reth_transaction_pool::{TransactionEvent, TransactionListenerKind};
+    use reth_transaction_pool::TransactionListenerKind;
     use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
@@ -3801,6 +3794,24 @@ mod tests {
         )
     }
 
+    /// Returns the first lifecycle event received so far for `hash`, skipping other transactions'.
+    fn next_event_for(
+        events: &mut AllTransactionsEvents<TempoPooledTransaction>,
+        hash: TxHash,
+    ) -> Option<FullTransactionEvent<TempoPooledTransaction>> {
+        std::iter::from_fn(|| events.next().now_or_never().flatten()).find(|event| {
+            matches!(
+                event,
+                FullTransactionEvent::Pending(h)
+                    | FullTransactionEvent::Queued(h, _)
+                    | FullTransactionEvent::Discarded(h)
+                    | FullTransactionEvent::Invalid(h)
+                    | FullTransactionEvent::Mined { tx_hash: h, .. }
+                    if *h == hash
+            )
+        })
+    }
+
     /// Returns the hashes of the `Discarded` events received so far, in order.
     fn discarded_hashes(events: &mut AllTransactionsEvents<TempoPooledTransaction>) -> Vec<TxHash> {
         std::iter::from_fn(|| events.next().now_or_never().flatten())
@@ -4029,9 +4040,7 @@ mod tests {
         pool.add_transaction(TransactionOrigin::External, tx)
             .await
             .expect("transaction should be held");
-        let mut events = pool
-            .transaction_event_listener(hash)
-            .expect("held transactions can be subscribed to");
+        let mut events = pool.all_transactions_event_listener();
 
         set_tip(&pool, tip + 17);
         pool.release_delayed_transactions(tip + 17).await;
@@ -4042,8 +4051,8 @@ mod tests {
         assert!(!pool.delayed_pool.read().contains(&hash));
         assert_eq!(tx_hashes(&pool.pending_transactions()), vec![hash]);
         assert!(matches!(
-            events.next().now_or_never().flatten(),
-            Some(TransactionEvent::Pending)
+            next_event_for(&mut events, hash),
+            Some(FullTransactionEvent::Pending(_))
         ));
     }
 
@@ -4057,7 +4066,7 @@ mod tests {
         pool.add_transaction(TransactionOrigin::External, tx)
             .await
             .expect("transaction should be held");
-        let mut events = pool.transaction_event_listener(hash).unwrap();
+        let mut events = pool.all_transactions_event_listener();
 
         // The sender can no longer pay its fee when the transaction is released.
         set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, U256::ZERO);
@@ -4066,8 +4075,8 @@ mod tests {
 
         assert!(!pool.contains(&hash));
         assert!(matches!(
-            events.next().now_or_never().flatten(),
-            Some(TransactionEvent::Discarded)
+            next_event_for(&mut events, hash),
+            Some(FullTransactionEvent::Discarded(_))
         ));
     }
 
@@ -4088,15 +4097,15 @@ mod tests {
                 .expect("transaction should be held");
         }
         assert_eq!(pool.delayed_pool.read().len(), 3);
-        let mut events = pool.transaction_event_listener(removed).unwrap();
+        let mut events = pool.all_transactions_event_listener();
 
         assert_eq!(
             tx_hashes(&pool.remove_transactions(vec![removed])),
             vec![removed]
         );
         assert!(matches!(
-            events.next().now_or_never().flatten(),
-            Some(TransactionEvent::Discarded)
+            next_event_for(&mut events, removed),
+            Some(FullTransactionEvent::Discarded(_))
         ));
 
         let all = pool.all_transactions();
@@ -4196,7 +4205,7 @@ mod tests {
         pool.add_transaction(TransactionOrigin::External, cheap)
             .await
             .expect("transaction should be held");
-        let mut events = pool.transaction_event_listener(cheap_hash).unwrap();
+        let mut events = pool.all_transactions_event_listener();
 
         let other = Address::random();
         provider.add_account(other, ExtendedAccount::new(0, U256::ZERO));
@@ -4215,8 +4224,8 @@ mod tests {
         assert!(!pool.contains(&cheap_hash));
         assert!(pool.delayed_pool.read().contains(&expensive_hash));
         assert!(matches!(
-            events.next().now_or_never().flatten(),
-            Some(TransactionEvent::Discarded)
+            next_event_for(&mut events, cheap_hash),
+            Some(FullTransactionEvent::Discarded(_))
         ));
     }
 
