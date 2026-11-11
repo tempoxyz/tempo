@@ -325,8 +325,8 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::{
-        primitives::{Bytes, U256, bytes},
-        sol_types::SolCall,
+        primitives::{B256, Bytes, U256, bytes},
+        sol_types::{SolCall, SolValue},
     };
     use evm2::{
         BaseEvmConfigSelector, ExecutionConfig,
@@ -337,8 +337,13 @@ mod tests {
         },
         registry::TxRegistry,
     };
-    use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
-    use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+    use tempo_contracts::precompiles::{
+        IReceivePolicyGuard::{self, ClaimReceiptV1, InboundKind},
+        ITIP20,
+        ITIP403Registry::BlockedReason,
+        ReceivePolicyGuardError, UnknownFunctionSelector,
+    };
+    use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoBlockExt};
 
     struct TestTypes;
 
@@ -551,6 +556,61 @@ mod tests {
                 result.is_ok(),
                 "view function should succeed in static context"
             );
+        }
+    }
+
+    /// An out-of-gas cold SLOAD while resolving a virtual receipt recipient halts from T15 and
+    /// reverts with `InvalidClaimAddress` before it.
+    #[test]
+    fn test_claim_recipient_resolution_out_of_gas_gated_on_t15() {
+        let claimer = Address::random();
+        // The registry SLOAD is cold whether or not the master id is registered.
+        let recipient = Address::new_virtual([0xab; 4].into(), [0x01; 6].into());
+        let receipt = ClaimReceiptV1::new(
+            Address::random(),
+            claimer,
+            Address::random(),
+            recipient,
+            1_728_000,
+            1,
+            BlockedReason::RECEIVE_POLICY as u8,
+            InboundKind::TRANSFER,
+            B256::ZERO,
+        );
+        let calldata = IReceivePolicyGuard::claimCall {
+            to: claimer,
+            receipt: receipt.abi_encode().into(),
+        }
+        .abi_encode();
+
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
+            let mut evm = test_evm(spec, false);
+            let mut precompiles = test_tempo_precompiles(spec);
+            // Covers the input cost and the warm SLOAD pre-charge, but not the cold surcharge.
+            let gas_limit = input_cost(spec, calldata.len()).unwrap() + 1_000;
+            let message = Message::<TestTypes> {
+                kind: MessageKind::Call,
+                gas_limit,
+                destination: RECEIVE_POLICY_GUARD_ADDRESS,
+                call_target: RECEIVE_POLICY_GUARD_ADDRESS,
+                code_address: RECEIVE_POLICY_GUARD_ADDRESS,
+                input: Bytes::from(calldata.clone()).into(),
+                caller: claimer,
+                ..Default::default()
+            };
+            let mut gas = GasTracker::new(gas_limit);
+            let result = precompiles
+                .execute(&mut evm, &message, &mut gas)
+                .expect("Tempo precompile must be registered");
+
+            if spec.is_t15() {
+                assert!(
+                    matches!(result, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))),
+                    "expected out-of-gas halt, got: {result:?}"
+                );
+            } else {
+                expect_precompile_revert(&result, ReceivePolicyGuardError::invalid_claim_address());
+            }
         }
     }
 

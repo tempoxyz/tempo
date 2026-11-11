@@ -239,6 +239,7 @@ fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMod
     let receiver = AddressRegistry::new()
         .resolve_recipient(receipt.recipient)
         .map_err(|err| {
+            // T15+: system errors (e.g. out-of-gas, database) are not masked as InvalidClaimAddress.
             if err.is_system_error() && StorageCtx.spec().is_t15() {
                 err
             } else {
@@ -1131,7 +1132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_recipient_resolution_system_error_propagates_post_t15() -> eyre::Result<()> {
+    fn test_recipient_resolution_system_error_gated_on_t15() -> eyre::Result<()> {
         for spec in [TempoHardfork::T14, TempoHardfork::T15] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             let (master_id, virtual_addr) = StorageCtx::enter(&mut storage, || {
@@ -1156,16 +1157,16 @@ mod tests {
             .into();
 
             StorageCtx::enter(&mut storage, || {
+                let expected = if spec.is_t15() {
+                    TempoPrecompileError::Fatal("injected sload failure".into())
+                } else {
+                    ReceivePolicyGuardError::invalid_claim_address().into()
+                };
                 let mut guard = ReceivePolicyGuard::new();
                 for result in [
                     guard.claim(VIRTUAL_MASTER, VIRTUAL_MASTER, receipt.clone()),
                     guard.burn_blocked_receipt(VIRTUAL_MASTER, receipt.clone()),
                 ] {
-                    let expected = if spec.is_t15() {
-                        TempoPrecompileError::Fatal("injected sload failure".into())
-                    } else {
-                        ReceivePolicyGuardError::invalid_claim_address().into()
-                    };
                     assert_eq!(result.unwrap_err(), expected);
                 }
                 Ok::<_, eyre::Report>(())
