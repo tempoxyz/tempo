@@ -151,6 +151,14 @@ where
         }
     }
 
+    /// Stops the prewarming workers from starting on transactions that are still queued.
+    fn stop_prewarming(&self) {
+        match self {
+            Self::Sequential(txs) => txs.stop_prewarming(),
+            Self::Parallel(txs) => txs.stop_prewarming(),
+        }
+    }
+
     /// Notify the iterator of a new result.
     ///
     /// Noop for [`Self::Parallel`]: replaying a transaction checks its fee payer's balance.
@@ -720,8 +728,10 @@ where
             return Ok(BuildOutcome::Cancelled);
         };
 
-        // cancel pre-warming, if any, by dropping the iter
-        drop(best_txs);
+        // Dropping the pool's snapshot of best transactions releases every transaction it holds,
+        // so leave that to another thread once prewarming has stopped.
+        best_txs.stop_prewarming();
+        self.executor.spawn_drop(best_txs);
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =

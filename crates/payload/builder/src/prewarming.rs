@@ -111,6 +111,13 @@ where
         self.fee_balances.on_new_result(result);
     }
 
+    /// Stops the prewarming workers from starting on transactions that are still queued.
+    pub(crate) fn stop_prewarming(&self) {
+        if let Some(prewarmer) = &self.prewarmer {
+            prewarmer.ctx.stop();
+        }
+    }
+
     /// Takes transactions from the source until `depth` of them wait in `ahead`.
     fn fill(&mut self) {
         while self.ahead.len() < self.depth {
@@ -214,6 +221,11 @@ where
         if !tx.transaction.is_expiring_nonce() {
             self.invalidated.insert(Lane::of(tx));
         }
+    }
+
+    /// Stops the prewarming workers from starting on transactions that are still queued.
+    pub(crate) fn stop_prewarming(&self) {
+        self.prewarmer.ctx.stop();
     }
 }
 
