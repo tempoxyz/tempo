@@ -42,6 +42,7 @@ impl SignatureVerifier {
 
     /// Returns whether `signature` is an active access-key signature for `account`.
     ///
+<<<<<<< HEAD
     /// From T14, `false` when a primitive inner signature's key ID has a nonzero configuration
     /// commitment (TIP-1113), even under a stored grant, or when the inner signature type differs
     /// from the stored key type.
@@ -71,6 +72,13 @@ impl SignatureVerifier {
             );
         }
         let recovered = self.recover_keychain_key(hash, &sig)?;
+=======
+    /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
+    /// (TIP-1112), even under a stored grant, or when the inner signature type differs from the
+    /// stored key type.
+    pub fn verify_keychain(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
+        let recovered = self.recover_keychain_key(hash, signature)?;
+>>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }
@@ -134,11 +142,17 @@ impl SignatureVerifier {
         }
     }
 
+<<<<<<< HEAD
     fn recover_keychain_key(
         &self,
         hash: B256,
         sig: &TempoSignature,
     ) -> Result<RecoveredKeychainKey> {
+=======
+    fn recover_keychain_key(&self, hash: B256, signature: &[u8]) -> Result<RecoveredKeychainKey> {
+        let sig = TempoSignature::from_bytes(signature)
+            .map_err(|_| SignatureVerifierError::invalid_format())?;
+>>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
         let keychain_sig = sig
             .as_keychain()
             .ok_or_else(SignatureVerifierError::invalid_format)?;

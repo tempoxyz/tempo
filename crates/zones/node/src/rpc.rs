@@ -390,6 +390,14 @@ where
     }
 }
 
+/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
+///
+/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
+/// collection timeout.
+const MULTI_PROOF_RETRIES: usize = 7;
+/// Delay before each `eth_getMultiProof` retry.
+const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
+
 /// Fetch all L1 read proofs at the checkpoint selected by the opening advanceTempo transaction.
 async fn collect_tempo_witness(
     provider: &DynProvider<TempoNetwork>,
@@ -427,6 +435,7 @@ async fn collect_tempo_witness(
         // An account-only read still needs the account proof, which every target carries.
         targets.entry(read.account).or_default().extend(read.slot);
     }
+<<<<<<< HEAD
     // The L1 RPC may balance connections across nodes whose heads differ by a few
     // milliseconds, so the node serving this request can lack a block the subscriber already
     // saw finalized. Retry only that answer (`block not found`); return every other error.
@@ -470,6 +479,35 @@ async fn collect_tempo_witness(
         .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
     Ok((initial_header, nodes.into_values().collect()))
 }
+=======
+    let targets = targets
+        .into_iter()
+        .map(|(account, slots)| (account, slots.into_iter().collect::<Vec<_>>()))
+        .collect::<Vec<_>>();
+    // The L1 RPC may balance connections across nodes whose heads differ by a few
+    // milliseconds, so the node serving this request can lack a block the subscriber already
+    // saw finalized. Retry only that answer (`block not found`); return every other error.
+    let proofs = (|| {
+        provider
+            .client()
+            .request::<_, Vec<EIP1186AccountProofResponse>>(
+                "eth_getMultiProof",
+                (targets.clone(), BlockId::number(tempo_block_number)),
+            )
+    })
+    .retry(
+        ConstantBuilder::default()
+            .with_delay(MULTI_PROOF_RETRY_DELAY)
+            .with_max_times(MULTI_PROOF_RETRIES),
+    )
+    .when(|error| {
+        error.as_error_resp().is_some_and(|response| {
+            response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+        })
+    })
+    .await
+    .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
+>>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
 
 /// Split proof targets into even parallel `eth_getMultiProof` requests, each within reth's
 /// [`DEFAULT_MAX_PROOF_SLOTS`] limit on targets and slots.
@@ -2014,6 +2052,79 @@ mod tests {
         let reads = HashSet::from([zone_evm::TempoStorageRead {
             account: Address::repeat_byte(0xaa),
             slot: Some(B256::repeat_byte(0xbb)),
+        }]);
+        let mut checkpoint = TempoHeader::default();
+        checkpoint.inner.number = 10;
+        let first_tx_input = IZoneInbox::advanceTempoCall {
+            header: alloy_rlp::encode(&checkpoint).into(),
+            deposits: Vec::new(),
+            decryptions: Vec::new(),
+            enabledTokens: Vec::new(),
+        }
+        .abi_encode();
+
+        // A node that catches up within the retry budget yields the proofs.
+        not_found_calls.store(2, Ordering::Relaxed);
+        collect_tempo_witness(&provider, initial, Some(&first_tx_input), &reads).await?;
+        assert_eq!(requests.load(Ordering::Relaxed), 3);
+
+        // A node that never catches up fails after the last attempt.
+        requests.store(0, Ordering::Relaxed);
+        not_found_calls.store(u32::MAX, Ordering::Relaxed);
+        let error = collect_tempo_witness(&provider, initial, Some(&first_tx_input), &reads)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("block not found: 0xa"));
+        assert_eq!(
+            requests.load(Ordering::Relaxed) as usize,
+            MULTI_PROOF_RETRIES + 1
+        );
+        handle.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tempo_witness_retries_multi_proof_only_while_block_not_found() -> eyre::Result<()> {
+        let header = TempoHeader::default();
+        let initial = alloy_eips::NumHash {
+            number: 0,
+            hash: header.hash_slow(),
+        };
+        // Number of leading calls answered with `block not found`.
+        let not_found_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let requests = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let mut module = RpcModule::new((not_found_calls.clone(), requests.clone()));
+        let mut block = serde_json::to_value(TempoHeaderResponse {
+            inner: alloy_rpc_types_eth::Header::new(header.clone()),
+            timestamp_millis: 0,
+        })?;
+        block["transactions"] = serde_json::json!([]);
+        block["uncles"] = serde_json::json!([]);
+        module.register_method("eth_getBlockByNumber", move |_, _, _| block.clone())?;
+        module.register_method("eth_getMultiProof", |_, ctx, _| {
+            ctx.1.fetch_add(1, Ordering::Relaxed);
+            let remaining = ctx.0.load(Ordering::Relaxed);
+            if remaining > 0 {
+                ctx.0.store(remaining - 1, Ordering::Relaxed);
+                return Err(ErrorObjectOwned::owned(
+                    EthRpcErrorCode::ResourceNotFound.code(),
+                    "block not found: 0xa",
+                    None::<()>,
+                ));
+            }
+            Ok::<_, ErrorObjectOwned>(Vec::<serde_json::Value>::new())
+        })?;
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build("127.0.0.1:0")
+            .await?;
+        let address = server.local_addr()?;
+        let handle = server.start(module);
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_http(format!("http://{address}").parse()?)
+            .erased();
+        let reads = HashSet::from([zone_evm::TempoStorageRead {
+            account: Address::repeat_byte(0xaa),
+            slot: B256::repeat_byte(0xbb),
         }]);
         let mut checkpoint = TempoHeader::default();
         checkpoint.inner.number = 10;

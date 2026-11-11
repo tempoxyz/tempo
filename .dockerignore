@@ -1,9 +1,14 @@
 **/.git
 contrib/
+<<<<<<< HEAD
 !contrib/antithesis/reth-state-root/Cargo.toml
 !contrib/antithesis/reth-state-root/src/**
 !contrib/antithesis/trie-shapes/Cargo.toml
 !contrib/antithesis/trie-shapes/src/**
+=======
+!contrib/antithesis/reth-trie/Cargo.toml
+!contrib/antithesis/reth-trie/src/**
+>>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
 docs/
 localnet/
 scripts/

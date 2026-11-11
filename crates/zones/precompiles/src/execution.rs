@@ -116,7 +116,11 @@ where
         ));
     }
 
+<<<<<<< HEAD
     let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
+=======
+    let (data, caller): (&[u8], Address) = (&message.input, message.caller);
+>>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
     let Ok(input_gas) = input_cost(env.spec, data.len()) else {
         return Err(PrecompileHalt::OutOfGas.into());
     };

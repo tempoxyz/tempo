@@ -143,7 +143,11 @@ required-features = ["localnet"]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 # Link Antithesis's coverage runtime shim, for binaries built with its sancov flags (see
+<<<<<<< HEAD
 # contrib/antithesis/zones/Dockerfile). Linux only.
+=======
+# zones/antithesis/Dockerfile). Linux only.
+>>>>>>> b809f300160089ad3b6d8ce55407ae0486c149cf
 antithesis-coverage = ["dep:antithesis-instrumentation"]
 
 # Report Antithesis SDK assertions. Without it the assertions and their details are compiled out.
