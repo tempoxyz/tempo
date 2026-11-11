@@ -664,7 +664,6 @@ where
         transaction: TempoPooledTransaction,
         propagate: bool,
         authorities: Option<Vec<Address>>,
-        valid_after: u64,
     ) -> PoolResult<AddedTransactionOutcome> {
         let hash = *transaction.hash();
         if self.protocol_pool.contains(&hash) {
@@ -686,10 +685,7 @@ where
                 .as_ref()
                 .map(|auths| protocol_pool.get_sender_ids(auths.iter().copied())),
         });
-        let evicted = self
-            .aa_2d_pool
-            .write()
-            .hold_transaction(Arc::clone(&tx), valid_after)?;
+        let evicted = self.aa_2d_pool.write().hold_transaction(Arc::clone(&tx))?;
 
         protocol_pool.on_new_pending_transaction(&AddedPendingTransaction {
             transaction: Arc::clone(&tx),
@@ -991,32 +987,27 @@ where
             .into_iter()
             .zip(origins)
             .map(|(outcome, origin)| {
-                let valid_after = match &outcome {
-                    TransactionValidationOutcome::Valid { transaction, .. } => self
+                match outcome {
+                    TransactionValidationOutcome::Valid {
+                        transaction,
+                        propagate,
+                        authorities,
+                        ..
+                    } if self
                         .aa_2d_pool
                         .read()
                         .delayed()
-                        .hold_until(transaction.transaction(), tip_timestamp),
-                    _ => None,
-                };
-                match (outcome, valid_after) {
-                    (
-                        TransactionValidationOutcome::Valid {
-                            transaction,
+                        .should_hold(transaction.transaction(), tip_timestamp) =>
+                    {
+                        self.hold_transaction(
+                            origin,
+                            transaction.into_transaction(),
                             propagate,
                             authorities,
-                            ..
-                        },
-                        Some(valid_after),
-                    ) => self.hold_transaction(
-                        origin,
-                        transaction.into_transaction(),
-                        propagate,
-                        authorities,
-                        valid_after,
-                    ),
+                        )
+                    }
                     // The 2D pool rejects a transaction that is held already.
-                    (outcome, _) => self.add_validated_transaction(origin, outcome),
+                    outcome => self.add_validated_transaction(origin, outcome),
                 }
             })
             .collect()

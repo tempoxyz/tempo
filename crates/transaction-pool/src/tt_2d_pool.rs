@@ -249,7 +249,6 @@ impl AA2dPool {
     pub(crate) fn hold_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-        valid_after: u64,
     ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
         let hash = *transaction.hash();
         if self.contains(&hash)
@@ -275,7 +274,7 @@ impl AA2dPool {
         }
         let evicted = self
             .delayed
-            .insert(Arc::clone(&transaction), valid_after)
+            .insert(Arc::clone(&transaction))
             // Reported with the live pool's kinds so RPC returns the standard txpool errors.
             .map_err(|err| {
                 let kind = match err {
@@ -7468,10 +7467,7 @@ mod tests {
         pool: &mut AA2dPool,
         tx: TempoPooledTransaction,
     ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
-        pool.hold_transaction(
-            Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)),
-            u64::MAX,
-        )
+        pool.hold_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)))
     }
 
     /// A held transaction and a live one never share a hash or an expiring nonce, whichever
