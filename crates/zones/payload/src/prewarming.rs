@@ -165,8 +165,8 @@ impl Drop for Prewarming {
 
 /// A [`L1StorageReader`], used for simulations, that never blocks on a Tempo L1 commitment read.
 ///
-/// Cached commitments are returned as is. Misses are queued for a parallel fetch and read as zero,
-/// which is exact for accounts never configured on Tempo. Storage reads pass through unchanged.
+/// Storage reads pass through unchanged. Cached commitments are returned as is.
+/// Misses are queued for a parallel fetch and read as zero, like an unconfigured account.
 #[derive(Clone)]
 struct L1StoragePrewarmer {
     provider: L1StateProvider,
