@@ -105,12 +105,12 @@ struct Authorization {
     counted: U96,
     /// Whether `holdStandIn` placed the hold, so its captures may owe up to the offline cap.
     stand_in: bool,
-    /// Card line (TIP-1169) of a hold `holdCard` placed, whose committed amount this
-    /// authorization's follows; zero for other authorizations. Packed beside `counted`, which a
-    /// card mandate key with a spending limit writes on every hold anyway.
+    /// Card line (TIP-1169) of a hold `holdCard` or `holdCardWithLine` placed, whose committed
+    /// amount this authorization's follows; zero for other authorizations. Packed beside `counted`,
+    /// which a card mandate key with a spending limit writes on every hold anyway.
     card_line: u64,
-    /// Whether `holdWithLine` placed the hold, so part of it is on a credit line recorded in
-    /// `Reservations::credit_holds`.
+    /// Whether `holdWithLine` or `holdCardWithLine` placed the hold, so part of it is on a credit
+    /// line recorded in `Reservations::credit_holds`.
     line: bool,
 }
 
@@ -304,7 +304,8 @@ impl Reservations {
     }
 
     /// Places `hold`, `holdStandIn`, which reserves only what is available, `holdCard`, which
-    /// first checks the card, or `holdWithLine`, which puts part of the hold on a credit line.
+    /// first checks the card, `holdWithLine`, which puts part of the hold on a credit line, or
+    /// `holdCardWithLine`, which does both.
     fn hold(
         &mut self,
         owner: Address,
@@ -323,7 +324,8 @@ impl Reservations {
             return Err(ReservationsError::hold_exists().into());
         }
         let card = match placement {
-            Placement::Card { issuer, card } => Some((
+            // The card counts the whole amount, line part included, against its limit.
+            Placement::Card { issuer, card } | Placement::CardLine { issuer, card, .. } => Some((
                 card,
                 Cards::new().line_for_hold(owner, issuer, card, call.token, call.amount)?,
             )),
@@ -340,7 +342,10 @@ impl Reservations {
                 return Err(ReservationsError::insufficient_available().into());
             }
             Placement::Plain | Placement::Card { .. } => (call.amount, call.amount),
-            Placement::Line { part, line, lender } => {
+            Placement::Line { part, line, lender }
+            | Placement::CardLine {
+                part, line, lender, ..
+            } => {
                 if part == 0 || part > call.amount {
                     return Err(ReservationsError::invalid_amount().into());
                 }
@@ -368,7 +373,10 @@ impl Reservations {
             key_id: spend.map_or(Address::ZERO, |spend| spend.key_id),
             stand_in: placement == Placement::StandIn,
             card_line: card.map_or(0, |(_, line)| line),
-            line: matches!(placement, Placement::Line { .. }),
+            line: matches!(
+                placement,
+                Placement::Line { .. } | Placement::CardLine { .. }
+            ),
             ..Default::default()
         };
         record_spend(&mut auth, spend, held);
@@ -395,7 +403,10 @@ impl Reservations {
                 call.token,
                 call.amount,
             )),
-            Placement::Line { part, line, lender } => {
+            Placement::Line { part, line, lender }
+            | Placement::CardLine {
+                part, line, lender, ..
+            } => {
                 self.credit_holds[owner][call.id].write(CreditHold {
                     lender,
                     held: U96::from(part),
@@ -1579,10 +1590,17 @@ enum Placement {
     /// `holdStandIn`: reserves what is available of an approval made offline.
     StandIn,
     /// `holdCard`: `hold` through the caller's card `card` issued by `issuer`, its `ICards` payee.
-    /// Never on a credit line.
     Card { issuer: Address, card: B256 },
     /// `holdWithLine`: reserves the amount less `part`, which goes on `lender`'s line `line`.
     Line {
+        part: u128,
+        line: B256,
+        lender: Address,
+    },
+    /// `holdCardWithLine`: `holdWithLine` through the caller's card `card` issued by `issuer`.
+    CardLine {
+        issuer: Address,
+        card: B256,
         part: u128,
         line: B256,
         lender: Address,
@@ -4060,6 +4078,220 @@ mod tests {
     }
 
     #[test]
+    fn test_card_line_hold_checks_the_card_and_the_line() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Active,
+                U96::from(300),
+            )?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let payee = f.payee;
+            let committed =
+                |cards: &Cards| -> Result<U96> { Ok(cards.get_card(payee, card)?.committed) };
+
+            // The card checks run first and count the line part against the card's limit.
+            for (card, amount, error) in [
+                (B256::random(), 10, CardsError::unknown_card()),
+                (card, 301, CardsError::card_limit_exceeded()),
+            ] {
+                assert_eq!(
+                    hold_card_on_line(&mut f, B256::random(), amount, 10, lender, line, card)
+                        .unwrap_err(),
+                    error.into()
+                );
+            }
+            cards.set_program_tokens(
+                f.payee,
+                ICards::setProgramTokensCall {
+                    tokens: vec![Address::random()],
+                },
+            )?;
+            assert_eq!(
+                hold_card_on_line(&mut f, B256::random(), 10, 10, lender, line, card).unwrap_err(),
+                CardsError::token_not_allowed().into()
+            );
+            cards.set_program_tokens(f.payee, ICards::setProgramTokensCall { tokens: vec![] })?;
+
+            // The line hold checks still apply: its part, the balance part and the bound payee.
+            for (amount, part, error) in [
+                (10, 11, ReservationsError::invalid_amount()),
+                (200, 50, ReservationsError::insufficient_available()),
+            ] {
+                assert_eq!(
+                    hold_card_on_line(&mut f, B256::random(), amount, part, lender, line, card)
+                        .unwrap_err(),
+                    error.into()
+                );
+            }
+            assert_eq!(
+                f.reservations
+                    .hold(
+                        f.owner,
+                        IReservations::holdCall {
+                            token: f.token.address(),
+                            id: B256::random(),
+                            amount: 10,
+                            expiresAt: EXPIRY,
+                            payee: Address::random(),
+                        },
+                        Placement::CardLine {
+                            issuer: f.payee,
+                            card,
+                            part: 10,
+                            line,
+                            lender,
+                        },
+                    )
+                    .unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+
+            // A frozen card stops holds its credit line would fund.
+            update_card(
+                &mut cards,
+                &f,
+                card,
+                ICards::Status::Frozen,
+                U96::from(300),
+                0,
+            )?;
+            assert_eq!(
+                hold_card_on_line(&mut f, B256::random(), 300, 200, lender, line, card)
+                    .unwrap_err(),
+                CardsError::card_inactive().into()
+            );
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            update_card(
+                &mut cards,
+                &f,
+                card,
+                ICards::Status::Active,
+                U96::from(300),
+                0,
+            )?;
+
+            let id = B256::random();
+            f.reservations.clear_emitted_events();
+            hold_card_on_line(&mut f, id, 300, 200, lender, line, card)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::hold_placed(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    f.payee,
+                    300,
+                    EXPIRY,
+                ),
+                ReservationsEvent::card_hold_placed(f.owner, id, card, 1),
+                ReservationsEvent::credit_held(f.owner, id, lender, line, 200),
+            ]);
+            assert_eq!(f.reserved()?, 100);
+            assert_eq!(f.credit(lender, line)?, (500, 0, 200));
+            assert_eq!(committed(&cards)?, U96::from(300));
+
+            // An increase rechecks the card; a frozen card's hold still shrinks, captures and refunds.
+            assert_eq!(
+                f.adjust(id, 301).unwrap_err(),
+                CardsError::card_limit_exceeded().into()
+            );
+            update_card(
+                &mut cards,
+                &f,
+                card,
+                ICards::Status::Frozen,
+                U96::from(300),
+                0,
+            )?;
+            f.adjust(id, 250)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 150));
+            assert_eq!(committed(&cards)?, U96::from(250));
+            f.capture(id, 250)?;
+            assert_eq!(f.balance(f.payee)?, U256::from(250));
+            assert_eq!(f.credit(lender, line)?, (500, 150, 0));
+            assert_eq!(committed(&cards)?, U96::from(250));
+            // Refunds repay the line first and give back the card's committed amount.
+            f.refund(f.payee, id, 100)?;
+            assert_eq!(f.credit(lender, line)?, (500, 50, 0));
+            assert_eq!(committed(&cards)?, U96::from(150));
+            f.refund(f.payee, id, 150)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(100));
+            assert_eq!(committed(&cards)?, U96::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_card_scoped_key_holds_lines_only_through_cards() -> eyre::Result<()> {
+        at_t15(|| {
+            let f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_key_for(
+                f.owner,
+                key,
+                f.token.address(),
+                500,
+                &[
+                    IReservations::holdCardCall::SELECTOR,
+                    IReservations::holdCardWithLineCall::SELECTOR,
+                    IReservations::captureCall::SELECTOR,
+                    IReservations::releaseCall::SELECTOR,
+                ],
+            )?;
+            let validate = |input: Vec<u8>| {
+                keychain.validate_call_scope_for_transaction(
+                    f.owner,
+                    key,
+                    &TxKind::Call(RESERVATIONS_ADDRESS),
+                    &input,
+                )
+            };
+            let (line, lender) = (B256::random(), Address::random());
+            validate(
+                IReservations::holdCardWithLineCall {
+                    token: f.token.address(),
+                    id: B256::random(),
+                    amount: 1,
+                    linePart: 1,
+                    line,
+                    lender,
+                    expiresAt: EXPIRY,
+                    payee: f.payee,
+                    issuer: f.payee,
+                    card: B256::random(),
+                }
+                .abi_encode(),
+            )?;
+            assert_eq!(
+                validate(
+                    IReservations::holdWithLineCall {
+                        token: f.token.address(),
+                        id: B256::random(),
+                        amount: 1,
+                        linePart: 1,
+                        line,
+                        lender,
+                        expiresAt: EXPIRY,
+                        payee: f.payee,
+                    }
+                    .abi_encode()
+                )
+                .unwrap_err(),
+                AccountKeychainError::call_not_allowed().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_pre_t15_tip20_ignores_reservations() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         storage.set_timestamp(U256::from(NOW));
@@ -4167,6 +4399,36 @@ mod tests {
             Placement::Card {
                 issuer: f.payee,
                 card,
+            },
+        )
+    }
+
+    /// Holds `amount` through the owner's `card` under the fixture's payee, with `part` of it on
+    /// `lender`'s `line`.
+    fn hold_card_on_line(
+        f: &mut Fixture,
+        id: B256,
+        amount: u128,
+        part: u128,
+        lender: Address,
+        line: B256,
+        card: B256,
+    ) -> Result<()> {
+        f.reservations.hold(
+            f.owner,
+            IReservations::holdCall {
+                token: f.token.address(),
+                id,
+                amount,
+                expiresAt: EXPIRY,
+                payee: f.payee,
+            },
+            Placement::CardLine {
+                issuer: f.payee,
+                card,
+                part,
+                line,
+                lender,
             },
         )
     }

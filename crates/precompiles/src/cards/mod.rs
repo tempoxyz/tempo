@@ -1,5 +1,5 @@
 //! Card records precompile: cards an issuer's settlement account (the payee) issues on an owner's
-//! account, which card-scoped holds (`IReservations.holdCard`) check.
+//! account, which card-scoped holds (`IReservations.holdCard`, `holdCardWithLine`) check.
 //!
 //! A card is keyed by (payee, card id). Each issued card starts a line holding its owner, status,
 //! limit, expiry, program type, holder reference and network token hash; replacing a card maps a
@@ -78,7 +78,8 @@ impl Cards {
     }
 
     /// Checks that `owner`'s card `card` under `payee` (its issuer) may hold `amount` of `token`
-    /// now, and returns its line. Called by `IReservations.holdCard` before it places the hold.
+    /// now, and returns its line. Called by `IReservations.holdCard` and `holdCardWithLine` before
+    /// they place the hold.
     pub(crate) fn line_for_hold(
         &self,
         owner: Address,

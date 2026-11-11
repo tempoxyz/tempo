@@ -78,6 +78,10 @@ crate::sol! {
         /// Reserves `amount` for `payee` until `expiresAt` as `hold` does, with `linePart` of it on
         /// `lender`'s line `line` instead of the caller's balance.
         function holdWithLine(address token, bytes32 id, uint128 amount, uint128 linePart, bytes32 line, address lender, uint64 expiresAt, address payee) external;
+        /// `holdWithLine` through the caller's card `card` issued by `issuer`: runs `holdCard`'s
+        /// card checks on the whole `amount`, line part included, then places the line hold and
+        /// records the card's line, so freezing the card stops holds funded by the line too.
+        function holdCardWithLine(address token, bytes32 id, uint128 amount, uint128 linePart, bytes32 line, address lender, uint64 expiresAt, address payee, address issuer, bytes32 card) external;
         /// Repays up to `amount` of what the caller owes on `lender`'s line `line` from its
         /// available balance.
         function repayCredit(address lender, bytes32 line, uint128 amount) external;
