@@ -3333,7 +3333,7 @@ fn retired_root_signatures_still_recover_and_keychain_format_is_unchanged() {
         to: TxKind::Call(SIGNATURE_VERIFIER_ADDRESS),
         value: U256::ZERO,
         input: ISignatureVerifier::verifyCall {
-            signer: account,
+            account,
             hash,
             signature: raw,
         }

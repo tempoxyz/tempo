@@ -3,12 +3,12 @@
 
 use alloy::{
     primitives::{Address, B256, Bytes},
-    sol_types::{SolCall, SolValue},
+    sol_types::{SolCall, SolInterface, SolValue},
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-use tempo_chainspec::hardfork::TempoHardfork::{self, T13, T14};
+use tempo_chainspec::hardfork::TempoHardfork::{self, T13, T14, T15};
 use tempo_contracts::precompiles::{
     IAccountKeychain::{
         KeyRestrictions,
@@ -38,7 +38,7 @@ use tempo_primitives::{
 };
 
 use Committed::{Account, Nobody, Signer};
-use common::seed_commitment;
+use common::{PrecompileOutput, seed_commitment};
 
 mod common;
 
@@ -342,8 +342,8 @@ fn implicit_root_admin_status_ends_with_the_commitment_from_t14() {
     }
 }
 
-#[test]
-fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14() {
+/// A configurable account signature over [`HASH`], longer than any primitive one, and its account.
+fn oversized_configurable_signature() -> (Address, Bytes) {
     // Eight P256 approvals over a full owner list encode longer than any primitive signature.
     let mut signers: Vec<Key> = (0..MAX_CONFIGURABLE_ACCOUNT_SIGNATURES)
         .map(|_| Key::random(P256))
@@ -372,6 +372,12 @@ fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14(
     .to_bytes();
     assert!(signature.len() > (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32));
 
+    (account, signature)
+}
+
+#[test]
+fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14() {
+    let (account, signature) = oversized_configurable_signature();
     let calldata = ISignatureVerifier::verifyConfigurableAccountCall {
         account,
         hash: HASH,
@@ -439,5 +445,68 @@ fn verify_keychain_accepts_configurable_delegates_from_t14() {
     assert_eq!(
         verify(T13, delegate_grant, &[]),
         [invalid_format(), invalid_format()]
+    );
+}
+
+#[test]
+fn verify_follows_the_account_state_from_t15() {
+    let root = Key::random(Secp256k1);
+    let account = root.address();
+    let access_key = Key::random(Secp256k1);
+    let primitive = TempoSignature::Primitive(root.sign(HASH)).to_bytes();
+    let root_keychain = keychain_signature(&root, account);
+    // `verify` at `spec`, with `grant` to the access key and a commitment on each of `committed`.
+    let verify = |spec, signature: &Bytes, grant, committed: &[Address]| {
+        let mut storage = storage_at(spec, account, access_key.address(), grant, committed);
+        StorageCtx::enter(&mut storage, || {
+            SignatureVerifier::new().verify(account, HASH, signature)
+        })
+    };
+
+    // The original key approves only while the account has no commitment, and before T15 always.
+    assert_eq!(verify(T15, &primitive, None, &[]), Ok(true));
+    assert_eq!(verify(T15, &primitive, None, &[account]), Ok(false));
+    assert_eq!(verify(T14, &primitive, None, &[account]), Ok(true));
+    assert_eq!(verify(T15, &root_keychain, None, &[]), Ok(true));
+    assert_eq!(verify(T15, &root_keychain, None, &[account]), Ok(false));
+    // A primitive signature by any other key.
+    let other = TempoSignature::Primitive(access_key.sign(HASH)).to_bytes();
+    assert_eq!(verify(T15, &other, key(Secp256k1), &[]), Ok(false));
+    // Ordinary access keys don't approve for the account.
+    let access_keychain = keychain_signature(&access_key, account);
+    assert_eq!(
+        verify(T15, &access_keychain, key(Secp256k1), &[]),
+        Ok(false)
+    );
+    assert_eq!(
+        verify(T15, &Bytes::from_static(&[0x05]), None, &[]),
+        Err(SignatureVerifierError::invalid_format().into())
+    );
+}
+
+#[test]
+fn verify_checks_configurable_account_signatures_beyond_the_primitive_cap_from_t15() {
+    let (account, signature) = oversized_configurable_signature();
+    // The `verify` selector called at `spec` with `signature` for `account`.
+    let call = |spec, account| {
+        let calldata = ISignatureVerifier::verifyCall {
+            account,
+            hash: HASH,
+            signature: signature.clone(),
+        }
+        .abi_encode();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+        StorageCtx::enter(&mut storage, || {
+            SignatureVerifier::new().call(&calldata, Address::ZERO)
+        })
+    };
+    assert!(bool::abi_decode(call(T15, account).unwrap().bytes()).unwrap());
+    // The owners' signature doesn't approve for any other account.
+    assert!(!bool::abi_decode(call(T15, Address::repeat_byte(0x01)).unwrap().bytes()).unwrap());
+    let capped = PrecompileOutput::new(call(T14, account), 0);
+    assert!(capped.is_revert());
+    assert_eq!(
+        capped.bytes,
+        Bytes::from(SignatureVerifierError::invalid_format().abi_encode())
     );
 }

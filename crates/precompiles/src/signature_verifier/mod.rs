@@ -24,6 +24,10 @@ impl SignatureVerifier {
         self.__initialize()
     }
 
+    /// Returns the address of the key that produced the primitive `signature` over `hash`.
+    ///
+    /// Only says which key signed: a migrated account's retired root key still recovers to its
+    /// address (TIP-1113). Use [`Self::verify`] to check whether an account approves a hash.
     pub fn recover(&self, hash: B256, signature: &[u8]) -> Result<Address> {
         // Parse and validate signature (handles size checks + type disambiguation).
         let sig = PrimitiveSignature::from_bytes(signature)
@@ -94,7 +98,44 @@ impl SignatureVerifier {
     ) -> Result<bool> {
         let sig = TempoSignature::from_bytes(signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
-        let recovered = self.recover_keychain_key(hash, &sig)?;
+        self.verify_keychain_admin_signature(account, hash, &sig)
+    }
+
+    /// Returns whether `account` approves `hash` under its current state: the one check for any
+    /// account and signature type, correct even after it migrates or changes owners (TIP-1168).
+    ///
+    /// By signature type, including the routed checks' reverts:
+    /// - primitive: recovers to `account`, and `account` has no configuration commitment
+    /// - keychain: as `verifyKeychainAdmin`
+    /// - configurable account: as `verifyConfigurableAccount`
+    ///
+    /// Before T15, only checks that a primitive `signature` recovers to `account`.
+    pub fn verify(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
+        if !self.storage.spec().is_t15() {
+            return Ok(self.recover(hash, signature)? == account);
+        }
+        match TempoSignature::from_bytes(signature)
+            .map_err(|_| SignatureVerifierError::invalid_format())?
+        {
+            TempoSignature::Primitive(primitive) => Ok(self.recover_primitive(hash, &primitive)?
+                == account
+                && !self.storage.is_retired_root(account)?),
+            sig @ TempoSignature::Keychain(_) => {
+                self.verify_keychain_admin_signature(account, hash, &sig)
+            }
+            TempoSignature::ConfigurableAccount(configurable) => Ok(self
+                .verify_configurable_signature(account, hash, &configurable)?
+                .is_some()),
+        }
+    }
+
+    fn verify_keychain_admin_signature(
+        &self,
+        account: Address,
+        hash: B256,
+        sig: &TempoSignature,
+    ) -> Result<bool> {
+        let recovered = self.recover_keychain_key(hash, sig)?;
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }

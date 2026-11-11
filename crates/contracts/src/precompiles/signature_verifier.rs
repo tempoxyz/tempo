@@ -9,14 +9,22 @@ crate::sol! {
         /// @param hash The message hash that was signed
         /// @param signature The encoded signature (see Tempo Transaction spec for formats)
         /// @return Address of the signer if valid, reverts otherwise
+        /// @dev Only says which key signed: a migrated account's retired root key still recovers to
+        /// its address (TIP-1113). Use `verify` to check whether an account approves a hash.
         function recover(bytes32 hash, bytes calldata signature) external view returns (address signer);
 
-        /// @notice Verifies a signer against a Tempo signature (secp256k1, P256, WebAuthn).
-        /// @param signer The input address verified against the recovered signer
+        /// @notice Checks whether account approves hash: the one check to use for any account
+        /// and signature type. It follows the account's current state, so it stays correct when
+        /// the account migrates or changes owners (TIP-1168). By signature type:
+        /// - primitive: recovers to account, and account has no configuration commitment
+        /// - keychain: same as `verifyKeychainAdmin`
+        /// - configurable account: same as `verifyConfigurableAccount`
+        /// @param account The account expected to approve
         /// @param hash The message hash that was signed
-        /// @param signature The encoded signature (see Tempo Transaction spec for formats)
-        /// @return True if the input address signed, false otherwise. Reverts on invalid signatures.
-        function verify(address signer, bytes32 hash, bytes calldata signature) external view returns (bool);
+        /// @param signature A primitive, keychain or configurable account signature
+        /// @dev Before T15, only checks that a primitive signature recovers to account.
+        /// @return True if account approves hash. Reverts on malformed or invalid signatures.
+        function verify(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
 
         /// @notice Verifies whether a keychain signature was produced by an active key.
         /// @param account The expected embedded root account
