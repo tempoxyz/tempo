@@ -3,9 +3,9 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    admission_fence::AdmissionFence,
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
+    metrics::AdmissionMetrics,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
@@ -14,7 +14,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, B256Set, Entry, HashMap},
+    map::{AddressMap, AddressSet, Entry, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -33,7 +33,13 @@ use reth_transaction_pool::{
     pool::AddedTransaction,
 };
 use reth_trie_common::bundle_state::BundleAccount;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
@@ -46,8 +52,8 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{Block, TempoHeader};
 
-/// Validations of a transaction before admission keeps an outcome that canonical updates
-/// published during validation invalidated. Maintenance or block building rejects it later.
+/// Validations of a transaction before admission keeps an outcome that a canonical update landed
+/// during. Maintenance or block building rejects it later if that update invalidated it.
 const ADMISSION_ATTEMPTS: usize = 3;
 
 /// Transaction pool operations for Tempo nonce lanes.
@@ -70,8 +76,11 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
-    /// Canonical updates published by maintenance, rechecked by admissions they overlap.
-    pub(crate) admission_fence: Arc<AdmissionFence>,
+    /// Number of canonical updates maintenance has started scanning the pool for. Admission
+    /// validates again what it inserted when this changed while it validated.
+    pub(crate) canonical_updates: Arc<AtomicU64>,
+    /// Admission metrics.
+    admission_metrics: AdmissionMetrics,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -93,7 +102,8 @@ where
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
-            admission_fence: Arc::default(),
+            canonical_updates: Arc::default(),
+            admission_metrics: AdmissionMetrics::default(),
         }
     }
 }
@@ -176,31 +186,7 @@ where
         }
 
         let all_txs = self.all_transactions();
-        let liquidity_recheck = self.track_validator_token_changes(updates);
-        self.evict_invalidated_transactions_from(updates, all_txs.iter(), None, liquidity_recheck)
-    }
-
-    /// Records the tokens active validators switched to in `updates` with the AMM cache and
-    /// returns whether pooled transactions need their liquidity rechecked.
-    ///
-    /// Only the first call for a token returns true, so call it once per canonical update and
-    /// pass the result to every [`Self::evict_invalidated_transactions_from`] for that update.
-    pub(crate) fn track_validator_token_changes(
-        &self,
-        updates: &crate::maintain::TempoPoolUpdates,
-    ) -> bool {
-        if updates.validator_token_changes.is_empty() {
-            return false;
-        }
-        let amm_cache = self.amm_liquidity_cache();
-        let active_new_tokens: Vec<_> = updates
-            .validator_token_changes
-            .iter()
-            .filter(|(validator, _)| amm_cache.is_active_validator(validator))
-            .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
-            .map(|(_, &new_token)| new_token)
-            .collect();
-        amm_cache.track_tokens(&active_new_tokens)
+        self.evict_invalidated_transactions_from(updates, all_txs.iter(), None)
     }
 
     /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
@@ -210,7 +196,6 @@ where
         updates: &crate::maintain::TempoPoolUpdates,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         expiry_cutoff: Option<u64>,
-        liquidity_recheck: bool,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         if !updates.has_invalidation_events() && expiry_cutoff.is_none() {
             return Vec::new();
@@ -274,9 +259,17 @@ where
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
         // enough liquidity, matching admission and preventing mass-eviction of valid txs.
-        // `liquidity_recheck` comes from `track_validator_token_changes`, computed once per update.
         let amm_cache = self.amm_liquidity_cache();
-        let has_active_validator_token_changes = liquidity_recheck;
+        let has_active_validator_token_changes = !updates.validator_token_changes.is_empty() && {
+            let active_new_tokens: Vec<_> = updates
+                .validator_token_changes
+                .iter()
+                .filter(|(validator, _)| amm_cache.is_active_validator(validator))
+                .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
+                .map(|(_, &new_token)| new_token)
+                .collect();
+            amm_cache.track_tokens(&active_new_tokens)
+        };
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
@@ -587,9 +580,8 @@ where
         self.remove_transactions(to_remove)
     }
 
-    /// Validates and inserts transactions without rechecking them against canonical updates
-    /// published meanwhile.
-    async fn add_transactions_unfenced(
+    /// Validates `transactions` against the latest state and inserts the valid ones.
+    async fn validate_and_insert(
         &self,
         transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
@@ -617,100 +609,6 @@ where
             .into_iter()
             .zip(origins)
             .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
-    }
-
-    /// Removes the transactions `inserted` reports added that a canonical update published
-    /// after generation `since` invalidated, and returns them with their index to validate
-    /// again.
-    ///
-    /// Updates published after the insert need no check: maintenance publishes an update
-    /// before it scans the pool, so its scan finds these transactions.
-    fn take_stale_insertions<'a>(
-        &self,
-        since: u64,
-        inserted: impl IntoIterator<Item = (usize, &'a PoolResult<AddedTransactionOutcome>)>,
-    ) -> Vec<(usize, (TransactionOrigin, TempoPooledTransaction))> {
-        if self.admission_fence.generation() == since {
-            return Vec::new();
-        }
-        let inserted: HashMap<TxHash, usize> = inserted
-            .into_iter()
-            .filter_map(|(index, result)| Some((result.as_ref().ok()?.hash, index)))
-            .collect();
-        if inserted.is_empty() {
-            return Vec::new();
-        }
-
-        let metrics = &self.admission_fence.metrics;
-        metrics.rechecks.increment(1);
-        let stale = match self.admission_fence.published_since(since) {
-            Some(published) => {
-                let transactions = self.get_all(inserted.keys().copied().collect());
-                let mut stale = Vec::new();
-                // Transactions still mined after the missed updates follow reth's mined path, even
-                // when an earlier update invalidated them. One a later reorg orphaned is checked
-                // like any other.
-                let mut taken: B256Set = transactions
-                    .iter()
-                    .map(|tx| *tx.hash())
-                    .filter(|hash| {
-                        published.iter().fold(false, |mined, invalidations| {
-                            if invalidations.mined.contains(hash) {
-                                true
-                            } else {
-                                mined && !invalidations.orphaned.contains(hash)
-                            }
-                        })
-                    })
-                    .collect();
-                for invalidations in &published {
-                    let live: Vec<_> = transactions
-                        .iter()
-                        .filter(|tx| {
-                            !taken.contains(tx.hash()) && !invalidations.mined.contains(tx.hash())
-                        })
-                        .collect();
-                    // Expiry is left to maintenance: revalidation would admit the transaction
-                    // again until it expires.
-                    let mut removed = self.evict_invalidated_transactions_from(
-                        &invalidations.updates,
-                        live.iter().copied(),
-                        None,
-                        invalidations.liquidity_recheck,
-                    );
-                    let evicted: B256Set = removed.iter().map(|tx| *tx.hash()).collect();
-                    removed.extend(
-                        self.remove_transactions(
-                            live.iter()
-                                .filter(|tx| {
-                                    !evicted.contains(tx.hash())
-                                        && invalidations.needs_revalidation(&tx.transaction)
-                                })
-                                .map(|tx| *tx.hash())
-                                .collect(),
-                        ),
-                    );
-                    taken.extend(removed.iter().map(|tx| *tx.hash()));
-                    stale.extend(removed);
-                }
-                stale
-            }
-            None => {
-                metrics.history_misses.increment(1);
-                self.remove_transactions(inserted.keys().copied().collect())
-            }
-        };
-        metrics.revalidated.increment(stale.len() as u64);
-
-        stale
-            .into_iter()
-            .filter_map(|tx| {
-                Some((
-                    *inserted.get(tx.hash())?,
-                    (tx.origin, tx.transaction.with_discarded_caches()),
-                ))
-            })
             .collect()
     }
 
@@ -833,7 +731,8 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
-            admission_fence: Arc::clone(&self.admission_fence),
+            canonical_updates: Arc::clone(&self.canonical_updates),
+            admission_metrics: self.admission_metrics.clone(),
         }
     }
 }
@@ -974,26 +873,42 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        let mut since = self.admission_fence.generation();
-        let mut results = self.add_transactions_unfenced(transactions).await;
-        let mut stale = self.take_stale_insertions(since, results.iter().enumerate());
-        for attempt in 2..=ADMISSION_ATTEMPTS {
-            if stale.is_empty() {
+        let mut seen = self.canonical_updates.load(Ordering::SeqCst);
+        let mut results = self.validate_and_insert(transactions).await;
+        for _ in 1..ADMISSION_ATTEMPTS {
+            // Maintenance counts an update before it scans the pool, and the pool lock orders
+            // the insert against that scan: either the scan saw these transactions or this
+            // load sees the update.
+            let updates = self.canonical_updates.load(Ordering::SeqCst);
+            if updates == seen {
                 break;
             }
-            since = self.admission_fence.generation();
-            let (round, transactions): (Vec<_>, Vec<_>) = stale.into_iter().unzip();
-            for (&index, result) in round
-                .iter()
-                .zip(self.add_transactions_unfenced(transactions).await)
-            {
-                results[index] = result;
+            seen = updates;
+
+            // Validated against the state before an update maintenance may have scanned the
+            // pool for already, so validate again whatever is still pooled.
+            let mut inserted: HashMap<TxHash, usize> = HashMap::default();
+            for (slot, result) in results.iter().enumerate() {
+                if let Ok(added) = result {
+                    inserted.insert(added.hash, slot);
+                }
             }
-            if attempt == ADMISSION_ATTEMPTS {
-                break;
+            let (slots, stale): (Vec<usize>, Vec<_>) = self
+                .remove_transactions(inserted.keys().copied().collect())
+                .into_iter()
+                .filter_map(|tx| {
+                    Some((
+                        *inserted.get(tx.hash())?,
+                        (tx.origin, tx.transaction.with_discarded_caches()),
+                    ))
+                })
+                .unzip();
+            self.admission_metrics
+                .revalidated
+                .increment(stale.len() as u64);
+            for (slot, result) in slots.into_iter().zip(self.validate_and_insert(stale).await) {
+                results[slot] = result;
             }
-            stale = self
-                .take_stale_insertions(since, round.iter().map(|&index| (index, &results[index])));
         }
         results
     }
@@ -1712,13 +1627,16 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use futures::{FutureExt, StreamExt};
-    use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
+    use reth_primitives_traits::{
+        InMemorySize, Recovered, SealedBlock, transaction::error::InvalidTransactionError,
+    };
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
         AllTransactionsEvents, FullTransactionEvent, PoolConfig, PoolUpdateKind, SubPoolLimit,
         TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
+        error::InvalidPoolTransactionError,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
     use tempo_chainspec::{
@@ -2431,153 +2349,88 @@ mod tests {
         )
     }
 
-    fn inserted(pooled: &TempoPooledTransaction) -> PoolResult<AddedTransactionOutcome> {
-        Ok(AddedTransactionOutcome {
-            hash: *pooled.hash(),
-            state: reth_transaction_pool::pool::AddedTransactionState::Pending,
-        })
-    }
-
-    fn pool_with_sponsored_transaction() -> (
+    /// A pool whose state admits the returned protocol transaction.
+    fn pool_with_valid_transaction() -> (
+        MockEthProvider<TempoPrimitives, TempoChainSpec>,
         TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
         TempoPooledTransaction,
-        Address,
     ) {
-        let sender = Address::random();
-        let (pooled, fee_payer) = sponsored_implicit_fee_transaction(sender);
+        let pooled = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let sender = pooled.sender();
         let provider = create_provider_with_tip();
-        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
-        (create_test_pool(provider), pooled, fee_payer)
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), U256::ZERO));
+        set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, U256::from(u64::MAX));
+        (provider.clone(), create_test_pool(provider), pooled)
+    }
+
+    /// Polls `admission` until it waits on a validation, then lets the validation task finish
+    /// that validation against the current state.
+    async fn run_validation(admission: &mut (impl Future + Unpin)) {
+        assert!(futures::poll!(&mut *admission).is_pending());
+        tokio::task::yield_now().await;
+    }
+
+    /// Moves the sender's nonce past `pooled`, so validation rejects it from now on.
+    fn mine_sender_nonce(
+        provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        pooled: &TempoPooledTransaction,
+    ) {
+        provider.add_account(
+            pooled.sender(),
+            ExtendedAccount::new(pooled.nonce() + 1, U256::ZERO),
+        );
     }
 
     #[tokio::test]
-    async fn fence_takes_insertion_an_update_during_validation_evicts() {
-        let (pool, pooled, fee_payer) = pool_with_sponsored_transaction();
-        let since = pool.admission_fence.generation();
-        add_validated(&pool, pooled.clone());
+    async fn admission_validates_again_after_canonical_update_during_validation() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        mine_sender_nonce(&provider, &pooled);
+        pool.canonical_updates.fetch_add(1, Ordering::SeqCst);
 
-        let mut invalidations = crate::maintain::PoolInvalidations::default();
-        invalidations.updates.user_token_changes.insert(fee_payer);
-        pool.admission_fence.publish(Arc::new(invalidations));
-
-        let result = inserted(&pooled);
-        let stale = pool.take_stale_insertions(since, [(3, &result)]);
-        assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].0, 3);
-        assert_eq!(stale[0].1.1.hash(), pooled.hash());
-        assert!(pool.get(pooled.hash()).is_none());
-    }
-
-    #[tokio::test]
-    async fn fence_keeps_insertion_a_later_missed_update_mined() {
-        let (pool, pooled, fee_payer) = pool_with_sponsored_transaction();
-        let since = pool.admission_fence.generation();
-        add_validated(&pool, pooled.clone());
-
-        let mut evicting = crate::maintain::PoolInvalidations::default();
-        evicting.updates.user_token_changes.insert(fee_payer);
-        pool.admission_fence.publish(Arc::new(evicting));
-        let mut mining = crate::maintain::PoolInvalidations::default();
-        mining.mined.insert(*pooled.hash());
-        pool.admission_fence.publish(Arc::new(mining));
-
-        let result = inserted(&pooled);
-        assert!(pool.take_stale_insertions(since, [(0, &result)]).is_empty());
-        assert!(pool.get(pooled.hash()).is_some());
-    }
-
-    #[tokio::test]
-    async fn fence_takes_insertion_a_reorg_orphaned_before_it_was_invalidated() {
-        let (pool, pooled, fee_payer) = pool_with_sponsored_transaction();
-        let since = pool.admission_fence.generation();
-        add_validated(&pool, pooled.clone());
-
-        let mut mining = crate::maintain::PoolInvalidations::default();
-        mining.mined.insert(*pooled.hash());
-        pool.admission_fence.publish(Arc::new(mining));
-        let mut reorg = crate::maintain::PoolInvalidations::default();
-        reorg.orphaned.insert(*pooled.hash());
-        pool.admission_fence.publish(Arc::new(reorg));
-        let mut evicting = crate::maintain::PoolInvalidations::default();
-        evicting.updates.user_token_changes.insert(fee_payer);
-        pool.admission_fence.publish(Arc::new(evicting));
-
-        let result = inserted(&pooled);
-        assert_eq!(pool.take_stale_insertions(since, [(0, &result)]).len(), 1);
-        assert!(pool.get(pooled.hash()).is_none());
-    }
-
-    #[tokio::test]
-    async fn fence_takes_insertion_whose_authority_changed_during_validation() {
-        let (pool, pooled, _) = pool_with_sponsored_transaction();
-        let since = pool.admission_fence.generation();
-        add_validated(&pool, pooled.clone());
-
-        let mut invalidations = crate::maintain::PoolInvalidations::default();
-        invalidations
-            .changed_commitments
-            .insert(*pooled.sender_ref());
-        pool.admission_fence.publish(Arc::new(invalidations));
-
-        let result = inserted(&pooled);
-        let stale = pool.take_stale_insertions(since, [(0, &result)]);
-        assert_eq!(stale.len(), 1);
-        assert!(pool.get(pooled.hash()).is_none());
-    }
-
-    #[tokio::test]
-    async fn fence_keeps_insertion_an_update_does_not_affect() {
-        let (pool, pooled, _) = pool_with_sponsored_transaction();
-        let since = pool.admission_fence.generation();
-        add_validated(&pool, pooled.clone());
-
-        let mut invalidations = crate::maintain::PoolInvalidations::default();
-        invalidations
-            .updates
-            .user_token_changes
-            .insert(Address::random());
-        invalidations.changed_commitments.insert(Address::random());
-        pool.admission_fence.publish(Arc::new(invalidations));
-
-        let result = inserted(&pooled);
-        assert!(pool.take_stale_insertions(since, [(0, &result)]).is_empty());
-        assert!(pool.get(pooled.hash()).is_some());
-    }
-
-    #[tokio::test]
-    async fn fence_ignores_updates_published_before_validation() {
-        let (pool, pooled, fee_payer) = pool_with_sponsored_transaction();
-        let mut invalidations = crate::maintain::PoolInvalidations::default();
-        invalidations.updates.user_token_changes.insert(fee_payer);
-        pool.admission_fence.publish(Arc::new(invalidations));
-
-        let since = pool.admission_fence.generation();
-        add_validated(&pool, pooled.clone());
-
-        let result = inserted(&pooled);
-        assert!(pool.take_stale_insertions(since, [(0, &result)]).is_empty());
-        assert!(pool.get(pooled.hash()).is_some());
-    }
-
-    #[tokio::test]
-    async fn fence_takes_every_insertion_once_missed_updates_are_dropped() {
-        let (pool, pooled, _) = pool_with_sponsored_transaction();
-        let since = pool.admission_fence.generation();
-        add_validated(&pool, pooled.clone());
-        for _ in 0..=crate::admission_fence::RECENT_UPDATES {
-            pool.admission_fence
-                .publish(Arc::new(crate::maintain::PoolInvalidations::default()));
-        }
-
-        let result = inserted(&pooled);
-        let rejected: PoolResult<AddedTransactionOutcome> = Err(PoolError::new(
-            B256::random(),
-            PoolErrorKind::DiscardedOnInsert,
+        let err = admission
+            .await
+            .expect_err("the second validation rejects the transaction");
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::NonceNotConsistent { tx: 0, state: 1 }
+            ))
         ));
-        let stale = pool.take_stale_insertions(since, [(0, &rejected), (1, &result)]);
-        assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].0, 1);
         assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn admission_keeps_insertion_without_canonical_update_during_validation() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        // The state changed, but maintenance has not scanned the pool for it yet.
+        mine_sender_nonce(&provider, &pooled);
+
+        let added = admission.await.expect("the first validation stands");
+        assert_eq!(added.hash, *pooled.hash());
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn admission_keeps_outcome_of_last_attempt() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        for _ in 0..ADMISSION_ATTEMPTS {
+            run_validation(&mut admission).await;
+            pool.canonical_updates.fetch_add(1, Ordering::SeqCst);
+        }
+        // One more validation would reject the transaction.
+        mine_sender_nonce(&provider, &pooled);
+
+        let added = admission.await.expect("the last validation stands");
+        assert_eq!(added.hash, *pooled.hash());
+        assert!(pool.get(pooled.hash()).is_some());
     }
 
     #[tokio::test]
