@@ -61,9 +61,11 @@ impl BestTransactionsPrewarming {
         };
 
         let prewarm_executor = prewarm.executor();
+        // The coordinator of a build that missed its deadline lives as long as that build, so
+        // do not queue behind it on the named thread.
         prewarm
             .executor()
-            .spawn_blocking_named("builder-prewarm", move || {
+            .spawn_blocking_named_or_tokio("builder-prewarm", move || {
                 Self::start_prewarming(
                     prewarm_executor,
                     BestTransactionsPrewarmingContext {
@@ -94,15 +96,9 @@ impl BestTransactionsPrewarming {
         let pool = &stateful_pool;
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 // The build is over, so do not pull from the source for advances that are still
-                // queued. All coordinators run on one named thread, and the next build's
-                // coordinator cannot start until this one returns.
+                // queued.
                 if ctx.prewarm.is_stopped() {
                     return;
                 }
@@ -169,6 +165,11 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
+
+        // Dropping the handle waits until every worker of the pool has cleared its EVM, and a
+        // worker can be busy with a transaction of another build for as long as that takes. One
+        // thread does this for all builds, so that coordinators do not pile up behind it.
+        executor.spawn_blocking_named("builder-prewarm-drop", move || drop(stateful_pool));
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -1459,5 +1460,36 @@ mod tests {
         // At most the poll that was already running reached the source, not the rest of the
         // initial batch.
         assert!(log.lock().unwrap().empty_polls <= 1);
+    }
+
+    #[test]
+    fn coordinator_exits_while_another_job_keeps_a_worker_busy() {
+        let executor = TaskExecutor::test();
+        // One worker stays busy, as with a transaction of another build that does not return.
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        executor.prewarming_pool().spawn(move || {
+            let _ = release_rx.recv();
+        });
+        // The test keeps a handle to the runtime: shutting it down joins the thread that clears
+        // the workers, which does wait for the busy one.
+        let prewarming = prewarming_with_executor(executor.clone(), Vec::new(), Arc::default());
+
+        // Release the worker after a timeout so that a regression fails instead of hanging.
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let watchdog = thread::spawn(move || {
+            let timed_out = done_rx.recv_timeout(Duration::from_secs(5)).is_err();
+            drop(release_tx);
+            timed_out
+        });
+
+        // Dropping the harness waits for the coordinator to exit.
+        drop(prewarming);
+        let _ = done_tx.send(());
+
+        assert!(
+            !watchdog.join().unwrap(),
+            "the coordinator waited for a worker that another build keeps busy"
+        );
+        drop(executor);
     }
 }

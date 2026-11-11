@@ -42,7 +42,7 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
 
     let tempo_node = TempoNode::default();
     let executed_state = tempo_node.executed_state();
-    let (observer, _) = tempo_test_setup(1, chain_spec)
+    let (observer, _) = tempo_test_setup(1, chain_spec, None)
         .with_node(move |_| tempo_node.clone())
         .build_single()
         .await?;

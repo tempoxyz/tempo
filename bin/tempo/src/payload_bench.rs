@@ -198,6 +198,9 @@ impl PayloadBench {
                 enable_prewarming: !self.disable_prewarming,
                 skip_state_root: self.skip_state_root,
                 enable_parallel: self.parallel,
+                // Builds here carry no deadline.
+                build_timeout: false,
+                max_build_tasks: 1,
             },
             Estimator::new(EstimatorConfig::default()),
         );

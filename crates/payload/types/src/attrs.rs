@@ -34,6 +34,12 @@ pub struct TempoPayloadAttributes {
     /// builder should not stop early for block pacing.
     #[serde(skip)]
     payload_build_budget: Option<(Duration, Instant)>,
+    /// Time left to return a payload and the monotonic clock reading when it was set.
+    ///
+    /// Consensus sets this to the point past which a proposal can no longer reach the
+    /// voters before their leader timeout. `None` means the build has no deadline.
+    #[serde(skip)]
+    payload_build_timeout: Option<(Duration, Instant)>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -80,6 +86,7 @@ impl TempoPayloadAttributes {
                 target_gas_limit: None,
             },
             payload_build_budget: None,
+            payload_build_timeout: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -135,6 +142,30 @@ impl TempoPayloadAttributes {
     pub fn payload_build_budget(&self) -> Option<Duration> {
         self.payload_build_budget
             .map(|(budget, observed)| budget.saturating_sub(observed.elapsed()))
+    }
+
+    /// Sets how long the build may take before its payload is useless to consensus.
+    ///
+    /// Unlike [`Self::with_payload_build_budget`], which paces a build, this is a hard limit:
+    /// once it has passed, the builder returns an empty payload instead of the one it was
+    /// building. Time between setting it and starting the build counts against it.
+    pub fn with_payload_build_timeout(mut self, timeout: Duration) -> Self {
+        self.payload_build_timeout = Some((timeout, Instant::now()));
+        self
+    }
+
+    /// Returns the time left before the build's payload is useless to consensus, or `None` if
+    /// the build has no deadline. A deadline that has passed returns zero.
+    pub fn payload_build_timeout(&self) -> Option<Duration> {
+        self.payload_build_timeout
+            .map(|(timeout, observed)| timeout.saturating_sub(observed.elapsed()))
+    }
+
+    /// Removes the pacing budget and the deadline, as for a build consensus did not request.
+    pub fn without_payload_build_limits(mut self) -> Self {
+        self.payload_build_budget = None;
+        self.payload_build_timeout = None;
+        self
     }
 
     /// Returns the milliseconds portion of the timestamp.

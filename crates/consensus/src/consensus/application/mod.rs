@@ -18,7 +18,7 @@ pub(super) use r#impl::Config;
 pub(crate) use r#impl::Inner;
 pub(super) use parent_state::TempoParentState;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use commonware_actor::Feedback;
 use commonware_codec::Codec;
@@ -42,6 +42,7 @@ use commonware_cryptography::{
 };
 use commonware_runtime::{Clock, Spawner};
 use commonware_utils::channel::oneshot;
+use parking_lot::Mutex;
 use rand_core::Rng;
 use tempo_chainspec::TempoChainSpec;
 
@@ -69,6 +70,7 @@ where
     deferred: Deferred<E, S, A, B, ES>,
     chainspec: Arc<TempoChainSpec>,
     verification_mode: VerificationMode,
+    proposal_requests: ProposalRequests,
 }
 
 impl<E, S, A, B, ES> Clone for Factory<E, S, A, B, ES>
@@ -86,6 +88,7 @@ where
             deferred: self.deferred.clone(),
             chainspec: self.chainspec.clone(),
             verification_mode: self.verification_mode,
+            proposal_requests: self.proposal_requests.clone(),
         }
     }
 }
@@ -115,6 +118,7 @@ where
         epocher: ES,
         chainspec: Arc<TempoChainSpec>,
         verification_mode: VerificationMode,
+        proposal_requests: ProposalRequests,
     ) -> Self {
         Self {
             application: inner.clone(),
@@ -127,6 +131,7 @@ where
             deferred: Deferred::new(context.child("application"), inner, marshal, epocher),
             chainspec,
             verification_mode,
+            proposal_requests,
         }
     }
 
@@ -136,9 +141,9 @@ where
             .verification_mode
             .is_deferred_at(&self.chainspec, timestamp)
         {
-            Application::Deferred(self.deferred.clone())
+            Application::Deferred(self.deferred.clone(), self.proposal_requests.clone())
         } else {
-            Application::Immediate(self.immediate.clone())
+            Application::Immediate(self.immediate.clone(), self.proposal_requests.clone())
         }
     }
 }
@@ -158,6 +163,29 @@ where
     }
 }
 
+/// When consensus last asked this node for a proposal.
+///
+/// Voters give the leader `leader_timeout` from the start of the view, which is when consensus
+/// asks the leader for its proposal. The wrappers resolve the parent block before they hand
+/// that request to the application, so the application reads the time of the request here.
+#[derive(Clone, Default)]
+pub(crate) struct ProposalRequests(Arc<Mutex<Option<(Round, Instant)>>>);
+
+impl ProposalRequests {
+    fn record(&self, round: Round) {
+        *self.0.lock() = Some((round, Instant::now()));
+    }
+
+    /// Returns when the proposal for `round` was asked for, or `None` if that was not the
+    /// latest request.
+    fn requested_at(&self, round: Round) -> Option<Instant> {
+        self.0
+            .lock()
+            .filter(|(requested, _)| *requested == round)
+            .map(|(_, at)| at)
+    }
+}
+
 /// Verification policy fixed for the lifetime of a simplex epoch.
 pub(crate) enum Application<E, S, A, B, ES>
 where
@@ -167,8 +195,8 @@ where
     B: CertifiableBlock + Codec + Clone,
     ES: Epocher,
 {
-    Deferred(Deferred<E, S, A, B, ES>),
-    Immediate(Inline<E, S, A, B, ES>),
+    Deferred(Deferred<E, S, A, B, ES>, ProposalRequests),
+    Immediate(Inline<E, S, A, B, ES>, ProposalRequests),
 }
 
 impl<E, S, A, B, ES> Clone for Application<E, S, A, B, ES>
@@ -181,8 +209,12 @@ where
 {
     fn clone(&self) -> Self {
         match self {
-            Self::Deferred(application) => Self::Deferred(application.clone()),
-            Self::Immediate(application) => Self::Immediate(application.clone()),
+            Self::Deferred(application, requests) => {
+                Self::Deferred(application.clone(), requests.clone())
+            }
+            Self::Immediate(application, requests) => {
+                Self::Immediate(application.clone(), requests.clone())
+            }
         }
     }
 }
@@ -208,8 +240,14 @@ where
 
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
         match self {
-            Self::Deferred(application) => application.propose(context).await,
-            Self::Immediate(application) => application.propose(context).await,
+            Self::Deferred(application, requests) => {
+                requests.record(context.round);
+                application.propose(context).await
+            }
+            Self::Immediate(application, requests) => {
+                requests.record(context.round);
+                application.propose(context).await
+            }
         }
     }
 
@@ -219,8 +257,8 @@ where
         payload: Self::Digest,
     ) -> oneshot::Receiver<bool> {
         match self {
-            Self::Deferred(application) => application.verify(context, payload).await,
-            Self::Immediate(application) => application.verify(context, payload).await,
+            Self::Deferred(application, _) => application.verify(context, payload).await,
+            Self::Immediate(application, _) => application.verify(context, payload).await,
         }
     }
 }
@@ -243,8 +281,8 @@ where
 {
     async fn certify(&mut self, round: Round, payload: Self::Digest) -> oneshot::Receiver<bool> {
         match self {
-            Self::Deferred(application) => application.certify(round, payload).await,
-            Self::Immediate(application) => application.certify(round, payload).await,
+            Self::Deferred(application, _) => application.certify(round, payload).await,
+            Self::Immediate(application, _) => application.certify(round, payload).await,
         }
     }
 
@@ -253,8 +291,8 @@ where
         context: Self::Context,
     ) -> oneshot::Receiver<Handoff<Self::Digest>> {
         match self {
-            Self::Deferred(application) => application.prepare(context).await,
-            Self::Immediate(application) => application.prepare(context).await,
+            Self::Deferred(application, _) => application.prepare(context).await,
+            Self::Immediate(application, _) => application.prepare(context).await,
         }
     }
 }
@@ -275,8 +313,8 @@ where
 
     fn broadcast(&mut self, payload: Self::Digest, plan: Self::Plan) -> Feedback {
         match self {
-            Self::Deferred(application) => application.broadcast(payload, plan),
-            Self::Immediate(application) => application.broadcast(payload, plan),
+            Self::Deferred(application, _) => application.broadcast(payload, plan),
+            Self::Immediate(application, _) => application.broadcast(payload, plan),
         }
     }
 }
@@ -297,8 +335,29 @@ where
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
         match self {
-            Self::Deferred(application) => application.report(activity),
-            Self::Immediate(application) => application.report(activity),
+            Self::Deferred(application, _) => application.report(activity),
+            Self::Immediate(application, _) => application.report(activity),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use commonware_consensus::types::{Epoch, View};
+
+    #[test]
+    fn proposal_request_is_known_only_for_the_latest_round() {
+        let requests = ProposalRequests::default();
+        let earlier = Round::new(Epoch::new(0), View::new(7));
+        let later = Round::new(Epoch::new(0), View::new(8));
+        assert!(requests.requested_at(earlier).is_none());
+
+        requests.record(earlier);
+        assert!(requests.requested_at(earlier).is_some());
+
+        requests.record(later);
+        assert!(requests.requested_at(earlier).is_none());
+        assert!(requests.requested_at(later).is_some());
     }
 }

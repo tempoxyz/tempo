@@ -301,6 +301,7 @@ where
         .await
         .wrap_err("failed initializing dkg manager")?;
 
+        let proposal_requests = application::ProposalRequests::default();
         let application = application::Inner::new(application::Config {
             context: context.child("application"),
             public_key: self.signer.public_key(),
@@ -311,6 +312,8 @@ where
                 executed_state: self.executed_state.clone(),
             },
             estimator: self.estimator.clone(),
+            time_to_propose: self.time_to_propose,
+            proposal_requests: proposal_requests.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
         let application = application::Factory::new(
@@ -320,6 +323,7 @@ where
             epoch_strategy.clone(),
             execution_node.chain_spec(),
             self.verification_mode,
+            proposal_requests,
         );
 
         let epoch_manager_config = epoch::manager::Config {

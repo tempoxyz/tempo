@@ -7,7 +7,7 @@ mod encode;
 mod metrics;
 mod prewarming;
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{RecvTimeoutError, Sender};
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, TxHash, U256};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -29,13 +29,13 @@ use reth_basic_payload_builder::{
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::{
-    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
-    instrumented_state::InstrumentedStateProvider,
+    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, PayloadStateRootHandle,
+    StateRootUpdateHook, instrumented_state::InstrumentedStateProvider,
 };
 use reth_errors::ConsensusError;
 use reth_evm::{
     BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError, ConfigureEvm,
-    Database, NextBlockEnvAttributes, OnStateHook, database::StateProviderDatabase,
+    Database, NextBlockEnvAttributes, OnStateHook, StateUpdate, database::StateProviderDatabase,
     execute::BlockAssemblerInput,
 };
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
@@ -45,14 +45,14 @@ use reth_storage_api::{
     EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
     StateRootProvider,
 };
-use reth_tasks::TaskExecutor;
+use reth_tasks::{CancelOnDrop, TaskExecutor};
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
 use std::{
     num::NonZeroU64,
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
@@ -69,7 +69,7 @@ use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
     transaction::TempoPoolTransactionError,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{Semaphore, oneshot};
 use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
@@ -78,6 +78,9 @@ use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+
+/// How often a build that waits for its worker thread checks whether its job was cancelled.
+const BUILD_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -139,6 +142,9 @@ pub struct TempoPayloadBuilder<Provider> {
     /// One [`tempo_payload_types::BuildPlan`] is taken from it per paced build,
     /// and the finished build's replayable work is reported back to it.
     estimator: Estimator,
+    /// Limits the builds running on worker threads. This counts builds that missed their
+    /// deadline, which keep their thread until the transaction they are executing returns.
+    build_workers: Arc<Semaphore>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -158,6 +164,13 @@ pub struct TempoPayloadBuilderConfig {
     pub skip_state_root: bool,
     /// Whether to enable speculative parallel payload-builder planning.
     pub enable_parallel: bool,
+    /// Whether a build that misses the deadline set by consensus is replaced by an empty
+    /// payload. When `false`, a build runs until it is done.
+    pub build_timeout: bool,
+    /// Most builds that may run at once, counting builds that missed their deadline and are
+    /// still executing a transaction. While all of them are running, new builds return an
+    /// empty payload.
+    pub max_build_tasks: usize,
 }
 
 impl TempoPayloadBuilderConfig {
@@ -202,6 +215,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
+            build_workers: Arc::new(Semaphore::new(config.max_build_tasks)),
         }
     }
 }
@@ -218,9 +232,12 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(args, |attributes, timestamp| {
-            self.pool.best_transactions_for_block(attributes, timestamp)
-        })
+        match args.config.attributes.payload_build_timeout() {
+            Some(timeout) if self.config.build_timeout => {
+                self.build_payload_with_timeout(args, timeout)
+            }
+            _ => self.build_pool_payload(args, &Arc::default()),
+        }
     }
 
     fn on_missing_payload(
@@ -234,7 +251,11 @@ where
         &self,
         config: PayloadConfig<Self::Attributes, TempoHeader>,
     ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
-        self.build_payload(
+        // An empty payload has nothing to prewarm. It is also what a build falls back to, so it
+        // must not wait on a prewarming coordinator.
+        let mut this = self.clone();
+        this.config.enable_prewarming = false;
+        this.build_payload(
             BuildArguments::new(
                 Default::default(),
                 None,
@@ -244,6 +265,7 @@ where
                 Default::default(),
             ),
             |_, _| core::iter::empty(),
+            &Arc::default(),
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -255,6 +277,137 @@ where
     Provider:
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
+    /// Builds a payload on a worker thread and returns an empty one if the worker is not done
+    /// within `timeout`.
+    ///
+    /// The empty payload is built ahead of the deadline, once the worker is unlikely to make it,
+    /// so that it is returned when the deadline passes rather than started then.
+    ///
+    /// A build cannot be interrupted while it executes a transaction, so a build that misses the
+    /// deadline, or whose job is cancelled, is abandoned instead. It is told to stop, its state
+    /// root task is released and its result is dropped whenever it finishes. If the transaction
+    /// it is executing has by itself outlasted the build's pacing budget, it can never be
+    /// included and is removed from the pool, so that the next build does not pick it again.
+    fn build_payload_with_timeout(
+        &self,
+        mut args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
+        timeout: Duration,
+    ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError> {
+        let started = Instant::now();
+        let deadline = started + timeout;
+        let config = args.config.clone();
+        let budget = config.attributes.payload_build_budget();
+        // A build that is still running halfway between the end of its pacing budget and the
+        // deadline is unlikely to finish before it.
+        let prepare_fallback_at = budget.map_or(deadline, |budget| {
+            let paced_until = started + budget;
+            paced_until + deadline.saturating_duration_since(paced_until) / 2
+        });
+
+        // An abandoned build keeps its thread until the transaction it is executing returns, so
+        // stop starting builds while too many are still running.
+        let Ok(permit) = self.build_workers.clone().try_acquire_owned() else {
+            warn!(
+                target: "payload_builder",
+                id = %config.payload_id,
+                "too many payload builds are still running, building an empty payload"
+            );
+            self.metrics.inc_empty_fallback("workers_exhausted");
+            return self.build_empty_fallback(config);
+        };
+
+        // The worker stops once `worker_cancel` is dropped. The job's own marker stays on this
+        // thread, so that a cancelled job is not mistaken for a worker that finished.
+        let worker_cancel = CancelOnDrop::default();
+        let cancel = core::mem::replace(&mut args.cancel, worker_cancel.clone());
+        let state_root_task = detach_state_root_task(&mut args.state_root_handle);
+        let shared = Arc::new(SharedBuildState::default());
+        let (outcome_tx, outcome_rx) = crossbeam_channel::bounded(1);
+
+        let this = self.clone();
+        let worker_shared = shared.clone();
+        let span = Span::current();
+        self.executor
+            .spawn_blocking_named_or_tokio("builder-worker", move || {
+                let _permit = permit;
+                let _span = span.entered();
+                // Nobody is waiting if the build was abandoned.
+                let _ = outcome_tx.send(this.build_pool_payload(args, &worker_shared));
+            });
+
+        let mut fallback = None;
+        let cancelled = loop {
+            if fallback.is_none() && Instant::now() >= prepare_fallback_at.min(deadline) {
+                fallback = Some(self.build_empty_fallback(config.clone()));
+            }
+            let next_check = deadline.min(Instant::now() + BUILD_WORKER_POLL_INTERVAL);
+            match outcome_rx.recv_deadline(next_check) {
+                Ok(outcome) => return outcome,
+                // The worker panicked.
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(PayloadBuilderError::ChannelClosed);
+                }
+                Err(RecvTimeoutError::Timeout) if cancel.is_cancelled() => break true,
+                Err(RecvTimeoutError::Timeout) if Instant::now() >= deadline => break false,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        };
+
+        // Either way the worker is left behind, possibly in the middle of a transaction. Cancel
+        // its state root task before ending the stream to it, so that the task does not take
+        // what the build streamed so far for a whole block.
+        drop(worker_cancel);
+        drop(state_root_task);
+        shared.end_state_stream();
+        if let Some((tx, elapsed)) = shared.outlasted(budget) {
+            warn!(
+                target: "payload_builder",
+                id = %config.payload_id,
+                %tx,
+                ?elapsed,
+                "removing a transaction that outlasted the build budget from the pool"
+            );
+            self.pool.remove_transactions(vec![tx]);
+            self.metrics.inc_pool_tx_skipped("execution_timeout");
+        }
+        if cancelled {
+            return Ok(BuildOutcome::Cancelled);
+        }
+
+        warn!(
+            target: "payload_builder",
+            id = %config.payload_id,
+            ?timeout,
+            "payload build missed its deadline, returning an empty payload"
+        );
+        self.metrics.inc_empty_fallback("timeout");
+        fallback.unwrap_or_else(|| self.build_empty_fallback(config))
+    }
+
+    /// Builds an empty payload in place of one that will not be ready in time.
+    fn build_empty_fallback(
+        &self,
+        mut config: PayloadConfig<TempoPayloadAttributes, TempoHeader>,
+    ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError> {
+        // Consensus paces the return of a proposal itself, and the estimator must not learn the
+        // timing of a build that only stands in for another.
+        config.attributes = config.attributes.without_payload_build_limits();
+        self.build_empty_payload(config).map(BuildOutcome::Freeze)
+    }
+
+    /// Builds a payload from the best transactions of the pool.
+    fn build_pool_payload(
+        &self,
+        args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
+        shared: &Arc<SharedBuildState>,
+    ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError> {
+        self.build_payload(
+            args,
+            |attributes, timestamp| self.pool.best_transactions_for_block(attributes, timestamp),
+            shared,
+        )
+    }
+
     #[instrument(
         target = "payload_builder",
         skip_all,
@@ -268,6 +421,7 @@ where
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
         best_txs: impl FnOnce(BestTransactionsAttributes, u64) -> Txs,
+        shared: &Arc<SharedBuildState>,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
@@ -439,8 +593,8 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let mut hook = handle.take_state_hook();
-            executor.set_state_hook(move |state| hook.on_state(state));
+            let stream = StateStream::new(shared, handle.take_state_hook());
+            executor.set_state_hook(move |state| stream.on_state(state));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -675,6 +829,7 @@ where
                 best_txs.on_new_result(result);
             };
 
+            shared.set_executing(Some((*tx.hash(), Instant::now())));
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
@@ -691,6 +846,7 @@ where
                         executor.commit_transaction(result).map(|_| ())
                     })
             };
+            shared.set_executing(None);
 
             if let Err(err) = execution_result {
                 match err {
@@ -869,6 +1025,8 @@ where
                             );
                             Some((outcome, elapsed))
                         }
+                        // The task of a build that was given up on is cancelled with it.
+                        Err(_) if cancel.is_cancelled() => None,
                         Err(err) => {
                             warn!(
                                 target: "payload_builder",
@@ -882,6 +1040,10 @@ where
                 })
             }
             .unzip();
+
+        // Nobody waits for the payload of a build that was given up on while it finished, so do
+        // not compute the root the slow way in place of the cancelled task.
+        check_cancel!();
 
         let (state_root, trie_updates) = if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
@@ -1171,8 +1333,9 @@ where
         let (result_tx, result_rx) = oneshot::channel();
         let parent = Span::current();
 
+        // Another build may still hold the named thread, see `Self::build_payload_with_timeout`.
         self.executor
-            .spawn_blocking_named("builder-roots-task", move || {
+            .spawn_blocking_named_or_tokio("builder-roots-task", move || {
                 let _span =
                     debug_span!(target: "payload_builder", parent: &parent, "builder_roots")
                         .entered();
@@ -1242,6 +1405,101 @@ fn maybe_override_fee_recipient<DB: Database>(
     }
 }
 
+/// What a build shares with the thread that waits for it, which may have to abandon it.
+#[derive(Debug, Default)]
+struct SharedBuildState {
+    /// The pool transaction the build is executing and when it started.
+    executing: Mutex<Option<(TxHash, Instant)>>,
+    /// Streams the state changes of the build to its state root task.
+    state_hook: Mutex<Option<StateRootUpdateHook>>,
+}
+
+impl SharedBuildState {
+    fn set_executing(&self, tx: Option<(TxHash, Instant)>) {
+        *self
+            .executing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = tx;
+    }
+
+    /// Returns the transaction and how long it has been executing, if that is at least a whole
+    /// pacing `budget`. Such a transaction does not fit into any block. Without a budget there is
+    /// nothing to measure it against.
+    fn outlasted(&self, budget: Option<Duration>) -> Option<(TxHash, Duration)> {
+        let (tx, started) = (*self
+            .executing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner))?;
+        let elapsed = started.elapsed();
+        (elapsed >= budget?).then_some((tx, elapsed))
+    }
+
+    /// Ends the stream of state changes to the state root task.
+    ///
+    /// The task hashes the stream on a thread that all state root tasks share, and that thread
+    /// stays with the task until the stream ends.
+    fn end_state_stream(&self) {
+        drop(
+            self.state_hook
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
+    }
+}
+
+/// The executor's end of the stream of state changes to a state root task. The stream ends when
+/// the executor drops it, unless the thread that waits for the build ended it before.
+struct StateStream(Arc<SharedBuildState>);
+
+impl StateStream {
+    fn new(shared: &Arc<SharedBuildState>, hook: StateRootUpdateHook) -> Self {
+        *shared
+            .state_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
+        Self(shared.clone())
+    }
+
+    fn on_state(&self, state: StateUpdate) {
+        if let Some(hook) = self
+            .0
+            .state_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            hook.on_state(state);
+        }
+    }
+}
+
+impl Drop for StateStream {
+    fn drop(&mut self) {
+        self.0.end_state_stream();
+    }
+}
+
+/// Moves what a build needs of its state root task into a new handle in `handle`, and returns
+/// the original, which cancels the task when dropped.
+///
+/// All state root tasks run on one thread. A build that is left behind in a transaction would
+/// keep that thread, and block validation with it, until the transaction returns, unless
+/// whoever abandons the build can still cancel the task. See also
+/// [`SharedBuildState::end_state_stream`].
+fn detach_state_root_task(
+    handle: &mut Option<PayloadStateRootHandle>,
+) -> Option<PayloadStateRootHandle> {
+    let mut task = handle.take()?;
+    *handle = Some(PayloadStateRootHandle::new(
+        task.name(),
+        Some(task.take_state_hook()),
+        task.take_state_root_rx(),
+        task.try_take_hashed_state_rx(),
+    ));
+    Some(task)
+}
+
 /// Result produced by the roots task while finalizing payload block data.
 #[derive(Debug)]
 pub(crate) struct RootsTaskResult {
@@ -1265,6 +1523,8 @@ pub(crate) struct RootsTaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossbeam_channel::TryRecvError;
+    use reth_engine_tree::tree::{StateRootHandle, StateRootMessage, StateRootTaskCancelGuard};
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
@@ -1279,5 +1539,61 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
+    }
+
+    #[test]
+    fn executing_transaction_outlasts_only_a_budget_it_ran_past() {
+        let shared = SharedBuildState::default();
+        assert!(shared.outlasted(Some(Duration::ZERO)).is_none());
+
+        let tx = TxHash::repeat_byte(1);
+        shared.set_executing(Some((tx, Instant::now())));
+        assert_eq!(
+            shared.outlasted(Some(Duration::ZERO)).map(|(tx, _)| tx),
+            Some(tx)
+        );
+        assert!(shared.outlasted(Some(Duration::from_secs(3600))).is_none());
+        // A build that consensus does not pace has no budget to outlast.
+        assert!(shared.outlasted(None).is_none());
+    }
+
+    #[test]
+    fn abandoning_a_build_releases_its_state_root_task() {
+        let (updates_tx, updates_rx) = crossbeam_channel::unbounded();
+        let (cancel_guard, cancel_rx) = StateRootTaskCancelGuard::channel();
+        let (_state_root_tx, state_root_rx) = std::sync::mpsc::channel();
+        let (_hashed_state_tx, hashed_state_rx) = std::sync::mpsc::channel();
+        let mut build_handle = Some(
+            StateRootHandle::new(
+                B256::ZERO,
+                updates_tx,
+                cancel_guard,
+                state_root_rx,
+                hashed_state_rx,
+            )
+            .into_payload_state_root_handle(),
+        );
+
+        // What the thread that waits for a build keeps, and what the build does with the rest.
+        let task = detach_state_root_task(&mut build_handle);
+        let shared = Arc::new(SharedBuildState::default());
+        let stream = StateStream::new(&shared, build_handle.as_mut().unwrap().take_state_hook());
+        assert_eq!(cancel_rx.try_recv(), Err(TryRecvError::Empty));
+        assert!(matches!(updates_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        // The build still holds its handle and its end of the stream when it is abandoned.
+        drop(task);
+        shared.end_state_stream();
+
+        assert_eq!(cancel_rx.try_recv(), Err(TryRecvError::Disconnected));
+        assert!(matches!(
+            updates_rx.try_recv(),
+            Ok(StateRootMessage::FinishedStateUpdates)
+        ));
+        assert!(matches!(
+            updates_rx.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+        drop(stream);
     }
 }

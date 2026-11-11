@@ -132,6 +132,13 @@ impl TempoPayloadBuilderMetrics {
             .increment(1);
     }
 
+    /// Increments the counter of builds replaced by an empty payload, by the reason they were.
+    #[inline]
+    pub(crate) fn inc_empty_fallback(&self, reason: &'static str) {
+        metrics::counter!("tempo_payload_builder_empty_fallback_total", "reason" => reason)
+            .increment(1);
+    }
+
     /// Increments the counter for why the payload builder stopped adding pool transactions.
     #[inline]
     pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {

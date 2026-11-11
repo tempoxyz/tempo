@@ -149,6 +149,15 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.build-time-multiplier", default_value_t)]
     pub builder_build_time_multiplier: BuildTimeMultiplier,
 
+    /// Keep building a block after the leader timeout has made it useless.
+    ///
+    /// By default a consensus build that is not done in time for the voters' leader timeout is
+    /// replaced by an empty block, and a transaction that alone outlasted the build's pacing
+    /// budget is removed from the pool. The abandoned build holds one of the
+    /// `--builder.max-tasks` slots until the transaction it is executing returns.
+    #[arg(long = "builder.disable-build-timeout", default_value_t = false)]
+    pub builder_disable_build_timeout: bool,
+
     /// Replay canonical blocks under the latest compiled hardfork, or an explicit HARDFORK.
     #[arg(
         long = "shadow-replay",
@@ -172,6 +181,7 @@ impl Default for TempoNodeArgs {
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: BuildTimeMultiplier::default(),
+            builder_disable_build_timeout: false,
             shadow_replay: None,
         }
     }
@@ -200,6 +210,7 @@ impl TempoNodeArgs {
             enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
+            build_timeout: !self.builder_disable_build_timeout,
             estimator: None,
         }
     }
@@ -1060,6 +1071,8 @@ pub struct TempoPayloadBuilderBuilder {
     ///
     /// Only used when no `estimator` is provided.
     pub build_time_multiplier: BuildTimeMultiplier,
+    /// Replace a consensus build that misses its deadline with an empty payload.
+    pub build_timeout: bool,
     /// Proposal budget estimator the payload builder paces builds with, or
     /// `None` for a private one using default timing and `build_time_multiplier`.
     /// Inject a shared estimator to use consensus timing and feedback.
@@ -1073,6 +1086,7 @@ impl Default for TempoPayloadBuilderBuilder {
             enable_prewarming: true,
             enable_parallel: false,
             build_time_multiplier: BuildTimeMultiplier::default(),
+            build_timeout: true,
             estimator: None,
         }
     }
@@ -1136,6 +1150,8 @@ where
                 enable_prewarming: self.enable_prewarming,
                 skip_state_root: ctx.config().tree_config().skip_state_root(),
                 enable_parallel: self.enable_parallel,
+                build_timeout: self.build_timeout,
+                max_build_tasks: conf.max_payload_tasks(),
             },
             estimator,
         ))
