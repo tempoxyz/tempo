@@ -1755,7 +1755,7 @@ mod tests {
         },
     };
 
-    use crate::delayed_pool;
+    use crate::delayed_pool::DelayedPoolConfig;
     use reth_transaction_pool::TransactionListenerKind;
     use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3764,7 +3764,7 @@ mod tests {
     fn create_validating_pool(
         sender: Address,
         tip: u64,
-        delayed_config: delayed_pool::Config,
+        delayed_config: DelayedPoolConfig,
     ) -> (
         MockEthProvider<TempoPrimitives, TempoChainSpec>,
         TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
@@ -3932,7 +3932,7 @@ mod tests {
         let (_provider, pool) = create_validating_pool(
             sender,
             tip,
-            delayed_pool::Config {
+            DelayedPoolConfig {
                 lead_secs: 2,
                 ..Default::default()
             },
@@ -3955,7 +3955,7 @@ mod tests {
         let (_provider, pool) = create_validating_pool(
             sender,
             tip,
-            delayed_pool::Config {
+            DelayedPoolConfig {
                 lead_secs: 2,
                 ..Default::default()
             },
@@ -4133,7 +4133,7 @@ mod tests {
         let (provider, pool) = create_validating_pool(
             sender,
             tip,
-            delayed_pool::Config {
+            DelayedPoolConfig {
                 max_count: std::num::NonZeroUsize::MIN,
                 ..Default::default()
             },

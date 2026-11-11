@@ -61,8 +61,8 @@ use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
     amm::AmmLiquidityCache,
     delayed_pool::{
-        self, BYTES_PER_MB, DEFAULT_DELAYED_LEAD_SECS, DEFAULT_DELAYED_MAX_COUNT,
-        DEFAULT_DELAYED_MAX_SIZE_MB,
+        BYTES_PER_MB, DEFAULT_DELAYED_LEAD_SECS, DEFAULT_DELAYED_MAX_COUNT,
+        DEFAULT_DELAYED_MAX_SIZE_MB, DelayedPoolConfig,
     },
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -205,7 +205,7 @@ impl TempoNodeArgs {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
             max_txs_per_lane: self.max_txs_per_lane,
-            delayed_pool_config: delayed_pool::Config {
+            delayed_pool_config: DelayedPoolConfig {
                 lead_secs: self.delayed_lead_secs,
                 max_count: self.delayed_max_count,
                 max_size: self.delayed_max_size_mb.saturating_mul(BYTES_PER_MB),
@@ -801,7 +801,7 @@ pub struct TempoPoolBuilder {
     /// Maximum pending and queued transactions per regular 2D nonce lane.
     pub max_txs_per_lane: usize,
     /// Lead time and limits of the delayed sub-pool.
-    pub delayed_pool_config: delayed_pool::Config,
+    pub delayed_pool_config: DelayedPoolConfig,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
     /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
@@ -1021,7 +1021,7 @@ impl Default for TempoPoolBuilder {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            delayed_pool_config: delayed_pool::Config::default(),
+            delayed_pool_config: DelayedPoolConfig::default(),
             disable_fee_amm_check: false,
             address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
@@ -1250,7 +1250,7 @@ mod tests {
         let defaults = Args::try_parse_from(["tempo"]).unwrap();
         assert_eq!(
             defaults.node.pool_builder().delayed_pool_config,
-            delayed_pool::Config::default()
+            DelayedPoolConfig::default()
         );
 
         let args = Args::try_parse_from([
@@ -1265,7 +1265,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             args.node.pool_builder().delayed_pool_config,
-            delayed_pool::Config {
+            DelayedPoolConfig {
                 lead_secs: 1,
                 max_count: NonZeroUsize::new(10).unwrap(),
                 max_size: NonZeroUsize::new(3 * 1024 * 1024).unwrap(),

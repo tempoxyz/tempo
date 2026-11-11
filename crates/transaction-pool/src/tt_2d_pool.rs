@@ -1,7 +1,7 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{
     authority_counts::AuthorityCounts,
-    delayed_pool::{self, DelayedPool},
+    delayed_pool::{self, DelayedPool, DelayedPoolConfig},
     metrics::AA2dPoolMetrics,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -2232,7 +2232,7 @@ pub struct AA2dPoolConfig {
     /// Expiring nonce transactions are independent and do not use this limit.
     pub max_txs_per_lane: usize,
     /// Lead time and limits of the delayed sub-pool.
-    pub delayed: delayed_pool::Config,
+    pub delayed: DelayedPoolConfig,
 }
 
 impl Default for AA2dPoolConfig {
@@ -2243,7 +2243,7 @@ impl Default for AA2dPoolConfig {
             queued_limit: SubPoolLimit::default(),
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            delayed: delayed_pool::Config::default(),
+            delayed: DelayedPoolConfig::default(),
         }
     }
 }

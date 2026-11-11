@@ -32,11 +32,11 @@ pub const DEFAULT_DELAYED_MAX_SIZE_MB: NonZeroUsize = NonZeroUsize::new(8).unwra
 pub const BYTES_PER_MB: NonZeroUsize = NonZeroUsize::new(1024 * 1024).unwrap();
 
 /// Delays expiring nonce transactions that pass validation but whose `valid_after` is later than
-/// the tip timestamp plus [`Config::lead_secs`].
+/// the tip timestamp plus [`DelayedPoolConfig::lead_secs`].
 #[derive(Debug, Default)]
 pub struct DelayedPool {
     /// Lead time and limits.
-    config: Config,
+    config: DelayedPoolConfig,
     /// Delayed transactions by hash.
     by_hash: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Expiring nonce hashes of delayed transactions; there is at most one per expiring nonce.
@@ -53,7 +53,7 @@ pub struct DelayedPool {
 
 impl DelayedPool {
     /// Creates an empty pool with the given config.
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: DelayedPoolConfig) -> Self {
         Self {
             config,
             ..Default::default()
@@ -61,7 +61,7 @@ impl DelayedPool {
     }
 
     /// Returns the lead time and limits.
-    pub(crate) const fn config(&self) -> Config {
+    pub(crate) const fn config(&self) -> DelayedPoolConfig {
         self.config
     }
 
@@ -226,7 +226,7 @@ impl DelayedPool {
 
 /// Lead time and limits of the [`DelayedPool`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Config {
+pub struct DelayedPoolConfig {
     /// A transaction is delayed while its `valid_after` is later than the tip timestamp plus this
     /// many seconds, and released by the first block that brings it within that window.
     pub lead_secs: u64,
@@ -239,7 +239,7 @@ pub struct Config {
     pub max_size: NonZeroUsize,
 }
 
-impl Config {
+impl DelayedPoolConfig {
     /// Returns whether a transaction must be delayed: it uses an expiring nonce and its
     /// `valid_after` is later than `tip_timestamp` plus the lead time. Otherwise it can enter the
     /// live sub-pools.
@@ -258,7 +258,7 @@ impl Config {
     }
 }
 
-impl Default for Config {
+impl Default for DelayedPoolConfig {
     fn default() -> Self {
         Self {
             lead_secs: DEFAULT_DELAYED_LEAD_SECS,
@@ -279,7 +279,7 @@ pub enum Error {
 
 /// Returns the timestamp a delayed transaction is indexed by in [`DelayedPool::by_valid_after`].
 ///
-/// Delayed transactions have a `valid_after` ([`Config::should_delay`]); the zero fallback
+/// Delayed transactions have a `valid_after` ([`DelayedPoolConfig::should_delay`]); the zero fallback
 /// only keeps the index total, making such a transaction due at once.
 fn valid_after(transaction: &ValidPoolTransaction<TempoPooledTransaction>) -> u64 {
     transaction
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn should_hold_respects_lead_time() {
-        let config = Config {
+        let config = DelayedPoolConfig {
             lead_secs: 2,
             ..Default::default()
         };
@@ -341,7 +341,7 @@ mod tests {
             .nonce_key(nonce_key)
             .valid_after(1_000)
             .build();
-        assert!(!Config::default().should_delay(&tx, 100));
+        assert!(!DelayedPoolConfig::default().should_delay(&tx, 100));
     }
 
     #[test]
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn rejects_when_count_or_size_is_full() {
-        let mut pool = DelayedPool::new(Config {
+        let mut pool = DelayedPool::new(DelayedPoolConfig {
             max_count: NonZeroUsize::MIN,
             ..Default::default()
         });
@@ -371,7 +371,7 @@ mod tests {
         );
 
         let tx = expiring(Address::random()).build();
-        let mut pool = DelayedPool::new(Config {
+        let mut pool = DelayedPool::new(DelayedPoolConfig {
             max_size: NonZeroUsize::new(tx.size()).unwrap(),
             ..Default::default()
         });
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn take_due_removes_transactions_within_lead_time() {
-        let mut pool = DelayedPool::new(Config {
+        let mut pool = DelayedPool::new(DelayedPoolConfig {
             lead_secs: 2,
             ..Default::default()
         });
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn evicts_lower_priority_transactions_when_full() {
-        let mut pool = DelayedPool::new(Config {
+        let mut pool = DelayedPool::new(DelayedPoolConfig {
             max_count: NonZeroUsize::MIN,
             ..Default::default()
         });
