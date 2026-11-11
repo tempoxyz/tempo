@@ -1,6 +1,8 @@
 use crate::utils::TestNodeBuilder;
 use alloy::providers::{Provider, ProviderBuilder};
+use jsonrpsee::types::error::{INVALID_PARAMS_CODE, METHOD_NOT_FOUND_CODE};
 use reth_chainspec::Hardfork;
+use reth_rpc_builder::RpcModuleSelection;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -82,6 +84,35 @@ async fn test_is_hardfork_active() -> eyre::Result<()> {
         assert!(
             provider.is_hardfork_active(*fork).await?,
             "{fork:?} should be active on devnet",
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_custom_namespaces_follow_module_selection() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new()
+        .build_http_only_with_api("token".parse::<RpcModuleSelection>().unwrap())
+        .await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+
+    // A served method rejects the empty params; an unserved one is not found.
+    for (method, code) in [
+        ("token_getTokens", INVALID_PARAMS_CODE),
+        ("tempo_forkSchedule", METHOD_NOT_FOUND_CODE),
+        ("eth_getTransactions", METHOD_NOT_FOUND_CODE),
+    ] {
+        let err = provider
+            .raw_request::<_, serde_json::Value>(method.into(), ())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.as_error_resp().map(|payload| payload.code),
+            Some(code.into()),
+            "{method}: {err}"
         );
     }
 
