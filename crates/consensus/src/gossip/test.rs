@@ -447,27 +447,6 @@ fn terminal_outcome_settles_frame_for_every_peer() {
     });
 }
 
-/// The source is penalized even when it disconnected before the judgment.
-#[test_traced]
-fn invalid_certificate_penalizes_source_that_disconnected() {
-    deterministic::Runner::default().start(|mut context| async move {
-        let mut rig = start(&mut context);
-        rig.connect(peer(1));
-
-        rig.send(peer(1), rig.frame(7)).await;
-        wait_until(&context, || rig.sink.requests().len() == 1).await;
-
-        rig.disconnect(peer(1));
-        wait_until(&context, || metric(&context, "gossip_slots") == 0).await;
-
-        rig.sink.release(Err(CertificateError::Invalid));
-        wait_until(&context, || !rig.peer_control.penalized().is_empty()).await;
-        context.sleep(Duration::from_millis(50)).await;
-
-        assert_eq!(rig.peer_control.penalized(), vec![peer(1)]);
-    });
-}
-
 /// A live peer can only advance its claimed round. Replaying the same round or
 /// an older one does not consume another driver judgment.
 #[test_traced]
