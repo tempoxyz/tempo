@@ -200,16 +200,16 @@ impl Estimator {
     /// without a preparation cap.
     pub fn snapshot(&self, now: Instant) -> EstimatorSnapshot {
         let mut state = self.lock_state();
-        let network = state.network.snapshot(now);
+        let (network_reserve, network_target) = state.network.snapshot(now);
         EstimatorSnapshot {
             validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
             build_time_multiplier: state.build_time.multiplier(now).get(),
             dry_build_finish: state.build_time.dry_finish(now),
-            network_target: network.target,
-            network_reserve: network.reservation,
+            network_target,
+            network_reserve,
             proposal_return_budget: state
                 .last_return_budget
-                .unwrap_or_else(|| self.target_block_time.saturating_sub(network.reservation)),
+                .unwrap_or_else(|| self.target_block_time.saturating_sub(network_reserve)),
         }
     }
 

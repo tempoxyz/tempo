@@ -124,13 +124,11 @@ impl NetworkTracker {
         true
     }
 
-    /// Expires retained observations without advancing the reservation.
-    pub(super) fn snapshot(&mut self, now: Instant) -> NetworkSnapshot {
+    /// Returns the last reservation and current policy-adjusted target, expiring
+    /// retained observations without advancing the reservation.
+    pub(super) fn snapshot(&mut self, now: Instant) -> (Duration, Option<Duration>) {
         self.prune(now);
-        NetworkSnapshot {
-            reservation: self.current_reservation,
-            target: self.reservation_target(),
-        }
+        (self.current_reservation, self.reservation_target())
     }
 
     /// Unclamped target, with warm-up and corroborated fast rise applied.
@@ -186,12 +184,6 @@ impl NetworkTracker {
         );
         self.current_reservation
     }
-}
-
-/// The last reservation and the current policy-adjusted target.
-pub(super) struct NetworkSnapshot {
-    pub(super) reservation: Duration,
-    pub(super) target: Option<Duration>,
 }
 
 #[derive(Debug)]
