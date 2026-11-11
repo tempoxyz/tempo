@@ -10,13 +10,15 @@
 //! intended for use inside EVM precompiles where async is unavailable — it retries the RPC
 //! call indefinitely with exponential backoff to avoid bricking the chain on transient outages.
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_client::RpcClient;
 use alloy_transport::layers::RetryBackoffLayer;
-use eyre::Result;
+use eyre::{Result, WrapErr as _};
 use std::num::NonZeroU32;
 use tempo_alloy::TempoNetwork;
+use tempo_contracts::TempoHardfork;
+use tempo_primitives::account::decode_config_commitment;
 use tracing::{debug, info, warn};
 use zone_precompiles::{L1StateError, L1StorageReader};
 
@@ -179,25 +181,39 @@ impl L1StateProvider {
             }
         }
 
-        warn!(%address, %slot, block_number, "L1 storage cache miss, fetching from RPC");
+        let value = self.fetch_blocking(
+            format_args!("storage address={address} slot={slot} block={block_number}"),
+            || self.fetch_slot(address, slot, block_number),
+        )?;
+        self.cache.lock().set(address, slot, block_number, value);
+        Ok(value)
+    }
 
+    /// Runs `fetch` on the runtime from a blocking thread, retrying until it succeeds or
+    /// [`L1StateProviderConfig::max_sync_attempts`] is reached. `read` names the value in logs
+    /// and errors.
+    fn fetch_blocking<T, Fut>(
+        &self,
+        read: std::fmt::Arguments<'_>,
+        fetch: impl Fn() -> Fut,
+    ) -> Result<T>
+    where
+        T: std::fmt::Display,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
             let start = std::time::Instant::now();
-            let result = tokio::task::block_in_place(|| {
-                self.runtime_handle
-                    .block_on(self.fetch_slot(address, slot, block_number))
-            });
+            let result = tokio::task::block_in_place(|| self.runtime_handle.block_on(fetch()));
             let elapsed = start.elapsed();
 
             match result {
                 Ok(value) => {
-                    self.cache.lock().set(address, slot, block_number, value);
                     if attempt > 1 {
-                        info!(%address, %slot, block_number, %value, ?elapsed, attempt, "L1 storage RPC fetch succeeded after retries");
+                        info!(%read, %value, ?elapsed, attempt, "L1 RPC fetch succeeded after retries");
                     } else {
-                        info!(%address, %slot, block_number, %value, ?elapsed, "L1 storage RPC fetch succeeded");
+                        debug!(%read, %value, ?elapsed, "L1 RPC fetch succeeded");
                     }
                     return Ok(value);
                 }
@@ -207,10 +223,10 @@ impl L1StateProvider {
                         .is_some_and(|max_attempts| attempt >= max_attempts.get())
                     {
                         return Err(eyre::eyre!(
-                            "L1 storage RPC fetch failed after {attempt} attempts for address={address} slot={slot} block={block_number}: {rpc_err}"
+                            "L1 RPC fetch failed after {attempt} attempts for {read}: {rpc_err}"
                         ));
                     }
-                    warn!(%address, %slot, block_number, %rpc_err, ?elapsed, attempt, "L1 storage RPC fetch failed, retrying");
+                    warn!(%read, %rpc_err, ?elapsed, attempt, "L1 RPC fetch failed, retrying");
                 }
             }
         }
@@ -233,11 +249,28 @@ impl L1StateProvider {
             }
         }
 
-        warn!(%address, %slot, block_number, "L1 storage cache miss, fetching from RPC");
-
         let value = self.fetch_slot(address, slot, block_number).await?;
         self.cache.lock().set(address, slot, block_number, value);
         Ok(value)
+    }
+
+    /// Read an account's TIP-1108 commitment asynchronously at a specific L1 block, cache first.
+    ///
+    /// Same semantics as [`L1StorageReader::read_l1_commitment`], but a cache miss makes one fetch
+    /// through the provider instead of retrying until it succeeds, so callers can bound the wait.
+    pub async fn read_l1_commitment_async(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> std::result::Result<B256, L1StateError> {
+        if let Some(commitment) = self.cache.lock().get_commitment(account, block_number) {
+            return Ok(commitment);
+        }
+        let extension = self
+            .fetch_account_extension(account, block_number)
+            .await
+            .map_err(|error| account_unavailable(account, block_number, format!("{error:#}")))?;
+        self.cache_commitment(account, block_number, &extension)
     }
 
     /// Expose the shared cache handle for external use (e.g. the engine).
@@ -256,6 +289,42 @@ impl L1StateProvider {
         debug!(%address, %slot, block_number, %result, "fetched L1 storage slot from RPC");
         Ok(result)
     }
+
+    /// Fetch an account's raw extension, which holds its TIP-1108 commitment, from L1 at a
+    /// specific block via `eth_getAccountInfo`.
+    async fn fetch_account_extension(&self, account: Address, block_number: u64) -> Result<Bytes> {
+        let info = self
+            .provider
+            .get_account_info(account)
+            .number(block_number)
+            .await
+            .wrap_err_with(|| {
+                format!("eth_getAccountInfo failed for account={account} block={block_number}")
+            })?;
+        Ok(Bytes::copy_from_slice(&info.extension))
+    }
+
+    /// Decodes the commitment in `extension` and caches it. An invalid commitment is not cached.
+    fn cache_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+        extension: &[u8],
+    ) -> std::result::Result<B256, L1StateError> {
+        // A nonempty extension only exists once Tempo has activated T14.
+        let commitment =
+            decode_config_commitment(extension, TempoHardfork::T14).map_err(|error| {
+                account_unavailable(
+                    account,
+                    block_number,
+                    format!("invalid account commitment: {error}"),
+                )
+            })?;
+        self.cache
+            .lock()
+            .set_commitment(account, block_number, commitment);
+        Ok(commitment)
+    }
 }
 
 impl L1StorageReader for L1StateProvider {
@@ -272,6 +341,34 @@ impl L1StorageReader for L1StateProvider {
                 block_number,
                 reason: error.to_string(),
             })
+    }
+
+    /// Cache first, RPC fallback, with the blocking and retry semantics of
+    /// [`get_storage`](L1StateProvider::get_storage). An extension that is not a valid commitment
+    /// fails without a retry.
+    fn read_l1_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> std::result::Result<B256, L1StateError> {
+        if let Some(commitment) = self.cache.lock().get_commitment(account, block_number) {
+            return Ok(commitment);
+        }
+        let extension = self
+            .fetch_blocking(
+                format_args!("account extension account={account} block={block_number}"),
+                || self.fetch_account_extension(account, block_number),
+            )
+            .map_err(|error| account_unavailable(account, block_number, format!("{error:#}")))?;
+        self.cache_commitment(account, block_number, &extension)
+    }
+}
+
+const fn account_unavailable(account: Address, block_number: u64, reason: String) -> L1StateError {
+    L1StateError::AccountUnavailable {
+        account,
+        block_number,
+        reason,
     }
 }
 
@@ -305,5 +402,108 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("after 1 attempts"), "{message}");
         assert!(message.contains("block=7"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cached_commitment_is_served_without_rpc() {
+        let config = L1StateProviderConfig {
+            max_sync_attempts: Some(NonZeroU32::MIN),
+            ..Default::default()
+        };
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect("http://127.0.0.1:1")
+            .await
+            .expect("HTTP transport construction is lazy")
+            .erased();
+        let cache = L1StateCache::default();
+        let (account, commitment) = (Address::repeat_byte(1), B256::repeat_byte(2));
+        cache.lock().set_commitment(account, 7, commitment);
+        let reader =
+            L1StateProvider::new_raw(config, cache, provider, tokio::runtime::Handle::current());
+
+        let (cached, missing) = tokio::task::spawn_blocking(move || {
+            (
+                reader.read_l1_commitment(account, 7),
+                reader.read_l1_commitment(account, 8),
+            )
+        })
+        .await
+        .expect("commitment task must not panic");
+        assert_eq!(cached, Ok(commitment));
+        // A miss at another height goes to the dead endpoint and fails closed.
+        let missing = missing.expect_err("dead endpoint must fail after one attempt");
+        assert!(matches!(
+            missing,
+            L1StateError::AccountUnavailable {
+                block_number: 8,
+                ..
+            }
+        ));
+        assert!(missing.is_unavailable());
+    }
+
+    #[tokio::test]
+    async fn async_commitment_read_fetches_once_then_serves_the_cache() {
+        let asserter = alloy_provider::mock::Asserter::new();
+        let commitment = B256::repeat_byte(2);
+        asserter.push_success(&alloy_rpc_types_eth::AccountInfo {
+            extension: tempo_primitives::account::encode_config_commitment(commitment).into(),
+            ..Default::default()
+        });
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter)
+            .erased();
+        let reader = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            L1StateCache::default(),
+            provider,
+            tokio::runtime::Handle::current(),
+        );
+        let account = Address::repeat_byte(1);
+
+        // The mock answers one request, so the second read must come from the cache.
+        for _ in 0..2 {
+            assert_eq!(
+                reader.read_l1_commitment_async(account, 7).await,
+                Ok(commitment)
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_commitment_fails_without_retry() {
+        let asserter = alloy_provider::mock::Asserter::new();
+        // An unsupported commitment format tag.
+        asserter.push_success(&alloy_rpc_types_eth::AccountInfo {
+            extension: Bytes::from_static(&[0xff]).into(),
+            ..Default::default()
+        });
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter)
+            .erased();
+        // Retrying indefinitely, a retried decode error would never return.
+        let reader = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            L1StateCache::default(),
+            provider,
+            tokio::runtime::Handle::current(),
+        );
+        let account = Address::repeat_byte(1);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::task::spawn_blocking(move || reader.read_l1_commitment(account, 7)),
+        )
+        .await
+        .expect("an invalid commitment must not be retried")
+        .expect("commitment task must not panic");
+        assert_eq!(
+            result,
+            Err(L1StateError::AccountUnavailable {
+                account,
+                block_number: 7,
+                reason: "invalid account commitment: unsupported account commitment format".into(),
+            })
+        );
     }
 }
