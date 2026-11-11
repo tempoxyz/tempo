@@ -74,7 +74,7 @@ impl EncryptionKeyRing {
     /// Bind a finalized Portal key registration to matching configured private material.
     ///
     /// A registration without configured private material is recorded by its public key only, so
-    /// L1 ingestion continues and [`Self::key`] fails for that index. Errors only when the index
+    /// L1 ingestion continues and [`Self::key`] returns `None` for that index. Errors only when the index
     /// was already recorded with a different public key.
     pub fn apply_rotation(&self, rotation: &EncryptionKeyRotation) -> eyre::Result<()> {
         let mut keys = self.inner.write();
@@ -109,17 +109,18 @@ impl EncryptionKeyRing {
 
     /// Return the private key registered at `key_index`.
     ///
-    /// Errors when the index is unknown or its key has no private material on this node.
-    pub fn key(&self, key_index: U256) -> eyre::Result<k256::SecretKey> {
+    /// Returns `None` when the index is registered but its key has no private material on this
+    /// node, and errors when no registration for the index has been observed.
+    pub fn key(&self, key_index: U256) -> eyre::Result<Option<k256::SecretKey>> {
         let keys = self.inner.read();
         if let Some(key) = keys.by_index.get(&key_index) {
-            return Ok(key.clone());
+            return Ok(Some(key.clone()));
         }
         eyre::ensure!(
-            !keys.unbound.contains_key(&key_index),
-            "missing private decryption key for finalized Portal key index {key_index}"
+            keys.unbound.contains_key(&key_index),
+            "no private decryption key is bound to Portal key index {key_index}"
         );
-        eyre::bail!("no private decryption key is bound to Portal key index {key_index}")
+        Ok(None)
     }
 
     /// Return only public fingerprints and Portal bindings for operator observability.
@@ -183,8 +184,14 @@ mod tests {
         ring.apply_rotation(&rotation(&old, 0, 10)).unwrap();
         ring.apply_rotation(&rotation(&current, 1, 20)).unwrap();
 
-        assert_eq!(ring.key(U256::ZERO).unwrap().to_bytes(), old.to_bytes());
-        assert_eq!(ring.key(U256::ONE).unwrap().to_bytes(), current.to_bytes());
+        assert_eq!(
+            ring.key(U256::ZERO).unwrap().unwrap().to_bytes(),
+            old.to_bytes()
+        );
+        assert_eq!(
+            ring.key(U256::ONE).unwrap().unwrap().to_bytes(),
+            current.to_bytes()
+        );
     }
 
     #[test]
@@ -195,10 +202,7 @@ mod tests {
 
         ring.apply_rotation(&rotation(&missing, 1, 20)).unwrap();
         ring.apply_rotation(&rotation(&missing, 1, 20)).unwrap();
-        assert_eq!(
-            ring.key(U256::ONE).unwrap_err().to_string(),
-            "missing private decryption key for finalized Portal key index 1"
-        );
+        assert!(ring.key(U256::ONE).unwrap().is_none());
         assert_eq!(
             ring.key(U256::from(2)).unwrap_err().to_string(),
             "no private decryption key is bound to Portal key index 2"
@@ -226,7 +230,7 @@ mod tests {
             "Portal key index 0 was already bound to a different key"
         );
         assert_eq!(
-            ring.key(U256::ZERO).unwrap().to_bytes(),
+            ring.key(U256::ZERO).unwrap().unwrap().to_bytes(),
             configured.to_bytes()
         );
     }
