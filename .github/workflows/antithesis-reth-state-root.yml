@@ -235,6 +235,30 @@ jobs:
             printf 'FROM scratch\nCOPY docker-compose.yaml /\n' > "$dir/Dockerfile.config"
           done
 
+      - name: Validate probe compose setup with snouty
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          tools_dir="$RUNNER_TEMP/guidance-probe-snouty"
+          mkdir -p "$tools_dir"
+          archive="$tools_dir/snouty.tar.xz"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            https://github.com/antithesishq/snouty/releases/download/v0.9.1/snouty-x86_64-unknown-linux-musl.tar.xz \
+            -o "$archive"
+          printf '174087ee666c20dc120d45f131023eae112148b9e32bb07c08c0172880bd486b  %s\n' "$archive" | sha256sum --check
+          tar -xJf "$archive" -C "$tools_dir"
+          snouty=$(find "$tools_dir" -type f -name snouty -print -quit)
+          test -n "$snouty" && test -x "$snouty"
+          "$snouty" --version
+          for mode in dynamic constant; do
+            config="$RUNNER_TEMP/antithesis-guidance-probe-$mode-config"
+            validation_temp=$(mktemp -d "$RUNNER_TEMP/guidance-probe-$mode-validation.XXXXXX")
+            log="$RUNNER_TEMP/guidance-probe-$mode-validation.log"
+            SNOUTY_TEMP_DIR="$validation_temp" "$snouty" validate "$config" --timeout 20s 2>&1 | tee "$log"
+            grep -F 'Setup validation successful' "$log"
+            grep -F 'Found 1 first, 0 driver, 0 anytime, 0 eventually, 0 finally' "$log"
+          done
+
       - name: Build and push dynamic guidance config
         id: dynamic_config
         uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
