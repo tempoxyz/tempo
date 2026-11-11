@@ -17,18 +17,19 @@ impl Precompile for SignatureVerifier {
             return err;
         }
 
-        // `verifyConfigurableAccount`, `verifyAccount` and `verifyKeychain` input, which can carry a
-        // configurable account signature, is bounded by its decoder and already charged.
-        if calldata.len() > MAX_CALLDATA_LEN
-            && !(self.storage.spec().is_t14()
-                && [
-                    ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR,
-                    ISignatureVerifier::verifyAccountCall::SELECTOR,
-                    ISignatureVerifier::verifyKeychainCall::SELECTOR,
-                ]
-                .iter()
-                .any(|selector| calldata.starts_with(selector)))
-        {
+        // `verifyConfigurableAccount` and `verifyKeychain` input from T14, and `verify` input from
+        // T15, can carry a configurable account signature, which its decoder bounds and is already
+        // charged.
+        let spec = self.storage.spec();
+        let uncapped = (spec.is_t14()
+            && [
+                ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR,
+                ISignatureVerifier::verifyKeychainCall::SELECTOR,
+            ]
+            .iter()
+            .any(|selector| calldata.starts_with(selector)))
+            || (spec.is_t15() && calldata.starts_with(&ISignatureVerifier::verifyCall::SELECTOR));
+        if calldata.len() > MAX_CALLDATA_LEN && !uncapped {
             return self
                 .storage
                 .abi_revert(SignatureVerifierError::invalid_format());
@@ -39,9 +40,7 @@ impl Precompile for SignatureVerifier {
             |call| match call {
                 ISignatureVerifier::ISignatureVerifierCalls {
                     recover(call) => view(call, |c| self.recover(c.hash, &c.signature)),
-                    verify(call) => view(call, |c| {
-                        self.recover(c.hash, &c.signature).map(|sig| sig == c.signer)
-                    }),
+                    verify(call) => view(call, |c| self.verify(c.account, c.hash, &c.signature)),
                     #[schedule(since = T6)]
                     verifyKeychain(call) => view(call, |c| {
                         self.verify_keychain(c.account, c.hash, &c.signature)
@@ -53,10 +52,6 @@ impl Precompile for SignatureVerifier {
                     #[schedule(since = T14)]
                     verifyConfigurableAccount(call) => view(call, |c| {
                         self.verify_configurable_account(c.account, c.hash, &c.signature)
-                    }),
-                    #[schedule(since = T14)]
-                    verifyAccount(call) => view(call, |c| {
-                        self.verify_account(c.account, c.hash, &c.signature)
                     }),
                 }
             }
@@ -197,26 +192,6 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_account_selector_rejected_before_t14() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
-            let calldata = ISignatureVerifier::verifyAccountCall {
-                account: Address::random(),
-                hash: B256::ZERO,
-                signature: vec![0u8; 65].into(),
-            }
-            .abi_encode();
-
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
-            assert!(
-                UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
-                "verifyAccount should be selector-gated before T14"
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_verify_returns_true_for_correct_signer() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
@@ -225,7 +200,7 @@ mod tests {
             let sig = signer.sign_hash_sync(&hash)?;
 
             let calldata = ISignatureVerifier::verifyCall {
-                signer: signer.address(),
+                account: signer.address(),
                 hash,
                 signature: sig.as_bytes().into(),
             }
@@ -247,7 +222,7 @@ mod tests {
             let sig = signer.sign_hash_sync(&hash)?;
 
             let calldata = ISignatureVerifier::verifyCall {
-                signer: Address::random(),
+                account: Address::random(),
                 hash,
                 signature: sig.as_bytes().into(),
             }
@@ -506,7 +481,7 @@ mod tests {
             sig.extend_from_slice(&[0u8; MAX_WEBAUTHN_SIGNATURE_LENGTH]);
 
             let calldata = ISignatureVerifier::verifyCall {
-                signer: Address::ZERO,
+                account: Address::ZERO,
                 hash: B256::ZERO,
                 signature: sig.into(),
             }

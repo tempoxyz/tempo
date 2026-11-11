@@ -97,13 +97,17 @@ impl SignatureVerifier {
         self.verify_keychain_admin_signature(account, hash, &sig)
     }
 
-    /// Returns whether `signature` approves `hash` for `account` under its current state.
+    /// Returns whether `signature` approves `hash` for `account`.
     ///
-    /// A primitive signature counts only when it recovers to `account` and `account` has no
-    /// configuration commitment (TIP-1113). A keychain signature follows
-    /// [`Self::verify_keychain_admin`], and a configurable account signature follows
-    /// `verifyConfigurableAccount`, including their reverts.
-    pub fn verify_account(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
+    /// Before T15, whether a primitive `signature` recovers to `account`. From T15 (TIP-1168), whether
+    /// it approves under `account`'s current state: a primitive signature counts only when it
+    /// recovers to `account` and `account` has no configuration commitment (TIP-1113), a keychain
+    /// signature follows [`Self::verify_keychain_admin`], and a configurable account signature
+    /// follows `verifyConfigurableAccount`, including their reverts.
+    pub fn verify(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
+        if !self.storage.spec().is_t15() {
+            return Ok(self.recover(hash, signature)? == account);
+        }
         let sig = TempoSignature::from_bytes(signature).map_err(|error| {
             trace!(%error, "malformed account signature");
             SignatureVerifierError::invalid_format()

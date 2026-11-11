@@ -408,17 +408,18 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             ? descriptor.authorizedSigner
             : descriptor.payer;
 
-        bool isValid;
-        try ISignatureVerifier(SIGNATURE_VERIFIER_PRECOMPILE)
-            .verify(expectedSigner, digest, signature) returns (
-            bool valid
+        // Settlement must not depend on the signer's current account state (TIP-1113), so this uses
+        // the stateless `recover` rather than `verify`, which checks it from T15 (TIP-1168).
+        address signer;
+        try ISignatureVerifier(SIGNATURE_VERIFIER_PRECOMPILE).recover(digest, signature) returns (
+            address recovered
         ) {
-            isValid = valid;
+            signer = recovered;
         } catch {
             revert InvalidSignature();
         }
 
-        if (!isValid) revert InvalidSignature();
+        if (signer != expectedSigner) revert InvalidSignature();
     }
 
     function _domainSeparator() internal view returns (bytes32) {
