@@ -289,7 +289,10 @@ where
         async move {
             let mut params = params.sequence();
             let address: Address = params.next()?;
-            let block_id = params.optional_next::<BlockId>()?.unwrap_or_default();
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(
+                params.optional_next::<BlockId>()?.unwrap_or_default(),
+            );
             let code = EthState::get_code(&eth_api, address, Some(block_id))
                 .await
                 .map_err(Into::into)?;

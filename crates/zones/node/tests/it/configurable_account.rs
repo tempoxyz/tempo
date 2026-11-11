@@ -126,13 +126,34 @@ async fn test_derived_account_sends_with_its_owner_quorum() -> eyre::Result<()> 
 async fn test_migrated_account_rejects_its_original_key() -> eyre::Result<()> {
     let (zone, _fixture, provider, dev_address) = funded_zone().await?;
     let anchor = zone.tempo_block_number().await?;
-    zone.l1_state_cache()
-        .lock()
-        .set_commitment(dev_address, anchor, B256::repeat_byte(0x11));
-    // The operator RPC returns the account marker code that zone execution sees.
+    // An unregistered account has no code.
+    assert!(provider.get_code_at(dev_address).await?.is_empty());
+    assert!(
+        provider
+            .get_code_at(dev_address)
+            .pending()
+            .await?
+            .is_empty()
+    );
+    let outbox_code = provider.get_code_at(ZONE_OUTBOX_ADDRESS).await?;
+    {
+        let mut cache = zone.l1_state_cache().lock();
+        cache.set_commitment(dev_address, anchor, B256::repeat_byte(0x11));
+        // A zone precompile never carries a Tempo commitment, whatever Tempo holds for it.
+        cache.set_commitment(ZONE_OUTBOX_ADDRESS, anchor, B256::repeat_byte(0x11));
+    }
+    // The operator RPC returns the account marker code that zone execution sees, at every tag.
     assert_eq!(
         provider.get_code_at(dev_address).await?,
         CONFIGURABLE_ACCOUNT_CODE
+    );
+    assert_eq!(
+        provider.get_code_at(dev_address).pending().await?,
+        CONFIGURABLE_ACCOUNT_CODE
+    );
+    assert_eq!(
+        provider.get_code_at(ZONE_OUTBOX_ADDRESS).await?,
+        outbox_code
     );
 
     let chain_id = provider.get_chain_id().await?;
