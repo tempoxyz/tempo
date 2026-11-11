@@ -1263,6 +1263,7 @@ dependencies = [
  "antithesis_sdk",
  "eyre",
  "rand 0.9.5",
+ "reth-trie-common",
  "serde",
  "serde_json",
 ]
@@ -11798,44 +11799,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reth-proofs-antithesis"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "alloy-rlp",
- "alloy-trie",
- "antithesis-instrumentation",
- "antithesis-trie-shapes",
- "antithesis_sdk",
- "evm2",
- "eyre",
- "rand 0.9.5",
- "reth-chain-state",
- "reth-chainspec",
- "reth-db",
- "reth-db-common",
- "reth-engine-primitives",
- "reth-engine-tree",
- "reth-ethereum-primitives",
- "reth-evm",
- "reth-evm-ethereum",
- "reth-execution-types",
- "reth-node-builder",
- "reth-node-core",
- "reth-primitives-traits",
- "reth-provider",
- "reth-stages-types",
- "reth-storage-overlay",
- "reth-tasks",
- "reth-trie",
- "reth-trie-common",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "reth-provider"
 version = "2.10.1"
 source = "git+https://github.com/paradigmxyz/reth?rev=467449357b6d0aca6c1fb7cc2d87a304bb8fbff5#467449357b6d0aca6c1fb7cc2d87a304bb8fbff5"
@@ -15331,7 +15294,6 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-eth",
  "antithesis-instrumentation",
- "antithesis_sdk",
  "base64 0.22.1",
  "bytes",
  "clap",
@@ -15458,6 +15420,26 @@ dependencies = [
  "zone-prover",
  "zone-rpc",
  "zone-spf",
+]
+
+[[package]]
+name = "tempo-zones-antithesis"
+version = "1.18.3"
+dependencies = [
+ "alloy",
+ "antithesis_sdk",
+ "clap",
+ "eyre",
+ "futures",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-contracts",
+ "tempo-primitives",
+ "tokio",
+ "zone-precompiles",
+ "zone-rpc",
 ]
 
 [[package]]
