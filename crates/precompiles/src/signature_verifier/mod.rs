@@ -97,7 +97,8 @@ impl SignatureVerifier {
         self.verify_keychain_admin_signature(account, hash, &sig)
     }
 
-    /// Returns whether `signature` approves `hash` for `account`.
+    /// Returns whether `account` approves `hash`: from T15, the one check for any account and
+    /// signature type.
     ///
     /// Before T15, whether a primitive `signature` recovers to `account`.
     /// From T15, by signature type, against `account`'s current state (TIP-1168):

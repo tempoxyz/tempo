@@ -11,18 +11,19 @@ crate::sol! {
         /// @return Address of the signer if valid, reverts otherwise
         function recover(bytes32 hash, bytes calldata signature) external view returns (address signer);
 
-        /// @notice Verifies whether a signature approves a hash for an account.
+        /// @notice Checks whether account approves hash. From T15, the one check to use for any
+        /// account and signature type: it follows the account's current state, so it stays correct
+        /// when the account migrates or changes owners.
         /// @param account The account expected to approve
         /// @param hash The message hash that was signed
-        /// @param signature The encoded signature
+        /// @param signature A primitive, keychain or configurable account signature
         /// @dev Before T15, whether a primitive signature recovers to account.
         /// From T15, by signature type, against account's current state (TIP-1168):
         /// - primitive: recovers to account, and account has no configuration commitment
         /// - keychain: same as `verifyKeychainAdmin`
         /// - configurable account: same as `verifyConfigurableAccount`
-        /// Use `recover` for a stateless check.
-        /// @return True if the signature approves hash for account. Reverts on malformed or invalid
-        /// signatures.
+        /// Use `recover` only to learn which key signed, whatever the account's state.
+        /// @return True if account approves hash. Reverts on malformed or invalid signatures.
         function verify(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
 
         /// @notice Verifies whether a keychain signature was produced by an active key.
