@@ -11,6 +11,8 @@ use reth_metrics::{
 pub(crate) struct SequencerMetrics {
     /// Current PathUSD balance of the sequencer account on Tempo L1, in base units.
     pub(crate) pathusd_balance: Gauge,
+    /// Current OUSD balance of the sequencer account on Tempo L1, in base units.
+    pub(crate) ousd_balance: Gauge,
 }
 
 /// Metrics emitted by the prover.
