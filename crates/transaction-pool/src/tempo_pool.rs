@@ -48,7 +48,11 @@ use tempo_primitives::{Block, TempoHeader};
 
 /// Validations of a transaction before admission rejects it because the admission epoch advanced
 /// during each of them.
-const ADMISSION_ATTEMPTS: usize = 3;
+///
+/// One more than the advances a single canonical update causes (reth's pool update, two in pool
+/// maintenance and a zone's authority revalidation), so a rejection takes advances from two
+/// canonical updates during one admission.
+const ADMISSION_ATTEMPTS: usize = 5;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
