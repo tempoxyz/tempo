@@ -295,14 +295,16 @@ where
                         .unwrap_or_default()
                         .saturating_to();
 
-                    let lane_nonces: Vec<u64> = this
+                    // Pending 2D transactions form a gap-free sequence on each lane.
+                    let highest_pending_nonce = this
                         .pool()
-                        .get_transactions_by_address_and_nonce_key(from, nonce_key)
+                        .get_pending_transactions_by_address_and_nonce_key(from, nonce_key)
                         .iter()
                         .map(|tx| tx.nonce())
-                        .collect();
+                        .max();
 
-                    next_lane_nonce(on_chain_nonce, lane_nonces).map_err(Self::Error::from)
+                    next_lane_nonce(on_chain_nonce, highest_pending_nonce)
+                        .map_err(Self::Error::from)
                 })
                 .await?
             };
@@ -624,25 +626,21 @@ where
     }
 }
 
-/// Returns the first nonce from `on_chain_nonce` on that no pooled transaction in the lane uses.
-///
-/// Pending, queued and delayed transactions all take their nonces; walking from the on-chain nonce
-/// skips stale entries below it.
-fn next_lane_nonce(on_chain_nonce: u64, mut lane_nonces: Vec<u64>) -> Result<u64, EthApiError> {
-    lane_nonces.sort_unstable();
-    let mut nonce = on_chain_nonce;
-    for taken in lane_nonces {
-        if taken < nonce {
-            continue;
+/// Returns the next lane nonce, accounting for pending transactions without regressing state.
+fn next_lane_nonce(
+    on_chain_nonce: u64,
+    highest_pending_nonce: Option<u64>,
+) -> Result<u64, EthApiError> {
+    match highest_pending_nonce {
+        Some(pending) if pending >= on_chain_nonce => {
+            pending
+                .checked_add(1)
+                .ok_or(EthApiError::InvalidTransaction(
+                    RpcInvalidTransactionError::NonceMaxValue,
+                ))
         }
-        if taken > nonce {
-            break;
-        }
-        nonce = nonce.checked_add(1).ok_or(EthApiError::InvalidTransaction(
-            RpcInvalidTransactionError::NonceMaxValue,
-        ))?;
+        _ => Ok(on_chain_nonce),
     }
-    Ok(nonce)
 }
 
 #[cfg(test)]
@@ -650,13 +648,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn next_lane_nonce_skips_taken_nonces() {
-        assert_eq!(next_lane_nonce(5, vec![3, 4]).unwrap(), 5);
-        assert_eq!(next_lane_nonce(5, vec![5, 6, 8]).unwrap(), 7);
-        assert_eq!(next_lane_nonce(5, vec![6]).unwrap(), 5);
-        assert_eq!(next_lane_nonce(5, vec![7, 5, 6, 6, 9]).unwrap(), 8);
+    fn next_lane_nonce_handles_stale_entries_and_overflow() {
+        assert_eq!(next_lane_nonce(5, Some(3)).unwrap(), 5);
+
         assert!(matches!(
-            next_lane_nonce(u64::MAX, vec![u64::MAX]),
+            next_lane_nonce(0, Some(u64::MAX)),
             Err(EthApiError::InvalidTransaction(
                 RpcInvalidTransactionError::NonceMaxValue
             ))

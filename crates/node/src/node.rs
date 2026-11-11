@@ -100,9 +100,9 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
     pub max_txs_per_lane: usize,
 
-    /// AA transactions whose `valid_after` is more than this many seconds past the tip timestamp
-    /// wait in the delayed sub-pool, outside pending and queued transactions and their limits,
-    /// until a block brings them within this window.
+    /// Expiring nonce AA transactions whose `valid_after` is more than this many seconds past the
+    /// tip timestamp wait in the delayed sub-pool, outside pending and queued transactions and
+    /// their limits, until a block brings them within this window.
     #[arg(long = "txpool.delayed-lead-secs", default_value_t = DEFAULT_DELAYED_LEAD_SECS)]
     pub delayed_lead_secs: u64,
 

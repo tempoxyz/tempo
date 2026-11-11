@@ -667,16 +667,6 @@ impl AA2dPool {
         regular.chain(expiring)
     }
 
-    /// Returns all transactions in the `lane` sequential 2D nonce lane, by nonce.
-    pub(crate) fn get_lane_transactions(
-        &self,
-        lane: AASequenceId,
-    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
-        self.by_id
-            .range(lane.range())
-            .map(|(_, tx)| tx.inner.transaction.clone())
-    }
-
     /// Returns pending transactions in the address's sequential 2D nonce lane.
     pub(crate) fn get_pending_transactions_by_address_and_nonce_key(
         &self,
@@ -1464,21 +1454,6 @@ impl AA2dPool {
     /// Returns `true` if the transaction with the given hash is already included in this pool.
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
         self.by_hash.contains_key(tx_hash)
-    }
-
-    /// Returns whether the pool holds a transaction that uses the same nonce as `transaction`:
-    /// the same expiring nonce hash, or the same sender, nonce key and nonce.
-    pub(crate) fn contains_nonce(&self, transaction: &TempoPooledTransaction) -> bool {
-        if transaction.is_expiring_nonce()
-            && transaction
-                .expiring_nonce_hash()
-                .is_some_and(|hash| self.expiring_nonce_txs.contains_key(&hash))
-        {
-            return true;
-        }
-        transaction
-            .aa_transaction_id()
-            .is_some_and(|id| self.by_id.contains_key(&id))
     }
 
     /// Returns hashes of transactions in the pool that can be propagated.
@@ -2623,7 +2598,7 @@ impl AASequenceId {
     }
 
     /// Returns a range of transactions for this sequence.
-    pub(crate) const fn range(self) -> std::ops::RangeInclusive<AA2dTransactionId> {
+    const fn range(self) -> std::ops::RangeInclusive<AA2dTransactionId> {
         AA2dTransactionId::new(self, 0)..=AA2dTransactionId::new(self, u64::MAX)
     }
 }
