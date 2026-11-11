@@ -1,2 +1,2 @@
 #!/bin/sh
-exec tempo-zone-xtask antithesis transfer
+exec tempo-zones-antithesis transfer
