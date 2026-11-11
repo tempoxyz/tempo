@@ -87,7 +87,8 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 ///
 /// Every skipped transaction still passes through prewarming, so draining a large pool after the
 /// block is full costs time linear in the pool size. Stopping early can only miss a transaction
-/// whose gas limit fits in the gas that is left.
+/// whose gas limit fits in the gas that is left, and ends paced builds without waiting for new
+/// pool transactions.
 const MAX_CONSECUTIVE_GAS_LIMIT_SKIPS: u32 = 128;
 
 /// Source of transactions for payload building.
@@ -594,7 +595,7 @@ where
                 self.skipped.exceeds_block_gas_limit.increment(1);
                 consecutive_gas_limit_skips += 1;
                 if consecutive_gas_limit_skips >= MAX_CONSECUTIVE_GAS_LIMIT_SKIPS {
-                    break BlockBuildStopReason::GasLimit;
+                    break BlockBuildStopReason::GasLimitSkips;
                 }
                 continue;
             }

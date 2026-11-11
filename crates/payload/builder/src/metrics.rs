@@ -139,6 +139,8 @@ pub(crate) enum BlockBuildStopReason {
     RlpBlockSizeLimit,
     TxPoolEmpty,
     BuildBudget,
+    /// Too many consecutive pool transactions exceeded the remaining block gas.
+    GasLimitSkips,
 }
 
 impl BlockBuildStopReason {
@@ -148,6 +150,7 @@ impl BlockBuildStopReason {
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",
             Self::TxPoolEmpty => "tx_pool_empty",
             Self::BuildBudget => "build_budget",
+            Self::GasLimitSkips => "gas_limit_skips",
         }
     }
 }
