@@ -74,9 +74,15 @@ pub(crate) struct CreateZone {
     sequencers: Vec<Address>,
 
     /// Number of sequencer signatures required for a settlement attestation
-    /// quorum. Must be between 1 and the number of sequencers.
-    #[arg(long, default_value_t = 1)]
-    threshold: u8,
+    /// quorum. Must be between 1 and the number of sequencers. Defaults to a
+    /// majority of the sequencers.
+    #[arg(long)]
+    threshold: Option<u8>,
+
+    /// Allow a zone with a single sequencer, whose one signature settles every batch.
+    /// Without it, at least two sequencers are required.
+    #[arg(long)]
+    allow_single_sequencer: bool,
 
     /// Admin address that controls token enablement and deposit pause/unpause.
     /// Pass the sequencer address explicitly when both roles should use the same key.
@@ -144,7 +150,7 @@ impl CreateZone {
             zoneGateways: self.zone_gateways.clone(),
             admin: self.admin,
             sequencers: self.sequencers.clone(),
-            threshold: self.threshold,
+            threshold: self.threshold(),
             rpcUrl: self.rpc_url.clone(),
         }
     }
@@ -156,6 +162,14 @@ impl CreateZone {
                 .safe_output
                 .clone()
                 .expect("clap requires --safe-output with --safe-address"),
+        })
+    }
+
+    /// The requested settlement quorum: `--threshold`, or a majority of the sequencers.
+    fn threshold(&self) -> u8 {
+        self.threshold.unwrap_or_else(|| {
+            // `validate_sequencer_set` bounds the set by MAX_SEQUENCERS, which fits in a u8.
+            u8::try_from(self.sequencers.len() / 2 + 1).unwrap_or(u8::MAX)
         })
     }
 
@@ -179,14 +193,21 @@ impl CreateZone {
                 return Err(eyre!("duplicate sequencer address {sequencer}"));
             }
         }
-        if self.threshold == 0 || usize::from(self.threshold) > self.sequencers.len() {
+        let threshold = self.threshold();
+        if threshold == 0 || usize::from(threshold) > self.sequencers.len() {
             return Err(eyre!(
                 "threshold must be between 1 and the number of sequencers ({}), got {}",
                 self.sequencers.len(),
-                self.threshold
+                threshold
             ));
         }
-        if self.sequencers.len() > 1 && self.threshold < 2 {
+        if self.sequencers.len() == 1 && !self.allow_single_sequencer {
+            return Err(eyre!(
+                "a single sequencer settles every batch with one signature; add more \
+                 --sequencer addresses or pass --allow-single-sequencer"
+            ));
+        }
+        if self.sequencers.len() > 1 && threshold < 2 {
             // With threshold 1 a leader can settle blocks no follower holds, so an
             // empty-disk leader recovery cannot reconstruct the settled chain from
             // follower replicas. Threshold >= 2 guarantees every settled batch carries
@@ -206,7 +227,7 @@ impl CreateZone {
         println!("Gateway enforcement: {}", self.gateway_mode);
         println!("Admin: {}", self.admin);
         println!("Sequencers: {:?}", self.sequencers);
-        println!("Threshold: {}", self.threshold);
+        println!("Threshold: {}", self.threshold());
     }
 
     /// Simulates createZone from the Safe that owns the ZoneFactory and writes an unsigned
@@ -424,10 +445,11 @@ impl CreateZone {
                 event.sequencers, self.sequencers
             ));
         }
-        if event.threshold != self.threshold {
+        if event.threshold != self.threshold() {
             mismatches.push(format!(
                 "threshold {} (expected {})",
-                event.threshold, self.threshold
+                event.threshold,
+                self.threshold()
             ));
         }
         ensure!(
@@ -547,6 +569,7 @@ impl CreateZone {
             anchor.block_number, anchor.hash
         );
 
+        let threshold = self.threshold();
         let genesis_cmd = crate::generate_zone_genesis::GenerateZoneGenesis {
             output: self.output.clone(),
             chain_id,
@@ -580,7 +603,7 @@ impl CreateZone {
             "admin": format!("{}", self.admin),
             "sequencer": format!("{leader}"),
             "sequencers": self.sequencers.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            "sequencerThreshold": self.threshold,
+            "sequencerThreshold": threshold,
             "sequencerSetVersion": sequencer_set_version,
             "tempoAnchorBlock": anchor.block_number,
             "zoneFactory": format!("{}", self.zone_factory),
@@ -603,7 +626,7 @@ impl CreateZone {
         println!("  Gateway enforcement: {}", self.gateway_mode);
         println!("  Admin: {}", self.admin);
         println!("  Sequencers: {:?}", self.sequencers);
-        println!("  Threshold: {}", self.threshold);
+        println!("  Threshold: {threshold}");
         println!("  Sequencer set version: {sequencer_set_version}");
         println!("  ZoneFactory: {}", self.zone_factory);
         if !self.rpc_url.is_empty() {
@@ -675,7 +698,8 @@ mod tests {
                 address!("0x2000000000000000000000000000000000000002"),
                 address!("0x3000000000000000000000000000000000000003"),
             ],
-            threshold: 2,
+            threshold: Some(2),
+            allow_single_sequencer: false,
             admin: address!("0x5000000000000000000000000000000000000005"),
             rpc_url: String::new(),
             private_key: None,
@@ -697,7 +721,7 @@ mod tests {
             gatewayMode: command.gateway_mode,
             admin: command.admin,
             sequencers: command.sequencers.clone(),
-            threshold: command.threshold,
+            threshold: command.threshold(),
             verifier: ZONE_VERIFIER_ADDRESS,
         }
     }
@@ -809,6 +833,63 @@ mod tests {
         let mut event = created_event(&command);
         event.sequencers.reverse();
         assert!(command.ensure_requested_zone(&event).is_err());
+    }
+
+    #[test]
+    fn single_sequencer_requires_explicit_opt_in() {
+        let command = parse(&["--private-key", "unused"]).unwrap();
+        let error = command.validate_sequencer_set().unwrap_err().to_string();
+        assert!(error.contains("--allow-single-sequencer"), "{error}");
+
+        let command = parse(&["--private-key", "unused", "--allow-single-sequencer"]).unwrap();
+        command.validate_sequencer_set().unwrap();
+        assert_eq!(command.factory_params().threshold, 1);
+    }
+
+    #[test]
+    fn explicit_threshold_overrides_the_majority_default() {
+        let command = parse(&[
+            "--private-key",
+            "unused",
+            "--sequencer=0x2000000000000000000000000000000000000002",
+            "--sequencer=0x3000000000000000000000000000000000000003",
+            "--threshold=3",
+        ])
+        .unwrap();
+        command.validate_sequencer_set().unwrap();
+        assert_eq!(command.factory_params().threshold, 3);
+
+        let command = parse(&[
+            "--private-key",
+            "unused",
+            "--sequencer=0x2000000000000000000000000000000000000002",
+            "--threshold=3",
+        ])
+        .unwrap();
+        let error = command.validate_sequencer_set().unwrap_err().to_string();
+        assert!(
+            error.contains("threshold must be between 1 and the number of sequencers (2), got 3"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn default_threshold_is_a_majority_of_sequencers() {
+        // BASE_ARGS supplies the first sequencer.
+        for (count, expected) in [(2, 2), (3, 2), (4, 3), (5, 3), (8, 5)] {
+            let sequencers: Vec<String> = (1..count)
+                .map(|i| format!("--sequencer={}", Address::repeat_byte(0x10 + i)))
+                .collect();
+            let mut args: Vec<&str> = vec!["--private-key", "unused"];
+            args.extend(sequencers.iter().map(String::as_str));
+            let command = parse(&args).unwrap();
+            command.validate_sequencer_set().unwrap();
+            assert_eq!(
+                command.factory_params().threshold,
+                expected,
+                "{count} sequencers"
+            );
+        }
     }
 
     #[test]
