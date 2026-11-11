@@ -29,6 +29,7 @@ reth-basic-payload-builder.workspace = true
 reth-chainspec = { workspace = true, default-features = true }
 reth-errors.workspace = true
 reth-evm.workspace = true
+reth-metrics.workspace = true
 reth-node-api.workspace = true
 reth-node-builder.workspace = true
 reth-payload-builder.workspace = true
@@ -50,5 +51,6 @@ evm2.workspace = true
 
 # misc
 eyre.workspace = true
+metrics.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
 tracing.workspace = true
