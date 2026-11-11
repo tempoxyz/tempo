@@ -1152,4 +1152,36 @@ mod tests {
         );
         assert!(parallel.next_until(|| false).is_none());
     }
+
+    #[test]
+    fn dropping_a_prewarmer_does_not_wait_for_a_busy_worker() {
+        let executor = TaskExecutor::test();
+        // One worker stays busy, as with a transaction of another build that does not return.
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        executor.prewarming_pool().spawn(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker started");
+        let prewarmer = Prewarmer::new(prewarming_context(executor, false));
+
+        // Release the worker after a timeout so that a regression fails instead of hanging.
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let watchdog = thread::spawn(move || {
+            let timed_out = done_rx.recv_timeout(Duration::from_secs(5)).is_err();
+            drop(release_tx);
+            timed_out
+        });
+
+        drop(prewarmer);
+        let _ = done_tx.send(());
+
+        assert!(
+            !watchdog.join().unwrap(),
+            "dropping the prewarmer waited for a worker that another build keeps busy"
+        );
+    }
 }
