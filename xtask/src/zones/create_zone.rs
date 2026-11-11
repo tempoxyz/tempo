@@ -4,7 +4,7 @@
 
 use alloy::{
     network::primitives::ReceiptResponse,
-    primitives::{Address, TxHash},
+    primitives::{Address, Log, TxHash},
     providers::{DynProvider, Provider, ProviderBuilder},
     sol_types::{SolCall as _, SolEvent as _},
 };
@@ -452,14 +452,17 @@ impl CreateZone {
     /// logs, are exactly the requested allowed accounts and zone gateways.
     fn ensure_requested_roles<'a>(
         &self,
-        logs: impl IntoIterator<Item = &'a alloy::primitives::Log>,
+        logs: impl IntoIterator<Item = &'a Log>,
         portal: Address,
     ) -> eyre::Result<()> {
         let mut roles = BTreeMap::new();
-        for log in logs.into_iter().filter(|log| log.address == portal) {
-            if let Ok(update) = ZonePortal::RoleUpdated::decode_log(log) {
-                roles.insert(update.account, update.next);
-            }
+        for log in logs.into_iter().filter(|log| {
+            log.address == portal
+                && log.topics().first() == Some(&ZonePortal::RoleUpdated::SIGNATURE_HASH)
+        }) {
+            let update = ZonePortal::RoleUpdated::decode_log(log)
+                .wrap_err("failed decoding portal RoleUpdated log")?;
+            roles.insert(update.account, update.next);
         }
         let mut mismatches = Vec::new();
         for (requested, role, name) in [
@@ -576,13 +579,7 @@ impl CreateZone {
         let portal_contract = ZonePortal::new(portal, &provider);
         let creation_block_id = BlockId::number(creation_block);
         self.ensure_requested_rpc_url(&portal_contract, creation_block_id)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "transaction {} did not create the requested zone",
-                    receipt.transaction_hash
-                )
-            })?;
+            .await?;
         let sequencer_set_version = portal_contract
             .sequencerSetVersion()
             .block(creation_block_id)
@@ -896,20 +893,25 @@ mod tests {
         assert!(command.ensure_requested_zone(&event).is_err());
     }
 
-    fn role_log(
+    fn role_update_log(
         portal: Address,
         account: Address,
+        prev: ZonePortal::Role,
         next: ZonePortal::Role,
-    ) -> alloy::primitives::Log {
-        alloy::primitives::Log {
+    ) -> Log {
+        Log {
             address: portal,
             data: ZonePortal::RoleUpdated {
                 account,
-                prev: ZonePortal::Role::None,
+                prev,
                 next,
             }
             .encode_log_data(),
         }
+    }
+
+    fn role_log(portal: Address, account: Address, next: ZonePortal::Role) -> Log {
+        role_update_log(portal, account, ZonePortal::Role::None, next)
     }
 
     #[test]
@@ -931,17 +933,72 @@ mod tests {
         command.ensure_requested_roles(&installed, portal).unwrap();
 
         // Extra holders installed by the creation are rejected.
-        let mut with_extra = installed.to_vec();
-        with_extra.push(role_log(portal, extra, ZonePortal::Role::Account));
-        with_extra.push(role_log(portal, extra, ZonePortal::Role::CallbackGateway));
+        let mut extra_account = installed.to_vec();
+        extra_account.push(role_log(portal, extra, ZonePortal::Role::Account));
         assert_eq!(
             command
-                .ensure_requested_roles(&with_extra, portal)
+                .ensure_requested_roles(&extra_account, portal)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "portal roles report allowed accounts {{{extra}, {account}}} (expected {{{account}}})"
+            )
+        );
+        let mut extra_gateway = installed.to_vec();
+        extra_gateway.push(role_log(portal, extra, ZonePortal::Role::CallbackGateway));
+        assert_eq!(
+            command
+                .ensure_requested_roles(&extra_gateway, portal)
                 .unwrap_err()
                 .to_string(),
             format!(
                 "portal roles report zone gateways {{{extra}, {gateway}}} (expected {{{gateway}}})"
             )
+        );
+
+        // A role removed later in the same transaction is not installed.
+        let mut removed = installed.to_vec();
+        removed.push(role_update_log(
+            portal,
+            account,
+            ZonePortal::Role::Account,
+            ZonePortal::Role::None,
+        ));
+        assert_eq!(
+            command
+                .ensure_requested_roles(&removed, portal)
+                .unwrap_err()
+                .to_string(),
+            format!("portal roles report allowed accounts {{}} (expected {{{account}}})")
+        );
+
+        // Duplicate requested entries match the repeated logs pre-T11 factories emit.
+        let mut duplicates = test_command();
+        duplicates.allowed_accounts = vec![account, account];
+        duplicates.zone_gateways = vec![gateway];
+        let mut repeated = installed.to_vec();
+        repeated.push(role_update_log(
+            portal,
+            account,
+            ZonePortal::Role::Account,
+            ZonePortal::Role::Account,
+        ));
+        duplicates
+            .ensure_requested_roles(&repeated, portal)
+            .unwrap();
+
+        // A portal RoleUpdated log that does not decode is an error, not a missing role.
+        let mut malformed = installed.to_vec();
+        malformed[0].data = alloy::primitives::LogData::new_unchecked(
+            malformed[0].data.topics().to_vec(),
+            Bytes::new(),
+        );
+        assert_eq!(
+            command
+                .ensure_requested_roles(&malformed, portal)
+                .unwrap_err()
+                .to_string(),
+            "failed decoding portal RoleUpdated log"
         );
 
         // With no role flags, any installed holder is rejected.
@@ -964,6 +1021,77 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             format!("portal roles report allowed accounts {{}} (expected {{{account}}})")
+        );
+    }
+
+    #[test]
+    fn zone_created_event_rejects_mismatched_roles() {
+        let account = address!("0x8000000000000000000000000000000000000008");
+        let extra = address!("0x7000000000000000000000000000000000000007");
+        let mut command = test_command();
+        command.zone_factory = address!("0x7a00000000000000000000000000000000000000");
+        command.allowed_accounts = vec![account];
+        let event = created_event(&command);
+        let receipt = |roles: &[Log]| -> TempoTransactionReceipt {
+            let created = Log {
+                address: command.zone_factory,
+                data: event.encode_log_data(),
+            };
+            let logs: Vec<_> = std::iter::once(&created)
+                .chain(roles)
+                .enumerate()
+                .map(|(index, log)| {
+                    serde_json::json!({
+                        "address": log.address,
+                        "topics": log.data.topics(),
+                        "data": log.data.data,
+                        "blockHash": alloy::primitives::B256::repeat_byte(0x22),
+                        "blockNumber": "0x1",
+                        "transactionHash": TxHash::repeat_byte(0x11),
+                        "transactionIndex": "0x0",
+                        "logIndex": format!("{index:#x}"),
+                        "removed": false,
+                    })
+                })
+                .collect();
+            serde_json::from_value(serde_json::json!({
+                "type": "0x0",
+                "status": "0x1",
+                "cumulativeGasUsed": "0x1",
+                "logs": logs,
+                "logsBloom": alloy::primitives::Bloom::ZERO,
+                "transactionHash": TxHash::repeat_byte(0x11),
+                "transactionIndex": "0x0",
+                "blockHash": alloy::primitives::B256::repeat_byte(0x22),
+                "blockNumber": "0x1",
+                "gasUsed": "0x1",
+                "effectiveGasPrice": "0x1",
+                "from": Address::ZERO,
+                "to": command.zone_factory,
+                "contractAddress": null,
+                "feePayer": Address::ZERO,
+            }))
+            .unwrap()
+        };
+
+        let installed = [role_log(event.portal, account, ZonePortal::Role::Account)];
+        assert_eq!(
+            command.zone_created_event(&receipt(&installed)).unwrap(),
+            event
+        );
+
+        let extra = [
+            installed[0].clone(),
+            role_log(event.portal, extra, ZonePortal::Role::Account),
+        ];
+        let error = format!(
+            "{:#}",
+            command.zone_created_event(&receipt(&extra)).unwrap_err()
+        );
+        assert!(
+            error.contains("did not create the requested zone")
+                && error.contains("portal roles report allowed accounts"),
+            "{error}"
         );
     }
 
