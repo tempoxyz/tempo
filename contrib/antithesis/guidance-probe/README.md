@@ -51,7 +51,8 @@ No `RUSTFLAGS`, sanitizer-coverage flags, `-Zinstrument-coverage`, Hegel, or
 `nm`, `readelf`, and the dependency tree for coverage hooks, then use `objdump`
 to reject jumps in the transition and mode-masked label selection. The final
 `scratch` filesystem contains only the binary, identical first command,
-`ldd`-discovered loader/runtime libraries, and `/tmp` with mode 1777. There is no
+`ldd`-discovered loader/runtime libraries, `libm.so.6` for the injected Antithesis
+runtime, and `/tmp` with mode 1777. There is no
 shell, package installation, or second runtime base image.
 
 Required CI checks: formatting; four copied state/label tests plus activation
