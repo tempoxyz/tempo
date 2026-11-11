@@ -1,6 +1,7 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{
-    metrics::AA2dPoolMetrics, ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    authority_counts::AuthorityCounts, metrics::AA2dPoolMetrics, ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -112,13 +113,8 @@ pub struct AA2dPool {
     queued_eviction_order: BTreeSet<EvictionKey>,
     /// Base fee used for transaction insertion and eviction-order priorities.
     base_fee: u64,
-    /// Tracks the number of transactions per authority for DoS protection; see
-    /// [`TempoPooledTransaction::authorities`]. A transaction counts once against each distinct
-    /// account it names.
-    ///
-    /// Bounded by pool size (at most four authorities per transaction).
-    /// Entries are removed when count reaches 0 via [`uncount_authorities`].
-    txs_by_authority: AddressMap<usize>,
+    /// Tracks the number of transactions per authority for DoS protection.
+    txs_by_authority: AuthorityCounts,
     /// Pending and queued regular transactions per `(sender, nonce_key)` lane.
     txs_by_lane: HashMap<AASequenceId, usize>,
     /// Number of pending transactions, including expiring nonce transactions.
@@ -310,19 +306,18 @@ impl AA2dPool {
                 // The replacement can name a different fee payer or access key, so its
                 // authorities are checked with the replaced transaction's slots released.
                 let replaced_tx = &entry.get().inner.transaction.transaction;
-                uncount_authorities(&mut self.txs_by_authority, replaced_tx);
-                if let Some(authority) = authority_at_capacity(
-                    &self.txs_by_authority,
-                    self.config.max_txs_per_authority,
-                    &transaction.transaction,
-                ) {
-                    count_authorities(&mut self.txs_by_authority, replaced_tx);
+                self.txs_by_authority.remove(replaced_tx);
+                if let Some(authority) = self
+                    .txs_by_authority
+                    .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+                {
+                    self.txs_by_authority.add(replaced_tx);
                     return Err(PoolError::new(
                         *transaction.hash(),
                         PoolErrorKind::SpammerExceededCapacity(authority),
                     ));
                 }
-                count_authorities(&mut self.txs_by_authority, &transaction.transaction);
+                self.txs_by_authority.add(&transaction.transaction);
 
                 let replaced = entry.insert(Arc::clone(&tx));
                 #[cfg(feature = "fuzz")]
@@ -335,17 +330,16 @@ impl AA2dPool {
             }
             Entry::Vacant(entry) => {
                 // Check the per-authority limit for new (non-replacement) transactions
-                if let Some(authority) = authority_at_capacity(
-                    &self.txs_by_authority,
-                    self.config.max_txs_per_authority,
-                    &transaction.transaction,
-                ) {
+                if let Some(authority) = self
+                    .txs_by_authority
+                    .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+                {
                     return Err(PoolError::new(
                         *transaction.hash(),
                         PoolErrorKind::SpammerExceededCapacity(authority),
                     ));
                 }
-                count_authorities(&mut self.txs_by_authority, &transaction.transaction);
+                self.txs_by_authority.add(&transaction.transaction);
 
                 entry.insert(Arc::clone(&tx));
                 *self.txs_by_lane.entry(tx_id.seq_id).or_default() += 1;
@@ -500,17 +494,16 @@ impl AA2dPool {
         };
 
         // Check the per-authority limit
-        if let Some(authority) = authority_at_capacity(
-            &self.txs_by_authority,
-            self.config.max_txs_per_authority,
-            &transaction.transaction,
-        ) {
+        if let Some(authority) = self
+            .txs_by_authority
+            .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+        {
             return Err(PoolError::new(
                 tx_hash,
                 PoolErrorKind::SpammerExceededCapacity(authority),
             ));
         }
-        count_authorities(&mut self.txs_by_authority, &transaction.transaction);
+        self.txs_by_authority.add(&transaction.transaction);
 
         // Create pending transaction
         let pending_tx = AA2dStoredTransaction {
@@ -913,7 +906,7 @@ impl AA2dPool {
         self.by_hash.remove(removed_tx.hash());
         self.remove_from_subpool(tx.is_pending(), removed_tx.transaction.size());
 
-        uncount_authorities(&mut self.txs_by_authority, &removed_tx.transaction);
+        self.txs_by_authority.remove(&removed_tx.transaction);
 
         Some(removed_tx)
     }
@@ -1416,10 +1409,8 @@ impl AA2dPool {
                 .precomputed_expiring_nonce_hash();
             self.remove_nonce_slot_entry(slot, NonceSlotEntry::ExpiringNonce(expiring_hash));
         }
-        uncount_authorities(
-            &mut self.txs_by_authority,
-            &pending_tx.transaction.transaction,
-        );
+        self.txs_by_authority
+            .remove(&pending_tx.transaction.transaction);
         self.remove_from_subpool(true, pending_tx.size());
         pending_tx.transaction
     }
@@ -2527,50 +2518,6 @@ impl BestAA2dTransactions {
 
 fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u64) -> bool {
     tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
-}
-
-/// Yields each distinct authority of `transaction` once; see
-/// [`TempoPooledTransaction::authorities`].
-fn distinct_authorities(transaction: &TempoPooledTransaction) -> impl Iterator<Item = Address> {
-    let authorities = transaction.authorities();
-    (0..authorities.len()).filter_map(move |index| {
-        authorities[index].filter(|authority| !authorities[..index].contains(&Some(*authority)))
-    })
-}
-
-/// Returns an authority of `transaction` that already has `max` transactions in the pool.
-fn authority_at_capacity(
-    txs_by_authority: &AddressMap<usize>,
-    max: usize,
-    transaction: &TempoPooledTransaction,
-) -> Option<Address> {
-    distinct_authorities(transaction)
-        .find(|authority| txs_by_authority.get(authority).copied().unwrap_or_default() >= max)
-}
-
-/// Counts `transaction` against each of its authorities.
-fn count_authorities(
-    txs_by_authority: &mut AddressMap<usize>,
-    transaction: &TempoPooledTransaction,
-) {
-    for authority in distinct_authorities(transaction) {
-        *txs_by_authority.entry(authority).or_default() += 1;
-    }
-}
-
-/// Reverts [`count_authorities`], removing entries that reach zero.
-fn uncount_authorities(
-    txs_by_authority: &mut AddressMap<usize>,
-    transaction: &TempoPooledTransaction,
-) {
-    for authority in distinct_authorities(transaction) {
-        if let hash_map::Entry::Occupied(mut entry) = txs_by_authority.entry(authority) {
-            *entry.get_mut() -= 1;
-            if *entry.get() == 0 {
-                entry.remove();
-            }
-        }
-    }
 }
 
 impl Iterator for BestAA2dTransactions {
@@ -6174,7 +6121,7 @@ mod tests {
 
         assert_eq!(pool.remove_transactions([&first_hash].into_iter()).len(), 1);
         add_expiring(&mut pool, sponsored()).unwrap();
-        assert_eq!(pool.txs_by_authority[&fee_payer.address()], 2);
+        assert_eq!(pool.txs_by_authority.get(&fee_payer.address()), 2);
         pool.assert_invariants();
     }
 
@@ -6231,11 +6178,11 @@ mod tests {
             "unexpected error: {:?}",
             err.kind
         );
-        assert_eq!(pool.txs_by_authority[&sender], 1);
-        assert_eq!(pool.txs_by_authority[&fee_payer.address()], 2);
+        assert_eq!(pool.txs_by_authority.get(&sender), 1);
+        assert_eq!(pool.txs_by_authority.get(&fee_payer.address()), 2);
 
         add_expiring(&mut pool, build(2_000_000_000).build()).unwrap();
-        assert_eq!(pool.txs_by_authority[&sender], 1);
+        assert_eq!(pool.txs_by_authority.get(&sender), 1);
         pool.assert_invariants();
     }
 
