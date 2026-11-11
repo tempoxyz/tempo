@@ -54,6 +54,7 @@ TIP-1031 and docs upgrades/t4.mdx require consensus_context exactly from T4 and 
 - Where: [01-chain-and-forks.md (T4)](01-chain-and-forks.md#t4), [02-encoding.md §2.3](02-encoding.md#23-tempoconsensuscontext), [07-consensus.md (Header consensus context)](07-consensus.md#header-consensus-context)
 - Recommendation: Mainnet blocks before T4 carry no consensus_context and blocks from T4 do, which matches TIP-1031, but the implementation enforces no fork gate. Recommended: the spec adopts TIP-1031's rule (absent before T4, required from T4), and the missing gate is filed as a code issue.
 - Decision: adopt TIP-1031: absent before T4, required from T4; the implementation's missing fork gate is tracked as a code issue. Mainnet and Moderato history satisfy the rule.
+- Divergence until the code issue is fixed: Until the code issue is fixed, the reference checks the context only in its vote, at every fork, and not in header validation. A node with the TIP-1031 header rule can therefore reject blocks that the reference finalized, for example a block from T4 without the context that a faulty quorum finalized. The reference follower accepts such a block.
 
 ### C-ENC-04
 <a id="c-enc-04"></a>

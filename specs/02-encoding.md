@@ -91,12 +91,13 @@ def network_decode_tx(list_payload):
     if first < 0x80:
         ty = list_payload.read_u8()                        # unwrapped form
         return typed_decode(ty, list_payload)              # consumes the typed payload
-    s = list_payload.read_rlp_string()                     # wrapped form
-    if len(s) == 0: raise DecodeError
-    tx = typed_decode(s[0], s[1:])
-    # typed_decode MUST consume exactly len(s) - 1 bytes
-    return tx
+    s_len = list_payload.read_rlp_string_header()          # wrapped form
+    if s_len == 0 or s_len > list_payload.remaining(): raise DecodeError
+    ty = list_payload.read_u8()
+    return typed_decode(ty, list_payload)                  # consumes the typed payload
 ```
+
+If its canonical string header declares at most the bytes left in the list, a wrapped typed transaction decodes. The payload length does not matter, and the next item starts right after the typed payload. Both reference encoders write the exact length, so only another encoder writes a body in which the two lengths differ.
 
 ### 1.5 Constants
 
@@ -198,6 +199,8 @@ Presence by fork is a header-validity rule ([§2.5](#25-standalone-header-validi
 - A header whose timestamp is at or after T4 MUST contain it.
 
 The genesis header of mainnet and Moderato has no `consensus_context`. Mainnet and Moderato history satisfy the rule: every header before T4 omits the field, and every header from T4 carries it.
+
+The reference does not yet apply this rule in header validation. It checks the context only in its vote, at every fork, so a node with this rule can reject blocks that the reference finalized ([07-consensus.md §5.1](07-consensus.md#header-consensus-context)).
 
 Beyond presence and decoding:
 

@@ -106,6 +106,8 @@ Every block a validator proposes carries `header.consensus_context = {epoch, vie
 
 Presence by fork is a header-validity rule ([02-encoding.md §2.5](02-encoding.md#25-standalone-header-validity) check 9): a header MUST NOT contain the context before T4 and MUST contain it from T4, by block timestamp. Every node checks it, including followers replaying finalized blocks. A validator voting on a new proposal from T4 MUST also require that the context equals the engine's Context for it (§13 step 5).
 
+Until the code issue is fixed, the reference checks the context only in its vote, at every fork, and not in header validation. A node with the TIP-1031 header rule can therefore reject blocks that the reference finalized, for example a block from T4 without the context that a faulty quorum finalized. The reference follower accepts such a block.
+
 > **Resolved conflict C-CONS-01**: TIP-1031 requires the context to be absent before T4 and the check to depend on activation, but the implementation has no T4 gate: it always builds and requires a context. Decided: this spec adopts TIP-1031's rule, and every node checks presence by fork as a header-validity rule. The implementation does not yet enforce the gate, and that is tracked as a code issue. Mainnet and Moderato history satisfy the rule. See [conflicts](conflicts.md#c-cons-01).
 
 Every mainnet block a validator votes on under T13 rules has its timestamp after T4, so the rule above (present and equal) applies to them. A block whose header has no context MUST fail the check: a validator rejects it, whatever placeholder Context it uses internally.
@@ -157,7 +159,7 @@ Block-to-epoch membership *(validator voting rule)*: a proposal in round `(E, v)
 
 **Boundary re-proposal.** When the parent chosen for a proposal in epoch `E` is the boundary block `last(E)`, the leader MUST NOT build a new block. It re-proposes the boundary block: the proposal's payload equals `context.parent.1`, the parent digest. A proposal whose payload equals its parent digest is valid iff the block it names has height `last(E)`. The application does not verify it again ([simplex.md §10.2](commonware/simplex.md#102-verifyctx-d)). So the boundary block can be notarized and finalized in a later view than the one recorded in its header `consensus_context`, and no block above `last(E)` is ever proposed in epoch `E`.
 
-**Certification (Before T14).** The verification mode is *immediate*: the application's verify (§13) completes before the node sends its notarize vote, and certify returns once the block is available locally. (Deferred verification, the default from T14, is out of scope. TIP-1031 lets a validator keep synchronous verification in any case.)
+**Certification (Before T14).** The default verification mode is *immediate*: the application's verify (§13) completes before the node sends its notarize vote, and certify returns once the block is available locally. An operator can select *deferred* verification at any fork. The mode changes only the time of the vote, not which blocks are valid. (Deferred verification, the default from T14, is out of scope. TIP-1031 lets a validator keep synchronous verification in any case.)
 
 ## 6. Leader election
 

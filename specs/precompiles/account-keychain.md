@@ -351,11 +351,12 @@ struct KeyInfo { SignatureType signatureType; address keyId; uint64 expiry; bool
 
 Functions. "Live" gives the forks at which the selector dispatches; outside that window the selector
 is unknown (precompiles/00-framework.md: `UnknownFunctionSelector(bytes4)`). Mutators reject static
-calls as the framework specifies.
+calls as the framework specifies. From T3, the legacy `authorizeKey` (`0x54063a55`) skips the
+static-call check of precompiles/00-framework.md §4.3 step 6 (§1.4 step 4).
 
 | Function | Selector | Live | Kind |
 |---|---|---|---|
-| `authorizeKey(address keyId, SignatureType signatureType, uint64 expiry, bool enforceLimits, (address,uint256)[] limits)` (legacy) | `0x54063a55` | always; from T3 it returns `LegacyAuthorizeKeySelectorChanged` | mutator |
+| `authorizeKey(address keyId, SignatureType signatureType, uint64 expiry, bool enforceLimits, (address,uint256)[] limits)` (legacy) | `0x54063a55` | always; from T3 it returns `LegacyAuthorizeKeySelectorChanged` | mutator before T3; from T3 not a mutator (§1.4 step 4) |
 | `authorizeKey(address keyId, SignatureType signatureType, KeyRestrictions config)` | `0x980a6025` | T3+ | mutator |
 | `authorizeKey(address keyId, SignatureType signatureType, KeyRestrictions config, bytes32 witness)` | `0xe3c154d2` | T5+ | mutator |
 | `authorizeAdminKey(address keyId, SignatureType signatureType, bytes32 witness)` | `0x9a424307` | T6+ (through T13) | mutator |
@@ -436,8 +437,11 @@ For every call into the AccountKeychain:
 4. Legacy `authorizeKey` (`0x54063a55`): before T3 it behaves as
    `authorize_key(msg.sender, keyId, signatureType, KeyRestrictions{expiry, enforceLimits,
    limits: [(token, amount, period = 0) for each limit], allowAnyCalls: true, allowedCalls: []},
-   witness = None)`. From T3, after successful decoding, it MUST revert with
-   `LegacyAuthorizeKeySelectorChanged(0x980a6025)` and do nothing else. From T11 a legacy call whose
+   witness = None)`, and it is a mutator. From T3, after successful decoding, it MUST revert with
+   `LegacyAuthorizeKeySelectorChanged(0x980a6025)` and do nothing else. This revert happens in
+   every frame: the selector skips the static-call check of precompiles/00-framework.md §4.3
+   step 6, so a static call gets `LegacyAuthorizeKeySelectorChanged` and not
+   `StaticCallNotAllowed()` (before T12) or an exceptional halt (from T12). From T11 a legacy call whose
    `signatureType` word is 3 or more therefore reverts with empty data (step 2 or a decoding failure),
    not with `LegacyAuthorizeKeySelectorChanged`.
 

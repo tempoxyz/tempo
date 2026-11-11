@@ -31,7 +31,7 @@ with integers encoded as minimal big-endian strings (`0` encodes as the empty st
 T14 adds an optional fifth RLP item to the account leaf, the *account extension*, which holds configurable-account commitments and is encoded only when non-empty. At or before T13:
 
 - No state transition can produce a non-empty extension: before T14 no precompile, opcode or transaction path writes an account configuration commitment (the configurable-account constructs that write it are introduced by T14 and are rejected or absent at every fork in scope; see [03-signatures.md §9](03-signatures.md#9-configurable-account-signatures-0x05-at-or-before-t13) and [06-transactions-and-fees.md §4.2](06-transactions-and-fees.md#42-structure-checks) item 2).
-- A client MUST treat any account leaf with a fifth item as invalid state. Equivalently, every account leaf is exactly the 4-item list above.
+- At or before T13, no reachable account leaf has a fifth item, so every account leaf is the 4-item list above. A genesis allocation MUST NOT carry an account `extension` (§4.4). No client enforces the 4-item form: the reference decodes a non-empty fifth item at any fork.
 
 ### 1.3 Code
 
@@ -134,18 +134,20 @@ The genesis state and header of each network are fully determined by a genesis J
 
 (Any re-serialization that yields the same parsed content yields the same genesis.)
 
-A client MUST derive its genesis from this data as described below and MUST check that the resulting genesis hash equals the expected value in §4.7.
+For mainnet and Moderato, a client MUST derive its genesis from this data as described below, and the resulting genesis hash MUST equal the expected value in §4.7.
 
 The file's top-level keys are `config` (§4.2), `nonce`, `timestamp`, `extraData`, `gasLimit`, `difficulty`, `mixHash`, `coinbase`, `baseFeePerGas` and `alloc`. The mainnet file also has a top-level `craftedWithLove` object (team member names and the message "Time is money"). It MUST be ignored, because it affects neither the genesis header nor the state. Absent numeric header keys (`number`, `gasUsed`, `parentHash`, `blobGasUsed`, `excessBlobGas`) are zero.
 
 The file is a JSON object (RFC 8259). Its values are encoded as follows:
 
-- **Quantities** (`nonce`, `timestamp`, `gasLimit`, `difficulty`, `baseFeePerGas`, and each account's `nonce` and `balance`) are JSON strings holding `0x` followed by the value in hexadecimal without leading zeros, such as `"0x1dcd6500"`. A client SHOULD also accept a JSON number. The top-level `nonce` is a 64-bit value. It becomes the 8-byte big-endian header `nonce`.
-- **Byte strings** (`extraData` and each account's `code`) are `0x`-prefixed hex strings with two digits per byte.
-- **Fixed-size values** are `0x`-prefixed hex strings of exactly their size: 20 bytes for `coinbase` and the `alloc` keys, 32 bytes for `mixHash` and for the keys and values of an account's `storage` object. Hex digits are case-insensitive, so EIP-55 mixed-case addresses are accepted.
+- **Quantities** (`nonce`, `timestamp`, `gasLimit`, `difficulty`, `baseFeePerGas`, and each account's `nonce` and `balance`) are JSON numbers, or JSON strings of `0x` hex or of decimal digits, such as `"0x1dcd6500"`. Leading zeros are allowed. The top-level `nonce` is a 64-bit value. It becomes the 8-byte big-endian header `nonce`.
+- **Byte strings** (`extraData` and each account's `code`) are hex strings with two digits per byte and an optional `0x` prefix.
+- **Fixed-size values** are hex strings with an optional `0x` prefix and exactly their size: 20 bytes for `coinbase` and the `alloc` keys, 32 bytes for `mixHash`. Hex digits are case-insensitive, so EIP-55 mixed-case addresses are accepted.
+- **Storage words** (the keys and values of an account's `storage` object) are hex strings with an optional `0x` prefix and at most 32 bytes. A shorter word is padded with zeros on the left.
+- A `null` value counts as absent.
 - **`config`** is a JSON object whose values are JSON numbers, booleans or hex address strings, as listed in [01-chain-and-forks.md](01-chain-and-forks.md#genesis-configuration).
 
-A storage value is the 256-bit slot value as a big-endian word. A client MUST reject a file whose values do not parse under these rules.
+A storage value is the 256-bit slot value as a big-endian word. A client MUST accept every file whose values parse under these rules. The result for other value forms is implementation-defined. For example, the reference also accepts a `0X`, `0o` or `0b` prefix and `_` in a quantity. The reference genesis generator writes only `0x` hex, so its files parse the same way in every client.
 
 ### 4.2 Genesis `config`
 
@@ -193,7 +195,7 @@ The genesis header is exempt from the per-block header rules of [05-block-execut
 
 ### 4.4 Genesis state from `alloc`
 
-`alloc` maps 20-byte addresses to accounts with optional `nonce`, `balance`, `code` and `storage` (a map from 32-byte slot to 32-byte value). Missing `nonce`/`balance` are 0, missing `code` is empty and missing `storage` is empty. For each entry, the client MUST create the account with those values, and storage entries whose value is zero MUST be skipped (§1.1). The genesis state root is the state trie root over all entries (§1.1, §1.2).
+`alloc` maps 20-byte addresses to accounts with a required `balance` and optional `nonce`, `code` and `storage` (a map from storage word to storage word, §4.1). A client MUST reject a file with an account that has no `balance`. A missing `nonce` is 0, missing `code` is empty and missing `storage` is empty. An account MUST NOT carry an `extension` (§1.2). For each entry, the client MUST create the account with those values, and storage entries whose value is zero MUST be skipped (§1.1). The genesis state root is the state trie root over all entries (§1.1, §1.2).
 
 This rule is consensus-critical. Mainnet's alloc lists zero-valued slots (for example slot `0x06` of pathUSD and slot `0x0f` of token `0x20c0…16c6514b53947fdc`). Inserting them would give state root `0xb1a04bd8…786c` and the wrong genesis hash `0x80da98c9…0bcc`.
 
@@ -240,7 +242,7 @@ The genesis `extraData` is the `OnchainDkgOutcome` ([07-consensus.md](07-consens
 
 These values were recomputed from the genesis files with the rules in §4.3 and §4.4. The mainnet hash equals the `parent_hash` of mainnet block 1 (hash `0x76e86f9739fbe17669b01b24e976ac214742c4b1bbc6ae0c083a87e43a5e9b0f`), whose `state_root` equals the genesis state root above. The Moderato hash matches the value Tempo's tooling publishes for Moderato.
 
-A client MUST refuse to start if its computed genesis hash differs from the expected value for the configured chain ID.
+A client that a user configures for mainnet or Moderato by name MUST use the genesis whose hash is the value above. A genesis file from a path defines a custom chain, whatever its chain ID: the reference does not compare its hash with these values. A node that starts from such a file with chain ID 4217 or 42431 and another genesis starts its own chain, and mainnet or Moderato peers refuse it at the Status handshake ([08-p2p-and-sync.md](08-p2p-and-sync.md)).
 
 ### 4.8 Genesis generator (informative)
 
