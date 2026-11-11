@@ -225,6 +225,9 @@ impl AA2dPool {
     /// `hardfork` indicates the active Tempo hardfork. When T1 or later, expiring nonce
     /// transactions (nonce_key == U256::MAX) are handled specially. Otherwise, they are
     /// treated as regular 2D nonce transactions.
+    ///
+    /// Pending insertions enforce the subpool limits and return the evicted transactions in
+    /// `discarded`. Queued insertions don't; the caller enforces them with [`Self::discard`].
     pub(crate) fn add_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
@@ -304,6 +307,10 @@ impl AA2dPool {
                 }
 
                 let replaced = entry.insert(Arc::clone(&tx));
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "AA 2D pool replaces a transaction at the same nonce"
+                );
                 self.remove_from_subpool(replaced.is_pending(), replaced.inner.size());
                 self.queued_count += 1;
                 Some(replaced)
@@ -455,9 +462,6 @@ impl AA2dPool {
                 discarded: self.discard(),
             }));
         }
-
-        // Call discard for queued transactions too
-        let _ = self.discard();
 
         Ok(AddedTransaction::Parked {
             transaction,
@@ -812,7 +816,8 @@ impl AA2dPool {
     /// Returns pooled transaction elements for the given hashes while respecting the size limit.
     ///
     /// This method collects transactions from the pool, converts them to pooled format,
-    /// and tracks the accumulated size. It stops collecting when the limit is exceeded.
+    /// and tracks the accumulated size. It stops collecting when the limit is exceeded and skips
+    /// transactions that must not be propagated.
     ///
     /// The `accumulated_size` is updated with the total encoded size of returned transactions.
     pub(crate) fn append_pooled_transaction_elements<'a>(
@@ -823,7 +828,7 @@ impl AA2dPool {
         out: &mut Vec<<TempoPooledTransaction as PoolTransaction>::Pooled>,
     ) {
         for tx_hash in tx_hashes {
-            let Some(tx) = self.by_hash.get(tx_hash) else {
+            let Some(tx) = self.by_hash.get(tx_hash).filter(|tx| tx.propagate) else {
                 continue;
             };
 
@@ -1205,6 +1210,10 @@ impl AA2dPool {
                 } else {
                     // Gap detected - mark this and all remaining transactions as non-pending
                     if existing_tx.set_pending(false) {
+                        #[cfg(feature = "fuzz")]
+                        antithesis_sdk::assert_reachable!(
+                            "AA 2D pool demotes a pending transaction when its on-chain nonce moves back"
+                        );
                         newly_queued += 1;
                         newly_queued_size += existing_tx.inner.size();
                         let key = EvictionKey::with_base_fee(
@@ -1254,7 +1263,7 @@ impl AA2dPool {
     /// Evicts queued transactions first, then pending if either the transaction count or reported
     /// size exceeds the configured subpool limit. Pending eviction can demote descendants, so the
     /// queued limit is checked again afterwards.
-    fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+    pub(crate) fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
         if self
@@ -1282,6 +1291,10 @@ impl AA2dPool {
         }
 
         if !removed.is_empty() {
+            #[cfg(feature = "fuzz")]
+            antithesis_sdk::assert_reachable!(
+                "AA 2D pool evicts transactions over its subpool limits"
+            );
             self.metrics.inc_removed(removed.len());
         }
 
@@ -1557,6 +1570,35 @@ impl AA2dPool {
             self.metrics.inc_removed(mined.len());
         }
         self.update_metrics();
+
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            self.by_hash.len() == self.by_id.len() + self.expiring_nonce_txs.len()
+                && self.expiring_nonce_txs.len() == self.expiring_nonce_eviction_order.len(),
+            "AA 2D pool indexes agree on its transactions after a state update",
+            &serde_json::json!({
+                "by_hash": self.by_hash.len(),
+                "by_id": self.by_id.len(),
+                "expiring_nonce": self.expiring_nonce_txs.len(),
+                "expiring_nonce_eviction_order": self.expiring_nonce_eviction_order.len(),
+            })
+        );
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            self.pending_count == self.pending_eviction_order.len() + self.expiring_nonce_txs.len()
+                && self.queued_count == self.queued_eviction_order.len()
+                && self.by_id.len()
+                    == self.pending_eviction_order.len() + self.queued_eviction_order.len(),
+            "AA 2D pool pending and queued counts match its eviction orders after a state update",
+            &serde_json::json!({
+                "pending_count": self.pending_count,
+                "queued_count": self.queued_count,
+                "pending_eviction_order": self.pending_eviction_order.len(),
+                "queued_eviction_order": self.queued_eviction_order.len(),
+                "expiring_nonce": self.expiring_nonce_txs.len(),
+                "by_id": self.by_id.len(),
+            })
+        );
 
         (promoted, mined, discarded)
     }
@@ -4145,6 +4187,30 @@ mod tests {
             "Should add to pre-accumulated size"
         );
     }
+
+    #[test]
+    fn append_pooled_transaction_elements_skips_non_propagatable() {
+        let mut pool = AA2dPool::default();
+        let tx = TxBuilder::aa(Address::random())
+            .nonce_key(U256::ONE)
+            .build();
+        let tx_hash = *tx.hash();
+        let mut tx = wrap_valid_tx(tx, TransactionOrigin::Local);
+        tx.propagate = false;
+        pool.add_transaction(Arc::new(tx), 0, TempoHardfork::T1)
+            .unwrap();
+
+        let mut accumulated = 0;
+        let mut elements = Vec::new();
+        pool.append_pooled_transaction_elements(
+            &[tx_hash],
+            GetPooledTransactionLimit::None,
+            &mut accumulated,
+            &mut elements,
+        );
+        assert!(elements.is_empty());
+        assert_eq!(accumulated, 0);
+    }
     // ============================================
     // Helper function tests
     // ============================================
@@ -5144,6 +5210,9 @@ mod tests {
             .unwrap();
         pool.add_transaction(Arc::new(tx1), 0, TempoHardfork::T1)
             .unwrap();
+        let discarded = pool.discard();
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0].hash(), &tx1_hash);
 
         assert!(pool.contains(&tx0_hash));
         assert!(!pool.contains(&tx1_hash));
@@ -5331,6 +5400,7 @@ mod tests {
             );
             assert!(result.is_ok(), "Transaction {i} should be added");
         }
+        assert_eq!(pool.discard().len(), 3);
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(
@@ -5373,6 +5443,7 @@ mod tests {
                 TempoHardfork::T1,
             );
         }
+        assert_eq!(pool.discard().len(), 2);
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(queued, 3, "Queued should be capped at 3");
@@ -5553,6 +5624,7 @@ mod tests {
                 TempoHardfork::T1,
             );
         }
+        assert_eq!(pool.discard().len(), 8);
 
         // All pending should still be there
         for hash in &pending_hashes {

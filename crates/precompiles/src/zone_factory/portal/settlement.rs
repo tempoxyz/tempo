@@ -8,13 +8,13 @@ use crate::{
 };
 use alloy::{
     primitives::{Address, B256, Bytes, U256, address},
-    sol_types::SolValue,
+    sol_types::{SolCall, SolValue},
 };
 use keccak_const::Keccak256;
 use tempo_contracts::{
     precompiles::{
-        ISignatureVerifier, IZoneVerifier, SIGNATURE_VERIFIER_ADDRESS, ZonePortalError,
-        ZonePortalEvent,
+        CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount, ISignatureVerifier, IZoneVerifier,
+        SIGNATURE_VERIFIER_ADDRESS, ZonePortalError, ZonePortalEvent,
     },
     zones::ZonePortal,
 };
@@ -231,16 +231,37 @@ impl ZonePortalStorage {
             else {
                 return Ok(false);
             };
-            if signer.is_zero()
-                || !self.is_sequencer_account(signer)?
-                || recovered.contains(&signer)
-            {
+            if signer.is_zero() || !self.is_sequencer_account(signer)? {
+                return Ok(false);
+            }
+            // TIP-1020 recovery is stateless, so TIP-1112 leaves rejecting the retired primitive
+            // key of a sequencer that upgraded to a configurable account to this consumer.
+            if self.is_retired_root(signer)? || recovered.contains(&signer) {
                 return Ok(false);
             }
             recovered.push(signer);
         }
 
         Ok(signatures.len() >= threshold)
+    }
+
+    /// Solidity `_isRetiredRoot`: whether `signer` has a TIP-1108 configuration commitment,
+    /// meaning `upgradeAccount` retired its primitive root key. Fails closed on a revert or a
+    /// malformed result; empty return data means the precompile is absent, so nothing is retired.
+    fn is_retired_root(&mut self, signer: Address) -> Result<bool> {
+        let result = self.raw_call(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            SolCall::abi_encode(&IConfigurableAccount::getConfigCommitmentCall { account: signer })
+                .into(),
+            true,
+        )?;
+        if !result.success {
+            return Ok(true);
+        }
+        if result.output.is_empty() {
+            return Ok(false);
+        }
+        Ok(result.output.len() != 32 || result.output.iter().any(|byte| *byte != 0))
     }
 
     /// Solidity `_domainSeparator`.

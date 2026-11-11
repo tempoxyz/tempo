@@ -26,7 +26,7 @@ use commonware_cryptography::{
     transcript::{Summary, Transcript, Version},
 };
 use commonware_parallel::Strategy;
-use commonware_runtime::{BufferPooler, Clock, Metrics, ReadOptions, buffer::paged::CacheRef};
+use commonware_runtime::{Clock, Metrics, ReadOptions, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, futures::rebind, ordered};
 use eyre::{OptionExt, WrapErr as _};
@@ -53,7 +53,7 @@ pub(super) fn builder() -> Builder {
 
 pub(super) struct Storage<TContext>
 where
-    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+    TContext: commonware_runtime::Storage + Clock + Metrics,
 {
     // Rebind consuming commonware mutations through these slots. Write failures
     // panic, so an invalidated handle is never reused by the actor.
@@ -71,14 +71,14 @@ where
 /// into a usable [`Storage`].
 pub(super) struct Unverified<TContext>
 where
-    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+    TContext: commonware_runtime::Storage + Clock + Metrics,
 {
     storage: Storage<TContext>,
 }
 
 impl<TContext> Unverified<TContext>
 where
-    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+    TContext: commonware_runtime::Storage + Clock + Metrics,
 {
     pub(super) fn state(&self) -> Option<&State> {
         self.storage.current.as_ref()
@@ -98,7 +98,7 @@ where
 
 impl<TContext> Storage<TContext>
 where
-    TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+    TContext: commonware_runtime::Storage + Clock + Metrics,
 {
     /// Returns all player acknowledgments received during the given epoch.
     fn acks_for_epoch(
@@ -360,9 +360,9 @@ where
     /// Notably, this does not persist the dealer logs to disk! On restart, it
     /// is expected that the actor reads the dealer logs from the marshal actor
     /// and forwards them one-by-one to the state cache.
-    pub(super) fn cache_notarized_block(&mut self, round: &Round, block: Block) {
+    pub(super) fn cache_notarized_block(&mut self, round: &Round, block: &Block) {
         let cache = self.cache.entry(round.epoch).or_default();
-        let log = ReducedBlock::from_block_for_round(&block, round);
+        let log = ReducedBlock::from_block_for_round(block, round);
         cache.notarized_blocks.insert(log.digest, log);
     }
 
@@ -521,13 +521,13 @@ impl Builder {
         context: TContext,
     ) -> eyre::Result<Unverified<TContext>>
     where
-        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+        TContext: commonware_runtime::Storage + Clock + Metrics,
     {
         let Self { partition_prefix } = self;
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
 
-        let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, POOL_CAPACITY);
+        let page_cache = CacheRef::new(PAGE_SIZE, POOL_CAPACITY);
 
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
         let states: metadata::Metadata<TContext, u64, State> = metadata::Metadata::init(
@@ -642,7 +642,7 @@ impl Read for ShareState {
     type Cfg = ();
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(buf)?;
@@ -713,7 +713,7 @@ impl Read for State {
     type Cfg = NonZeroU32;
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let epoch = ReadExt::read(buf)?;
@@ -890,7 +890,7 @@ impl Read for Event {
     type Cfg = NonZeroU32;
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(buf)?;
@@ -934,7 +934,7 @@ pub(super) struct Dealer {
     /// The finalized, signed log of this dealer. Initially `None` and set after
     /// the middle point of the epoch. Set to `None` again after this node
     /// observes it dealer log on chain to not post it again.
-    finalized: Option<SignedDealerLog<MinSig, PrivateKey>>,
+    finalized: Option<SignedDealerLog<MinSig, PublicKey>>,
 }
 
 impl Dealer {
@@ -965,7 +965,7 @@ impl Dealer {
         ack: PlayerAck<PublicKey>,
     ) -> eyre::Result<()>
     where
-        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+        TContext: commonware_runtime::Storage + Clock + Metrics,
     {
         // Remove before validation so invalid ACKs cannot trigger repeated verification.
         if self.unsent.remove(&player).is_none() {
@@ -1000,12 +1000,12 @@ impl Dealer {
     }
 
     /// Returns a clone of the finalized log if it exists.
-    pub(super) fn finalized(&self) -> Option<SignedDealerLog<MinSig, PrivateKey>> {
+    pub(super) fn finalized(&self) -> Option<SignedDealerLog<MinSig, PublicKey>> {
         self.finalized.clone()
     }
 
     /// Takes and returns the finalized log, leaving None in its place.
-    pub(super) const fn take_finalized(&mut self) -> Option<SignedDealerLog<MinSig, PrivateKey>> {
+    pub(super) const fn take_finalized(&mut self) -> Option<SignedDealerLog<MinSig, PublicKey>> {
         self.finalized.take()
     }
 
@@ -1118,7 +1118,7 @@ impl Player {
         priv_msg: DealerPrivMsg,
     ) -> eyre::Result<PlayerAck<PublicKey>>
     where
-        TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
+        TContext: commonware_runtime::Storage + Clock + Metrics,
     {
         // Cached acks are backed by a persisted dealing.
         if let Some(ack) = self.acks.get(&dealer) {
@@ -1164,8 +1164,7 @@ impl Player {
         logs: dkg::Logs<MinSig, PublicKey, N3f1>,
         strategy: &impl Strategy,
     ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::FinalizeError<PublicKey>> {
-        self.player
-            .finalize::<N3f1, commonware_cryptography::ed25519::Batch>(rng, logs, strategy)
+        self.player.finalize::<N3f1>(rng, logs, strategy)
     }
 }
 
@@ -1193,8 +1192,8 @@ impl ReducedBlock {
         let log = if block.header().extra_data().is_empty() {
             None
         } else {
-            dkg::SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
-                &mut block.header().extra_data().as_ref(),
+            dkg::SignedDealerLog::<MinSig, PublicKey>::read_cfg(
+                &mut commonware_codec::Copying(block.header().extra_data().as_ref()),
                 &NZU32!(round.players.len() as u32),
             )
             .inspect(|_| {
@@ -1305,7 +1304,11 @@ mod tests {
 
             state.is_full_dkg.write(&mut bytes);
 
-            let decoded = State::read_cfg(&mut bytes.as_slice(), &NZU32!(u32::MAX)).unwrap();
+            let decoded = State::read_cfg(
+                &mut commonware_codec::Copying(bytes.as_slice()),
+                &NZU32!(u32::MAX),
+            )
+            .unwrap();
             assert_eq!(state, decoded);
         });
     }
@@ -1313,7 +1316,8 @@ mod tests {
     #[track_caller]
     fn assert_roundtrip(original: &ShareState) {
         let encoded = original.encode();
-        let decoded = ShareState::read_cfg(&mut encoded.as_ref(), &()).unwrap();
+        let decoded =
+            ShareState::read_cfg(&mut commonware_codec::Copying(encoded.as_ref()), &()).unwrap();
         assert_eq!(original, &decoded);
     }
 

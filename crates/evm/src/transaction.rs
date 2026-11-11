@@ -313,20 +313,14 @@ impl TempoTxEnv {
                         value: transaction_env.value,
                         access_list: transaction_env.access_list.clone(),
                         authorization_list: transaction_env
-                            .authorization_list
-                            .iter()
-                            .map(|authorization| {
-                                authorization.as_signed().cloned().unwrap_or_else(|| {
-                                    authorization.inner().clone().into_signed(signature)
-                                })
-                            })
-                            .collect(),
+                            .authorization_list()
+                            .expect("EIP-7702 transactions have an authorization list")
+                            .to_vec(),
                         input: transaction_env.input.clone(),
                     }
                     .into_signed(signature),
                 );
-                // Keep the recovered authorizations: re-recovering the placeholder signatures
-                // above would yield wrong authorities.
+                // Keep the cached authority recovery results for execution.
                 return Some(Self {
                     evm_tx: TempoEvmTx::Eip7702(Recovered::new_unchecked(transaction, signer)),
                     execution_context: ExecutionContext::Simulation,

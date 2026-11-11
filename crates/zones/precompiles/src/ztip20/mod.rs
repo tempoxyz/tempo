@@ -1,11 +1,10 @@
 //! Zone pre-execution rules for the upstream Tempo TIP20 precompile.
 //!
 //! `TIP20Token` remains the source of truth for token and TIP403 policy behavior, except that
-//! from T15 zone precompiles run with a storage context that makes inbounds blocked by a TIP-1028
-//! receive policy revert instead of diverting funds to `ReceivePolicyGuard`. Before forwarding a
-//! call to Tempo, `TIP20Rules` applies only zone-specific checks: privacy-gated reads, fixed gas
-//! for selected selectors, blocked system/admin entry points, and, for zone-internal transfers, the
-//! portal admin's opt-in.
+//! inbounds blocked by a TIP-1028 receive policy revert on zones instead of diverting funds to
+//! `ReceivePolicyGuard`. Before forwarding a call to Tempo, `TIP20Rules` applies only
+//! zone-specific checks: privacy-gated reads, fixed gas for selected selectors, blocked
+//! system/admin entry points, and, for zone-internal transfers, the portal admin's opt-in.
 //!
 //! Accepted calldata and callers are forwarded unchanged to Tempo. Ordinary token state remains
 //! Zone-local while the EVM context's database adapter exposes selected policy values and, from
@@ -53,8 +52,8 @@ pub(crate) struct TIP20Rules<P> {
 impl<P: L1StorageReader> TIP20Rules<P> {
     /// Admits a transfer-family call.
     ///
-    /// Transfers require T15 and the portal admin's opt-in. Upstream then reverts, rather than
-    /// diverts, a transfer that the recipient's receive policy blocks (see `execute_precompile`).
+    /// Transfers require T15 and the portal admin's opt-in. Upstream TIP-20 then reverts, rather
+    /// than diverts, a transfer that the recipient's receive policy blocks on a zone.
     fn admit_transfer(&self) -> Result<CallCheck> {
         // Before T15, private asset movement is limited to the protocol-managed inbox and outbox
         // paths.
