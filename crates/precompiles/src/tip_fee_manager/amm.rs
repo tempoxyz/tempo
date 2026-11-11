@@ -518,7 +518,7 @@ impl TipFeeManager {
         self.pools[pool_id].write(pool)?;
 
         // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
-        if self.storage.spec().is_t14() {
+        if self.storage.spec().is_t15() {
             StorageCtx.set_tip1060_storage_credit_minting(false);
         }
 
@@ -1730,11 +1730,11 @@ mod tests {
         })
     }
 
-    /// Draining FeeManager custody through `burn` must not mint a storage credit from T14 on, since
+    /// Draining FeeManager custody through `burn` must not mint a storage credit from T15 on, since
     /// `collect_fee_pre_tx` can create that balance slot without paying for it.
     #[test]
-    fn test_burn_clearing_fee_manager_balance_mints_no_credit_from_t14() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+    fn test_burn_clearing_fee_manager_balance_mints_no_credit_from_t15() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14, TempoHardfork::T15] {
             let mut evm = crate::tests::test_evm(spec, false);
             let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             let admin = Address::random();
@@ -1781,7 +1781,7 @@ mod tests {
                 Ok(StorageCtx.sload(STORAGE_CREDITS_ADDRESS, credit_slot)? - before)
             })?;
 
-            let expected = if spec.is_t14() { U256::ZERO } else { U256::ONE };
+            let expected = if spec.is_t15() { U256::ZERO } else { U256::ONE };
             assert_eq!(minted, expected, "{spec:?}");
         }
         Ok(())
