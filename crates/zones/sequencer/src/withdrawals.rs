@@ -418,27 +418,38 @@ impl WithdrawalProcessor {
 
     /// Update sequencer metrics from Tempo L1 state.
     ///
-    /// Each fee token's balance gauge is refreshed independently, so a failed read of one token
-    /// (such as OUSD on an L1 before T13) leaves the other gauge current and is logged by name.
+    /// Reads every fee token balance in one Multicall3 call, so all gauges observe the same L1
+    /// state. Each read may fail on its own: a failed one (such as OUSD on an L1 before T13)
+    /// leaves the other gauges current and is logged by token name.
     async fn update_sequencer_metrics(&self) {
         let sequencer = self.config.sequencer_address;
-        let tokens = [
-            (
-                "pathUSD",
-                PATH_USD_ADDRESS,
-                &self.sequencer_metrics.pathusd_balance,
-            ),
-            ("OUSD", OUSD_ADDRESS, &self.sequencer_metrics.ousd_balance),
-        ];
-        for (name, token, gauge) in tokens {
-            match ITIP20::new(token, &self.provider)
-                .balanceOf(sequencer)
-                .call()
-                .await
-            {
-                Ok(balance) => gauge.set(f64::from(balance)),
-                Err(error) => warn!(
+        let (pathusd, ousd) = match self
+            .provider
+            .multicall()
+            .add(ITIP20::new(PATH_USD_ADDRESS, &self.provider).balanceOf(sequencer))
+            .add(ITIP20::new(OUSD_ADDRESS, &self.provider).balanceOf(sequencer))
+            .try_aggregate(false)
+            .await
+        {
+            Ok(balances) => balances,
+            Err(error) => {
+                warn!(
                     %error,
+                    %sequencer,
+                    "Failed to refresh sequencer fee token balance metrics"
+                );
+                return;
+            }
+        };
+
+        for (name, balance, gauge) in [
+            ("pathUSD", pathusd, &self.sequencer_metrics.pathusd_balance),
+            ("OUSD", ousd, &self.sequencer_metrics.ousd_balance),
+        ] {
+            match balance {
+                Ok(balance) => gauge.set(f64::from(balance)),
+                Err(failure) => warn!(
+                    ?failure,
                     %sequencer,
                     token = name,
                     "Failed to refresh sequencer fee token balance metric"
