@@ -107,16 +107,16 @@ pub struct TempoPoolMaintenanceMetrics {
 #[derive(Metrics, Clone)]
 #[metrics(scope = "transaction_pool.delayed")]
 pub struct DelayedPoolMetrics {
-    /// Number of held transactions.
+    /// Number of delayed transactions.
     pub transactions: Gauge,
 
-    /// Total size of held transactions in bytes.
+    /// Total size of delayed transactions in bytes.
     pub size_bytes: Gauge,
 
-    /// Number of held transactions moved into the live sub-pools.
+    /// Number of delayed transactions moved into the live sub-pools.
     pub released_transactions: Counter,
 
-    /// Number of held transactions dropped at release: failed revalidation, a nonce conflict
+    /// Number of delayed transactions dropped at release: failed revalidation, a nonce conflict
     /// with the live pool or a full limit.
     pub discarded_on_release: Counter,
 }

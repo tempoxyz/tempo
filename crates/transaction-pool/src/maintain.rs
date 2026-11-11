@@ -549,7 +549,7 @@ where
 
         // 1. Update 2D nonce pool before scan-based maintenance.
         // This removes mined 2D nonce transactions and promotes newly
-        // unblocked transactions before later pool scans. Held transactions whose nonce the
+        // unblocked transactions before later pool scans. Delayed transactions whose nonce the
         // block used are dropped too.
         let nonce_pool_start = Instant::now();
         // Reth's canonical-update handling may not have pruned mined transactions yet.
@@ -766,7 +766,7 @@ where
             .expired_eviction_duration_seconds
             .record(invalidation_start.elapsed());
 
-        // 6. Release held transactions that are about to become valid. Starts after the scans
+        // 6. Release delayed transactions that are about to become valid. Starts after the scans
         // above so transactions they evicted are not revalidated, and runs in its own task so
         // revalidation doesn't hold up the next block. A release still in flight keeps the
         // transactions it took, so later ones don't revalidate them again.

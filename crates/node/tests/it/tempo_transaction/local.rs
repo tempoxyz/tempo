@@ -1360,9 +1360,9 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Test that a transaction held in the delayed sub-pool is announced to peers before it is valid.
+/// Test that a transaction delayed in the delayed sub-pool is announced to peers before it is valid.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_propagate_held_transactions() -> eyre::Result<()> {
+async fn test_propagate_delayed_transactions() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let wallet = test_signer(0);
@@ -1389,7 +1389,7 @@ async fn test_propagate_held_transactions() -> eyre::Result<()> {
         .header
         .timestamp();
 
-    // Not valid until well past the delayed pool's lead time, so both nodes hold it.
+    // Not valid until well past the delayed pool's lead time, so both nodes delay it.
     let mut tx = create_expiring_nonce_tx(chain_id, tip_timestamp + 25, Address::random());
     tx.valid_after = Some(nonzero_timestamp(tip_timestamp + 15));
     let signature = sign_aa_tx_secp256k1(&tx, &wallet)?;
@@ -1404,7 +1404,7 @@ async fn test_propagate_held_transactions() -> eyre::Result<()> {
 
     let received = tokio::time::timeout(std::time::Duration::from_secs(30), tx_listener2.recv())
         .await
-        .expect("timed out waiting for the held tx on node2")
+        .expect("timed out waiting for the delayed tx on node2")
         .expect("tx listener2 channel closed");
     assert_eq!(received, hash);
     assert!(node2.inner.pool.contains(&hash));

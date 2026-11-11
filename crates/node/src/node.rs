@@ -52,7 +52,7 @@ use tempo_payload_types::{
 };
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dPool, AA2dPoolConfig, AddressFilter, DelayedPool, TempoTransactionPool,
+    AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
     amm::AmmLiquidityCache,
     delayed_pool::{
         self, BYTES_PER_MB, DEFAULT_DELAYED_LEAD_SECS, DEFAULT_DELAYED_MAX_COUNT,
@@ -980,6 +980,7 @@ where
             queued_limit: pool_config.queued_limit,
             max_txs_per_authority: pool_config.max_account_slots,
             max_txs_per_lane: self.max_txs_per_lane,
+            delayed: self.delayed_pool_config,
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
@@ -988,7 +989,7 @@ where
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             max_txs_per_lane: _,
-            delayed_pool_config,
+            delayed_pool_config: _,
             disable_fee_amm_check,
             address_filter,
             additional_stateless_validation,
@@ -1014,11 +1015,7 @@ where
         );
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool = TempoTransactionPool::new(
-            protocol_pool,
-            aa_2d_pool,
-            DelayedPool::new(delayed_pool_config),
-        );
+        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 

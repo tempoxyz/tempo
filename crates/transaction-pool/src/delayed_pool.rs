@@ -1,12 +1,12 @@
 //! Sub-pool for expiring nonce transactions whose `valid_after` is too far ahead of the tip to be
 //! included soon.
 //!
-//! Held transactions are visible to lookups and gossip but stay out of the pending and queued
+//! Delayed transactions are visible to lookups and gossip but stay out of the pending and queued
 //! structures, eviction ordering and limits of the live sub-pools until pool maintenance releases
 //! them shortly before `valid_after`.
 //!
-//! Only expiring nonce transactions are held. They are unique by their expiring nonce hash and
-//! belong to no sequential nonce lane, so holding them never splits a sender's nonce sequence
+//! Only expiring nonce transactions are delayed. They are unique by their expiring nonce hash and
+//! belong to no sequential nonce lane, so delaying them never splits a sender's nonce sequence
 //! across sub-pools. Future-dated transactions with sequential nonces enter the live sub-pools.
 
 use crate::{metrics::DelayedPoolMetrics, transaction::TempoPooledTransaction};
@@ -16,42 +16,42 @@ use alloy_primitives::{
     map::{AddressMap, B256Map, B256Set},
 };
 use reth_primitives_traits::InMemorySize;
-use reth_transaction_pool::{GetPooledTransactionLimit, PoolTransaction, ValidPoolTransaction};
+use reth_transaction_pool::ValidPoolTransaction;
 use reth_trie_common::bundle_state::BundleAccount;
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 
-/// Default number of seconds before `valid_after` at which a held transaction is released.
+/// Default number of seconds before `valid_after` at which a delayed transaction is released.
 pub const DEFAULT_DELAYED_LEAD_SECS: u64 = 2;
 
-/// Default maximum number of held transactions.
+/// Default maximum number of delayed transactions.
 pub const DEFAULT_DELAYED_MAX_COUNT: NonZeroUsize = NonZeroUsize::new(4096).unwrap();
 
-/// Default maximum total size of held transactions, in megabytes.
+/// Default maximum total size of delayed transactions, in megabytes.
 pub const DEFAULT_DELAYED_MAX_SIZE_MB: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 /// Bytes in a megabyte, for converting size limits given in megabytes.
 pub const BYTES_PER_MB: NonZeroUsize = NonZeroUsize::new(1024 * 1024).unwrap();
 
-/// Holds expiring nonce transactions that pass validation but whose `valid_after` is later than
+/// Delays expiring nonce transactions that pass validation but whose `valid_after` is later than
 /// the tip timestamp plus [`Config::lead_secs`].
 #[derive(Debug, Default)]
 pub struct DelayedPool {
     /// Lead time and limits.
     config: Config,
-    /// Held transactions by hash.
+    /// Delayed transactions by hash.
     by_hash: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    /// Held transaction hash by its expiring nonce hash; there is at most one per expiring nonce.
-    by_expiring_nonce: B256Map<TxHash>,
-    /// Held transactions ordered by `valid_after`, for release.
+    /// Expiring nonce hashes of delayed transactions; there is at most one per expiring nonce.
+    by_expiring_nonce: B256Set,
+    /// Delayed transactions ordered by `valid_after`, for release.
     by_valid_after: BTreeSet<(u64, TxHash)>,
-    /// Held transactions ordered by priority fee, lowest first, for eviction when full.
+    /// Delayed transactions ordered by priority fee, lowest first, for eviction when full.
     by_priority: BTreeSet<(u128, TxHash)>,
     /// Hashes handed out by [`Self::take_due`] and not yet removed.
     releasing: B256Set,
-    /// Total size of held transactions in bytes.
+    /// Total size of delayed transactions in bytes.
     size: usize,
-    /// Metrics for held transactions.
+    /// Metrics for delayed transactions.
     metrics: DelayedPoolMetrics,
 }
 
@@ -64,46 +64,29 @@ impl DelayedPool {
         }
     }
 
-    /// Returns the metrics for held transactions.
+    /// Returns the metrics for delayed transactions.
     pub(crate) const fn metrics(&self) -> &DelayedPoolMetrics {
         &self.metrics
     }
 
-    /// Returns whether a transaction must be held: it uses an expiring nonce and its
-    /// `valid_after` is later than `tip_timestamp` plus the lead time. Otherwise it can enter the live
-    /// sub-pools.
-    pub(crate) fn should_hold(
-        &self,
-        transaction: &TempoPooledTransaction,
-        tip_timestamp: u64,
-    ) -> bool {
-        transaction.is_expiring_nonce()
-            && transaction
-                .inner()
-                .valid_after()
-                .is_some_and(|valid_after| {
-                    valid_after > tip_timestamp.saturating_add(self.config.lead_secs)
-                })
+    /// Returns the lead time and limits.
+    pub(crate) const fn config(&self) -> Config {
+        self.config
     }
 
-    /// Holds a validated transaction until its `valid_after` and returns the held transactions it
+    /// Delays a validated transaction until its `valid_after` and returns the delayed transactions it
     /// evicted.
     ///
-    /// When the pool is full, the lowest-priority held transactions are evicted to make room,
+    /// When the pool is full, the lowest-priority delayed transactions are evicted to make room,
     /// but only for a transaction whose priority fee is higher than each of theirs; otherwise it
     /// is rejected with [`Error::PoolFull`]. The caller ensures the transaction uses an
-    /// expiring nonce and that no sub-pool holds its hash.
+    /// expiring nonce and that no sub-pool contains its hash or expiring nonce.
     pub(crate) fn insert(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     ) -> Result<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>, Error> {
         debug_assert!(transaction.transaction.is_expiring_nonce());
         let hash = *transaction.hash();
-        let expiring_nonce = expiring_nonce_key(&transaction);
-        if self.by_expiring_nonce.contains_key(&expiring_nonce) {
-            return Err(Error::NonceConflict);
-        }
-
         let tx_size = transaction.transaction.size();
         let max_size = self.config.max_size.get();
         if tx_size > max_size {
@@ -128,7 +111,8 @@ impl DelayedPool {
             .filter_map(|evict_hash| self.remove(evict_hash))
             .collect();
 
-        self.by_expiring_nonce.insert(expiring_nonce, hash);
+        self.by_expiring_nonce
+            .insert(transaction.transaction.precomputed_expiring_nonce_hash());
         self.by_valid_after
             .insert((valid_after(&transaction), hash));
         self.by_priority.insert((priority, hash));
@@ -139,8 +123,8 @@ impl DelayedPool {
         Ok(evicted)
     }
 
-    /// Returns held transactions whose `valid_after` is within the lead time of
-    /// `tip_timestamp`, earliest first, skipping those an earlier call returned. They stay held
+    /// Returns delayed transactions whose `valid_after` is within the lead time of
+    /// `tip_timestamp`, earliest first, skipping those an earlier call returned. They stay delayed
     /// until removed, so only one release revalidates each transaction.
     pub(crate) fn take_due(
         &mut self,
@@ -157,14 +141,14 @@ impl DelayedPool {
         due
     }
 
-    /// Removes the held transaction with the given hash, if any.
+    /// Removes the delayed transaction with the given hash, if any.
     pub(crate) fn remove(
         &mut self,
         hash: &TxHash,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let transaction = self.by_hash.remove(hash)?;
         self.by_expiring_nonce
-            .remove(&expiring_nonce_key(&transaction));
+            .remove(&transaction.transaction.precomputed_expiring_nonce_hash());
         self.by_valid_after
             .remove(&(valid_after(&transaction), *hash));
         self.releasing.remove(hash);
@@ -175,7 +159,7 @@ impl DelayedPool {
         Some(transaction)
     }
 
-    /// Removes the held transactions with the given hashes and returns them.
+    /// Removes the delayed transactions with the given hashes and returns them.
     pub(crate) fn remove_transactions<'a>(
         &mut self,
         hashes: impl IntoIterator<Item = &'a TxHash>,
@@ -189,7 +173,7 @@ impl DelayedPool {
             .collect()
     }
 
-    /// Removes and returns the held transactions whose expiring nonce `state` marks as seen.
+    /// Removes and returns the delayed transactions whose expiring nonce `state` marks as seen.
     pub(crate) fn remove_consumed(
         &mut self,
         state: &AddressMap<BundleAccount>,
@@ -203,8 +187,9 @@ impl DelayedPool {
         let consumed: Vec<_> = self
             .by_hash
             .iter()
-            .filter(|(_, held)| {
-                held.transaction
+            .filter(|(_, delayed)| {
+                delayed
+                    .transaction
                     .expiring_nonce_slot()
                     .and_then(|slot| nonce_state.storage.get(&slot))
                     .is_some_and(|seen| !seen.present_value.is_zero())
@@ -214,86 +199,64 @@ impl DelayedPool {
         self.remove_transactions(&consumed)
     }
 
-    /// Removes the held transactions sent by `sender` and returns them.
+    /// Removes the delayed transactions sent by `sender` and returns them.
     pub(crate) fn remove_transactions_by_sender(
         &mut self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let hashes: Vec<_> = self
-            .by_hash
-            .iter()
-            .filter(|(_, held)| held.sender() == sender)
-            .map(|(hash, _)| *hash)
+            .transactions_by_sender(sender)
+            .map(|delayed| *delayed.hash())
             .collect();
         self.remove_transactions(&hashes)
     }
 
-    /// Returns whether a held transaction uses the expiring nonce with this hash.
+    /// Returns whether a delayed transaction uses the expiring nonce with this hash.
     pub(crate) fn contains_expiring_nonce(&self, expiring_nonce_hash: &B256) -> bool {
-        self.by_expiring_nonce.contains_key(expiring_nonce_hash)
+        self.by_expiring_nonce.contains(expiring_nonce_hash)
     }
 
-    /// Returns whether a transaction with the given hash is held.
+    /// Returns whether a transaction with the given hash is delayed.
     pub(crate) fn contains(&self, hash: &TxHash) -> bool {
         self.by_hash.contains_key(hash)
     }
 
-    /// Returns the held transaction with the given hash.
+    /// Returns the delayed transaction with the given hash.
     pub(crate) fn get(
         &self,
         hash: &TxHash,
-    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.by_hash.get(hash).cloned()
+    ) -> Option<&Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_hash.get(hash)
     }
 
-    /// Returns all held transactions.
+    /// Returns all delayed transactions.
     pub(crate) fn transactions(
         &self,
     ) -> impl Iterator<Item = &Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.by_hash.values()
     }
 
-    /// Returns the held transactions that may be propagated to peers.
+    /// Returns the delayed transactions that may be propagated to peers.
     pub(crate) fn pooled_transactions(
         &self,
     ) -> impl Iterator<Item = &Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.transactions().filter(|tx| tx.propagate)
     }
 
-    /// Appends the pooled form of the held, propagatable transactions among `tx_hashes` to
-    /// `out`, adding their encoded length to `accumulated_size` and stopping once `limit` is
-    /// exceeded.
-    pub(crate) fn append_pooled_transaction_elements<'a>(
+    /// Returns the delayed transactions sent by `sender`.
+    pub(crate) fn transactions_by_sender(
         &self,
-        tx_hashes: impl IntoIterator<Item = &'a TxHash>,
-        limit: GetPooledTransactionLimit,
-        accumulated_size: &mut usize,
-        out: &mut Vec<<TempoPooledTransaction as PoolTransaction>::Pooled>,
-    ) {
-        if self.by_hash.is_empty() {
-            return;
-        }
-        for hash in tx_hashes {
-            let Some(held) = self.by_hash.get(hash).filter(|held| held.propagate) else {
-                continue;
-            };
-            let Some(pooled) = held.transaction.clone_into_pooled().ok() else {
-                continue;
-            };
-            *accumulated_size += held.transaction.encoded_length();
-            out.push(pooled.into_inner());
-            if limit.exceeds(*accumulated_size) {
-                break;
-            }
-        }
+        sender: Address,
+    ) -> impl Iterator<Item = &Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.transactions().filter(move |tx| tx.sender() == sender)
     }
 
-    /// Returns the number of held transactions.
+    /// Returns the number of delayed transactions.
     pub(crate) fn len(&self) -> usize {
         self.by_hash.len()
     }
 
-    /// Returns the total size of held transactions in bytes.
+    /// Returns the total size of delayed transactions in bytes.
     pub(crate) const fn size(&self) -> usize {
         self.size
     }
@@ -307,16 +270,35 @@ impl DelayedPool {
 /// Lead time and limits of the [`DelayedPool`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
-    /// A transaction is held while its `valid_after` is later than the tip timestamp plus this
+    /// A transaction is delayed while its `valid_after` is later than the tip timestamp plus this
     /// many seconds, and released by the first block that brings it within that window.
     pub lead_secs: u64,
-    /// Maximum number of held transactions.
+    /// Maximum number of delayed transactions.
     pub max_count: NonZeroUsize,
-    /// Maximum total size of held transactions in bytes.
+    /// Maximum total size of delayed transactions in bytes.
     ///
-    /// Each authority is also limited by the 2D pool's per-authority limit, which counts held
+    /// Each authority is also limited by the 2D pool's per-authority limit, which counts delayed
     /// and live transactions together.
     pub max_size: NonZeroUsize,
+}
+
+impl Config {
+    /// Returns whether a transaction must be delayed: it uses an expiring nonce and its
+    /// `valid_after` is later than `tip_timestamp` plus the lead time. Otherwise it can enter the
+    /// live sub-pools.
+    pub(crate) fn should_delay(
+        &self,
+        transaction: &TempoPooledTransaction,
+        tip_timestamp: u64,
+    ) -> bool {
+        transaction.is_expiring_nonce()
+            && transaction
+                .inner()
+                .valid_after()
+                .is_some_and(|valid_after| {
+                    valid_after > tip_timestamp.saturating_add(self.lead_secs)
+                })
+    }
 }
 
 impl Default for Config {
@@ -332,18 +314,15 @@ impl Default for Config {
 /// Why the [`DelayedPool`] rejected a transaction.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
-    /// The pool holds the maximum number or total size of transactions, none of them with a
+    /// The pool contains the maximum number or total size of transactions, none of them with a
     /// lower priority fee than the rejected one.
     #[error("delayed transaction pool is full")]
     PoolFull,
-    /// A held transaction already uses this expiring nonce; held transactions cannot be replaced.
-    #[error("a delayed transaction with the same expiring nonce is already held")]
-    NonceConflict,
 }
 
-/// Returns the timestamp a held transaction is indexed by in [`DelayedPool::by_valid_after`].
+/// Returns the timestamp a delayed transaction is indexed by in [`DelayedPool::by_valid_after`].
 ///
-/// Held transactions have a `valid_after` ([`DelayedPool::should_hold`]); the zero fallback
+/// Delayed transactions have a `valid_after` ([`Config::should_delay`]); the zero fallback
 /// only keeps the index total, making such a transaction due at once.
 fn valid_after(transaction: &ValidPoolTransaction<TempoPooledTransaction>) -> u64 {
     transaction
@@ -353,26 +332,13 @@ fn valid_after(transaction: &ValidPoolTransaction<TempoPooledTransaction>) -> u6
         .unwrap_or_default()
 }
 
-/// Returns the key a held transaction is indexed by in [`DelayedPool::by_expiring_nonce`].
-///
-/// Held transactions use expiring nonces, which always have an expiring nonce hash; the
-/// transaction hash fallback only keeps the index total.
-fn expiring_nonce_key(transaction: &ValidPoolTransaction<TempoPooledTransaction>) -> B256 {
-    transaction
-        .transaction
-        .expiring_nonce_hash()
-        .unwrap_or(*transaction.hash())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
-    use alloy_primitives::{Signature, U256, map::HashMap};
-    use reth_primitives_traits::Recovered;
-    use reth_transaction_pool::TransactionOrigin;
+    use alloy_primitives::{U256, map::HashMap};
+    use reth_transaction_pool::{PoolTransaction, TransactionOrigin};
     use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
-    use tempo_primitives::TempoTxEnvelope;
 
     fn valid(tx: TempoPooledTransaction) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
@@ -384,22 +350,6 @@ mod tests {
             .nonce_key(U256::MAX)
             .valid_after(105)
             .valid_before(200)
-    }
-
-    /// Returns `tx` signed with another signature: a different transaction hash, but the same
-    /// expiring nonce hash.
-    fn resigned(tx: &TempoPooledTransaction) -> TempoPooledTransaction {
-        let signed = tx
-            .inner()
-            .as_aa()
-            .expect("AA transaction")
-            .tx()
-            .clone()
-            .into_signed(Signature::new(U256::from(1), U256::from(2), false).into());
-        TempoPooledTransaction::new(Recovered::new_unchecked(
-            TempoTxEnvelope::from(signed),
-            tx.sender(),
-        ))
     }
 
     /// Inserts into `pool` and returns the hashes of the evicted transactions.
@@ -416,50 +366,30 @@ mod tests {
 
     #[test]
     fn should_hold_respects_lead_time() {
-        let pool = DelayedPool::new(Config {
+        let config = Config {
             lead_secs: 2,
             ..Default::default()
-        });
+        };
         let sender = Address::random();
         let without_valid_after = TxBuilder::aa(sender).nonce_key(U256::MAX).valid_before(200);
 
-        assert!(!pool.should_hold(&without_valid_after.build(), 100));
-        assert!(!pool.should_hold(&expiring(sender).valid_after(102).build(), 100));
-        assert!(pool.should_hold(&expiring(sender).valid_after(103).build(), 100));
+        assert!(!config.should_delay(&without_valid_after.build(), 100));
+        assert!(!config.should_delay(&expiring(sender).valid_after(102).build(), 100));
+        assert!(config.should_delay(&expiring(sender).valid_after(103).build(), 100));
     }
 
     #[test_case::test_case(U256::ZERO; "protocol")]
     #[test_case::test_case(U256::ONE; "2d")]
-    fn holds_only_expiring_nonce_transactions(nonce_key: U256) {
-        let pool = DelayedPool::default();
+    fn delays_only_expiring_nonce_transactions(nonce_key: U256) {
         let tx = TxBuilder::aa(Address::random())
             .nonce_key(nonce_key)
             .valid_after(1_000)
             .build();
-        assert!(!pool.should_hold(&tx, 100));
+        assert!(!Config::default().should_delay(&tx, 100));
     }
 
     #[test]
-    fn rejects_second_transaction_for_held_expiring_nonce() {
-        let mut pool = DelayedPool::default();
-        let first = expiring(Address::random()).build();
-        let replacement = resigned(&first);
-        assert_ne!(first.hash(), replacement.hash());
-        assert_eq!(
-            first.expiring_nonce_hash(),
-            replacement.expiring_nonce_hash()
-        );
-
-        assert_eq!(insert(&mut pool, valid(first)), Ok(Vec::new()));
-        assert_eq!(
-            insert(&mut pool, valid(replacement)),
-            Err(Error::NonceConflict)
-        );
-        assert_eq!(pool.len(), 1);
-    }
-
-    #[test]
-    fn holds_independent_expiring_nonce_transactions() {
+    fn delays_independent_expiring_nonce_transactions() {
         let mut pool = DelayedPool::default();
         let sender = Address::random();
         for valid_before in [200, 201] {
@@ -518,17 +448,15 @@ mod tests {
         let mut pool = DelayedPool::default();
         let tx = expiring(Address::random()).build();
         let hash = *tx.hash();
-        insert(&mut pool, valid(tx.clone())).unwrap();
+        let expiring_nonce = tx.precomputed_expiring_nonce_hash();
+        insert(&mut pool, valid(tx)).unwrap();
+        assert!(pool.contains_expiring_nonce(&expiring_nonce));
 
         assert_eq!(hashes(&pool.remove_transactions([&hash])), vec![hash]);
         assert!(!pool.contains(&hash));
         assert_eq!((pool.len(), pool.size()), (0, 0));
         assert!(pool.take_due(u64::MAX).is_empty());
-        assert_eq!(
-            insert(&mut pool, valid(resigned(&tx))),
-            Ok(Vec::new()),
-            "the expiring nonce is free again"
-        );
+        assert!(!pool.contains_expiring_nonce(&expiring_nonce));
     }
 
     #[test]
@@ -581,7 +509,7 @@ mod tests {
         assert_eq!(insert(&mut pool, equal), Err(Error::PoolFull));
         let evicted = pool
             .insert(Arc::clone(&expensive))
-            .expect("a higher priority fee evicts the cheapest held transaction");
+            .expect("a higher priority fee evicts the cheapest delayed transaction");
         assert_eq!(hashes(&evicted), vec![*cheap.hash()]);
         assert!(!pool.contains(cheap.hash()));
         assert!(pool.contains(expensive.hash()));
@@ -602,11 +530,15 @@ mod tests {
         insert(&mut pool, Arc::clone(&second)).unwrap();
         assert_eq!(hashes(&pool.take_due(100)), vec![*second.hash()]);
         assert!(pool.take_due(100).is_empty());
-        assert_eq!(pool.len(), 2, "taken transactions stay held until removed");
+        assert_eq!(
+            pool.len(),
+            2,
+            "taken transactions stay delayed until removed"
+        );
     }
 
     #[test]
-    fn removes_held_transactions_whose_expiring_nonce_was_seen() {
+    fn removes_delayed_transactions_whose_expiring_nonce_was_seen() {
         let mut pool = DelayedPool::default();
         let sender = Address::random();
         let seen = valid(expiring(sender).build());
