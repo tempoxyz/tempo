@@ -572,17 +572,17 @@ impl TempoPooledTransaction {
             .filter(|_| !signed_by_access_key)
             .into_iter()
             .chain(authorities.into_iter().flatten())
+            .chain(self.primitive_granted_key())
             .any(|authority| accounts.contains(&authority))
     }
 
-    /// The accounts whose state changes can invalidate this transaction: the sender, the key
-    /// authorization signer, a separate fee payer, the access key and the key ID a primitive
-    /// inline key authorization grants, in that order. The same account can appear in more than
-    /// one role.
-    pub(crate) fn authorities(&self) -> [Option<Address>; 5] {
+    /// The accounts whose state changes can invalidate this transaction and that signed it or
+    /// chose to back it: the sender, the key authorization signer, a separate fee payer and the
+    /// access key, in that order. The same account can appear in more than one role.
+    pub(crate) fn authorities(&self) -> [Option<Address>; 4] {
         let sender = Some(*self.sender_ref());
         let Some(tx) = self.inner().as_aa() else {
-            return [sender, None, None, None, None];
+            return [sender, None, None, None];
         };
         // Recovery fails only for a transaction that validation already rejects.
         let grant_signer = tx
@@ -595,13 +595,21 @@ impl TempoPooledTransaction {
             .fee_payer_signature
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
-        let granted_key = tx
+        [sender, grant_signer, fee_payer, access_key]
+    }
+
+    /// The key ID a primitive inline key authorization grants, or `None` without one.
+    ///
+    /// Its state can invalidate the grant (TIP-1111), but only the grantor signs the grant, so
+    /// it is not one of [`Self::authorities`] and doesn't count toward per-authority limits.
+    pub(crate) fn primitive_granted_key(&self) -> Option<Address> {
+        self.inner()
+            .as_aa()?
             .tx()
             .key_authorization
             .as_ref()
             .filter(|authorization| authorization.key_type != SignatureType::ConfigurableAccount)
-            .map(|authorization| authorization.key_id);
-        [sender, grant_signer, fee_payer, access_key, granted_key]
+            .map(|authorization| authorization.key_id)
     }
 }
 
@@ -2105,6 +2113,8 @@ mod tests {
         let primitive = grant(SignatureType::Secp256k1);
         assert!(primitive.has_authority_in(&AddressSet::from_iter([key_id])));
         assert!(!primitive.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        // Only the grantor signs the grant, so its key ID isn't charged against pool limits.
+        assert!(!primitive.authorities().contains(&Some(key_id)));
         // A configurable grant's validity doesn't depend on its key ID's commitment value.
         let configurable = grant(SignatureType::ConfigurableAccount);
         assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));
