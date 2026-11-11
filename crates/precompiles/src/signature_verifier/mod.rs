@@ -102,7 +102,7 @@ impl SignatureVerifier {
     /// A primitive signature counts only when it recovers to `account` and `account` has no
     /// configuration commitment (TIP-1113). A keychain signature follows
     /// [`Self::verify_keychain_admin`], and a configurable account signature follows
-    /// [`Self::verify_configurable_account`], including their reverts.
+    /// `verifyConfigurableAccount`, including their reverts.
     pub fn verify_account(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
         let sig = TempoSignature::from_bytes(signature).map_err(|error| {
             trace!(%error, "malformed account signature");
