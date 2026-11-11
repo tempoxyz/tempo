@@ -50,10 +50,11 @@ No `RUSTFLAGS`, sanitizer-coverage flags, `-Zinstrument-coverage`, Hegel, or
 `antithesis-instrumentation` dependency is intended. Docker build gates inspect
 `nm`, `readelf`, and the dependency tree for coverage hooks, then use `objdump`
 to reject jumps in the transition and mode-masked label selection. The final
-`scratch` filesystem contains only the binary, identical first command,
-`ldd`-discovered loader/runtime libraries, `libm.so.6` for the injected Antithesis
-runtime, and `/tmp` with mode 1777. There is no
-shell, package installation, or second runtime base image.
+image uses a digest-pinned Debian Bookworm slim runtime, matching the builder's
+Debian release. Preserve its full glibc runtime: the platform injects dependencies
+such as `libm.so.6` and `libpthread.so.0` that a local `ldd` of the probe does not
+reveal. Only the probe and identical first command are copied from the builder;
+no source, compiler, SDK cache, or build output directory is copied.
 
 Required CI checks: formatting; four copied state/label tests plus activation
 ready/timeout/shutdown tests; Clippy; locked release build; no-coverage and

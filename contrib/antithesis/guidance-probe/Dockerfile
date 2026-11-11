@@ -38,7 +38,7 @@ RUN set -eu; \
     test "$(sort -u /tmp/constant-labels)" = 13
 
 # Reject coverage hooks and state/mode-dependent jumps in the release binary.
-# Include libm for the injected platform runtime even though the probe does not link it.
+# Keep the complete Debian runtime for libraries loaded by the platform.
 RUN set -eu; \
     binary=target/release/guidance-probe; \
     nm -a "$binary" > /tmp/symbols; \
@@ -60,16 +60,10 @@ RUN set -eu; \
     cp "$binary" /rootfs/usr/local/bin/guidance-probe; \
     cp "$binary" /rootfs/opt/antithesis/test/v1/main/first_start_workload; \
     cmp /rootfs/usr/local/bin/guidance-probe /rootfs/opt/antithesis/test/v1/main/first_start_workload; \
-    ldd "$binary" > /tmp/runtime-libraries; \
-    ldd /lib/x86_64-linux-gnu/libm.so.6 >> /tmp/runtime-libraries; \
-    cat /tmp/runtime-libraries; \
-    if grep 'not found' /tmp/runtime-libraries; then exit 1; fi; \
-    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }' /tmp/runtime-libraries > /tmp/library-paths; \
-    test -s /tmp/library-paths; \
-    printf '%s\n' /lib/x86_64-linux-gnu/libm.so.6 >> /tmp/library-paths; \
-    while IFS= read -r library; do cp --parents --dereference "$library" /rootfs; done < /tmp/library-paths
+    test -x /rootfs/usr/local/bin/guidance-probe
 
-FROM scratch
-COPY --from=builder /rootfs/ /
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+COPY --from=builder /rootfs/usr/local/bin/guidance-probe /usr/local/bin/guidance-probe
+COPY --from=builder /rootfs/opt/antithesis/test/v1/main/first_start_workload /opt/antithesis/test/v1/main/first_start_workload
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/guidance-probe"]
