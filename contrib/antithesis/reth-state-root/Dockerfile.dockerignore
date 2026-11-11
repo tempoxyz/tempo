@@ -15,6 +15,9 @@
 !contrib/antithesis/reth-proofs/src/**
 !contrib/antithesis/reth-state-root/Cargo.toml
 !contrib/antithesis/reth-state-root/src/**
+!contrib/antithesis/reth-state-root/test/**
+!contrib/antithesis/trie-shapes/Cargo.toml
+!contrib/antithesis/trie-shapes/src/**
 
 # Apply these exclusions after the source allowlist, including nested copies.
 **/target/

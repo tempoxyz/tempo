@@ -6,8 +6,9 @@ use alloy_primitives::{
     Address, B256, U256,
 };
 use alloy_trie::{HashBuilder, Nibbles, TrieAccount};
+use antithesis_trie_shapes::{harness::AccountSample, Collider, Leaves, Write};
 use evm2::evm::AccountInfo;
-use rand_09::Rng;
+use rand_09::{seq::IteratorRandom, Rng};
 use reth_primitives_traits::Account;
 use reth_trie::{bundle_state::BundleState, HashedPostState, HashedStorage};
 use serde::{Deserialize, Serialize};
@@ -81,12 +82,96 @@ pub(crate) fn random_slot(rng: &mut impl Rng) -> U256 {
     U256::from_be_bytes(rng.random::<[u8; 32]>())
 }
 
+/// One trie-shapes step of at most budget updates, applied to state: a new or revisited key
+/// group in the account trie or in the storage trie of an existing account.
 #[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
-pub(crate) fn generate(rng: &mut impl Rng, state: &Model, updates: usize) -> Vec<Update> {
+pub(crate) fn collide(
+    rng: &mut impl Rng,
+    state: &mut Model,
+    collider: &mut Collider,
+    budget: usize,
+) -> Vec<Update> {
+    let owner = (!state.is_empty())
+        .then(|| *state.keys().nth(rng.random_range(0..state.len())).expect("sampled account"));
+    let writes = collider.step(rng, owner, budget);
+    writes.into_iter().flat_map(|write| write_updates(state, write)).collect()
+}
+
+/// The updates one trie-shapes write makes, applied to state. An account write bumps the nonce. A
+/// storage write to an account the state lacks creates the account first: a test command may draw
+/// it from a summary of an earlier round.
+#[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
+pub(crate) fn write_updates(state: &mut Model, write: Write) -> Vec<Update> {
+    let account = |state: &Model, address: Address, balance: U256| {
+        let mut account =
+            state.get(&address).map(|entry| entry.account.clone()).unwrap_or_default();
+        account.nonce += 1;
+        account.balance = balance;
+        Update::Account { address, account }
+    };
+    let updates = match write {
+        Write::Account { address, balance } => vec![account(state, address, balance)],
+        Write::Storage { address, slot, value } => (!state.contains_key(&address))
+            .then(|| account(state, address, U256::from(1)))
+            .into_iter()
+            .chain([Update::Storage { address, slot, value }])
+            .collect(),
+    };
+    for update in &updates {
+        update.apply_to_model(state);
+    }
+    updates
+}
+
+/// Up to 64 random accounts of state, each with up to 16 random slots it has written.
+pub(crate) fn sample(rng: &mut impl Rng, state: &Model) -> Vec<AccountSample> {
+    state
+        .iter()
+        .choose_multiple(rng, 64)
+        .into_iter()
+        .map(|(address, entry)| AccountSample {
+            address: *address,
+            slots: entry.touched_slots.iter().copied().choose_multiple(rng, 16),
+        })
+        .collect()
+}
+
+/// Whether the next writes of a block of updates come from a trie-shapes step: an eighth of the
+/// time, while the block has room for at least two more updates.
+pub(crate) fn collide_next(rng: &mut impl Rng, written: usize, updates: usize) -> bool {
+    updates - written >= 2 && rng.random_ratio(1, 8)
+}
+
+/// The account trie and every account's storage trie, for the shape tracker.
+pub(crate) fn tries(state: &Model) -> Vec<(Option<Address>, Leaves)> {
+    let accounts = state.keys().map(|address| (keccak256(address), Vec::new())).collect();
+    std::iter::once((None, accounts))
+        .chain(state.iter().map(|(address, entry)| {
+            let leaves =
+                entry.hashed_storage.iter().map(|(key, value)| (*key, value.clone())).collect();
+            (Some(*address), leaves)
+        }))
+        .collect()
+}
+
+#[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]
+pub(crate) fn generate(
+    rng: &mut impl Rng,
+    state: &Model,
+    collider: &mut Collider,
+    updates: usize,
+) -> Vec<Update> {
     let mut state = state.clone();
     let mut addresses = state.keys().copied().collect::<Vec<_>>();
-    (0..updates)
-        .map(|_| {
+    let mut generated = Vec::with_capacity(updates);
+    while generated.len() < updates {
+        if collide_next(rng, generated.len(), updates) {
+            generated.extend(collide(rng, &mut state, collider, updates - generated.len()));
+            // Collided accounts join the active set, so later writes revisit them too.
+            addresses = state.keys().copied().collect();
+            continue;
+        }
+        generated.push({
             // Bound the active account set while sampling full-width random keys.
             let address =
                 if !addresses.is_empty() && (addresses.len() >= 16 || rng.random_ratio(3, 4)) {
@@ -124,8 +209,9 @@ pub(crate) fn generate(rng: &mut impl Rng, state: &Model, updates: usize) -> Vec
             }
             operation.apply(&mut state);
             operation
-        })
-        .collect()
+        });
+    }
+    generated
 }
 
 #[allow(clippy::clone_on_copy, reason = "Account is not Copy with account-ext enabled.")]

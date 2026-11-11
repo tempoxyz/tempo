@@ -36,7 +36,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, SignatureType, calc_gas_balance_spending,
+    },
 };
 use thiserror::Error;
 
@@ -544,9 +546,22 @@ impl TempoPooledTransaction {
         );
     }
 
+    /// The `key_id` of this transaction's inline grant of a configurable-account delegate, or
+    /// `None` without such a grant.
+    ///
+    /// The grant is valid only while that account's code matches its configuration commitment.
+    /// Registration installs the account marker in the same write and the commitment never
+    /// returns to zero, so a change to its code alone requires revalidation.
+    pub(crate) fn configurable_grant_target(&self) -> Option<Address> {
+        let authorization = self.inner().as_aa()?.tx().key_authorization.as_ref()?;
+        (authorization.key_type == SignatureType::ConfigurableAccount)
+            .then_some(authorization.key_id)
+    }
+
     /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
-    /// an access key signs for it), the key authorization signer, a separate fee payer or the
-    /// access key.
+    /// an access key signs for it), the key authorization signer, a separate fee payer, the access
+    /// key, or the key ID a primitive inline key authorization grants (TIP-1111: a migrated key ID
+    /// only takes ConfigurableAccount grants, so its first commitment invalidates the grant).
     pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
         let [sender, authorities @ ..] = self.authorities();
         let signed_by_access_key = self
@@ -561,12 +576,13 @@ impl TempoPooledTransaction {
     }
 
     /// The accounts whose state changes can invalidate this transaction: the sender, the key
-    /// authorization signer, a separate fee payer and the access key, in that order. The same
-    /// account can appear in more than one role.
-    pub(crate) fn authorities(&self) -> [Option<Address>; 4] {
+    /// authorization signer, a separate fee payer, the access key and the key ID a primitive
+    /// inline key authorization grants, in that order. The same account can appear in more than
+    /// one role.
+    pub(crate) fn authorities(&self) -> [Option<Address>; 5] {
         let sender = Some(*self.sender_ref());
         let Some(tx) = self.inner().as_aa() else {
-            return [sender, None, None, None];
+            return [sender, None, None, None, None];
         };
         // Recovery fails only for a transaction that validation already rejects.
         let grant_signer = tx
@@ -579,7 +595,13 @@ impl TempoPooledTransaction {
             .fee_payer_signature
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
-        [sender, grant_signer, fee_payer, access_key]
+        let granted_key = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .filter(|authorization| authorization.key_type != SignatureType::ConfigurableAccount)
+            .map(|authorization| authorization.key_id);
+        [sender, grant_signer, fee_payer, access_key, granted_key]
     }
 }
 
@@ -1265,8 +1287,8 @@ mod tests {
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
         ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
-        KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        TempoTransaction, tempo_transaction::Call,
+        KeyAuthorization, KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature, TempoTransaction, tempo_transaction::Call,
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
@@ -2060,5 +2082,31 @@ mod tests {
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
         }
+    }
+
+    #[test]
+    fn primitive_granted_key_is_an_authority() {
+        let sender = Address::random();
+        let signer = PrivateKeySigner::random();
+        let key_id = Address::random();
+        let grant = |key_type| {
+            let authorization =
+                KeyAuthorization::unrestricted(42431, key_type, key_id).with_account(sender);
+            let signature = signer
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            TxBuilder::aa(sender)
+                .key_authorization(
+                    authorization.into_signed(PrimitiveSignature::Secp256k1(signature)),
+                )
+                .build()
+        };
+
+        let primitive = grant(SignatureType::Secp256k1);
+        assert!(primitive.has_authority_in(&AddressSet::from_iter([key_id])));
+        assert!(!primitive.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        // A configurable grant's validity doesn't depend on its key ID's commitment value.
+        let configurable = grant(SignatureType::ConfigurableAccount);
+        assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));
     }
 }

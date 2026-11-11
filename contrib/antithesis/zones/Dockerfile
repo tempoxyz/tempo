@@ -21,6 +21,13 @@ RUN apt-get update \
     mold \
     && rm -rf /var/lib/apt/lists/*
 
+# Match the regular Tempo Docker builders; keep installation cached across source changes.
+RUN cargo install sccache --version 0.14.0 --locked
+
+ENV CARGO_INCREMENTAL=0 \
+    RUSTC_WRAPPER=sccache \
+    SCCACHE_DIR=/sccache
+
 # Release optimizations with debug assertions and symbols, without LTO (including the crate-local
 # ThinLTO pass) so Antithesis can symbolize the coverage instrumentation.
 ARG RUST_PROFILE=antithesis
@@ -48,6 +55,7 @@ ARG TARGETARCH
 # registry mount, so concurrent builds must not share it.
 RUN --mount=type=cache,id=antithesis-zones-cargo-registry,target=/usr/local/cargo/registry,sharing=private \
     --mount=type=cache,id=antithesis-zones-cargo-git,target=/usr/local/cargo/git,sharing=private \
+    --mount=type=cache,id=antithesis-zones-sccache,target=/sccache,sharing=private \
     --mount=type=cache,id=antithesis-zones-target,target=/app/target,sharing=private \
     case "${TARGETARCH}" in arm64) target=aarch64-unknown-linux-gnu ;; *) target=x86_64-unknown-linux-gnu ;; esac \
     && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${COVERAGE_RUSTFLAGS}" \
@@ -55,6 +63,7 @@ RUN --mount=type=cache,id=antithesis-zones-cargo-registry,target=/usr/local/carg
         -p tempo -p tempo-zone -p tempo-xtask \
         --bin tempo --bin tempo-zone --bin tempo-xtask --bin tempo-zone-xtask \
         --features tempo/fuzz-execution,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
+    && sccache --show-stats \
     && mkdir -p /out \
     && cd "target/$target/${RUST_PROFILE}" \
     && cp tempo tempo-zone tempo-xtask tempo-zone-xtask /out/

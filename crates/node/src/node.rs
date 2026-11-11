@@ -107,7 +107,7 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Disable prewarming for the payload builder.
-    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    #[arg(long = "builder.disable-prewarming", default_value_t = true)]
     pub builder_disable_prewarming: bool,
 
     /// No-op legacy flag for payload builder prewarming.
