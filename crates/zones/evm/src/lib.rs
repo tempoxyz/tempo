@@ -189,6 +189,16 @@ where
         self.inner.chain_spec()
     }
 
+    /// Returns the Tempo L1 storage reader.
+    pub fn l1_reader(&self) -> &L1 {
+        &self.zone_factory.l1_reader
+    }
+
+    /// Returns the Zone portal address on Tempo.
+    pub fn portal_address(&self) -> Address {
+        self.zone_factory.portal_address
+    }
+
     /// Clones this configuration with a Tempo L1 storage-read recorder.
     pub fn with_l1_storage_recorder(
         &self,
@@ -197,19 +207,12 @@ where
         RecordingL1StorageReader<L1>,
     ) {
         let reader = RecordingL1StorageReader::new(self.zone_factory.l1_reader.clone());
-        (self.map_l1_reader(|_| reader.clone()), reader)
-    }
-
-    /// Clones this configuration with the Tempo L1 reader that `map` builds from the current one.
-    pub fn map_l1_reader<R: L1StorageReader>(
-        &self,
-        map: impl FnOnce(&L1) -> R,
-    ) -> ZoneEvmConfig<R> {
-        ZoneEvmConfig::new(
+        let config = ZoneEvmConfig::new(
             self.chain_spec.clone(),
-            map(&self.zone_factory.l1_reader),
+            reader.clone(),
             self.zone_factory.portal_address,
-        )
+        );
+        (config, reader)
     }
 }
 

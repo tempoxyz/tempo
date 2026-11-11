@@ -53,15 +53,14 @@ where
         chain_id: u64,
         tempo_block_number: u64,
     ) -> Arc<Self> {
-        let evm_config = evm_config.map_l1_reader(|provider| {
-            let (fetches, fetch_task) = commitment_fetches(provider.clone(), tempo_block_number);
-            task_executor.spawn_task(fetch_task);
-            L1PrewarmReader {
-                provider: provider.clone(),
-                tempo_block_number,
-                fetches,
-            }
-        });
+        let (reader, fetch_task) =
+            L1PrewarmReader::new(evm_config.l1_reader().clone(), tempo_block_number);
+        task_executor.spawn_task(fetch_task);
+        let evm_config = ZoneEvmConfig::new(
+            evm_config.chain_spec().clone(),
+            reader,
+            evm_config.portal_address(),
+        );
         Arc::new(Self {
             provider,
             evm_config,
@@ -214,35 +213,39 @@ impl L1StorageReader for L1PrewarmReader {
     }
 }
 
-/// Returns a sender for accounts whose commitments to cache at `tempo_block_number`, and the
-/// task that fetches each account once, up to [`MAX_COMMITMENT_FETCHES`] at a time.
-///
-/// The task ends once every sender is dropped and its fetches finish.
-fn commitment_fetches(
-    provider: L1StateProvider,
-    tempo_block_number: u64,
-) -> (
-    mpsc::UnboundedSender<Address>,
-    impl Future<Output = ()> + Send + 'static,
-) {
-    let (sender, accounts) = mpsc::unbounded();
-    let task = async move {
-        let provider = &provider;
-        let mut fetched = HashSet::<Address>::default();
-        accounts
-            .filter(move |account| ready(fetched.insert(*account)))
-            .for_each_concurrent(MAX_COMMITMENT_FETCHES, |account| async move {
-                // A failed fetch is retried by canonical execution on its own cache miss.
-                if let Err(error) = provider
-                    .read_l1_commitment_async(account, tempo_block_number)
-                    .await
-                {
-                    debug!(target: "zone::payload", %account, %error, "Commitment prewarm fetch failed");
-                }
-            })
-            .await;
-    };
-    (sender, task)
+impl L1PrewarmReader {
+    /// Returns a reader whose commitment misses are fetched at `tempo_block_number`, and the task
+    /// that fetches each missed account once, up to [`MAX_COMMITMENT_FETCHES`] at a time.
+    ///
+    /// The task ends once every clone of the reader is dropped and its fetches finish.
+    fn new(
+        provider: L1StateProvider,
+        tempo_block_number: u64,
+    ) -> (Self, impl Future<Output = ()> + Send + 'static) {
+        let (fetches, accounts) = mpsc::unbounded();
+        let reader = Self {
+            provider: provider.clone(),
+            tempo_block_number,
+            fetches,
+        };
+        let task = async move {
+            let provider = &provider;
+            let mut fetched = HashSet::<Address>::default();
+            accounts
+                .filter(move |account| ready(fetched.insert(*account)))
+                .for_each_concurrent(MAX_COMMITMENT_FETCHES, |account| async move {
+                    // A failed fetch is retried by canonical execution on its own cache miss.
+                    if let Err(error) = provider
+                        .read_l1_commitment_async(account, tempo_block_number)
+                        .await
+                    {
+                        debug!(target: "zone::payload", %account, %error, "Commitment prewarm fetch failed");
+                    }
+                })
+                .await;
+        };
+        (reader, task)
+    }
 }
 
 #[cfg(test)]
@@ -314,7 +317,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commitment_fetches_cache_each_sent_account_once() {
+    async fn prewarm_reader_fetches_each_sent_account_once() {
         let asserter = Asserter::new();
         let (failed, fetched, commitment) = (
             Address::repeat_byte(1),
@@ -328,11 +331,11 @@ mod tests {
             ..Default::default()
         });
         let provider = provider(asserter);
-        let (sender, task) = commitment_fetches(provider.clone(), TEMPO_BLOCK);
+        let (reader, task) = L1PrewarmReader::new(provider.clone(), TEMPO_BLOCK);
         for account in [failed, failed, fetched] {
-            sender.unbounded_send(account).unwrap();
+            reader.fetches.unbounded_send(account).unwrap();
         }
-        drop(sender);
+        drop(reader);
 
         tokio::time::timeout(std::time::Duration::from_secs(5), task)
             .await
