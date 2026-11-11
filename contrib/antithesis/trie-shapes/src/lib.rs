@@ -20,6 +20,7 @@
 //! prefixes; past that, width comes only from key count. [ShapeTracker] reports the shapes the
 //! resulting tries really have.
 
+mod exploration;
 pub mod harness;
 pub mod proofs;
 mod shape;

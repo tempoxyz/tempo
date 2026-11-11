@@ -1,6 +1,7 @@
 //! Which shapes a block's tries reach, measured from their sorted keys and reported as Antithesis
 //! coverage. Generators aim for shapes; this checks the tries really have them.
 
+use crate::exploration::sometimes_each;
 use alloy_primitives::{Address, B256};
 use alloy_trie::{nodes::LeafNode, Nibbles};
 use antithesis_sdk::assert_sometimes;
@@ -50,6 +51,16 @@ impl ShapeTracker {
         for (trie, mut leaves) in tries {
             leaves.sort_unstable_by_key(|(key, _)| *key);
             let keys = leaves.iter().map(|(key, _)| Nibbles::unpack(*key)).collect::<Vec<_>>();
+            let root = match keys.len() {
+                0 => "empty",
+                1 => "leaf",
+                _ if keys[0].common_prefix_length(&keys[keys.len() - 1]) == 0 => "branch",
+                _ => "extension",
+            };
+            sometimes_each!(
+                "Observed trie root shape",
+                json!({"storage": trie.is_some(), "root": root})
+            );
             let mut nodes = Nodes { keys: keys.len(), ..Default::default() };
             if !keys.is_empty() {
                 walk(trie.is_some(), &keys, &leaves, 0, 0, &mut nodes, &mut reached);
@@ -131,11 +142,16 @@ fn walk(
     reached: &mut Reached,
 ) {
     if keys.len() == 1 {
-        // A leaf below a branch is embedded when its encoding is under 32 bytes.
-        if storage && depth > 0 {
+        // Account values may be omitted by the caller, so their encoding size is unknown.
+        let embedded = storage.then(|| {
             let leaf = LeafNode::new(keys[0].slice(depth..), leaves[0].1.clone());
-            reached.embedded_leaf |= alloy_rlp::encode(leaf).len() < 32;
-        }
+            depth > 0 && alloy_rlp::encode(leaf).len() < 32
+        });
+        reached.embedded_leaf |= embedded == Some(true);
+        sometimes_each!(
+            "Observed trie leaf shape",
+            json!({"storage": storage, "depth": depth, "root": depth == 0, "embedded": embedded})
+        );
         return;
     }
     let branch = keys[0].common_prefix_length(&keys[keys.len() - 1]);
@@ -146,9 +162,13 @@ fn walk(
         extensions += 1;
         reached.long_extension |= length >= 8;
         reached.nested_extension |= extensions >= 2;
+        sometimes_each!(
+            "Observed trie extension shape",
+            json!({"storage": storage, "depth": depth, "root": depth == 0, "length": length})
+        );
     }
     nodes.branches.insert(keys[0].slice(..branch));
-    let mut children = 0;
+    let mut state_mask = 0u16;
     let mut start = 0;
     while start < keys.len() {
         let nibble = keys[start].get_unchecked(branch);
@@ -163,9 +183,15 @@ fn walk(
             nodes,
             reached,
         );
-        children += 1;
+        state_mask |= 1u16 << nibble;
         start = end;
     }
+    // Occupied children follow from the model's complete keys, not sparse-trie cache masks.
+    sometimes_each!(
+        "Observed trie branch shape",
+        json!({"storage": storage, "depth": branch, "root": branch == 0, "state_mask": state_mask})
+    );
+    let children = state_mask.count_ones();
     reached.full_branch_below_root |= children == 16 && branch >= 1;
     reached.full_branch_deep |= children == 16 && branch >= 2;
     reached.deep_narrow_branch |= children == 2 && branch >= 8;
