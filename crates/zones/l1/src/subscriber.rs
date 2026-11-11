@@ -912,6 +912,14 @@ where
         to: u64,
     ) -> Result<(), L1SubscriberError> {
         let mut blocks = self.fetch_l1_blocks(l1_provider, from..=to);
+        // Until the first enqueue, the persisted checkpoint stands in for the queue tip.
+        let checkpoint = self
+            .deposit_queue
+            .last_enqueued()
+            .is_none()
+            .then(|| self.zone_provider.latest()?.tempo_num_hash())
+            .transpose()
+            .map_err(eyre::Report::from)?;
 
         let mut processed = 0u64;
         let backfill_start = std::time::Instant::now();
@@ -925,16 +933,12 @@ where
             let portal_evidence =
                 portal_logs.map(|logs| (sealed.parent_hash(), sealed.timestamp_millis(), logs));
             // Validate continuity before publishing any effect, so a rejected header leaves none.
-            let checkpoint = if self.deposit_queue.last_enqueued().is_none() {
-                let state = self.zone_provider.latest().map_err(eyre::Report::from)?;
-                Some(state.tempo_num_hash().map_err(eyre::Report::from)?)
-            } else {
-                None
-            };
+            // Checking before enqueueing under separate locks is sound because this subscriber is
+            // the queue's only producer.
             self.deposit_queue
                 .ensure_accepts(&sealed, checkpoint)
                 .wrap_err_with(|| {
-                    format!("unexpected discontinuity while enqueueing L1 block {block_number}")
+                    format!("L1 block {block_number} does not extend the deposit queue tip")
                 })?;
             // Publish the leadership transition _before_ the activation block becomes
             // consumable.

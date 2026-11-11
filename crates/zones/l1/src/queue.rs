@@ -332,7 +332,8 @@ impl DepositQueue {
     /// Check, without enqueueing, that [`Self::try_enqueue_sealed`] would accept `header`.
     ///
     /// `checkpoint` stands in for the queue tip until a block has been enqueued, so the first
-    /// block after a restart must extend the persisted checkpoint.
+    /// block after a restart must extend the persisted checkpoint. The result holds until the
+    /// next enqueue only while the caller is the queue's single producer.
     pub(crate) fn ensure_accepts(
         &self,
         header: &SealedHeader<TempoHeader>,

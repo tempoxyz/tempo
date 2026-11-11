@@ -2665,6 +2665,15 @@ fn finalized_queue_pre_check_matches_enqueue_without_mutation() {
 
     // Before the first enqueue, the persisted checkpoint stands in for the queue tip.
     queue.ensure_accepts(&h10, Some(checkpoint)).unwrap();
+    // Redelivery of the checkpoint itself is accepted; anything below it is out of order.
+    let checkpoint_header = seal(make_test_header(9));
+    queue
+        .ensure_accepts(&checkpoint_header, Some(checkpoint_header.num_hash()))
+        .unwrap();
+    let err = queue
+        .ensure_accepts(&seal(make_test_header(8)), Some(checkpoint))
+        .unwrap_err();
+    assert!(err.to_string().contains("out-of-order finalized L1 block"));
     let wrong_parent = seal(make_chained_header(10, B256::with_last_byte(0xff)));
     let err = queue
         .ensure_accepts(&wrong_parent, Some(checkpoint))
