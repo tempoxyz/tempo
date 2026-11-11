@@ -297,6 +297,8 @@ jobs:
         env:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
+          # Network E2E images also carry the corpus commands, for the merge queue's corpus replay.
+          EXTRA_RUST_FEATURES: ${{ steps.source.outputs.image_tag != '' && ',corpus' || '' }}
 
       - name: Record published PR images
         id: image-report
