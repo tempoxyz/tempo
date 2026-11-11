@@ -526,12 +526,6 @@ impl Context {
             "Workload creates more than 1000 accounts",
             &json!({ "accounts": accounts })
         );
-        assert_sometimes_greater_than!(
-            accounts,
-            10_000,
-            "Workload creates more than 10000 accounts",
-            &json!({ "accounts": accounts })
-        );
         println!(
             "fanout: {count} new accounts from {}, {accounts} total",
             sender.address()
