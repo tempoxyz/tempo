@@ -651,11 +651,19 @@ where
                 // Transactions still mined after the missed updates follow reth's mined path, even
                 // when an earlier update invalidated them. One a later reorg orphaned is checked
                 // like any other.
-                let mut taken = B256Set::default();
-                for invalidations in &published {
-                    taken.retain(|hash| !invalidations.orphaned.contains(hash));
-                    taken.extend(invalidations.mined.iter().copied());
-                }
+                let mut taken: B256Set = transactions
+                    .iter()
+                    .map(|tx| *tx.hash())
+                    .filter(|hash| {
+                        published.iter().fold(false, |mined, invalidations| {
+                            if invalidations.mined.contains(hash) {
+                                true
+                            } else {
+                                mined && !invalidations.orphaned.contains(hash)
+                            }
+                        })
+                    })
+                    .collect();
                 for invalidations in &published {
                     let live: Vec<_> = transactions
                         .iter()
