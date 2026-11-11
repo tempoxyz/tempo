@@ -258,8 +258,9 @@ mod tests {
     use alloy::sol_types::SolValue;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        ITIP403Registry, ReceivePolicyGuardEvent, TIP20Error, TIP20Event,
+        AddrRegistryError, ITIP403Registry, ReceivePolicyGuardEvent, TIP20Error, TIP20Event,
     };
+    use tempo_primitives::{MasterId, UserTag};
 
     fn block_all_senders(receiver: Address, recovery_authority: Address) -> Result<()> {
         TIP403Registry::new().set_receive_policy(
@@ -1121,5 +1122,59 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_claim_rejects_unregistered_virtual_destination() -> eyre::Result<()> {
+        let admin = Address::random();
+        let originator = Address::random();
+        let receiver = Address::random();
+        let amount = U256::from(100u64);
+        let blocked_at = 1_728_000u64;
+        let to = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
+
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            storage.set_timestamp(U256::from(blocked_at));
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("T", "T", admin)
+                    .with_issuer(admin)
+                    .with_mint(originator, amount)
+                    .apply()?;
+                block_all_senders(receiver, RECOVERY_ORIGINATOR)?;
+                token.transfer(
+                    originator,
+                    ITIP20::transferCall {
+                        to: receiver,
+                        amount,
+                    },
+                )?;
+
+                let receipt = ClaimReceiptV1::new(
+                    token.address(),
+                    RECOVERY_ORIGINATOR,
+                    originator,
+                    receiver,
+                    blocked_at,
+                    1,
+                    BlockedReason::RECEIVE_POLICY as u8,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                );
+                let mut guard = ReceivePolicyGuard::new();
+                let result = guard.claim(originator, to, receipt.abi_encode().into());
+                let expected: TempoPrecompileError = if spec.is_t14() {
+                    ReceivePolicyGuardError::invalid_claim_address().into()
+                } else {
+                    AddrRegistryError::virtual_address_unregistered().into()
+                };
+                assert_eq!(result.unwrap_err(), expected);
+
+                eyre::Ok(())
+            })?;
+        }
+
+        Ok(())
     }
 }

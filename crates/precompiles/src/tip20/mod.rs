@@ -38,7 +38,7 @@ use alloy::{
 use keccak_const::Keccak256;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
+    AddrRegistryError, DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 use tempo_precompiles_macros::contract;
@@ -1432,7 +1432,14 @@ impl TIP20Token {
         );
 
         self.check_not_paused()?;
-        let destination = Recipient::resolve(to)?;
+        let destination = match Recipient::resolve(to) {
+            Err(TempoPrecompileError::AddrRegistryError(
+                AddrRegistryError::VirtualAddressUnregistered(_),
+            )) if self.storage.spec().is_t14() => {
+                return Err(ReceivePolicyGuardError::invalid_claim_address().into());
+            }
+            result => result?,
+        };
         destination.validate()?;
         if recovery_mode.is_reroute(to, receiver) {
             let policy_subject = recovery_mode.policy_subject(originator, receiver);
