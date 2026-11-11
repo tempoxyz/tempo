@@ -713,6 +713,10 @@ where
             }
         }
 
+        // Delayed transactions that are about to become valid enter the live sub-pools the same
+        // way: resubmitted, so they are validated against current state first.
+        revalidate_txs.extend(pool.take_due_delayed_transactions(tip_timestamp));
+
         if !revalidate_txs.is_empty() {
             let pool = pool.clone();
             tokio::spawn(async move {
@@ -764,16 +768,7 @@ where
             .expired_eviction_duration_seconds
             .record(invalidation_start.elapsed());
 
-        // 6. Release delayed transactions that are about to become valid. Starts after the scans
-        // above so transactions they evicted are not revalidated, and runs in its own task so
-        // revalidation doesn't hold up the next block. A release still in flight keeps the
-        // transactions it took, so later ones don't revalidate them again.
-        {
-            let pool = pool.clone();
-            tokio::spawn(async move { pool.release_delayed_transactions(tip_timestamp).await });
-        }
-
-        // 7. Evict stale pending transactions (must happen after AA pool promotions in step 1)
+        // 6. Evict stale pending transactions (must happen after AA pool promotions in step 1)
         // Only runs once per interval (~30 min) to avoid overhead on every block.
         // Transactions pending across two consecutive snapshots are considered stale.
         if pending_staleness.should_check(tip_timestamp) {

@@ -45,8 +45,6 @@ pub struct DelayedPool {
     by_valid_after: BTreeSet<(u64, TxHash)>,
     /// Delayed transactions ordered by priority fee, lowest first, for eviction when full.
     by_priority: BTreeSet<(u128, TxHash)>,
-    /// Hashes handed out by [`Self::take_due`] and not yet removed.
-    releasing: B256Set,
     /// Total size of delayed transactions in bytes.
     size: usize,
     /// Metrics for delayed transactions.
@@ -60,11 +58,6 @@ impl DelayedPool {
             config,
             ..Default::default()
         }
-    }
-
-    /// Returns the metrics for delayed transactions.
-    pub(crate) const fn metrics(&self) -> &DelayedPoolMetrics {
-        &self.metrics
     }
 
     /// Returns the lead time and limits.
@@ -121,9 +114,8 @@ impl DelayedPool {
         Ok(evicted)
     }
 
-    /// Returns delayed transactions whose `valid_after` is within the lead time of
-    /// `tip_timestamp`, earliest first, skipping those an earlier call returned. They stay delayed
-    /// until removed, so only one release revalidates each transaction.
+    /// Removes and returns the delayed transactions whose `valid_after` is within the lead time
+    /// of `tip_timestamp`, earliest first.
     pub(crate) fn take_due(
         &mut self,
         tip_timestamp: u64,
@@ -132,11 +124,12 @@ impl DelayedPool {
         let due: Vec<_> = self
             .by_valid_after
             .range(..=(release_until, B256::repeat_byte(0xff)))
-            .filter(|(_, hash)| !self.releasing.contains(hash))
-            .map(|(_, hash)| Arc::clone(&self.by_hash[hash]))
+            .map(|(_, hash)| *hash)
             .collect();
-        self.releasing.extend(due.iter().map(|tx| *tx.hash()));
-        due
+        self.metrics
+            .released_transactions
+            .increment(due.len() as u64);
+        due.iter().filter_map(|hash| self.remove(hash)).collect()
     }
 
     /// Removes the delayed transaction with the given hash, if any.
@@ -149,7 +142,6 @@ impl DelayedPool {
             .remove(&transaction.transaction.precomputed_expiring_nonce_hash());
         self.by_valid_after
             .remove(&(valid_after(&transaction), *hash));
-        self.releasing.remove(hash);
         self.by_priority
             .remove(&(transaction.transaction.priority_fee_or_price(), *hash));
         self.size -= transaction.transaction.size();
@@ -398,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn due_returns_transactions_within_lead_time() {
+    fn take_due_removes_transactions_within_lead_time() {
         let mut pool = DelayedPool::new(Config {
             lead_secs: 2,
             ..Default::default()
@@ -410,8 +402,9 @@ mod tests {
 
         assert!(pool.take_due(102).is_empty());
         assert_eq!(hashes(&pool.take_due(103)), vec![*early.hash()]);
+        assert!(!pool.contains(early.hash()));
         assert_eq!(hashes(&pool.take_due(108)), vec![*late.hash()]);
-        assert_eq!(pool.len(), 2, "due must not remove transactions");
+        assert_eq!((pool.len(), pool.size()), (0, 0));
     }
 
     #[test]
@@ -485,26 +478,5 @@ mod tests {
         assert!(!pool.contains(cheap.hash()));
         assert!(pool.contains(expensive.hash()));
         assert_eq!(pool.len(), 1);
-    }
-
-    #[test]
-    fn take_due_hands_out_each_transaction_once() {
-        let mut pool = DelayedPool::new(Config {
-            lead_secs: 0,
-            ..Default::default()
-        });
-        let first = valid(expiring(Address::random()).valid_after(100).build());
-        let second = valid(expiring(Address::random()).valid_after(100).build());
-        insert(&mut pool, Arc::clone(&first)).unwrap();
-
-        assert_eq!(hashes(&pool.take_due(100)), vec![*first.hash()]);
-        insert(&mut pool, Arc::clone(&second)).unwrap();
-        assert_eq!(hashes(&pool.take_due(100)), vec![*second.hash()]);
-        assert!(pool.take_due(100).is_empty());
-        assert_eq!(
-            pool.len(),
-            2,
-            "taken transactions stay delayed until removed"
-        );
     }
 }

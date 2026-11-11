@@ -113,10 +113,7 @@ pub struct DelayedPoolMetrics {
     /// Total size of delayed transactions in bytes.
     pub size_bytes: Gauge,
 
-    /// Number of delayed transactions moved into the live sub-pools.
+    /// Number of delayed transactions taken out to be revalidated and added to the live
+    /// sub-pools.
     pub released_transactions: Counter,
-
-    /// Number of delayed transactions dropped at release: failed revalidation, a nonce conflict
-    /// with the live pool or a full limit.
-    pub discarded_on_release: Counter,
 }

@@ -137,65 +137,16 @@ where
             .tip_timestamp()
     }
 
-    /// Moves delayed transactions whose `valid_after` is within the lead time of `tip_timestamp`
-    /// into the live sub-pools.
+    /// Takes the delayed transactions whose `valid_after` is within the lead time of
+    /// `tip_timestamp` out of the delayed sub-pool.
     ///
-    /// Each one is revalidated against current state with validation caches discarded and
-    /// inserted with the live pool's limits and replacement rules applied. It is dropped, with a
-    /// discarded event, if it fails revalidation or the live pool rejects it. Called by pool
-    /// maintenance on each new block.
-    pub(crate) async fn release_delayed_transactions(&self, tip_timestamp: u64) {
-        let (due, metrics) = {
-            let mut aa_2d_pool = self.aa_2d_pool.write();
-            let due = aa_2d_pool.take_due_delayed(tip_timestamp);
-            (due, aa_2d_pool.delayed().metrics().clone())
-        };
-        if due.is_empty() {
-            return;
-        }
-
-        let outcomes = self
-            .protocol_pool
-            .validator()
-            .validate_transactions(
-                due.iter()
-                    .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
-                    .collect::<Vec<_>>(),
-            )
-            .await;
-
-        let mut released = 0;
-        let mut discarded = Vec::new();
-        for (delayed, outcome) in due.into_iter().zip(outcomes) {
-            let hash = *delayed.hash();
-            if !outcome.is_valid() {
-                // Skipped if it was removed, for example by eviction, while it was revalidated.
-                if self.aa_2d_pool.write().remove_delayed(&hash).is_some() {
-                    discarded.push(delayed);
-                }
-                continue;
-            }
-
-            match self.insert_validated_transaction(delayed.origin, outcome, Some(hash)) {
-                Ok(Some(_)) => released += 1,
-                // Removed while it was revalidated.
-                Ok(None) => {}
-                // Listeners were notified by the insert.
-                Err(err) if matches!(err.kind, PoolErrorKind::DiscardedOnInsert) => {}
-                Err(_) => discarded.push(delayed),
-            }
-        }
-
-        metrics.released_transactions.increment(released);
-        metrics
-            .discarded_on_release
-            .increment(discarded.len() as u64);
-
-        if !discarded.is_empty() {
-            self.protocol_pool
-                .inner()
-                .notify_on_transaction_updates(Vec::new(), discarded);
-        }
+    /// Called by pool maintenance on each new block, which resubmits them so they are validated
+    /// against current state and added to the live sub-pools.
+    pub(crate) fn take_due_delayed_transactions(
+        &self,
+        tip_timestamp: u64,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.aa_2d_pool.write().take_due_delayed(tip_timestamp)
     }
 
     /// Updates the 2d nonce pool with the given state changes.
@@ -725,22 +676,6 @@ where
         origin: TransactionOrigin,
         transaction: TransactionValidationOutcome<TempoPooledTransaction>,
     ) -> PoolResult<AddedTransactionOutcome> {
-        self.insert_validated_transaction(origin, transaction, None)
-            .map(|added| added.expect("only a release skips the insert"))
-    }
-
-    /// Adds a validated transaction like [`Self::add_validated_transaction`], first taking
-    /// the delayed transaction `release` out of the delayed sub-pool, if given.
-    ///
-    /// A released 2D transaction leaves the delayed set under the same lock that adds it live, so no
-    /// other admission can take its hash or expiring nonce in between. Returns `None` without
-    /// inserting if `release` is no longer delayed.
-    fn insert_validated_transaction(
-        &self,
-        origin: TransactionOrigin,
-        transaction: TransactionValidationOutcome<TempoPooledTransaction>,
-        release: Option<TxHash>,
-    ) -> PoolResult<Option<AddedTransactionOutcome>> {
         match transaction {
             TransactionValidationOutcome::Valid {
                 balance,
@@ -773,11 +708,6 @@ where
                     let tx = Arc::new(tx);
                     let (added, mut discarded) = {
                         let mut aa_2d_pool = self.aa_2d_pool.write();
-                        if let Some(delayed) = release
-                            && aa_2d_pool.remove_delayed(&delayed).is_none()
-                        {
-                            return Ok(None);
-                        }
                         let mut added = aa_2d_pool.add_transaction(tx, state_nonce, hardfork)?;
                         // Taken so `notify_event_listeners` doesn't report them a second time.
                         let discarded = match &mut added {
@@ -818,7 +748,7 @@ where
                         .inner()
                         .on_new_transaction(added.into_new_transaction_event());
 
-                    Ok(Some(AddedTransactionOutcome { hash, state }))
+                    Ok(AddedTransactionOutcome { hash, state })
                 } else {
                     self.protocol_pool
                         .inner()
@@ -835,7 +765,6 @@ where
                         )
                         .pop()
                         .unwrap()
-                        .map(Some)
                 }
             }
             invalid => {
@@ -845,7 +774,6 @@ where
                     .add_transactions(origin, Some(invalid))
                     .pop()
                     .unwrap()
-                    .map(Some)
             }
         }
     }
@@ -3933,6 +3861,19 @@ mod tests {
         (provider, pool)
     }
 
+    /// Takes the delayed transactions due at `tip` and resubmits them, as pool maintenance does.
+    async fn release_due(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        tip: u64,
+    ) {
+        let due = pool
+            .take_due_delayed_transactions(tip)
+            .into_iter()
+            .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+            .collect();
+        pool.add_transactions_with_origins(due).await;
+    }
+
     /// Returns a builder for an expiring nonce transaction from `sender` that the pool delays
     /// with the default lead time while the tip is at `tip`. Released from a tip of `tip + 18`.
     fn delayed_tx(sender: Address, tip: u64) -> TxBuilder {
@@ -4073,11 +4014,11 @@ mod tests {
         let mut events = pool.all_transactions_event_listener();
 
         set_tip(&pool, tip + 17);
-        pool.release_delayed_transactions(tip + 17).await;
+        release_due(&pool, tip + 17).await;
         assert!(pool.aa_2d_pool.read().delayed().contains(&hash));
 
         set_tip(&pool, tip + 18);
-        pool.release_delayed_transactions(tip + 18).await;
+        release_due(&pool, tip + 18).await;
         assert!(!pool.aa_2d_pool.read().delayed().contains(&hash));
         assert_eq!(tx_hashes(&pool.pending_transactions()), vec![hash]);
         assert!(matches!(
@@ -4101,12 +4042,12 @@ mod tests {
         // The sender can no longer pay its fee when the transaction is released.
         set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, U256::ZERO);
         set_tip(&pool, tip + 18);
-        pool.release_delayed_transactions(tip + 18).await;
+        release_due(&pool, tip + 18).await;
 
         assert!(!pool.contains(&hash));
         assert!(matches!(
             next_event_for(&mut events, hash),
-            Some(FullTransactionEvent::Discarded(_))
+            Some(FullTransactionEvent::Invalid(_))
         ));
     }
 

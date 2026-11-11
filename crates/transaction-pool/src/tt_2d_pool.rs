@@ -180,17 +180,21 @@ impl AA2dPool {
         &self.delayed
     }
 
-    /// Returns the delayed transactions due for release at `tip_timestamp`; see
+    /// Removes and returns the delayed transactions due for release at `tip_timestamp`; see
     /// [`DelayedPool::take_due`].
     pub(crate) fn take_due_delayed(
         &mut self,
         tip_timestamp: u64,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.delayed.take_due(tip_timestamp)
+        let due = self.delayed.take_due(tip_timestamp);
+        for tx in &due {
+            self.untrack_delayed(tx);
+        }
+        due
     }
 
     /// Removes the delayed transaction with the given hash, if any.
-    pub(crate) fn remove_delayed(
+    fn remove_delayed(
         &mut self,
         hash: &TxHash,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
@@ -1683,8 +1687,7 @@ impl AA2dPool {
                 mined.push(tx);
             }
         }
-        // Removed like included live expiring nonce transactions, without a discarded event. A
-        // release revalidating one of them finds it gone and drops its outcome.
+        // Removed like included live expiring nonce transactions, without a discarded event.
         for hash in consumed_delayed {
             if let Some(tx) = self.remove_delayed(&hash) {
                 mined.push(tx);
@@ -7521,7 +7524,7 @@ mod tests {
     }
 
     /// A block that uses a delayed transaction's expiring nonce removes it without a discarded
-    /// event, and a release that took it before the block finds it gone.
+    /// event.
     #[test]
     fn state_update_removes_delayed_transaction_whose_expiring_nonce_was_seen() {
         let mut pool = AA2dPool::default();
@@ -7534,7 +7537,6 @@ mod tests {
         let hash = *transaction.hash();
         let state = expiring_nonce_seen(&transaction);
         delay(&mut pool, transaction).unwrap();
-        assert_eq!(pool.take_due_delayed(98).len(), 1);
 
         let (promoted, mined, discarded) = pool.on_state_updates(&state);
         assert!(promoted.is_empty());
@@ -7544,10 +7546,6 @@ mod tests {
             vec![hash]
         );
         assert!(!pool.delayed().contains(&hash));
-        assert!(
-            pool.remove_delayed(&hash).is_none(),
-            "the release must not insert it"
-        );
         assert!(pool.slot_to_nonce_entry.is_empty());
         assert_eq!(pool.txs_by_authority.get(&sender), 0);
         pool.assert_invariants();
