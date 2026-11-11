@@ -107,7 +107,7 @@ pub struct TempoPoolMaintenanceMetrics {
 #[derive(Metrics, Clone)]
 #[metrics(scope = "transaction_pool.admission")]
 pub(crate) struct AdmissionMetrics {
-    /// Inserted transactions validated again because a canonical update landed while they
-    /// validated.
+    /// Transactions validated again before insertion because a canonical update landed while
+    /// they validated.
     pub(crate) revalidated: Counter,
 }

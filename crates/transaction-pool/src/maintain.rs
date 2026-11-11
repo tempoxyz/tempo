@@ -17,7 +17,7 @@ use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, Head
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
 use reth_trie_common::bundle_state::BundleAccount;
-use std::{iter, sync::atomic::Ordering, time::Instant};
+use std::{iter, time::Instant};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -570,8 +570,8 @@ where
 
         // Count the update after refreshing the caches validation reads and before any pool
         // scan below, so an admission that validated against the previous state validates again
-        // what it inserts too late for these scans.
-        pool.canonical_updates.fetch_add(1, Ordering::SeqCst);
+        // instead of inserting too late for these scans.
+        *pool.canonical_updates.write() += 1;
 
         // 3. Collect all block-level invalidation events
         let updates = TempoPoolUpdates::from_chain(tip);

@@ -33,13 +33,7 @@ use reth_transaction_pool::{
     pool::AddedTransaction,
 };
 use reth_trie_common::bundle_state::BundleAccount;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Instant,
-};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
@@ -52,8 +46,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{Block, TempoHeader};
 
-/// Validations of a transaction before admission keeps an outcome that a canonical update landed
-/// during. Maintenance or block building rejects it later if that update invalidated it.
+/// Validations of a transaction before admission inserts it even though a canonical update landed
+/// during the last one. Maintenance or block building rejects it later if that update
+/// invalidated it.
 const ADMISSION_ATTEMPTS: usize = 3;
 
 /// Transaction pool operations for Tempo nonce lanes.
@@ -77,8 +72,8 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
     /// Number of canonical updates maintenance has started scanning the pool for. Admission
-    /// validates again what it inserted when this changed while it validated.
-    pub(crate) canonical_updates: Arc<AtomicU64>,
+    /// inserts under the read lock, and only what it validated since the last update.
+    pub(crate) canonical_updates: Arc<RwLock<u64>>,
     /// Admission metrics.
     admission_metrics: AdmissionMetrics,
 }
@@ -580,38 +575,6 @@ where
         self.remove_transactions(to_remove)
     }
 
-    /// Validates `transactions` against the latest state and inserts the valid ones.
-    async fn validate_and_insert(
-        &self,
-        transactions: Vec<(TransactionOrigin, TempoPooledTransaction)>,
-    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.is_empty() {
-            return Vec::new();
-        }
-
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions_with_origins(transactions)
-                .await;
-        }
-
-        let origins = transactions
-            .iter()
-            .map(|(origin, _)| *origin)
-            .collect::<Vec<_>>();
-
-        self.protocol_pool
-            .validator()
-            .validate_transactions(transactions)
-            .await
-            .into_iter()
-            .zip(origins)
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
-    }
-
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
     ///
     /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
@@ -873,44 +836,71 @@ where
         &self,
         transactions: Vec<(TransactionOrigin, Self::Transaction)>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        let mut seen = self.canonical_updates.load(Ordering::SeqCst);
-        let mut results = self.validate_and_insert(transactions).await;
-        for _ in 1..ADMISSION_ATTEMPTS {
-            // Maintenance counts an update before it scans the pool, and the pool lock orders
-            // the insert against that scan: either the scan saw these transactions or this
-            // load sees the update.
-            let updates = self.canonical_updates.load(Ordering::SeqCst);
-            if updates == seen {
-                break;
-            }
-            seen = updates;
+        if transactions.is_empty() {
+            return Vec::new();
+        }
 
-            // Validated against the state before an update maintenance may have scanned the
-            // pool for already, so validate again whatever is still pooled.
-            let mut inserted: HashMap<TxHash, usize> = HashMap::default();
-            for (slot, result) in results.iter().enumerate() {
-                if let Ok(added) = result {
-                    inserted.insert(added.hash, slot);
+        let has_2d = transactions.iter().any(|(_, tx)| tx.is_aa_2d());
+        let origins = transactions
+            .iter()
+            .map(|(origin, _)| *origin)
+            .collect::<Vec<_>>();
+        let validator = self.protocol_pool.validator();
+
+        let mut seen = *self.canonical_updates.read();
+        let mut outcomes = validator.validate_transactions(transactions).await;
+        let mut attempts = 1;
+        loop {
+            {
+                // Maintenance counts an update under the write lock before it scans the pool, so
+                // either this sees the update or that scan sees what is inserted under this
+                // guard.
+                let updates = self.canonical_updates.read();
+                if *updates == seen || attempts == ADMISSION_ATTEMPTS {
+                    let outcomes = origins.into_iter().zip(outcomes);
+                    // Fully delegate to protocol pool for non-2D transactions
+                    return if has_2d {
+                        outcomes
+                            .map(|(origin, outcome)| {
+                                self.add_validated_transaction(origin, outcome)
+                            })
+                            .collect()
+                    } else {
+                        self.protocol_pool
+                            .inner()
+                            .add_transactions_with_origins(outcomes)
+                    };
                 }
+                seen = *updates;
             }
-            let (slots, stale): (Vec<usize>, Vec<_>) = self
-                .remove_transactions(inserted.keys().copied().collect())
-                .into_iter()
-                .filter_map(|tx| {
-                    Some((
-                        *inserted.get(tx.hash())?,
-                        (tx.origin, tx.transaction.with_discarded_caches()),
-                    ))
+            attempts += 1;
+
+            // An update landed while these validated, and maintenance may have scanned the pool
+            // for it already: validate the valid ones again before inserting any.
+            let (slots, stale): (Vec<_>, Vec<_>) = outcomes
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, outcome)| match outcome {
+                    TransactionValidationOutcome::Valid { transaction, .. } => Some((
+                        slot,
+                        (
+                            origins[slot],
+                            transaction.transaction().with_discarded_caches(),
+                        ),
+                    )),
+                    _ => None,
                 })
                 .unzip();
             self.admission_metrics
                 .revalidated
                 .increment(stale.len() as u64);
-            for (slot, result) in slots.into_iter().zip(self.validate_and_insert(stale).await) {
-                results[slot] = result;
+            for (slot, outcome) in slots
+                .into_iter()
+                .zip(validator.validate_transactions(stale).await)
+            {
+                outcomes[slot] = outcome;
             }
         }
-        results
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -2388,11 +2378,14 @@ mod tests {
         tokio::pin!(admission);
         run_validation(&mut admission).await;
         mine_sender_nonce(&provider, &pooled);
-        pool.canonical_updates.fetch_add(1, Ordering::SeqCst);
+        *pool.canonical_updates.write() += 1;
 
+        let mut pending = pool.pending_transactions_listener();
         let err = admission
             .await
             .expect_err("the second validation rejects the transaction");
+        // The transaction never entered the pool.
+        assert!(pending.try_recv().is_err());
         assert!(matches!(
             err.kind,
             PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
@@ -2423,7 +2416,7 @@ mod tests {
         tokio::pin!(admission);
         for _ in 0..ADMISSION_ATTEMPTS {
             run_validation(&mut admission).await;
-            pool.canonical_updates.fetch_add(1, Ordering::SeqCst);
+            *pool.canonical_updates.write() += 1;
         }
         // One more validation would reject the transaction.
         mine_sender_nonce(&provider, &pooled);
