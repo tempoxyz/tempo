@@ -6,6 +6,7 @@
 mod encode;
 mod metrics;
 mod prewarming;
+mod state_hook;
 
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
@@ -15,11 +16,15 @@ use crate::{
         EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
         block_transaction_length,
     },
-    metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    metrics::{
+        BlockBuildStopReason, InstrumentedFinishProvider, PoolTxSkippedCounters,
+        TempoPayloadBuilderMetrics,
+    },
     prewarming::{
         BestTransactionsLookahead, BestTransactionsParallel, PrewarmedTransaction,
         PrewarmingExecutionContext,
     },
+    state_hook::{BatchedStateHook, STATE_UPDATE_BATCH_SIZE},
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
@@ -87,6 +92,27 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 /// How often a build that waits for its worker thread checks whether its job was cancelled.
 const BUILD_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+/// Consecutive pool transactions whose gas limit exceeds the remaining block gas before the builder
+/// treats the block as full.
+///
+/// Every skipped transaction still passes through the prewarming lookahead, so draining a large
+/// pool after the block is full costs time linear in the pool size. Stopping early can only miss a
+/// transaction whose gas limit fits in the gas that is left, and ends paced builds without waiting
+/// for new pool transactions.
+///
+/// Skips only count once less than `1 / EARLY_STOP_REMAINING_GAS_DIVISOR` of the block gas
+/// limit remains, so transactions with large gas limits cannot end a block that still has room.
+const MAX_CONSECUTIVE_GAS_LIMIT_SKIPS: u32 = 128;
+
+/// See [`MAX_CONSECUTIVE_GAS_LIMIT_SKIPS`]: at most 1% of the block gas can be left unused.
+const EARLY_STOP_REMAINING_GAS_DIVISOR: u64 = 100;
+
+/// Number of executed transactions sent to the roots task at once.
+///
+/// Every send wakes the roots task, so sending each transaction on its own costs the builder
+/// thread a wakeup per transaction.
+const ROOTS_BATCH_SIZE: usize = 64;
+
 /// Source of transactions for payload building.
 enum PayloadTransactions<Provider> {
     /// Executed by the builder in pool order, with or without prewarming.
@@ -139,6 +165,7 @@ pub struct TempoPayloadBuilder<Provider> {
     config: TempoPayloadBuilderConfig,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
+    skipped: PoolTxSkippedCounters,
     cache_metrics: CachedStateMetrics,
     /// Proposal budget estimator that paces builds with a `payload_build_budget`.
     ///
@@ -216,6 +243,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             config,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
+            skipped: PoolTxSkippedCounters::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
             build_workers: Arc::new(Semaphore::new(config.max_build_tasks)),
@@ -367,7 +395,7 @@ where
                 "removing a transaction that outlasted the build budget from the pool"
             );
             self.pool.remove_transactions(vec![tx]);
-            self.metrics.inc_pool_tx_skipped("execution_timeout");
+            self.skipped.execution_timeout.increment(1);
         }
         if cancelled {
             return Ok(BuildOutcome::Cancelled);
@@ -613,7 +641,11 @@ where
             executor.evm().block().timestamp.to(),
         );
         let raw_best_txs = Box::new(raw_best_txs);
-        let prewarm_ctx = self.config.enable_prewarming.then(|| {
+        // Without an execution cache, sequential prewarming has nowhere to keep what it reads and
+        // only competes with the builder for CPU. Parallel planning needs it for replay.
+        let enable_prewarming = self.config.enable_prewarming
+            && (self.config.enable_parallel || execution_cache.is_some());
+        let prewarm_ctx = enable_prewarming.then(|| {
             PrewarmingExecutionContext::new(
                 self.provider.clone(),
                 self.executor.clone(),
@@ -1084,7 +1116,7 @@ where
         &self,
         executor: &mut TempoBlockExecutor<'_>,
         best_txs: &mut PayloadTransactions<Provider>,
-        roots_tx: &Sender<(BestTransaction, TempoReceipt)>,
+        roots_tx: &Sender<Vec<(BestTransaction, TempoReceipt)>>,
         cancel: &CancelOnDrop,
         shared: &SharedBuildState,
         limits: FillLimits,
@@ -1119,7 +1151,9 @@ where
         let mut total_fees = U256::ZERO;
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        let mut consecutive_gas_limit_skips = 0u32;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut roots_batch = Vec::with_capacity(ROOTS_BATCH_SIZE);
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -1181,6 +1215,12 @@ where
                     continue;
                 }
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
+                    // Hand over partial batches, so that the roots and state root tasks work
+                    // through them during the wait instead of after the block is filled.
+                    if !roots_batch.is_empty() {
+                        let _ = roots_tx.send(core::mem::take(&mut roots_batch));
+                    }
+                    shared.flush_state();
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -1211,9 +1251,20 @@ where
                         block_gas_limit - cumulative_gas_used,
                     ),
                 );
-                self.metrics.inc_pool_tx_skipped("exceeds_block_gas_limit");
+                self.skipped.exceeds_block_gas_limit.increment(1);
+                if block_gas_limit - cumulative_gas_used
+                    < block_gas_limit / EARLY_STOP_REMAINING_GAS_DIVISOR
+                {
+                    consecutive_gas_limit_skips += 1;
+                } else {
+                    consecutive_gas_limit_skips = 0;
+                }
+                if consecutive_gas_limit_skips >= MAX_CONSECUTIVE_GAS_LIMIT_SKIPS {
+                    break BlockBuildStopReason::GasLimitSkips;
+                }
                 continue;
             }
+            consecutive_gas_limit_skips = 0;
 
             let is_payment = if hardfork.is_t15() {
                 tx.transaction.is_payment_v3()
@@ -1237,8 +1288,7 @@ where
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                self.skipped.exceeds_general_gas_limit.increment(1);
                 continue;
             }
 
@@ -1259,7 +1309,7 @@ where
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
                 );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
+                self.skipped.oversized_block.increment(1);
                 skipped_oversized_block = true;
                 continue;
             }
@@ -1313,7 +1363,7 @@ where
                         if error.is_nonce_too_low() {
                             // if the nonce is too low, we can skip this transaction
                             trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                            self.skipped.nonce_too_low.increment(1);
                         } else if matches!(
                             TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
                             Some(TempoInvalidTransaction::ExpiringNonceReplay)
@@ -1326,7 +1376,7 @@ where
                                 "Payload builder skips an expiring nonce transaction already included"
                             );
                             trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
-                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
+                            self.skipped.expiring_nonce_replay.increment(1);
                         } else {
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
@@ -1342,7 +1392,7 @@ where
                                     InvalidTransactionError::TxTypeNotSupported,
                                 ),
                             );
-                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                            self.skipped.invalid_tx.increment(1);
                         }
                         continue;
                     }
@@ -1357,7 +1407,7 @@ where
                                     InvalidTransactionError::TxTypeNotSupported,
                                 ),
                             );
-                            self.metrics.inc_pool_tx_skipped("invalid_replay");
+                            self.skipped.invalid_replay.increment(1);
                             trace!(
                                 target: "payload_builder",
                                 tx_hash = ?tx.hash(),
@@ -1380,8 +1430,20 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let _ = roots_tx.send((tx, receipt));
+            roots_batch.push((tx, receipt));
+            if roots_batch.len() >= ROOTS_BATCH_SIZE {
+                let _ = roots_tx.send(core::mem::replace(
+                    &mut roots_batch,
+                    Vec::with_capacity(ROOTS_BATCH_SIZE),
+                ));
+            }
         };
+        if !roots_batch.is_empty() {
+            let _ = roots_tx.send(roots_batch);
+        }
+        // Without this the state root task would only see the last transactions once the block
+        // is finished, and the build would wait for it to catch up.
+        shared.flush_state();
 
         Ok(Some(BlockFill {
             block_build_stop_reason,
@@ -1403,11 +1465,11 @@ where
     fn spawn_roots_task(
         &self,
     ) -> (
-        Sender<(BestTransaction, TempoReceipt)>,
+        Sender<Vec<(BestTransaction, TempoReceipt)>>,
         oneshot::Receiver<RootsTaskResult>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
+            crossbeam_channel::unbounded::<Vec<(BestTransaction, TempoReceipt)>>();
         let (result_tx, result_rx) = oneshot::channel();
         let parent = Span::current();
 
@@ -1427,7 +1489,7 @@ where
 
                 let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
+                for (tx, receipt) in transactions_rx.into_iter().flatten() {
                     let (tx, sender) = tx.transaction.inner().clone().into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
@@ -1524,8 +1586,8 @@ struct BlockFill {
 struct SharedBuildState {
     /// The pool transaction the build is executing and when it started.
     executing: Mutex<Option<(TxHash, Instant)>>,
-    /// Streams the state changes of the build to its state root task.
-    state_hook: Mutex<Option<StateRootUpdateHook>>,
+    /// Streams the state changes of the build to its state root task, a batch at a time.
+    state_hook: Mutex<Option<BatchedStateHook<StateRootUpdateHook>>>,
 }
 
 impl SharedBuildState {
@@ -1548,7 +1610,20 @@ impl SharedBuildState {
         (elapsed >= budget?).then_some((tx, elapsed))
     }
 
-    /// Ends the stream of state changes to the state root task.
+    /// Sends the state changes that are waiting for a full batch to the state root task.
+    fn flush_state(&self) {
+        if let Some(hook) = self
+            .state_hook
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            hook.flush();
+        }
+    }
+
+    /// Ends the stream of state changes to the state root task, after sending what still waits
+    /// for a full batch.
     ///
     /// The task hashes the stream on a thread that all state root tasks share, and that thread
     /// stays with the task until the stream ends.
@@ -1571,7 +1646,8 @@ impl StateStream {
         *shared
             .state_hook
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(hook);
+            .unwrap_or_else(PoisonError::into_inner) =
+            Some(BatchedStateHook::new(hook, STATE_UPDATE_BATCH_SIZE));
         Self(shared.clone())
     }
 
@@ -1639,6 +1715,7 @@ mod tests {
     use super::*;
     use crossbeam_channel::TryRecvError;
     use reth_engine_tree::tree::{StateRootHandle, StateRootMessage, StateRootTaskCancelGuard};
+    use reth_execution_types::AccountUpdate;
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
@@ -1709,5 +1786,57 @@ mod tests {
             Err(TryRecvError::Disconnected)
         ));
         drop(stream);
+    }
+
+    #[test]
+    fn state_stream_sends_a_partial_batch_when_flushed_and_when_it_ends() {
+        let (updates_tx, updates_rx) = crossbeam_channel::unbounded();
+        let (cancel_guard, _cancel_rx) = StateRootTaskCancelGuard::channel();
+        let (_state_root_tx, state_root_rx) = std::sync::mpsc::channel();
+        let (_hashed_state_tx, hashed_state_rx) = std::sync::mpsc::channel();
+        let mut handle = StateRootHandle::new(
+            B256::ZERO,
+            updates_tx,
+            cancel_guard,
+            state_root_rx,
+            hashed_state_rx,
+        )
+        .into_payload_state_root_handle();
+        let shared = Arc::new(SharedBuildState::default());
+        let stream = StateStream::new(&shared, handle.take_state_hook());
+        let update = || StateUpdate {
+            accounts: vec![AccountUpdate {
+                address: Address::ZERO,
+                original: None,
+                current: None,
+                created: false,
+                wiped: false,
+                storage: Default::default(),
+            }],
+        };
+
+        // Fewer updates than a batch wait for more.
+        stream.on_state(update());
+        assert!(matches!(updates_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        // A build that waits for transactions hands them over.
+        shared.flush_state();
+        assert!(matches!(
+            updates_rx.try_recv(),
+            Ok(StateRootMessage::StateUpdate(_))
+        ));
+        assert!(matches!(updates_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        // The end of the stream sends what is left before it says so.
+        stream.on_state(update());
+        drop(stream);
+        assert!(matches!(
+            updates_rx.try_recv(),
+            Ok(StateRootMessage::StateUpdate(_))
+        ));
+        assert!(matches!(
+            updates_rx.try_recv(),
+            Ok(StateRootMessage::FinishedStateUpdates)
+        ));
     }
 }
