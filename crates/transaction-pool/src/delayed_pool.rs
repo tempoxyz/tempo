@@ -11,25 +11,19 @@
 
 use crate::{metrics::DelayedPoolMetrics, transaction::TempoPooledTransaction};
 use alloy_consensus::Transaction;
-use alloy_primitives::{
-    Address, B256, TxHash,
-    map::{B256Map, B256Set},
-};
+use alloy_primitives::{Address, B256, TxHash, map::B256Map};
 use reth_primitives_traits::InMemorySize;
 use reth_transaction_pool::ValidPoolTransaction;
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 
-/// Default number of seconds before `valid_after` at which a delayed transaction is released.
-pub const DEFAULT_DELAYED_LEAD_SECS: u64 = 2;
+/// Number of seconds before `valid_after` at which a delayed transaction is released.
+const DEFAULT_DELAYED_LEAD_SECS: u64 = 2;
 
 /// Default maximum number of delayed transactions.
 pub const DEFAULT_DELAYED_MAX_COUNT: NonZeroUsize = NonZeroUsize::new(4096).unwrap();
 
-/// Default maximum total size of delayed transactions, in megabytes.
-pub const DEFAULT_DELAYED_MAX_SIZE_MB: NonZeroUsize = NonZeroUsize::new(8).unwrap();
-
-/// Bytes in a megabyte, for converting size limits given in megabytes.
-pub const BYTES_PER_MB: NonZeroUsize = NonZeroUsize::new(1024 * 1024).unwrap();
+/// Maximum total size of delayed transactions in bytes.
+const DEFAULT_DELAYED_MAX_SIZE: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).unwrap();
 
 /// Delays expiring nonce transactions that pass validation but whose `valid_after` is later than
 /// the tip timestamp plus [`DelayedPoolConfig::lead_secs`].
@@ -39,8 +33,6 @@ pub struct DelayedPool {
     config: DelayedPoolConfig,
     /// Delayed transactions by hash.
     by_hash: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    /// Expiring nonce hashes of delayed transactions; there is at most one per expiring nonce.
-    by_expiring_nonce: B256Set,
     /// Delayed transactions ordered by `valid_after`, for release.
     by_valid_after: BTreeSet<(u64, TxHash)>,
     /// Delayed transactions ordered by priority fee, lowest first, for eviction when full.
@@ -70,18 +62,18 @@ impl DelayedPool {
     ///
     /// When the pool is full, the lowest-priority delayed transactions are evicted to make room,
     /// but only for a transaction whose priority fee is higher than each of theirs; otherwise it
-    /// is rejected with [`Error::PoolFull`]. The caller ensures the transaction uses an
-    /// expiring nonce and that no sub-pool contains its hash or expiring nonce.
+    /// is rejected and `None` is returned. The caller ensures the transaction uses an expiring
+    /// nonce and that no sub-pool contains its hash.
     pub(crate) fn insert(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-    ) -> Result<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>, Error> {
+    ) -> Option<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
         debug_assert!(transaction.transaction.is_expiring_nonce());
         let hash = *transaction.hash();
         let tx_size = transaction.transaction.size();
         let max_size = self.config.max_size.get();
         if tx_size > max_size {
-            return Err(Error::PoolFull);
+            return None;
         }
         let priority = transaction.transaction.priority_fee_or_price();
         let (mut count, mut size) = (self.by_hash.len(), self.size);
@@ -91,7 +83,7 @@ impl DelayedPool {
                 break;
             }
             if *evict_priority >= priority {
-                return Err(Error::PoolFull);
+                return None;
             }
             count -= 1;
             size -= self.by_hash[evict_hash].transaction.size();
@@ -102,8 +94,6 @@ impl DelayedPool {
             .filter_map(|evict_hash| self.remove(evict_hash))
             .collect();
 
-        self.by_expiring_nonce
-            .insert(transaction.transaction.precomputed_expiring_nonce_hash());
         self.by_valid_after
             .insert((valid_after(&transaction), hash));
         self.by_priority.insert((priority, hash));
@@ -111,7 +101,7 @@ impl DelayedPool {
 
         self.by_hash.insert(hash, transaction);
         self.update_metrics();
-        Ok(evicted)
+        Some(evicted)
     }
 
     /// Removes and returns the delayed transactions whose `valid_after` is within the lead time
@@ -138,8 +128,6 @@ impl DelayedPool {
         hash: &TxHash,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let transaction = self.by_hash.remove(hash)?;
-        self.by_expiring_nonce
-            .remove(&transaction.transaction.precomputed_expiring_nonce_hash());
         self.by_valid_after
             .remove(&(valid_after(&transaction), *hash));
         self.by_priority
@@ -147,11 +135,6 @@ impl DelayedPool {
         self.size -= transaction.transaction.size();
         self.update_metrics();
         Some(transaction)
-    }
-
-    /// Returns whether a delayed transaction uses the expiring nonce with this hash.
-    pub(crate) fn contains_expiring_nonce(&self, expiring_nonce_hash: &B256) -> bool {
-        self.by_expiring_nonce.contains(expiring_nonce_hash)
     }
 
     /// Returns whether a transaction with the given hash is delayed.
@@ -237,18 +220,9 @@ impl Default for DelayedPoolConfig {
         Self {
             lead_secs: DEFAULT_DELAYED_LEAD_SECS,
             max_count: DEFAULT_DELAYED_MAX_COUNT,
-            max_size: DEFAULT_DELAYED_MAX_SIZE_MB.saturating_mul(BYTES_PER_MB),
+            max_size: DEFAULT_DELAYED_MAX_SIZE,
         }
     }
-}
-
-/// Why the [`DelayedPool`] rejected a transaction.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum Error {
-    /// The pool contains the maximum number or total size of transactions, none of them with a
-    /// lower priority fee than the rejected one.
-    #[error("delayed transaction pool is full")]
-    PoolFull,
 }
 
 /// Returns the timestamp a delayed transaction is indexed by in [`DelayedPool::by_valid_after`].
@@ -286,7 +260,7 @@ mod tests {
     fn insert(
         pool: &mut DelayedPool,
         tx: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-    ) -> Result<Vec<TxHash>, Error> {
+    ) -> Option<Vec<TxHash>> {
         pool.insert(tx).map(|evicted| hashes(&evicted))
     }
 
@@ -325,7 +299,7 @@ mod tests {
         for valid_before in [200, 201] {
             let tx = expiring(sender).valid_before(valid_before).build();
             assert!(tx.is_expiring_nonce());
-            assert_eq!(insert(&mut pool, valid(tx)), Ok(Vec::new()));
+            assert_eq!(insert(&mut pool, valid(tx)), Some(Vec::new()));
         }
     }
 
@@ -337,11 +311,11 @@ mod tests {
         });
         assert_eq!(
             insert(&mut pool, valid(expiring(Address::random()).build())),
-            Ok(Vec::new())
+            Some(Vec::new())
         );
         assert_eq!(
             insert(&mut pool, valid(expiring(Address::random()).build())),
-            Err(Error::PoolFull)
+            None
         );
 
         let tx = expiring(Address::random()).build();
@@ -349,10 +323,10 @@ mod tests {
             max_size: NonZeroUsize::new(tx.size()).unwrap(),
             ..Default::default()
         });
-        assert_eq!(insert(&mut pool, valid(tx)), Ok(Vec::new()));
+        assert_eq!(insert(&mut pool, valid(tx)), Some(Vec::new()));
         assert_eq!(
             insert(&mut pool, valid(expiring(Address::random()).build())),
-            Err(Error::PoolFull)
+            None
         );
     }
 
@@ -379,15 +353,12 @@ mod tests {
         let mut pool = DelayedPool::default();
         let tx = expiring(Address::random()).build();
         let hash = *tx.hash();
-        let expiring_nonce = tx.precomputed_expiring_nonce_hash();
         insert(&mut pool, valid(tx)).unwrap();
-        assert!(pool.contains_expiring_nonce(&expiring_nonce));
 
         assert_eq!(*pool.remove(&hash).unwrap().hash(), hash);
         assert!(!pool.contains(&hash));
         assert_eq!((pool.len(), pool.size()), (0, 0));
         assert!(pool.take_due(u64::MAX).is_empty());
-        assert!(!pool.contains_expiring_nonce(&expiring_nonce));
     }
 
     #[test]
@@ -413,7 +384,7 @@ mod tests {
         );
         insert(&mut pool, Arc::clone(&cheap)).unwrap();
 
-        assert_eq!(insert(&mut pool, equal), Err(Error::PoolFull));
+        assert_eq!(insert(&mut pool, equal), None);
         let evicted = pool
             .insert(Arc::clone(&expensive))
             .expect("a higher priority fee evicts the cheapest delayed transaction");

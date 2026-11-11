@@ -1,7 +1,7 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{
     authority_counts::AuthorityCounts,
-    delayed_pool::{self, DelayedPool, DelayedPoolConfig},
+    delayed_pool::{DelayedPool, DelayedPoolConfig},
     metrics::AA2dPoolMetrics,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -207,18 +207,14 @@ impl AA2dPool {
     /// transactions it evicted.
     ///
     /// Rejected as already imported if this pool has a delayed or live transaction with the same
-    /// hash or expiring nonce. Delayed transactions count toward
+    /// hash. Delayed transactions count toward
     /// [`AA2dPoolConfig::max_txs_per_authority`] like live ones.
     pub(crate) fn add_delayed_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
         let hash = *transaction.hash();
-        let expiring_nonce = transaction.transaction.precomputed_expiring_nonce_hash();
-        if self.contains(&hash)
-            || self.expiring_nonce_txs.contains_key(&expiring_nonce)
-            || self.delayed.contains_expiring_nonce(&expiring_nonce)
-        {
+        if self.contains(&hash) {
             return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
         }
         if let Some(authority) = self
@@ -233,10 +229,7 @@ impl AA2dPool {
         let evicted = self
             .delayed
             .insert(Arc::clone(&transaction))
-            // Reported with the live pool's kinds so RPC returns the standard txpool errors.
-            .map_err(|delayed_pool::Error::PoolFull| {
-                PoolError::new(hash, PoolErrorKind::DiscardedOnInsert)
-            })?;
+            .ok_or_else(|| PoolError::new(hash, PoolErrorKind::DiscardedOnInsert))?;
         self.txs_by_authority.add(&transaction.transaction);
         for tx in &evicted {
             self.txs_by_authority.remove(&tx.transaction);
@@ -316,6 +309,12 @@ impl AA2dPool {
             transaction.transaction.is_aa(),
             "only AA transactions are supported"
         );
+        if self.delayed.contains(transaction.hash()) {
+            return Err(PoolError::new(
+                *transaction.hash(),
+                PoolErrorKind::AlreadyImported,
+            ));
+        }
         // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
         // Only treat as expiring nonce if T1 hardfork is active.
         //
@@ -565,10 +564,6 @@ impl AA2dPool {
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         let tx_hash = *transaction.hash();
         let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
-        // At most one transaction, delayed or live, uses an expiring nonce.
-        if self.delayed.contains_expiring_nonce(&expiring_nonce_hash) {
-            return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
-        }
 
         let expiring_nonce_entry = match self.expiring_nonce_txs.entry(expiring_nonce_hash) {
             hash_map::Entry::Occupied(_) => {
@@ -7491,31 +7486,25 @@ mod tests {
         pool.add_delayed_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)))
     }
 
-    /// A delayed transaction and a live one never share a hash or an expiring nonce, whichever
-    /// arrives first.
+    /// A transaction is never both delayed and live, whichever it becomes first.
     #[test]
-    fn delayed_and_live_transactions_never_share_an_expiring_nonce() {
-        let delayed = TxBuilder::aa(Address::random())
+    fn delayed_and_live_transactions_never_share_a_hash() {
+        let tx = TxBuilder::aa(Address::random())
             .nonce_key(U256::MAX)
             .build();
-        let variant = sponsor(delayed.clone(), &PrivateKeySigner::random());
-        assert_ne!(delayed.hash(), variant.hash());
-        assert_eq!(delayed.expiring_nonce_hash(), variant.expiring_nonce_hash());
 
         let mut pool = AA2dPool::default();
-        delay(&mut pool, delayed.clone()).unwrap();
-        for tx in [delayed.clone(), variant.clone()] {
-            let err = add_expiring(&mut pool, tx).unwrap_err();
-            assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
-        }
-        let err = delay(&mut pool, delayed.clone()).unwrap_err();
+        delay(&mut pool, tx.clone()).unwrap();
+        let err = add_expiring(&mut pool, tx.clone()).unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
+        let err = delay(&mut pool, tx.clone()).unwrap_err();
         assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
         assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
         pool.assert_invariants();
 
         let mut pool = AA2dPool::default();
-        add_expiring(&mut pool, delayed).unwrap();
-        let err = delay(&mut pool, variant).unwrap_err();
+        add_expiring(&mut pool, tx.clone()).unwrap();
+        let err = delay(&mut pool, tx).unwrap_err();
         assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
         assert_eq!(pool.delayed().len(), 0);
         pool.assert_invariants();
@@ -7533,23 +7522,13 @@ mod tests {
                 .build()
         };
 
-        let delayed = expiring(1_001);
-        delay(
-            &mut pool,
-            sponsor(delayed.clone(), &PrivateKeySigner::random()),
-        )
-        .unwrap();
+        delay(&mut pool, expiring(1_001)).unwrap();
         add_expiring(&mut pool, expiring(1_002)).unwrap();
 
         let err = add_expiring(&mut pool, expiring(1_003)).unwrap_err();
         assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
         let err = delay(&mut pool, expiring(1_004)).unwrap_err();
         assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
-
-        // A copy of a delayed transaction with another sponsor is already known, also at the limit.
-        let copy = sponsor(delayed, &PrivateKeySigner::random());
-        let err = delay(&mut pool, copy).unwrap_err();
-        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
         pool.assert_invariants();
     }
 
