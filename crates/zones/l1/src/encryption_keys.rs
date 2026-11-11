@@ -1,7 +1,7 @@
 use alloy_primitives::{B256, U256};
 use parking_lot::RwLock;
 use std::{collections::BTreeMap, sync::Arc};
-use tracing::warn;
+use tracing::debug;
 
 use crate::EncryptionKeyRotation;
 
@@ -43,6 +43,8 @@ pub struct BoundPublicKeyFingerprint {
 pub struct EncryptionKeyPublicStatus {
     pub candidates: Vec<PublicKeyFingerprint>,
     pub bound: Vec<BoundPublicKeyFingerprint>,
+    /// Portal key indexes registered without local private material.
+    pub unbound: Vec<BoundPublicKeyFingerprint>,
 }
 
 impl std::fmt::Debug for EncryptionKeyRing {
@@ -74,8 +76,8 @@ impl EncryptionKeyRing {
     /// Bind a finalized Portal key registration to matching configured private material.
     ///
     /// A registration without configured private material is recorded by its public key only, so
-    /// L1 ingestion continues and [`Self::key`] returns `None` for that index. Errors only when the index
-    /// was already recorded with a different public key.
+    /// L1 ingestion continues and [`Self::key`] returns `None` for that index. Errors only when
+    /// the index was already recorded with a different public key.
     pub fn apply_rotation(&self, rotation: &EncryptionKeyRotation) -> eyre::Result<()> {
         let mut keys = self.inner.write();
         let public = (rotation.x, rotation.y_parity);
@@ -96,7 +98,7 @@ impl EncryptionKeyRing {
         if let Some(key) = keys.candidates.get(&public).cloned() {
             keys.by_index.insert(rotation.key_index, key);
         } else {
-            warn!(
+            debug!(
                 key_index = %rotation.key_index,
                 activation_block = rotation.activation_block,
                 "No private decryption key is configured for finalized Portal key index; \
@@ -148,7 +150,20 @@ impl EncryptionKeyRing {
                 }
             })
             .collect();
-        EncryptionKeyPublicStatus { candidates, bound }
+        let unbound = keys
+            .unbound
+            .iter()
+            .map(|(index, (x, y_parity))| BoundPublicKeyFingerprint {
+                key_index: *index,
+                x: *x,
+                y_parity: *y_parity,
+            })
+            .collect();
+        EncryptionKeyPublicStatus {
+            candidates,
+            bound,
+            unbound,
+        }
     }
 }
 
@@ -214,6 +229,24 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Portal key index 1 was already bound to a different key"
+        );
+
+        // A later registration of a configured key still binds after an unbound index.
+        ring.apply_rotation(&rotation(&configured, 2, 30)).unwrap();
+        assert_eq!(
+            ring.key(U256::from(2)).unwrap().unwrap().to_bytes(),
+            configured.to_bytes()
+        );
+        assert!(ring.key(U256::ONE).unwrap().is_none());
+
+        let (x, y_parity) = public_key(&missing);
+        assert_eq!(
+            ring.public_status().unbound,
+            vec![BoundPublicKeyFingerprint {
+                key_index: U256::ONE,
+                x,
+                y_parity,
+            }]
         );
     }
 

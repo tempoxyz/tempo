@@ -3303,6 +3303,151 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
     Ok(())
 }
 
+/// A node started after the Portal registered a key it holds no private key for still starts,
+/// refunds deposits encrypted to that index, keeps advancing, and mints deposits once a key it
+/// holds is registered again.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_deposit_to_key_without_local_private_key_bounces_and_zone_advances()
+-> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let l1 = L1TestNode::start().await?;
+    let portal_address = l1.deploy_zone().await?;
+    let unknown_key = k256::SecretKey::from_slice(&[0x42; 32])?;
+    l1.set_sequencer_encryption_key(portal_address, &unknown_key)
+        .await?;
+
+    let zone = ZoneTestNode::start_from_l1_with_decryption_keys(
+        l1.http_url(),
+        l1.ws_url(),
+        portal_address,
+        vec![],
+    )
+    .await?;
+    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+
+    let depositor = l1.user_signer();
+    let tempo_refund_recipient = depositor.address();
+    let deposit_amount = 1_000_000u128;
+    l1.fund_user(tempo_refund_recipient, 2 * deposit_amount)
+        .await?;
+    let provider = l1.provider_with_signer(depositor.clone());
+    ITIP20::new(PATH_USD_ADDRESS, &provider)
+        .approve(portal_address, U256::MAX)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let refund_balance_before = l1
+        .balance_of(PATH_USD_ADDRESS, tempo_refund_recipient)
+        .await?;
+
+    let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    let portal = ZonePortal::new(portal_address, &provider);
+    let refunded_recipient = l1.signer_at(2).address();
+    let (key_index, encrypted) = l1
+        .encrypt_deposit_for_portal(
+            portal_address,
+            depositor.address(),
+            refunded_recipient,
+            B256::ZERO,
+        )
+        .await?;
+    assert_eq!(key_index, U256::ONE);
+    let receipt = portal
+        .deposit(
+            PATH_USD_ADDRESS,
+            deposit_amount,
+            key_index,
+            encrypted,
+            tempo_refund_recipient,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(
+        receipt.status(),
+        "deposit to the unbound key index was rejected"
+    );
+    let deposit_block = receipt
+        .block_number
+        .ok_or_else(|| eyre::eyre!("deposit receipt has no block number"))?;
+
+    zone.wait_for_l2_tempo_finalized(deposit_block, L1_TIMEOUT)
+        .await?;
+    l1.wait_for_balance(
+        PATH_USD_ADDRESS,
+        tempo_refund_recipient,
+        refund_balance_before,
+        L1_TIMEOUT,
+    )
+    .await?;
+    assert_eq!(
+        zone.balance_of(ZONE_TOKEN_ADDRESS, refunded_recipient)
+            .await?,
+        U256::ZERO,
+        "a deposit to an unbound key index must not be minted"
+    );
+    let bounced = portal
+        .DepositBounceBack_filter()
+        .from_block(0)
+        .query()
+        .await?
+        .iter()
+        .any(|(event, _)| {
+            event.tempoRefundRecipient == tempo_refund_recipient
+                && event.token == PATH_USD_ADDRESS
+                && event.amount + event.bouncebackFee == deposit_amount
+        });
+    eyre::ensure!(
+        bounced,
+        "expected a bounceback for the unbound key index deposit"
+    );
+
+    // Registering a key the node holds restores minting.
+    l1.set_sequencer_encryption_key(
+        portal_address,
+        &k256::SecretKey::from(l1.dev_signer().credential()),
+    )
+    .await?;
+    let minted_recipient = l1.signer_at(3).address();
+    let (key_index, encrypted) = l1
+        .encrypt_deposit_for_portal(
+            portal_address,
+            depositor.address(),
+            minted_recipient,
+            B256::ZERO,
+        )
+        .await?;
+    assert_eq!(key_index, U256::from(2));
+    let receipt = portal
+        .deposit(
+            PATH_USD_ADDRESS,
+            deposit_amount,
+            key_index,
+            encrypted,
+            tempo_refund_recipient,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(
+        receipt.status(),
+        "deposit to the re-registered key was rejected"
+    );
+    zone.wait_for_balance(
+        ZONE_TOKEN_ADDRESS,
+        minted_recipient,
+        U256::from(deposit_amount),
+        L1_TIMEOUT,
+    )
+    .await?;
+
+    Ok(())
+}
+
 /// Test that an encrypted deposit whose decrypted recipient is blacklisted
 /// gets bounced back to the sender on L1 instead of minting to the recipient.
 ///

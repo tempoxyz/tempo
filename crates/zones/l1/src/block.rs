@@ -184,6 +184,7 @@ fn prepare_deposit(
             key_index = %d.key_index,
             "No private decryption key is configured for the deposit's key index, refunding it"
         );
+        ::metrics::counter!("zone_deposit_missing_decryption_key_total").increment(1);
         return (queued, Some((FAILED_DECRYPTION, None)));
     };
 
