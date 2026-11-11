@@ -172,18 +172,12 @@ impl BestTransactions for MergeBestTransactions {
 /// included transactions.
 pub struct StateAwareBestTransactions<I> {
     inner: I,
-    /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
-    /// Updated after each executed transaction. Used to check if a candidate
-    /// transaction's fee payer can still cover its fee cost.
-    decreased_balances: HashMap<(Address, U256), U256>,
-    /// Ordered fallback fee tokens active for the block being built.
-    fallback_fee_tokens: &'static [Address],
+    fee_balances: FeeBalances,
 }
 
 impl<I> StateAwareBestTransactions<I>
 where
-    I: BestTransactions,
-    I::Item: StateAwarePoolTransaction,
+    I: BestTransactions<Item = BestTransaction>,
 {
     /// Wraps an existing [`BestTransactions`] iterator.
     ///
@@ -192,7 +186,69 @@ where
     pub fn new(inner: I, fallback_fee_tokens: &'static [Address]) -> Self {
         Self {
             inner,
-            decreased_balances: HashMap::default(),
+            fee_balances: FeeBalances::new(fallback_fee_tokens),
+        }
+    }
+
+    /// Processes a new transaction execution result and collects any relevant
+    /// state changes that might affect other transactions validity.
+    pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {
+        self.fee_balances.on_new_result(result);
+    }
+}
+
+impl<I> Iterator for StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = BestTransaction>,
+{
+    type Item = BestTransaction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let tx = self.inner.next()?;
+            match self.fee_balances.check(&tx) {
+                Ok(()) => return Some(tx),
+                Err(err) => self.inner.mark_invalid(&tx, err),
+            }
+        }
+    }
+}
+
+impl<I> BestTransactions for StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = BestTransaction>,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.inner.mark_invalid(transaction, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
+    }
+}
+
+/// Fee balances lowered by the transactions included in a block so far, to tell whether a later
+/// transaction's fee payer can still cover its fee.
+#[derive(Debug)]
+pub struct FeeBalances {
+    /// Decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
+    decreased: HashMap<(Address, U256), U256>,
+    /// Ordered fallback fee tokens active for the block being built.
+    fallback_fee_tokens: &'static [Address],
+}
+
+impl FeeBalances {
+    /// Creates a tracker that knows of no lowered balance.
+    ///
+    /// `fallback_fee_tokens` lists the tokens execution may fall back to when no transaction
+    /// field or fee-manager rule selects the fee token.
+    pub fn new(fallback_fee_tokens: &'static [Address]) -> Self {
+        Self {
+            decreased: HashMap::default(),
             fallback_fee_tokens,
         }
     }
@@ -203,8 +259,37 @@ where
         result
             .result()
             .pending_state
-            .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
+            .visit(&mut DecreasedBalancesSink(&mut self.decreased))
             .unwrap();
+    }
+
+    /// Records `balance` as the lowered balance of a `(token_address, slot)` pair.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_balance(&mut self, slot: (Address, U256), balance: U256) {
+        self.decreased.insert(slot, balance);
+    }
+
+    /// Returns the error to reject `tx` with if its fee payer can no longer cover its fee.
+    ///
+    /// Only balances that an included transaction lowered are known here, so `Ok` does not mean
+    /// that the transaction can pay.
+    pub fn check(&self, tx: &BestTransaction) -> Result<(), InvalidPoolTransactionError> {
+        // Validation only admits transactions with a recoverable fee payer.
+        let Some(key) = tx.transaction.fee_balance_slot() else {
+            debug_assert!(false, "pool transaction must have cached fee_balance_slot");
+            return Ok(());
+        };
+
+        let fee = tx.transaction.fee_token_cost();
+        if let Some(&balance) = self.decreased.get(&key)
+            && balance < fee
+            && !self.may_use_other_fallback_token(tx, key, fee)
+        {
+            return Err(InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::InsufficientFunds((balance, fee).into()),
+            ));
+        }
+        Ok(())
     }
 
     /// Returns whether execution may pay the fee with another fallback token.
@@ -221,87 +306,10 @@ where
                 // TIP-20 balance slots share a layout.
                 candidate != token
                     && self
-                        .decreased_balances
+                        .decreased
                         .get(&(candidate, slot))
                         .is_none_or(|&balance| balance >= fee)
             })
-    }
-
-    /// Returns the next transaction whose fee payer can still pay, like [`Iterator::next`], but
-    /// takes every candidate from the inner iterator through `next`.
-    ///
-    /// The search ends as soon as `next` returns `None`, so the caller decides how long a run of
-    /// skipped transactions may go on for.
-    pub fn next_with(
-        &mut self,
-        mut next: impl FnMut(&mut I) -> Option<I::Item>,
-    ) -> Option<I::Item> {
-        loop {
-            let tx = next(&mut self.inner)?;
-            let best_tx = tx.best_transaction();
-
-            let Some(key) = best_tx.transaction.fee_balance_slot() else {
-                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
-                continue;
-            };
-
-            let fee = best_tx.transaction.fee_token_cost();
-            if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < fee
-                && !self.may_use_other_fallback_token(best_tx, key, fee)
-            {
-                self.inner.mark_invalid(
-                    &tx,
-                    InvalidPoolTransactionError::Consensus(
-                        InvalidTransactionError::InsufficientFunds((balance, fee).into()),
-                    ),
-                );
-                continue;
-            }
-
-            return Some(tx);
-        }
-    }
-}
-
-impl<I> Iterator for StateAwareBestTransactions<I>
-where
-    I: BestTransactions,
-    I::Item: StateAwarePoolTransaction,
-{
-    type Item = I::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_with(I::next)
-    }
-}
-
-impl<I> BestTransactions for StateAwareBestTransactions<I>
-where
-    I: BestTransactions,
-    I::Item: StateAwarePoolTransaction,
-{
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
-        self.inner.mark_invalid(transaction, kind);
-    }
-
-    fn no_updates(&mut self) {
-        self.inner.no_updates();
-    }
-
-    fn set_skip_blobs(&mut self, skip_blobs: bool) {
-        self.inner.set_skip_blobs(skip_blobs);
-    }
-}
-
-/// [`StateAwareBestTransactions`] iterator item.
-pub trait StateAwarePoolTransaction {
-    fn best_transaction(&self) -> &BestTransaction;
-}
-
-impl StateAwarePoolTransaction for BestTransaction {
-    fn best_transaction(&self) -> &BestTransaction {
-        self
     }
 }
 
@@ -656,36 +664,10 @@ mod tests {
             fallback_fee_tokens,
         );
         for &token in drained {
-            best.decreased_balances
-                .insert((token, slot), fee - U256::ONE);
+            best.fee_balances
+                .set_balance((token, slot), fee - U256::ONE);
         }
         best.next().is_some()
-    }
-
-    #[test]
-    fn next_with_ends_a_run_of_skipped_transactions() {
-        let txs = (0..10).map(|_| protocol_tx(0, 1)).collect::<Vec<_>>();
-        let mut best =
-            StateAwareBestTransactions::new(protocol_best_transactions(txs.clone()), &[]);
-        // No fee payer can pay, so every candidate is skipped.
-        for tx in &txs {
-            best.decreased_balances
-                .insert(tx.transaction.fee_balance_slot().unwrap(), U256::ZERO);
-        }
-
-        let mut polls = 0;
-        let next = best.next_with(|inner| {
-            polls += 1;
-            if polls > 3 { None } else { inner.next() }
-        });
-
-        assert!(next.is_none());
-        assert_eq!(polls, 4);
-        assert_eq!(
-            best.inner.count(),
-            7,
-            "the search must stop where `next` did"
-        );
     }
 
     #[test]

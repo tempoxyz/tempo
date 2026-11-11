@@ -16,7 +16,10 @@ use crate::{
         block_transaction_length,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
+    prewarming::{
+        BestTransactionsLookahead, BestTransactionsParallel, PrewarmedTransaction,
+        PrewarmingExecutionContext,
+    },
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
@@ -55,19 +58,21 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_evm::{
-    StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
-    TempoStateAccess, TempoTxResult,
+    StorageActionReplayError, TempoBlockExecutor, TempoEvmConfig, TempoInvalidTransaction,
+    TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult,
 };
 use tempo_payload_types::{
-    Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    BuildPlan, Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
     estimator::FinishedBuild,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
-    transaction::TempoPoolTransactionError,
+    TempoTransactionPool, best::BestTransaction, transaction::TempoPoolTransactionError,
 };
 use tokio::sync::{Semaphore, oneshot};
 use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
@@ -83,25 +88,28 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 const BUILD_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Source of transactions for payload building.
-enum PayloadTransactions {
-    Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
-    Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),
-    Parallel(BestTransactionsPrewarming),
+enum PayloadTransactions<Provider> {
+    /// Executed by the builder in pool order, with or without prewarming.
+    Sequential(BestTransactionsLookahead<Provider>),
+    /// Executed ahead of the builder, which replays them.
+    Parallel(BestTransactionsParallel<Provider>),
 }
 
-impl PayloadTransactions {
+impl<Provider> PayloadTransactions<Provider>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
     /// Returns the next transaction, if available.
     ///
-    /// `should_stop` is checked before every candidate and while waiting for prewarming, and
-    /// selection returns `None` once it reports true. Neither a slow prewarming coordinator nor
-    /// a long run of skipped transactions can then keep the builder past its deadline.
-    fn next(&mut self, mut should_stop: impl FnMut() -> bool) -> Option<PrewarmedTransaction> {
+    /// `should_stop` is checked before every candidate and while waiting for an execution, and
+    /// selection returns `None` once it reports true. Neither a slow execution nor a long run of
+    /// skipped transactions can then keep the builder past its deadline.
+    fn next(&mut self, should_stop: impl FnMut() -> bool) -> Option<PrewarmedTransaction> {
         match self {
             Self::Sequential(txs) => txs
-                .next_with(|inner| if should_stop() { None } else { inner.next() })
+                .next_until(should_stop)
                 .map(PrewarmedTransaction::without_replay),
-            Self::Prewarming(txs) => txs.next_with(|inner| inner.next_until(&mut should_stop)),
-            Self::Parallel(planner) => planner.next_until(should_stop),
+            Self::Parallel(txs) => txs.next_until(should_stop),
         }
     }
 
@@ -109,21 +117,16 @@ impl PayloadTransactions {
     fn mark_invalid(&mut self, tx: &PrewarmedTransaction, kind: InvalidPoolTransactionError) {
         match self {
             Self::Sequential(txs) => txs.mark_invalid(&tx.tx, kind),
-            Self::Prewarming(txs) => txs.mark_invalid(tx, kind),
-            Self::Parallel(prewarming) => prewarming.mark_invalid(tx, kind),
+            Self::Parallel(txs) => txs.mark_invalid(&tx.tx, kind),
         }
     }
 
     /// Notify the iterator of a new result.
     ///
-    /// Noop for [`Self::Parallel`], as it doesn't use the [`StateAwareBestTransactions`] iterator.
+    /// Noop for [`Self::Parallel`]: replaying a transaction checks its fee payer's balance.
     fn on_new_result(&mut self, result: &TempoTxResult) {
-        match self {
-            Self::Sequential(txs) => txs.on_new_result(result),
-            Self::Prewarming(txs) => txs.on_new_result(result),
-            Self::Parallel(_) => {
-                // Parallel does not use state-aware best transactions iterator.
-            }
+        if let Self::Sequential(txs) = self {
+            txs.on_new_result(result);
         }
     }
 }
@@ -251,11 +254,7 @@ where
         &self,
         config: PayloadConfig<Self::Attributes, TempoHeader>,
     ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
-        // An empty payload has nothing to prewarm. It is also what a build falls back to, so it
-        // must not wait on a prewarming coordinator.
-        let mut this = self.clone();
-        this.config.enable_prewarming = false;
-        this.build_payload(
+        self.build_payload(
             BuildArguments::new(
                 Default::default(),
                 None,
@@ -538,22 +537,13 @@ where
             attributes.extra_data().clone()
         };
 
-        let mut cumulative_gas_used = 0;
-        let mut cumulative_state_gas_used = 0u64;
-        let mut non_payment_gas_used = 0;
-        let mut estimated_rlp_block_size = attributes
+        let estimated_rlp_block_size = attributes
             .withdrawals
             .as_ref()
             .map(|w| w.length())
             .unwrap_or(0)
             + NON_TRANSACTION_SIZE_ESTIMATE
             + extra_data.length();
-        let mut payment_transactions = 0u64;
-        let mut reverted_transactions = 0u64;
-        let mut pool_transactions_yielded = 0u64;
-        let mut pool_transactions_included = 0u64;
-        let mut parallel_transactions_executed = 0u64;
-        let mut total_fees = U256::ZERO;
 
         let next_attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
@@ -622,32 +612,27 @@ where
             ),
             executor.evm().block().timestamp.to(),
         );
-        let prewarm_ctx = PrewarmingExecutionContext::new(
-            self.provider.clone(),
-            self.executor.clone(),
-            execution_cache,
-            parent_header.hash(),
-            prewarm_evm_env,
-            self.evm_config.clone(),
-            self.config.enable_parallel,
-        );
-        let mut best_txs = if self.config.enable_prewarming {
-            if self.config.enable_parallel {
-                PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
-                    prewarm_ctx,
-                    raw_best_txs,
-                ))
-            } else {
-                PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
-                    hardfork.fallback_fee_tokens(),
-                ))
-            }
-        } else {
-            PayloadTransactions::Sequential(StateAwareBestTransactions::new(
-                Box::new(raw_best_txs),
+        let raw_best_txs = Box::new(raw_best_txs);
+        let prewarm_ctx = self.config.enable_prewarming.then(|| {
+            PrewarmingExecutionContext::new(
+                self.provider.clone(),
+                self.executor.clone(),
+                execution_cache,
+                parent_header.hash(),
+                prewarm_evm_env,
+                self.evm_config.clone(),
+                self.config.enable_parallel,
+            )
+        });
+        let mut best_txs = match prewarm_ctx {
+            Some(prewarm_ctx) if self.config.enable_parallel => PayloadTransactions::Parallel(
+                BestTransactionsParallel::new(raw_best_txs, prewarm_ctx),
+            ),
+            prewarm_ctx => PayloadTransactions::Sequential(BestTransactionsLookahead::new(
+                raw_best_txs,
                 hardfork.fallback_fee_tokens(),
-            ))
+                prewarm_ctx,
+            )),
         };
         self.metrics
             .pool_fetch_duration_seconds
@@ -655,9 +640,6 @@ where
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        let mut skipped_oversized_block = false;
-        let mut invalid_pool_transaction_execution_attempts = 0u64;
-        let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -666,267 +648,39 @@ where
         let build_plan = payload_build_budget
             .map(|build_budget| self.estimator.build_plan(Instant::now(), build_budget));
         let validation_latency = build_plan.and_then(|plan| plan.validation_latency());
-        let block_build_stop_reason = loop {
-            check_cancel!();
-
-            if let Some(plan) = build_plan.as_ref() {
-                let elapsed = start.elapsed();
-                let current_workload = ValidationLatencyWorkload::new(
-                    cumulative_gas_used,
-                    pool_transactions_included as usize,
-                );
-                let budget_decision = plan.decision(
-                    elapsed,
-                    normal_transaction_fill_idle_elapsed,
-                    current_workload,
-                );
-                if plan.exhausted(&budget_decision) {
-                    debug!(
-                        target: "payload_builder",
-                        ?elapsed,
-                        ?normal_transaction_fill_idle_elapsed,
-                        build_budget = ?plan.build_budget,
-                        predicted_builder_work = ?budget_decision.predicted_builder_work,
-                        predicted_validator_work = ?budget_decision.predicted_validator_work,
-                        total_reserved = ?budget_decision.total_reserved,
-                        ?current_workload,
-                        gas_used = cumulative_gas_used,
-                        transactions = pool_transactions_included,
-                        estimated_rlp_block_size,
-                        build_time_multiplier = %plan.build_time_multiplier(),
-                        dry_finish = ?plan.dry_finish(),
-                        "stopping pool transaction execution before payload build budget is exhausted"
-                    );
-                    break BlockBuildStopReason::BuildBudget;
-                }
-            }
-
-            // Selection can wait on prewarming or skip many candidates, so it re-checks both
-            // conditions above itself. Once one of them holds it returns `None`, and the next
-            // iteration ends the build.
-            let mut stopped = false;
-            let should_stop = || {
-                stopped = cancel.is_cancelled()
-                    || build_plan.is_some_and(|plan| {
-                        let budget_decision = plan.decision(
-                            start.elapsed(),
-                            normal_transaction_fill_idle_elapsed,
-                            ValidationLatencyWorkload::new(
-                                cumulative_gas_used,
-                                pool_transactions_included as usize,
-                            ),
-                        );
-                        plan.exhausted(&budget_decision)
-                    });
-                stopped
-            };
-            let Some(mut pool_tx) = best_txs.next(should_stop) else {
-                // Selection gave up; the pool did not run dry. Idle time here would make the
-                // estimator take a busy build for one that waited on an empty pool.
-                if stopped {
-                    continue;
-                }
-                if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
-                    continue;
-                }
-                let stop_reason = if cumulative_gas_used >= block_gas_limit {
-                    BlockBuildStopReason::GasLimit
-                } else if skipped_oversized_block {
-                    BlockBuildStopReason::RlpBlockSizeLimit
-                } else {
-                    BlockBuildStopReason::TxPoolEmpty
-                };
-                break stop_reason;
-            };
-            let tx = pool_tx.tx.clone();
-            pool_transactions_yielded += 1;
-
-            let max_regular_gas_used =
-                core::cmp::min(tx.gas_limit(), executor.evm().version().tx_gas_limit_cap);
-
-            // Ensure we still have capacity for this transaction within the block gas limit.
-            if cumulative_gas_used + max_regular_gas_used > block_gas_limit {
-                // Mark this transaction as invalid since it doesn't fit
-                // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
-                        tx.gas_limit(),
-                        block_gas_limit - cumulative_gas_used,
-                    ),
-                );
-                self.metrics.inc_pool_tx_skipped("exceeds_block_gas_limit");
-                continue;
-            }
-
-            let is_payment = if hardfork.is_t15() {
-                tx.transaction.is_payment_v3()
-            } else if hardfork.is_t5() {
-                tx.transaction.is_payment_v2()
-            } else {
-                tx.transaction.inner().is_payment_v1()
-            };
-
-            // If the tx is not a payment and will exceed the general gas limit
-            // mark the tx as invalid and continue
-            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
-                #[cfg(feature = "fuzz")]
-                antithesis_sdk::assert_reachable!(
-                    "Payload builder defers a non-payment transaction at the general gas limit",
-                    &serde_json::json!({ "general_gas_used": non_payment_gas_used, "general_gas_limit": general_gas_limit })
-                );
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
-                continue;
-            }
-
-            check_cancel!();
-            if is_payment {
-                payment_transactions += 1;
-            }
-
-            let tx_rlp_length =
-                block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
-            let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
-
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
-                );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
-                skipped_oversized_block = true;
-                continue;
-            }
-
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", tx.transaction))
-                .unwrap_or_default();
-
-            let mut result_closure = |result: &TempoTxResult| {
-                cumulative_gas_used += result.block_gas_used();
-                cumulative_state_gas_used += result.state_gas_used();
-                if !is_payment {
-                    non_payment_gas_used += result.block_gas_used();
-                }
-
-                // Score payload value by the validator-credited fee amount that the
-                // FeeManager precompile actually wrote during this transaction.
-                total_fees += result.validator_fee();
-
-                // Notify transactions iterator about the new state.
-                best_txs.on_new_result(result);
-            };
-
-            shared.set_executing(Some((*tx.hash(), Instant::now())));
-            let execution_result = if let Some(replay) = pool_tx.replay.take() {
-                parallel_transactions_executed += 1;
-                executor.execute_transaction_with_actions(
-                    tx.transaction.executable(),
-                    *replay,
-                    result_closure,
-                )
-            } else {
-                executor.invalidate_expiring_nonce_cache();
-                executor
-                    .execute_transaction_without_commit(tx.transaction.executable())
-                    .and_then(|result| {
-                        result_closure(&result);
-                        executor.commit_transaction(result).map(|_| ())
-                    })
-            };
-            shared.set_executing(None);
-
-            if let Err(err) = execution_result {
-                match err {
-                    BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        error,
-                        ..
-                    }) => {
-                        invalid_pool_transaction_execution_attempts += 1;
-
-                        if error.is_nonce_too_low() {
-                            // if the nonce is too low, we can skip this transaction
-                            trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                        } else if matches!(
-                            TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
-                            Some(TempoInvalidTransaction::ExpiringNonceReplay)
-                        ) {
-                            // This exact transaction is already included, typically in the parent
-                            // block before pool maintenance evicted it. Skip it without marking it
-                            // invalid.
-                            #[cfg(feature = "fuzz")]
-                            antithesis_sdk::assert_reachable!(
-                                "Payload builder skips an expiring nonce transaction already included"
-                            );
-                            trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
-                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
-                        } else {
-                            // if the transaction is invalid, we can skip it and all of its
-                            // descendants
-                            #[cfg(feature = "fuzz")]
-                            antithesis_sdk::assert_reachable!(
-                                "Payload builder evicts a pool transaction that fails execution",
-                                &serde_json::json!({ "error": error.to_string() })
-                            );
-                            trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                            best_txs.mark_invalid(
-                                &pool_tx,
-                                InvalidPoolTransactionError::Consensus(
-                                    InvalidTransactionError::TxTypeNotSupported,
-                                ),
-                            );
-                            self.metrics.inc_pool_tx_skipped("invalid_tx");
-                        }
-                        continue;
-                    }
-                    BlockExecutionError::Internal(err) => {
-                        if let Some(err) =
-                            StorageActionReplayError::from_internal_block_execution_error(&err)
-                        {
-                            invalid_pool_transaction_execution_attempts += 1;
-                            best_txs.mark_invalid(
-                                &pool_tx,
-                                InvalidPoolTransactionError::Consensus(
-                                    InvalidTransactionError::TxTypeNotSupported,
-                                ),
-                            );
-                            self.metrics.inc_pool_tx_skipped("invalid_replay");
-                            trace!(
-                                target: "payload_builder",
-                                tx_hash = ?tx.hash(),
-                                ?err,
-                                "Skipping invalid replay transaction"
-                            );
-                            continue;
-                        } else {
-                            return Err(PayloadBuilderError::evm(err));
-                        }
-                    }
-                    _ => return Err(PayloadBuilderError::evm(err)),
-                }
-            }
-
-            trace!("Transaction executed");
-            pool_transactions_included += 1;
-            estimated_rlp_block_size += tx_rlp_length;
-            let receipt = executor.receipts().last().unwrap().clone();
-            if !receipt.success {
-                reverted_transactions += 1;
-            }
-            let _ = roots_tx.send((tx, receipt));
+        let Some(BlockFill {
+            block_build_stop_reason,
+            cumulative_gas_used,
+            cumulative_state_gas_used,
+            non_payment_gas_used,
+            estimated_rlp_block_size,
+            payment_transactions,
+            reverted_transactions,
+            pool_transactions_yielded,
+            pool_transactions_included,
+            parallel_transactions_executed,
+            total_fees,
+            invalid_pool_transaction_execution_attempts,
+            normal_transaction_fill_idle_elapsed,
+        }) = self.fill_block(
+            &mut executor,
+            &mut best_txs,
+            &roots_tx,
+            &cancel,
+            shared,
+            FillLimits {
+                start,
+                payload_build_budget,
+                build_plan,
+                block_gas_limit,
+                general_gas_limit,
+                hardfork,
+                is_osaka,
+                estimated_rlp_block_size,
+            },
+        )?
+        else {
+            return Ok(BuildOutcome::Cancelled);
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -1322,6 +1076,330 @@ where
         Ok(BuildOutcome::Freeze(payload))
     }
 
+    /// Executes the best transactions of the pool until the block is full, the pool has no more
+    /// or the build has to stop, and returns what went into the block.
+    ///
+    /// Returns `None` if the build was cancelled.
+    fn fill_block(
+        &self,
+        executor: &mut TempoBlockExecutor<'_>,
+        best_txs: &mut PayloadTransactions<Provider>,
+        roots_tx: &Sender<(BestTransaction, TempoReceipt)>,
+        cancel: &CancelOnDrop,
+        shared: &SharedBuildState,
+        limits: FillLimits,
+    ) -> Result<Option<BlockFill>, PayloadBuilderError> {
+        let FillLimits {
+            start,
+            payload_build_budget,
+            build_plan,
+            block_gas_limit,
+            general_gas_limit,
+            hardfork,
+            is_osaka,
+            mut estimated_rlp_block_size,
+        } = limits;
+
+        macro_rules! check_cancel {
+            () => {
+                if cancel.is_cancelled() {
+                    return Ok(None);
+                }
+            };
+        }
+
+        let mut cumulative_gas_used = 0;
+        let mut cumulative_state_gas_used = 0u64;
+        let mut non_payment_gas_used = 0;
+        let mut payment_transactions = 0u64;
+        let mut reverted_transactions = 0u64;
+        let mut pool_transactions_yielded = 0u64;
+        let mut pool_transactions_included = 0u64;
+        let mut parallel_transactions_executed = 0u64;
+        let mut total_fees = U256::ZERO;
+        let mut skipped_oversized_block = false;
+        let mut invalid_pool_transaction_execution_attempts = 0u64;
+        let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let block_build_stop_reason = loop {
+            check_cancel!();
+
+            if let Some(plan) = build_plan.as_ref() {
+                let elapsed = start.elapsed();
+                let current_workload = ValidationLatencyWorkload::new(
+                    cumulative_gas_used,
+                    pool_transactions_included as usize,
+                );
+                let budget_decision = plan.decision(
+                    elapsed,
+                    normal_transaction_fill_idle_elapsed,
+                    current_workload,
+                );
+                if plan.exhausted(&budget_decision) {
+                    debug!(
+                        target: "payload_builder",
+                        ?elapsed,
+                        ?normal_transaction_fill_idle_elapsed,
+                        build_budget = ?plan.build_budget,
+                        predicted_builder_work = ?budget_decision.predicted_builder_work,
+                        predicted_validator_work = ?budget_decision.predicted_validator_work,
+                        total_reserved = ?budget_decision.total_reserved,
+                        ?current_workload,
+                        gas_used = cumulative_gas_used,
+                        transactions = pool_transactions_included,
+                        estimated_rlp_block_size,
+                        build_time_multiplier = %plan.build_time_multiplier(),
+                        dry_finish = ?plan.dry_finish(),
+                        "stopping pool transaction execution before payload build budget is exhausted"
+                    );
+                    break BlockBuildStopReason::BuildBudget;
+                }
+            }
+
+            // Selection can wait on prewarming or skip many candidates, so it re-checks both
+            // conditions above itself. Once one of them holds it returns `None`, and the next
+            // iteration ends the build.
+            let mut stopped = false;
+            let should_stop = || {
+                stopped = cancel.is_cancelled()
+                    || build_plan.is_some_and(|plan| {
+                        let budget_decision = plan.decision(
+                            start.elapsed(),
+                            normal_transaction_fill_idle_elapsed,
+                            ValidationLatencyWorkload::new(
+                                cumulative_gas_used,
+                                pool_transactions_included as usize,
+                            ),
+                        );
+                        plan.exhausted(&budget_decision)
+                    });
+                stopped
+            };
+            let Some(mut pool_tx) = best_txs.next(should_stop) else {
+                // Selection gave up; the pool did not run dry. Idle time here would make the
+                // estimator take a busy build for one that waited on an empty pool.
+                if stopped {
+                    continue;
+                }
+                if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
+                    std::thread::sleep(Duration::from_millis(1));
+                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    continue;
+                }
+                let stop_reason = if cumulative_gas_used >= block_gas_limit {
+                    BlockBuildStopReason::GasLimit
+                } else if skipped_oversized_block {
+                    BlockBuildStopReason::RlpBlockSizeLimit
+                } else {
+                    BlockBuildStopReason::TxPoolEmpty
+                };
+                break stop_reason;
+            };
+            let tx = pool_tx.tx.clone();
+            pool_transactions_yielded += 1;
+
+            let max_regular_gas_used =
+                core::cmp::min(tx.gas_limit(), executor.evm().version().tx_gas_limit_cap);
+
+            // Ensure we still have capacity for this transaction within the block gas limit.
+            if cumulative_gas_used + max_regular_gas_used > block_gas_limit {
+                // Mark this transaction as invalid since it doesn't fit
+                // The iterator will handle lane switching internally when appropriate
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::ExceedsGasLimit(
+                        tx.gas_limit(),
+                        block_gas_limit - cumulative_gas_used,
+                    ),
+                );
+                self.metrics.inc_pool_tx_skipped("exceeds_block_gas_limit");
+                continue;
+            }
+
+            let is_payment = if hardfork.is_t15() {
+                tx.transaction.is_payment_v3()
+            } else if hardfork.is_t5() {
+                tx.transaction.is_payment_v2()
+            } else {
+                tx.transaction.inner().is_payment_v1()
+            };
+
+            // If the tx is not a payment and will exceed the general gas limit
+            // mark the tx as invalid and continue
+            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Payload builder defers a non-payment transaction at the general gas limit",
+                    &serde_json::json!({ "general_gas_used": non_payment_gas_used, "general_gas_limit": general_gas_limit })
+                );
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                    )),
+                );
+                self.metrics
+                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                continue;
+            }
+
+            check_cancel!();
+            if is_payment {
+                payment_transactions += 1;
+            }
+
+            let tx_rlp_length =
+                block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
+            let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
+
+            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::OversizedData {
+                        size: estimated_block_size_with_tx,
+                        limit: MAX_RLP_BLOCK_SIZE,
+                    },
+                );
+                self.metrics.inc_pool_tx_skipped("oversized_block");
+                skipped_oversized_block = true;
+                continue;
+            }
+
+            let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                .then(|| format!("{:?}", tx.transaction))
+                .unwrap_or_default();
+
+            let mut result_closure = |result: &TempoTxResult| {
+                cumulative_gas_used += result.block_gas_used();
+                cumulative_state_gas_used += result.state_gas_used();
+                if !is_payment {
+                    non_payment_gas_used += result.block_gas_used();
+                }
+
+                // Score payload value by the validator-credited fee amount that the
+                // FeeManager precompile actually wrote during this transaction.
+                total_fees += result.validator_fee();
+
+                // Notify transactions iterator about the new state.
+                best_txs.on_new_result(result);
+            };
+
+            shared.set_executing(Some((*tx.hash(), Instant::now())));
+            let execution_result = if let Some(replay) = pool_tx.replay.take() {
+                parallel_transactions_executed += 1;
+                executor.execute_transaction_with_actions(
+                    tx.transaction.executable(),
+                    *replay,
+                    result_closure,
+                )
+            } else {
+                executor.invalidate_expiring_nonce_cache();
+                executor
+                    .execute_transaction_without_commit(tx.transaction.executable())
+                    .and_then(|result| {
+                        result_closure(&result);
+                        executor.commit_transaction(result).map(|_| ())
+                    })
+            };
+            shared.set_executing(None);
+
+            if let Err(err) = execution_result {
+                match err {
+                    BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                        error,
+                        ..
+                    }) => {
+                        invalid_pool_transaction_execution_attempts += 1;
+
+                        if error.is_nonce_too_low() {
+                            // if the nonce is too low, we can skip this transaction
+                            trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        } else if matches!(
+                            TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+                            Some(TempoInvalidTransaction::ExpiringNonceReplay)
+                        ) {
+                            // This exact transaction is already included, typically in the parent
+                            // block before pool maintenance evicted it. Skip it without marking it
+                            // invalid.
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "Payload builder skips an expiring nonce transaction already included"
+                            );
+                            trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
+                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
+                        } else {
+                            // if the transaction is invalid, we can skip it and all of its
+                            // descendants
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "Payload builder evicts a pool transaction that fails execution",
+                                &serde_json::json!({ "error": error.to_string() })
+                            );
+                            trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                        }
+                        continue;
+                    }
+                    BlockExecutionError::Internal(err) => {
+                        if let Some(err) =
+                            StorageActionReplayError::from_internal_block_execution_error(&err)
+                        {
+                            invalid_pool_transaction_execution_attempts += 1;
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_replay");
+                            trace!(
+                                target: "payload_builder",
+                                tx_hash = ?tx.hash(),
+                                ?err,
+                                "Skipping invalid replay transaction"
+                            );
+                            continue;
+                        } else {
+                            return Err(PayloadBuilderError::evm(err));
+                        }
+                    }
+                    _ => return Err(PayloadBuilderError::evm(err)),
+                }
+            }
+
+            trace!("Transaction executed");
+            pool_transactions_included += 1;
+            estimated_rlp_block_size += tx_rlp_length;
+            let receipt = executor.receipts().last().unwrap().clone();
+            if !receipt.success {
+                reverted_transactions += 1;
+            }
+            let _ = roots_tx.send((tx, receipt));
+        };
+
+        Ok(Some(BlockFill {
+            block_build_stop_reason,
+            cumulative_gas_used,
+            cumulative_state_gas_used,
+            non_payment_gas_used,
+            estimated_rlp_block_size,
+            payment_transactions,
+            reverted_transactions,
+            pool_transactions_yielded,
+            pool_transactions_included,
+            parallel_transactions_executed,
+            total_fees,
+            invalid_pool_transaction_execution_attempts,
+            normal_transaction_fill_idle_elapsed,
+        }))
+    }
+
     fn spawn_roots_task(
         &self,
     ) -> (
@@ -1403,6 +1481,42 @@ fn maybe_override_fee_recipient<DB: Database>(
             warn!(%err, "failed resolving fee recipient from contract; using fallback");
         }
     }
+}
+
+/// The bounds a build fills its block within.
+struct FillLimits {
+    /// When the build started.
+    start: Instant,
+    /// What was left of the proposal budget when the build started, for a build that consensus
+    /// paces.
+    payload_build_budget: Option<Duration>,
+    /// Decides when a paced build has to stop adding transactions.
+    build_plan: Option<BuildPlan>,
+    block_gas_limit: u64,
+    /// Gas available to transactions that are not payments.
+    general_gas_limit: u64,
+    hardfork: TempoHardfork,
+    is_osaka: bool,
+    /// Estimated RLP size of the block before any pool transaction.
+    estimated_rlp_block_size: usize,
+}
+
+/// What [`TempoPayloadBuilder::fill_block`] put into a block.
+struct BlockFill {
+    block_build_stop_reason: BlockBuildStopReason,
+    cumulative_gas_used: u64,
+    cumulative_state_gas_used: u64,
+    non_payment_gas_used: u64,
+    estimated_rlp_block_size: usize,
+    payment_transactions: u64,
+    reverted_transactions: u64,
+    pool_transactions_yielded: u64,
+    pool_transactions_included: u64,
+    parallel_transactions_executed: u64,
+    total_fees: U256,
+    invalid_pool_transaction_execution_attempts: u64,
+    /// Time spent waiting for transactions, which validators do not replay.
+    normal_transaction_fill_idle_elapsed: Duration,
 }
 
 /// What a build shares with the thread that waits for it, which may have to abandon it.

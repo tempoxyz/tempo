@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -18,158 +18,253 @@ use reth_tasks::{TaskExecutor, WorkerStatefulPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
-use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
-use tempo_transaction_pool::{AASequenceId, StateAwarePoolTransaction, best::BestTransaction};
+use tempo_evm::{
+    ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, TempoTxResult, evm::TempoEvm,
+};
+use tempo_transaction_pool::{AASequenceId, FeeBalances, best::BestTransaction};
 use tracing::{instrument, trace};
 
-/// How long [`BestTransactionsPrewarming::next_until`] waits for the coordinator between two
-/// checks of its stop condition.
-const COORDINATOR_POLL_INTERVAL: Duration = Duration::from_millis(1);
+/// How long [`BestTransactionsParallel::next_until`] waits for a result between two checks of
+/// its stop condition.
+const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
 
-/// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
-/// lookahead, prewarms buffered transactions in parallel, and produces a new
-/// [`BestTransactions`] iterator with the source order and invalidations triggered
-/// by [`Self::mark_invalid`] preserved.
-pub(crate) struct BestTransactionsPrewarming {
-    transactions_rx: Receiver<Option<PrewarmedTransaction>>,
-    commands_tx: Sender<BestTransactionsCommand>,
-    stop: Arc<AtomicBool>,
-    /// Lanes passed to [`BestTransactions::mark_invalid`]. Buffered transactions on them are
-    /// skipped in [`Iterator::next`] instead of re-scanning the buffer on every invalidation.
-    invalidated: InvalidatedLanes,
+/// The pool's best transactions in order, without those whose fee payer can no longer pay.
+///
+/// With prewarming, the next few transactions also execute on the prewarming pool while the
+/// builder is busy with the ones before them, which loads the state they touch into the
+/// execution cache. The builder takes every transaction from the source itself, so prewarming
+/// runs a bounded number of transactions ahead of it and never holds it up.
+pub(crate) struct BestTransactionsLookahead<Provider> {
+    source: Box<dyn BestTransactions<Item = BestTransaction>>,
+    fee_balances: FeeBalances,
+    /// Transactions taken from the source that the builder has not asked for yet, in source
+    /// order.
+    ahead: VecDeque<BestTransaction>,
+    /// How many transactions to hold in `ahead`.
+    depth: usize,
+    /// `None` without prewarming.
+    prewarmer: Option<Prewarmer<Provider>>,
 }
 
-impl BestTransactionsPrewarming {
-    /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
-    pub(crate) fn new<Txs, Provider>(
-        prewarm: PrewarmingExecutionContext<Provider>,
-        best_txs: Txs,
-    ) -> Self
-    where
-        Txs: BestTransactions<Item = BestTransaction> + 'static,
-        Provider: StateProviderFactory + Clone + 'static,
-    {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
-        let this = Self {
-            transactions_rx,
-            commands_tx: commands_tx.clone(),
-            stop: prewarm.stop.clone(),
-            invalidated: InvalidatedLanes::default(),
-        };
-
-        let prewarm_executor = prewarm.executor();
-        // The coordinator of a build that missed its deadline lives as long as that build, so
-        // do not queue behind it on the named thread.
-        prewarm
-            .executor()
-            .spawn_blocking_named_or_tokio("builder-prewarm", move || {
-                Self::start_prewarming(
-                    prewarm_executor,
-                    BestTransactionsPrewarmingContext {
-                        best_txs,
-                        transactions_tx,
-                        commands_rx,
-                        commands_tx,
-                        prewarm,
-                        next_expiring_nonce_offset: 0,
-                    },
-                );
-            });
-
-        this
+impl<Provider> BestTransactionsLookahead<Provider>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    /// Wraps `source`, prewarming its transactions with `prewarm` if there is one.
+    ///
+    /// `fallback_fee_tokens` lists the tokens execution may fall back to when no transaction
+    /// field or fee-manager rule selects the fee token.
+    pub(crate) fn new(
+        source: Box<dyn BestTransactions<Item = BestTransaction>>,
+        fallback_fee_tokens: &'static [Address],
+        prewarm: Option<PrewarmingExecutionContext<Provider>>,
+    ) -> Self {
+        let prewarmer = prewarm.map(Prewarmer::new);
+        Self {
+            source,
+            fee_balances: FeeBalances::new(fallback_fee_tokens),
+            ahead: VecDeque::new(),
+            depth: prewarmer.as_ref().map_or(1, Prewarmer::depth),
+            prewarmer,
+        }
     }
 
-    /// Runs the coordinator side of prewarming for a payload build.
+    /// Returns the next transaction whose fee payer can still pay, or `None` if the source has
+    /// none right now or `should_stop` reports true.
     ///
-    /// See [`BestTransactionsPrewarming`] for details.
-    fn start_prewarming<Txs, Provider>(
-        executor: TaskExecutor,
-        mut ctx: BestTransactionsPrewarmingContext<Txs, Provider>,
-    ) where
-        Txs: BestTransactions<Item = BestTransaction>,
-        Provider: StateProviderFactory + Clone + 'static,
-    {
-        let stateful_pool = WorkerStatefulPool::new(executor.prewarming_pool().clone());
-        let pool = &stateful_pool;
-
-        pool.in_place_scope(|scope| {
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
-                // The build is over, so do not pull from the source for advances that are still
-                // queued.
-                if ctx.prewarm.is_stopped() {
-                    return;
-                }
-                let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
-                    return;
-                };
-                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                    let offset = ctx.next_expiring_nonce_offset;
-                    ctx.next_expiring_nonce_offset += 1;
-                    Some(offset)
-                } else {
-                    None
-                };
-
-                let parallel = ctx.prewarm.parallel;
-                let prewarm = ctx.prewarm.clone();
-                let commands_tx = ctx.commands_tx.clone();
-                // Only parallel jobs send their result; in sequential mode the transaction is
-                // forwarded below before its prewarm job runs.
-                let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
-
-                if !parallel {
-                    let _ = ctx
-                        .transactions_tx
-                        .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
-                }
-
-                scope.spawn(move |_| {
-                    let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
-                    if let Some(transactions_tx) = transactions_tx {
-                        let _ = transactions_tx.send(Some(tx));
-                    }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
-                });
-            };
-
-            // Fill the initial batch of transactions to execute and prewarm.
-            //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
+    /// `should_stop` is checked before every candidate, so the caller decides how long a run of
+    /// skipped transactions may go on for.
+    pub(crate) fn next_until(
+        &mut self,
+        mut should_stop: impl FnMut() -> bool,
+    ) -> Option<BestTransaction> {
+        loop {
+            if should_stop() {
+                return None;
             }
+            self.fill();
+            let tx = self.ahead.pop_front()?;
+            // Checked now and not when the transaction left the source: the transactions
+            // included since then may have lowered the balance of its fee payer.
+            match self.fee_balances.check(&tx) {
+                Ok(()) => return Some(tx),
+                Err(err) => self.mark_invalid(&tx, err),
+            }
+        }
+    }
 
-            while let Ok(command) = ctx.commands_rx.recv() {
-                match command {
-                    BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
-                    }
-                    BestTransactionsCommand::Invalid(invalid) => {
-                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
-                    }
-                    BestTransactionsCommand::NoUpdates => {
-                        ctx.best_txs.no_updates();
-                    }
-                    BestTransactionsCommand::SkipBlobs(skip_blobs) => {
-                        ctx.best_txs.set_skip_blobs(skip_blobs);
-                    }
-                    BestTransactionsCommand::Stop { drain_rx } => {
-                        ctx.prewarm.stop();
-                        drop(drain_rx);
-                        return;
+    /// Marks `tx` as invalid, which also skips the transactions that depend on it.
+    pub(crate) fn mark_invalid(&mut self, tx: &BestTransaction, kind: InvalidPoolTransactionError) {
+        self.source.mark_invalid(tx, kind);
+        // The source stops yielding the lane of `tx`, but part of it may already wait here.
+        // Expiring nonce transactions do not depend on each other.
+        if !tx.transaction.is_expiring_nonce() {
+            let lane = Lane::of(tx);
+            self.ahead.retain(|ahead| Lane::of(ahead) != lane);
+        }
+    }
+
+    /// Records the fee balances that an included transaction lowered.
+    pub(crate) fn on_new_result(&mut self, result: &TempoTxResult) {
+        self.fee_balances.on_new_result(result);
+    }
+
+    /// Takes transactions from the source until `depth` of them wait in `ahead`.
+    fn fill(&mut self) {
+        while self.ahead.len() < self.depth {
+            let Some(tx) = self.source.next() else {
+                return;
+            };
+            // A transaction that is about to be skipped is not worth a worker.
+            if let Some(prewarmer) = &mut self.prewarmer
+                && self.fee_balances.check(&tx).is_ok()
+            {
+                prewarmer.spawn(tx.clone(), None);
+            }
+            self.ahead.push_back(tx);
+        }
+    }
+}
+
+/// The pool's best transactions, executed on the prewarming pool ahead of the builder, which
+/// only replays what a successful execution did.
+///
+/// Transactions come back in the order their execution finishes, not in source order, so that a
+/// slow one does not hold back the rest.
+pub(crate) struct BestTransactionsParallel<Provider> {
+    source: Box<dyn BestTransactions<Item = BestTransaction>>,
+    prewarmer: Prewarmer<Provider>,
+    results_tx: Sender<PrewarmedTransaction>,
+    results_rx: Receiver<PrewarmedTransaction>,
+    /// Transactions handed to the pool whose result the builder has not taken yet.
+    outstanding: usize,
+    /// Most transactions to have outstanding.
+    depth: usize,
+    /// Lanes passed to [`Self::mark_invalid`]. Results on them are dropped as they arrive.
+    invalidated: HashSet<Lane>,
+}
+
+impl<Provider> BestTransactionsParallel<Provider>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    /// Executes the transactions of `source` with `prewarm`.
+    pub(crate) fn new(
+        source: Box<dyn BestTransactions<Item = BestTransaction>>,
+        prewarm: PrewarmingExecutionContext<Provider>,
+    ) -> Self {
+        let prewarmer = Prewarmer::new(prewarm);
+        let (results_tx, results_rx) = mpsc::channel();
+        Self {
+            source,
+            depth: prewarmer.depth(),
+            prewarmer,
+            results_tx,
+            results_rx,
+            outstanding: 0,
+            invalidated: HashSet::new(),
+        }
+    }
+
+    /// Returns the next executed transaction, or `None` if there is none to wait for or
+    /// `should_stop` reports true.
+    ///
+    /// An execution takes as long as its transaction does. `should_stop` is checked every
+    /// [`RESULT_POLL_INTERVAL`] while waiting, so the caller decides how long that may hold it
+    /// up.
+    pub(crate) fn next_until(
+        &mut self,
+        mut should_stop: impl FnMut() -> bool,
+    ) -> Option<PrewarmedTransaction> {
+        loop {
+            if should_stop() {
+                return None;
+            }
+            while self.outstanding < self.depth {
+                let Some(tx) = self.source.next() else {
+                    break;
+                };
+                self.prewarmer.spawn(tx, Some(self.results_tx.clone()));
+                self.outstanding += 1;
+            }
+            if self.outstanding == 0 {
+                return None;
+            }
+            match self.results_rx.recv_timeout(RESULT_POLL_INTERVAL) {
+                Ok(tx) => {
+                    self.outstanding -= 1;
+                    // The source yielded this transaction before it saw the invalidation.
+                    if !self.invalidated.contains(&Lane::of(&tx.tx)) {
+                        return Some(tx);
                     }
                 }
+                Err(RecvTimeoutError::Timeout) => {}
+                // `results_tx` keeps the channel open.
+                Err(RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
+    /// Marks `tx` as invalid, which also skips the transactions that depend on it.
+    pub(crate) fn mark_invalid(&mut self, tx: &BestTransaction, kind: InvalidPoolTransactionError) {
+        self.source.mark_invalid(tx, kind);
+        // Expiring nonce transactions do not depend on each other.
+        if !tx.transaction.is_expiring_nonce() {
+            self.invalidated.insert(Lane::of(tx));
+        }
+    }
+}
+
+/// Executes transactions on the prewarming pool, each on top of the parent state.
+struct Prewarmer<Provider> {
+    ctx: Arc<PrewarmingExecutionContext<Provider>>,
+    /// Owns the EVMs of the pool's workers. `None` only while dropping.
+    workers: Option<Arc<WorkerStatefulPool>>,
+    /// Number of expiring nonce transactions handed to the pool so far.
+    expiring_nonce_transactions: usize,
+}
+
+impl<Provider> Prewarmer<Provider>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    fn new(ctx: PrewarmingExecutionContext<Provider>) -> Self {
+        Self {
+            workers: Some(WorkerStatefulPool::new(
+                ctx.executor.prewarming_pool().clone(),
+            )),
+            ctx: Arc::new(ctx),
+            expiring_nonce_transactions: 0,
+        }
+    }
+
+    /// How many transactions to have on the pool at once.
+    ///
+    /// Twice the number of threads, so that a worker that finishes finds the next one waiting.
+    fn depth(&self) -> usize {
+        self.ctx.executor.prewarming_pool().current_num_threads() * 2
+    }
+
+    /// Queues `tx` for execution and sends the outcome to `results`, if given.
+    fn spawn(&mut self, tx: BestTransaction, results: Option<Sender<PrewarmedTransaction>>) {
+        let Some(workers) = self.workers.clone() else {
+            return;
+        };
+        let expiring_nonce_offset = tx.transaction.is_expiring_nonce().then(|| {
+            let offset = self.expiring_nonce_transactions;
+            self.expiring_nonce_transactions += 1;
+            offset
+        });
+        let ctx = self.ctx.clone();
+        self.ctx.executor.prewarming_pool().spawn(move || {
+            let tx = Self::prewarm_transaction(&workers, &ctx, tx, expiring_nonce_offset);
+            if let Some(results) = results {
+                // The build is over if nobody takes the result.
+                let _ = results.send(tx);
             }
         });
-
-        // Dropping the handle waits until every worker of the pool has cleared its EVM, and a
-        // worker can be busy with a transaction of another build for as long as that takes. One
-        // thread does this for all builds, so that coordinators do not pile up behind it.
-        executor.spawn_blocking_named("builder-prewarm-drop", move || drop(stateful_pool));
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -177,15 +272,12 @@ impl BestTransactionsPrewarming {
     /// If [`PrewarmingExecutionContext::parallel`] is enabled and prewarming was successful,
     /// a [`PrewarmedTransaction`] with populated replay data is returned.
     #[instrument(level = "trace", skip_all, fields(parallel = prewarm.parallel, tx_hash = ?tx.hash()))]
-    fn prewarm_transaction<Provider>(
+    fn prewarm_transaction(
         pool: &WorkerStatefulPool,
-        prewarm: PrewarmingExecutionContext<Provider>,
+        prewarm: &PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
         expiring_nonce_offset: Option<usize>,
-    ) -> PrewarmedTransaction
-    where
-        Provider: StateProviderFactory + Clone + 'static,
-    {
+    ) -> PrewarmedTransaction {
         if prewarm.parallel && !is_parallel_candidate(&tx) {
             return PrewarmedTransaction::without_replay(tx);
         }
@@ -261,120 +353,23 @@ impl BestTransactionsPrewarming {
 
         PrewarmedTransaction { tx, replay }
     }
-
-    /// Returns the next already-received transaction that is not on an invalidated lane.
-    fn next_buffered(&mut self) -> Option<PrewarmedTransaction> {
-        let invalidated = &self.invalidated;
-        self.transactions_rx
-            .try_iter()
-            .flatten()
-            .find(|tx| !invalidated.contains(&tx.tx))
-    }
-
-    /// Returns the next transaction like [`Iterator::next`], but returns `None` once
-    /// `should_stop` reports true.
-    ///
-    /// The coordinator answers in its own time: it can be busy with the source iterator or a
-    /// backlog of commands, and a parallel result only arrives after its transaction executed.
-    /// `should_stop` is checked before every candidate and every [`COORDINATOR_POLL_INTERVAL`]
-    /// while waiting, so the caller decides how long a slow coordinator may hold it up.
-    pub(crate) fn next_until(
-        &mut self,
-        mut should_stop: impl FnMut() -> bool,
-    ) -> Option<PrewarmedTransaction> {
-        loop {
-            if should_stop() {
-                return None;
-            }
-            // Empty replies describe earlier source polls. Drain them before deciding
-            // whether a ready transaction exists, preserving the order of actual txs.
-            if let Some(tx) = self.next_buffered() {
-                return Some(tx);
-            }
-            self.commands_tx
-                .send(BestTransactionsCommand::Advance)
-                .ok()?;
-            // Keep waiting on this advance instead of returning empty-handed: polling again
-            // would only queue another advance behind the one the coordinator has not reached.
-            let reply = loop {
-                match self.transactions_rx.recv_timeout(COORDINATOR_POLL_INTERVAL) {
-                    Ok(reply) => break reply,
-                    Err(RecvTimeoutError::Timeout) if !should_stop() => {}
-                    // Told to stop, or the coordinator is gone.
-                    Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
-                }
-            };
-            // An eager advance can also reply empty while this receive is waiting.
-            // Check for buffered transactions before reporting empty to the builder,
-            // but do not wait for more replies: it must still check its build budget.
-            match reply {
-                // The source yielded a transaction on an invalidated lane before it saw the
-                // invalidation; poll again for one the builder can use.
-                Some(tx) if self.invalidated.contains(&tx.tx) => continue,
-                Some(tx) => return Some(tx),
-                None => return self.next_buffered(),
-            }
-        }
-    }
 }
 
-impl Drop for BestTransactionsPrewarming {
+impl<Provider> Drop for Prewarmer<Provider> {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
-        let (_drain_tx, replacement_rx) = mpsc::channel();
-        let drain_rx = core::mem::replace(&mut self.transactions_rx, replacement_rx);
-        let _ = self
-            .commands_tx
-            .send(BestTransactionsCommand::Stop { drain_rx });
-    }
-}
-
-impl Iterator for BestTransactionsPrewarming {
-    type Item = PrewarmedTransaction;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_until(|| false)
-    }
-}
-
-impl BestTransactions for BestTransactionsPrewarming {
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
-        let invalid = InvalidTransaction {
-            tx: transaction.tx.clone(),
-            kind,
-        };
-        // Expiring nonces have no dependent transactions to remove from the buffer.
-        if !transaction.tx.transaction.is_expiring_nonce() {
-            self.invalidated.insert(&transaction.tx);
+        self.ctx.stop();
+        // Dropping the last handle waits until every worker of the pool, busy or not, has
+        // cleared its EVM. Leave that wait to a worker.
+        if let Some(workers) = self.workers.take() {
+            self.ctx
+                .executor
+                .prewarming_pool()
+                .spawn(move || drop(workers));
         }
-        let _ = self
-            .commands_tx
-            .send(BestTransactionsCommand::Invalid(invalid));
-    }
-
-    fn no_updates(&mut self) {
-        let _ = self.commands_tx.send(BestTransactionsCommand::NoUpdates);
-    }
-
-    fn set_skip_blobs(&mut self, skip_blobs: bool) {
-        let _ = self
-            .commands_tx
-            .send(BestTransactionsCommand::SkipBlobs(skip_blobs));
     }
 }
 
-/// Context for prewarming best transactions for a payload build.
-struct BestTransactionsPrewarmingContext<Txs, Provider> {
-    best_txs: Txs,
-    transactions_tx: Sender<Option<PrewarmedTransaction>>,
-    commands_tx: Sender<BestTransactionsCommand>,
-    commands_rx: Receiver<BestTransactionsCommand>,
-    prewarm: PrewarmingExecutionContext<Provider>,
-    next_expiring_nonce_offset: usize,
-}
-
-/// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
+/// Prewarmed transaction returned from [`BestTransactionsParallel`].
 #[derive(Debug)]
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
@@ -384,12 +379,6 @@ pub(crate) struct PrewarmedTransaction {
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
         Self { tx, replay: None }
-    }
-}
-
-impl StateAwarePoolTransaction for PrewarmedTransaction {
-    fn best_transaction(&self) -> &BestTransaction {
-        &self.tx
     }
 }
 
@@ -476,10 +465,6 @@ where
 
         Some(evm)
     }
-
-    pub(crate) fn executor(&self) -> TaskExecutor {
-        self.executor.clone()
-    }
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider> {
@@ -492,56 +477,25 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
     }
 }
 
-/// Command sent by [`BestTransactionsPrewarming`] consumer.
-#[derive(Debug)]
-enum BestTransactionsCommand {
-    Advance,
-    Invalid(InvalidTransaction),
-    NoUpdates,
-    SkipBlobs(bool),
-    Stop {
-        /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
-        drain_rx: Receiver<Option<PrewarmedTransaction>>,
-    },
-}
-
-/// Invalid transaction encountered during execution.
-#[derive(Debug)]
-struct InvalidTransaction {
-    tx: BestTransaction,
-    kind: InvalidPoolTransactionError,
-}
-
-/// Transaction lanes invalidated during a payload build.
+/// The transactions that an invalid transaction takes with it.
 ///
 /// Invalidating a regular transaction blocks every later regular transaction from the same
 /// sender. Invalidating a 2D nonce transaction blocks only its `(sender, nonce_key)` sequence.
-#[derive(Debug, Default)]
-struct InvalidatedLanes {
-    senders: HashSet<Address>,
-    sequences: HashSet<AASequenceId>,
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum Lane {
+    Sender(Address),
+    Sequence(AASequenceId),
 }
 
-impl InvalidatedLanes {
-    fn insert(&mut self, invalid: &BestTransaction) {
-        if invalid.transaction.is_aa_2d() {
-            if let Some(id) = invalid.transaction.aa_transaction_id() {
-                self.sequences.insert(*id.seq_id());
-            }
-        } else {
-            self.senders.insert(invalid.transaction.sender());
-        }
-    }
-
-    fn contains(&self, candidate: &BestTransaction) -> bool {
-        if candidate.transaction.is_aa_2d() {
-            candidate
-                .transaction
-                .aa_transaction_id()
-                .is_some_and(|id| self.sequences.contains(id.seq_id()))
-        } else {
-            self.senders.contains(&candidate.transaction.sender())
-        }
+impl Lane {
+    fn of(tx: &BestTransaction) -> Self {
+        tx.transaction
+            .aa_transaction_id()
+            .filter(|_| tx.transaction.is_aa_2d())
+            .map_or_else(
+                || Self::Sender(tx.transaction.sender()),
+                |id| Self::Sequence(*id.seq_id()),
+            )
     }
 }
 
@@ -571,13 +525,7 @@ mod tests {
     use reth_transaction_pool::{
         TransactionOrigin, ValidPoolTransaction, identifier::TransactionId,
     };
-    use std::{
-        collections::VecDeque,
-        num::NonZeroU64,
-        sync::{Arc, Mutex},
-        thread,
-        time::{Duration, Instant},
-    };
+    use std::{num::NonZeroU64, sync::Mutex, thread, time::Instant};
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
     use tempo_precompiles::{
@@ -595,8 +543,6 @@ mod tests {
         yielded: usize,
         empty_polls: usize,
         invalid: usize,
-        no_updates: usize,
-        skip_blobs: Vec<bool>,
     }
 
     struct TestBestTransactions {
@@ -618,16 +564,11 @@ mod tests {
 
         fn next(&mut self) -> Option<Self::Item> {
             let tx = self.txs.pop_front();
-            {
-                let mut log = self.log.lock().unwrap();
-                if tx.is_some() {
-                    log.yielded += 1;
-                } else {
-                    log.empty_polls += 1;
-                }
-            }
-            if tx.is_none() {
-                thread::sleep(Duration::from_millis(1));
+            let mut log = self.log.lock().unwrap();
+            if tx.is_some() {
+                log.yielded += 1;
+            } else {
+                log.empty_polls += 1;
             }
             tx
         }
@@ -637,19 +578,14 @@ mod tests {
         fn mark_invalid(&mut self, transaction: &Self::Item, _kind: InvalidPoolTransactionError) {
             self.log.lock().unwrap().invalid += 1;
             if !transaction.transaction.is_expiring_nonce() {
-                let mut invalidated = InvalidatedLanes::default();
-                invalidated.insert(transaction);
-                self.txs.retain(|tx| !invalidated.contains(tx));
+                let lane = Lane::of(transaction);
+                self.txs.retain(|tx| Lane::of(tx) != lane);
             }
         }
 
-        fn no_updates(&mut self) {
-            self.log.lock().unwrap().no_updates += 1;
-        }
+        fn no_updates(&mut self) {}
 
-        fn set_skip_blobs(&mut self, skip_blobs: bool) {
-            self.log.lock().unwrap().skip_blobs.push(skip_blobs);
-        }
+        fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
     }
 
     fn test_tx(sender: Address, nonce: u64) -> BestTransaction {
@@ -719,51 +655,40 @@ mod tests {
         })
     }
 
-    struct TestPrewarming {
-        prewarming: Option<BestTransactionsPrewarming>,
-        executor: TaskExecutor,
+    type TestProvider = NoopProvider<TempoChainSpec, TempoPrimitives>;
+
+    fn invalid_kind() -> InvalidPoolTransactionError {
+        InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported)
     }
 
-    impl Drop for TestPrewarming {
-        fn drop(&mut self) {
-            drop(self.prewarming.take());
-            self.executor
-                .spawn_blocking_named("builder-prewarm", || {})
-                .get();
-        }
-    }
-
-    impl std::ops::Deref for TestPrewarming {
-        type Target = BestTransactionsPrewarming;
-
-        fn deref(&self) -> &Self::Target {
-            self.prewarming.as_ref().expect("prewarming exists")
-        }
-    }
-
-    impl std::ops::DerefMut for TestPrewarming {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            self.prewarming.as_mut().expect("prewarming exists")
-        }
-    }
-
-    fn prewarming(txs: Vec<BestTransaction>, log: Arc<Mutex<TestLog>>) -> TestPrewarming {
-        let executor = TaskExecutor::test();
-        prewarming_with_executor(executor, txs, log)
-    }
-
-    fn prewarming_with_executor(
-        executor: TaskExecutor,
+    /// A lookahead that holds `depth` of `txs` and does not prewarm them.
+    fn lookahead(
         txs: Vec<BestTransaction>,
+        depth: usize,
         log: Arc<Mutex<TestLog>>,
-    ) -> TestPrewarming {
-        let context = prewarming_context(executor.clone(), false);
-        let prewarming =
-            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log));
-        TestPrewarming {
-            prewarming: Some(prewarming),
-            executor,
+    ) -> BestTransactionsLookahead<TestProvider> {
+        BestTransactionsLookahead {
+            source: Box::new(TestBestTransactions::new(txs, log)),
+            fee_balances: FeeBalances::new(&[]),
+            ahead: VecDeque::new(),
+            depth,
+            prewarmer: None,
         }
+    }
+
+    /// Occupies every prewarming worker until the returned sender is dropped, so that the jobs
+    /// spawned after it stay queued.
+    fn block_workers(executor: &TaskExecutor) -> Sender<()> {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let pool = executor.prewarming_pool();
+        for _ in 0..pool.current_num_threads() {
+            let release_rx = release_rx.clone();
+            pool.spawn(move || {
+                let _ = release_rx.lock().unwrap().recv();
+            });
+        }
+        release_tx
     }
 
     fn prewarming_context(
@@ -837,281 +762,6 @@ mod tests {
         let evm = context.evm_for_ctx().expect("prewarming EVM");
         assert!(evm.ext().actions.is_enabled());
         assert_eq!(BUILDER_STATES.load(Ordering::Relaxed), 3);
-    }
-
-    fn wait_until(mut condition: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while Instant::now() < deadline {
-            if condition() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert!(condition(), "condition did not become true before timeout");
-    }
-
-    #[test]
-    fn source_ordering_is_unchanged_when_prewarming_is_enabled() {
-        let sender = Address::random();
-        let txs = vec![test_tx(sender, 0), test_tx(sender, 1), test_tx(sender, 2)];
-        let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
-        let log = Arc::new(Mutex::new(TestLog::default()));
-
-        let mut prewarming = prewarming(txs, log);
-        let actual = (0..expected.len())
-            .map(|_| *prewarming.next().expect("transaction").tx.hash())
-            .collect::<Vec<_>>();
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn prewarming_eagerly_drains_source_iterator() {
-        let sender = Address::random();
-        let executor = TaskExecutor::test();
-        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
-            .map(|nonce| test_tx(sender, nonce as u64))
-            .collect::<Vec<_>>();
-        let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
-        let log = Arc::new(Mutex::new(TestLog::default()));
-
-        let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
-        wait_until(|| log.lock().unwrap().yielded == expected.len());
-
-        let actual = (0..expected.len())
-            .map(|_| *prewarming.next().expect("transaction").tx.hash())
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
-        let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
-
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
-
-        assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
-
-        assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
-    }
-
-    #[test]
-    fn stale_empty_replies_do_not_hide_buffered_transactions() {
-        for empty_replies in [2, 32] {
-            let (transactions_tx, transactions_rx) = mpsc::channel();
-            let (commands_tx, commands_rx) = mpsc::channel();
-            let sender = Address::random();
-            let first = test_tx(sender, 0);
-            let second = test_tx(sender, 1);
-            for _ in 0..empty_replies {
-                transactions_tx.send(None).unwrap();
-            }
-            for tx in [&first, &second] {
-                transactions_tx
-                    .send(Some(PrewarmedTransaction::without_replay(tx.clone())))
-                    .unwrap();
-            }
-            let mut prewarming = BestTransactionsPrewarming {
-                transactions_rx,
-                commands_tx,
-                stop: Arc::default(),
-                invalidated: InvalidatedLanes::default(),
-            };
-
-            assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
-            assert_eq!(prewarming.next().unwrap().tx.hash(), second.hash());
-            assert!(matches!(
-                commands_rx.try_recv(),
-                Err(mpsc::TryRecvError::Empty)
-            ));
-        }
-    }
-
-    #[test]
-    fn stale_empty_replies_do_not_hide_a_fresh_advance() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
-        for _ in 0..32 {
-            transactions_tx.send(None).unwrap();
-        }
-        let tx = test_tx(Address::random(), 0);
-        let expected = *tx.hash();
-        let coordinator = thread::spawn(move || {
-            assert!(matches!(
-                commands_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-                BestTransactionsCommand::Advance
-            ));
-            transactions_tx
-                .send(Some(PrewarmedTransaction::without_replay(tx)))
-                .unwrap();
-        });
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-            invalidated: InvalidatedLanes::default(),
-        };
-
-        let next = prewarming.next();
-        coordinator.join().unwrap();
-        assert_eq!(*next.expect("fresh transaction").tx.hash(), expected);
-    }
-
-    #[test]
-    fn empty_advance_returns_none_and_can_resume_on_a_later_poll() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
-        let tx = test_tx(Address::random(), 0);
-        let expected = *tx.hash();
-        let coordinator = thread::spawn(move || {
-            for reply in [None, Some(PrewarmedTransaction::without_replay(tx))] {
-                assert!(matches!(
-                    commands_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-                    BestTransactionsCommand::Advance
-                ));
-                transactions_tx.send(reply).unwrap();
-            }
-        });
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-            invalidated: InvalidatedLanes::default(),
-        };
-
-        assert!(prewarming.next().is_none());
-        assert_eq!(
-            *prewarming.next().expect("later transaction").tx.hash(),
-            expected
-        );
-        coordinator.join().unwrap();
-        assert!(prewarming.next().is_none());
-    }
-
-    #[test]
-    fn buffered_transactions_survive_empty_replies_and_coordinator_disconnect() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
-        let tx = test_tx(Address::random(), 0);
-        let expected = *tx.hash();
-        transactions_tx.send(None).unwrap();
-        transactions_tx
-            .send(Some(PrewarmedTransaction::without_replay(tx)))
-            .unwrap();
-        drop(transactions_tx);
-        drop(commands_rx);
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-            invalidated: InvalidatedLanes::default(),
-        };
-
-        assert_eq!(
-            *prewarming.next().expect("buffered transaction").tx.hash(),
-            expected
-        );
-        assert!(prewarming.next().is_none());
-    }
-
-    #[test]
-    fn mark_invalid_filters_already_buffered_invalidated_transactions() {
-        let sender = Address::random();
-        let mut sender_nonces = 0..;
-        let tx1 = test_tx(sender, sender_nonces.next().expect("first nonce"));
-        let tx2 = test_tx(sender, sender_nonces.next().expect("second nonce"));
-        let tx3 = test_tx(
-            Address::random(),
-            sender_nonces.next().expect("third nonce"),
-        );
-        let log = Arc::new(Mutex::new(TestLog::default()));
-
-        let mut prewarming = prewarming(vec![tx1.clone(), tx2.clone(), tx3.clone()], log.clone());
-        assert_eq!(
-            prewarming.next().as_ref().map(|tx| tx.tx.hash()),
-            Some(tx1.hash())
-        );
-
-        wait_until(|| log.lock().unwrap().yielded == 3);
-        prewarming.mark_invalid(
-            &PrewarmedTransaction::without_replay(tx1),
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-        );
-
-        let next = prewarming.next().expect("non-invalidated transaction");
-        assert_eq!(next.tx.hash(), tx3.hash());
-        assert_ne!(next.tx.hash(), tx2.hash());
-        wait_until(|| log.lock().unwrap().invalid == 1);
-    }
-
-    #[test]
-    fn mark_invalid_does_not_wait_for_queued_prewarm_jobs() {
-        let executor = TaskExecutor::test();
-
-        // Occupy every prewarm worker so the jobs spawned for the transactions stay queued.
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let release_rx = Arc::new(Mutex::new(release_rx));
-        let pool = executor.prewarming_pool();
-        for _ in 0..pool.current_num_threads() {
-            let release_rx = release_rx.clone();
-            pool.spawn(move || {
-                let _ = release_rx.lock().unwrap().recv();
-            });
-        }
-
-        let tx1 = test_tx(Address::random(), 0);
-        let tx2 = test_tx(Address::random(), 0);
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming =
-            prewarming_with_executor(executor, vec![tx1.clone(), tx2.clone()], log.clone());
-        assert_eq!(
-            prewarming.next().as_ref().map(|tx| tx.tx.hash()),
-            Some(tx1.hash())
-        );
-        wait_until(|| log.lock().unwrap().yielded == 2);
-
-        // Release the workers after a timeout so a regression fails instead of hanging.
-        let (done_tx, done_rx) = mpsc::channel::<()>();
-        let watchdog = thread::spawn(move || {
-            let timed_out = done_rx.recv_timeout(Duration::from_secs(5)).is_err();
-            drop(release_tx);
-            timed_out
-        });
-
-        prewarming.mark_invalid(
-            &PrewarmedTransaction::without_replay(tx1),
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-        );
-        let first = prewarming.next().map(|tx| *tx.tx.hash());
-        // Answering this poll needs the coordinator, which must not be stuck in the drain.
-        let second = prewarming.next().map(|tx| *tx.tx.hash());
-        let _ = done_tx.send(());
-
-        assert!(
-            !watchdog.join().unwrap(),
-            "invalidation waited for queued prewarm jobs"
-        );
-        assert_eq!(first, Some(*tx2.hash()));
-        assert_eq!(second, None);
-    }
-
-    #[test]
-    fn commands_are_forwarded_to_source_iterator() {
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming(Vec::new(), log.clone());
-
-        prewarming.no_updates();
-        prewarming.set_skip_blobs(true);
-
-        wait_until(|| {
-            let log = log.lock().unwrap();
-            log.no_updates == 1 && log.skip_blobs == vec![true]
-        });
     }
 
     #[test]
@@ -1212,12 +862,8 @@ mod tests {
             );
 
             let sender = Address::random();
-            let failed = BestTransactionsPrewarming::prewarm_transaction(
-                &pool,
-                context.clone(),
-                test_payment_tx(sender, 0),
-                None,
-            );
+            let failed =
+                Prewarmer::prewarm_transaction(&pool, &context, test_payment_tx(sender, 0), None);
             assert!(failed.replay.is_none());
             pool.get_or_init(
                 || context.evm_for_ctx(),
@@ -1227,9 +873,9 @@ mod tests {
                 },
             );
 
-            let successful = BestTransactionsPrewarming::prewarm_transaction(
+            let successful = Prewarmer::prewarm_transaction(
                 &pool,
-                context,
+                &context,
                 test_payment_tx(sender, 500_000),
                 None,
             );
@@ -1240,239 +886,294 @@ mod tests {
     }
 
     #[test]
-    fn mark_invalid_skips_buffered_transactions_on_invalidated_lanes() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+    fn lookahead_yields_transactions_in_source_order() {
         let sender = Address::random();
-        let other = Address::random();
+        let txs = (0..10)
+            .map(|nonce| test_tx(sender, nonce))
+            .collect::<Vec<_>>();
+        let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+        let mut lookahead = BestTransactionsLookahead::new(
+            Box::new(TestBestTransactions::new(txs, Default::default())),
+            &[],
+            Some(prewarming_context(TaskExecutor::test(), false)),
+        );
+
+        let actual = std::iter::from_fn(|| lookahead.next_until(|| false))
+            .map(|tx| *tx.hash())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn lookahead_takes_only_its_depth_from_the_source() {
+        let sender = Address::random();
+        let txs = (0..10).map(|nonce| test_tx(sender, nonce)).collect();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut lookahead = lookahead(txs, 4, log.clone());
+
+        assert!(lookahead.next_until(|| false).is_some());
+        assert_eq!(log.lock().unwrap().yielded, 4);
+        assert!(lookahead.next_until(|| false).is_some());
+        assert_eq!(log.lock().unwrap().yielded, 5);
+    }
+
+    #[test]
+    fn lookahead_polls_an_empty_source_once_per_call() {
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut lookahead = lookahead(Vec::new(), 4, log.clone());
+
+        assert!(lookahead.next_until(|| false).is_none());
+        assert_eq!(log.lock().unwrap().empty_polls, 1);
+        assert!(lookahead.next_until(|| false).is_none());
+        assert_eq!(log.lock().unwrap().empty_polls, 2);
+    }
+
+    #[test]
+    fn lookahead_skips_a_transaction_whose_fee_payer_cannot_pay() {
+        let drained = Address::random();
+        let txs = vec![
+            test_tx(drained, 0),
+            test_tx(drained, 1),
+            test_tx(Address::random(), 0),
+        ];
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut lookahead = lookahead(txs.clone(), 4, log.clone());
+        lookahead
+            .fee_balances
+            .set_balance(txs[0].transaction.fee_balance_slot().unwrap(), U256::ZERO);
+
+        assert_eq!(
+            lookahead.next_until(|| false).map(|tx| *tx.hash()),
+            Some(*txs[2].hash())
+        );
+        // The second transaction of the drained sender went with the first.
+        assert_eq!(log.lock().unwrap().invalid, 1);
+        assert!(lookahead.next_until(|| false).is_none());
+    }
+
+    #[test]
+    fn lookahead_stops_skipping_transactions_when_told_to() {
+        let txs = (0..10)
+            .map(|_| test_tx(Address::random(), 0))
+            .collect::<Vec<_>>();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut lookahead = lookahead(txs.clone(), 1, log.clone());
+        // No fee payer can pay, so every transaction is skipped.
+        for tx in &txs {
+            lookahead
+                .fee_balances
+                .set_balance(tx.transaction.fee_balance_slot().unwrap(), U256::ZERO);
+        }
+
+        let mut checks = 0;
+        let next = lookahead.next_until(|| {
+            checks += 1;
+            checks > 3
+        });
+
+        assert!(next.is_none());
+        assert_eq!(log.lock().unwrap().invalid, 3);
+        assert_eq!(log.lock().unwrap().yielded, 3);
+    }
+
+    #[test]
+    fn lookahead_does_not_prewarm_a_transaction_whose_fee_payer_cannot_pay() {
+        let executor = TaskExecutor::test();
+        // Keeps the prewarm jobs queued, where each holds on to its transaction.
+        let release = block_workers(&executor);
+        let payable = test_tx(Address::random(), 0);
+        let drained = test_tx(Address::random(), 0);
+        let mut lookahead = BestTransactionsLookahead::new(
+            Box::new(TestBestTransactions::new(
+                vec![payable.clone(), drained.clone()],
+                Default::default(),
+            )),
+            &[],
+            Some(prewarming_context(executor, false)),
+        );
+        lookahead
+            .fee_balances
+            .set_balance(drained.transaction.fee_balance_slot().unwrap(), U256::ZERO);
+
+        lookahead.fill();
+
+        // One reference here, one in the lookahead, and for `payable` one in its prewarm job.
+        assert_eq!(Arc::strong_count(&payable), 3);
+        assert_eq!(Arc::strong_count(&drained), 2);
+        drop(release);
+    }
+
+    #[test]
+    fn mark_invalid_drops_waiting_transactions_on_the_same_lane() {
+        let sender = Address::random();
         let invalid_regular = test_tx(sender, 0);
         let invalid_2d = test_payment_tx_with_nonce_key(sender, 500_000, U256::from(1));
-        let buffered = [
+        let waiting = [
             // Same sender as the invalid regular transaction.
             test_tx(sender, 1),
             // Same `(sender, nonce_key)` sequence as the invalid 2D transaction.
             test_payment_tx_with_nonce_key(sender, 500_000, U256::from(1)),
             // Other sequence of the same sender.
             test_payment_tx_with_nonce_key(sender, 500_000, U256::from(2)),
-            test_tx(other, 0),
+            test_tx(Address::random(), 0),
         ];
-        for tx in &buffered {
-            transactions_tx
-                .send(Some(PrewarmedTransaction::without_replay(tx.clone())))
-                .unwrap();
-        }
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-            invalidated: InvalidatedLanes::default(),
-        };
+        let mut lookahead = lookahead(waiting.to_vec(), 8, Default::default());
+        lookahead.fill();
 
         for invalid in [&invalid_regular, &invalid_2d] {
-            prewarming.mark_invalid(
-                &PrewarmedTransaction::without_replay(invalid.clone()),
-                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-            );
-            let BestTransactionsCommand::Invalid(forwarded) = commands_rx.try_recv().unwrap()
-            else {
-                panic!("invalidation must be forwarded to the source");
-            };
-            assert_eq!(forwarded.tx.hash(), invalid.hash());
+            lookahead.mark_invalid(invalid, invalid_kind());
         }
 
-        assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[2].hash());
-        assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[3].hash());
-        // Both transactions were already buffered, so no source poll was needed.
-        assert!(commands_rx.try_recv().is_err());
+        for expected in &waiting[2..] {
+            assert_eq!(
+                lookahead.next_until(|| false).map(|tx| *tx.hash()),
+                Some(*expected.hash())
+            );
+        }
+        assert!(lookahead.next_until(|| false).is_none());
     }
 
     #[test]
-    fn next_skips_invalidated_transactions_that_arrive_after_mark_invalid() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, _commands_rx) = mpsc::channel();
+    fn expiring_nonce_invalidation_keeps_waiting_transactions() {
         let sender = Address::random();
-        let invalid = test_tx(sender, 0);
-        let late_same_sender = test_tx(sender, 1);
-        let other = test_tx(Address::random(), 0);
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-            invalidated: InvalidatedLanes::default(),
-        };
-        prewarming.mark_invalid(
-            &PrewarmedTransaction::without_replay(invalid),
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        let rejected = test_payment_tx_with_nonce_key(sender, 500_000, U256::MAX);
+        let waiting = [
+            test_payment_tx_with_nonce_key(sender, 600_000, U256::MAX),
+            test_payment_tx(sender, 500_000),
+            test_tx(sender, 0),
+        ];
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut lookahead = lookahead(waiting.to_vec(), 8, log.clone());
+        lookahead.fill();
+
+        lookahead.mark_invalid(&rejected, invalid_kind());
+
+        // The source hears of it, and nothing that waits depends on it.
+        assert_eq!(log.lock().unwrap().invalid, 1);
+        for expected in &waiting {
+            assert_eq!(
+                lookahead.next_until(|| false).map(|tx| *tx.hash()),
+                Some(*expected.hash())
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_yields_every_transaction() {
+        let txs = (0..10)
+            .map(|_| test_tx(Address::random(), 0))
+            .collect::<Vec<_>>();
+        let expected = txs.iter().map(|tx| *tx.hash()).collect::<HashSet<_>>();
+        let mut parallel = BestTransactionsParallel::new(
+            Box::new(TestBestTransactions::new(txs, Default::default())),
+            prewarming_context(TaskExecutor::test(), true),
         );
 
-        // Deliver only after `next` has found the buffer empty and is waiting on the
-        // coordinator, so the invalidated transaction is the one it receives.
-        let delivered = [late_same_sender, other.clone()];
-        let producer = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(50));
-            for tx in delivered {
-                transactions_tx
-                    .send(Some(PrewarmedTransaction::without_replay(tx)))
-                    .unwrap();
-            }
-        });
-
-        assert_eq!(prewarming.next().unwrap().tx.hash(), other.hash());
-        producer.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let actual = std::iter::from_fn(|| parallel.next_until(|| Instant::now() >= deadline))
+            .map(|tx| *tx.tx.hash())
+            .collect::<HashSet<_>>();
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn expiring_nonce_invalidation_keeps_the_existing_buffer() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
-        let sender = Address::random();
-        let rejected = test_payment_tx_with_nonce_key(sender, 500_000, U256::MAX);
-        let buffered = [
-            test_payment_tx_with_nonce_key(sender, 600_000, U256::MAX),
-            test_payment_tx(sender, 500_000),
-            test_tx(sender, 0),
-        ];
-        for tx in &buffered {
-            transactions_tx
-                .send(Some(PrewarmedTransaction::without_replay(tx.clone())))
-                .unwrap();
-        }
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-            invalidated: InvalidatedLanes::default(),
-        };
-
-        // Leave the coordinator commands unprocessed: the original buffer must
-        // remain readable even across repeated rejections.
-        for _ in 0..3 {
-            prewarming.mark_invalid(
-                &PrewarmedTransaction::without_replay(rejected.clone()),
-                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-            );
-        }
-        for expected in &buffered {
-            let tx = prewarming.transactions_rx.try_recv().unwrap().unwrap();
-            assert_eq!(tx.tx.hash(), expected.hash());
-        }
-        // Existing worker senders must still deliver to the same receiver.
-        transactions_tx
-            .send(Some(PrewarmedTransaction::without_replay(
-                buffered[0].clone(),
-            )))
-            .unwrap();
-        let delivered = prewarming.transactions_rx.try_recv().unwrap().unwrap();
-        assert_eq!(delivered.tx.hash(), buffered[0].hash());
-        for _ in 0..3 {
-            let BestTransactionsCommand::Invalid(invalid) = commands_rx.try_recv().unwrap() else {
-                panic!("expiring nonce invalidation must be forwarded to the source");
-            };
-            assert_eq!(invalid.tx.hash(), rejected.hash());
-            assert!(matches!(
-                invalid.kind,
-                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported)
-            ));
-        }
-    }
-
-    #[test]
-    fn expiring_nonce_invalidation_is_forwarded_without_filtering_other_transactions() {
-        let sender = Address::random();
-        let rejected = test_payment_tx_with_nonce_key(sender, 500_000, U256::MAX);
-        let remaining = [
-            test_payment_tx_with_nonce_key(sender, 600_000, U256::MAX),
-            test_payment_tx(sender, 500_000),
-            test_tx(sender, 0),
-        ];
-        let txs = std::iter::once(rejected.clone())
-            .chain(remaining.iter().cloned())
+    fn parallel_keeps_a_bounded_number_of_transactions_outstanding() {
+        let executor = TaskExecutor::test();
+        let release = block_workers(&executor);
+        let depth = executor.prewarming_pool().current_num_threads() * 2;
+        let txs = (0..depth + 5)
+            .map(|_| test_tx(Address::random(), 0))
             .collect();
         let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming(txs, log.clone());
-        assert_eq!(prewarming.next().unwrap().tx.hash(), rejected.hash());
-        wait_until(|| log.lock().unwrap().yielded == 4);
-
-        prewarming.mark_invalid(
-            &PrewarmedTransaction::without_replay(rejected),
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        let mut parallel = BestTransactionsParallel::new(
+            Box::new(TestBestTransactions::new(txs, log.clone())),
+            prewarming_context(executor, true),
         );
-        wait_until(|| log.lock().unwrap().invalid == 1);
-        for expected in remaining {
-            assert_eq!(prewarming.next().unwrap().tx.hash(), expected.hash());
-        }
+
+        let mut checks = 0;
+        let next = parallel.next_until(|| {
+            checks += 1;
+            checks > 1
+        });
+
+        assert!(next.is_none());
+        assert_eq!(log.lock().unwrap().yielded, depth);
+        drop(release);
     }
 
     #[test]
-    fn next_until_stops_waiting_for_a_stalled_coordinator() {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
-        let mut prewarming = BestTransactionsPrewarming {
-            transactions_rx,
-            commands_tx,
-            stop: Arc::default(),
-            invalidated: InvalidatedLanes::default(),
-        };
+    fn parallel_stops_waiting_for_an_execution_when_told_to() {
+        let executor = TaskExecutor::test();
+        let release = block_workers(&executor);
+        let mut parallel = BestTransactionsParallel::new(
+            Box::new(TestBestTransactions::new(
+                vec![test_tx(Address::random(), 0)],
+                Default::default(),
+            )),
+            prewarming_context(executor, true),
+        );
 
-        // The coordinator never answers. Disconnect it after a timeout so a regression fails
-        // instead of hanging.
+        // Release the workers after a timeout so that a regression fails instead of hanging.
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let watchdog = thread::spawn(move || {
             let timed_out = done_rx.recv_timeout(Duration::from_secs(5)).is_err();
-            drop(transactions_tx);
+            drop(release);
             timed_out
         });
 
         let deadline = Instant::now() + Duration::from_millis(20);
-        let next = prewarming.next_until(|| Instant::now() >= deadline);
+        let next = parallel.next_until(|| Instant::now() >= deadline);
         let _ = done_tx.send(());
 
         assert!(
             !watchdog.join().unwrap(),
-            "selection waited for the coordinator past its deadline"
+            "selection waited for an execution past its deadline"
         );
         assert!(next.is_none());
-        // The wait spanned many poll intervals but queued a single advance.
-        assert!(matches!(
-            commands_rx.try_recv(),
-            Ok(BestTransactionsCommand::Advance)
-        ));
-        assert!(matches!(
-            commands_rx.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
     }
 
     #[test]
-    fn stopped_coordinator_stops_polling_the_source() {
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        // The source records every poll in the log, so holding the lock stalls the coordinator
-        // inside its first poll.
-        let stalled = log.lock().unwrap();
-        let mut prewarming = prewarming(Vec::new(), log.clone());
+    fn parallel_drops_results_on_an_invalidated_lane() {
+        let sender = Address::random();
+        let invalid = test_tx(sender, 0);
+        let late_same_sender = test_tx(sender, 1);
+        let other = test_tx(Address::random(), 0);
+        let mut parallel = BestTransactionsParallel::new(
+            Box::new(TestBestTransactions::new(Vec::new(), Default::default())),
+            prewarming_context(TaskExecutor::test(), true),
+        );
+        parallel.mark_invalid(&invalid, invalid_kind());
 
-        // The build ends and drops the iterator while the coordinator is still stalled.
-        drop(prewarming.prewarming.take());
-        drop(stalled);
-        // Dropping the harness waits for the coordinator to exit.
-        drop(prewarming);
+        // Results of executions that started before the invalidation.
+        for tx in [late_same_sender, other.clone()] {
+            parallel
+                .results_tx
+                .send(PrewarmedTransaction::without_replay(tx))
+                .unwrap();
+            parallel.outstanding += 1;
+        }
 
-        // At most the poll that was already running reached the source, not the rest of the
-        // initial batch.
-        assert!(log.lock().unwrap().empty_polls <= 1);
+        assert_eq!(
+            parallel.next_until(|| false).map(|tx| *tx.tx.hash()),
+            Some(*other.hash())
+        );
+        assert!(parallel.next_until(|| false).is_none());
     }
 
     #[test]
-    fn coordinator_exits_while_another_job_keeps_a_worker_busy() {
+    fn dropping_a_prewarmer_does_not_wait_for_a_busy_worker() {
         let executor = TaskExecutor::test();
         // One worker stays busy, as with a transaction of another build that does not return.
+        let (started_tx, started_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         executor.prewarming_pool().spawn(move || {
+            let _ = started_tx.send(());
             let _ = release_rx.recv();
         });
-        // The test keeps a handle to the runtime: shutting it down joins the thread that clears
-        // the workers, which does wait for the busy one.
-        let prewarming = prewarming_with_executor(executor.clone(), Vec::new(), Arc::default());
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker started");
+        let prewarmer = Prewarmer::new(prewarming_context(executor, false));
 
         // Release the worker after a timeout so that a regression fails instead of hanging.
         let (done_tx, done_rx) = mpsc::channel::<()>();
@@ -1482,14 +1183,12 @@ mod tests {
             timed_out
         });
 
-        // Dropping the harness waits for the coordinator to exit.
-        drop(prewarming);
+        drop(prewarmer);
         let _ = done_tx.send(());
 
         assert!(
             !watchdog.join().unwrap(),
-            "the coordinator waited for a worker that another build keeps busy"
+            "dropping the prewarmer waited for a worker that another build keeps busy"
         );
-        drop(executor);
     }
 }
