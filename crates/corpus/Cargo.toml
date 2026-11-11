@@ -59,7 +59,7 @@ tempo-fuzz-types.workspace = true
 
 async-trait.workspace = true
 bincode.workspace = true
-aws-config = "1.8"
+aws-config = { version = "1.8", default-features = false, features = ["rt-tokio"] }
 aws-credential-types = "1.2"
 bytes.workspace = true
 eyre.workspace = true
