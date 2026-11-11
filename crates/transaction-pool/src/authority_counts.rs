@@ -1,4 +1,4 @@
-//! Per-authority transaction counts, shared by the sub-pools that limit them.
+//! Per-authority transaction counts for the 2D pool's per-authority limit.
 
 use crate::transaction::TempoPooledTransaction;
 use alloy_primitives::{
