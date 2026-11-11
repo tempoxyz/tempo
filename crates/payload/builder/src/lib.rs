@@ -24,7 +24,7 @@ use crate::{
         BestTransactionsLookahead, BestTransactionsParallel, PrewarmedTransaction,
         PrewarmingExecutionContext,
     },
-    state_hook::{BatchedStateHook, STATE_UPDATE_BATCH_SIZE},
+    state_hook::{MergingStateHook, STATE_UPDATE_BATCH_SIZE},
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
@@ -624,7 +624,11 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let stream = StateStream::new(shared, handle.take_state_hook());
+            let stream = StateStream::new(shared, handle.take_state_hook(), |merge| {
+                // Another build may still hold the named thread.
+                self.executor
+                    .spawn_blocking_named_or_tokio("builder-state-merge", merge);
+            });
             executor.set_state_hook(move |state| stream.on_state(state));
         }
 
@@ -1602,7 +1606,7 @@ struct SharedBuildState {
     /// The pool transaction the build is executing and when it started.
     executing: Mutex<Option<(TxHash, Instant)>>,
     /// Streams the state changes of the build to its state root task, a batch at a time.
-    state_hook: Mutex<Option<BatchedStateHook<StateRootUpdateHook>>>,
+    state_hook: Mutex<Option<MergingStateHook<StateRootUpdateHook>>>,
 }
 
 impl SharedBuildState {
@@ -1657,12 +1661,17 @@ impl SharedBuildState {
 struct StateStream(Arc<SharedBuildState>);
 
 impl StateStream {
-    fn new(shared: &Arc<SharedBuildState>, hook: StateRootUpdateHook) -> Self {
+    /// Batches are merged on the thread that `spawn` runs its closure on.
+    fn new(
+        shared: &Arc<SharedBuildState>,
+        hook: StateRootUpdateHook,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>),
+    ) -> Self {
         *shared
             .state_hook
             .lock()
             .unwrap_or_else(PoisonError::into_inner) =
-            Some(BatchedStateHook::new(hook, STATE_UPDATE_BATCH_SIZE));
+            Some(MergingStateHook::new(hook, STATE_UPDATE_BATCH_SIZE, spawn));
         Self(shared.clone())
     }
 
@@ -1746,6 +1755,10 @@ mod tests {
     use reth_engine_tree::tree::{StateRootHandle, StateRootMessage, StateRootTaskCancelGuard};
     use reth_execution_types::AccountUpdate;
 
+    fn spawn_thread(f: Box<dyn FnOnce() + Send>) {
+        std::thread::spawn(f);
+    }
+
     #[test]
     fn test_extra_data_flow_in_attributes() {
         // Test that extra_data in attributes can be accessed correctly
@@ -1797,7 +1810,11 @@ mod tests {
         // What the thread that waits for a build keeps, and what the build does with the rest.
         let task = detach_state_root_task(&mut build_handle);
         let shared = Arc::new(SharedBuildState::default());
-        let stream = StateStream::new(&shared, build_handle.as_mut().unwrap().take_state_hook());
+        let stream = StateStream::new(
+            &shared,
+            build_handle.as_mut().unwrap().take_state_hook(),
+            spawn_thread,
+        );
         assert_eq!(cancel_rx.try_recv(), Err(TryRecvError::Empty));
         assert!(matches!(updates_rx.try_recv(), Err(TryRecvError::Empty)));
 
@@ -1832,7 +1849,7 @@ mod tests {
         )
         .into_payload_state_root_handle();
         let shared = Arc::new(SharedBuildState::default());
-        let stream = StateStream::new(&shared, handle.take_state_hook());
+        let stream = StateStream::new(&shared, handle.take_state_hook(), spawn_thread);
         let update = || StateUpdate {
             accounts: vec![AccountUpdate {
                 address: Address::ZERO,
