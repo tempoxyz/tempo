@@ -97,15 +97,16 @@ impl SignatureVerifier {
         self.verify_keychain_admin_signature(account, hash, &sig)
     }
 
-    /// Returns whether `account` approves `hash`. From T15, the one check to use for any account
-    /// and signature type: it follows `account`'s current state, so it stays correct when the
-    /// account migrates or changes owners. Use `recover` only to learn which key signed.
+    /// Returns whether `account` approves `hash`: the one check to use for any account and
+    /// signature type. It follows `account`'s current state, so it stays correct when the account
+    /// migrates or changes owners (TIP-1168). Use `recover` only to learn which key signed.
     ///
-    /// Before T15, whether a primitive `signature` recovers to `account`.
-    /// From T15, by signature type (TIP-1168):
+    /// By signature type, including the routed checks' reverts:
     /// - primitive: recovers to `account`, and `account` has no configuration commitment
-    /// - keychain: as `verifyKeychainAdmin`, reverts included
-    /// - configurable account: as `verifyConfigurableAccount`, reverts included
+    /// - keychain: as `verifyKeychainAdmin`
+    /// - configurable account: as `verifyConfigurableAccount`
+    ///
+    /// Before T15, only checks that a primitive `signature` recovers to `account`.
     pub fn verify(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
         if !self.storage.spec().is_t15() {
             return Ok(self.recover(hash, signature)? == account);
