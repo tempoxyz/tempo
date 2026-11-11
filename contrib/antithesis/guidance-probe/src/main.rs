@@ -10,7 +10,6 @@ use std::{
 };
 
 const CADENCE: Duration = Duration::from_millis(100);
-const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(30);
 static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn stop(_: libc::c_int) {
@@ -43,7 +42,11 @@ fn emit_guidance(label: &str) {
     );
 }
 
-fn wait_for_activation(path: &Path, timeout: Duration, stop: &AtomicBool) -> io::Result<bool> {
+fn wait_for_activation(
+    path: &Path,
+    timeout: Option<Duration>,
+    stop: &AtomicBool,
+) -> io::Result<bool> {
     let started = Instant::now();
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -52,27 +55,34 @@ fn wait_for_activation(path: &Path, timeout: Duration, stop: &AtomicBool) -> io:
         if path.try_exists()? {
             return Ok(true);
         }
-        let remaining = timeout.checked_sub(started.elapsed()).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "first_start_workload did not activate the probe",
-            )
-        })?;
-        thread::sleep(CADENCE.min(remaining));
+        let sleep = match timeout {
+            Some(timeout) => {
+                let remaining = timeout.checked_sub(started.elapsed()).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "first_start_workload did not activate the probe",
+                    )
+                })?;
+                CADENCE.min(remaining)
+            }
+            None => CADENCE,
+        };
+        thread::sleep(sleep);
     }
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    install_signals()?;
-    // This executable is copied as the only first_ test command; no shell needed.
-    if env::args().next().is_some_and(|p| {
-        Path::new(&p)
-            .file_name()
-            .is_some_and(|n| n == "first_start_workload")
-    }) {
+    // Test commands dispatch before mode parsing or any SDK events/RNG draws.
+    let command = env::args().next();
+    let command = command.as_deref().and_then(|p| Path::new(p).file_name());
+    if command.is_some_and(|n| n == "anytime_probe_health") {
+        return Ok(());
+    }
+    if command.is_some_and(|n| n == "first_start_workload") {
         fs::write("/workload-active", b"active\n")?;
         return Ok(());
     }
+    install_signals()?;
     let dynamic = match env::var("PROBE_MODE").as_deref() {
         Ok("dynamic") => true,
         Ok("constant") => false,
@@ -102,13 +112,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    // SDK init registers guidance/assertion catalogs before any setup-complete call.
+    antithesis_sdk::antithesis_init();
     let mut probe = Probe::new(dynamic);
     antithesis_sdk::assert_always!(true, "Probe process healthy", &json!({}));
     antithesis_sdk::lifecycle::setup_complete(&json!({"probe": "json-guidance-ab-v1"}));
-    // Wait for the first_ command after the root snapshot; bounded local tests skip it.
-    if steps.is_none()
-        && !wait_for_activation(Path::new("/workload-active"), ACTIVATION_TIMEOUT, &STOP)?
-    {
+    // first_ is template-selected, not deadline-bound; external run limits bound the wait.
+    if steps.is_none() && !wait_for_activation(Path::new("/workload-active"), None, &STOP)? {
         return Ok(());
     }
     let mut step = 0_u64;
@@ -130,8 +140,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
-    // SDK init registers guidance/assertion catalogs before any setup-complete call.
-    antithesis_sdk::antithesis_init();
     if let Err(error) = run() {
         eprintln!("guidance-probe: {error}");
         std::process::exit(2);
@@ -147,7 +155,7 @@ mod tests {
         let path = env::temp_dir().join(format!("guidance-probe-absent-{}", std::process::id()));
         assert!(!path.exists());
         let error =
-            wait_for_activation(&path, Duration::ZERO, &AtomicBool::new(false)).unwrap_err();
+            wait_for_activation(&path, Some(Duration::ZERO), &AtomicBool::new(false)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert_eq!(
             error.to_string(),
@@ -157,17 +165,13 @@ mod tests {
 
     #[test]
     fn shutdown_interrupts_activation() {
-        assert!(
-            !wait_for_activation(Path::new("."), ACTIVATION_TIMEOUT, &AtomicBool::new(true))
-                .unwrap()
-        );
+        let stop = AtomicBool::new(true);
+        assert!(!wait_for_activation(Path::new("."), Some(Duration::ZERO), &stop).unwrap());
     }
 
     #[test]
     fn existing_activation_is_ready() {
-        assert!(
-            wait_for_activation(Path::new("."), ACTIVATION_TIMEOUT, &AtomicBool::new(false))
-                .unwrap()
-        );
+        let stop = AtomicBool::new(false);
+        assert!(wait_for_activation(Path::new("."), Some(Duration::ZERO), &stop).unwrap());
     }
 }

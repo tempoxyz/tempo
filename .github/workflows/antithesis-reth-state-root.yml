@@ -187,32 +187,56 @@ jobs:
           }
           trap cleanup EXIT
           docker pull "$image"
+          check_health() {
+            timeout 10s docker exec -e PROBE_MODE=invalid \
+              -e ANTITHESIS_SDK_LOCAL_OUTPUT=/tmp/health-sdk.jsonl \
+              "$container" /opt/antithesis/test/v1/main/anytime_probe_health \
+              > "$RUNNER_TEMP/health-stdout" 2> "$RUNNER_TEMP/health-stderr"
+            [[ ! -s "$RUNNER_TEMP/health-stdout" && ! -s "$RUNNER_TEMP/health-stderr" ]]
+            timeout 10s docker exec "$container" /bin/sh -c 'test ! -e /tmp/health-sdk.jsonl'
+          }
           for mode in dynamic constant; do
-            container="guidance-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$mode"
-            containers+=("$container")
-            stdout="$RUNNER_TEMP/$container-stdout.jsonl"
-            stderr="$RUNNER_TEMP/$container-stderr.log"
-            sdk="$RUNNER_TEMP/$container-sdk.jsonl"
-            docker run --network none --pull=never -d --name "$container" \
-              -e "PROBE_MODE=$mode" -e ANTITHESIS_SDK_LOCAL_OUTPUT=/tmp/sdk.jsonl \
-              "$image" > /dev/null
-            sleep 1
-            [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == true ]]
-            docker logs "$container" > "$stdout" 2> "$stderr"
-            [[ ! -s "$stdout" ]]
-            timeout 10s docker exec "$container" /opt/antithesis/test/v1/main/first_start_workload
-            sleep 1
-            docker logs "$container" > "$stdout" 2> "$stderr"
-            grep -Eq '"actual_state":[0-9]+' "$stdout"
-            docker stop --time 5 "$container" > /dev/null
-            [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container")" == 0 ]]
-            docker cp "$container:/tmp/sdk.jsonl" "$sdk"
-            grep -F '"antithesis_setup"' "$sdk" > /dev/null
-            grep -F '"antithesis_guidance"' "$sdk" \
-              | grep -F '"guidance_type":"json"' \
-              | grep -F '"hit":true' \
-              | grep -E '"guidance_data":\{"label":"[0-3][0-9a-f]"\}' > /dev/null
-            printf 'Validated %s mode: gated startup, first command, telemetry, SDK JSON guidance, clean shutdown (%s)\n' "$mode" "$image"
+            for phase in idle active; do
+              container="guidance-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$mode-$phase"
+              containers+=("$container")
+              stdout="$RUNNER_TEMP/$container-stdout.jsonl"
+              stderr="$RUNNER_TEMP/$container-stderr.log"
+              sdk="$RUNNER_TEMP/$container-sdk.jsonl"
+              docker run --network none --pull=never -d --name "$container" \
+                -e "PROBE_MODE=$mode" -e ANTITHESIS_SDK_LOCAL_OUTPUT=/tmp/sdk.jsonl \
+                "$image" > /dev/null
+              # Idle timelines must outlive the former fatal 30-second activation deadline.
+              if [[ "$phase" == idle ]]; then sleep 31; else sleep 1; fi
+              [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == true ]]
+              docker logs "$container" > "$stdout" 2> "$stderr"
+              [[ ! -s "$stdout" ]]
+              docker cp "$container:/tmp/sdk.jsonl" "$sdk"
+              grep -F '"antithesis_setup"' "$sdk" > /dev/null
+              ! grep -F '"antithesis_guidance"' "$sdk" | grep -F '"hit":true'
+              check_health
+              timeout 10s docker exec "$container" /bin/sh -c 'test ! -e /workload-active'
+              if [[ "$phase" == active ]]; then
+                timeout 10s docker exec "$container" /opt/antithesis/test/v1/main/first_start_workload
+                sleep 1
+                docker logs "$container" > "$stdout" 2> "$stderr"
+                grep -Eq '"actual_state":[0-9]+' "$stdout"
+                check_health
+              fi
+              docker stop --time 5 "$container" > /dev/null
+              [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container")" == 0 ]]
+              docker cp "$container:/tmp/sdk.jsonl" "$sdk"
+              if [[ "$phase" == active ]]; then
+                grep -F '"antithesis_guidance"' "$sdk" \
+                  | grep -F '"guidance_type":"json"' \
+                  | grep -F '"hit":true' \
+                  | grep -E '"guidance_data":\{"label":"[0-3][0-9a-f]"\}' > /dev/null
+              else
+                docker logs "$container" > "$stdout" 2> "$stderr"
+                [[ ! -s "$stdout" ]]
+                ! grep -F '"antithesis_guidance"' "$sdk" | grep -F '"hit":true'
+              fi
+              printf 'Validated %s mode (%s): gated startup, stateless anytime health, clean shutdown (%s)\n' "$mode" "$phase" "$image"
+            done
           done
 
       - name: Prepare digest-paired probe configurations
@@ -258,7 +282,7 @@ jobs:
             log="$RUNNER_TEMP/guidance-probe-$mode-validation.log"
             SNOUTY_TEMP_DIR="$validation_temp" "$snouty" validate "$config" --timeout 20s 2>&1 | tee "$log"
             grep -F 'Setup validation successful' "$log"
-            grep -F 'Found 1 first, 0 driver, 0 anytime, 0 eventually, 0 finally' "$log"
+            grep -F 'Found 1 first, 0 driver, 1 anytime, 0 eventually, 0 finally' "$log"
           done
 
       - name: Build and push dynamic guidance config

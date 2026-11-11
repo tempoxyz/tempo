@@ -58,12 +58,14 @@ RUN set -eu; \
     mkdir -p /rootfs/usr/local/bin /rootfs/opt/antithesis/test/v1/main /rootfs/tmp; \
     chmod 1777 /rootfs/tmp; \
     cp "$binary" /rootfs/usr/local/bin/guidance-probe; \
-    cp "$binary" /rootfs/opt/antithesis/test/v1/main/first_start_workload; \
-    cmp /rootfs/usr/local/bin/guidance-probe /rootfs/opt/antithesis/test/v1/main/first_start_workload; \
+    for command in first_start_workload anytime_probe_health; do \
+        cp "$binary" "/rootfs/opt/antithesis/test/v1/main/$command"; \
+        cmp /rootfs/usr/local/bin/guidance-probe "/rootfs/opt/antithesis/test/v1/main/$command"; \
+    done; \
     test -x /rootfs/usr/local/bin/guidance-probe
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 COPY --from=builder /rootfs/usr/local/bin/guidance-probe /usr/local/bin/guidance-probe
-COPY --from=builder /rootfs/opt/antithesis/test/v1/main/first_start_workload /opt/antithesis/test/v1/main/first_start_workload
+COPY --from=builder /rootfs/opt/antithesis/test/v1/main/ /opt/antithesis/test/v1/main/
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/guidance-probe"]

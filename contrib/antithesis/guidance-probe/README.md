@@ -26,10 +26,19 @@ label bytes vary. `antithesis_init()` registers catalogs before the fixed true
 
 After setup, `/opt/antithesis/test/v1/main/first_start_workload` (an identical copy
 of the binary, not a shell script) creates `/workload-active`. The main process
-waits up to 30 seconds for it, checking SIGTERM/SIGINT shutdown every 100 ms;
-missing activation exits with an error. Fuzzing then intentionally runs until
-shutdown. Each fuzz-loop sleep is bounded at 100 ms and checks shutdown before
-the next draw. Missing/invalid mode and other errors exit with code 2.
+waits for activation or SIGTERM/SIGINT, checking shutdown with bounded 100 ms
+sleeps. There is no activation deadline: the [test composer reference](https://antithesis.com/docs/product/writing_tests/test_templates/test_composer_reference/)
+requires a driver or anytime command and runs `first` only when its template is
+selected after setup; it does not guarantee activation within 30 seconds.
+`anytime_probe_health` is another identical copy of the binary that returns zero
+without consulting mode or state, writing a marker, or invoking the SDK/RNG.
+Both test commands dispatch by basename before SDK initialization. PID 1 alone
+owns the state walk and telemetry, and emits neither steps nor guidance hits
+before activation. External validation timeouts and authorized run limits bound
+waiting and fuzzing; a branch without a selected first command remains idle and
+interruptible. Each fuzz-loop sleep is bounded at 100 ms and checks shutdown
+before the next draw. Missing/invalid mode in PID 1 and other errors exit with
+code 2.
 
 ## Build and publication: CI only
 
@@ -53,17 +62,20 @@ to reject jumps in the transition and mode-masked label selection. The final
 image uses a digest-pinned Debian Bookworm slim runtime, matching the builder's
 Debian release. Preserve its full glibc runtime: the platform injects dependencies
 such as `libm.so.6` and `libpthread.so.0` that a local `ldd` of the probe does not
-reveal. Only the probe and identical first command are copied from the builder;
-no source, compiler, SDK cache, or build output directory is copied.
+reveal. Only the probe and identical first/anytime commands are copied from the
+builder; no source, compiler, SDK cache, or build output directory is copied.
 
 Required CI checks: formatting; four copied state/label tests plus activation
 ready/timeout/shutdown tests; Clippy; locked release build; no-coverage and
 branchless disassembly gates; a 78-step/arm deterministic SDK/stdout equivalence
-and cadence preflight; image construction/upload. Run startup/first-command,
-shutdown, and compose validation against the
-CI-built immutable image before treating it as launch-ready. Earlier standalone
-host validation is not evidence for this new toolchain/image. No CI result is
-claimed here.
+and cadence preflight; image construction/upload. CI runtime gates verify idle
+startup beyond the former 30-second deadline with no telemetry/guidance hits,
+first-command activation, clean shutdown both before and after activation, and
+zero-exit anytime health with invalid mode and no SDK output. Compose validation
+must discover exactly one first and one anytime command. Run these gates against
+the CI-built immutable image before treating it as launch-ready. Earlier
+standalone host validation is not evidence for this new toolchain/image. No CI
+result is claimed here.
 
 The existing `--steps N` option skips activation and bounds a deterministic
 preflight; `--tape PATH` requires steps and reads whitespace-separated u64 draws.
