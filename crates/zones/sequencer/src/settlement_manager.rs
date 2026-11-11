@@ -341,6 +341,7 @@ impl PendingSettlements {
             routes.remove(&digest);
             eyre::bail!("settlement response has no pending request");
         };
+        // The digest binds the exact attestation, so a signer's first reply is final.
         if !route.signers.insert(signer) {
             return Ok(());
         }
@@ -447,6 +448,43 @@ mod tests {
             request.receiver.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         );
+    }
+
+    #[test]
+    fn tracks_signers_per_digest() {
+        let pending = PendingSettlements::default();
+        let first_digest = B256::repeat_byte(1);
+        let second_digest = B256::repeat_byte(2);
+        let mut first = pending.subscribe(first_digest).unwrap();
+        let mut second = pending.subscribe(second_digest).unwrap();
+        let response = signed(120);
+        let signer = signer_of(&response);
+
+        pending
+            .route(first_digest, signer, response.clone())
+            .unwrap();
+        pending
+            .route(second_digest, signer, response.clone())
+            .unwrap();
+
+        assert_eq!(first.receiver.try_recv().unwrap(), response);
+        assert_eq!(second.receiver.try_recv().unwrap(), response);
+    }
+
+    #[test]
+    fn resubscribing_resets_forwarded_signers() {
+        let pending = PendingSettlements::default();
+        let digest = B256::repeat_byte(1);
+        let response = signed(120);
+        let signer = signer_of(&response);
+        let request = pending.subscribe(digest).unwrap();
+        pending.route(digest, signer, response.clone()).unwrap();
+        drop(request);
+
+        let mut retry = pending.subscribe(digest).unwrap();
+        pending.route(digest, signer, response.clone()).unwrap();
+
+        assert_eq!(retry.receiver.try_recv().unwrap(), response);
     }
 
     #[test]
