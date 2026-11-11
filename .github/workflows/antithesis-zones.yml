@@ -118,9 +118,11 @@ jobs:
           dir="$RUNNER_TEMP/antithesis-config"
           mkdir -p "$dir"
           cp contrib/antithesis/zones/docker-compose.yaml "$dir/"
+          # Digest only: Antithesis turns a tag@digest reference into a file name, which a long
+          # branch tag pushes past the 255-byte limit, and the image is silently dropped.
           {
-            echo "ZONES_IMAGE=$REGISTRY/tempo-zones-antithesis:$TAG@$DIGEST"
-            echo "WORKLOAD_IMAGE=$REGISTRY/tempo-zones-antithesis-workload:$TAG@$WORKLOAD_DIGEST"
+            echo "ZONES_IMAGE=$REGISTRY/tempo-zones-antithesis@$DIGEST"
+            echo "WORKLOAD_IMAGE=$REGISTRY/tempo-zones-antithesis-workload@$WORKLOAD_DIGEST"
           } > "$dir/.env"
           printf 'FROM scratch\nCOPY docker-compose.yaml .env /\n' > "$dir/Dockerfile"
           docker build --platform linux/amd64 \
@@ -132,7 +134,7 @@ jobs:
             echo ""
             echo "| Image | Reference |"
             echo "|---|---|"
-            echo "| Node image | \`$REGISTRY/tempo-zones-antithesis:$TAG@$DIGEST\` |"
-            echo "| Workload image | \`$REGISTRY/tempo-zones-antithesis-workload:$TAG@$WORKLOAD_DIGEST\` |"
+            echo "| Node image | \`$REGISTRY/tempo-zones-antithesis@$DIGEST\` |"
+            echo "| Workload image | \`$REGISTRY/tempo-zones-antithesis-workload@$WORKLOAD_DIGEST\` |"
             echo "| Config image | \`$REGISTRY/tempo-zones-antithesis-config:$TAG\` |"
           } >> "$GITHUB_STEP_SUMMARY"
