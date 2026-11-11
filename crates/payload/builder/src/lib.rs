@@ -1025,6 +1025,8 @@ where
                             );
                             Some((outcome, elapsed))
                         }
+                        // The task of a build that was given up on is cancelled with it.
+                        Err(_) if cancel.is_cancelled() => None,
                         Err(err) => {
                             warn!(
                                 target: "payload_builder",
@@ -1038,6 +1040,10 @@ where
                 })
             }
             .unzip();
+
+        // Nobody waits for the payload of a build that was given up on while it finished, so do
+        // not compute the root the slow way in place of the cancelled task.
+        check_cancel!();
 
         let (state_root, trie_updates) = if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
