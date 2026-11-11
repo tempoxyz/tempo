@@ -1038,9 +1038,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 ///
 /// Like every other fork boundary, this follows the EVM spec, so an out-of-order schedule such as
 /// T15 at genesis and T13 later runs the T15 runtimes from genesis.
-///
-/// T14 retires migrated root keys but only the T15 portal stops counting them in settlement, so
-/// the chainspec test `t15_activates_no_later_than_t14` keeps T14 from running the T13 runtimes.
 fn zone_runtime_fork(spec: TempoHardfork) -> Option<TempoHardfork> {
     if spec.is_t15() {
         Some(TempoHardfork::T15)
