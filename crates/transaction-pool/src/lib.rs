@@ -31,7 +31,7 @@ pub use maintain::TempoPoolUpdates;
 
 pub use delayed_pool::DelayedPool;
 pub use metrics::{AA2dPoolMetrics, DelayedPoolMetrics, TempoPoolMaintenanceMetrics};
-pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_SENDER};
+pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_AUTHORITY};
 
 #[cfg(test)]
 pub(crate) mod test_utils;
