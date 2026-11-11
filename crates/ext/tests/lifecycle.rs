@@ -7,6 +7,8 @@
 
 use minisign::{KeyPair, PublicKey};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{collections::HashMap, env, fs, io::Cursor, path::PathBuf, sync::Mutex};
 
 /// Serialize integration tests — they mutate process-wide env vars.
@@ -45,10 +47,7 @@ impl Fixture {
         let tempoup = stub_dir.join("tempoup");
         fs::write(&tempoup, "#!/bin/sh\nexit 0\n").unwrap();
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tempoup, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        fs::set_permissions(&tempoup, fs::Permissions::from_mode(0o755)).unwrap();
         let path = env::var_os("PATH").unwrap_or_default();
         let path =
             env::join_paths(std::iter::once(stub_dir).chain(env::split_paths(&path))).unwrap();
