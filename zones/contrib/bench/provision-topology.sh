@@ -830,6 +830,7 @@ provision_up() {
         --txpool.max-pending-txns 200000
         --txpool.max-new-txns 200000
         --txpool.max-batch-size 200000
+        --txpool.max-account-slots 150000
     )
 
     start_process tempo-a "$TEMPO_BIN" "${ZONES_BENCH_L1_A_CPUS:-0-3,16-19}" "$log_dir/tempo-a.log" \
