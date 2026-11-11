@@ -656,6 +656,14 @@ pub enum TempoPoolTransactionError {
     )]
     ExceedsNonPaymentLimit,
 
+    /// Canonical updates kept changing the pool while the transaction validated.
+    ///
+    /// Thrown during pool admission when a canonical update landed during every validation
+    /// attempt, so none validated the transaction against the state the pool is maintained
+    /// for. The transaction may be valid and can be submitted again.
+    #[error("Chain state changed during every validation attempt, please resubmit")]
+    StateChangedDuringValidation,
+
     /// An AA transaction's `valid_before` is too close to the current pool tip.
     ///
     /// Thrown during pool admission when `valid_before` is less than or equal to
@@ -856,6 +864,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
+            | Self::StateChangedDuringValidation
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }

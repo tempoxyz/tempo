@@ -102,3 +102,16 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Number of transactions re-validated due to quote token updates.
     pub quote_token_revalidated: Counter,
 }
+
+/// Transaction pool admission metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.admission")]
+pub(crate) struct AdmissionMetrics {
+    /// Transactions validated again before insertion because a canonical update landed while
+    /// they validated.
+    pub(crate) revalidated: Counter,
+
+    /// Valid transactions rejected because a canonical update landed during every validation
+    /// attempt.
+    pub(crate) rejected: Counter,
+}

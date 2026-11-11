@@ -5,8 +5,9 @@
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
+    metrics::AdmissionMetrics,
     ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
@@ -45,6 +46,14 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{Block, TempoHeader};
 
+/// Validations of a transaction before admission rejects it because the admission epoch advanced
+/// during each of them.
+///
+/// A single canonical update advances it at most four times (reth's pool update, two in pool
+/// maintenance and a zone's authority revalidation), so a rejection takes advances from at least
+/// three canonical updates during one admission.
+const ADMISSION_ATTEMPTS: usize = 10;
+
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
     /// Returns pending transactions in the address's sequential 2D nonce lane.
@@ -65,6 +74,11 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Advanced by [`Self::advance_admission_epoch`]. Admission inserts under the read lock, and
+    /// only what it validated within the current epoch.
+    admission_epoch: Arc<RwLock<u64>>,
+    /// Admission metrics.
+    admission_metrics: AdmissionMetrics,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -86,6 +100,8 @@ where
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            admission_epoch: Arc::default(),
+            admission_metrics: AdmissionMetrics::default(),
         }
     }
 }
@@ -96,6 +112,15 @@ where
         + 'static,
     EvmConfig: ConfigureTempoPoolEvm,
 {
+    /// Sends admissions that are validating now back to validation before they insert.
+    ///
+    /// Call before repairing the pool for a canonical update, and after refreshing what
+    /// validation reads besides chain state. An admission that validated earlier would otherwise
+    /// insert a transaction that repair would have removed.
+    pub(crate) fn advance_admission_epoch(&self) {
+        *self.admission_epoch.write() += 1;
+    }
+
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
         self.protocol_pool
@@ -681,6 +706,8 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            admission_epoch: Arc::clone(&self.admission_epoch),
+            admission_metrics: self.admission_metrics.clone(),
         }
     }
 }
@@ -718,6 +745,8 @@ where
         if accounts.is_some_and(AddressSet::is_empty) {
             return true;
         }
+        // An admission that validated before the change would insert after this scan.
+        self.advance_admission_epoch();
         let transactions: Vec<_> = self
             .all_transactions()
             .iter()
@@ -825,27 +854,85 @@ where
             return Vec::new();
         }
 
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions_with_origins(transactions)
-                .await;
-        }
-
+        let has_2d = transactions.iter().any(|(_, tx)| tx.is_aa_2d());
         let origins = transactions
             .iter()
             .map(|(origin, _)| *origin)
             .collect::<Vec<_>>();
+        let validator = self.protocol_pool.validator();
 
-        self.protocol_pool
-            .validator()
-            .validate_transactions(transactions)
-            .await
-            .into_iter()
-            .zip(origins)
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
+        let mut seen = *self.admission_epoch.read();
+        let mut outcomes = validator.validate_transactions(transactions).await;
+        let mut attempts = 1;
+        loop {
+            {
+                // The epoch advances under the write lock before the pool is repaired for a
+                // canonical update, so either this sees the advance or that repair sees what is
+                // inserted under this guard.
+                let epoch = self.admission_epoch.read();
+                if *epoch == seen {
+                    let outcomes = origins.into_iter().zip(outcomes);
+                    // Fully delegate to protocol pool for non-2D transactions
+                    return if has_2d {
+                        outcomes
+                            .map(|(origin, outcome)| {
+                                self.add_validated_transaction(origin, outcome)
+                            })
+                            .collect()
+                    } else {
+                        self.protocol_pool
+                            .inner()
+                            .add_transactions_with_origins(outcomes)
+                    };
+                }
+                seen = *epoch;
+            }
+            if attempts == ADMISSION_ATTEMPTS {
+                // No attempt validated these against the state the pool is repaired for.
+                return origins
+                    .into_iter()
+                    .zip(outcomes)
+                    .map(|(origin, outcome)| match outcome {
+                        TransactionValidationOutcome::Valid { transaction, .. } => {
+                            self.admission_metrics.rejected.increment(1);
+                            Err(PoolError::other(
+                                *transaction.transaction().hash(),
+                                TempoPoolTransactionError::StateChangedDuringValidation,
+                            ))
+                        }
+                        // Forwarded for event listener updates.
+                        invalid => self.add_validated_transaction(origin, invalid),
+                    })
+                    .collect();
+            }
+            attempts += 1;
+
+            // A canonical update landed while these validated, and the pool may have been
+            // repaired for it already: validate the valid ones again before inserting any.
+            let (slots, stale): (Vec<_>, Vec<_>) = outcomes
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, outcome)| match outcome {
+                    TransactionValidationOutcome::Valid { transaction, .. } => Some((
+                        slot,
+                        (
+                            origins[slot],
+                            transaction.transaction().with_discarded_caches(),
+                        ),
+                    )),
+                    _ => None,
+                })
+                .unzip();
+            self.admission_metrics
+                .revalidated
+                .increment(stale.len() as u64);
+            for (slot, outcome) in slots
+                .into_iter()
+                .zip(validator.validate_transactions(stale).await)
+            {
+                outcomes[slot] = outcome;
+            }
+        }
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -1405,6 +1492,9 @@ where
         // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
         // keep ordering its eviction sets against a stale base fee once the fee starts moving.
         let pending_basefee = update.pending_block_base_fee;
+        // Reth prunes mined transactions and moves sender nonces below. An admission that
+        // validated against the previous state would insert with the nonce it read then.
+        self.advance_admission_epoch();
         self.protocol_pool.on_canonical_state_change(update);
         self.aa_2d_pool.write().set_base_fee(pending_basefee);
     }
@@ -1562,13 +1652,16 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use futures::{FutureExt, StreamExt};
-    use reth_primitives_traits::{InMemorySize, Recovered, SealedBlock};
+    use reth_primitives_traits::{
+        InMemorySize, Recovered, SealedBlock, transaction::error::InvalidTransactionError,
+    };
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
         AllTransactionsEvents, FullTransactionEvent, PoolConfig, PoolUpdateKind, SubPoolLimit,
         TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
+        error::InvalidPoolTransactionError,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
     use tempo_chainspec::{
@@ -2279,6 +2372,166 @@ mod tests {
             )),
             fee_payer,
         )
+    }
+
+    /// A pool whose state admits the returned protocol transaction.
+    fn pool_with_valid_transaction() -> (
+        MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        TempoPooledTransaction,
+    ) {
+        let pooled = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let sender = pooled.sender();
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), U256::ZERO));
+        set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, U256::from(u64::MAX));
+        (provider.clone(), create_test_pool(provider), pooled)
+    }
+
+    /// Polls `admission` until it waits on a validation, then lets the validation task finish
+    /// that validation against the current state.
+    async fn run_validation(admission: &mut (impl Future + Unpin)) {
+        assert!(futures::poll!(&mut *admission).is_pending());
+        tokio::task::yield_now().await;
+    }
+
+    /// Moves the sender's nonce past `pooled`, so validation rejects it from now on.
+    fn mine_sender_nonce(
+        provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        pooled: &TempoPooledTransaction,
+    ) {
+        provider.add_account(
+            pooled.sender(),
+            ExtendedAccount::new(pooled.nonce() + 1, U256::ZERO),
+        );
+    }
+
+    /// Asserts that `admission`, whose first validation passed before
+    /// [`mine_sender_nonce`], validates `pooled` again and never inserts it.
+    async fn assert_validated_again(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        pooled: &TempoPooledTransaction,
+        admission: impl Future<Output = PoolResult<AddedTransactionOutcome>>,
+    ) {
+        let mut pending = pool.pending_transactions_listener();
+        let err = admission
+            .await
+            .expect_err("the second validation rejects the transaction");
+        assert!(pending.try_recv().is_err());
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::NonceNotConsistent { tx: 0, state: 1 }
+            ))
+        ));
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn admission_validates_again_after_epoch_advances_during_validation() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        mine_sender_nonce(&provider, &pooled);
+        pool.advance_admission_epoch();
+
+        assert_validated_again(&pool, &pooled, admission).await;
+    }
+
+    #[tokio::test]
+    async fn admission_validates_again_after_canonical_state_change_during_validation() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        mine_sender_nonce(&provider, &pooled);
+        let new_tip = SealedBlock::seal_slow(Block {
+            header: TempoHeader {
+                inner: Header {
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        pool.on_canonical_state_change(CanonicalStateUpdate {
+            new_tip: &new_tip,
+            pending_block_base_fee: pool.block_info().pending_basefee,
+            pending_block_blob_fee: None,
+            changed_accounts: Vec::new(),
+            mined_transactions: Vec::new(),
+            update_kind: PoolUpdateKind::Commit,
+        });
+
+        assert_validated_again(&pool, &pooled, admission).await;
+    }
+
+    #[tokio::test]
+    async fn admission_validates_again_after_authority_revalidation_during_validation() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        mine_sender_nonce(&provider, &pooled);
+        assert!(pool.revalidate_authorities(None).await);
+
+        assert_validated_again(&pool, &pooled, admission).await;
+    }
+
+    #[tokio::test]
+    async fn admission_keeps_insertion_without_canonical_update_during_validation() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        // The state changed, but maintenance has not scanned the pool for it yet.
+        mine_sender_nonce(&provider, &pooled);
+
+        let added = admission.await.expect("the first validation stands");
+        assert_eq!(added.hash, *pooled.hash());
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn admission_inserts_on_last_attempt_within_one_epoch() {
+        let (_, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        for _ in 1..ADMISSION_ATTEMPTS {
+            run_validation(&mut admission).await;
+            pool.advance_admission_epoch();
+        }
+
+        let added = admission.await.expect("the last validation stands");
+        assert_eq!(added.hash, *pooled.hash());
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_after_epoch_advances_during_every_attempt() {
+        let (_, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        for _ in 0..ADMISSION_ATTEMPTS {
+            run_validation(&mut admission).await;
+            pool.advance_admission_epoch();
+        }
+
+        let mut pending = pool.pending_transactions_listener();
+        let err = admission
+            .await
+            .expect_err("no validation held for a whole epoch");
+        assert!(pending.try_recv().is_err());
+        let PoolErrorKind::Other(err) = err.kind else {
+            panic!("unexpected error {err:?}");
+        };
+        assert!(matches!(
+            err.downcast_ref(),
+            Some(TempoPoolTransactionError::StateChangedDuringValidation)
+        ));
+        assert!(pool.get(pooled.hash()).is_none());
     }
 
     #[tokio::test]
