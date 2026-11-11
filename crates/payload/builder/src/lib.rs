@@ -89,7 +89,13 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 /// block is full costs time linear in the pool size. Stopping early can only miss a transaction
 /// whose gas limit fits in the gas that is left, and ends paced builds without waiting for new
 /// pool transactions.
+///
+/// Skips only count once less than `1 / EARLY_STOP_REMAINING_GAS_DIVISOR` of the block gas
+/// limit remains, so transactions with large gas limits cannot end a block that still has room.
 const MAX_CONSECUTIVE_GAS_LIMIT_SKIPS: u32 = 128;
+
+/// See [`MAX_CONSECUTIVE_GAS_LIMIT_SKIPS`]: at most 1% of the block gas can be left unused.
+const EARLY_STOP_REMAINING_GAS_DIVISOR: u64 = 100;
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -593,7 +599,13 @@ where
                     ),
                 );
                 self.skipped.exceeds_block_gas_limit.increment(1);
-                consecutive_gas_limit_skips += 1;
+                if block_gas_limit - cumulative_gas_used
+                    < block_gas_limit / EARLY_STOP_REMAINING_GAS_DIVISOR
+                {
+                    consecutive_gas_limit_skips += 1;
+                } else {
+                    consecutive_gas_limit_skips = 0;
+                }
                 if consecutive_gas_limit_skips >= MAX_CONSECUTIVE_GAS_LIMIT_SKIPS {
                     break BlockBuildStopReason::GasLimitSkips;
                 }
