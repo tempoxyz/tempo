@@ -100,7 +100,7 @@ impl SignatureVerifier {
     /// Returns whether `signature` approves `hash` for `account`.
     ///
     /// Before T15, whether a primitive `signature` recovers to `account`.
-    /// (+T15) by signature type, against `account`'s current state (TIP-1168):
+    /// From T15, by signature type, against `account`'s current state (TIP-1168):
     /// - primitive: recovers to `account`, and `account` has no configuration commitment
     /// - keychain: as `verifyKeychainAdmin`, reverts included
     /// - configurable account: as `verifyConfigurableAccount`, reverts included

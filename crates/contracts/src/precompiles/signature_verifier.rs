@@ -16,7 +16,7 @@ crate::sol! {
         /// @param hash The message hash that was signed
         /// @param signature The encoded signature
         /// @dev Before T15, whether a primitive signature recovers to account.
-        /// (+T15) by signature type, against account's current state (TIP-1168):
+        /// From T15, by signature type, against account's current state (TIP-1168):
         /// - primitive: recovers to account, and account has no configuration commitment
         /// - keychain: same as `verifyKeychainAdmin`
         /// - configurable account: same as `verifyConfigurableAccount`
