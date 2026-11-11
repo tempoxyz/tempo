@@ -10,7 +10,7 @@ use std::{
     pin::Pin,
     sync::{Arc, OnceLock},
     task::{Context as TaskContext, Poll},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use alloy_consensus::{BlockHeader as _, Sealable as _, Transaction as _};
@@ -35,6 +35,7 @@ use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
+    time::timeout,
 };
 use tracing::{debug, info, warn};
 use zone_chainspec::ZoneChainSpec;
@@ -61,6 +62,10 @@ const SETTLEMENT_PROVER_QUEUE_CAPACITY: usize = 2;
 /// Number of finalized follower candidates allowed to wait behind validation.
 pub const SHADOW_PROVER_QUEUE_CAPACITY: usize = 5;
 const RPC_CONCURRENCY: usize = 8;
+/// Deadline for each of the request write and the response read on a remote prover connection.
+/// The read includes proving time, so this sits well above the enclave's 300 s transport
+/// deadlines.
+const REMOTE_PROVER_IO_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Node-owned inputs required to validate canonical Zone blocks with the SPF.
 #[derive(Clone)]
@@ -754,14 +759,16 @@ async fn verify_remotely(
 
     let started = Instant::now();
     let expected_id = request.request_id.clone();
-    let send_result = connection.send(request).await;
+    let send_result = timeout(REMOTE_PROVER_IO_TIMEOUT, connection.send(request)).await;
     metrics
         .spf_remote_request_send_duration_seconds
         .record(started.elapsed().as_secs_f64());
-    send_result.wrap_err_with(|| format!("send request to remote prover at {address}"))?;
+    send_result
+        .wrap_err_with(|| format!("send request to remote prover at {address} timed out"))?
+        .wrap_err_with(|| format!("send request to remote prover at {address}"))?;
 
     let response_started = Instant::now();
-    let response_result = connection.receive();
+    let response_result = timeout(REMOTE_PROVER_IO_TIMEOUT, connection.receive());
     let response_result = response_result.await;
     let response_finished = Instant::now();
     if let Some(first_read_at) = first_read_at.get().copied() {
@@ -782,7 +789,10 @@ async fn verify_remotely(
         );
     }
     let response: VerifyResponse = response_result
-        .wrap_err_with(|| format!("read response from remote prover at {address}"))
+        .wrap_err_with(|| format!("read response from remote prover at {address} timed out"))
+        .and_then(|response| {
+            response.wrap_err_with(|| format!("read response from remote prover at {address}"))
+        })
         .and_then(|response| {
             response.ok_or_eyre("remote prover closed the connection without a response")
         })?;
