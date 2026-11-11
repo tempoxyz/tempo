@@ -1,6 +1,6 @@
 use crate::{TempoExecutionData, TempoPayloadTypes};
 use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
-use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock};
+use reth_primitives_traits::SealedBlock;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{Block, TempoHeader};
 
@@ -32,10 +32,69 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
         attr: &TempoPayloadAttributes,
         header: &TempoHeader,
     ) -> Result<(), InvalidPayloadAttributesError> {
-        // Ensure that payload attributes timestamp is not in the past
-        if attr.timestamp < header.timestamp() {
+        // Ensure the payload attributes timestamp is after the parent's, in milliseconds
+        if attr.timestamp_millis() <= header.timestamp_millis() {
             return Err(InvalidPayloadAttributesError::InvalidTimestamp);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Bytes;
+    use reth_primitives_traits::Header;
+    use test_case::test_case;
+
+    fn header(timestamp: u64, timestamp_millis_part: u64) -> TempoHeader {
+        TempoHeader {
+            timestamp_millis_part,
+            inner: Header {
+                timestamp,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn attributes(timestamp: u64, timestamp_millis_part: u64) -> TempoPayloadAttributes {
+        TempoPayloadAttributes::new(None, timestamp, timestamp_millis_part, Bytes::new(), None)
+    }
+
+    #[test_case(10, 500, 10, 499; "same second lower millis")]
+    #[test_case(10, 500, 10, 500; "same millisecond")]
+    #[test_case(10, 500, 9, 999; "earlier second")]
+    fn rejects_non_increasing_millis_timestamp(
+        parent_secs: u64,
+        parent_millis: u64,
+        attr_secs: u64,
+        attr_millis: u64,
+    ) {
+        assert!(matches!(
+            TempoEngineValidator::new().validate_payload_attributes_against_header(
+                &attributes(attr_secs, attr_millis),
+                &header(parent_secs, parent_millis),
+            ),
+            Err(InvalidPayloadAttributesError::InvalidTimestamp)
+        ));
+    }
+
+    #[test_case(10, 500, 10, 501; "same second higher millis")]
+    #[test_case(10, 999, 11, 0; "next second")]
+    fn accepts_increasing_millis_timestamp(
+        parent_secs: u64,
+        parent_millis: u64,
+        attr_secs: u64,
+        attr_millis: u64,
+    ) {
+        assert!(
+            TempoEngineValidator::new()
+                .validate_payload_attributes_against_header(
+                    &attributes(attr_secs, attr_millis),
+                    &header(parent_secs, parent_millis),
+                )
+                .is_ok()
+        );
     }
 }

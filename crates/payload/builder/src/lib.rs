@@ -296,8 +296,10 @@ where
         // Snapshot before setup: the stop decision already charges start.elapsed().
         let payload_build_budget = attributes.payload_build_budget();
 
-        let block_time_millis =
-            (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
+        let block_time_millis = attributes
+            .timestamp_millis()
+            .saturating_sub(parent_header.timestamp_millis())
+            as f64;
         self.metrics.block_time_millis.record(block_time_millis);
         self.metrics.block_time_millis_last.set(block_time_millis);
 
