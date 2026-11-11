@@ -94,7 +94,40 @@ impl SignatureVerifier {
     ) -> Result<bool> {
         let sig = TempoSignature::from_bytes(signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
-        let recovered = self.recover_keychain_key(hash, &sig)?;
+        self.verify_keychain_admin_signature(account, hash, &sig)
+    }
+
+    /// Returns whether `signature` approves `hash` for `account` under its current state.
+    ///
+    /// A primitive signature counts only when it recovers to `account` and `account` has no
+    /// configuration commitment (TIP-1113). A keychain signature follows
+    /// [`Self::verify_keychain_admin`], and a configurable account signature follows
+    /// [`Self::verify_configurable_account`], including their reverts.
+    pub fn verify_account(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
+        let sig = TempoSignature::from_bytes(signature).map_err(|error| {
+            trace!(%error, "malformed account signature");
+            SignatureVerifierError::invalid_format()
+        })?;
+        match &sig {
+            TempoSignature::Primitive(primitive) => Ok(self.recover_primitive(hash, primitive)?
+                == account
+                && !self.storage.is_retired_root(account)?),
+            TempoSignature::Keychain(_) => {
+                self.verify_keychain_admin_signature(account, hash, &sig)
+            }
+            TempoSignature::ConfigurableAccount(configurable) => Ok(self
+                .verify_configurable_signature(account, hash, configurable)?
+                .is_some()),
+        }
+    }
+
+    fn verify_keychain_admin_signature(
+        &self,
+        account: Address,
+        hash: B256,
+        sig: &TempoSignature,
+    ) -> Result<bool> {
+        let recovered = self.recover_keychain_key(hash, sig)?;
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }

@@ -17,12 +17,13 @@ impl Precompile for SignatureVerifier {
             return err;
         }
 
-        // `verifyConfigurableAccount` and `verifyKeychain` input, which can carry a configurable
-        // account signature, is bounded by its decoder and already charged.
+        // `verifyConfigurableAccount`, `verifyAccount` and `verifyKeychain` input, which can carry a
+        // configurable account signature, is bounded by its decoder and already charged.
         if calldata.len() > MAX_CALLDATA_LEN
             && !(self.storage.spec().is_t14()
                 && [
                     ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR,
+                    ISignatureVerifier::verifyAccountCall::SELECTOR,
                     ISignatureVerifier::verifyKeychainCall::SELECTOR,
                 ]
                 .iter()
@@ -52,6 +53,10 @@ impl Precompile for SignatureVerifier {
                     #[schedule(since = T14)]
                     verifyConfigurableAccount(call) => view(call, |c| {
                         self.verify_configurable_account(c.account, c.hash, &c.signature)
+                    }),
+                    #[schedule(since = T14)]
+                    verifyAccount(call) => view(call, |c| {
+                        self.verify_account(c.account, c.hash, &c.signature)
                     }),
                 }
             }
@@ -186,6 +191,26 @@ mod tests {
             assert!(
                 UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
                 "verifyKeychainAdmin should be selector-gated before T6"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_account_selector_rejected_before_t14() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || {
+            let calldata = ISignatureVerifier::verifyAccountCall {
+                account: Address::random(),
+                hash: B256::ZERO,
+                signature: vec![0u8; 65].into(),
+            }
+            .abi_encode();
+
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
+            assert!(
+                UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
+                "verifyAccount should be selector-gated before T14"
             );
             Ok(())
         })

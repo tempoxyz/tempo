@@ -16,6 +16,9 @@ crate::sol! {
         /// @param hash The message hash that was signed
         /// @param signature The encoded signature (see Tempo Transaction spec for formats)
         /// @return True if the input address signed, false otherwise. Reverts on invalid signatures.
+        /// @dev Only checks which key signed. It doesn't apply the TIP-1113 retirement check, so a
+        /// migrated account's original key still verifies. Use `verifyAccount` to check whether an
+        /// account approved a hash.
         function verify(address signer, bytes32 hash, bytes calldata signature) external view returns (bool);
 
         /// @notice Verifies whether a keychain signature was produced by an active key.
@@ -40,6 +43,16 @@ crate::sol! {
         /// @notice Verifies a configurable account signature against current account state.
         /// @return False for an account or configuration mismatch; reverts for malformed or invalid approvals.
         function verifyConfigurableAccount(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
+
+        /// @notice Verifies whether a signature approves a hash for an account under its current state.
+        /// @param account The account expected to approve
+        /// @param hash The message hash that was signed
+        /// @param signature A primitive, keychain or configurable account signature
+        /// @dev A primitive signature counts only while the account has no configuration commitment
+        /// (TIP-1113). A keychain signature follows `verifyKeychainAdmin`, and a configurable account
+        /// signature follows `verifyConfigurableAccount`.
+        /// @return True if the signature approves hash for account. Reverts for malformed or invalid signatures.
+        function verifyAccount(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
 
         error InvalidFormat();
         error InvalidSignature();

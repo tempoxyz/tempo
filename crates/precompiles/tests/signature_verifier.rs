@@ -441,3 +441,67 @@ fn verify_keychain_accepts_configurable_delegates_from_t14() {
         [invalid_format(), invalid_format()]
     );
 }
+
+#[test]
+fn verify_account_follows_the_account_state() {
+    let root = Key::random(Secp256k1);
+    let account = root.address();
+    let access_key = Key::random(Secp256k1);
+    let primitive = TempoSignature::Primitive(root.sign(HASH)).to_bytes();
+    let root_keychain = keychain_signature(&root, account);
+    let access_keychain = keychain_signature(&access_key, account);
+    // `verifyAccount` results for `signature`, with `grant` to the access key and a commitment on
+    // each of `committed`.
+    let verify = |signature: &Bytes, grant, committed: &[Address]| {
+        let mut storage = storage_at(T14, account, access_key.address(), grant, committed);
+        StorageCtx::enter(&mut storage, || {
+            SignatureVerifier::new().verify_account(account, HASH, signature)
+        })
+    };
+
+    // The original key approves only while the account has no commitment.
+    assert_eq!(verify(&primitive, None, &[]), Ok(true));
+    assert_eq!(verify(&primitive, None, &[account]), Ok(false));
+    assert_eq!(verify(&root_keychain, None, &[]), Ok(true));
+    assert_eq!(verify(&root_keychain, None, &[account]), Ok(false));
+    // A primitive signature by any other key.
+    let other = TempoSignature::Primitive(access_key.sign(HASH)).to_bytes();
+    assert_eq!(verify(&other, key(Secp256k1), &[]), Ok(false));
+    // Ordinary access keys don't approve for the account.
+    assert_eq!(verify(&access_keychain, key(Secp256k1), &[]), Ok(false));
+    assert_eq!(
+        verify(&Bytes::from_static(&[0x05]), None, &[]),
+        Err(SignatureVerifierError::invalid_format().into())
+    );
+}
+
+#[test]
+fn verify_account_accepts_configurable_account_signatures() {
+    let owner = Key::random(Secp256k1);
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let account = config.derive_account().unwrap();
+    let digest = configurable_account_digest(HASH, account, config.version);
+    let signature = TempoSignature::ConfigurableAccount(
+        ConfigurableAccountSignature::try_new(account, config, vec![owner.sign(digest)]).unwrap(),
+    )
+    .to_bytes();
+    let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
+    StorageCtx::enter(&mut storage, || {
+        let verifier = SignatureVerifier::new();
+        assert!(verifier.verify_account(account, HASH, &signature).unwrap());
+        // The owner's signature doesn't approve for any other account.
+        assert!(
+            !verifier
+                .verify_account(owner.address(), HASH, &signature)
+                .unwrap()
+        );
+    });
+}
