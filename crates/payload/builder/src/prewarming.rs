@@ -36,7 +36,8 @@ const MAX_PREWARM_LOOKAHEAD: usize = 256;
 struct PrewarmLookahead {
     /// Transactions the coordinator pulled from the source iterator.
     pulled: AtomicUsize,
-    /// Transactions the builder took from [`BestTransactionsPrewarming`].
+    /// Transactions the builder took from [`BestTransactionsPrewarming`], or that it dropped
+    /// because their lane was invalidated.
     consumed: AtomicUsize,
     /// Set by the coordinator when it defers advances; cleared by the builder when it asks the
     /// coordinator to resume.
@@ -302,19 +303,29 @@ impl BestTransactionsPrewarming {
 
     /// Records that the builder takes `tx` and resumes prewarming once it caught up.
     fn consumed(&self, tx: PrewarmedTransaction) -> PrewarmedTransaction {
+        self.record_taken();
+        tx
+    }
+
+    /// Records a transaction that left the buffer, taken or dropped, so it no longer counts
+    /// towards the lookahead, and resumes prewarming once the builder caught up.
+    fn record_taken(&self) {
         if self.lookahead.consume() {
             let _ = self.commands_tx.send(BestTransactionsCommand::Resume);
         }
-        tx
     }
 
     /// Returns the next already-received transaction that is not on an invalidated lane.
     fn next_buffered(&mut self) -> Option<PrewarmedTransaction> {
-        let invalidated = &self.invalidated;
-        self.transactions_rx
-            .try_iter()
-            .flatten()
-            .find(|tx| !invalidated.contains(&tx.tx))
+        while let Ok(tx) = self.transactions_rx.try_recv() {
+            let Some(tx) = tx else { continue };
+            if self.invalidated.contains(&tx.tx) {
+                self.record_taken();
+                continue;
+            }
+            return Some(tx);
+        }
+        None
     }
 }
 
@@ -349,7 +360,10 @@ impl Iterator for BestTransactionsPrewarming {
             match self.transactions_rx.recv().ok()? {
                 // The source yielded a transaction on an invalidated lane before it saw the
                 // invalidation; poll again for one the builder can use.
-                Some(tx) if self.invalidated.contains(&tx.tx) => continue,
+                Some(tx) if self.invalidated.contains(&tx.tx) => {
+                    self.record_taken();
+                    continue;
+                }
                 Some(tx) => return Some(self.consumed(tx)),
                 None => return self.next_buffered().map(|tx| self.consumed(tx)),
             }
@@ -944,6 +958,54 @@ mod tests {
         assert!(lookahead.consume());
         assert!(!lookahead.paused.load(Ordering::Relaxed));
         assert!(!lookahead.consume(), "resumes once");
+    }
+
+    #[test]
+    fn dropped_transactions_on_invalidated_lanes_leave_the_lookahead() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let sender = Address::random();
+        let dropped = MAX_PREWARM_LOOKAHEAD / 2 + 1;
+        for nonce in 1..=dropped {
+            transactions_tx
+                .send(Some(PrewarmedTransaction::without_replay(test_tx(
+                    sender,
+                    nonce as u64,
+                ))))
+                .unwrap();
+        }
+        let kept = test_tx(Address::random(), 0);
+        transactions_tx
+            .send(Some(PrewarmedTransaction::without_replay(kept.clone())))
+            .unwrap();
+        let lookahead = Arc::new(PrewarmLookahead::default());
+        lookahead.pulled.store(dropped + 1, Ordering::Relaxed);
+        lookahead.paused.store(true, Ordering::Relaxed);
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
+            lookahead: lookahead.clone(),
+        };
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(test_tx(sender, 0)),
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+        assert!(matches!(
+            commands_rx.try_recv().unwrap(),
+            BestTransactionsCommand::Invalid(_)
+        ));
+
+        assert_eq!(prewarming.next().unwrap().tx.hash(), kept.hash());
+        assert_eq!(lookahead.ahead(), 0);
+        assert!(
+            matches!(
+                commands_rx.try_recv().unwrap(),
+                BestTransactionsCommand::Resume
+            ),
+            "dropping the invalidated lane must let prewarming resume"
+        );
     }
 
     #[test]

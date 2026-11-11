@@ -15032,6 +15032,7 @@ dependencies = [
  "crossbeam-channel",
  "evm2",
  "metrics",
+ "parking_lot",
  "proptest",
  "reth-basic-payload-builder",
  "reth-chainspec",

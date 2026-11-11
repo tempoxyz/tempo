@@ -79,7 +79,8 @@ impl<H: OnStateHook> BatchedStateHook<H> {
         self.pending.push(account);
     }
 
-    fn flush(&mut self) {
+    /// Sends the pending batch, if any.
+    pub(crate) fn flush(&mut self) {
         if self.updates == 0 && self.pending.is_empty() {
             return;
         }

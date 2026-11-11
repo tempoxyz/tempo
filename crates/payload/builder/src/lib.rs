@@ -27,6 +27,7 @@ use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_rlp::Encodable;
+use parking_lot::Mutex;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -460,10 +461,18 @@ where
 
         check_cancel!();
 
-        if let Some(handle) = state_root_handle.as_mut() {
-            let mut hook = BatchedStateHook::new(handle.take_state_hook(), STATE_UPDATE_BATCH_SIZE);
-            executor.set_state_hook(move |state| hook.on_state(state));
-        }
+        // Shared with the executor so the fill loop can flush a partial batch while it waits for
+        // pool transactions. Dropped before `executor.finish()`, so the executor's copy is the last
+        // and its drop ends the update stream as before.
+        let state_hook = state_root_handle.as_mut().map(|handle| {
+            let hook = Arc::new(Mutex::new(BatchedStateHook::new(
+                handle.take_state_hook(),
+                STATE_UPDATE_BATCH_SIZE,
+            )));
+            let executor_hook = hook.clone();
+            executor.set_state_hook(move |state| executor_hook.lock().on_state(state));
+            hook
+        });
 
         executor.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
@@ -577,6 +586,17 @@ where
 
             let Some(mut pool_tx) = best_txs.next() else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
+                    // Hand partial batches to the roots and state-root tasks so their work
+                    // overlaps the wait instead of running after the block is finished.
+                    if !roots_batch.is_empty() {
+                        let _ = roots_tx.send(core::mem::replace(
+                            &mut roots_batch,
+                            Vec::with_capacity(ROOTS_BATCH_SIZE),
+                        ));
+                    }
+                    if let Some(hook) = &state_hook {
+                        hook.lock().flush();
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -795,6 +815,7 @@ where
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
+        drop(state_hook);
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
