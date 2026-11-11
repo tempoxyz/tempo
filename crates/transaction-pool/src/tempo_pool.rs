@@ -1089,6 +1089,14 @@ where
                             authorities,
                             valid_after,
                         ),
+                        // A concurrent admission of the same transaction may have held it
+                        // while this one was validating.
+                        (outcome, _) if self.delayed_pool.read().contains(&outcome.tx_hash()) => {
+                            Err(PoolError::new(
+                                outcome.tx_hash(),
+                                PoolErrorKind::AlreadyImported,
+                            ))
+                        }
                         (outcome, _) => self.add_validated_transaction(origin, outcome),
                     }
                 })
