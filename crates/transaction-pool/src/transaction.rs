@@ -548,10 +548,26 @@ impl TempoPooledTransaction {
     /// an access key signs for it), the key authorization signer, a separate fee payer or the
     /// access key.
     pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let [sender, authorities @ ..] = self.authorities();
+        let signed_by_access_key = self
+            .inner()
+            .as_aa()
+            .is_some_and(|tx| tx.signature().is_keychain());
+        sender
+            .filter(|_| !signed_by_access_key)
+            .into_iter()
+            .chain(authorities.into_iter().flatten())
+            .any(|authority| accounts.contains(&authority))
+    }
+
+    /// The accounts whose state changes can invalidate this transaction: the sender, the key
+    /// authorization signer, a separate fee payer and the access key, in that order. The same
+    /// account can appear in more than one role.
+    pub(crate) fn authorities(&self) -> [Option<Address>; 4] {
+        let sender = Some(*self.sender_ref());
         let Some(tx) = self.inner().as_aa() else {
-            return accounts.contains(self.sender_ref());
+            return [sender, None, None, None];
         };
-        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
         // Recovery fails only for a transaction that validation already rejects.
         let grant_signer = tx
             .tx()
@@ -564,9 +580,6 @@ impl TempoPooledTransaction {
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
         [sender, grant_signer, fee_payer, access_key]
-            .into_iter()
-            .flatten()
-            .any(|authority| accounts.contains(&authority))
     }
 }
 
