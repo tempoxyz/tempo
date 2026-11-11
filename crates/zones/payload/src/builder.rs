@@ -24,6 +24,7 @@ use reth_evm::{
         BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv, map_handler_error,
     },
 };
+use reth_metrics::{Metrics, metrics::Histogram};
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::PayloadBuilderBuilder};
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
@@ -141,6 +142,7 @@ where
             withdrawal_batch_interval_blocks: self.withdrawal_batch_interval_blocks,
             withdrawal_reveal_encryptor: self.withdrawal_reveal_encryptor.clone(),
             transfer_allowlist: self.transfer_allowlist.clone(),
+            metrics: ZonePayloadBuilderMetrics::default(),
         })
     }
 }
@@ -163,6 +165,15 @@ pub struct ZonePayloadBuilder<Provider> {
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
     /// Accounts that may send and receive TIP-20 transfers. `None` admits every transfer.
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
+    metrics: ZonePayloadBuilderMetrics,
+}
+
+/// Zone payload builder metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_payload")]
+struct ZonePayloadBuilderMetrics {
+    /// Time to build one Zone block, from the parent state lookup to the sealed payload.
+    build_duration_seconds: Histogram,
 }
 
 impl<Provider> PayloadBuilder for ZonePayloadBuilder<Provider>
@@ -385,6 +396,7 @@ where
         }
 
         let elapsed = start.elapsed();
+        self.metrics.build_duration_seconds.record(elapsed);
         info!(
             number = sealed_block.number(),
             l1_block = final_imported.number(),
