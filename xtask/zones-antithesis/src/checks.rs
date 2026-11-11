@@ -215,9 +215,10 @@ impl Context {
     }
 
     pub(super) async fn check_settled(&self) -> eyre::Result<()> {
-        bounded_check(SETTLE_TIMEOUT, async {
+        let mut state = None;
+        let result = bounded_check(SETTLE_TIMEOUT, async {
             let deadline = tokio::time::Instant::now() + SETTLE_TIMEOUT;
-            let state = recover_until(deadline, async || {
+            recover_until(deadline, async || {
                 // A killed driver's signed send remains an obligation even without a receipt.
                 // Reconciliation replays identical bytes; timeout/cancellation cannot forget it.
                 if !self.reconcile_intents().await? {
@@ -232,9 +233,16 @@ impl Context {
                     return Ok(None);
                 }
                 let current = self.settlement(records).await?;
-                Ok(current.is_settled().then_some(current))
+                let settled = current.is_settled();
+                state = Some(current);
+                Ok(settled.then_some(()))
             })
-            .await?;
+            .await
+        })
+        .await;
+        // Retain the last complete observation even if a later RPC or the deadline interrupts
+        // recovery. Missing observations must not fabricate passing settlement properties.
+        if let Some(state) = state {
             assert_always!(
                 state.unsettled_deposits.is_empty(),
                 "Every confirmed deposit is credited or bounced back",
@@ -256,9 +264,8 @@ impl Context {
                 state.unpaid_withdrawals.len(),
                 state.converged
             );
-            Ok(())
-        })
-        .await
+        }
+        result
     }
 
     pub(super) async fn check_ledger(&self) -> eyre::Result<()> {
@@ -483,4 +490,225 @@ async fn logs(provider: &DynProvider, filter: Filter, to: u64) -> eyre::Result<V
         from = end + 1;
     }
     Ok(logs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{POLL, ledger::Ledger};
+    use alloy::{providers::ProviderBuilder, rpc::types::Block, transports::mock::Asserter};
+    use serde_json::Value;
+    use std::{env, fs};
+    use tokio::{process::Command, runtime::Builder, time::Instant};
+
+    fn queue_observation(l1: &Asserter, zones: &[Asserter; 2], diverged: bool) {
+        let mut block = Block::<B256>::default();
+        block.header.number = 1;
+        block.header.hash = B256::repeat_byte(1);
+        // Reconciliation and history validation each read one pinned L1 history snapshot.
+        for _ in 0..2 {
+            l1.push_success(&block);
+            l1.push_success(&Vec::<Log>::new());
+            l1.push_success(&block);
+        }
+        for (index, zone) in zones.iter().enumerate() {
+            block.header.hash = B256::repeat_byte(if diverged && index == 1 { 2 } else { 1 });
+            zone.push_success(&block);
+            zone.push_success(&block);
+        }
+        zones[0].push_success(&"0x1");
+        zones[0].push_success(&Vec::<Log>::new());
+        l1.push_success(&"0x1");
+        l1.push_success(&Vec::<Log>::new());
+    }
+
+    // The SDK initializes once per process. A subprocess isolates its output and assertion
+    // deduplication without mutating the test runner's environment or changing production code.
+    #[test]
+    fn settlement_report_fixture() {
+        let Ok(case) = env::var("TEMPO_SETTLEMENT_TEST_CASE") else {
+            return;
+        };
+        Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap()
+            .block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                let ledger = Ledger::open(dir.path()).unwrap();
+                if matches!(case.as_str(), "deposit" | "terminal_error") {
+                    ledger
+                        .append(&Record::Deposit {
+                            l1_tx: B256::repeat_byte(3),
+                            queue_hash: B256::repeat_byte(4),
+                            sender: Address::repeat_byte(5),
+                            to: Address::repeat_byte(6),
+                            net_amount: 7,
+                        })
+                        .unwrap();
+                }
+                if case == "withdrawal" {
+                    ledger
+                        .append(&Record::Withdrawal {
+                            zone_tx: B256::repeat_byte(8),
+                            zone_block: 1,
+                            sender: Address::repeat_byte(5),
+                            to: Address::repeat_byte(6),
+                            amount: 9,
+                        })
+                        .unwrap();
+                }
+                let l1 = Asserter::new();
+                let zones = [Asserter::new(), Asserter::new()];
+                if case != "unobserved" {
+                    queue_observation(
+                        &l1,
+                        &zones,
+                        matches!(case.as_str(), "divergence" | "recovers"),
+                    );
+                }
+                if case == "recovers" {
+                    queue_observation(&l1, &zones, false);
+                } else if case == "terminal_error" {
+                    l1.push_success(&None::<Block<B256>>);
+                }
+                // Later RPC errors must not erase the last complete observation.
+                for _ in 0..=SETTLE_TIMEOUT.as_millis() / POLL.as_millis() {
+                    l1.push_failure_msg("RPC unavailable");
+                }
+                let ctx = Context {
+                    ledger,
+                    http: Default::default(),
+                    l1_url: "http://l1.invalid".parse().unwrap(),
+                    l1: ProviderBuilder::new().connect_mocked_client(l1).erased(),
+                    zone_urls: ["http://zone-0.invalid/", "http://zone-1.invalid/"]
+                        .map(|url| url.parse().unwrap())
+                        .to_vec(),
+                    zones: zones
+                        .into_iter()
+                        .map(|zone| ProviderBuilder::new().connect_mocked_client(zone).erased())
+                        .collect(),
+                    portal: Address::repeat_byte(10),
+                };
+                let started = Instant::now();
+                let result = ctx.check_settled().await;
+                if matches!(case.as_str(), "settled" | "recovers") {
+                    result.unwrap();
+                    assert!(started.elapsed() < SETTLE_TIMEOUT);
+                } else if case == "terminal_error" {
+                    assert_eq!(
+                        result.unwrap_err().to_string(),
+                        "no finalized L1 block for handoff history"
+                    );
+                } else {
+                    assert_eq!(
+                        result.unwrap_err().to_string(),
+                        "recovery observation timed out"
+                    );
+                    assert_eq!(started.elapsed(), SETTLE_TIMEOUT);
+                }
+            });
+    }
+
+    #[tokio::test]
+    async fn settlement_reports_specific_failures_and_preserves_diagnostics() {
+        let names = [
+            "Every confirmed deposit is credited or bounced back",
+            "Every confirmed withdrawal is paid on L1",
+            "Zone nodes converge once faults stop",
+        ];
+        for case in [
+            "deposit",
+            "withdrawal",
+            "divergence",
+            "terminal_error",
+            "unobserved",
+            "settled",
+            "recovers",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let output_path = dir.path().join("assertions.jsonl");
+            let output = tokio::time::timeout(
+                Duration::from_secs(20),
+                Command::new(env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "checks::tests::settlement_report_fixture",
+                        "--nocapture",
+                    ])
+                    .env("TEMPO_SETTLEMENT_TEST_CASE", case)
+                    .env("ANTITHESIS_SDK_LOCAL_OUTPUT", &output_path)
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let events: Vec<Value> = fs::read_to_string(&output_path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .filter_map(|mut event| event.get_mut("antithesis_assert").map(Value::take))
+                .filter(|event| event["hit"] == true)
+                .collect();
+            let deadline = events
+                .iter()
+                .find(|event| {
+                    event["message"] == "Recovery checks finish successfully within their deadline"
+                })
+                .unwrap();
+            assert_eq!(
+                deadline["condition"],
+                matches!(case, "settled" | "recovers"),
+                "{case}"
+            );
+            for (index, name) in names.iter().enumerate() {
+                let event = events.iter().find(|event| event["message"] == *name);
+                if case == "unobserved" {
+                    assert!(event.is_none(), "no observations must not pass {name}");
+                    continue;
+                }
+                let event = event.unwrap_or_else(|| panic!("{case}: missing assertion {name}"));
+                let failed = match index {
+                    0 => matches!(case, "deposit" | "terminal_error"),
+                    1 => case == "withdrawal",
+                    2 => case == "divergence",
+                    _ => unreachable!(),
+                };
+                assert_eq!(event["condition"], !failed, "{case}: {name}");
+                if index < 2 {
+                    let missing = event["details"]["missing"].as_array().unwrap();
+                    assert_eq!(missing.len(), usize::from(failed));
+                    if failed && index == 0 {
+                        assert_eq!(
+                            missing[0]["deposit"]["queue_hash"],
+                            json!(B256::repeat_byte(4))
+                        );
+                    } else if failed {
+                        assert_eq!(
+                            missing[0]["withdrawal"]["zone_tx"],
+                            json!(B256::repeat_byte(8))
+                        );
+                    }
+                } else {
+                    let tips = &event["details"]["tips"];
+                    assert_eq!(
+                        tips["http://zone-0.invalid/"][1],
+                        json!(B256::repeat_byte(1))
+                    );
+                    assert_eq!(
+                        tips["http://zone-1.invalid/"][1],
+                        json!(B256::repeat_byte(if failed { 2 } else { 1 }))
+                    );
+                }
+            }
+        }
+    }
 }
