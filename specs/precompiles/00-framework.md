@@ -353,7 +353,7 @@ Precompile logic ends in one of these outcomes, mapped to the EVM frame result:
 | Invalid enum discriminant read from storage | revert | `Panic(0x21)` | as revert |
 | Array index out of bounds | revert | `Panic(0x32)` | as revert |
 | Malformed ABI arguments; missing selector (from T1); empty reverts a chapter defines | revert | empty | as revert |
-| OutOfGas: a failed `charge`, the input charge, a skipped cold load, the T12 stipend sentry | exceptional halt | empty | all forwarded gas consumed |
+| OutOfGas: a failed `charge`, the input charge, a skipped cold load, the T12 stipend sentry (exception: an OutOfGas in `resolve_recipient` during `resolve_receipt` reverts `InvalidClaimAddress()`, [tip403.md](tip403.md) §4.3) | exceptional halt | empty | all forwarded gas consumed |
 | `StaticCallNotAllowed` raised by a write primitive (any fork); step 6 from T12; missing selector before T1 | exceptional halt | empty | all forwarded gas consumed |
 | Database failure or internal invariant violation (a stored short-string length > 31, invalid UTF-8 in a stored string, a packed lane spanning a slot boundary) | none: block processing fails (one exception: before T1A the StablecoinDEX automatic flip swallows every error, these included, [stablecoin-dex.md](stablecoin-dex.md) §11.7) | — | — |
 
