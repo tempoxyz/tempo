@@ -679,8 +679,9 @@ where
             // Selection can wait on prewarming or skip many candidates, so it re-checks both
             // conditions above itself. Once one of them holds it returns `None`, and the next
             // iteration ends the build.
+            let mut stopped = false;
             let should_stop = || {
-                cancel.is_cancelled()
+                stopped = cancel.is_cancelled()
                     || build_plan.is_some_and(|plan| {
                         let budget_decision = plan.decision(
                             start.elapsed(),
@@ -691,9 +692,15 @@ where
                             ),
                         );
                         plan.exhausted(&budget_decision)
-                    })
+                    });
+                stopped
             };
             let Some(mut pool_tx) = best_txs.next(should_stop) else {
+                // Selection gave up; the pool did not run dry. Idle time here would make the
+                // estimator take a busy build for one that waited on an empty pool.
+                if stopped {
+                    continue;
+                }
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
