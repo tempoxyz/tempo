@@ -39,8 +39,9 @@ on:
         type: string
         default: "20"
       count:
+        description: Journeys per phase (default tps x 20, a 20 s window).
         type: string
-        default: "100"
+        default: ""
       tps:
         type: string
         default: "5"
@@ -105,9 +106,6 @@ on:
         type: string
         required: false
       accounts:
-        type: string
-        required: false
-      count:
         type: string
         required: false
       recipient-mode:
@@ -179,7 +177,7 @@ jobs:
       BENCH_TEMPO_HARDFORK: ${{ inputs['tempo-hardfork'] || 't13' }}
       BENCH_PRESET: ${{ inputs.preset || 'full-journey' }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '20' }}
-      BENCH_COUNT: ${{ inputs.count || '100' }}
+      BENCH_COUNT: ${{ inputs.count }}
       BENCH_TPS: ${{ inputs.tps || '5' }}
       BENCH_MAX_CONCURRENT: ${{ inputs.max-concurrent || '4' }}
       BENCH_L1_BLOAT_MIB: ${{ inputs.state-bloat-mib || '0' }}
@@ -240,7 +238,7 @@ jobs:
             core.exportVariable('BENCH_BASELINE_NAME', baselineName);
             core.exportVariable('BENCH_FEATURE_NAME', featureName);
             core.exportVariable('BENCH_JOB_URL', `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`);
-            const workload = `tempo-hardfork: \`${process.env.BENCH_TEMPO_HARDFORK}\`, tps: \`${process.env.BENCH_TPS}\`, accounts: \`${process.env.BENCH_ACCOUNTS}\`, count: \`${process.env.BENCH_COUNT}\`, recipient-mode: \`${process.env.BENCH_RECIPIENT_MODE}\`, l1-latency-ms: \`${process.env.BENCH_L1_LATENCY_MS}\``;
+            const workload = `tempo-hardfork: \`${process.env.BENCH_TEMPO_HARDFORK}\`, tps: \`${process.env.BENCH_TPS}\`, accounts: \`${process.env.BENCH_ACCOUNTS}\`, count: \`${process.env.BENCH_COUNT || Number(process.env.BENCH_TPS) * 20}\`, recipient-mode: \`${process.env.BENCH_RECIPIENT_MODE}\`, l1-latency-ms: \`${process.env.BENCH_L1_LATENCY_MS}\``;
             core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`zones\`, prover: \`${process.env.BENCH_PROVER}\`, preset: \`${process.env.BENCH_PRESET}\`, ${workload}, baseline: \`${baselineName}\`, feature: \`${featureName}\``);
       - name: Update status (running)
         if: env.BENCH_COMMENT_ID
@@ -276,7 +274,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 69358efa1cdd5c184e0b5d27d02c0aa951d9c6f4 # tempo-multi-region-benchmark #493
+          ref: a4641e6f3074d228fbd799bfb080af30da627658 # tempo-multi-region-benchmark #493
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
