@@ -20,6 +20,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_provider::ProviderBuilder;
 use alloy_signer::SignerSync;
 use alloy_sol_types::{SolCall, SolError};
+use eyre::OptionExt as _;
 use futures::{SinkExt, StreamExt};
 use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
 use serde_json::{Value, json};
@@ -884,7 +885,7 @@ async fn test_transaction_receipt_load_error_is_sender_only() -> eyre::Result<()
     let tx_hash = receipt.transaction_hash;
     let block_hash = receipt
         .block_hash
-        .ok_or_else(|| eyre::eyre!("mined receipt has no block hash"))?;
+        .ok_or_eyre("mined receipt has no block hash")?;
 
     let owner_receipt = ctx
         .call_as_user("eth_getTransactionReceipt", json!([tx_hash]), &owner_signer)
@@ -909,7 +910,7 @@ async fn test_transaction_receipt_load_error_is_sender_only() -> eyre::Result<()
     // Keep the receipt's block off the tip, which the node still resolves by hash.
     let block_number = receipt
         .block_number
-        .ok_or_else(|| eyre::eyre!("mined receipt has no block number"))?;
+        .ok_or_eyre("mined receipt has no block number")?;
     ctx.fixture.inject_empty_block(ctx.zone.deposit_queue());
     ctx.zone
         .wait_for_block_number(block_number + 1, DEFAULT_TIMEOUT)

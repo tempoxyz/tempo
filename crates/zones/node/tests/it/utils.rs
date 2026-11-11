@@ -1356,7 +1356,7 @@ impl ZoneTestNode {
         .await
     }
 
-    /// With `uncached_storage_reads`, every block is persisted at once and the RPC state cache
+    /// With `cold_rpc_reads`, every block is persisted at once and the RPC state cache
     /// is disabled, so RPC lookups read storage the way cold historical lookups do.
     #[allow(clippy::too_many_arguments)]
     async fn launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
@@ -1372,7 +1372,7 @@ impl ZoneTestNode {
         prover_config: Option<ZoneProverConfig>,
         deposit_allowlist: Option<zone_node::DepositAllowlist>,
         deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
-        uncached_storage_reads: bool,
+        cold_rpc_reads: bool,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
         let is_local_dummy_l1 = l1_ws_url == DUMMY_L1_URL;
@@ -1502,11 +1502,11 @@ impl ZoneTestNode {
                 // A node attached to a real portal may have the standalone sequencer started
                 // after launch. Match production by making every settleable block durable
                 // immediately. Synthetic P2P nodes need the same policy for replication.
-                if p2p_enabled || !portal_address.is_zero() || uncached_storage_reads {
+                if p2p_enabled || !portal_address.is_zero() || cold_rpc_reads {
                     c.engine.persistence_threshold = 0;
                     c.engine.memory_block_buffer_target = Some(0);
                 }
-                if uncached_storage_reads {
+                if cold_rpc_reads {
                     c.rpc.rpc_state_cache.set_zero_lengths();
                 }
                 c
