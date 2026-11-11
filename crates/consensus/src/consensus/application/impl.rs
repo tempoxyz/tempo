@@ -60,6 +60,9 @@ pub(in crate::consensus) struct Config<TContext> {
     /// Proposal pacing and execution feedback shared with the payload builder.
     pub(in crate::consensus) estimator: Estimator,
 
+    /// How long voters wait for the leader's proposal before they nullify the view.
+    pub(in crate::consensus) time_to_propose: Duration,
+
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
 }
@@ -71,6 +74,8 @@ pub(crate) struct Inner {
     epoch_strategy: FixedEpocher,
     /// Shared proposal pacing and execution feedback.
     estimator: Estimator,
+    /// How long voters wait for the leader's proposal before they nullify the view.
+    time_to_propose: Duration,
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
@@ -87,6 +92,7 @@ impl Inner {
             public_key: config.public_key,
             epoch_strategy: config.epoch_strategy,
             estimator: config.estimator,
+            time_to_propose: config.time_to_propose,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
@@ -190,6 +196,11 @@ impl Inner {
         );
         let return_budget = proposal_budget.return_budget();
         let build_budget = return_budget.saturating_sub(window_opened.elapsed());
+        // Past this point the voters have nullified the view, so the builder gives up on the
+        // block it is filling and returns an empty one instead.
+        let build_timeout = proposal_budget
+            .build_timeout(self.time_to_propose)
+            .saturating_sub(window_opened.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -197,7 +208,8 @@ impl Inner {
             extra_data,
             consensus_context,
         )
-        .with_payload_build_budget(build_budget);
+        .with_payload_build_budget(build_budget)
+        .with_payload_build_timeout(build_timeout);
 
         // Subscribe to the payload build. The executor owns the build job
         // and runs it to completion; dropping the receiver (for example

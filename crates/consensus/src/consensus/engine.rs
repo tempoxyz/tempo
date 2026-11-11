@@ -307,6 +307,7 @@ where
                 executed_state: self.executed_state.clone(),
             },
             estimator: self.estimator.clone(),
+            time_to_propose: self.time_to_propose,
             epoch_strategy: epoch_strategy.clone(),
         });
         let application = application::Factory::new(

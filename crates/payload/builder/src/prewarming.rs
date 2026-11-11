@@ -61,9 +61,11 @@ impl BestTransactionsPrewarming {
         };
 
         let prewarm_executor = prewarm.executor();
+        // The coordinator of a build that missed its deadline lives as long as that build, so
+        // do not queue behind it on the named thread.
         prewarm
             .executor()
-            .spawn_blocking_named("builder-prewarm", move || {
+            .spawn_blocking_named_or_tokio("builder-prewarm", move || {
                 Self::start_prewarming(
                     prewarm_executor,
                     BestTransactionsPrewarmingContext {
@@ -101,8 +103,7 @@ impl BestTransactionsPrewarming {
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 // The build is over, so do not pull from the source for advances that are still
-                // queued. All coordinators run on one named thread, and the next build's
-                // coordinator cannot start until this one returns.
+                // queued.
                 if ctx.prewarm.is_stopped() {
                     return;
                 }

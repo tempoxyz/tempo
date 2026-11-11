@@ -8,6 +8,8 @@ use alloy::{
 use alloy_network::ReceiptResponse;
 use reth_e2e_test_utils::wallet::{TestAccount, Wallet};
 use reth_node_api::BuiltPayload;
+use reth_transaction_pool::TransactionPool;
+use std::time::Duration;
 use tempo_contracts::precompiles::{
     IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
 };
@@ -706,5 +708,31 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
     assert_eq!(payment, 5);
     assert_eq!(non_payment, 3);
 
+    Ok(())
+}
+
+/// A build that is not done by the deadline in its attributes is replaced by an empty block, and
+/// the pool keeps its transactions for the next build.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_build_past_its_deadline_returns_empty_block() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .with_payload_build_timeout(Duration::ZERO)
+        .build_with_node_access()
+        .await?;
+    let chain_id = setup.node.rpc_provider().get_chain_id().await?;
+    let tx = t1_account(&Wallet::default().with_chain_id(chain_id), 0)
+        .tx()
+        .to(Address::ZERO)
+        .gas_limit(2_000_000)
+        .await;
+    let hash = setup.node.inject_tx(tx).await?;
+
+    let payload = setup.node.advance_block().await?;
+
+    let transactions = payload.block().body().transactions().cloned().collect();
+    assert!(extract_user_txs(transactions).is_empty());
+    assert!(setup.node.inner.pool.contains(&hash));
     Ok(())
 }
