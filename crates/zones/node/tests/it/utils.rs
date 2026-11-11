@@ -97,8 +97,8 @@ mod auth_tokens;
 mod network;
 
 pub(crate) use auth_tokens::{
-    build_signed_token_blob, now_secs, sign_keychain_signature, sign_p256_signature,
-    sign_webauthn_signature,
+    build_signed_token_blob, now_secs, p256_public_key, sign_keychain_signature,
+    sign_p256_signature, sign_webauthn_signature,
 };
 pub(crate) use network::{P2pChaosNetwork, TcpChaosProxy};
 
@@ -348,6 +348,8 @@ async fn handle_test_l1_rpc_request(
         "eth_chainId" => serde_json::json!(format!("0x{chain_id:x}")),
         "eth_blockNumber" => serde_json::json!("0x0"),
         "eth_getCode" => serde_json::json!("0x01"),
+        // Accounts have no TIP-1108 configuration commitment on the test L1.
+        "eth_getAccountInfo" => serde_json::json!({"balance": "0x0", "nonce": "0x0", "code": "0x"}),
         // Synthetic SPF fixtures supply their own Tempo trie nodes; only the initial header
         // and a successful proof RPC are needed when generating their Zone witness.
         "eth_getMultiProof" => serde_json::json!([]),
@@ -1545,16 +1547,19 @@ impl ZoneTestNode {
         let eth_handlers = node_handle.node.eth_handlers().clone();
         let rpc_enabled_tokens = enabled_tokens.clone();
         let rpc_l1_provider = redacted_l1_provider;
+        let rpc_l1_state_cache = l1_state_cache.clone();
         let rpc_api_factory = Arc::new(move |config: zone_node::rpc::RedactedRpcConfig| {
             let eth_handlers = eth_handlers.clone();
             let enabled_tokens = rpc_enabled_tokens.clone();
             let l1_provider = rpc_l1_provider.clone();
+            let l1_state_cache = rpc_l1_state_cache.clone();
             Box::pin(async move {
                 Ok(Arc::new(zone_node::rpc::ZoneRpc::new(
                     eth_handlers,
                     config,
                     enabled_tokens,
                     l1_provider,
+                    l1_state_cache,
                 )) as Arc<dyn zone_node::rpc::ZoneRpcApi>)
             })
                 as Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>>>>>
@@ -3365,7 +3370,10 @@ impl ZoneAccount {
         Ok((block_number, balance))
     }
 
-    async fn submit_deposit_with_memo(
+    /// Submit a pathUSD deposit to `recipient` on L1 without waiting for the zone to process it.
+    ///
+    /// Returns the L1 block containing the deposit.
+    pub(crate) async fn submit_deposit_with_memo(
         &mut self,
         amount: u128,
         recipient: Address,
@@ -4083,8 +4091,16 @@ pub(crate) fn deposit_allowlist_admin() -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&B256::repeat_byte(0xad)).expect("valid test admin key")
 }
 
+/// Deposit allowlist of a real P2P test cluster.
+struct AllowlistSetup<'a> {
+    /// Addresses every sequencer's list starts with.
+    seed: &'a [Address],
+    /// Whether the RPC-only node runs with the admin and relays `zoneAdmin` writes.
+    rpc_relays_writes: bool,
+}
+
 /// Three-member P2P quorum whose sequencers enforce a deposit allowlist administered by
-/// [`deposit_allowlist_admin`], plus an RPC-only node that relays `zoneAdmin` calls to them.
+/// [`deposit_allowlist_admin`], plus an RPC-only node that mirrors their list.
 pub(crate) struct DepositAllowlistP2pCluster {
     pub(crate) cluster: RealP2pCluster,
     pub(crate) rpc_node: ZoneTestNode,
@@ -4094,11 +4110,14 @@ pub(crate) struct DepositAllowlistP2pCluster {
 }
 
 /// Start a real-L1 cluster whose sequencers seed their deposit allowlists with `seed`, launching
-/// only `active_nodes` of the three quorum members, plus one RPC-only node.
+/// only `active_nodes` of the three quorum members, plus one RPC-only node. With
+/// `rpc_relays_writes` the RPC-only node runs with the admin and relays `zoneAdmin` writes;
+/// otherwise writes must go to the sequencers directly.
 pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
     withdrawal_batch_interval_blocks: u64,
     active_nodes: usize,
     seed: &[Address],
+    rpc_relays_writes: bool,
 ) -> eyre::Result<DepositAllowlistP2pCluster> {
     let parts = start_real_p2p_cluster_inner(
         withdrawal_batch_interval_blocks,
@@ -4107,7 +4126,10 @@ pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
         None,
         false,
         None,
-        Some(seed),
+        Some(AllowlistSetup {
+            seed,
+            rpc_relays_writes,
+        }),
         false,
     )
     .await?;
@@ -4130,9 +4152,10 @@ async fn start_real_p2p_cluster_inner(
     l1_block_time: Option<Duration>,
     proxy_p2p: bool,
     prover_config: Option<ZoneProverConfig>,
-    deposit_allowlist_seed: Option<&[Address]>,
+    deposit_allowlist: Option<AllowlistSetup<'_>>,
     l1_proofs_unavailable: bool,
 ) -> eyre::Result<RealP2pClusterParts> {
+    let deposit_allowlist_seed = deposit_allowlist.as_ref().map(|setup| setup.seed);
     eyre::ensure!(
         (2..=3).contains(&active_nodes),
         "real P2P test cluster requires two or three active nodes, got {active_nodes}"
@@ -4362,7 +4385,10 @@ async fn start_real_p2p_cluster_inner(
                     vec![SecretKey::from(attestation_signers[0].credential())],
                     None,
                     None,
-                    Some(allowlist_admin),
+                    deposit_allowlist
+                        .as_ref()
+                        .is_some_and(|setup| setup.rpc_relays_writes)
+                        .then_some(allowlist_admin),
                 )
                 .await?,
             zone_chain_id: allowlist_admin.zone_chain_id,
@@ -4765,8 +4791,19 @@ impl RedactedRpcL1TestCtx {
 }
 
 impl RedactedRpcTestCtx {
+    /// Seeds the zero Tempo commitment of a P256 or WebAuthn token signer, which zone RPC
+    /// authorization reads to reject retired roots.
+    fn seed_p256_signer(&self, signing_key: &P256SigningKey) {
+        let (x, y) = p256_public_key(signing_key);
+        self.fixture.seed_no_commitment(
+            tempo_primitives::transaction::tt_signature::derive_p256_address(&x, &y),
+        );
+    }
+
     /// Build an auth token for the sequencer.
     pub(crate) fn sequencer_token(&self) -> String {
+        self.fixture
+            .seed_no_commitment(self.sequencer_signer.address());
         build_auth_token(
             &self.sequencer_signer,
             self.config.zone_id,
@@ -4776,16 +4813,19 @@ impl RedactedRpcTestCtx {
 
     /// Build an auth token for a regular (non-sequencer) user.
     pub(crate) fn user_token(&self, signer: &alloy_signer_local::PrivateKeySigner) -> String {
+        self.fixture.seed_no_commitment(signer.address());
         build_auth_token(signer, self.config.zone_id, self.config.chain_id)
     }
 
     /// Build a P256 auth token for a non-sequencer caller.
     pub(crate) fn p256_token(&self, signing_key: &P256SigningKey) -> String {
+        self.seed_p256_signer(signing_key);
         build_p256_auth_token(signing_key, self.config.zone_id, self.config.chain_id)
     }
 
     /// Build a WebAuthn auth token for a non-sequencer caller.
     pub(crate) fn webauthn_token(&self, signing_key: &P256SigningKey) -> String {
+        self.seed_p256_signer(signing_key);
         build_webauthn_auth_token(signing_key, self.config.zone_id, self.config.chain_id, None)
     }
 
@@ -4795,11 +4835,37 @@ impl RedactedRpcTestCtx {
         signing_key: &P256SigningKey,
         challenge_digest: B256,
     ) -> String {
+        self.seed_p256_signer(signing_key);
         build_webauthn_auth_token(
             signing_key,
             self.config.zone_id,
             self.config.chain_id,
             Some(challenge_digest),
+        )
+    }
+
+    /// Build an auth token signed by the owner quorum of the configurable account whose
+    /// version-zero configuration has `signing_key` as its sole owner, returning the token and
+    /// the account.
+    pub(crate) fn configurable_account_token(
+        &self,
+        signing_key: &P256SigningKey,
+    ) -> (String, Address) {
+        let now = now_secs();
+        let (fields, digest) = zone_node::rpc::auth::build_token_fields(
+            self.config.zone_id,
+            self.config.chain_id,
+            now,
+            now + 600,
+        );
+        let (signature, account, _) =
+            auth_tokens::sign_configurable_account_signature(digest, signing_key)
+                .expect("configurable account signing failed");
+        // Authorization reads the account's commitment from Tempo.
+        self.fixture.seed_no_commitment(account);
+        (
+            auth_tokens::build_token_with_signature(signature, &fields),
+            account,
         )
     }
 
@@ -4810,13 +4876,18 @@ impl RedactedRpcTestCtx {
         signing_key: &P256SigningKey,
         version: u8,
     ) -> (String, Address) {
-        build_keychain_auth_token(
+        // AccountKeychain lookups load the root account.
+        self.fixture.seed_no_commitment(root_account);
+        let (token, key_id) = build_keychain_auth_token(
             signing_key,
             root_account,
             version,
             self.config.zone_id,
             self.config.chain_id,
-        )
+        );
+        // Authorization reads the key ID's commitment.
+        self.fixture.seed_no_commitment(key_id);
+        (token, key_id)
     }
 
     /// Send an authenticated JSON-RPC call to the redacted RPC server.
@@ -5073,21 +5144,25 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
 
 /// Start a zone with a redacted RPC server backed by a real L1 + ZonePortal.
 pub(crate) async fn start_zone_with_redacted_rpc_l1() -> eyre::Result<RedactedRpcL1TestCtx> {
-    start_zone_with_redacted_rpc_l1_inner().await
+    start_zone_with_redacted_rpc_l1_with_encryption(Vec::new()).await
 }
 
 /// Start a zone with a redacted RPC server backed by a real L1 and a portal
-/// with a registered encryption key.
-pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption()
--> eyre::Result<RedactedRpcL1TestCtx> {
-    start_zone_with_redacted_rpc_l1_inner().await
-}
-
-async fn start_zone_with_redacted_rpc_l1_inner() -> eyre::Result<RedactedRpcL1TestCtx> {
+/// with a registered encryption key, whose node also holds `additional_decryption_keys` for keys
+/// the portal rotates to.
+pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption(
+    additional_decryption_keys: Vec<SecretKey>,
+) -> eyre::Result<RedactedRpcL1TestCtx> {
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
 
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1_with_decryption_keys(
+        l1.http_url(),
+        l1.ws_url(),
+        portal_address,
+        additional_decryption_keys,
+    )
+    .await?;
 
     zone.wait_for_l2_tempo_finalized(0, DEFAULT_TIMEOUT).await?;
 
@@ -5327,6 +5402,8 @@ impl L1Fixture {
         seed_raw_tip403_token_policy(&mut cache, 0, Address::ZERO, ALLOW_ALL_POLICY_ID);
         seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
         seed_raw_tip20_unpaused(&mut cache, 0, PATH_USD_ADDRESS);
+        // Zones read every sender's TIP-1108 commitment from Tempo; the dev account has none.
+        cache.set_commitment(l1_dev_signer().address(), 0, B256::ZERO);
         drop(cache);
         self.caches.lock().unwrap().push(cache_handle.clone());
         self.enabled_token_registries
@@ -5345,7 +5422,7 @@ impl L1Fixture {
         policy_id: u64,
     ) -> eyre::Result<Check403Registry> {
         for &account in no_receive_policy_accounts {
-            self.seed_no_receive_policy_at(block_number, account)?;
+            self.seed_transfer_recipient_at(block_number, account)?;
         }
         seed_raw_tip403_token_policy(
             &mut zone.l1_state_cache().lock(),
@@ -5359,13 +5436,19 @@ impl L1Fixture {
         })
     }
 
-    /// Seed the absence of an address-level TIP-403 receive policy at the current Zone anchor.
-    pub(crate) fn seed_no_receive_policy(&self, recipient: Address) -> eyre::Result<()> {
+    /// Seed the Tempo state a transfer recipient needs at the current Zone anchor: no address-level
+    /// TIP-403 receive policy and no TIP-1108 commitment.
+    pub(crate) fn seed_transfer_recipient(&self, recipient: Address) -> eyre::Result<()> {
         let current_anchor = self.next_block_number.saturating_sub(1);
-        self.seed_no_receive_policy_at(current_anchor, recipient)
+        self.seed_transfer_recipient_at(current_anchor, recipient)
     }
 
-    fn seed_no_receive_policy_at(&self, block_number: u64, recipient: Address) -> eyre::Result<()> {
+    fn seed_transfer_recipient_at(
+        &self,
+        block_number: u64,
+        recipient: Address,
+    ) -> eyre::Result<()> {
+        self.seed_no_commitment_at(block_number, recipient);
         // TODO(rusowsky): make `ReceivePolicy` public upstream to use the handlers
         let receive_policy_slot = recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
         for cache in self.caches.lock().unwrap().iter() {
@@ -5381,8 +5464,22 @@ impl L1Fixture {
 
     fn seed_fixture_deposit_policy_state(&self, block_number: u64, deposits: &[DepositFixture]) {
         for deposit in deposits {
-            self.seed_no_receive_policy_at(block_number, deposit.to)
-                .expect("deposit receive-policy fixture seed must be admitted");
+            self.seed_transfer_recipient_at(block_number, deposit.to)
+                .expect("deposit recipient fixture seed must be admitted");
+        }
+    }
+
+    /// Seed the absence of `account`'s TIP-1108 commitment on Tempo, which zones read whenever
+    /// execution first loads an account without zone code.
+    pub(crate) fn seed_no_commitment(&self, account: Address) {
+        self.seed_no_commitment_at(0, account);
+    }
+
+    fn seed_no_commitment_at(&self, block_number: u64, account: Address) {
+        for cache in self.caches.lock().unwrap().iter() {
+            cache
+                .lock()
+                .set_commitment(account, block_number, B256::ZERO);
         }
     }
 
@@ -5490,8 +5587,8 @@ impl L1Fixture {
         for deposit in &events.deposits {
             match deposit {
                 L1Deposit::WithdrawalBounceBack(deposit) => {
-                    self.seed_no_receive_policy_at(block_number, deposit.to)
-                        .expect("event receive-policy fixture seed must be admitted");
+                    self.seed_transfer_recipient_at(block_number, deposit.to)
+                        .expect("event recipient fixture seed must be admitted");
                 }
                 L1Deposit::Deposit(deposit) => {
                     if let Some(decrypted) = zone_precompiles::ecies::decrypt_deposit(
@@ -5505,8 +5602,8 @@ impl L1Fixture {
                         deposit.key_index,
                         deposit.sender,
                     ) {
-                        self.seed_no_receive_policy_at(block_number, decrypted.to)
-                            .expect("encrypted receive-policy fixture seed must be admitted");
+                        self.seed_transfer_recipient_at(block_number, decrypted.to)
+                            .expect("encrypted recipient fixture seed must be admitted");
                     }
                 }
             }

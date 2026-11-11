@@ -32,7 +32,7 @@ use tempo_primitives::{
 
 mod common;
 
-use common::{PrecompileOutput, PrecompileStatus};
+use common::{PrecompileOutput, PrecompileStatus, seed_commitment};
 
 const OWNER: Address = Address::repeat_byte(0x22);
 const EOA: Address = Address::repeat_byte(0x33);
@@ -126,12 +126,6 @@ fn upgrade(
 fn seed_authority(origin: Address, directly_authorized: Address, eligibility: UpgradeEligibility) {
     ConfigurableAccount::new()
         .set_authority(origin, directly_authorized, eligibility)
-        .unwrap();
-}
-
-fn seed_commitment(account: Address, commitment: B256) {
-    StorageCtx
-        .set_config_commitment(account, commitment, ConfigCommitmentWriteGas::Intrinsic)
         .unwrap();
 }
 

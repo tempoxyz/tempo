@@ -101,11 +101,24 @@ class BenchCommandTests(unittest.TestCase):
                 self.assertEqual({key: result["outputs"][key] for key in ("mode", "prover", "preset", "pr-head-sha")},
                                  {"mode": "zones", "prover": prover, "preset": preset, "pr-head-sha": SHA})
 
+    def test_zones_command_forwards_only_given_workload_overrides(self):
+        for body, workload in (
+                ("derek bench zones", {}),
+                ("derek bench zones tempo-hardfork=t14 tps=50 accounts=200 recipient-mode=random l1-latency-ms=40",
+                 {"tempo-hardfork": "t14", "tps": "50", "accounts": "200", "recipient-mode": "random", "l1-latency-ms": "40"})):
+            with self.subTest(body=body):
+                result = parse(body)
+                self.assertEqual(result["failures"], [])
+                self.assertEqual(json.loads(result["outputs"]["zones-workload"]), workload)
+
     def test_rejects_prover_and_unsupported_arguments(self):
         for body, message in (
                 ("derek bench prover=false", "`prover` is only supported with `derek bench zones`."),
                 ("derek bench zones duration=10", "`duration` is not supported with `derek bench zones`."),
-                ("derek bench zones preset=default", "`preset=default` is not a Zone preset.")):
+                ("derek bench zones preset=default", "`preset=default` is not a Zone preset."),
+                ("derek bench zones recipient-mode=fresh", "`recipient-mode` must be `existing` or `random`."),
+                ("derek bench zones tempo-hardfork=latest", "`tempo-hardfork` must be a Tempo hardfork such as `t14`."),
+                ("derek bench l1-latency-ms=40", "`l1-latency-ms` is only supported with `derek bench zones`.")):
             with self.subTest(body=body):
                 result = parse(body)
                 self.assertEqual(len(result["failures"]), 1)

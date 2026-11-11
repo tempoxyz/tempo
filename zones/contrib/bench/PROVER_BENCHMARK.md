@@ -10,13 +10,21 @@ with the prover setting applied to both phases:
 
 The two settings are never compared with each other. Runs start from:
 
-- **PR comments**: `derek bench zones [prover=true|false] [preset=NAME] [baseline=REF] [feature=REF] [no-slack]`,
+- **PR comments**: `derek bench zones [prover=true|false] [preset=NAME] [tempo-hardfork=HARDFORK] [tps=N] [accounts=N] [recipient-mode=existing|random] [l1-latency-ms=N] [baseline=REF] [feature=REF] [slack]`,
   parsed by `bench.yml` like the e2e and replay commands. The feature is the pinned PR
   head, which must be a `tempoxyz/tempo` branch; the baseline defaults to its merge base
   with main.
 - **Nightly** (`zones-benchmark.yml`, 03:45 UTC): the latest main commit against
   the last commit that completed the nightly successfully, with the prover on.
 - **Manual dispatch** of `zones-prover-benchmark.yml` on main, with every workload input.
+
+Workload arguments override the defaults for both phases. Each phase sends `tps` journeys
+per second for 20 seconds. `l1-latency-ms=N` adds N ms to every L1 RPC round trip on the
+benchmark host, which the colocated topology otherwise answers over loopback. `recipient-mode=random` sends private transfers to fresh addresses,
+so from T14 each one is a cold Tempo commitment read. Raise `tps` and `accounts` to put
+many of them in one block. The summary reports the mean Zone block build time from
+`tempo_zone_payload_build_duration_seconds`, for example with
+`derek bench zones prover=false tempo-hardfork=t14 tps=50 accounts=500 recipient-mode=random l1-latency-ms=40`.
 
 For `preset=full-journey`, the controller reports p50/p95 for withdrawal submit → L1
 funds (split into submit → Zone inclusion and Zone → L1 processing), deposit submit →
