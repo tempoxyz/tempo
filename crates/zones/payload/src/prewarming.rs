@@ -29,7 +29,7 @@ const MAX_COMMITMENT_FETCHES: usize = 64;
 /// Immutable canonical inputs used to construct isolated prewarming workers.
 pub(crate) struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
-    evm_config: ZoneEvmConfig<L1PrewarmReader>,
+    evm_config: ZoneEvmConfig<L1StoragePrewarmer>,
     parent_header: SealedHeader<TempoHeader>,
     next_block_env_attributes: TempoNextBlockEnvAttributes,
     chain_id: u64,
@@ -39,7 +39,7 @@ impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Send + Sync + 'static,
 {
-    /// Creates the context and spawns its [`L1PrewarmReader`] fetch task.
+    /// Creates the context and spawns its [`L1StoragePrewarmer`] fetch task.
     pub(crate) fn new(
         task_executor: &TaskExecutor,
         provider: Provider,
@@ -50,7 +50,7 @@ where
         tempo_block_number: u64,
     ) -> Arc<Self> {
         let (reader, fetch_task) =
-            L1PrewarmReader::new(evm_config.l1_reader().clone(), tempo_block_number);
+            L1StoragePrewarmer::new(evm_config.l1_reader().clone(), tempo_block_number);
         task_executor.spawn_task(fetch_task);
         let evm_config = ZoneEvmConfig::new(
             evm_config.chain_spec().clone(),
@@ -169,13 +169,13 @@ impl Drop for Prewarming {
 /// the read returns zero, which is exact for accounts never configured on Tempo, such as fresh
 /// addresses. Storage reads go to the cache-backed provider unchanged.
 #[derive(Clone)]
-struct L1PrewarmReader {
+struct L1StoragePrewarmer {
     provider: L1StateProvider,
     tempo_block_number: u64,
     fetches: mpsc::UnboundedSender<Address>,
 }
 
-impl L1StorageReader for L1PrewarmReader {
+impl L1StorageReader for L1StoragePrewarmer {
     fn read_l1_storage(
         &self,
         account: Address,
@@ -205,7 +205,7 @@ impl L1StorageReader for L1PrewarmReader {
     }
 }
 
-impl L1PrewarmReader {
+impl L1StoragePrewarmer {
     /// Returns a reader whose commitment misses are fetched at `tempo_block_number`, and the task
     /// that fetches each missed account once, up to [`MAX_COMMITMENT_FETCHES`] at a time.
     ///
@@ -278,7 +278,7 @@ mod tests {
             cache.set(cached, slot, TEMPO_BLOCK - 1, value);
         }
         let (fetches, sent) = mpsc::unbounded();
-        let reader = L1PrewarmReader {
+        let reader = L1StoragePrewarmer {
             provider,
             tempo_block_number: TEMPO_BLOCK,
             fetches,
@@ -318,7 +318,7 @@ mod tests {
             ..Default::default()
         });
         let provider = provider(asserter);
-        let (reader, task) = L1PrewarmReader::new(provider.clone(), TEMPO_BLOCK);
+        let (reader, task) = L1StoragePrewarmer::new(provider.clone(), TEMPO_BLOCK);
         for account in [failed, failed, fetched] {
             reader.fetches.unbounded_send(account).unwrap();
         }
