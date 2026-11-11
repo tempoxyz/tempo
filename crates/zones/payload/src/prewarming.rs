@@ -178,7 +178,6 @@ impl Drop for Prewarming {
 #[derive(Clone)]
 struct L1PrewarmReader {
     provider: L1StateProvider,
-    /// Tempo block the next Zone block's transactions read commitments at.
     tempo_block_number: u64,
     fetches: mpsc::UnboundedSender<Address>,
 }
