@@ -1618,29 +1618,7 @@ where
                 key_index,
                 activation_block: entry.activationBlock,
             };
-            if keys.has_candidate(rotation.x, rotation.y_parity) {
-                keys.apply_rotation(&rotation)?;
-                continue;
-            }
-
-            let validity = portal
-                .isEncryptionKeyValid(key_index)
-                .block(block_id)
-                .call()
-                .await?;
-            eyre::ensure!(
-                !validity.valid
-                // A key that has expired at the persisted checkpoint may still be needed by a deposit in the
-                // deferred Portal-work range.
-                    && self
-                        .l1_config
-                        .deferred_work_start.is_none_or(|from| validity.expiresAtBlock <= from),
-                "missing private decryption key for Portal key index {key_index} required at L1 \
-                 checkpoint {block_number} or by deferred work starting at {:?} (expires at L1 \
-                 block {})",
-                self.l1_config.deferred_work_start,
-                validity.expiresAtBlock,
-            );
+            keys.apply_rotation(&rotation)?;
         }
 
         Ok(())

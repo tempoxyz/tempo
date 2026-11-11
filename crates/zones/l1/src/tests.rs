@@ -2353,6 +2353,50 @@ async fn sync_fails_fatally_when_the_leadership_sink_rejects_the_transition() {
     assert_eq!(subscriber.block_tracker.latest(), None);
 }
 
+#[tokio::test]
+async fn sync_records_a_rotation_without_local_private_key_and_keeps_ingesting() {
+    let mut subscriber = test_subscriber(9);
+    let portal = subscriber.config.portal_address;
+    let queue = subscriber.deposit_queue.clone();
+    let configured = k256::SecretKey::from_slice(&[0x11; 32]).unwrap();
+    let unknown = k256::SecretKey::from_slice(&[0x22; 32]).unwrap();
+    let ring = EncryptionKeyRing::new([configured]);
+    subscriber.encryption_keys = Some(ring.clone());
+
+    let (x, y_parity) =
+        crate::precompiles::ecies::compressed_x_and_parity(unknown.public_key().as_affine());
+    let pubkey = encryption_key_address(x, y_parity).unwrap();
+    let key_index = U256::from(1);
+    let log = encryption_key_updated_log(portal, x, y_parity, pubkey, key_index, 10);
+    let mut header_10 = make_test_header(10);
+    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
+    header_10.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
+    header_10.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
+
+    let asserter = Asserter::new();
+    let l1_provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
+    asserter.push_success(&Some(header_response(header_10.clone())));
+    asserter.push_success(&Some(header_response(header_10.clone())));
+    asserter.push_success(&Some(vec![receipt]));
+    asserter.push_success(&Some(header_response(header_10)));
+
+    assert_eq!(
+        subscriber
+            .sync_to_finalized(&l1_provider, 10)
+            .await
+            .unwrap(),
+        11
+    );
+    assert_eq!(queue.last_enqueued().unwrap().number, 10);
+
+    let err = ring.key(key_index).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "missing private decryption key for finalized Portal key index 1"
+    );
+}
+
 #[test]
 fn portal_pause_events_record_the_final_state_in_log_order() {
     let subscriber = test_subscriber(9);
