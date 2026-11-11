@@ -234,8 +234,12 @@ impl RecoveryMode {
     }
 }
 
-/// Decodes a claim receipt. From T15 only its canonical ABI encoding is accepted.
-fn decode_receipt(bytes: Bytes) -> Result<ClaimReceiptV1> {
+/// Decodes a claim receipt for the guard entry points and for Zone `balanceOf` admission.
+///
+/// Before T15 it accepts any encoding plain `abi_decode` accepts. From T15 it requires the
+/// canonical ABI encoding (no trailing bytes, no nonzero padding) and returns
+/// `InvalidReceipt` otherwise.
+pub fn decode_receipt(bytes: Bytes) -> Result<ClaimReceiptV1> {
     if !StorageCtx.spec().is_t15() {
         return Ok(ClaimReceiptV1::try_from(bytes)?);
     }
@@ -780,9 +784,14 @@ mod tests {
                 // Nonzero padding in the high bytes of the `token` address word.
                 let mut dirty = canonical.clone();
                 dirty[32] = 0xff;
+                // Nonzero padding in the high bytes of the `blockedNonce` uint64 word.
+                let mut dirty_nonce = canonical.clone();
+                dirty_nonce[6 * 32] = 0xff;
+                let mut trailing_byte = canonical.clone();
+                trailing_byte.push(0);
 
                 let mut guard = ReceivePolicyGuard::new();
-                for encoding in [trailing, dirty] {
+                for encoding in [trailing, dirty, dirty_nonce, trailing_byte] {
                     if spec.is_t15() {
                         assert_invalid_receipt(
                             guard.balance_of(encoding.clone().into()).map(|_| ()),
