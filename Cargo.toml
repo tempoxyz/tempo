@@ -310,6 +310,7 @@ reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "46
 reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "467449357b6d0aca6c1fb7cc2d87a304bb8fbff5", features = ["account-ext"] }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "467449357b6d0aca6c1fb7cc2d87a304bb8fbff5" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "467449357b6d0aca6c1fb7cc2d87a304bb8fbff5", features = ["account-ext"] }
+reth-trie-parallel = { git = "https://github.com/paradigmxyz/reth", rev = "467449357b6d0aca6c1fb7cc2d87a304bb8fbff5" }
 
 alloy-json-abi = { version = "1.7.3", default-features = false }
 alloy-primitives = { version = "1.7.3", default-features = false }
