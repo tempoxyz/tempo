@@ -5,8 +5,10 @@ mod utils;
 use std::time::Duration;
 
 use alloy_primitives::B256;
+use commonware_consensus::types::Height;
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Spawner as _, Supervisor as _, deterministic};
+use futures::FutureExt as _;
 use tempo_node::rpc::consensus::Event;
 
 use super::actor;
@@ -86,6 +88,45 @@ fn queues_requests_until_subscription_is_ready() {
                 .is_none()
         );
         assert_eq!(client.block_reads(), 1);
+    });
+}
+
+#[test_traced]
+fn cancelled_requests_are_dropped_during_outage() {
+    deterministic::Runner::default().start(|context| async move {
+        let client = StubClient::connected();
+        client.queue_subscription();
+        let connector = StubConnector::new(client.clone());
+        connector.fail_connections(1);
+        let (actor, mailbox) = actor::init(context.child("upstream"), connector.clone(), no_jitter);
+        actor.start(StubReporter::default());
+
+        wait_until(&context, || connector.attempts() == vec![1]).await;
+        for height in 1..=3 {
+            assert!(
+                mailbox
+                    .get_finalization(Height::new(height))
+                    .now_or_never()
+                    .is_none()
+            );
+        }
+        let (response, received) = tokio::sync::oneshot::channel();
+        context.child("request").spawn(move |_| async move {
+            let block = mailbox.get_block(Digest(B256::with_last_byte(1))).await;
+            let _ = response.send(block);
+        });
+
+        context.sleep(actor::reconnect_backoff(1)).await;
+        wait_until(&context, || client.subscriptions() == 1).await;
+
+        assert!(
+            received
+                .await
+                .expect("request task should respond")
+                .is_none()
+        );
+        assert_eq!(client.block_reads(), 1);
+        assert_eq!(client.finalization_reads(), 0);
     });
 }
 

@@ -215,6 +215,10 @@ impl StubClient {
     pub(super) fn block_reads(&self) -> usize {
         self.inner.block_reads.load(Ordering::SeqCst)
     }
+
+    pub(super) fn finalization_reads(&self) -> usize {
+        self.inner.finalization_reads.load(Ordering::SeqCst)
+    }
 }
 
 impl UpstreamClient for StubClient {
