@@ -108,19 +108,17 @@ impl SignatureVerifier {
         if !self.storage.spec().is_t15() {
             return Ok(self.recover(hash, signature)? == account);
         }
-        let sig = TempoSignature::from_bytes(signature).map_err(|error| {
-            trace!(%error, "malformed account signature");
-            SignatureVerifierError::invalid_format()
-        })?;
-        match &sig {
-            TempoSignature::Primitive(primitive) => Ok(self.recover_primitive(hash, primitive)?
+        match TempoSignature::from_bytes(signature)
+            .map_err(|_| SignatureVerifierError::invalid_format())?
+        {
+            TempoSignature::Primitive(primitive) => Ok(self.recover_primitive(hash, &primitive)?
                 == account
                 && !self.storage.is_retired_root(account)?),
-            TempoSignature::Keychain(_) => {
+            sig @ TempoSignature::Keychain(_) => {
                 self.verify_keychain_admin_signature(account, hash, &sig)
             }
             TempoSignature::ConfigurableAccount(configurable) => Ok(self
-                .verify_configurable_signature(account, hash, configurable)?
+                .verify_configurable_signature(account, hash, &configurable)?
                 .is_some()),
         }
     }

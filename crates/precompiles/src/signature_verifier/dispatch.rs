@@ -21,15 +21,17 @@ impl Precompile for SignatureVerifier {
         // T15, can carry a configurable account signature, which its decoder bounds and is already
         // charged.
         let spec = self.storage.spec();
-        let uncapped = (spec.is_t14()
-            && [
-                ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR,
-                ISignatureVerifier::verifyKeychainCall::SELECTOR,
-            ]
-            .iter()
-            .any(|selector| calldata.starts_with(selector)))
-            || (spec.is_t15() && calldata.starts_with(&ISignatureVerifier::verifyCall::SELECTOR));
-        if calldata.len() > MAX_CALLDATA_LEN && !uncapped {
+        if calldata.len() > MAX_CALLDATA_LEN
+            && !((spec.is_t14()
+                && [
+                    ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR,
+                    ISignatureVerifier::verifyKeychainCall::SELECTOR,
+                ]
+                .iter()
+                .any(|selector| calldata.starts_with(selector)))
+                || (spec.is_t15()
+                    && calldata.starts_with(&ISignatureVerifier::verifyCall::SELECTOR)))
+        {
             return self
                 .storage
                 .abi_revert(SignatureVerifierError::invalid_format());
