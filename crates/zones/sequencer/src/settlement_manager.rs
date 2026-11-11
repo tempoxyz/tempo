@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -193,7 +193,7 @@ impl SettlementManager {
             "settlement signer does not match authenticated peer"
         );
         let digest = self.domain.settlement_digest(&signed.attestation);
-        self.pending.route(digest, signed)
+        self.pending.route(digest, signer, signed)
     }
 
     fn broadcast(&self, attestation: &SettlementAttestation, digest: B256) -> eyre::Result<()> {
@@ -294,34 +294,58 @@ fn settlement_attestation(
 
 #[derive(Clone, Default)]
 struct PendingSettlements {
-    senders: Arc<Mutex<HashMap<B256, Weak<mpsc::UnboundedSender<SignedSettlementAttestation>>>>>,
+    routes: Arc<Mutex<HashMap<B256, PendingRoute>>>,
+}
+
+/// Mailbox of one pending settlement and the signers already forwarded to it.
+struct PendingRoute {
+    sender: Weak<mpsc::UnboundedSender<SignedSettlementAttestation>>,
+    signers: HashSet<Address>,
 }
 
 impl PendingSettlements {
     fn subscribe(&self, digest: B256) -> eyre::Result<PendingSettlement> {
-        let mut senders = self.senders.lock();
-        senders.retain(|_, sender| sender.strong_count() > 0);
+        let mut routes = self.routes.lock();
+        routes.retain(|_, route| route.sender.strong_count() > 0);
         eyre::ensure!(
-            !senders.contains_key(&digest),
+            !routes.contains_key(&digest),
             "settlement digest is already pending"
         );
         let (sender, receiver) = mpsc::unbounded_channel();
         let sender = Arc::new(sender);
-        senders.insert(digest, Arc::downgrade(&sender));
+        routes.insert(
+            digest,
+            PendingRoute {
+                sender: Arc::downgrade(&sender),
+                signers: HashSet::new(),
+            },
+        );
         Ok(PendingSettlement {
             _sender: sender,
             receiver,
         })
     }
 
-    fn route(&self, digest: B256, signed: SignedSettlementAttestation) -> eyre::Result<()> {
-        let mut senders = self.senders.lock();
-        let Some(sender) = senders.get(&digest).and_then(|sender| sender.upgrade()) else {
-            senders.remove(&digest);
+    /// Forwards at most one response per signer, so the mailbox is bounded by the signer set.
+    fn route(
+        &self,
+        digest: B256,
+        signer: Address,
+        signed: SignedSettlementAttestation,
+    ) -> eyre::Result<()> {
+        let mut routes = self.routes.lock();
+        let Some((route, sender)) = routes
+            .get_mut(&digest)
+            .and_then(|route| route.sender.upgrade().map(|sender| (route, sender)))
+        else {
+            routes.remove(&digest);
             eyre::bail!("settlement response has no pending request");
         };
+        if !route.signers.insert(signer) {
+            return Ok(());
+        }
         if sender.send(signed).is_err() {
-            senders.remove(&digest);
+            routes.remove(&digest);
             eyre::bail!("pending settlement receiver closed");
         }
         Ok(())
@@ -370,6 +394,10 @@ mod tests {
         .unwrap()
     }
 
+    fn signer_of(signed: &SignedSettlementAttestation) -> Address {
+        signed.recover_signer(domain()).unwrap()
+    }
+
     #[test]
     fn routes_concurrent_settlements_by_digest() {
         let pending = PendingSettlements::default();
@@ -381,14 +409,44 @@ mod tests {
         let second_signature = signed(240);
 
         pending
-            .route(second_digest, second_signature.clone())
+            .route(
+                second_digest,
+                signer_of(&second_signature),
+                second_signature.clone(),
+            )
             .unwrap();
         pending
-            .route(first_digest, first_signature.clone())
+            .route(
+                first_digest,
+                signer_of(&first_signature),
+                first_signature.clone(),
+            )
             .unwrap();
 
         assert_eq!(first.receiver.try_recv().unwrap(), first_signature);
         assert_eq!(second.receiver.try_recv().unwrap(), second_signature);
+    }
+
+    #[test]
+    fn drops_duplicate_signer_responses() {
+        let pending = PendingSettlements::default();
+        let digest = B256::repeat_byte(1);
+        let mut request = pending.subscribe(digest).unwrap();
+        let first = signed(120);
+        let second = signed(120);
+
+        for response in [&first, &first, &second, &first, &second] {
+            pending
+                .route(digest, signer_of(response), response.clone())
+                .unwrap();
+        }
+
+        assert_eq!(request.receiver.try_recv().unwrap(), first);
+        assert_eq!(request.receiver.try_recv().unwrap(), second);
+        assert_eq!(
+            request.receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        );
     }
 
     #[test]
@@ -445,10 +503,16 @@ mod tests {
         drop(nitro_request);
         let mut fallback_request = pending.subscribe(fallback_digest).unwrap();
         let stale = SignedSettlementAttestation::sign(nitro, domain(), &signer).unwrap();
-        assert!(pending.route(nitro_digest, stale).is_err());
+        assert!(
+            pending
+                .route(nitro_digest, signer.address(), stale)
+                .is_err()
+        );
         assert!(fallback_request.receiver.try_recv().is_err());
         let fresh = SignedSettlementAttestation::sign(fallback, domain(), &signer).unwrap();
-        pending.route(fallback_digest, fresh.clone()).unwrap();
+        pending
+            .route(fallback_digest, signer.address(), fresh.clone())
+            .unwrap();
         assert_eq!(fallback_request.receiver.try_recv().unwrap(), fresh);
     }
 }
