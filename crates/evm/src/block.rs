@@ -1014,6 +1014,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
             let mut inner = self.inner.inner;
+            // The committee system call above made the block's last state change. Dropping the
+            // state hook ends the stream to the state root task, which can then compute the root
+            // while the block state is converted into a bundle.
+            evm2::block::BlockExecutor::set_state_hook(&mut inner, |_| {});
             let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
             let result = reth_execution_types::BlockExecutionResult {
                 receipts: inner.receipts,

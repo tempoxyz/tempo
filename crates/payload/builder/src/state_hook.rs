@@ -1,6 +1,7 @@
 //! Batching of execution state updates sent to the state root task.
 
 use alloy_primitives::{Address, U256, map::HashMap};
+use crossbeam_channel::{Receiver, Sender};
 use reth_evm::{OnStateHook, StateUpdate};
 use reth_execution_types::AccountUpdate;
 
@@ -106,6 +107,115 @@ impl<H: OnStateHook> OnStateHook for BatchedStateHook<H> {
 }
 
 impl<H: OnStateHook> Drop for BatchedStateHook<H> {
+    fn drop(&mut self) {
+        // Match the inner hook: a drop during a panic leaves the stream unfinished.
+        if std::thread::panicking() {
+            return;
+        }
+        self.flush();
+    }
+}
+
+/// [`OnStateHook`] that forwards the same batches as [`BatchedStateHook`], but merges them on
+/// another thread.
+///
+/// Merging looks up every account and slot of every update, which costs the thread that executes
+/// the block more than the updates themselves. Here that thread only collects updates and hands
+/// each full batch to the merging thread, and it forwards merged batches to `inner` as they come
+/// back. `inner` stays with this hook, so the stream ends, or is left unfinished during a panic,
+/// where it would with [`BatchedStateHook`].
+#[derive(Debug)]
+pub(crate) struct MergingStateHook<H: OnStateHook> {
+    inner: H,
+    batch_size: usize,
+    /// Updates of the batch that is not full yet.
+    pending: Vec<StateUpdate>,
+    batches: Sender<Vec<StateUpdate>>,
+    /// Merged updates, and `None` after the last one of a batch.
+    merged: Receiver<Option<StateUpdate>>,
+    /// Batches sent for merging that have not all come back yet.
+    in_flight: usize,
+}
+
+impl<H: OnStateHook> MergingStateHook<H> {
+    /// Merges batches of `batch_size` updates on the thread that `spawn` runs its closure on.
+    pub(crate) fn new(
+        inner: H,
+        batch_size: usize,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>),
+    ) -> Self {
+        let (batches, batches_rx) = crossbeam_channel::unbounded::<Vec<StateUpdate>>();
+        let (merged_tx, merged) = crossbeam_channel::unbounded();
+        spawn(Box::new(move || {
+            let batch_end = merged_tx.clone();
+            let mut hook = BatchedStateHook::new(
+                move |state| {
+                    let _ = merged_tx.send(Some(state));
+                },
+                usize::MAX,
+            );
+            for batch in batches_rx {
+                for state in batch {
+                    hook.on_state(state);
+                }
+                hook.flush();
+                let _ = batch_end.send(None);
+            }
+        }));
+        Self {
+            inner,
+            batch_size,
+            pending: Vec::with_capacity(batch_size),
+            batches,
+            merged,
+            in_flight: 0,
+        }
+    }
+
+    /// Sends the pending batch, if any, and forwards every merged batch to the inner hook.
+    pub(crate) fn flush(&mut self) {
+        self.send_pending();
+        while self.in_flight > 0 {
+            let merged = self
+                .merged
+                .recv()
+                .expect("state update merging thread exited");
+            self.forward(merged);
+        }
+    }
+
+    fn send_pending(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let batch = core::mem::replace(&mut self.pending, Vec::with_capacity(self.batch_size));
+        self.batches
+            .send(batch)
+            .expect("state update merging thread exited");
+        self.in_flight += 1;
+    }
+
+    fn forward(&mut self, merged: Option<StateUpdate>) {
+        match merged {
+            Some(state) => self.inner.on_state(state),
+            None => self.in_flight -= 1,
+        }
+    }
+}
+
+impl<H: OnStateHook> OnStateHook for MergingStateHook<H> {
+    fn on_state(&mut self, state: StateUpdate) {
+        self.pending.push(state);
+        if self.pending.len() >= self.batch_size {
+            self.send_pending();
+        }
+        while let Ok(merged) = self.merged.try_recv() {
+            self.forward(merged);
+        }
+    }
+}
+
+impl<H: OnStateHook> Drop for MergingStateHook<H> {
     fn drop(&mut self) {
         // Match the inner hook: a drop during a panic leaves the stream unfinished.
         if std::thread::panicking() {
@@ -224,6 +334,67 @@ mod tests {
                 "batch size {batch_size}"
             );
         }
+    }
+
+    #[test]
+    fn merging_on_another_thread_forwards_the_same_batches() {
+        let updates = stream();
+        for batch_size in [1, 2, 3, 4, 64] {
+            let batched = Sent::default();
+            let merged = Sent::default();
+            {
+                let mut batched_hook = BatchedStateHook::new(recording_hook(&batched), batch_size);
+                let mut merging_hook =
+                    MergingStateHook::new(recording_hook(&merged), batch_size, |merge| {
+                        std::thread::spawn(merge);
+                    });
+                for (index, update) in updates.iter().enumerate() {
+                    batched_hook.on_state(update.clone());
+                    merging_hook.on_state(update.clone());
+                    // As a build that waits for transactions does.
+                    if index == 1 {
+                        batched_hook.flush();
+                        merging_hook.flush();
+                    }
+                }
+            }
+            assert_eq!(
+                *merged.lock().unwrap(),
+                *batched.lock().unwrap(),
+                "batch size {batch_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn merging_hook_leaves_the_stream_unfinished_in_a_panic() {
+        struct Finish(Arc<Mutex<bool>>);
+        impl OnStateHook for Finish {
+            fn on_state(&mut self, _state: StateUpdate) {}
+        }
+        impl Drop for Finish {
+            fn drop(&mut self) {
+                if !std::thread::panicking() {
+                    *self.0.lock().unwrap() = true;
+                }
+            }
+        }
+
+        let finished = Arc::new(Mutex::new(false));
+        let hook = MergingStateHook::new(Finish(finished.clone()), 64, |merge| {
+            std::thread::spawn(merge);
+        });
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _hook = hook;
+            panic!("execution failed");
+        }));
+        assert!(!*finished.lock().unwrap());
+
+        let hook = MergingStateHook::new(Finish(finished.clone()), 64, |merge| {
+            std::thread::spawn(merge);
+        });
+        drop(hook);
+        assert!(*finished.lock().unwrap());
     }
 
     #[test]

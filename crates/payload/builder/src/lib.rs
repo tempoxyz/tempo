@@ -22,13 +22,13 @@ use crate::{
     },
     prewarming::{
         BestTransactionsLookahead, BestTransactionsParallel, PrewarmedTransaction,
-        PrewarmingExecutionContext,
+        PrewarmingExecutionContext, SkipIncluded,
     },
-    state_hook::{BatchedStateHook, STATE_UPDATE_BATCH_SIZE},
+    state_hook::{MergingStateHook, STATE_UPDATE_BATCH_SIZE},
 };
-use alloy_consensus::{BlockHeader as _, TxReceipt};
+use alloy_consensus::{BlockHeader as _, TxReceipt, transaction::TxHashRef as _};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
-use alloy_primitives::{Address, B256, Bloom, Bytes, TxHash, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, TxHash, U256, map::B256Set};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -53,12 +53,13 @@ use reth_storage_api::{
     EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
     StateRootProvider,
 };
-use reth_tasks::{CancelOnDrop, TaskExecutor};
+use reth_tasks::{CancelOnDrop, TaskExecutor, utils::increase_thread_priority};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
 use std::{
+    cell::Cell,
     num::NonZeroU64,
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
@@ -91,6 +92,9 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// How often a build that waits for its worker thread checks whether its job was cancelled.
 const BUILD_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+/// Name of the thread that builds payloads with a deadline.
+const BUILD_WORKER_THREAD: &str = "builder-worker";
 
 /// Consecutive pool transactions whose gas limit exceeds the remaining block gas before the builder
 /// treats the block as full.
@@ -147,6 +151,14 @@ where
         }
     }
 
+    /// Stops the prewarming workers from starting on transactions that are still queued.
+    fn stop_prewarming(&self) {
+        match self {
+            Self::Sequential(txs) => txs.stop_prewarming(),
+            Self::Parallel(txs) => txs.stop_prewarming(),
+        }
+    }
+
     /// Notify the iterator of a new result.
     ///
     /// Noop for [`Self::Parallel`]: replaying a transaction checks its fee payer's balance.
@@ -175,6 +187,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// Limits the builds running on worker threads. This counts builds that missed their
     /// deadline, which keep their thread until the transaction they are executing returns.
     build_workers: Arc<Semaphore>,
+    /// Transactions of the block this builder built last.
+    last_built: Arc<Mutex<Option<BuiltTransactions>>>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -247,6 +261,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
             build_workers: Arc::new(Semaphore::new(config.max_build_tasks)),
+            last_built: Arc::default(),
         }
     }
 }
@@ -355,8 +370,9 @@ where
         let worker_shared = shared.clone();
         let span = Span::current();
         self.executor
-            .spawn_blocking_named_or_tokio("builder-worker", move || {
+            .spawn_blocking_named_or_tokio(BUILD_WORKER_THREAD, move || {
                 let _permit = permit;
+                increase_build_worker_priority();
                 let _span = span.entered();
                 // Nobody is waiting if the build was abandoned.
                 let _ = outcome_tx.send(this.build_pool_payload(args, &worker_shared));
@@ -611,7 +627,11 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let stream = StateStream::new(shared, handle.take_state_hook());
+            let stream = StateStream::new(shared, handle.take_state_hook(), |merge| {
+                // Another build may still hold the named thread.
+                self.executor
+                    .spawn_blocking_named_or_tokio("builder-state-merge", merge);
+            });
             executor.set_state_hook(move |state| stream.on_state(state));
         }
 
@@ -640,7 +660,25 @@ where
             ),
             executor.evm().block().timestamp.to(),
         );
-        let raw_best_txs = Box::new(raw_best_txs);
+        // Pool maintenance removes a block's transactions only once the block is canonical, so a
+        // build on the block this builder built last can still find them in the pool. None of
+        // them can be included again, so skip them before they are prewarmed or executed.
+        let included_in_parent = self
+            .last_built
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|built| built.block_hash == parent_header.hash())
+            .map(|built| built.hashes.clone());
+        let raw_best_txs: Box<dyn BestTransactions<Item = BestTransaction>> =
+            match included_in_parent {
+                Some(included) => Box::new(SkipIncluded::new(
+                    raw_best_txs,
+                    included,
+                    self.skipped.included_in_parent.clone(),
+                )),
+                None => Box::new(raw_best_txs),
+            };
         // Without an execution cache, sequential prewarming has nowhere to keep what it reads and
         // only competes with the builder for CPU. Parallel planning needs it for replay.
         let enable_prewarming = self.config.enable_prewarming
@@ -715,8 +753,10 @@ where
             return Ok(BuildOutcome::Cancelled);
         };
 
-        // cancel pre-warming, if any, by dropping the iter
-        drop(best_txs);
+        // Dropping the pool's snapshot of best transactions releases every transaction it holds,
+        // so leave that to another thread once prewarming has stopped.
+        best_txs.stop_prewarming();
+        self.executor.spawn_drop(best_txs);
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
@@ -850,6 +890,7 @@ where
             transactions,
             senders,
             encoded_block_transactions,
+            transaction_hashes,
         } = roots_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
@@ -1073,6 +1114,14 @@ where
                 &serde_json::json!({ "block_number": block.number(), "error": post_execution.err().map(|err| err.to_string()) })
             );
         }
+
+        *self
+            .last_built
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(BuiltTransactions {
+            block_hash: block.hash(),
+            hashes: Arc::new(transaction_hashes),
+        });
 
         let block = Arc::new(block);
         let execution_block_encoder = ExecutionBlockEncoder::new(
@@ -1486,6 +1535,7 @@ where
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
+                let mut transaction_hashes = B256Set::default();
 
                 let mut buf = Vec::new();
 
@@ -1495,6 +1545,7 @@ where
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
                     encoded_block_transactions.push(&tx, &buf);
+                    transaction_hashes.insert(*tx.tx_hash());
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -1514,6 +1565,7 @@ where
                     transactions,
                     senders,
                     encoded_block_transactions: encoded_block_transactions.finish(),
+                    transaction_hashes,
                 });
             });
 
@@ -1587,7 +1639,7 @@ struct SharedBuildState {
     /// The pool transaction the build is executing and when it started.
     executing: Mutex<Option<(TxHash, Instant)>>,
     /// Streams the state changes of the build to its state root task, a batch at a time.
-    state_hook: Mutex<Option<BatchedStateHook<StateRootUpdateHook>>>,
+    state_hook: Mutex<Option<MergingStateHook<StateRootUpdateHook>>>,
 }
 
 impl SharedBuildState {
@@ -1642,12 +1694,17 @@ impl SharedBuildState {
 struct StateStream(Arc<SharedBuildState>);
 
 impl StateStream {
-    fn new(shared: &Arc<SharedBuildState>, hook: StateRootUpdateHook) -> Self {
+    /// Batches are merged on the thread that `spawn` runs its closure on.
+    fn new(
+        shared: &Arc<SharedBuildState>,
+        hook: StateRootUpdateHook,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>),
+    ) -> Self {
         *shared
             .state_hook
             .lock()
             .unwrap_or_else(PoisonError::into_inner) =
-            Some(BatchedStateHook::new(hook, STATE_UPDATE_BATCH_SIZE));
+            Some(MergingStateHook::new(hook, STATE_UPDATE_BATCH_SIZE, spawn));
         Self(shared.clone())
     }
 
@@ -1690,6 +1747,20 @@ fn detach_state_root_task(
     Some(task)
 }
 
+/// Raises the priority of the [`BUILD_WORKER_THREAD`], once per thread.
+///
+/// A proposal waits for its build, which runs on one thread, while the node also serves RPC,
+/// imports pool transactions, computes proofs and prewarms on its other cores. At normal
+/// priority the build loses part of its budget to that work, as the engine and sparse trie
+/// threads would without the same raise. A build that runs on a shared blocking thread, because
+/// an abandoned build still holds the worker thread, keeps that thread's priority.
+fn increase_build_worker_priority() {
+    thread_local!(static RAISED: Cell<bool> = const { Cell::new(false) });
+    if std::thread::current().name() == Some(BUILD_WORKER_THREAD) && !RAISED.replace(true) {
+        increase_thread_priority();
+    }
+}
+
 /// Result produced by the roots task while finalizing payload block data.
 #[derive(Debug)]
 pub(crate) struct RootsTaskResult {
@@ -1708,6 +1779,15 @@ pub(crate) struct RootsTaskResult {
     /// Since roots task already encodes every transaction for the transaction trie,
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
+    /// The hashes of the transactions included in the block.
+    transaction_hashes: B256Set,
+}
+
+/// Hashes of the transactions in a block that the builder built.
+#[derive(Debug)]
+struct BuiltTransactions {
+    block_hash: B256,
+    hashes: Arc<B256Set>,
 }
 
 #[cfg(test)]
@@ -1716,6 +1796,10 @@ mod tests {
     use crossbeam_channel::TryRecvError;
     use reth_engine_tree::tree::{StateRootHandle, StateRootMessage, StateRootTaskCancelGuard};
     use reth_execution_types::AccountUpdate;
+
+    fn spawn_thread(f: Box<dyn FnOnce() + Send>) {
+        std::thread::spawn(f);
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
@@ -1768,7 +1852,11 @@ mod tests {
         // What the thread that waits for a build keeps, and what the build does with the rest.
         let task = detach_state_root_task(&mut build_handle);
         let shared = Arc::new(SharedBuildState::default());
-        let stream = StateStream::new(&shared, build_handle.as_mut().unwrap().take_state_hook());
+        let stream = StateStream::new(
+            &shared,
+            build_handle.as_mut().unwrap().take_state_hook(),
+            spawn_thread,
+        );
         assert_eq!(cancel_rx.try_recv(), Err(TryRecvError::Empty));
         assert!(matches!(updates_rx.try_recv(), Err(TryRecvError::Empty)));
 
@@ -1803,7 +1891,7 @@ mod tests {
         )
         .into_payload_state_root_handle();
         let shared = Arc::new(SharedBuildState::default());
-        let stream = StateStream::new(&shared, handle.take_state_hook());
+        let stream = StateStream::new(&shared, handle.take_state_hook(), spawn_thread);
         let update = || StateUpdate {
             accounts: vec![AccountUpdate {
                 address: Address::ZERO,
