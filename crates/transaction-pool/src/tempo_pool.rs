@@ -148,11 +148,7 @@ where
     /// discarded event, if it fails revalidation or the live pool rejects it. Called by pool
     /// maintenance on each new block.
     pub(crate) async fn release_delayed_transactions(&self, tip_timestamp: u64) {
-        let due = self
-            .aa_2d_pool
-            .write()
-            .delayed_mut()
-            .take_due(tip_timestamp);
+        let due = self.aa_2d_pool.write().take_due_held(tip_timestamp);
         if due.is_empty() {
             return;
         }
@@ -173,13 +169,7 @@ where
             let hash = *held.hash();
             if !outcome.is_valid() {
                 // Skipped if it was removed, for example by eviction, while it was revalidated.
-                if self
-                    .aa_2d_pool
-                    .write()
-                    .delayed_mut()
-                    .remove(&hash)
-                    .is_some()
-                {
+                if self.aa_2d_pool.write().remove_held(&hash).is_some() {
                     discarded.push(held);
                 }
                 continue;
@@ -655,8 +645,7 @@ where
         let (included, discarded) = self
             .aa_2d_pool
             .write()
-            .delayed_mut()
-            .remove_consumed(state)
+            .remove_consumed_held(state)
             .into_iter()
             .partition(|tx| mined.contains(tx.hash()));
         self.notify_held_removed(&mut removed, discarded);
@@ -802,7 +791,7 @@ where
                     let (added, mut discarded) = {
                         let mut aa_2d_pool = self.aa_2d_pool.write();
                         if let Some(held) = release
-                            && aa_2d_pool.delayed_mut().remove(&held).is_none()
+                            && aa_2d_pool.remove_held(&held).is_none()
                         {
                             return Ok(None);
                         }
@@ -849,12 +838,7 @@ where
                     Ok(Some(AddedTransactionOutcome { hash, state }))
                 } else {
                     if let Some(held) = release
-                        && self
-                            .aa_2d_pool
-                            .write()
-                            .delayed_mut()
-                            .remove(&held)
-                            .is_none()
+                        && self.aa_2d_pool.write().remove_held(&held).is_none()
                     {
                         return Ok(None);
                     }
@@ -1335,8 +1319,7 @@ where
         let held = self
             .aa_2d_pool
             .write()
-            .delayed_mut()
-            .remove_transactions(hashes.iter());
+            .remove_held_transactions(hashes.iter());
         let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
         txs.extend(self.protocol_pool.remove_transactions(hashes));
         self.notify_held_removed(&mut txs, held);
@@ -1351,8 +1334,7 @@ where
         let held = self
             .aa_2d_pool
             .write()
-            .delayed_mut()
-            .remove_transactions(hashes.iter());
+            .remove_held_transactions(hashes.iter());
         let mut txs = self
             .aa_2d_pool
             .write()
@@ -1369,11 +1351,7 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let held = self
-            .aa_2d_pool
-            .write()
-            .delayed_mut()
-            .remove_transactions_by_sender(sender);
+        let held = self.aa_2d_pool.write().remove_held_by_sender(sender);
         let mut txs = self
             .aa_2d_pool
             .write()
@@ -1390,8 +1368,7 @@ where
         let mut txs = self
             .aa_2d_pool
             .write()
-            .delayed_mut()
-            .remove_transactions(hashes.iter());
+            .remove_held_transactions(hashes.iter());
         txs.extend(self.aa_2d_pool.write().remove_transactions(hashes.iter()));
         txs.extend(self.protocol_pool.prune_transactions(hashes));
         txs
@@ -4141,33 +4118,6 @@ mod tests {
             vec![by_sender]
         );
         assert_eq!(pool.aa_2d_pool.read().delayed().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn delayed_limits_reject_transactions() {
-        let sender = Address::random();
-        let tip = now_secs();
-        let (_provider, pool) = create_validating_pool(
-            sender,
-            tip,
-            delayed_pool::Config {
-                max_per_sender: std::num::NonZeroUsize::MIN,
-                ..Default::default()
-            },
-        );
-        pool.add_transaction(TransactionOrigin::External, held_tx(sender, tip).build())
-            .await
-            .expect("transaction should be held");
-
-        let err = pool
-            .add_transaction(TransactionOrigin::External, held_tx(sender, tip).build())
-            .await
-            .expect_err("sender limit is reached");
-        assert!(!err.is_bad_transaction());
-        assert!(matches!(
-            err.kind,
-            PoolErrorKind::SpammerExceededCapacity(authority) if authority == sender
-        ));
     }
 
     #[tokio::test]

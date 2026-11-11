@@ -56,7 +56,7 @@ use tempo_transaction_pool::{
     amm::AmmLiquidityCache,
     delayed_pool::{
         self, BYTES_PER_MB, DEFAULT_DELAYED_LEAD_SECS, DEFAULT_DELAYED_MAX_COUNT,
-        DEFAULT_DELAYED_MAX_PER_SENDER, DEFAULT_DELAYED_MAX_SIZE_MB,
+        DEFAULT_DELAYED_MAX_SIZE_MB,
     },
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -109,14 +109,6 @@ pub struct TempoNodeArgs {
     /// Maximum total size of transactions in the delayed sub-pool, in megabytes.
     #[arg(long = "txpool.delayed-max-size", default_value_t = DEFAULT_DELAYED_MAX_SIZE_MB)]
     pub delayed_max_size_mb: NonZeroUsize,
-
-    /// Maximum number of transactions in the delayed sub-pool per sender. Fee payers and other
-    /// authorities are limited by the per-authority limit of live and held 2D transactions.
-    #[arg(
-        long = "txpool.delayed-max-per-sender",
-        default_value_t = DEFAULT_DELAYED_MAX_PER_SENDER
-    )]
-    pub delayed_max_per_sender: NonZeroUsize,
 
     /// Comma-separated addresses or a file containing comma/newline-separated addresses checked
     /// against each transaction's sender, fee payer, direct call targets, authorization delegates
@@ -180,7 +172,6 @@ impl Default for TempoNodeArgs {
             delayed_lead_secs: DEFAULT_DELAYED_LEAD_SECS,
             delayed_max_count: DEFAULT_DELAYED_MAX_COUNT,
             delayed_max_size_mb: DEFAULT_DELAYED_MAX_SIZE_MB,
-            delayed_max_per_sender: DEFAULT_DELAYED_MAX_PER_SENDER,
             txpool_filter: None,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
@@ -204,7 +195,6 @@ impl TempoNodeArgs {
                 lead_secs: self.delayed_lead_secs,
                 max_count: self.delayed_max_count,
                 max_size: self.delayed_max_size_mb.saturating_mul(BYTES_PER_MB),
-                max_per_sender: self.delayed_max_per_sender,
             },
             address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
@@ -1230,8 +1220,6 @@ mod tests {
             "10",
             "--txpool.delayed-max-size",
             "3",
-            "--txpool.delayed-max-per-sender",
-            "2",
         ])
         .unwrap();
         assert_eq!(
@@ -1240,15 +1228,10 @@ mod tests {
                 lead_secs: 1,
                 max_count: NonZeroUsize::new(10).unwrap(),
                 max_size: NonZeroUsize::new(3 * 1024 * 1024).unwrap(),
-                max_per_sender: NonZeroUsize::new(2).unwrap(),
             }
         );
 
-        for flag in [
-            "--txpool.delayed-max-count",
-            "--txpool.delayed-max-size",
-            "--txpool.delayed-max-per-sender",
-        ] {
+        for flag in ["--txpool.delayed-max-count", "--txpool.delayed-max-size"] {
             assert!(
                 Args::try_parse_from(["tempo", flag, "0"]).is_err(),
                 "{flag} must reject 0"

@@ -116,9 +116,7 @@ pub struct AA2dPool {
     queued_eviction_order: BTreeSet<EvictionKey>,
     /// Base fee used for transaction insertion and eviction-order priorities.
     base_fee: u64,
-    /// Tracks the number of transactions per authority for DoS protection.
-    ///
-    /// Limits apply to these together with the held transactions' counts.
+    /// Tracks the number of live and held transactions per authority for DoS protection.
     txs_by_authority: AuthorityCounts,
     /// Expiring nonce transactions whose `valid_after` is too far ahead of the tip, held out of
     /// the pending set until then.
@@ -181,9 +179,60 @@ impl AA2dPool {
         &self.delayed
     }
 
-    /// Returns the held transactions mutably.
-    pub(crate) const fn delayed_mut(&mut self) -> &mut DelayedPool {
-        &mut self.delayed
+    /// Returns the held transactions due for release at `tip_timestamp`; see
+    /// [`DelayedPool::take_due`].
+    pub(crate) fn take_due_held(
+        &mut self,
+        tip_timestamp: u64,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.delayed.take_due(tip_timestamp)
+    }
+
+    /// Removes the held transaction with the given hash, if any.
+    pub(crate) fn remove_held(
+        &mut self,
+        hash: &TxHash,
+    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let removed = self.delayed.remove(hash)?;
+        self.txs_by_authority.remove(&removed.transaction);
+        Some(removed)
+    }
+
+    /// Removes the held transactions with the given hashes and returns them.
+    pub(crate) fn remove_held_transactions<'a>(
+        &mut self,
+        hashes: impl IntoIterator<Item = &'a TxHash>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let removed = self.delayed.remove_transactions(hashes);
+        self.uncount_held(&removed);
+        removed
+    }
+
+    /// Removes the held transactions sent by `sender` and returns them.
+    pub(crate) fn remove_held_by_sender(
+        &mut self,
+        sender: Address,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let removed = self.delayed.remove_transactions_by_sender(sender);
+        self.uncount_held(&removed);
+        removed
+    }
+
+    /// Removes and returns the held transactions whose expiring nonce `state` marks as seen.
+    pub(crate) fn remove_consumed_held(
+        &mut self,
+        state: &AddressMap<BundleAccount>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let removed = self.delayed.remove_consumed(state);
+        self.uncount_held(&removed);
+        removed
+    }
+
+    /// Releases the authority slots of held transactions that left the held set.
+    fn uncount_held(&mut self, removed: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) {
+        for tx in removed {
+            self.txs_by_authority.remove(&tx.transaction);
+        }
     }
 
     /// Replaces the held transactions, such as with an empty set with other limits.
@@ -196,8 +245,7 @@ impl AA2dPool {
     ///
     /// Rejected as already imported if this pool holds or has live a transaction with the same
     /// hash or expiring nonce. Held transactions count toward
-    /// [`AA2dPoolConfig::max_txs_per_authority`] together with the live ones, and separately
-    /// toward the held set's own limit.
+    /// [`AA2dPoolConfig::max_txs_per_authority`] like live ones.
     pub(crate) fn hold_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
@@ -209,34 +257,37 @@ impl AA2dPool {
             || transaction
                 .transaction
                 .expiring_nonce_hash()
-                .is_some_and(|expiring_nonce| self.expiring_nonce_txs.contains_key(&expiring_nonce))
+                .is_some_and(|expiring_nonce| {
+                    self.expiring_nonce_txs.contains_key(&expiring_nonce)
+                        || self.delayed.contains_expiring_nonce(&expiring_nonce)
+                })
         {
             return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
         }
-        if let Some(authority) = self.delayed.authority_counts().at_capacity_with(
-            &self.txs_by_authority,
-            self.config.max_txs_per_authority,
-            &transaction.transaction,
-        ) {
+        if let Some(authority) = self
+            .txs_by_authority
+            .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+        {
             return Err(PoolError::new(
                 hash,
                 PoolErrorKind::SpammerExceededCapacity(authority),
             ));
         }
-        self.delayed
-            .insert(transaction, valid_after)
+        let evicted = self
+            .delayed
+            .insert(Arc::clone(&transaction), valid_after)
             // Reported with the live pool's kinds so RPC returns the standard txpool errors.
             .map_err(|err| {
                 let kind = match err {
                     delayed_pool::Error::PoolFull => PoolErrorKind::DiscardedOnInsert,
-                    delayed_pool::Error::SenderLimit(sender) => {
-                        PoolErrorKind::SpammerExceededCapacity(sender)
-                    }
                     // Like a live expiring nonce collision: held transactions cannot be replaced.
                     delayed_pool::Error::NonceConflict => PoolErrorKind::AlreadyImported,
                 };
                 PoolError::new(hash, kind)
-            })
+            })?;
+        self.txs_by_authority.add(&transaction.transaction);
+        self.uncount_held(&evicted);
+        Ok(evicted)
     }
 
     /// Broadcasts a new pending transaction to all active [`BestAA2dTransactions`] iterators.
@@ -388,11 +439,10 @@ impl AA2dPool {
                 // authorities are checked with the replaced transaction's slots released.
                 let replaced_tx = &entry.get().inner.transaction.transaction;
                 self.txs_by_authority.remove(replaced_tx);
-                if let Some(authority) = self.txs_by_authority.at_capacity_with(
-                    self.delayed.authority_counts(),
-                    self.config.max_txs_per_authority,
-                    &transaction.transaction,
-                ) {
+                if let Some(authority) = self
+                    .txs_by_authority
+                    .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+                {
                     self.txs_by_authority.add(replaced_tx);
                     return Err(PoolError::new(
                         *transaction.hash(),
@@ -412,11 +462,10 @@ impl AA2dPool {
             }
             Entry::Vacant(entry) => {
                 // Check the per-authority limit for new (non-replacement) transactions
-                if let Some(authority) = self.txs_by_authority.at_capacity_with(
-                    self.delayed.authority_counts(),
-                    self.config.max_txs_per_authority,
-                    &transaction.transaction,
-                ) {
+                if let Some(authority) = self
+                    .txs_by_authority
+                    .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+                {
                     return Err(PoolError::new(
                         *transaction.hash(),
                         PoolErrorKind::SpammerExceededCapacity(authority),
@@ -581,11 +630,10 @@ impl AA2dPool {
         };
 
         // Check the per-authority limit
-        if let Some(authority) = self.txs_by_authority.at_capacity_with(
-            self.delayed.authority_counts(),
-            self.config.max_txs_per_authority,
-            &transaction.transaction,
-        ) {
+        if let Some(authority) = self
+            .txs_by_authority
+            .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+        {
             return Err(PoolError::new(
                 tx_hash,
                 PoolErrorKind::SpammerExceededCapacity(authority),
@@ -7468,13 +7516,23 @@ mod tests {
                 .build()
         };
 
-        hold(&mut pool, expiring(1_001)).unwrap();
+        let held = expiring(1_001);
+        hold(
+            &mut pool,
+            sponsor(held.clone(), &PrivateKeySigner::random()),
+        )
+        .unwrap();
         add_expiring(&mut pool, expiring(1_002)).unwrap();
 
         let err = add_expiring(&mut pool, expiring(1_003)).unwrap_err();
         assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
         let err = hold(&mut pool, expiring(1_004)).unwrap_err();
         assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
+
+        // A copy of a held transaction with another sponsor is already known, also at the limit.
+        let copy = sponsor(held, &PrivateKeySigner::random());
+        let err = hold(&mut pool, copy).unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
         pool.assert_invariants();
     }
 
