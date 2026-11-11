@@ -1012,14 +1012,7 @@ where
 
     fn pooled_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.pooled_transaction_hashes();
-        let aa_2d_pool = self.aa_2d_pool.read();
-        hashes.extend(aa_2d_pool.pooled_transactions_hashes_iter());
-        hashes.extend(
-            aa_2d_pool
-                .delayed()
-                .pooled_transactions()
-                .map(|tx| *tx.hash()),
-        );
+        hashes.extend(self.aa_2d_pool.read().pooled_transactions_hashes_iter());
         hashes
     }
 
@@ -1030,14 +1023,10 @@ where
         }
         let remaining = max - protocol_hashes.len();
         let mut hashes = protocol_hashes;
-        let aa_2d_pool = self.aa_2d_pool.read();
-        hashes.extend(aa_2d_pool.pooled_transactions_hashes_iter().take(remaining));
-        let remaining = max - hashes.len();
         hashes.extend(
-            aa_2d_pool
-                .delayed()
-                .pooled_transactions()
-                .map(|tx| *tx.hash())
+            self.aa_2d_pool
+                .read()
+                .pooled_transactions_hashes_iter()
                 .take(remaining),
         );
         hashes
@@ -1045,9 +1034,7 @@ where
 
     fn pooled_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut txs = self.protocol_pool.pooled_transactions();
-        let aa_2d_pool = self.aa_2d_pool.read();
-        txs.extend(aa_2d_pool.pooled_transactions_iter());
-        txs.extend(aa_2d_pool.delayed().pooled_transactions().cloned());
+        txs.extend(self.aa_2d_pool.read().pooled_transactions_iter());
         txs
     }
 
@@ -1061,15 +1048,11 @@ where
         }
 
         let remaining = max - txs.len();
-        let aa_2d_pool = self.aa_2d_pool.read();
-        txs.extend(aa_2d_pool.pooled_transactions_iter().take(remaining));
-        let remaining = max - txs.len();
         txs.extend(
-            aa_2d_pool
-                .delayed()
-                .pooled_transactions()
-                .take(remaining)
-                .cloned(),
+            self.aa_2d_pool
+                .read()
+                .pooled_transactions_iter()
+                .take(remaining),
         );
         txs
     }
@@ -1125,14 +1108,9 @@ where
         self.protocol_pool
             .get_pooled_transaction_element(tx_hash)
             .or_else(|| {
-                let aa_2d_pool = self.aa_2d_pool.read();
-                if let Some(tx) = aa_2d_pool.get(&tx_hash) {
-                    return tx.transaction.clone_into_pooled().ok();
-                }
-                aa_2d_pool
-                    .delayed()
+                self.aa_2d_pool
+                    .read()
                     .get(&tx_hash)
-                    .filter(|tx| tx.propagate)
                     .and_then(|tx| tx.transaction.clone_into_pooled().ok())
             })
     }
@@ -1207,11 +1185,9 @@ where
 
     fn all_transactions(&self) -> AllPoolTransactions<Self::Transaction> {
         let mut transactions = self.protocol_pool.all_transactions();
-        let aa_2d_pool = self.aa_2d_pool.read();
-        aa_2d_pool.append_all_transactions(&mut transactions);
-        transactions
-            .queued
-            .extend(aa_2d_pool.delayed().transactions().cloned());
+        self.aa_2d_pool
+            .read()
+            .append_all_transactions(&mut transactions);
         transactions
     }
 
@@ -1220,19 +1196,15 @@ where
         sender: Address,
     ) -> AllPoolTransactions<Self::Transaction> {
         let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
-        let aa_2d_pool = self.aa_2d_pool.read();
-        aa_2d_pool.append_all_transactions_by_sender(sender, &mut transactions);
-        transactions
-            .queued
-            .extend(aa_2d_pool.delayed().transactions_by_sender(sender).cloned());
+        self.aa_2d_pool
+            .read()
+            .append_all_transactions_by_sender(sender, &mut transactions);
         transactions
     }
 
     fn all_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.all_transaction_hashes();
-        let aa_2d_pool = self.aa_2d_pool.read();
-        hashes.extend(aa_2d_pool.all_transaction_hashes_iter());
-        hashes.extend(aa_2d_pool.delayed().transactions().map(|tx| *tx.hash()));
+        hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
         hashes
     }
 
@@ -1308,8 +1280,7 @@ where
             return;
         }
         let aa_pool = self.aa_2d_pool.read();
-        let delayed_pool = aa_pool.delayed();
-        announcement.retain_by_hash(|tx| !aa_pool.contains(tx) && !delayed_pool.contains(tx))
+        announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
     }
 
     fn retain_contains<A>(&self, announcement: &mut A)
@@ -1323,33 +1294,17 @@ where
     }
 
     fn contains(&self, tx_hash: &B256) -> bool {
-        if self.protocol_pool.contains(tx_hash) {
-            return true;
-        }
-        let aa_2d_pool = self.aa_2d_pool.read();
-        aa_2d_pool.contains(tx_hash) || aa_2d_pool.delayed().contains(tx_hash)
+        self.protocol_pool.contains(tx_hash) || self.aa_2d_pool.read().contains(tx_hash)
     }
 
     fn get(&self, tx_hash: &B256) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        self.protocol_pool.get(tx_hash).or_else(|| {
-            let aa_2d_pool = self.aa_2d_pool.read();
-            aa_2d_pool
-                .get(tx_hash)
-                .or_else(|| aa_2d_pool.delayed().get(tx_hash).cloned())
-        })
+        self.protocol_pool
+            .get(tx_hash)
+            .or_else(|| self.aa_2d_pool.read().get(tx_hash))
     }
 
     fn get_all(&self, txs: Vec<B256>) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut result = {
-            let aa_2d_pool = self.aa_2d_pool.read();
-            let delayed_pool = aa_2d_pool.delayed();
-            let mut result = aa_2d_pool.get_all(txs.iter());
-            result.extend(
-                txs.iter()
-                    .filter_map(|hash| delayed_pool.get(hash).cloned()),
-            );
-            result
-        };
+        let mut result = self.aa_2d_pool.read().get_all(txs.iter());
         result.extend(self.protocol_pool.get_all(txs));
         result
     }
@@ -1363,9 +1318,11 @@ where
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut txs = self.protocol_pool.get_transactions_by_sender(sender);
-        let aa_2d_pool = self.aa_2d_pool.read();
-        txs.extend(aa_2d_pool.get_transactions_by_sender_iter(sender));
-        txs.extend(aa_2d_pool.delayed().transactions_by_sender(sender).cloned());
+        txs.extend(
+            self.aa_2d_pool
+                .read()
+                .get_transactions_by_sender_iter(sender),
+        );
         txs
     }
 
@@ -1452,14 +1409,10 @@ where
         origin: TransactionOrigin,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut txs = self.protocol_pool.get_transactions_by_origin(origin);
-        let aa_2d_pool = self.aa_2d_pool.read();
-        txs.extend(aa_2d_pool.get_transactions_by_origin_iter(origin));
         txs.extend(
-            aa_2d_pool
-                .delayed()
-                .transactions()
-                .filter(|tx| tx.origin == origin)
-                .cloned(),
+            self.aa_2d_pool
+                .read()
+                .get_transactions_by_origin_iter(origin),
         );
         txs
     }
@@ -1481,9 +1434,7 @@ where
 
     fn unique_senders(&self) -> AddressSet {
         let mut senders = self.protocol_pool.unique_senders();
-        let aa_2d_pool = self.aa_2d_pool.read();
-        senders.extend(aa_2d_pool.senders_iter().copied());
-        senders.extend(aa_2d_pool.delayed().transactions().map(|tx| tx.sender()));
+        senders.extend(self.aa_2d_pool.read().senders_iter().copied());
         senders
     }
 
@@ -3900,7 +3851,10 @@ mod tests {
         assert!(outcome.is_queued());
         assert!(pool.aa_2d_pool.read().delayed().contains(&hash));
         assert!(!pool.protocol_pool.contains(&hash));
-        assert!(!pool.aa_2d_pool.read().contains(&hash));
+        assert_eq!(
+            pool.aa_2d_pool.read().pending_and_queued_txn_count(),
+            (0, 0)
+        );
 
         assert!(pool.contains(&hash));
         assert!(pool.get(&hash).is_some());

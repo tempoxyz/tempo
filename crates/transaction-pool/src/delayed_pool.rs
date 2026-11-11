@@ -200,13 +200,6 @@ impl DelayedPool {
         self.by_hash.values()
     }
 
-    /// Returns the delayed transactions that may be propagated to peers.
-    pub(crate) fn pooled_transactions(
-        &self,
-    ) -> impl Iterator<Item = &Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.transactions().filter(|tx| tx.propagate)
-    }
-
     /// Returns the delayed transactions sent by `sender`.
     pub(crate) fn transactions_by_sender(
         &self,

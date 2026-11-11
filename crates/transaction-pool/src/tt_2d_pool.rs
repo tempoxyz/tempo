@@ -262,7 +262,6 @@ impl AA2dPool {
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
         let hash = *transaction.hash();
-        // A delayed transaction with this hash also has this expiring nonce.
         let expiring_nonce = transaction.transaction.precomputed_expiring_nonce_hash();
         if self.contains(&hash)
             || self.expiring_nonce_txs.contains_key(&expiring_nonce)
@@ -365,12 +364,6 @@ impl AA2dPool {
             transaction.transaction.is_aa(),
             "only AA transactions are supported"
         );
-        if self.delayed.contains(transaction.hash()) {
-            return Err(PoolError::new(
-                *transaction.hash(),
-                PoolErrorKind::AlreadyImported,
-            ));
-        }
         // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
         // Only treat as expiring nonce if T1 hardfork is active.
         //
@@ -757,7 +750,12 @@ impl AA2dPool {
             .values()
             .filter(move |tx| tx.transaction.origin == origin)
             .map(|tx| tx.transaction.clone());
-        regular.chain(expiring)
+        let delayed = self
+            .delayed
+            .transactions()
+            .filter(move |tx| tx.origin == origin)
+            .cloned();
+        regular.chain(expiring).chain(delayed)
     }
 
     /// Returns all transactions that where submitted with the given [`TransactionOrigin`]
@@ -779,8 +777,17 @@ impl AA2dPool {
         regular.chain(expiring)
     }
 
-    /// Returns all transactions of the address
+    /// Returns the live and delayed transactions sent by `sender`.
     pub(crate) fn get_transactions_by_sender_iter(
+        &self,
+        sender: Address,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
+        self.live_transactions_by_sender(sender)
+            .chain(self.delayed.transactions_by_sender(sender).cloned())
+    }
+
+    /// Returns the live transactions sent by `sender`.
+    fn live_transactions_by_sender(
         &self,
         sender: Address,
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
@@ -811,7 +818,10 @@ impl AA2dPool {
 
     /// Returns an iterator over all transaction hashes in this pool
     pub(crate) fn all_transaction_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
-        self.by_hash.keys().copied()
+        self.by_hash
+            .keys()
+            .copied()
+            .chain(self.delayed.transactions().map(|tx| *tx.hash()))
     }
 
     /// Returns all transactions from that are queued.
@@ -862,6 +872,9 @@ impl AA2dPool {
                 .values()
                 .map(|tx| tx.transaction.clone()),
         );
+        transactions
+            .queued
+            .extend(self.delayed.transactions().cloned());
     }
 
     /// Appends all transactions from `sender` to the provided collection.
@@ -888,6 +901,9 @@ impl AA2dPool {
                 .filter(|tx| tx.transaction.sender() == sender)
                 .map(|tx| tx.transaction.clone()),
         );
+        transactions
+            .queued
+            .extend(self.delayed.transactions_by_sender(sender).cloned());
     }
 
     /// Returns the best, executable transactions for this sub-pool
@@ -923,7 +939,10 @@ impl AA2dPool {
         &self,
         tx_hash: &TxHash,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.by_hash.get(tx_hash).cloned()
+        self.by_hash
+            .get(tx_hash)
+            .or_else(|| self.delayed.get(tx_hash))
+            .cloned()
     }
 
     /// Returns the transaction by hash.
@@ -991,7 +1010,8 @@ impl AA2dPool {
             .expiring_nonce_txs
             .values()
             .map(|tx| tx.transaction.sender_ref());
-        regular.chain(expiring)
+        let delayed = self.delayed.transactions().map(|tx| tx.sender_ref());
+        regular.chain(expiring).chain(delayed)
     }
 
     /// Returns all transactions that _follow_ after the given id but have the same sender.
@@ -1209,7 +1229,7 @@ impl AA2dPool {
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
         let txs = self
-            .get_transactions_by_sender_iter(sender_id)
+            .live_transactions_by_sender(sender_id)
             .collect::<Vec<_>>();
         for tx in txs {
             if tx.transaction.is_expiring_nonce() {
@@ -1577,13 +1597,14 @@ impl AA2dPool {
 
     /// Returns `true` if the transaction with the given hash is already included in this pool.
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
-        self.by_hash.contains_key(tx_hash)
+        self.by_hash.contains_key(tx_hash) || self.delayed.contains(tx_hash)
     }
 
     /// Returns hashes of transactions in the pool that can be propagated.
     pub(crate) fn pooled_transactions_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
         self.by_hash
             .values()
+            .chain(self.delayed.transactions())
             .filter(|tx| tx.propagate)
             .map(|tx| *tx.hash())
     }
@@ -1592,7 +1613,11 @@ impl AA2dPool {
     pub(crate) fn pooled_transactions_iter(
         &self,
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.by_hash.values().filter(|tx| tx.propagate).cloned()
+        self.by_hash
+            .values()
+            .chain(self.delayed.transactions())
+            .filter(|tx| tx.propagate)
+            .cloned()
     }
 
     const fn next_id(&mut self) -> u64 {
