@@ -36,6 +36,7 @@ mod defaults;
 mod follow;
 mod overrides;
 pub mod p2p_proxy;
+pub mod payload_bench;
 pub mod regenesis;
 pub mod shadow_replay;
 mod snapshot_download;
