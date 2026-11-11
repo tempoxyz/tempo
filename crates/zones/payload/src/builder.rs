@@ -168,14 +168,6 @@ pub struct ZonePayloadBuilder<Provider> {
     metrics: ZonePayloadBuilderMetrics,
 }
 
-/// Zone payload builder metrics.
-#[derive(Metrics, Clone)]
-#[metrics(scope = "tempo_zone_payload")]
-struct ZonePayloadBuilderMetrics {
-    /// Time to build one Zone block, from the parent state lookup to the sealed payload.
-    build_duration_seconds: Histogram,
-}
-
 impl<Provider> PayloadBuilder for ZonePayloadBuilder<Provider>
 where
     Provider: StateProviderFactory + ChainSpecProvider<ChainSpec = ZoneChainSpec> + Clone + 'static,
@@ -462,6 +454,14 @@ where
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
     }
+}
+
+/// Zone payload builder metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_payload")]
+struct ZonePayloadBuilderMetrics {
+    /// Time to build one Zone block, from the parent state lookup to the sealed payload.
+    build_duration_seconds: Histogram,
 }
 
 /// Validate that the prepared L1 block is the next block expected by TempoState.
