@@ -13,7 +13,10 @@ use crate::{
     transaction::TempoPooledTransaction, tt_2d_pool::DEFAULT_MAX_TXS_PER_AUTHORITY,
 };
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, B256, TxHash, map::B256Map};
+use alloy_primitives::{
+    Address, B256, TxHash,
+    map::{B256Map, B256Set},
+};
 use reth_primitives_traits::InMemorySize;
 use reth_transaction_pool::{
     GetPooledTransactionLimit, PoolResult, PoolTransaction, ValidPoolTransaction,
@@ -38,6 +41,9 @@ pub struct DelayedPool {
     config: DelayedPoolConfig,
     /// Delayed transactions by hash.
     by_hash: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    /// Expiring nonce hashes of delayed transactions. Copies of a transaction that differ only
+    /// in the fee payer signature share one, so only the first is delayed.
+    by_expiring_nonce: B256Set,
     /// Delayed transactions ordered by `valid_after`, for release.
     by_valid_after: BTreeSet<(u64, TxHash)>,
     /// Delayed transactions ordered by priority fee, lowest first, for eviction when full.
@@ -68,7 +74,8 @@ impl DelayedPool {
     /// Delays a validated transaction until its `valid_after` and returns the delayed transactions it
     /// evicted. The caller ensures the transaction uses an expiring nonce.
     ///
-    /// Rejected as already imported if it is delayed already, and with the authority if one of
+    /// Rejected as already imported if it or a transaction with the same expiring nonce is
+    /// delayed already, and with the authority if one of
     /// its authorities has [`DelayedPoolConfig::max_txs_per_authority`] delayed transactions.
     /// When the pool is full, the lowest-priority delayed transactions are evicted to make room,
     /// but only for a transaction whose priority fee is higher than each of theirs; otherwise it
@@ -79,7 +86,8 @@ impl DelayedPool {
     ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
         debug_assert!(transaction.transaction.is_expiring_nonce());
         let hash = *transaction.hash();
-        if self.by_hash.contains_key(&hash) {
+        let expiring_nonce = transaction.transaction.precomputed_expiring_nonce_hash();
+        if self.by_expiring_nonce.contains(&expiring_nonce) {
             return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
         }
         if let Some(authority) = self
@@ -121,6 +129,7 @@ impl DelayedPool {
         self.by_priority.insert((priority, hash));
         self.size += tx_size;
         self.txs_by_authority.add(&transaction.transaction);
+        self.by_expiring_nonce.insert(expiring_nonce);
 
         self.by_hash.insert(hash, transaction);
         self.update_metrics();
@@ -157,6 +166,8 @@ impl DelayedPool {
             .remove(&(transaction.transaction.priority_fee_or_price(), *hash));
         self.size -= transaction.transaction.size();
         self.txs_by_authority.remove(&transaction.transaction);
+        self.by_expiring_nonce
+            .remove(&transaction.transaction.precomputed_expiring_nonce_hash());
         self.update_metrics();
         Some(transaction)
     }
@@ -323,8 +334,9 @@ fn valid_after(transaction: &ValidPoolTransaction<TempoPooledTransaction>) -> u6
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{TxBuilder, wrap_valid_tx};
+    use crate::test_utils::{TxBuilder, sponsor, wrap_valid_tx};
     use alloy_primitives::U256;
+    use alloy_signer_local::PrivateKeySigner;
     use reth_transaction_pool::TransactionOrigin;
 
     fn valid(tx: TempoPooledTransaction) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
@@ -395,6 +407,26 @@ mod tests {
         let err = pool.insert(tx).unwrap_err();
         assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
         assert_eq!(pool.len(), 1);
+    }
+
+    /// A copy with another fee payer has a different hash but the same expiring nonce, so it
+    /// can't take another of the sender's slots.
+    #[test]
+    fn rejects_copy_with_another_fee_payer() {
+        let mut pool = DelayedPool::default();
+        let tx = expiring(Address::random()).build();
+        let copy = sponsor(tx.clone(), &PrivateKeySigner::random());
+        assert_ne!(tx.hash(), copy.hash());
+        let tx = valid(tx);
+        pool.insert(Arc::clone(&tx)).unwrap();
+
+        let err = pool.insert(valid(copy.clone())).unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
+        assert_eq!(pool.len(), 1);
+
+        // Removing the transaction frees its expiring nonce.
+        pool.remove(tx.hash()).unwrap();
+        pool.insert(valid(copy)).unwrap();
     }
 
     #[test]
