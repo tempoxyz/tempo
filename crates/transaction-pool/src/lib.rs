@@ -7,6 +7,7 @@ pub mod transaction;
 pub mod validator;
 
 mod address_filter;
+mod admission_fence;
 pub use address_filter::AddressFilter;
 
 pub use transaction::{KeychainSubject, RevokedKeys, SpendingLimitUpdates};
@@ -28,7 +29,7 @@ pub mod tt_2d_pool;
 pub use best::{StateAwareBestTransactions, StateAwarePoolTransaction};
 pub use maintain::TempoPoolUpdates;
 
-pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
+pub use metrics::{AA2dPoolMetrics, AdmissionFenceMetrics, TempoPoolMaintenanceMetrics};
 pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_SENDER};
 
 #[cfg(test)]

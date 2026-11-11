@@ -102,3 +102,19 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Number of transactions re-validated due to quote token updates.
     pub quote_token_revalidated: Counter,
 }
+
+/// Metrics for the transaction pool's admission fence.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.admission_fence")]
+pub struct AdmissionFenceMetrics {
+    /// Admissions that inserted transactions after a canonical update was published during
+    /// their validation.
+    pub rechecks: Counter,
+
+    /// Inserted transactions sent back to validation because such an update affected them.
+    pub revalidated: Counter,
+
+    /// Rechecks that revalidated everything inserted because the missed updates were no
+    /// longer kept.
+    pub history_misses: Counter,
+}

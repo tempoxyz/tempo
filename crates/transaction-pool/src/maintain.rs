@@ -15,10 +15,10 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
+use reth_transaction_pool::{AllPoolTransactions, PoolTransaction, TransactionPool};
 use reth_trie_common::bundle_state::BundleAccount;
-use std::{iter, time::Instant};
-use tempo_chainspec::hardfork::TempoHardforks;
+use std::{iter, sync::Arc, time::Instant};
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -409,6 +409,113 @@ fn collect_account_changes(
     }
 }
 
+/// What one canonical update changed that can make pooled transactions invalid.
+///
+/// Maintenance publishes it to the pool's admission fence before it scans the pool, so an
+/// admission that validated against the previous state rechecks what it inserted after the scan.
+#[derive(Debug, Default)]
+pub(crate) struct PoolInvalidations {
+    /// Invalidation events from the update's receipts.
+    pub(crate) updates: TempoPoolUpdates,
+    /// Transactions the update mined. They follow reth's mined path instead of revalidation.
+    pub(crate) mined: B256Set,
+    /// Accounts whose configuration commitment changed, on either branch of a reorg.
+    pub(crate) changed_commitments: AddressSet,
+    /// Accounts whose code changed, on either branch of a reorg.
+    pub(crate) changed_code: AddressSet,
+    /// The new canonical segment, read for fallback fee-token balance changes.
+    pub(crate) chain: Arc<Chain<TempoPrimitives>>,
+    /// Hardfork active at the new tip.
+    pub(crate) spec: TempoHardfork,
+}
+
+impl PoolInvalidations {
+    /// Collects the invalidations of the canonical segment `new`, which replaced `orphaned` on a
+    /// reorg. `spec` is the hardfork active at its tip.
+    fn new(
+        new: Arc<Chain<TempoPrimitives>>,
+        orphaned: Option<&Chain<TempoPrimitives>>,
+        spec: TempoHardfork,
+    ) -> Self {
+        // Undoing the orphaned branch's changes also changes the state pooled transactions were
+        // validated against.
+        let mut changed_commitments = AddressSet::default();
+        let mut changed_code = AddressSet::default();
+        for state in iter::once(new.execution_outcome().state().state())
+            .chain(orphaned.map(|old| old.execution_outcome().state().state()))
+        {
+            collect_account_changes(state, &mut changed_commitments, &mut changed_code);
+        }
+        Self {
+            updates: TempoPoolUpdates::from_chain(&new),
+            mined: new.transaction_hashes().copied().collect(),
+            changed_commitments,
+            changed_code,
+            chain: new,
+            spec,
+        }
+    }
+
+    /// Whether a fallback fee-token balance crossed `tx`'s fee, which can change the token an
+    /// implicit fee-token transaction pays with.
+    fn fallback_fee_token_changed(&self, tx: &TempoPooledTransaction) -> bool {
+        // Fallback balances cannot change a token chosen before the fallback.
+        if !self.spec.is_t13() || !tx.is_fallback_fee_token() {
+            return false;
+        }
+        let bundle_state = self.chain.execution_outcome().state().state();
+        tx.fee_balance_slot().is_some_and(|(selected_token, slot)| {
+            // TIP-20 balance slots share a layout. Include credits and protocol
+            // fee writes, which may change the choice without Transfer logs.
+            let fee = tx.fee_token_cost();
+            for token in self.spec.fallback_fee_tokens() {
+                if bundle_state
+                    .get(token)
+                    .and_then(|account| account.storage.get(&slot))
+                    .is_some_and(|value| {
+                        let had_sufficient_balance = value.original_value() >= fee;
+                        let has_sufficient_balance = value.present_value >= fee;
+                        had_sufficient_balance != has_sufficient_balance
+                    })
+                {
+                    return true;
+                }
+                if *token == selected_token {
+                    break;
+                }
+            }
+            false
+        })
+    }
+
+    /// Whether the configuration commitment of one of `tx`'s authorities changed, including
+    /// eventless first registration (TIP-1107), or the code of the account its inline
+    /// configurable-account grant names.
+    fn authority_changed(&self, tx: &TempoPooledTransaction) -> bool {
+        tx.has_authority_in(&self.changed_commitments)
+            || tx
+                .configurable_grant_target()
+                .is_some_and(|key_id| self.changed_code.contains(&key_id))
+    }
+
+    /// Whether `tx` pays with a token whose transfer policy or quote token changed.
+    fn fee_token_changed(&self, tx: &TempoPooledTransaction) -> bool {
+        tx.resolved_fee_token().is_some_and(|token| {
+            self.updates.transfer_policy_updates.contains(&token)
+                || self.updates.quote_token_updates.contains(&token)
+        })
+    }
+
+    /// Whether `tx` must be validated again against the new state. Eviction checks
+    /// ([`TempoTransactionPool::evict_invalidated_transactions`]) cover the remaining events.
+    pub(crate) fn needs_revalidation(&self, tx: &TempoPooledTransaction) -> bool {
+        !self.mined.contains(tx.hash())
+            && (self.fallback_fee_token_changed(tx)
+                || self.authority_changed(tx)
+                || self.fee_token_changed(tx))
+    }
+}
+
 fn first_topic(log: &Log) -> Option<B256> {
     log.topics().first().copied()
 }
@@ -539,7 +646,6 @@ where
         let bundle_state = tip.execution_outcome().state().state();
         let tip_timestamp = tip.tip().header().timestamp();
         let spec = pool.client().chain_spec().tempo_hardfork_at(tip_timestamp);
-        let fallback_tokens = spec.fallback_fee_tokens();
 
         // Removed transactions are collected here and dropped at the end of the
         // iteration: deallocating them (input data, signatures, allocator work) is
@@ -568,14 +674,21 @@ where
             .amm_cache_update_duration_seconds
             .record(amm_start.elapsed());
 
-        // 3. Collect all block-level invalidation events
-        let updates = TempoPoolUpdates::from_chain(tip);
+        // 3. Collect all block-level invalidation events and publish them before any pool scan,
+        // so an admission validated against the previous state rechecks what it inserts later.
+        let invalidations = Arc::new(PoolInvalidations::new(
+            Arc::clone(&new),
+            orphaned.as_deref(),
+            spec,
+        ));
+        pool.admission_fence.publish(Arc::clone(&invalidations));
+        let updates = &invalidations.updates;
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
         // Reth's canonical-update handling may not have pruned mined transactions yet.
         // Exclude them from every snapshot-based maintenance phase so they follow the
         // normal mined path rather than being discarded from the pool.
-        let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
+        let mut removed_this_iteration: B256Set = invalidations.mined.clone();
 
         let mut revalidate_txs = Vec::new();
 
@@ -585,34 +698,7 @@ where
             all_txs
                 .iter()
                 .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                // Fallback balances cannot change a token chosen before the fallback.
-                .filter(|tx| spec.is_t13() && tx.transaction.is_fallback_fee_token())
-                .filter(|tx| {
-                    tx.transaction
-                        .fee_balance_slot()
-                        .is_some_and(|(selected_token, slot)| {
-                            // TIP-20 balance slots share a layout. Include credits and protocol
-                            // fee writes, which may change the choice without Transfer logs.
-                            let fee = tx.transaction.fee_token_cost();
-                            for token in fallback_tokens {
-                                if bundle_state
-                                    .get(token)
-                                    .and_then(|account| account.storage.get(&slot))
-                                    .is_some_and(|value| {
-                                        let had_sufficient_balance = value.original_value() >= fee;
-                                        let has_sufficient_balance = value.present_value >= fee;
-                                        had_sufficient_balance != has_sufficient_balance
-                                    })
-                                {
-                                    return true;
-                                }
-                                if *token == selected_token {
-                                    break;
-                                }
-                            }
-                            false
-                        })
-                })
+                .filter(|tx| invalidations.fallback_fee_token_changed(&tx.transaction))
                 .map(|tx| *tx.hash())
                 .collect()
         };
@@ -624,33 +710,15 @@ where
             revalidate_txs.extend(transactions);
         }
 
-        // Revalidate transactions whose authorities' configuration commitment changed,
-        // including eventless first registration (TIP-1107), and transactions whose inline
-        // configurable-account grant names an account whose code changed. On a
-        // reorg, changes the orphaned blocks made count too: undoing them changes the state
-        // pooled transactions were validated against.
-        let mut changed_commitments = AddressSet::default();
-        let mut changed_code = AddressSet::default();
-        for state in iter::once(bundle_state).chain(
-            orphaned
-                .as_ref()
-                .map(|old| old.execution_outcome().state().state()),
-        ) {
-            collect_account_changes(state, &mut changed_commitments, &mut changed_code);
-        }
-        if !changed_commitments.is_empty() || !changed_code.is_empty() {
+        // Revalidate transactions whose authorities' configuration commitment or configurable
+        // grant target's code changed.
+        if !invalidations.changed_commitments.is_empty() || !invalidations.changed_code.is_empty() {
             let hashes: Vec<TxHash> = {
                 let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                 all_txs
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| {
-                        tx.transaction.has_authority_in(&changed_commitments)
-                            || tx
-                                .transaction
-                                .configurable_grant_target()
-                                .is_some_and(|key_id| changed_code.contains(&key_id))
-                    })
+                    .filter(|tx| invalidations.authority_changed(&tx.transaction))
                     .map(|tx| *tx.hash())
                     .collect()
             };
@@ -743,7 +811,7 @@ where
         let evicted = {
             let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
             pool.evict_invalidated_transactions_from(
-                &updates,
+                updates,
                 all_txs
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash())),
