@@ -79,8 +79,8 @@ pub(crate) struct CreateZone {
     #[arg(long)]
     threshold: Option<u8>,
 
-    /// Allow a zone with a single sequencer, whose one signature settles every batch.
-    /// Without it, at least two sequencers are required.
+    /// Allow a settlement threshold of 1, such as a single-sequencer zone, where one
+    /// signature settles every batch. Without it, the threshold must be at least 2.
     #[arg(long)]
     allow_single_sequencer: bool,
 
@@ -201,10 +201,10 @@ impl CreateZone {
                 threshold
             ));
         }
-        if self.sequencers.len() == 1 && !self.allow_single_sequencer {
+        if threshold == 1 && !self.allow_single_sequencer {
             return Err(eyre!(
-                "a single sequencer settles every batch with one signature; add more \
-                 --sequencer addresses or pass --allow-single-sequencer"
+                "threshold 1 settles every batch with one sequencer signature; add more \
+                 --sequencer addresses, raise --threshold, or pass --allow-single-sequencer"
             ));
         }
         if self.sequencers.len() > 1 && threshold < 2 {
@@ -842,6 +842,23 @@ mod tests {
         assert!(error.contains("--allow-single-sequencer"), "{error}");
 
         let command = parse(&["--private-key", "unused", "--allow-single-sequencer"]).unwrap();
+        command.validate_sequencer_set().unwrap();
+        assert_eq!(command.factory_params().threshold, 1);
+    }
+
+    #[test]
+    fn one_signature_quorum_requires_explicit_opt_in() {
+        let args = [
+            "--private-key",
+            "unused",
+            "--sequencer=0x2000000000000000000000000000000000000002",
+            "--threshold=1",
+        ];
+        let command = parse(&args).unwrap();
+        let error = command.validate_sequencer_set().unwrap_err().to_string();
+        assert!(error.contains("--allow-single-sequencer"), "{error}");
+
+        let command = parse(&[&args[..], &["--allow-single-sequencer"]].concat()).unwrap();
         command.validate_sequencer_set().unwrap();
         assert_eq!(command.factory_params().threshold, 1);
     }
