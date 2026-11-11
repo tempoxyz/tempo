@@ -88,8 +88,7 @@ where
                 follows_checkpoint_blocks: false,
             }
         });
-        // Queue-hash validation may fail, but preceding reads have already warmed the shared
-        // cache.
+        // Queue-hash validation may fail, but earlier reads have already warmed the cache.
         self.spawn(task_executor, partials, |partial, context| {
             build_advance_tempo_tx_owned(partial, context.chain_id)
         })
@@ -101,8 +100,7 @@ where
         task_executor: &TaskExecutor,
         transactions: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     ) -> Prewarming {
-        // Pool transactions may be invalid on the parent state; the reads before the failure
-        // still count.
+        // Pool transactions may fail on the parent state, but reads before the failure count.
         self.spawn(task_executor, transactions, |transaction, _| {
             transaction.to_consensus()
         })
