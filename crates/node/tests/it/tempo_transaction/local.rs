@@ -1360,6 +1360,59 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Test that a transaction held in the delayed sub-pool is announced to peers before it is valid.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_propagate_held_transactions() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let wallet = test_signer(0);
+
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .with_node_count(2)
+        .build_multi_node()
+        .await?;
+
+    let node1 = setup.nodes.remove(0);
+    let node2 = setup.nodes.remove(0);
+
+    node1.inner.network.update_sync_state(SyncState::Idle);
+    node2.inner.network.update_sync_state(SyncState::Idle);
+
+    let mut tx_listener2 = node2.inner.pool.pending_transactions_listener();
+
+    let provider1 = node1.rpc_provider_for::<TempoNetwork>();
+    let chain_id = provider1.get_chain_id().await?;
+    let tip_timestamp = provider1
+        .get_block_by_number(Default::default())
+        .await?
+        .ok_or_eyre("missing tip")?
+        .header
+        .timestamp();
+
+    // Not valid until well past the delayed pool's lead time, so both nodes hold it.
+    let mut tx = create_expiring_nonce_tx(chain_id, tip_timestamp + 25, Address::random());
+    tx.valid_after = Some(nonzero_timestamp(tip_timestamp + 15));
+    let signature = sign_aa_tx_secp256k1(&tx, &wallet)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let hash = *envelope.tx_hash();
+
+    let _ = provider1
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?;
+    assert!(node1.inner.pool.contains(&hash));
+    assert!(node1.inner.pool.pending_transactions().is_empty());
+
+    let received = tokio::time::timeout(std::time::Duration::from_secs(30), tx_listener2.recv())
+        .await
+        .expect("timed out waiting for the held tx on node2")
+        .expect("tx listener2 channel closed");
+    assert_eq!(received, hash);
+    assert!(node2.inner.pool.contains(&hash));
+    assert!(node2.inner.pool.pending_transactions().is_empty());
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse() -> eyre::Result<()>
 {

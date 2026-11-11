@@ -40,8 +40,8 @@ use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
     Pool, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
-    TransactionOrigin, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
-    error::InvalidPoolTransactionError,
+    TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+    blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
@@ -53,7 +53,6 @@ use tempo_payload_types::{
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, DelayedPool, TempoTransactionPool,
-    TempoTransactionPoolExt,
     amm::AmmLiquidityCache,
     delayed_pool::{
         self, BYTES_PER_MB, DEFAULT_DELAYED_LEAD_SECS, DEFAULT_DELAYED_MAX_COUNT,
@@ -80,9 +79,6 @@ use tempo_evm::{
 
 /// 500M gas limit
 pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
-
-/// Maximum number of delayed transaction hashes forwarded to the network per propagation.
-const DELAYED_PROPAGATION_BATCH_SIZE: usize = 256;
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, PartialEq, clap::Args)]
@@ -259,7 +255,7 @@ impl TempoNetworkBuilder {
 impl<Node, Pool> NetworkBuilder<Node, Pool> for TempoNetworkBuilder
 where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec: Hardforks>>,
-    Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>>
+    Pool: TransactionPool<Transaction: PoolTransaction<Consensus = TxTy<Node::Types>>>
         + Unpin
         + 'static,
 {
@@ -277,23 +273,7 @@ where
             network.network_mut().add_rlpx_sub_protocol(gossip);
         }
 
-        let mut delayed_transactions = pool.delayed_transactions_listener();
         let handle = ctx.start_network(network, pool);
-
-        let network = handle.clone();
-        ctx.task_executor().spawn_task(async move {
-            let Some(transactions) = network.transactions_handle().await else {
-                return;
-            };
-            let mut hashes = Vec::with_capacity(DELAYED_PROPAGATION_BATCH_SIZE);
-            while delayed_transactions
-                .recv_many(&mut hashes, DELAYED_PROPAGATION_BATCH_SIZE)
-                .await
-                > 0
-            {
-                transactions.propagate_transactions(std::mem::take(&mut hashes));
-            }
-        });
         reth_tracing::tracing::info!(
             target: "reth::cli",
             enode = %handle.local_node_record(),

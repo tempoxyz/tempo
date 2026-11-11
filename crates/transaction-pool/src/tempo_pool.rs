@@ -30,7 +30,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
-    pool::{AddedTransaction, AddedTransactionState, QueuedReason},
+    pool::{AddedPendingTransaction, AddedTransaction, AddedTransactionState, QueuedReason},
 };
 use reth_trie_common::bundle_state::BundleAccount;
 use std::{sync::Arc, time::Instant};
@@ -45,7 +45,6 @@ use tempo_precompiles::{
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::{Block, TempoHeader};
-use tokio::sync::mpsc;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -55,14 +54,6 @@ pub trait TempoTransactionPoolExt: TransactionPool {
         address: Address,
         nonce_key: U256,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
-
-    /// Returns a receiver of the hashes of propagatable transactions as they enter the delayed
-    /// sub-pool.
-    ///
-    /// Reth's network propagates only transactions that fire the pending notification, which held
-    /// transactions never do, so the node forwards these hashes to the network itself. Hashes are
-    /// dropped while the receiver's buffer is full.
-    fn delayed_transactions_listener(&self) -> mpsc::Receiver<TxHash>;
 }
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -669,8 +660,9 @@ where
 
     /// Holds a validated expiring nonce transaction in the delayed sub-pool until `valid_after`.
     ///
-    /// Listeners see it as queued: it fires no pending notification, and is announced to peers
-    /// through [`TempoTransactionPoolExt::delayed_transactions_listener`].
+    /// Event listeners see it as queued. It still fires the pending transaction notification, which
+    /// is how reth's network learns to announce it to peers, so pending hash subscribers see it
+    /// before its `valid_after`.
     fn hold_transaction(
         &self,
         origin: TransactionOrigin,
@@ -721,6 +713,12 @@ where
                 PoolError::new(hash, kind)
             })?;
 
+        protocol_pool.on_new_pending_transaction(&AddedPendingTransaction {
+            transaction: Arc::clone(&tx),
+            replaced: None,
+            promoted: Vec::new(),
+            discarded: Vec::new(),
+        });
         let added = AddedTransaction::Parked {
             transaction: tx,
             replaced: None,
@@ -1700,10 +1698,6 @@ where
             .get_pending_transactions_by_address_and_nonce_key(address, nonce_key)
             .collect()
     }
-
-    fn delayed_transactions_listener(&self) -> mpsc::Receiver<TxHash> {
-        self.delayed_pool.write().held_transactions_listener()
-    }
 }
 
 impl<Client, EvmConfig> TransactionPoolExt for TempoTransactionPool<Client, EvmConfig>
@@ -1919,7 +1913,6 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
     use tempo_primitives::TempoTxType;
-    use tokio::sync::mpsc::error::TryRecvError;
 
     fn provider_with_spending_limit(
         account: Address,
@@ -3915,7 +3908,6 @@ mod tests {
         let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
         let mut pending = pool.pending_transactions_listener_for(TransactionListenerKind::All);
         let mut new_transactions = pool.new_transactions_listener_for(TransactionListenerKind::All);
-        let mut delayed = pool.delayed_transactions_listener();
         let tx = held_tx(sender, tip).build();
         let hash = *tx.hash();
 
@@ -3964,8 +3956,7 @@ mod tests {
 
         assert!(pool.pending_transactions().is_empty());
         assert!(pool.best_transactions().next().is_none());
-        assert_eq!(pending.try_recv(), Err(TryRecvError::Empty));
-        assert_eq!(delayed.try_recv(), Ok(hash));
+        assert_eq!(pending.try_recv(), Ok(hash));
         let event = new_transactions.try_recv().expect("new transaction event");
         assert_eq!(event.subpool, SubPool::Queued);
         assert_eq!(*event.transaction.hash(), hash);

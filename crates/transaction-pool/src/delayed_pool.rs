@@ -20,7 +20,6 @@ use reth_transaction_pool::{GetPooledTransactionLimit, PoolTransaction, ValidPoo
 use reth_trie_common::bundle_state::BundleAccount;
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
-use tokio::sync::mpsc;
 
 /// Default number of seconds before `valid_after` at which a held transaction is released.
 pub const DEFAULT_DELAYED_LEAD_SECS: u64 = 2;
@@ -36,9 +35,6 @@ pub const DEFAULT_DELAYED_MAX_PER_AUTHORITY: NonZeroUsize = NonZeroUsize::new(4)
 
 /// Bytes in a megabyte, for converting size limits given in megabytes.
 pub const BYTES_PER_MB: NonZeroUsize = NonZeroUsize::new(1024 * 1024).unwrap();
-
-/// Bound on hashes buffered per listener of newly held transactions.
-const HELD_LISTENER_BUFFER_SIZE: usize = 2048;
 
 /// Holds expiring nonce transactions that pass validation but whose `valid_after` is later than
 /// the tip timestamp plus [`Config::lead_secs`].
@@ -65,8 +61,6 @@ pub struct DelayedPool {
     releasing: B256Set,
     /// Total size of held transactions in bytes.
     size: usize,
-    /// Receive the hashes of propagatable transactions as they are held.
-    held_listeners: Vec<mpsc::Sender<TxHash>>,
     /// Metrics for held transactions.
     metrics: DelayedPoolMetrics,
 }
@@ -172,14 +166,6 @@ impl DelayedPool {
         self.by_valid_after.insert((valid_after, hash));
         self.by_priority.insert((priority, hash));
         self.size += tx_size;
-
-        if transaction.propagate {
-            self.held_listeners
-                .retain(|listener| match listener.try_send(hash) {
-                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
-                    Err(mpsc::error::TrySendError::Closed(_)) => false,
-                });
-        }
 
         self.by_hash.insert(
             hash,
@@ -369,16 +355,6 @@ impl DelayedPool {
     /// Returns the total size of held transactions in bytes.
     pub(crate) const fn size(&self) -> usize {
         self.size
-    }
-
-    /// Returns a receiver of the hashes of propagatable transactions as they are held.
-    ///
-    /// Hashes are dropped while the receiver's buffer is full.
-    pub(crate) fn held_transactions_listener(&mut self) -> mpsc::Receiver<TxHash> {
-        let (sender, receiver) = mpsc::channel(HELD_LISTENER_BUFFER_SIZE);
-        self.held_listeners.retain(|listener| !listener.is_closed());
-        self.held_listeners.push(sender);
-        receiver
     }
 
     fn update_metrics(&self) {
@@ -702,25 +678,6 @@ mod tests {
             hashes(&pool.transactions().cloned().collect::<Vec<_>>()),
             vec![*other.hash()]
         );
-    }
-
-    #[test]
-    fn notifies_listeners_of_propagatable_transactions() {
-        let mut pool = DelayedPool::default();
-        let mut listener = pool.held_transactions_listener();
-        let propagated = valid(expiring(Address::random()).build());
-        let mut local = wrap_valid_tx(
-            expiring(Address::random()).build(),
-            TransactionOrigin::Local,
-        );
-        local.propagate = false;
-
-        insert(&mut pool, Arc::clone(&propagated), 105, Vec::new()).unwrap();
-        insert(&mut pool, Arc::new(local), 105, Vec::new()).unwrap();
-
-        assert_eq!(listener.try_recv(), Ok(*propagated.hash()));
-        assert_eq!(listener.try_recv(), Err(mpsc::error::TryRecvError::Empty));
-        assert_eq!(pool.pooled_transactions().count(), 1);
     }
 
     #[test]
