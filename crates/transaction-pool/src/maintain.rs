@@ -428,6 +428,10 @@ pub(crate) struct PoolInvalidations {
     pub(crate) fallback_balances: AddressMap<HashMap<U256, (U256, U256)>>,
     /// Hardfork active at the new tip.
     pub(crate) spec: TempoHardfork,
+    /// Whether an active validator switched to a token new to the AMM cache, so pooled
+    /// transactions need their liquidity rechecked. Set once per update by maintenance, since
+    /// [`TempoTransactionPool::track_validator_token_changes`] reports a token only once.
+    pub(crate) liquidity_recheck: bool,
 }
 
 impl PoolInvalidations {
@@ -472,6 +476,7 @@ impl PoolInvalidations {
             changed_code,
             fallback_balances,
             spec,
+            liquidity_recheck: false,
         }
     }
 
@@ -691,11 +696,10 @@ where
 
         // 3. Collect all block-level invalidation events and publish them before any pool scan,
         // so an admission validated against the previous state rechecks what it inserts later.
-        let invalidations = Arc::new(PoolInvalidations::new(
-            Arc::clone(&new),
-            orphaned.as_deref(),
-            spec,
-        ));
+        let mut invalidations = PoolInvalidations::new(Arc::clone(&new), orphaned.as_deref(), spec);
+        invalidations.liquidity_recheck =
+            pool.track_validator_token_changes(&invalidations.updates);
+        let invalidations = Arc::new(invalidations);
         pool.admission_fence.publish(Arc::clone(&invalidations));
         let updates = &invalidations.updates;
 
@@ -831,6 +835,7 @@ where
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash())),
                 Some(tip_timestamp.saturating_add(EVICTION_BUFFER_SECS)),
+                invalidations.liquidity_recheck,
             )
         };
         metrics

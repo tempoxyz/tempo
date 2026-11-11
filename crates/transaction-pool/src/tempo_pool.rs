@@ -176,7 +176,31 @@ where
         }
 
         let all_txs = self.all_transactions();
-        self.evict_invalidated_transactions_from(updates, all_txs.iter(), None)
+        let liquidity_recheck = self.track_validator_token_changes(updates);
+        self.evict_invalidated_transactions_from(updates, all_txs.iter(), None, liquidity_recheck)
+    }
+
+    /// Records the tokens active validators switched to in `updates` with the AMM cache and
+    /// returns whether pooled transactions need their liquidity rechecked.
+    ///
+    /// Only the first call for a token returns true, so call it once per canonical update and
+    /// pass the result to every [`Self::evict_invalidated_transactions_from`] for that update.
+    pub(crate) fn track_validator_token_changes(
+        &self,
+        updates: &crate::maintain::TempoPoolUpdates,
+    ) -> bool {
+        if updates.validator_token_changes.is_empty() {
+            return false;
+        }
+        let amm_cache = self.amm_liquidity_cache();
+        let active_new_tokens: Vec<_> = updates
+            .validator_token_changes
+            .iter()
+            .filter(|(validator, _)| amm_cache.is_active_validator(validator))
+            .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
+            .map(|(_, &new_token)| new_token)
+            .collect();
+        amm_cache.track_tokens(&active_new_tokens)
     }
 
     /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
@@ -186,6 +210,7 @@ where
         updates: &crate::maintain::TempoPoolUpdates,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         expiry_cutoff: Option<u64>,
+        liquidity_recheck: bool,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         if !updates.has_invalidation_events() && expiry_cutoff.is_none() {
             return Vec::new();
@@ -249,17 +274,9 @@ where
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
         // enough liquidity, matching admission and preventing mass-eviction of valid txs.
+        // `liquidity_recheck` comes from `track_validator_token_changes`, computed once per update.
         let amm_cache = self.amm_liquidity_cache();
-        let has_active_validator_token_changes = !updates.validator_token_changes.is_empty() && {
-            let active_new_tokens: Vec<_> = updates
-                .validator_token_changes
-                .iter()
-                .filter(|(validator, _)| amm_cache.is_active_validator(validator))
-                .filter(|(_, new_token)| !amm_cache.is_active_validator_token(new_token))
-                .map(|(_, &new_token)| new_token)
-                .collect();
-            amm_cache.track_tokens(&active_new_tokens)
-        };
+        let has_active_validator_token_changes = liquidity_recheck;
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
@@ -645,6 +662,7 @@ where
                         &invalidations.updates,
                         live.iter().copied(),
                         None,
+                        invalidations.liquidity_recheck,
                     );
                     let evicted: B256Set = removed.iter().map(|tx| *tx.hash()).collect();
                     removed.extend(
