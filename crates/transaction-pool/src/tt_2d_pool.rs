@@ -1,9 +1,6 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{
-    authority_counts::AuthorityCounts,
-    delayed_pool::{DelayedPool, DelayedPoolConfig},
-    metrics::AA2dPoolMetrics,
-    ordering::TempoTipOrdering,
+    authority_counts::AuthorityCounts, metrics::AA2dPoolMetrics, ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
 };
 use alloy_consensus::Transaction;
@@ -116,14 +113,8 @@ pub struct AA2dPool {
     queued_eviction_order: BTreeSet<EvictionKey>,
     /// Base fee used for transaction insertion and eviction-order priorities.
     base_fee: u64,
-    /// Tracks the number of live and delayed transactions per authority for DoS protection.
+    /// Tracks the number of transactions per authority for DoS protection.
     txs_by_authority: AuthorityCounts,
-    /// Expiring nonce transactions whose `valid_after` is too far ahead of the tip, kept out of
-    /// the pending set until then.
-    ///
-    /// Kept under this pool's lock so that delaying, admitting and releasing a transaction check
-    /// its hash and expiring nonce against the delayed and live transactions in one step.
-    delayed: DelayedPool,
     /// Pending and queued regular transactions per `(sender, nonce_key)` lane.
     txs_by_lane: HashMap<AASequenceId, usize>,
     /// Number of pending transactions, including expiring nonce transactions.
@@ -148,7 +139,6 @@ impl AA2dPool {
     /// Creates a new instance with the givenconfig and nonce keys
     pub fn new(config: AA2dPoolConfig) -> Self {
         let (new_transaction_notifier, _) = broadcast::channel(200);
-        let delayed = DelayedPool::new(config.delayed);
         Self {
             submission_id: 0,
             independent_transactions: Default::default(),
@@ -165,7 +155,6 @@ impl AA2dPool {
             queued_eviction_order: Default::default(),
             base_fee: 0,
             txs_by_authority: Default::default(),
-            delayed,
             txs_by_lane: Default::default(),
             pending_count: 0,
             queued_count: 0,
@@ -173,68 +162,6 @@ impl AA2dPool {
             queued_size: Default::default(),
             new_transaction_notifier,
         }
-    }
-
-    /// Returns the delayed transactions.
-    pub(crate) const fn delayed(&self) -> &DelayedPool {
-        &self.delayed
-    }
-
-    /// Removes and returns the delayed transactions due for release at `tip_timestamp`; see
-    /// [`DelayedPool::take_due`].
-    pub(crate) fn take_due_delayed(
-        &mut self,
-        tip_timestamp: u64,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let due = self.delayed.take_due(tip_timestamp);
-        for tx in &due {
-            self.txs_by_authority.remove(&tx.transaction);
-        }
-        due
-    }
-
-    /// Removes the delayed transaction with the given hash, if any.
-    fn remove_delayed(
-        &mut self,
-        hash: &TxHash,
-    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let removed = self.delayed.remove(hash)?;
-        self.txs_by_authority.remove(&removed.transaction);
-        Some(removed)
-    }
-
-    /// Delays a validated expiring nonce transaction until `valid_after` and returns the delayed
-    /// transactions it evicted.
-    ///
-    /// Rejected as already imported if this pool has a delayed or live transaction with the same
-    /// hash. Delayed transactions count toward
-    /// [`AA2dPoolConfig::max_txs_per_authority`] like live ones.
-    pub(crate) fn add_delayed_transaction(
-        &mut self,
-        transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-    ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
-        let hash = *transaction.hash();
-        if self.contains(&hash) {
-            return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
-        }
-        if let Some(authority) = self
-            .txs_by_authority
-            .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
-        {
-            return Err(PoolError::new(
-                hash,
-                PoolErrorKind::SpammerExceededCapacity(authority),
-            ));
-        }
-        let evicted = self
-            .delayed
-            .insert(Arc::clone(&transaction))
-            .ok_or_else(|| PoolError::new(hash, PoolErrorKind::DiscardedOnInsert))?;
-        self.txs_by_authority.add(&transaction.transaction);
-        for tx in &evicted {
-            self.txs_by_authority.remove(&tx.transaction);
-        }
-        Ok(evicted)
     }
 
     /// Broadcasts a new pending transaction to all active [`BestAA2dTransactions`] iterators.
@@ -246,7 +173,7 @@ impl AA2dPool {
 
     /// Updates all metrics to reflect the current state of the pool
     fn update_metrics(&self) {
-        let (pending, queued) = (self.pending_count, self.queued_count);
+        let (pending, queued) = self.pending_and_queued_txn_count();
         let total = self.by_id.len() + self.expiring_nonce_txs.len();
         self.metrics.set_transaction_counts(total, pending, queued);
     }
@@ -309,12 +236,6 @@ impl AA2dPool {
             transaction.transaction.is_aa(),
             "only AA transactions are supported"
         );
-        if self.delayed.contains(transaction.hash()) {
-            return Err(PoolError::new(
-                *transaction.hash(),
-                PoolErrorKind::AlreadyImported,
-            ));
-        }
         // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
         // Only treat as expiring nonce if T1 hardfork is active.
         //
@@ -637,19 +558,14 @@ impl AA2dPool {
         }))
     }
 
-    /// Returns how many pending and queued transactions are in the pool. Delayed transactions
-    /// count as queued.
+    /// Returns how many pending and queued transactions are in the pool.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
-        (self.pending_count, self.queued_count + self.delayed.len())
+        (self.pending_count, self.queued_count)
     }
 
-    /// Returns the reported size of pending and queued transactions in bytes. Delayed
-    /// transactions count as queued.
+    /// Returns the reported size of pending and queued transactions in bytes.
     pub(crate) fn pending_and_queued_txn_size(&self) -> (usize, usize) {
-        (
-            self.pending_size.into(),
-            usize::from(self.queued_size) + self.delayed.size(),
-        )
+        (self.pending_size.into(), self.queued_size.into())
     }
 
     /// Scans the pool to recompute counts for invariant checks.
@@ -702,12 +618,7 @@ impl AA2dPool {
             .values()
             .filter(move |tx| tx.transaction.origin == origin)
             .map(|tx| tx.transaction.clone());
-        let delayed = self
-            .delayed
-            .transactions()
-            .filter(move |tx| tx.origin == origin)
-            .cloned();
-        regular.chain(expiring).chain(delayed)
+        regular.chain(expiring)
     }
 
     /// Returns all transactions that where submitted with the given [`TransactionOrigin`]
@@ -729,17 +640,8 @@ impl AA2dPool {
         regular.chain(expiring)
     }
 
-    /// Returns the live and delayed transactions sent by `sender`.
+    /// Returns all transactions of the address
     pub(crate) fn get_transactions_by_sender_iter(
-        &self,
-        sender: Address,
-    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
-        self.live_transactions_by_sender(sender)
-            .chain(self.delayed.transactions_by_sender(sender).cloned())
-    }
-
-    /// Returns the live transactions sent by `sender`.
-    fn live_transactions_by_sender(
         &self,
         sender: Address,
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + '_ {
@@ -770,16 +672,10 @@ impl AA2dPool {
 
     /// Returns an iterator over all transaction hashes in this pool
     pub(crate) fn all_transaction_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
-        self.by_hash
-            .keys()
-            .copied()
-            .chain(self.delayed.transactions().map(|tx| *tx.hash()))
+        self.by_hash.keys().copied()
     }
 
-    /// Returns the live transactions that are queued.
-    ///
-    /// Delayed transactions are left out: reth's maintenance evicts external queued transactions
-    /// older than its queued lifetime, which a delayed transaction can reach before release.
+    /// Returns all transactions from that are queued.
     pub(crate) fn queued_transactions(
         &self,
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
@@ -827,9 +723,6 @@ impl AA2dPool {
                 .values()
                 .map(|tx| tx.transaction.clone()),
         );
-        transactions
-            .queued
-            .extend(self.delayed.transactions().cloned());
     }
 
     /// Appends all transactions from `sender` to the provided collection.
@@ -856,9 +749,6 @@ impl AA2dPool {
                 .filter(|tx| tx.transaction.sender() == sender)
                 .map(|tx| tx.transaction.clone()),
         );
-        transactions
-            .queued
-            .extend(self.delayed.transactions_by_sender(sender).cloned());
     }
 
     /// Returns the best, executable transactions for this sub-pool
@@ -894,10 +784,7 @@ impl AA2dPool {
         &self,
         tx_hash: &TxHash,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.by_hash
-            .get(tx_hash)
-            .or_else(|| self.delayed.get(tx_hash))
-            .cloned()
+        self.by_hash.get(tx_hash).cloned()
     }
 
     /// Returns the transaction by hash.
@@ -932,12 +819,7 @@ impl AA2dPool {
         out: &mut Vec<<TempoPooledTransaction as PoolTransaction>::Pooled>,
     ) {
         for tx_hash in tx_hashes {
-            let Some(tx) = self
-                .by_hash
-                .get(tx_hash)
-                .or_else(|| self.delayed.get(tx_hash))
-                .filter(|tx| tx.propagate)
-            else {
+            let Some(tx) = self.by_hash.get(tx_hash).filter(|tx| tx.propagate) else {
                 continue;
             };
 
@@ -965,8 +847,7 @@ impl AA2dPool {
             .expiring_nonce_txs
             .values()
             .map(|tx| tx.transaction.sender_ref());
-        let delayed = self.delayed.transactions().map(|tx| tx.sender_ref());
-        regular.chain(expiring).chain(delayed)
+        regular.chain(expiring)
     }
 
     /// Returns all transactions that _follow_ after the given id but have the same sender.
@@ -1065,8 +946,6 @@ impl AA2dPool {
                         })
                         .or_insert(id.nonce);
                 }
-                txs.push(tx);
-            } else if let Some(tx) = self.remove_delayed(tx_hash) {
                 txs.push(tx);
             }
         }
@@ -1174,9 +1053,6 @@ impl AA2dPool {
                 if let Some(id) = id {
                     self.remove_descendants(&id, &mut removed);
                 }
-            } else if let Some(tx) = self.remove_delayed(hash) {
-                // Delayed transactions use expiring nonces, so they have no descendants.
-                removed.push(tx);
             }
         }
         removed
@@ -1189,7 +1065,7 @@ impl AA2dPool {
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
         let txs = self
-            .live_transactions_by_sender(sender_id)
+            .get_transactions_by_sender_iter(sender_id)
             .collect::<Vec<_>>();
         for tx in txs {
             if tx.transaction.is_expiring_nonce() {
@@ -1206,12 +1082,6 @@ impl AA2dPool {
                 removed.push(tx);
             }
         }
-        let delayed: Vec<_> = self
-            .delayed
-            .transactions_by_sender(sender_id)
-            .map(|tx| *tx.hash())
-            .collect();
-        removed.extend(delayed.iter().filter_map(|hash| self.remove_delayed(hash)));
         removed
     }
 
@@ -1563,14 +1433,13 @@ impl AA2dPool {
 
     /// Returns `true` if the transaction with the given hash is already included in this pool.
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
-        self.by_hash.contains_key(tx_hash) || self.delayed.contains(tx_hash)
+        self.by_hash.contains_key(tx_hash)
     }
 
     /// Returns hashes of transactions in the pool that can be propagated.
     pub(crate) fn pooled_transactions_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
         self.by_hash
             .values()
-            .chain(self.delayed.transactions())
             .filter(|tx| tx.propagate)
             .map(|tx| *tx.hash())
     }
@@ -1579,11 +1448,7 @@ impl AA2dPool {
     pub(crate) fn pooled_transactions_iter(
         &self,
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.by_hash
-            .values()
-            .chain(self.delayed.transactions())
-            .filter(|tx| tx.propagate)
-            .cloned()
+        self.by_hash.values().filter(|tx| tx.propagate).cloned()
     }
 
     const fn next_id(&mut self) -> u64 {
@@ -1974,8 +1839,8 @@ impl AA2dPool {
         }
 
         // Verify pending/queued consistency
-        // `pending_count` includes expiring nonce txs
-        let (pending_count, queued_count) = (self.pending_count, self.queued_count);
+        // pending_and_queued_txn_count includes expiring nonce txs in pending count
+        let (pending_count, queued_count) = self.pending_and_queued_txn_count();
         let (scanned_pending, scanned_queued) = self.scan_pending_and_queued_txn_count();
         assert_eq!(
             (pending_count, queued_count),
@@ -1992,8 +1857,7 @@ impl AA2dPool {
             self.expiring_nonce_txs.len()
         );
 
-        let (pending_size, queued_size): (usize, usize) =
-            (self.pending_size.into(), self.queued_size.into());
+        let (pending_size, queued_size) = self.pending_and_queued_txn_size();
         let (scanned_pending_size, scanned_queued_size) = self.scan_pending_and_queued_txn_size();
         assert_eq!(
             (pending_size, queued_size),
@@ -2184,8 +2048,6 @@ pub struct AA2dPoolConfig {
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
     /// Expiring nonce transactions are independent and do not use this limit.
     pub max_txs_per_lane: usize,
-    /// Lead time and limits of the delayed sub-pool.
-    pub delayed: DelayedPoolConfig,
 }
 
 impl Default for AA2dPoolConfig {
@@ -2196,7 +2058,6 @@ impl Default for AA2dPoolConfig {
             queued_limit: SubPoolLimit::default(),
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            delayed: DelayedPoolConfig::default(),
         }
     }
 }
@@ -5225,7 +5086,6 @@ mod tests {
             },
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5437,7 +5297,6 @@ mod tests {
             },
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5507,7 +5366,6 @@ mod tests {
             },
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5552,7 +5410,6 @@ mod tests {
             },
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5592,7 +5449,6 @@ mod tests {
             },
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5629,7 +5485,6 @@ mod tests {
             },
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
         let max_fee = 30_000_000_000u128;
@@ -5722,7 +5577,6 @@ mod tests {
             },
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5785,7 +5639,6 @@ mod tests {
             },
             max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
 
@@ -5890,7 +5743,6 @@ mod tests {
             },
             max_txs_per_authority: 3,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -5952,7 +5804,6 @@ mod tests {
             },
             max_txs_per_authority: 2,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -6006,7 +5857,6 @@ mod tests {
             },
             max_txs_per_authority: 2,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -6178,7 +6028,6 @@ mod tests {
             },
             max_txs_per_authority: 2,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
@@ -7479,59 +7328,6 @@ mod tests {
         pool.assert_invariants();
     }
 
-    fn delay(
-        pool: &mut AA2dPool,
-        tx: TempoPooledTransaction,
-    ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
-        pool.add_delayed_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::External)))
-    }
-
-    /// A transaction is never both delayed and live, whichever it becomes first.
-    #[test]
-    fn delayed_and_live_transactions_never_share_a_hash() {
-        let tx = TxBuilder::aa(Address::random())
-            .nonce_key(U256::MAX)
-            .build();
-
-        let mut pool = AA2dPool::default();
-        delay(&mut pool, tx.clone()).unwrap();
-        let err = add_expiring(&mut pool, tx.clone()).unwrap_err();
-        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
-        let err = delay(&mut pool, tx.clone()).unwrap_err();
-        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
-        assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
-        pool.assert_invariants();
-
-        let mut pool = AA2dPool::default();
-        add_expiring(&mut pool, tx.clone()).unwrap();
-        let err = delay(&mut pool, tx).unwrap_err();
-        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
-        assert_eq!(pool.delayed().len(), 0);
-        pool.assert_invariants();
-    }
-
-    /// Delayed transactions count toward the per-authority limit together with live ones.
-    #[test]
-    fn authority_limit_counts_delayed_and_live_transactions() {
-        let mut pool = authority_limit_pool(2);
-        let sender = Address::random();
-        let expiring = |valid_before| {
-            TxBuilder::aa(sender)
-                .nonce_key(U256::MAX)
-                .valid_before(valid_before)
-                .build()
-        };
-
-        delay(&mut pool, expiring(1_001)).unwrap();
-        add_expiring(&mut pool, expiring(1_002)).unwrap();
-
-        let err = add_expiring(&mut pool, expiring(1_003)).unwrap_err();
-        assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
-        let err = delay(&mut pool, expiring(1_004)).unwrap_err();
-        assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
-        pool.assert_invariants();
-    }
-
     /// Verifies that removing an expiring nonce tx by hash correctly cleans up
     /// both `expiring_nonce_txs` and `by_hash`.
     #[test]
@@ -8195,7 +7991,6 @@ mod tests {
             },
             max_txs_per_authority: 1,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-            ..Default::default()
         };
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();

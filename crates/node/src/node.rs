@@ -840,12 +840,13 @@ impl TempoPoolBuilder {
             queued_limit: pool_config.queued_limit,
             max_txs_per_authority: pool_config.max_account_slots,
             max_txs_per_lane: self.max_txs_per_lane,
-            delayed: DelayedPoolConfig {
-                max_count: self.delayed_max_count,
-                ..Default::default()
-            },
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
+        let delayed_pool_config = DelayedPoolConfig {
+            max_count: self.delayed_max_count,
+            max_txs_per_authority: pool_config.max_account_slots,
+            ..Default::default()
+        };
         let amm_liquidity_cache = AmmLiquidityCache::new(&client)?;
 
         let Self {
@@ -878,7 +879,8 @@ impl TempoPoolBuilder {
         );
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
-        Ok(TempoTransactionPool::new(protocol_pool, aa_2d_pool))
+        Ok(TempoTransactionPool::new(protocol_pool, aa_2d_pool)
+            .with_delayed_pool_config(delayed_pool_config))
     }
 
     /// Sets the maximum number of transactions per regular 2D nonce lane.

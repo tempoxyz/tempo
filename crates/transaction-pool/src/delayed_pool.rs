@@ -1,19 +1,24 @@
 //! Sub-pool for expiring nonce transactions whose `valid_after` is too far ahead of the tip to be
 //! included soon.
 //!
-//! Delayed transactions are visible to lookups and gossip but stay out of the pending and queued
-//! structures, eviction ordering and limits of the live sub-pools until pool maintenance releases
-//! them shortly before `valid_after`.
+//! Delayed transactions are visible to lookups and gossip but stay out of the live sub-pools and
+//! their limits until pool maintenance releases them shortly before `valid_after`.
 //!
 //! Only expiring nonce transactions are delayed. They are unique by their expiring nonce hash and
 //! belong to no sequential nonce lane, so delaying them never splits a sender's nonce sequence
 //! across sub-pools. Future-dated transactions with sequential nonces enter the live sub-pools.
 
-use crate::{metrics::DelayedPoolMetrics, transaction::TempoPooledTransaction};
+use crate::{
+    authority_counts::AuthorityCounts, metrics::DelayedPoolMetrics,
+    transaction::TempoPooledTransaction, tt_2d_pool::DEFAULT_MAX_TXS_PER_AUTHORITY,
+};
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256, TxHash, map::B256Map};
 use reth_primitives_traits::InMemorySize;
-use reth_transaction_pool::ValidPoolTransaction;
+use reth_transaction_pool::{
+    GetPooledTransactionLimit, PoolResult, PoolTransaction, ValidPoolTransaction,
+    error::{PoolError, PoolErrorKind},
+};
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 
 /// Number of seconds before `valid_after` at which a delayed transaction is released.
@@ -39,6 +44,9 @@ pub struct DelayedPool {
     by_priority: BTreeSet<(u128, TxHash)>,
     /// Total size of delayed transactions in bytes.
     size: usize,
+    /// Number of delayed transactions per authority, limited by
+    /// [`DelayedPoolConfig::max_txs_per_authority`].
+    txs_by_authority: AuthorityCounts,
     /// Metrics for delayed transactions.
     metrics: DelayedPoolMetrics,
 }
@@ -58,22 +66,36 @@ impl DelayedPool {
     }
 
     /// Delays a validated transaction until its `valid_after` and returns the delayed transactions it
-    /// evicted.
+    /// evicted. The caller ensures the transaction uses an expiring nonce.
     ///
+    /// Rejected as already imported if it is delayed already, and with the authority if one of
+    /// its authorities has [`DelayedPoolConfig::max_txs_per_authority`] delayed transactions.
     /// When the pool is full, the lowest-priority delayed transactions are evicted to make room,
     /// but only for a transaction whose priority fee is higher than each of theirs; otherwise it
-    /// is rejected and `None` is returned. The caller ensures the transaction uses an expiring
-    /// nonce and that no sub-pool contains its hash.
+    /// is rejected as discarded on insert.
     pub(crate) fn insert(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-    ) -> Option<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
+    ) -> PoolResult<Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
         debug_assert!(transaction.transaction.is_expiring_nonce());
         let hash = *transaction.hash();
+        if self.by_hash.contains_key(&hash) {
+            return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
+        }
+        if let Some(authority) = self
+            .txs_by_authority
+            .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+        {
+            return Err(PoolError::new(
+                hash,
+                PoolErrorKind::SpammerExceededCapacity(authority),
+            ));
+        }
+        let full = || PoolError::new(hash, PoolErrorKind::DiscardedOnInsert);
         let tx_size = transaction.transaction.size();
         let max_size = self.config.max_size.get();
         if tx_size > max_size {
-            return None;
+            return Err(full());
         }
         let priority = transaction.transaction.priority_fee_or_price();
         let (mut count, mut size) = (self.by_hash.len(), self.size);
@@ -83,7 +105,7 @@ impl DelayedPool {
                 break;
             }
             if *evict_priority >= priority {
-                return None;
+                return Err(full());
             }
             count -= 1;
             size -= self.by_hash[evict_hash].transaction.size();
@@ -98,10 +120,11 @@ impl DelayedPool {
             .insert((valid_after(&transaction), hash));
         self.by_priority.insert((priority, hash));
         self.size += tx_size;
+        self.txs_by_authority.add(&transaction.transaction);
 
         self.by_hash.insert(hash, transaction);
         self.update_metrics();
-        Some(evicted)
+        Ok(evicted)
     }
 
     /// Removes and returns the delayed transactions whose `valid_after` is within the lead time
@@ -133,8 +156,35 @@ impl DelayedPool {
         self.by_priority
             .remove(&(transaction.transaction.priority_fee_or_price(), *hash));
         self.size -= transaction.transaction.size();
+        self.txs_by_authority.remove(&transaction.transaction);
         self.update_metrics();
         Some(transaction)
+    }
+
+    /// Removes the delayed transactions with the given hashes and returns them.
+    pub(crate) fn remove_transactions<'a>(
+        &mut self,
+        hashes: impl IntoIterator<Item = &'a TxHash>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        if self.by_hash.is_empty() {
+            return Vec::new();
+        }
+        hashes
+            .into_iter()
+            .filter_map(|hash| self.remove(hash))
+            .collect()
+    }
+
+    /// Removes the delayed transactions sent by `sender` and returns them.
+    pub(crate) fn remove_transactions_by_sender(
+        &mut self,
+        sender: Address,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let hashes: Vec<_> = self
+            .transactions_by_sender(sender)
+            .map(|tx| *tx.hash())
+            .collect();
+        self.remove_transactions(&hashes)
     }
 
     /// Returns whether a transaction with the given hash is delayed.
@@ -155,6 +205,38 @@ impl DelayedPool {
         &self,
     ) -> impl Iterator<Item = &Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.by_hash.values()
+    }
+
+    /// Returns the delayed transactions that may be propagated to peers.
+    pub(crate) fn pooled_transactions(
+        &self,
+    ) -> impl Iterator<Item = &Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.transactions().filter(|tx| tx.propagate)
+    }
+
+    /// Appends the pooled form of the delayed, propagatable transactions among `tx_hashes` to
+    /// `out`, adding their encoded length to `accumulated_size` and stopping once `limit` is
+    /// exceeded.
+    pub(crate) fn append_pooled_transaction_elements(
+        &self,
+        tx_hashes: &[TxHash],
+        limit: GetPooledTransactionLimit,
+        accumulated_size: &mut usize,
+        out: &mut Vec<<TempoPooledTransaction as PoolTransaction>::Pooled>,
+    ) {
+        for hash in tx_hashes {
+            let Some(tx) = self.by_hash.get(hash).filter(|tx| tx.propagate) else {
+                continue;
+            };
+            let Some(pooled) = tx.transaction.clone_into_pooled().ok() else {
+                continue;
+            };
+            *accumulated_size += tx.transaction.encoded_length();
+            out.push(pooled.into_inner());
+            if limit.exceeds(*accumulated_size) {
+                break;
+            }
+        }
     }
 
     /// Returns the delayed transactions sent by `sender`.
@@ -190,10 +272,10 @@ pub struct DelayedPoolConfig {
     /// Maximum number of delayed transactions.
     pub max_count: NonZeroUsize,
     /// Maximum total size of delayed transactions in bytes.
-    ///
-    /// Each authority is also limited by the 2D pool's per-authority limit, which counts delayed
-    /// and live transactions together.
     pub max_size: NonZeroUsize,
+    /// Maximum number of delayed transactions naming the same authority, counted separately
+    /// from the live sub-pools' limits; see [`TempoPooledTransaction::authorities`].
+    pub max_txs_per_authority: usize,
 }
 
 impl DelayedPoolConfig {
@@ -221,6 +303,7 @@ impl Default for DelayedPoolConfig {
             lead_secs: DEFAULT_DELAYED_LEAD_SECS,
             max_count: DEFAULT_DELAYED_MAX_COUNT,
             max_size: DEFAULT_DELAYED_MAX_SIZE,
+            max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
         }
     }
 }
@@ -242,7 +325,7 @@ mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
     use alloy_primitives::U256;
-    use reth_transaction_pool::{PoolTransaction, TransactionOrigin};
+    use reth_transaction_pool::TransactionOrigin;
 
     fn valid(tx: TempoPooledTransaction) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
@@ -261,7 +344,7 @@ mod tests {
         pool: &mut DelayedPool,
         tx: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     ) -> Option<Vec<TxHash>> {
-        pool.insert(tx).map(|evicted| hashes(&evicted))
+        pool.insert(tx).ok().map(|evicted| hashes(&evicted))
     }
 
     fn hashes(txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) -> Vec<TxHash> {
@@ -301,6 +384,38 @@ mod tests {
             assert!(tx.is_expiring_nonce());
             assert_eq!(insert(&mut pool, valid(tx)), Some(Vec::new()));
         }
+    }
+
+    #[test]
+    fn rejects_transaction_that_is_delayed_already() {
+        let mut pool = DelayedPool::default();
+        let tx = valid(expiring(Address::random()).build());
+        pool.insert(Arc::clone(&tx)).unwrap();
+
+        let err = pool.insert(tx).unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn limits_transactions_per_authority() {
+        let mut pool = DelayedPool::new(DelayedPoolConfig {
+            max_txs_per_authority: 1,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        let first = valid(expiring(sender).build());
+        pool.insert(Arc::clone(&first)).unwrap();
+
+        let err = pool
+            .insert(valid(expiring(sender).valid_before(201).build()))
+            .unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(a) if a == sender));
+
+        // Removing the transaction frees its authorities' slots.
+        pool.remove(first.hash()).unwrap();
+        pool.insert(valid(expiring(sender).valid_before(201).build()))
+            .unwrap();
     }
 
     #[test]
