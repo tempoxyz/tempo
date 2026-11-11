@@ -11,7 +11,9 @@ use std::{
 use crate::network_identity::NetworkIdentity;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
+use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
+use tempo_payload_types::estimator::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
@@ -31,10 +33,23 @@ const GOSSIP_ROUTE_QUEUE: usize = 256;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum VerificationMode {
     /// Complete application verification before voting to notarize.
-    #[default]
     Immediate,
     /// Defer completion of application verification until voting to finalize.
     Deferred,
+    /// Follow T14 at the previous epoch boundary: deferred at or after activation.
+    #[default]
+    Hardfork,
+}
+
+impl VerificationMode {
+    /// Resolves the policy using the previous epoch boundary timestamp (genesis for epoch zero).
+    pub(crate) fn is_deferred_at(self, chainspec: &TempoChainSpec, timestamp: u64) -> bool {
+        match self {
+            Self::Immediate => false,
+            Self::Deferred => true,
+            Self::Hardfork => chainspec.is_t14_active_at_timestamp(timestamp),
+        }
+    }
 }
 
 impl std::fmt::Display for VerificationMode {
@@ -42,19 +57,21 @@ impl std::fmt::Display for VerificationMode {
         f.write_str(match self {
             Self::Immediate => "immediate",
             Self::Deferred => "deferred",
+            Self::Hardfork => "hardfork",
         })
     }
 }
 
 impl clap::ValueEnum for VerificationMode {
     fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Immediate, Self::Deferred]
+        &[Self::Immediate, Self::Deferred, Self::Hardfork]
     }
 
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         Some(clap::builder::PossibleValue::new(match self {
             Self::Immediate => "immediate",
             Self::Deferred => "deferred",
+            Self::Hardfork => "hardfork",
         }))
     }
 }
@@ -125,6 +142,10 @@ pub struct Args {
     pub worker_threads: usize,
 
     /// When to complete application verification of proposed blocks.
+    ///
+    /// Hardfork uses the previous epoch boundary timestamp (genesis for epoch zero):
+    /// immediate before T14, deferred from T14.
+    /// Immediate and deferred override the schedule.
     #[arg(long = "consensus.verification-mode", value_enum, default_value_t)]
     pub verification_mode: VerificationMode,
 
@@ -158,12 +179,10 @@ pub struct Args {
 
     /// Target wall-clock time between blocks in healthy network conditions.
     ///
-    /// Local proposal work is paced against this value minus the network
-    /// reservation, which starts at `--consensus.network-budget` and is
-    /// learned up to `--consensus.network-budget-max`. The proposal window
-    /// opens when the proposer stamps its header, so time before that, such
-    /// as fetching the parent in commonware, is not deducted from it.
-    #[arg(long = "consensus.target-block-time", default_value = "550ms")]
+    /// Local proposal work is paced against this value minus an adaptive network
+    /// reservation. Long preparation can shorten the allowance; required work
+    /// may overrun it. An injected estimator overrides these timing flags.
+    #[arg(long = "consensus.target-block-time", default_value = format!("{}ms", DEFAULT_TARGET_BLOCK_TIME.as_millis()))]
     pub target_block_time: PositiveDuration,
 
     /// Maximum amount of time to wait for the leader's proposal before timing
@@ -203,35 +222,35 @@ pub struct Args {
     )]
     pub inactive_time_before_leader_skip: PositiveDuration,
 
-    /// Initial and smallest network reservation: time left before the target
-    /// block boundary for propagation and votes.
+    /// Initial and minimum network reservation before the target block boundary.
     ///
-    /// The estimator starts here and never reserves less; set
-    /// `--consensus.network-budget-max` equal to it for a fixed reservation.
-    #[arg(long = "consensus.network-budget", default_value = "50ms")]
+    /// Must be smaller than `--consensus.target-block-time`. The reservation
+    /// adapts from finalized successors up to `--consensus.network-budget-max`.
+    /// It includes propagation, voting, unprojected validation and preparation.
+    /// An injected estimator overrides this flag and the target block time.
+    #[arg(long = "consensus.network-budget", default_value = format!("{}ms", DEFAULT_NETWORK_BUDGET.as_millis()))]
     pub network_budget: PositiveDuration,
 
     /// Largest network reservation the proposal budget estimator may learn.
     ///
-    /// The estimator measures how long after its own proposal windows close the
-    /// next leader starts building on them and reserves a recent percentile of that
-    /// (`--consensus.network-reserve-percentile`), moving by at most 100ms per own
-    /// proposal, never below `--consensus.network-budget` and never above this. Set
-    /// it equal to `--consensus.network-budget` for a fixed reservation; it must
-    /// stay below `--consensus.target-block-time`.
+    /// Bounds the reservation learned from finalized successors of this node's
+    /// proposals. It never falls below `--consensus.network-budget`. Set this cap
+    /// equal to that floor to keep the reservation fixed. The cap must be smaller
+    /// than `--consensus.target-block-time`.
     ///
-    /// Defaults to `network-budget + (target-block-time - network-budget) / 2`, at
-    /// most 300ms: 300ms with the default 550ms target and 50ms network budget.
+    /// Defaults to the floor plus half the remaining target interval, capped at
+    /// 300ms but never below the floor. `None` selects this derived default.
     #[arg(long = "consensus.network-budget-max")]
     pub network_budget_max: Option<PositiveDuration>,
 
     /// Percentile of recent own-proposal network times the proposal budget
     /// estimator reserves, from 50 to 100.
     ///
-    /// A sample is this node's block time minus its proposal window, so about this
-    /// share of its own blocks finish within `--consensus.target-block-time`. A
-    /// higher percentile leaves fewer late blocks and smaller ones. A median at the
-    /// target takes 50 with `--consensus.network-reserve-fast-rise=false`.
+    /// Samples measure time from a proposal window's budgeted close to its
+    /// finalized successor's header timestamp, not solely propagation. The
+    /// reservation also obeys its floor, cap, warm-up and rate limit, and may be
+    /// raised by fast rise. This percentile is not a guarantee of the share of
+    /// blocks finishing within `--consensus.target-block-time`.
     #[arg(
         long = "consensus.network-reserve-percentile",
         default_value_t = tempo_payload_types::DEFAULT_NETWORK_RESERVE_PERCENTILE
@@ -241,15 +260,10 @@ pub struct Args {
     /// Let the two most recent own-proposal network times lift the reservation
     /// above the window percentile.
     ///
-    /// The percentile over the last 16 own proposals lags a network that is getting
-    /// slower, for example while blocks grow. With fast rise the smaller network
-    /// time of two slow proposals in a row becomes what the reservation moves
-    /// toward, still by at most 100ms per own proposal and capped by
-    /// `--consensus.network-budget-max`; one slow proposal alone lifts nothing, and
-    /// the next faster one hands the reservation back to the percentile.
-    ///
-    /// On by default; pass `--consensus.network-reserve-fast-rise=false` to reserve
-    /// the window percentile alone.
+    /// When enabled, the smaller of the two latest accepted samples can raise
+    /// the reservation target above the configured percentile, within the same
+    /// floor, cap and rate limit. A single outlier does not activate this rule.
+    /// Pass `--consensus.network-reserve-fast-rise=false` to disable the rule.
     #[arg(
         long = "consensus.network-reserve-fast-rise",
         value_name = "BOOL",
@@ -263,10 +277,9 @@ pub struct Args {
     /// How far an own proposal may run past its return budget and still teach the
     /// network reservation.
     ///
-    /// The default is the builder's pacing precision on a build whose pool ran dry,
-    /// a millisecond or two. A machine whose dry builds vary more needs a larger
-    /// value, or most proposals made while the pool is dry take no sample and the
-    /// reservation ages back to `--consensus.network-budget`.
+    /// The default tolerance is 5ms. Proposals exceeding this tolerance do not
+    /// contribute network samples; without fresh samples the reservation returns
+    /// toward `--consensus.network-budget`.
     #[arg(
         long = "consensus.return-budget-overrun-tolerance",
         default_value = "5ms"
@@ -512,56 +525,34 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
-    /// `--consensus.network-budget-max`, or
-    /// [`tempo_payload_types::EstimatorConfig::default_network_budget_max`] when
-    /// none is given.
-    pub fn network_budget_max(&self) -> Duration {
-        if let Some(network_budget_max) = self.network_budget_max {
-            return network_budget_max.into_duration();
-        }
-        tempo_payload_types::EstimatorConfig::default_network_budget_max(
+    /// Returns unvalidated adaptive proposal-budget inputs using the configured
+    /// flags, a derived cap when none is supplied, and the default build multiplier.
+    pub fn estimator_config(&self) -> tempo_payload_types::EstimatorConfig {
+        let mut config = tempo_payload_types::EstimatorConfig::new(
             self.target_block_time.into_duration(),
             self.network_budget.into_duration(),
-        )
-    }
-
-    /// Builds the shared proposal budget estimator configuration from the
-    /// consensus timing flags and the payload builder's initial multiplier.
-    pub fn estimator_config(
-        &self,
-        build_time_multiplier: f64,
-    ) -> tempo_payload_types::EstimatorConfig {
-        tempo_payload_types::EstimatorConfig {
-            target_block_time: self.target_block_time.into_duration(),
-            network_budget: self.network_budget.into_duration(),
-            network_budget_max: self.network_budget_max(),
-            network_reserve_percentile: self.network_reserve_percentile,
-            network_reserve_fast_rise: self.network_reserve_fast_rise,
-            build_time_multiplier,
-            return_budget_overrun_tolerance: self.return_budget_overrun_tolerance.into_duration(),
+        );
+        if let tempo_payload_types::NetworkReservation::Adaptive {
+            network_budget_max,
+            network_reserve_percentile,
+            network_reserve_fast_rise,
+            return_budget_overrun_tolerance,
+        } = &mut config.network_reservation_policy
+        {
+            if let Some(max) = self.network_budget_max {
+                *network_budget_max = max.into_duration();
+            }
+            *network_reserve_percentile = self.network_reserve_percentile;
+            *network_reserve_fast_rise = self.network_reserve_fast_rise;
+            *return_budget_overrun_tolerance = self.return_budget_overrun_tolerance.into_duration();
         }
-    }
-
-    /// Builds the shared proposal budget estimator from the consensus timing
-    /// flags and the payload builder's initial multiplier.
-    ///
-    /// This is where invalid proposal budget flags are reported: the binary
-    /// builds the estimator before the node launches, and an estimator only
-    /// exists for a valid configuration, so [`Self::validate`] does not check
-    /// them again.
-    pub fn estimator(
-        &self,
-        build_time_multiplier: f64,
-    ) -> eyre::Result<tempo_payload_types::Estimator> {
-        tempo_payload_types::Estimator::new(self.estimator_config(build_time_multiplier))
-            .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))
+        config
     }
 
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
     /// would panic on when the first epoch is entered, so a misconfiguration
-    /// fails at startup with a descriptive error instead. Proposal budget
-    /// flags are checked by [`Self::estimator`].
-    pub fn validate(&self) -> eyre::Result<()> {
+    /// fails at startup with a descriptive error instead.
+    pub fn validate_simplex_timing(&self) -> eyre::Result<()> {
         let wait_for_proposal = self.wait_for_proposal.into_duration();
         let wait_for_notarizations = self.wait_for_notarizations.into_duration();
         eyre::ensure!(
@@ -726,7 +717,9 @@ mod tests {
     use clap::Parser as _;
     use commonware_codec::Encode as _;
 
-    use super::{Args, PositiveDuration, VerificationMode};
+    use super::*;
+    use reth_ethereum::chainspec::ForkCondition;
+    use tempo_chainspec::TempoHardfork;
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -765,30 +758,32 @@ mod tests {
     }
 
     #[test]
-    fn verification_mode_defaults_to_immediate() {
+    fn verification_mode_defaults_to_hardfork() {
         assert_eq!(
             parse(&["--dev"]).consensus.verification_mode,
-            VerificationMode::Immediate,
+            VerificationMode::Hardfork,
         );
     }
 
     #[test]
-    fn verification_mode_parses() {
-        for (value, expected) in [
-            ("immediate", VerificationMode::Immediate),
-            ("deferred", VerificationMode::Deferred),
-        ] {
-            assert_eq!(
-                parse(&["--dev", "--consensus.verification-mode", value])
-                    .consensus
-                    .verification_mode,
-                expected,
-            );
+    fn verification_mode_resolves_t14_and_overrides() {
+        for mut chainspec in [TempoChainSpec::mainnet(), TempoChainSpec::moderato()] {
+            chainspec.inner.hardforks.remove(&TempoHardfork::T14);
+            // An unscheduled fork keeps the original immediate verification policy.
+            assert!(!VerificationMode::Hardfork.is_deferred_at(&chainspec, u64::MAX));
+            chainspec
+                .inner
+                .hardforks
+                .insert(TempoHardfork::T14, ForkCondition::Timestamp(100));
+            for (timestamp, deferred) in [(99, false), (100, true), (101, true)] {
+                assert_eq!(
+                    VerificationMode::Hardfork.is_deferred_at(&chainspec, timestamp),
+                    deferred
+                );
+                assert!(!VerificationMode::Immediate.is_deferred_at(&chainspec, timestamp));
+                assert!(VerificationMode::Deferred.is_deferred_at(&chainspec, timestamp));
+            }
         }
-        assert!(
-            TestCli::try_parse_from(["test", "--dev", "--consensus.verification-mode", "invalid",])
-                .is_err()
-        );
     }
 
     #[test]
@@ -816,7 +811,10 @@ mod tests {
 
     #[test]
     fn simplex_timing_defaults_validate() {
-        parse(&["--dev"]).consensus.validate().unwrap();
+        parse(&["--dev"])
+            .consensus
+            .validate_simplex_timing()
+            .unwrap();
     }
 
     #[test]
@@ -826,7 +824,7 @@ mod tests {
         for notarizations in ["1200ms", "1s"] {
             let err = parse(&["--dev", "--consensus.wait-for-notarizations", notarizations])
                 .consensus
-                .validate()
+                .validate_simplex_timing()
                 .unwrap_err();
             assert!(err.to_string().contains("wait-for-notarizations"), "{err}");
         }
@@ -838,7 +836,7 @@ mod tests {
             "2s",
         ])
         .consensus
-        .validate()
+        .validate_simplex_timing()
         .unwrap();
     }
 
@@ -846,7 +844,7 @@ mod tests {
     fn simplex_timing_rejects_zero_views_to_track() {
         let err = parse(&["--dev", "--consensus.views-to-track", "0"])
             .consensus
-            .validate()
+            .validate_simplex_timing()
             .unwrap_err();
         assert!(err.to_string().contains("views-to-track"), "{err}");
     }
@@ -876,7 +874,7 @@ mod tests {
                 value,
             ])
             .consensus
-            .validate()
+            .validate_simplex_timing()
             .unwrap_err();
             let msg = err.to_string();
             assert!(msg.contains("inactive-time-before-leader-skip"), "{msg}");
@@ -892,7 +890,7 @@ mod tests {
             args.inactive_time_before_leader_skip.into_duration(),
             Duration::from_millis(10_001)
         );
-        args.validate().unwrap();
+        args.validate_simplex_timing().unwrap();
     }
 
     #[test]

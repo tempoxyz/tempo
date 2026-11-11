@@ -220,6 +220,7 @@ The following table lists every privileged action and the role authorized to inv
 | `abdicate(capability)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `setAccessMode(mode)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `setGatewayMode(mode)` | [`ZonePortal`](#izoneportal) | **admin** |
+| `setTransfersEnabled(enabled)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `transferAdmin(newAdmin)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `acceptAdmin()` | [`ZonePortal`](#izoneportal) | **pending admin** |
 | `setSequencerSet(sequencers, threshold)` | [`ZonePortal`](#izoneportal) | **admin** |
@@ -427,8 +428,9 @@ The admin manages which TIP-20 tokens are available on the zone (see [Access Con
 - `abdicate(Capability.PausePortal)`: Permanently disable future portal-wide pauses after one
   `ABDICATION_DELAY` (30 days). It does not clear an active pause; any pause started before
   abdication takes effect runs to its own expiry.
-- `abdicate(Capability.AccessPolicy)`: Permanently freeze account roles, gateway roles, and
-  enforcement modes after the same delay. Existing access roles cannot be revoked afterward.
+- `abdicate(Capability.AccessPolicy)`: Permanently freeze account roles, gateway roles,
+  enforcement modes, and the zone transfer opt-in (`transfersEnabled`) after the same delay.
+  Existing access roles cannot be revoked afterward.
 
 The portal maintains a `TokenConfig` per token with an `enabled` flag and a configurable `depositsActive` flag, along with an append-only `enabledTokens` list. The admin can halt deposits but cannot disable withdrawals for an enabled token. At most `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) entries may remain enabled on Tempo but unprocessed by an accepted zone batch. This keeps the `advanceTempo()` call within its execution and proof budget even when checkpoint-only blocks defer work across many Tempo blocks. Each metadata string copied into the zone (`name`, `symbol`, and `currency`) is bounded to 31 encoded bytes. Note that token issuers can independently restrict transfers via TIP-403 policies, which may cause withdrawals to fail and bounce back (see [Withdrawal Failures and Bounce-Back](#withdrawal-failures-and-bounce-back)).
 
@@ -922,9 +924,10 @@ be recreated.
 
 Zone execution differs from standard Tempo execution in three areas. These changes are enforced at the EVM level, not just at the RPC layer, so they apply to all code paths including user transactions, `eth_call` simulations, and prover re-execution.
 
-- **Account-indexed state access control.** Every getter on a zone system contract or precompile that selects privacy-bearing state by account must authorize that account against `msg.sender`. Unless a getter explicitly defines additional legitimate readers, it reverts unless `msg.sender` is the selected account. This includes AccountKeychain key configuration and limits, TIP-20 permit nonces, Nonce Manager lanes, Permit2 allowances and nonce bitmaps, FeeManager preferences and collected fees, FeeAMM liquidity balances, and ZoneInbox refund balances. The `ZoneInbox.refunds` mapping is not publicly readable; its explicit `refunds(token, owner)` getter authorizes only `owner` or the sequencer. `balanceOf(account)` authorizes only the account owner; `allowance(owner, spender)` authorizes the owner or spender. Enforcement applies to nested calls, including calls forwarded by Multicall3 or another contract, as well as direct calls.
+- **Account-indexed state access control.** Every getter on a zone system contract or precompile that selects privacy-bearing state by account must authorize that account against `msg.sender`. Unless a getter explicitly defines additional legitimate readers, it reverts unless `msg.sender` is the selected account. This includes AccountKeychain key configuration and limits, TIP-20 permit nonces, Nonce Manager lanes, FeeManager preferences and collected fees, FeeAMM liquidity balances, and ZoneInbox refund balances. The `ZoneInbox.refunds` mapping is not publicly readable; its explicit `refunds(token, owner)` getter authorizes only `owner` or the sequencer. `balanceOf(account)` authorizes only the account owner; `allowance(owner, spender)` authorizes the owner or spender. Enforcement applies to nested calls as well as direct calls.
 - **Fixed gas for transfers.** All TIP-20 transfer and approve operations charge a fixed 100,000 gas regardless of storage layout. This eliminates a side channel where variable gas costs reveal whether a recipient has previously received tokens.
 - **Contract creation disabled.** `CREATE` and `CREATE2` revert. The zone runs only predeploys and TIP-20 token precompiles. Arbitrary contract deployment would allow users to circumvent the execution-level privacy controls.
+- **No Permit2 or Multicall3.** Zone genesis omits both. Before executing each T15 block, the zone clears any code still at either address, keeping its balance, nonce, and storage, so zones created before T15 lose them at activation. Permit2's public `allowance` and `nonceBitmap` getters would expose approvals, and Multicall3 lets anyone call a TIP-20 token as Multicall3. Funds held at either address stay there.
 
 <br>
 
@@ -964,7 +967,7 @@ The prover validates each read against the Tempo state root from the correspondi
 
 Native L1 storage reads use transaction-local cold/warm pricing keyed by Tempo account and storage slot. The first native access to a key in a transaction charges 2,100 gas and subsequent accesses charge 100 gas. This consensus access set is independent of the node's block-versioned L1 value cache, so prefetching and cache state cannot affect gas usage. Native precompile reads select the anchor by performing the ordinary local `TempoState.tempoBlockNumber` `SLOAD` before the L1 fetch.
 
-The EVM database overlay for mirrored TIP-403 storage uses REVM's ordinary cold/warm `SLOAD` pricing and does not apply the native tariff. On the first overlay registry read, the database adapter obtains `TempoState.tempoBlockNumber` through a host-side lookup to select the L1 anchor; this is not a second EVM `SLOAD` and carries no separate gas charge. The slot remains part of the zone-state witness because its value is required for execution, while the registry slot is charged by the ordinary REVM `SLOAD`. Every L1-backed read is charged exactly once by either the native Tempo read path or the EVM overlay path.
+The EVM database overlay for mirrored TIP-403 storage and, from T15, TIP-20 pause flags uses REVM's ordinary cold/warm `SLOAD` pricing and does not apply the native tariff. On the first overlay read, the database adapter obtains `TempoState.tempoBlockNumber` through a host-side lookup to select the L1 anchor; this is not a second EVM `SLOAD` and carries no separate gas charge. The slot remains part of the zone-state witness because its value is required for execution, while the mirrored slot is charged by the ordinary REVM `SLOAD`. Every L1-backed read is charged exactly once by either the native Tempo read path or the EVM overlay path.
 
 TIP-403 policy authorization on the zone executes Tempo's registry precompile at the canonical address over raw L1 registry storage pinned to the current finalized `tempoBlockNumber`.
 
@@ -1015,6 +1018,8 @@ The RPC server rejects authorization tokens where:
 - `issuedAt > now + 60`.
 - The signature is malformed or does not verify.
 - For Keychain signatures: the signing key is not authorized, revoked, or expired in the zone's `AccountKeychain`.
+- For primitive signatures and Keychain signatures with a primitive approval: the signing key's address has a nonzero Tempo configuration commitment at the zone's anchor, so it is a retired root (TIP-1113).
+- For configurable-account signatures, and Keychain signatures whose access key is a configurable account: the owners' configuration does not match the account's Tempo configuration commitment at the zone's anchor or, while the account has none, does not derive the account (TIP-1154). A primitive grant accepts its key's owner quorum only once the key has a nonzero commitment.
 
 Requests without an authorization token receive HTTP `401`. Requests with an invalid or expired token receive HTTP `403`.
 
@@ -1027,8 +1032,9 @@ Authorization token signatures follow the same format as Tempo transaction signa
 | secp256k1 | 65 bytes, no prefix | Standard `ecrecover` |
 | P256 | Prefix `0x01`, 130 bytes | Public key embedded in signature |
 | WebAuthn | Prefix `0x02`, variable length | P256 key via WebAuthn assertion |
-| Keychain V1 | Prefix `0x03` | Wraps inner sig + `user_address`, authenticates as root account |
-| Keychain V2 | Prefix `0x04` | Same as V1 but binds `user_address` into signing hash |
+| Keychain V1 | Prefix `0x03` | Not accepted: its signing hash does not bind `user_address`. Rejected as an invalid signature. |
+| Keychain V2 | Prefix `0x04` | Wraps inner sig + `user_address` (binding it into the signing hash), authenticates as root account |
+| Configurable account | Prefix `0x05` | Owner quorum of a configurable account, authenticates as the account |
 
 Keychain keys allow session keys and scoped access keys to authenticate to the RPC with the same permissions as the root account. The zone has its own independent `AccountKeychain` instance, not mirrored from Tempo. Users must register keychain keys on the zone directly.
 
@@ -1100,7 +1106,7 @@ WebSocket connections follow the same authorization model. The authorization tok
 - `eth_subscribe("logs")`: scoped to the authenticated account using the same event filtering rules.
 - `eth_subscribe("newPendingTransactions")`: disabled.
 
-The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key.
+The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key. Likewise, it rechecks the session's signer every second and terminates the connection once the zone's anchor has retired its signing key, or changed the configuration commitment its configurable-account signer signed with.
 
 ### Zone-Specific Methods
 
@@ -1618,7 +1624,11 @@ Each enabled TIP-20 token is deployed as a precompile at the same address as on 
 
 - `balanceOf` is restricted to the account owner; `allowance` is restricted to its owner or spender.
 - Transfer-family operations (`transfer`, `transferFrom`, `approve`) charge a fixed 100,000 gas.
+- `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized` unless T15 is active and the zone's `ZonePortal.transfersEnabled` flag, read from finalized Tempo state at the transaction's anchor, is true. The flag defaults to false and is set by the portal admin with `setTransfersEnabled`, which `Capability.AccessPolicy` abdication freezes. Admitted transfers follow the standard TIP-20 rules, including TIP-403 policy checks, with one zone difference:
+  - A transfer that the recipient's TIP-1028 receive policy blocks reverts with `PolicyForbids` instead of diverting funds to `ReceivePolicyGuard`, matching deposits. The policy's recovery authority may be an address that cannot act on the zone, such as an L1 contract, and could never claim the receipt. The zone registers no virtual masters, so transfers to TIP-1022 virtual addresses revert with `VirtualAddressUnregistered`.
+- Whether `transferFrom` succeeds depends on the owner's balance, so an approved spender can learn `min(balance, allowance)` by simulating it. Approving a spender discloses that much of the owner's balance to it.
 - `mint` is restricted to `ZoneInbox`, `burn` is restricted to `ZoneOutbox`.
+- From T15, the token's pause flag is read from finalized Tempo state at the transaction's anchor, and `pause` and `unpause` are disabled on the zone. A token paused on Tempo therefore blocks exactly the calls it blocks there: transfers, `mint` and burns revert with `ContractPaused`, so deposits bounce back and withdrawal requests revert, and transactions paying fees in the token are invalid. `approve` and `permit` still succeed.
 
 ## Encrypted Deposit Cryptography
 
@@ -1902,6 +1912,7 @@ interface IZonePortal {
     event AbdicationScheduled(Capability indexed capability, uint64 effectiveAt);
     event RoleUpdated(address indexed account, Role prev, Role next);
     event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
+    event TransfersEnabledUpdated(bool enabled);
 
     error NotSequencer();
     error NotAdmin();
@@ -1969,6 +1980,8 @@ interface IZonePortal {
     function setAccessMode(bool enforced) external; // admin-only
     function isGatewayOpen() external view returns (bool);
     function setGatewayMode(bool enforced) external; // admin-only
+    function transfersEnabled() external view returns (bool);
+    function setTransfersEnabled(bool enabled) external; // admin-only, T15+
     function hasRole(address account, Role role) external view returns (bool);
     function setAllowedAccount(address account, bool allowed) external; // admin-only
     function setGateway(address account, bool allowed) external; // admin-only

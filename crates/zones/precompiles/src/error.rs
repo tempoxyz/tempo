@@ -1,7 +1,7 @@
 //! Error types for zone-specific precompiles.
 
 use alloy_sol_types::SolInterface;
-use revm::precompile::{PrecompileOutput, PrecompileResult};
+use evm2::precompiles::{PrecompileError, PrecompileResult};
 use tempo_contracts::zones::{TempoStateError, ZoneInboxError, ZoneOutboxError, ZonePortalError};
 use tempo_precompiles::IntoPrecompileResult;
 
@@ -44,9 +44,9 @@ pub enum ZonePrecompileError {
 }
 
 impl IntoPrecompileResult for ZonePrecompileError {
-    fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
+    fn into_precompile_result(self) -> PrecompileResult {
         let data = match self {
-            Self::Tempo(error) => return error.into_precompile_result(gas, reservoir),
+            Self::Tempo(error) => return error.into_precompile_result(),
             Self::L1State(error) => return Err(error.into()),
             Self::Portal(error) => error.abi_encode(),
             Self::Outbox(error) => error.abi_encode(),
@@ -54,7 +54,7 @@ impl IntoPrecompileResult for ZonePrecompileError {
             Self::Inbox(error) => error.abi_encode(),
             Self::MalformedCalldata => Default::default(),
         };
-        Ok(PrecompileOutput::revert(gas, data.into(), reservoir))
+        Err(PrecompileError::Revert(data.into()))
     }
 }
 
@@ -63,7 +63,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{Address, B256, U256};
     use alloy_sol_types::SolError;
-    use revm::precompile::PrecompileHalt;
+    use evm2::precompiles::PrecompileHalt;
     use tempo_contracts::zones::IZoneOutbox;
 
     #[test]
@@ -85,23 +85,19 @@ mod tests {
                 .abi_encode(),
             ),
         ] {
-            let output = ZonePrecompileError::from(error)
-                .into_precompile_result(10, 20)
-                .unwrap();
-            assert!(output.is_revert());
-            assert_eq!(output.gas_used, 10);
-            assert_eq!(output.reservoir, 20);
-            assert_eq!(output.bytes, expected);
+            assert!(matches!(
+                ZonePrecompileError::from(error).into_precompile_result(),
+                Err(PrecompileError::Revert(bytes)) if bytes == expected
+            ));
         }
     }
 
     #[test]
     fn other_zone_and_tempo_errors_preserve_conversion_behavior() {
-        let output = ZonePrecompileError::from(TempoPrecompileError::OutOfGas)
-            .into_precompile_result(10, 20)
-            .unwrap();
-        assert_eq!(output.halt_reason(), Some(&PrecompileHalt::OutOfGas));
-        assert_eq!(output.reservoir, 20);
+        assert!(matches!(
+            ZonePrecompileError::from(TempoPrecompileError::OutOfGas).into_precompile_result(),
+            Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
+        ));
 
         let l1_error = L1StateError::StorageUnavailable {
             account: Address::ZERO,
@@ -110,9 +106,10 @@ mod tests {
             reason: "unavailable".into(),
         };
         assert!(
-            ZonePrecompileError::from(l1_error)
-                .into_precompile_result(10, 20)
-                .is_err(),
+            matches!(
+                ZonePrecompileError::from(l1_error).into_precompile_result(),
+                Err(PrecompileError::Fatal(_))
+            ),
             "L1 state failures must remain fatal"
         );
     }

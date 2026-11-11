@@ -15,11 +15,12 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
+use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
-    buffer::paged::CacheRef, spawn_cell,
+    Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
+    spawn_cell,
 };
-use commonware_utils::NZUsize;
+use commonware_utils::NZDuration;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
@@ -41,8 +42,6 @@ use super::block::Block;
 /// To better support peers near tip during network instability, we multiply
 /// the consensus activity timeout by this factor.
 const SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER: u64 = 10;
-// Ensure the marshal delivers blocks sequentially.
-const MAX_PENDING_ACKS: NonZeroUsize = NZUsize!(1);
 
 /// Settings for [`Engine`].
 ///
@@ -82,11 +81,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Shared proposal budget estimator.
-    ///
-    /// Owns the target block time, the learned network reservation and the
-    /// validation and build feedback. The payload builder must be given the
-    /// same handle so both sides pace the same proposal window.
+    /// Proposal pacing with learned network reservations and shared execution feedback.
+    /// Allowances pace returns, not time out required payload work.
     pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
@@ -121,8 +117,7 @@ where
             + Spawner
             + Storage
             + Metrics
-            + Network
-            + BufferPooler,
+            + Network,
     {
         let execution_node = self
             .execution_node
@@ -147,21 +142,42 @@ where
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
-        let page_cache_ref = CacheRef::from_pooler(
-            &context,
+        let page_cache_ref = CacheRef::new(
             storage::BUFFER_POOL_PAGE_SIZE,
             storage::BUFFER_POOL_CAPACITY,
         );
 
         let scheme_provider = SchemeProvider::new();
 
+        // The executor acknowledges finalized blocks only once the execution
+        // layer durably persisted them, which reth does in batches. Reth holds
+        // up to `persistence_backpressure_threshold + memory_block_buffer_target`
+        // unpersisted canonical blocks in memory before it stops processing
+        // engine requests, so marshal may dispatch as many unacknowledged
+        // blocks. Acknowledgements cannot stall with the queue full: reth's
+        // config validation requires this depth to exceed
+        // `persistence_threshold`, which must be crossed for reth to persist
+        // at all, and that in turn to exceed
+        // `memory_block_buffer_target + num_state_masking_blocks`, by which
+        // the durable frontier trails the head after a persistence run.
+        let engine_args = &execution_node.config.engine;
+        let max_pending_acks = engine_args
+            .persistence_backpressure_threshold()
+            .checked_add(engine_args.memory_block_buffer_target())
+            .and_then(|acks| usize::try_from(acks).ok())
+            .and_then(NonZeroUsize::new)
+            .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")?;
+
+        // Boxed because marshal's init future is deeply nested: inlining it into
+        // callers such as tempo-e2e's `TestingNode::start_inner` makes computing
+        // their layout exceed rustc's default query depth (recursion limit 128).
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
             finalized_floor,
             finalized_tip,
             finalized_tip_certificate,
-        } = alias::marshal::init(
+        } = Box::pin(alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
             execution_node.clone(),
@@ -172,12 +188,12 @@ where
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
-                max_pending_acks: MAX_PENDING_ACKS,
+                max_pending_acks,
                 finalized_blocks_retention: self.finalized_blocks_retention,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
-        )
+        ))
         .await
         .wrap_err("failed to initialize marshal")?;
 
@@ -214,6 +230,7 @@ where
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
                 codec_config: (),
+                strategy: Sequential,
             },
         );
 
@@ -225,8 +242,8 @@ where
             peer_provider: peer_manager_mailbox.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
-            timeout: Duration::from_secs(2),
-            fetch_retry_timeout: Duration::from_millis(100),
+            fetch_timeout: NZDuration!(Duration::from_secs(2)),
+            fetch_retry_delay: Duration::from_millis(100),
             priority_requests: false,
             priority_responses: false,
         };
@@ -270,10 +287,10 @@ where
                 network_identity: self.network_identity,
                 scheme_provider: scheme_provider.clone(),
                 last_finalized_height: finalized_floor,
-                mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
+                blocker: self.blocker.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
             },
         )
@@ -292,17 +309,17 @@ where
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
-        let application = application::Marshaled::new(
-            context.child("application"),
+        let application = application::Factory::new(
+            &context,
             application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
+            execution_node.chain_spec(),
             self.verification_mode,
         );
 
         let epoch_manager_config = epoch::manager::Config {
             application,
-            verification_mode: self.verification_mode,
             execution_node: execution_node.clone(),
             blocker: self.blocker.clone(),
             page_cache: page_cache_ref,
@@ -350,15 +367,8 @@ where
 
 pub struct Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: BufferPooler
-        + Clock
-        + governor::clock::Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Network
-        + Spawner
-        + Storage,
+    TContext:
+        Clock + governor::clock::Clock + Rng + CryptoRng + Metrics + Network + Spawner + Storage,
     TBlocker: Blocker<PublicKey = PublicKey>,
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
@@ -367,10 +377,10 @@ where
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
+    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, Sequential>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager: dkg::manager::Actor<TContext, TBlocker>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
@@ -406,15 +416,8 @@ where
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: BufferPooler
-        + Clock
-        + governor::clock::Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Network
-        + Spawner
-        + Storage,
+    TContext:
+        Clock + governor::clock::Clock + Rng + CryptoRng + Metrics + Network + Spawner + Storage,
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
     TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
@@ -539,7 +542,7 @@ where
                 self.dkg_manager_mailbox,
                 Reporters::from((
                     self.peer_manager_mailbox,
-                    Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                    Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
                         self.feed_mailbox,
                         self.gossip_mailbox,
                     )),
@@ -552,6 +555,7 @@ where
             self.broadcast_mailbox,
             resolver,
         );
+
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
             self.context.child("epoch_manager"),
             self.epoch_manager_config,

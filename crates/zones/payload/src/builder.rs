@@ -4,29 +4,32 @@
 //! followed by pool transactions and a withdrawal batch finalization.
 
 use crate::{
-    WithdrawalRevealEncryptor,
+    TransferAllowlist, WithdrawalRevealEncryptor,
     abi::{self, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
+    validate_transfer_calls,
 };
-use alloy_consensus::{Signed, TxLegacy};
+use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
-use alloy_evm::Evm;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{Bytes, TxHash, U256};
 use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
-use reth_errors::ProviderError;
 use reth_evm::{
-    ConfigureEvm, Database, NextBlockEnvAttributes,
-    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv},
+    BlockExecutionError, BlockExecutor, BlockValidationError, ConfigureEvm,
+    InternalBlockExecutionError, NextBlockEnvAttributes,
+    database::StateProviderDatabase,
+    execute::{
+        BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv, map_handler_error,
+    },
 };
+use reth_metrics::{Metrics, metrics::Histogram};
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::PayloadBuilderBuilder};
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadAttributes};
 use reth_primitives_traits::{AlloyBlockHeader as _, Recovered};
-use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, cancel::CancelOnDrop};
 use reth_transaction_pool::{
@@ -34,7 +37,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{error::Error, sync::Arc, time::Instant};
-use tempo_evm::TempoNextBlockEnvAttributes;
+use tempo_evm::{TempoNextBlockEnvAttributes, TempoTxEnv};
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload};
 use tempo_primitives::{
     TempoHeader, TempoTxEnvelope,
@@ -45,7 +48,7 @@ use tempo_transaction_pool::{
 };
 use tracing::{error, info, warn};
 use zone_chainspec::ZoneChainSpec;
-use zone_evm::ZoneEvmConfig;
+use zone_evm::{ZoneEvm, ZoneEvmConfig};
 use zone_l1::{PreparedL1Block, TempoStateExt};
 use zone_precompiles::L1StateError;
 use zone_primitives::constants::MAX_RLP_BLOCK_SIZE;
@@ -77,6 +80,7 @@ const L1_STORAGE_UNAVAILABLE_ERROR_PREFIX: &str = "Tempo L1 storage unavailable"
 pub struct ZonePayloadFactory {
     withdrawal_batch_interval_blocks: u64,
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
+    transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
 }
 
 impl ZonePayloadFactory {
@@ -85,6 +89,7 @@ impl ZonePayloadFactory {
         Self {
             withdrawal_batch_interval_blocks: withdrawal_batch_interval_blocks.max(1),
             withdrawal_reveal_encryptor: None,
+            transfer_allowlist: None,
         }
     }
 
@@ -93,6 +98,13 @@ impl ZonePayloadFactory {
         encryptor: Arc<dyn WithdrawalRevealEncryptor>,
     ) -> Self {
         self.withdrawal_reveal_encryptor = Some(encryptor);
+        self
+    }
+
+    /// Leave out pool transactions that move funds to or from accounts `allowlist` does not
+    /// allow, and drop them from the pool.
+    pub fn with_transfer_allowlist(mut self, allowlist: Arc<dyn TransferAllowlist>) -> Self {
+        self.transfer_allowlist = Some(allowlist);
         self
     }
 }
@@ -129,6 +141,8 @@ where
             task_executor: ctx.task_executor().clone(),
             withdrawal_batch_interval_blocks: self.withdrawal_batch_interval_blocks,
             withdrawal_reveal_encryptor: self.withdrawal_reveal_encryptor.clone(),
+            transfer_allowlist: self.transfer_allowlist.clone(),
+            metrics: ZonePayloadBuilderMetrics::default(),
         })
     }
 }
@@ -142,12 +156,16 @@ pub struct ZonePayloadBuilder<Provider> {
     provider: Provider,
     /// Zone-specific EVM configuration (precompiles, hardfork spec, gas params).
     evm_config: ZoneEvmConfig,
-    /// Runs disposable simulations on Reth's dedicated prewarming pool.
+    /// Runs disposable simulations on Reth's dedicated prewarming pool, and transfer allowlist
+    /// pool evictions off the build path.
     task_executor: TaskExecutor,
     /// Number of zone blocks between withdrawal batch boundaries.
     withdrawal_batch_interval_blocks: u64,
     /// Encrypts authenticated-withdrawal sender reveal data for batch finalization.
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
+    /// Accounts that may send and receive TIP-20 transfers. `None` admits every transfer.
+    transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
+    metrics: ZonePayloadBuilderMetrics,
 }
 
 impl<Provider> PayloadBuilder for ZonePayloadBuilder<Provider>
@@ -208,13 +226,9 @@ where
             );
         }
 
-        let state = StateProviderDatabase::new(state_provider.as_ref().into_evm_state_provider());
-        let mut db = State::builder()
-            .with_database(
-                Box::new(cached_reads.as_db_mut(state)) as Box<dyn Database<Error = ProviderError>>
-            )
-            .with_bundle_update()
-            .build();
+        let evm_state_provider = state_provider.as_ref().into_evm_state_provider();
+        let db = StateProviderDatabase::new(evm_state_provider);
+        let db = cached_reads.as_db_mut(db);
 
         let chain_spec = self.provider.chain_spec();
         let chain_id = chain_spec.chain_id();
@@ -240,9 +254,9 @@ where
         };
         let mut builder = self
             .evm_config
-            .builder_for_next_block(&mut db, &parent_header, next_block_env_attributes.clone())
+            .builder_for_next_block(db, &parent_header, next_block_env_attributes.clone())
             .map_err(PayloadBuilderError::other)?;
-        let base_fee = builder.evm().block().basefee;
+        let base_fee = builder.evm().block().basefee.to::<u64>();
         let block_number: u64 = builder
             .evm()
             .block()
@@ -303,7 +317,8 @@ where
                 .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
             // Zones resolve fee tokens without a fallback list.
             let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
-            if execute_pool_transactions(
+            let mut unlisted = Vec::new();
+            let outcome = execute_pool_transactions(
                 |tx, best_txs| {
                     builder
                         .execute_transaction_with_result_closure(tx, |result| {
@@ -314,8 +329,24 @@ where
                 &mut best_txs,
                 &cancel,
                 pool_tx_size_budget,
-            )? == PoolExecutionOutcome::Cancelled
-            {
+                self.transfer_allowlist.as_deref(),
+                &mut unlisted,
+            );
+            if !unlisted.is_empty() {
+                // Otherwise every later build would check and skip them again. Removal locks the
+                // pool, so it runs off the build path; a build that starts first skips them again.
+                info!(
+                    target: "zone::payload",
+                    count = unlisted.len(),
+                    "Dropping pool transactions that move funds outside the transfer allowlist"
+                );
+                let pool = self.pool.clone();
+                self.task_executor
+                    .spawn_blocking_named("zone-allowlist-evict", move || {
+                        pool.remove_transactions(unlisted);
+                    });
+            }
+            if outcome? == PoolExecutionOutcome::Cancelled {
                 return Ok(BuildOutcome::Cancelled);
             }
 
@@ -332,6 +363,7 @@ where
 
         let BlockBuilderOutcome {
             execution_result,
+            execution_state,
             hashed_state,
             trie_updates,
             block,
@@ -356,6 +388,7 @@ where
         }
 
         let elapsed = start.elapsed();
+        self.metrics.build_duration_seconds.record(elapsed);
         info!(
             number = sealed_block.number(),
             l1_block = final_imported.number(),
@@ -374,7 +407,7 @@ where
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
-            state: db.take_bundle(),
+            state: execution_state,
         };
 
         let executed_block = BuiltPayloadExecutedBlock {
@@ -421,6 +454,14 @@ where
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
     }
+}
+
+/// Zone payload builder metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_payload")]
+struct ZonePayloadBuilderMetrics {
+    /// Time to build one Zone block, from the parent state lookup to the sealed payload.
+    build_duration_seconds: Histogram,
 }
 
 /// Validate that the prepared L1 block is the next block expected by TempoState.
@@ -498,23 +539,37 @@ enum PoolExecutionOutcome {
 
 /// Execute the best pool transactions, skipping any whose RLP size would push the packed pool
 /// transaction bytes past `pool_tx_size_budget`.
+///
+/// Transactions that `transfer_allowlist` rejects against its current list are skipped without
+/// executing them, and their hashes are pushed to `unlisted`. This catches list changes after
+/// pool admission.
 fn execute_pool_transactions<T, F>(
     mut execute_tx: F,
     best_txs: &mut T,
     cancel: &CancelOnDrop,
     pool_tx_size_budget: usize,
+    transfer_allowlist: Option<&dyn TransferAllowlist>,
+    unlisted: &mut Vec<TxHash>,
 ) -> Result<PoolExecutionOutcome, PayloadBuilderError>
 where
     T: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     F: FnMut(
-        WithTxEnv<tempo_revm::TempoTxEnv, Recovered<TempoTxEnvelope>>,
+        WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>>,
         &mut T,
-    ) -> Result<(), reth_evm::block::BlockExecutionError>,
+    ) -> Result<(), BlockExecutionError>,
 {
     let mut packed_tx_bytes = 0usize;
     while let Some(pool_tx) = best_txs.next() {
         if cancel.is_cancelled() {
             return Ok(PoolExecutionOutcome::Cancelled);
+        }
+
+        if let Some(allowlist) = transfer_allowlist
+            && let Err(error) = validate_transfer_calls(allowlist, &pool_tx.transaction)
+        {
+            best_txs.mark_invalid(&pool_tx, error);
+            unlisted.push(*pool_tx.hash());
+            continue;
         }
 
         let packed_bytes_with_tx =
@@ -533,8 +588,8 @@ where
         let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
         match execute_tx(tx_with_env, best_txs) {
             Ok(_) => packed_tx_bytes = packed_bytes_with_tx,
-            Err(reth_evm::block::BlockExecutionError::Validation(
-                reth_evm::block::BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+            Err(BlockExecutionError::Validation(
+                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
                     transaction_gas_limit,
                     block_available_gas,
                 },
@@ -547,9 +602,9 @@ where
                     ),
                 );
             }
-            Err(reth_evm::block::BlockExecutionError::Validation(
-                reth_evm::block::BlockValidationError::InvalidTx { error, .. },
-            )) => {
+            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                error, ..
+            })) => {
                 if !error.is_nonce_too_low() {
                     best_txs.mark_invalid(
                         &pool_tx,
@@ -559,9 +614,10 @@ where
                     );
                 }
             }
-            Err(reth_evm::block::BlockExecutionError::Internal(
-                reth_evm::block::InternalBlockExecutionError::EVM { ref error, .. },
-            )) if is_l1_storage_unavailable(error.as_ref()) => {
+            Err(BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
+                ref error,
+                ..
+            })) if is_l1_storage_unavailable(error) => {
                 warn!(
                     target: "zone::payload",
                     %error,
@@ -581,7 +637,7 @@ fn is_l1_storage_unavailable(error: &(dyn Error + 'static)) -> bool {
     while let Some(error) = current {
         if error
             .downcast_ref::<L1StateError>()
-            .is_some_and(L1StateError::is_storage_unavailable)
+            .is_some_and(L1StateError::is_unavailable)
             || error
                 .to_string()
                 .contains(L1_STORAGE_UNAVAILABLE_ERROR_PREFIX)
@@ -594,7 +650,7 @@ fn is_l1_storage_unavailable(error: &(dyn Error + 'static)) -> bool {
 }
 
 /// Finalize a batch after processing deposits, with pending withdrawals, or at a batch boundary.
-fn finalize_withdrawal_batch_if_needed<B>(
+fn finalize_withdrawal_batch_if_needed<'a, B>(
     builder: &mut B,
     block_number: u64,
     interval_blocks: u64,
@@ -604,7 +660,10 @@ fn finalize_withdrawal_batch_if_needed<B>(
     chain_id: u64,
 ) -> Result<(), PayloadBuilderError>
 where
-    B: BlockBuilder<Primitives = tempo_primitives::TempoPrimitives>,
+    B: BlockBuilder<
+            Primitives = tempo_primitives::TempoPrimitives,
+            Executor: BlockExecutor<Evm = ZoneEvm<'a>>,
+        >,
 {
     let pending_withdrawals =
         read_pending_withdrawals_from_outbox(builder.evm_mut(), block_number)?;
@@ -711,42 +770,42 @@ pub(crate) fn build_finalize_withdrawal_batch_tx(
     };
 
     Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     )
 }
 
 /// Read all pending withdrawals in the ZoneOutbox
-fn read_pending_withdrawals_from_outbox<E>(
-    evm: &mut E,
+fn read_pending_withdrawals_from_outbox(
+    evm: &mut ZoneEvm<'_>,
     block_number: u64,
-) -> Result<Vec<abi::IZoneOutbox::PendingWithdrawal>, PayloadBuilderError>
-where
-    E: Evm,
-{
+) -> Result<Vec<abi::IZoneOutbox::PendingWithdrawal>, PayloadBuilderError> {
     let calldata = abi::IZoneOutbox::getPendingWithdrawalsCall {}.abi_encode();
     let call_result = evm
-        .transact_system_call(TEMPO_SYSTEM_TX_SENDER, ZONE_OUTBOX_ADDRESS, calldata.into())
+        .system_call(
+            evm2::evm::SystemTx::new(ZONE_OUTBOX_ADDRESS, calldata.into())
+                .with_caller(TEMPO_SYSTEM_TX_SENDER),
+        )
         .map_err(|err| {
             error!(
                 ?err,
                 block_number, "ZoneOutbox getPendingWithdrawals view call failed"
             );
-            PayloadBuilderError::evm(err)
+            PayloadBuilderError::evm(map_handler_error(err))
         })?;
 
-    if !call_result.result.is_success() {
+    if !call_result.result().status {
         error!(
             target: "zone::payload",
             block_number,
-            result = ?call_result.result,
+            result = ?call_result.result(),
             "ZoneOutbox getPendingWithdrawals view call failed"
         );
         return Err(PayloadBuilderError::Internal(reth_errors::RethError::msg(
             format!("ZoneOutbox getPendingWithdrawals view failed at zone block {block_number}"),
         )));
     }
-    let output = call_result.result.into_output().unwrap_or_default();
+    let output = call_result.discard().output;
 
     abi::IZoneOutbox::getPendingWithdrawalsCall::abi_decode_returns(&output).map_err(|err| {
         PayloadBuilderError::Internal(reth_errors::RethError::msg(format!(
@@ -820,7 +879,7 @@ fn build_advance_tempo_tx_from_parts(
     };
 
     Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     )
 }
@@ -855,14 +914,14 @@ pub fn build_advance_tempo_headers_tx(
         input: calldata.into(),
     };
     Ok(Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE)),
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{Header, Signed, TxLegacy};
+    use alloy_consensus::{Header, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, U256, address};
     use alloy_sol_types::SolCall;
     use reth_primitives_traits::{Recovered, SealedHeader};
@@ -873,14 +932,38 @@ mod tests {
         identifier::{SenderId, TransactionId},
     };
     use std::{collections::VecDeque, sync::Arc, time::Instant};
+    use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::{
-        TempoHeader, TempoTxEnvelope,
+        TempoAddressExt as _, TempoHeader, TempoTxEnvelope,
         transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
     };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
-    use crate::abi::{self, DepositType, IZoneInbox};
+    use crate::{
+        TransferAllowlist,
+        abi::{self, DepositType, IZoneInbox},
+    };
     use zone_l1::PreparedL1Block;
+
+    #[test]
+    fn stringified_l1_unavailability_is_recognized() {
+        for error in [
+            zone_precompiles::L1StateError::StorageUnavailable {
+                account: Address::ZERO,
+                slot: B256::ZERO,
+                block_number: 1,
+                reason: "RPC unavailable".into(),
+            },
+            zone_precompiles::L1StateError::AccountUnavailable {
+                account: Address::ZERO,
+                block_number: 1,
+                reason: "RPC unavailable".into(),
+            },
+        ] {
+            let stringified = std::io::Error::other(error.to_string());
+            assert!(super::is_l1_storage_unavailable(&stringified), "{error}");
+        }
+    }
 
     #[test]
     fn withdrawal_batch_boundary_conditions() {
@@ -980,7 +1063,7 @@ mod tests {
             value: U256::ZERO,
             input: vec![0u8; input_len].into(),
         };
-        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
         let recovered = Recovered::new_unchecked(envelope, TEMPO_SYSTEM_TX_SENDER);
         Arc::new(ValidPoolTransaction {
             transaction: TempoPooledTransaction::new(recovered),
@@ -1023,14 +1106,18 @@ mod tests {
         let mut executed = 0usize;
         let cancel = CancelOnDrop::default();
 
+        let mut unlisted = Vec::new();
+
         let outcome = super::execute_pool_transactions(
-            |_tx, _best_txs| -> Result<(), reth_evm::block::BlockExecutionError> {
+            |_tx, _best_txs| -> Result<(), reth_evm::BlockExecutionError> {
                 executed += 1;
                 Ok(())
             },
             &mut best_txs,
             &cancel,
             budget,
+            None,
+            &mut unlisted,
         )
         .expect("pool execution should not error");
 
@@ -1039,6 +1126,78 @@ mod tests {
         // Only the transactions that fit were executed; the rest were rejected for size.
         assert_eq!(executed, expected_fit);
         assert_eq!(best_txs.oversized_marked, total - expected_fit);
+        assert!(unlisted.is_empty());
+    }
+
+    /// Lists no account, so every transfer between accounts is rejected.
+    #[derive(Debug)]
+    struct EmptyAllowlist;
+
+    impl TransferAllowlist for EmptyAllowlist {
+        fn allows_all(&self, _addresses: &[Address]) -> bool {
+            false
+        }
+    }
+
+    /// Transactions the current allowlist rejects are skipped without executing, marked invalid,
+    /// reported for pool removal, and take no block space, so a later transaction still fits.
+    #[test]
+    fn unlisted_pool_transactions_are_skipped_without_using_block_space() {
+        let per_tx = pool_tx_with_calldata(1_000_000, 0).encoded_length();
+        let transfer = TxLegacy {
+            to: Address::new_tip20(0).into(),
+            input: ITIP20::transferCall {
+                to: address!("0x0000000000000000000000000000000000000b0b"),
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into(),
+            ..Default::default()
+        };
+        let transfer = Arc::new(ValidPoolTransaction {
+            transaction: TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::Legacy(transfer.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
+                address!("0x00000000000000000000000000000000000a11ce"),
+            )),
+            transaction_id: TransactionId::new(SenderId::from(1u64), 0),
+            propagate: false,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        });
+        let left_out = *transfer.hash();
+        let queue = [
+            transfer,
+            pool_tx_with_calldata(1_000_000, 0),
+            pool_tx_with_calldata(1_000_000, 1),
+        ]
+        .into_iter()
+        .collect::<VecDeque<_>>();
+        let mut best_txs = MockBestTransactions {
+            queue,
+            oversized_marked: 0,
+        };
+        let mut executed = 0usize;
+        let mut unlisted = Vec::new();
+
+        // The budget fits two transactions; the transfer is skipped, so both others are included.
+        let outcome = super::execute_pool_transactions(
+            |_tx, _best_txs| -> Result<(), reth_evm::BlockExecutionError> {
+                executed += 1;
+                Ok(())
+            },
+            &mut best_txs,
+            &CancelOnDrop::default(),
+            2 * per_tx,
+            Some(&EmptyAllowlist),
+            &mut unlisted,
+        )
+        .expect("pool execution should not error");
+
+        assert_eq!(outcome, super::PoolExecutionOutcome::Complete);
+        assert_eq!(executed, 2);
+        assert_eq!(best_txs.oversized_marked, 0);
+        assert_eq!(unlisted, vec![left_out]);
     }
 
     /// Verify calldata for an internal withdrawal bounce-back followed by an
@@ -1100,6 +1259,7 @@ mod tests {
                     c: B256::ZERO,
                 },
             }],
+            recipients: vec![None],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };

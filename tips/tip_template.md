@@ -12,41 +12,54 @@ protocolVersion: <version at which TIP is scheduled to be included/was included>
 
 ## Abstract
 
-Short 2–4 sentence high level summary
+Summarize the change, its purpose, and its main limitation in 2–4 sentences.
 
 ## Motivation
 
-Explain what problem this solves/functionality this introduces, and any alternatives considered (if applicable). Add context or links to other specs/resources that serve as prerequisites to this spec.
+Explain the problem or capability, alternatives considered, and why the change is needed. Link prerequisite specifications.
 
 ## Assumptions
 
-List the explicit assumptions this spec depends on (for example: upstream invariants, trust boundaries, deployment ordering, and backward compatibility expectations). Call out what happens if an assumption is violated.
+State the assumptions and consequences of violating them, including relevant upstream invariants, trust boundaries, deployment order, and backward compatibility.
 
 ---
 
 # Specification
 
+Define behavior precisely enough to implement and test without inferring rules.
 
-This section should provide a complete description of the feature’s behavior and required interfaces.
+## Overview
 
-If the feature introduces a precompile, this section should include the full interface definition along with comprehensive NatSpec. Each function should clearly describe its parameters, return values, and error conditions. The goal is to define the intended functionality clearly enough that an engineer can implement the reference contract, test suite, and node implementation without needing to infer any implementation details.
+Define terms, scope, and the lifecycle. Explain who authorizes each operation and the critical trust boundary before the detailed mechanics.
 
-For features that do not introduce a precompile, this section should define the exact mechanics of the feature/system. Describe the relevant state transitions, data structures, encodings, etc. When the feature interacts with existing components, explain how they relate and how data moves between them each system component.
+## Mechanics
 
-Where a feature involves multiple processes, state diagrams / flowcharts should be considered when helpful.
+Describe operations in lifecycle order: authority, inputs, checks, state transitions, data structures, encodings, and data flow between components. Define failures, rollback and persistence, fee and nonce effects, and retry conditions where relevant.
 
-# Tooling
+Use prose for behavior and causality, ordered steps when order matters, and tables for comparisons. Use diagrams when they clarify the flow. State each rule once and link to it elsewhere.
 
-Describe any tooling impact for this TIP. Include new or changed commands, SDK or library interfaces, test helpers, fixtures, machine-readable outputs, debugging or recovery workflows, and integration guidance needed by implementers, operators, support teams, or users. If no tooling changes are required, write `N/A` and explain why existing tooling is sufficient.
+## Interfaces
+
+Put full interface definitions, selectors, events, errors, and storage layouts here. For precompiles, include complete NatSpec for parameters, return values, and errors. Keep encoding formulas and algorithm steps with the mechanics.
+
+# Compatibility
+
+Describe changes to existing flows and adoption work, linking relevant scope limits from the Overview. Include commands, SDKs/libraries, test helpers, fixtures, machine-readable outputs, debugging, recovery, and integration guidance for implementers, operators, support teams, and users. Distinguish required tooling from available support.
+
+When a table helps, use `Integration | What changes` for recognizable flows, concrete behavior and consequences, and links to owning sections.
+
+Cite specification sections or pinned implementation revisions. Distinguish specified behavior, observed implementation, deductions, and unverified partner risks. If no compatibility or tooling changes are required, write `N/A` and explain why.
 
 # Observability
 
-Describe the events needed to monitor and debug this TIP in production. List each event that MUST be emitted, its fields, and the operational question it answers. If no new events are required, write `N/A` and explain why existing observability is sufficient.
+List each event that MUST be emitted, its fields, and the operational question it answers. Explain the evidence for failures and recovery. If no new events are required, write `N/A` and explain why existing observability is sufficient.
 
 # Threat Model
 
-List the actors this spec relies on and, for each, describe the trust assumptions in one or two lines. Include any trust boundaries, permissions, or adversarial behaviors that are in or out of scope.
+Lead with the most consequential attack supported by the design. For each actor, state what they control, what the design trusts them to do, the enforcing check, and the consequence of failure or compromise. Use a concise table when comparing actors helps.
+
+Name residual risks and excluded threats. A meta TIP owns shared actors and attacks spanning components; each component TIP still explains its local boundary and checks and links shared assumptions.
 
 # Invariants
 
-This section should describe invariants that must always hold, and outline the critical cases that the test suite must cover. 
+State checkable properties that must always hold and the critical cases the test suite must cover.

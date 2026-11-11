@@ -1,40 +1,56 @@
 //! Execution-local database adapter that overlays finalized Tempo L1 reads while preserving
 //! the caller-provided Zone database as the sole canonical state backend.
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
-use alloy_evm::Database;
-use alloy_primitives::{Address, B256, U256};
-use revm::{
-    context::{
-        DBErrorMarker,
-        result::{AnyError, EVMError},
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
+use evm2::{
+    DatabaseError, JournalEntry, PendingState,
+    bytecode::Bytecode,
+    evm::{
+        AccountChangeRef, AccountExtension, AccountInfo, DynDatabase, State, StateChangeSink,
+        StorageChange,
     },
-    database_interface::Database as RevmDatabase,
-    primitives::{AddressMap, StorageKey, StorageValue},
-    state::{Account, AccountInfo, Bytecode},
 };
+use reth_execution_types::StateUpdate;
+use reth_trie_common::bundle_state::{AccountInfoRevert, AccountStatus, BundleState};
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::{
+    configurable_account::{
+        CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, valid_account,
+    },
+    tip20::{self, is_tip20_prefix},
+};
+use tempo_primitives::account::encode_config_commitment;
 use thiserror::Error;
 use zone_precompiles::{
-    TIP403_REGISTRY_ADDRESS,
-    storage::{L1State, L1StateError, L1StorageReader},
-    tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
+    TIP403_REGISTRY_ADDRESS, is_zone_precompile,
+    storage::{L1State, L1StorageReader},
 };
-use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
 /// Resolves mirrored L1 reads at the active Tempo anchor and forwards all other database
 /// operations to the caller-provided Zone database.
+///
+/// The whole TIP-403 registry is mirrored. From T15, each TIP-20 token's pause flag is mirrored
+/// too, so upstream pause checks block on the Zone exactly what they block on Tempo.
+///
+/// From T14, account loads also carry Tempo's TIP-1108 commitment and the account marker code
+/// (TIP-1154). Block outputs drop them again through `strip_bundle_commitment_overlays` and
+/// `strip_update_commitment_overlays`, so zone state never stores them.
 pub struct L1OverlayDB<DB, L1> {
     inner: DB,
     l1: L1State<L1>,
+    /// Tempo hardfork the adapter executes at. From T15, TIP-20 pause flags are read from L1.
+    spec: TempoHardfork,
 }
 
 impl<DB, L1> L1OverlayDB<DB, L1> {
-    /// Creates an adapter around the caller-provided database.
-    pub fn new(inner: DB, l1: L1, portal_address: Address) -> Self {
+    /// Creates an adapter around the caller-provided database for execution at `spec`.
+    pub fn new(inner: DB, l1: L1, portal_address: Address, spec: TempoHardfork) -> Self {
         Self {
             inner,
             l1: L1State::new(l1, portal_address),
+            spec,
         }
     }
 
@@ -57,11 +73,6 @@ impl<DB, L1> L1OverlayDB<DB, L1> {
     pub const fn l1_state(&self) -> &L1State<L1> {
         &self.l1
     }
-
-    /// Clears bookkeeping that is valid only for the current transaction attempt.
-    pub(crate) fn reset_transaction_state(&mut self) {
-        self.l1.reset_transaction_state();
-    }
 }
 
 impl<DB: fmt::Debug, L1> fmt::Debug for L1OverlayDB<DB, L1> {
@@ -73,125 +84,340 @@ impl<DB: fmt::Debug, L1> fmt::Debug for L1OverlayDB<DB, L1> {
     }
 }
 
-impl<DB: Database, L1: L1StorageReader> L1OverlayDB<DB, L1> {
-    fn anchor(&mut self) -> Result<u64, ZoneDbError<DB::Error>> {
+impl<DB: DynDatabase, L1: L1StorageReader> L1OverlayDB<DB, L1> {
+    fn anchor(&mut self) -> Result<u64, DatabaseError> {
         if let Some(anchor) = self.l1.get_anchor() {
             return Ok(anchor);
         }
-
         let value = self
-            .inner
-            .storage(TEMPO_STATE_ADDRESS, TEMPO_BLOCK_NUMBER_SLOT)
-            .map_err(ZoneDbError::Inner)?;
-        let anchor = u64::try_from(value).map_err(|_| ZoneDbError::AnchorOverflow(value))?;
-        Ok(anchor)
+            .l1
+            .initial_anchor()
+            .ok_or_else(|| DatabaseError::new(ZoneDbError::MissingAnchor, true))?;
+        u64::try_from(value)
+            .map_err(|_| DatabaseError::new(ZoneDbError::AnchorOverflow(value), true))
+    }
+}
+
+/// Rejects net changes to mirrored storage made by the in-flight transaction.
+///
+/// Handlers run before the transaction state is finalized into a [`PendingState`], so this is the
+/// check available to every execution path. Like [`validate_pending_state`] it ignores slots that
+/// end at their original value, but it only sees storage writes; the block executor's check also
+/// covers account changes and wipes.
+pub(crate) fn validate_journal(state: &State<'_>) -> Result<(), ZoneDbError> {
+    let mut originals = HashMap::<(Address, U256), U256>::new();
+    for entry in state.journal() {
+        if let JournalEntry::StorageChange {
+            address,
+            key,
+            previous,
+        } = entry
+            && is_mirrored_slot(address, key)
+        {
+            originals.entry((*address, *key)).or_insert(*previous);
+        }
+    }
+    for ((address, slot), original) in originals {
+        if state.get_storage(&address, &slot) != Some(original) {
+            return Err(ZoneDbError::L1Write { address, slot });
+        }
+    }
+    Ok(())
+}
+
+/// Rejects persistent changes to mirrored storage in a finalized transaction state.
+pub(crate) fn validate_pending_state(state: &PendingState) -> Result<(), ZoneDbError> {
+    // Only the registry and TIP-20 accounts can fail the guard; skip visiting every other
+    // account's storage.
+    state
+        .account_changes()
+        .filter(|changes| {
+            changes.address == TIP403_REGISTRY_ADDRESS || is_tip20_prefix(changes.address)
+        })
+        .try_for_each(|changes| changes.visit(&mut L1WriteGuard))
+}
+
+struct L1WriteGuard;
+
+impl StateChangeSink for L1WriteGuard {
+    type Error = ZoneDbError;
+
+    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        if change.address == TIP403_REGISTRY_ADDRESS {
+            return Err(ZoneDbError::L1Write {
+                address: change.address,
+                slot: U256::ZERO,
+            });
+        }
+        Ok(())
     }
 
-    /// Rejects writes to the L1-mirrored TIP-403 registry.
-    pub fn sanitize_state(
-        &mut self,
-        state: &mut AddressMap<Account>,
-    ) -> Result<(), ZoneDbError<DB::Error>> {
-        if let Some(account) = state.get(&TIP403_REGISTRY_ADDRESS) {
-            if account.info != account.original_info() {
-                return Err(ZoneDbError::L1Write {
-                    address: TIP403_REGISTRY_ADDRESS,
-                    slot: U256::ZERO,
-                });
-            }
-            if let Some((&slot, _)) = account.changed_storage_slots().next() {
-                return Err(ZoneDbError::L1Write {
-                    address: TIP403_REGISTRY_ADDRESS,
-                    slot,
-                });
-            }
-            // A read-only overlay has identical original and present values, so it is not changed
-            // above, but committing the touched account could still persist that L1 value locally.
-            // Since every registry slot is mirrored and writes were rejected, drop the transition.
-            state.remove(&TIP403_REGISTRY_ADDRESS);
+    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+        if address == TIP403_REGISTRY_ADDRESS {
+            return Err(ZoneDbError::L1Write {
+                address,
+                slot: U256::ZERO,
+            });
         }
+        Ok(())
+    }
 
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+        if is_mirrored_slot(&change.address, &change.key) {
+            return Err(ZoneDbError::L1Write {
+                address: change.address,
+                slot: change.key,
+            });
+        }
         Ok(())
     }
 }
 
-impl<DB: Database, L1: L1StorageReader> RevmDatabase for L1OverlayDB<DB, L1> {
-    type Error = ZoneDbError<DB::Error>;
-
-    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.inner.basic(address).map_err(ZoneDbError::Inner)
-    }
-
-    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.inner
-            .code_by_hash(code_hash)
-            .map_err(ZoneDbError::Inner)
-    }
-
-    fn storage(&mut self, address: Address, slot: StorageKey) -> Result<StorageValue, Self::Error> {
-        if address != TIP403_REGISTRY_ADDRESS {
-            return self
-                .inner
-                .storage(address, slot)
-                .map_err(ZoneDbError::Inner);
+impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
+    fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, DatabaseError> {
+        let mut info = self.inner.get_account(address)?;
+        // Only accounts without zone code carry a Tempo commitment (TIP-1154): zones reject
+        // authorization lists and contract creation, so code belongs to a protocol contract.
+        // Outside a zone transaction, such as in block-level system calls, accounts load with
+        // their zone-local view.
+        if !self.spec.is_t14()
+            || info.as_ref().is_some_and(|info| !info.is_empty_code_hash())
+            || !valid_account(*address, self.spec)
+            || is_zone_precompile(*address, self.spec)
+            || self.l1.initial_anchor().is_none()
+        {
+            return Ok(info);
         }
 
         let anchor = self.anchor()?;
-        // REVM already charges this TIP-403 SLOAD; the host-side L1 fetch must not be charged again.
-        self.l1
-            .read_l1_storage_unmetered(address, B256::from(slot), anchor)
-            .map(Into::into)
-            .map_err(ZoneDbError::L1State)
+        // The EVM already charges this account load; the host-side L1 fetch must not be charged
+        // again.
+        let commitment = self
+            .l1
+            .read_l1_commitment_unmetered(*address, anchor)
+            .map_err(|error| DatabaseError::new(error, true))?;
+        if commitment.is_zero() {
+            return Ok(info);
+        }
+        let account = info.get_or_insert_with(AccountInfo::empty);
+        account.extension = AccountExtension::from(encode_config_commitment(commitment));
+        account.code_hash = CONFIGURABLE_ACCOUNT_CODE_HASH;
+        account.code = Some(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+        Ok(info)
     }
 
-    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
-        self.inner.block_hash(number).map_err(ZoneDbError::Inner)
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, DatabaseError> {
+        self.inner.get_code_by_hash(code_hash)
     }
+
+    fn get_storage(&mut self, address: &Address, slot: &U256) -> Result<U256, DatabaseError> {
+        if *address != TIP403_REGISTRY_ADDRESS
+            && !(self.spec.is_t15() && is_tip20_pause_slot(address, slot))
+        {
+            return self.inner.get_storage(address, slot);
+        }
+
+        let anchor = self.anchor()?;
+        // The EVM already charges this SLOAD; the host-side L1 fetch must not be charged again.
+        let value = self
+            .l1
+            .read_l1_storage_unmetered(*address, B256::from(*slot), anchor)
+            .map_err(|error| DatabaseError::new(error, true))?;
+        Ok(value.into())
+    }
+
+    fn get_block_hash(&mut self, number: &U256) -> Result<B256, DatabaseError> {
+        self.inner.get_block_hash(number)
+    }
+}
+
+/// Returns whether `slot` is the pause flag of the TIP-20 token at `address`.
+///
+/// The Zone never writes it: `TIP20Rules` blocks `pause` and `unpause` for every caller.
+fn is_tip20_pause_slot(address: &Address, slot: &U256) -> bool {
+    is_tip20_prefix(*address) && *slot == tip20::slots::PAUSED
+}
+
+/// Returns whether `slot` at `address` is mirrored from Tempo, so the Zone must never persist a
+/// change to it.
+///
+/// Pause flags are guarded at every fork: they are only mirrored from T15, but the Zone never
+/// writes them.
+fn is_mirrored_slot(address: &Address, slot: &U256) -> bool {
+    *address == TIP403_REGISTRY_ADDRESS || is_tip20_pause_slot(address, slot)
+}
+
+/// Removes the commitment overlays of [`L1OverlayDB`] from a block's state (see
+/// [`strip_commitment_overlay`]).
+///
+/// The result equals the state of the same block executed without overlays.
+pub(crate) fn strip_bundle_commitment_overlays(state: &mut BundleState) {
+    // The status of an account that only the overlay made exist.
+    let not_existing = |status| match status {
+        AccountStatus::Loaded => AccountStatus::LoadedNotExisting,
+        AccountStatus::Changed => AccountStatus::InMemoryChange,
+        status => status,
+    };
+    for account in state.state.values_mut() {
+        strip_commitment_overlay(&mut account.info);
+        if strip_commitment_overlay(&mut account.original_info) {
+            account.status = not_existing(account.status);
+        }
+    }
+    for (_, revert) in state.reverts.iter_mut().flatten() {
+        if let AccountInfoRevert::RevertTo(info) = &revert.account
+            && !info.extension.is_empty()
+        {
+            let mut info = Some(info.clone());
+            if strip_commitment_overlay(&mut info) {
+                revert.previous_status = not_existing(revert.previous_status);
+            }
+            revert.account = info.map_or(AccountInfoRevert::DeleteIt, AccountInfoRevert::RevertTo);
+        }
+    }
+}
+
+/// Removes the commitment overlays of [`L1OverlayDB`] from a transaction's streamed state, as
+/// [`strip_bundle_commitment_overlays`] does.
+pub(crate) fn strip_update_commitment_overlays(update: &mut StateUpdate) {
+    for account in &mut update.accounts {
+        strip_commitment_overlay(&mut account.current);
+        strip_commitment_overlay(&mut account.original);
+    }
+}
+
+/// Restores the zone-local view of an account loaded through [`L1OverlayDB`], returning whether
+/// the account does not exist locally.
+///
+/// Zones never write a commitment, so a nonempty extension marks an overlaid account. The overlay
+/// replaces its code with the account marker. Its zone code was empty: zones reject authorization
+/// lists and contract creation (see `validate_transaction`). An overlaid account that is empty
+/// without its overlay does not exist locally.
+fn strip_commitment_overlay(info: &mut Option<AccountInfo>) -> bool {
+    let Some(account) = info.as_mut().filter(|i| !i.extension.is_empty()) else {
+        return false;
+    };
+    account.extension = AccountExtension::new();
+    account.code_hash = KECCAK256_EMPTY;
+    account.code = None;
+    if !account.is_empty() {
+        return false;
+    }
+    *info = None;
+    true
 }
 
 /// Database error produced by [`L1OverlayDB`].
 #[derive(Debug, Error)]
-pub enum ZoneDbError<E> {
-    /// Error from the caller-provided database.
-    #[error("inner database error: {0}")]
-    Inner(#[source] E),
+pub enum ZoneDbError {
+    /// Mirrored storage was accessed without an initialized transaction context.
+    #[error("Tempo anchor was not initialized for this transaction")]
+    MissingAnchor,
     /// The selected Zone state contains an invalid Tempo anchor.
     #[error("invalid Tempo anchor (does not fit in u64): {0}")]
     AnchorOverflow(U256),
-    /// Execution-local Tempo L1 state could not be read or advanced consistently.
-    #[error(transparent)]
-    L1State(#[from] L1StateError),
     /// A transaction attempted to persist mirrored Tempo-owned state.
     #[error("write to mirrored Tempo storage address={address} slot={slot}")]
     L1Write { address: Address, slot: U256 },
 }
 
-impl<E: DBErrorMarker> DBErrorMarker for ZoneDbError<E> {}
-
-impl<E: DBErrorMarker> ZoneDbError<E> {
-    pub(crate) fn into_evm_error<TxError>(self) -> EVMError<E, TxError> {
-        match self {
-            Self::Inner(error) => EVMError::Database(error),
-            error => EVMError::CustomAny(AnyError::new(error)),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::{database::InMemoryDB, database_interface::DatabaseCommit, state::EvmStorageSlot};
-    use zone_precompiles::test_utils::MockL1Reader as TestL1;
+    use alloy_primitives::Bytes;
+    use evm2::evm::{InMemoryDB, StateChangeSource};
+    use reth_execution_types::{AccountUpdate, BlockState, BundleSource, TransactionChanges};
+    use tempo_precompiles::{PATH_USD_ADDRESS, storage::account_config_commitment};
+    use zone_precompiles::{
+        storage::L1StateError, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
+        test_utils::MockL1Reader as TestL1,
+    };
+    use zone_primitives::constants::{TEMPO_STATE_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     fn test_db(anchor: u64) -> InMemoryDB {
         let mut db = InMemoryDB::default();
         db.insert_account_storage(
-            TEMPO_STATE_ADDRESS,
-            TEMPO_BLOCK_NUMBER_SLOT,
-            U256::from(anchor),
-        )
-        .unwrap();
+            &TEMPO_STATE_ADDRESS,
+            &TEMPO_BLOCK_NUMBER_SLOT,
+            &U256::from(anchor),
+        );
         db
+    }
+
+    fn test_overlay(anchor: u64, reader: TestL1) -> L1OverlayDB<InMemoryDB, TestL1> {
+        // The backing database can lag the checkpoint already committed in the EVM overlay.
+        let db = L1OverlayDB::new(
+            test_db(anchor.saturating_sub(1)),
+            reader,
+            Address::ZERO,
+            TempoHardfork::T15,
+        );
+        db.l1_state().begin_transaction(U256::from(anchor));
+        db
+    }
+
+    #[test]
+    fn journal_guard_ignores_restored_registry_slots() {
+        let slot = U256::from(7);
+        let mut state = State::new(InMemoryDB::default());
+
+        // A write that restores the original value, as `ZoneInbox::enable_tokens` does.
+        state
+            .storage_slot(&TIP403_REGISTRY_ADDRESS, slot)
+            .unwrap()
+            .set(U256::from(1));
+        state
+            .storage_slot(&TIP403_REGISTRY_ADDRESS, slot)
+            .unwrap()
+            .set(U256::ZERO);
+        validate_journal(&state).unwrap();
+
+        state
+            .storage_slot(&TIP403_REGISTRY_ADDRESS, slot)
+            .unwrap()
+            .set(U256::from(2));
+        assert!(matches!(
+            validate_journal(&state),
+            Err(ZoneDbError::L1Write {
+                address: TIP403_REGISTRY_ADDRESS,
+                slot: s,
+            }) if s == slot
+        ));
+    }
+
+    #[test]
+    fn guards_reject_tip20_pause_flag_writes() {
+        let token = PATH_USD_ADDRESS;
+        let mut state = State::new(InMemoryDB::default());
+        state
+            .storage_slot(&token, tip20::slots::TOTAL_SUPPLY)
+            .unwrap()
+            .set(U256::ONE);
+        validate_journal(&state).unwrap();
+        state
+            .storage_slot(&token, tip20::slots::PAUSED)
+            .unwrap()
+            .set(U256::ONE);
+        assert!(matches!(
+            validate_journal(&state),
+            Err(ZoneDbError::L1Write { address, slot })
+                if address == token && slot == tip20::slots::PAUSED
+        ));
+
+        let mut state = PendingState::default();
+        state.insert_account(
+            token,
+            Some(AccountInfo::default()),
+            Some(AccountInfo::default()),
+        );
+        state.insert_storage(token, tip20::slots::TOTAL_SUPPLY, U256::ZERO, U256::ONE);
+        validate_pending_state(&state).unwrap();
+        state.insert_storage(token, tip20::slots::PAUSED, U256::ZERO, U256::ONE);
+        assert!(matches!(
+            validate_pending_state(&state),
+            Err(ZoneDbError::L1Write { address, slot })
+                if address == token && slot == tip20::slots::PAUSED
+        ));
     }
 
     #[test]
@@ -202,9 +428,12 @@ mod tests {
         let l1 = TestL1::default();
         l1.insert(TIP403_REGISTRY_ADDRESS, slot, anchor - 1, U256::from(98));
         l1.insert(TIP403_REGISTRY_ADDRESS, slot, anchor, expected);
-        let mut db = L1OverlayDB::new(test_db(anchor), l1, Address::ZERO);
+        let mut db = test_overlay(anchor, l1);
 
-        assert_eq!(db.storage(TIP403_REGISTRY_ADDRESS, slot).unwrap(), expected);
+        assert_eq!(
+            DynDatabase::get_storage(&mut db, &TIP403_REGISTRY_ADDRESS, &slot).unwrap(),
+            expected
+        );
         assert_eq!(db.l1_state().get_anchor(), Some(anchor));
     }
 
@@ -212,22 +441,23 @@ mod tests {
     fn l1_failures_and_read_before_advance_fail_closed() {
         let anchor = 42;
         let slot = U256::from(7);
-        let mut failing =
-            L1OverlayDB::new(test_db(anchor), TestL1::failing_storage(), Address::ZERO);
+        let mut failing = test_overlay(anchor, TestL1::failing_storage());
+        let code =
+            DynDatabase::get_storage(&mut failing, &TIP403_REGISTRY_ADDRESS, &slot).unwrap_err();
         assert!(matches!(
-            failing.storage(TIP403_REGISTRY_ADDRESS, slot),
-            Err(ZoneDbError::L1State(L1StateError::StorageUnavailable {
+            code.downcast_ref::<L1StateError>(),
+            Some(L1StateError::StorageUnavailable {
                 block_number: 42,
                 ..
-            }))
+            })
         ));
 
         let reader = TestL1::default();
         reader.insert(TIP403_REGISTRY_ADDRESS, slot, anchor, U256::ONE);
-        let mut db = L1OverlayDB::new(test_db(anchor), reader.clone(), Address::ZERO);
+        let mut db = test_overlay(anchor, reader.clone());
         let l1 = db.l1_state().clone();
         assert_eq!(
-            db.storage(TIP403_REGISTRY_ADDRESS, slot).unwrap(),
+            DynDatabase::get_storage(&mut db, &TIP403_REGISTRY_ADDRESS, &slot).unwrap(),
             U256::ONE
         );
         assert!(l1.advance_anchor(anchor, anchor + 1).is_err());
@@ -241,31 +471,99 @@ mod tests {
         let l1 = TestL1::default();
         l1.insert(TIP403_REGISTRY_ADDRESS, slot, anchor, l1_value);
         let mut inner = test_db(anchor);
-        inner
-            .insert_account_storage(TIP403_REGISTRY_ADDRESS, slot, local)
-            .unwrap();
-        let mut db = L1OverlayDB::new(inner, l1, Address::ZERO);
-        let observed = db.storage(TIP403_REGISTRY_ADDRESS, slot).unwrap();
+        inner.insert_account_info(&TIP403_REGISTRY_ADDRESS, Default::default());
+        inner.insert_account_storage(&TIP403_REGISTRY_ADDRESS, &slot, &local);
+        let mut db = L1OverlayDB::new(inner, l1, Address::ZERO, TempoHardfork::T15);
+        db.l1_state().begin_transaction(U256::from(anchor));
+        let observed = DynDatabase::get_storage(&mut db, &TIP403_REGISTRY_ADDRESS, &slot).unwrap();
         assert_eq!(observed, l1_value);
 
-        let mut account = Account::default();
-        account.mark_touch();
-        account.storage.insert(
-            slot,
-            EvmStorageSlot {
-                original_value: observed,
-                present_value: observed,
-                ..Default::default()
-            },
-        );
-        let mut state = AddressMap::from_iter([(TIP403_REGISTRY_ADDRESS, account)]);
+        let account = db.get_account(&TIP403_REGISTRY_ADDRESS).unwrap();
+        let mut state = PendingState::default();
+        state.insert_account(TIP403_REGISTRY_ADDRESS, account.clone(), account);
+        state.insert_storage(TIP403_REGISTRY_ADDRESS, slot, observed, observed);
+        validate_pending_state(&state).unwrap();
 
-        db.sanitize_state(&mut state).unwrap();
-        assert!(!state.contains_key(&TIP403_REGISTRY_ADDRESS));
-
+        // Consume the transition through the same bundle stream used by block execution.
+        let mut block = BlockState::new();
+        let mut changes = TransactionChanges::default();
+        state.visit(&mut changes).unwrap();
+        block.commit(&changes);
+        let state = block.into_bundle();
+        assert!(!state.state().contains_key(&TIP403_REGISTRY_ADDRESS));
         let mut inner = db.into_inner();
-        inner.commit(state);
-        assert_eq!(inner.storage(TIP403_REGISTRY_ADDRESS, slot).unwrap(), local);
+        inner.commit_source(&BundleSource(&state));
+        assert_eq!(
+            DynDatabase::get_storage(&mut inner, &TIP403_REGISTRY_ADDRESS, &slot).unwrap(),
+            local
+        );
+    }
+
+    #[test]
+    fn tip20_pause_flag_is_mirrored_from_t15() {
+        let anchor = 42;
+        let token = PATH_USD_ADDRESS;
+        let supply = tip20::slots::TOTAL_SUPPLY;
+        let l1 = TestL1::default();
+        l1.insert(token, tip20::slots::PAUSED, anchor, U256::ONE);
+        l1.insert(token, supply, anchor, U256::from(99));
+        for (spec, paused) in [
+            (TempoHardfork::T14, U256::ZERO),
+            (TempoHardfork::T15, U256::ONE),
+        ] {
+            let mut inner = test_db(anchor);
+            inner.insert_account_storage(&token, &supply, &U256::from(5));
+            let mut db = L1OverlayDB::new(inner, l1.clone(), Address::ZERO, spec);
+            db.l1_state().begin_transaction(U256::from(anchor));
+
+            assert_eq!(
+                db.get_storage(&token, &tip20::slots::PAUSED).unwrap(),
+                paused,
+                "{spec:?}"
+            );
+            // Every other token slot stays Zone-local.
+            assert_eq!(db.get_storage(&token, &supply).unwrap(), U256::from(5));
+        }
+        assert_eq!(
+            l1.storage_requests(),
+            [(token, B256::from(tip20::slots::PAUSED), anchor)]
+        );
+    }
+
+    #[test]
+    fn tip20_pause_overlay_is_removed_from_canonical_transition() {
+        let anchor = 42;
+        let token = PATH_USD_ADDRESS;
+        let (paused, supply) = (tip20::slots::PAUSED, tip20::slots::TOTAL_SUPPLY);
+        let l1 = TestL1::default();
+        l1.insert(token, paused, anchor, U256::ONE);
+        let mut inner = test_db(anchor);
+        inner.insert_account_info(&token, Default::default());
+        let mut db = L1OverlayDB::new(inner, l1, Address::ZERO, TempoHardfork::T15);
+        db.l1_state().begin_transaction(U256::from(anchor));
+        let observed = db.get_storage(&token, &paused).unwrap();
+        assert_eq!(observed, U256::ONE);
+
+        // The token account also changes Zone-local storage in the same transaction.
+        let account = db.get_account(&token).unwrap();
+        let mut state = PendingState::default();
+        state.insert_account(token, account.clone(), account);
+        state.insert_storage(token, paused, observed, observed);
+        state.insert_storage(token, supply, U256::ZERO, U256::from(7));
+        validate_pending_state(&state).unwrap();
+
+        let mut block = BlockState::new();
+        let mut changes = TransactionChanges::default();
+        state.visit(&mut changes).unwrap();
+        block.commit(&changes);
+        let state = block.into_bundle();
+        let storage = &state.state()[&token].storage;
+        assert!(!storage.contains_key(&paused));
+        assert!(storage.contains_key(&supply));
+        let mut inner = db.into_inner();
+        inner.commit_source(&BundleSource(&state));
+        assert_eq!(inner.get_storage(&token, &paused).unwrap(), U256::ZERO);
+        assert_eq!(inner.get_storage(&token, &supply).unwrap(), U256::from(7));
     }
 
     #[test]
@@ -273,14 +571,20 @@ mod tests {
         let (anchor, slot) = (42, U256::from(7));
         let l1 = TestL1::default();
         l1.insert(TIP403_REGISTRY_ADDRESS, slot, anchor, U256::from(7));
-        let mut db = L1OverlayDB::new(test_db(anchor), l1, Address::ZERO);
+        let mut db = test_overlay(anchor, l1);
 
-        db.storage(TIP403_REGISTRY_ADDRESS, slot).unwrap();
+        DynDatabase::get_storage(&mut db, &TIP403_REGISTRY_ADDRESS, &slot).unwrap();
         assert_eq!(db.l1_state().get_anchor(), Some(anchor));
 
-        db.reset_transaction_state();
+        db.l1_state().reset_transaction_state();
 
         assert_eq!(db.l1_state().get_anchor(), None);
+        assert_eq!(db.l1_state().initial_anchor(), None);
+        let code = db.get_storage(&TIP403_REGISTRY_ADDRESS, &slot).unwrap_err();
+        assert!(matches!(
+            code.downcast_ref::<ZoneDbError>(),
+            Some(ZoneDbError::MissingAnchor)
+        ));
     }
 
     #[test]
@@ -289,11 +593,139 @@ mod tests {
         let slot = U256::from(3);
         let value = U256::from(5);
         let mut inner = test_db(1);
-        inner.insert_account_storage(address, slot, value).unwrap();
-        let mut db = L1OverlayDB::new(inner, TestL1::default(), Address::ZERO);
+        inner.insert_account_storage(&address, &slot, &value);
+        let mut db = L1OverlayDB::new(inner, TestL1::default(), Address::ZERO, TempoHardfork::T15);
 
-        assert_eq!(db.storage(address, slot).unwrap(), value);
+        assert_eq!(
+            DynDatabase::get_storage(&mut db, &address, &slot).unwrap(),
+            value
+        );
         let mut inner: InMemoryDB = db.into_inner();
-        assert_eq!(inner.storage(address, slot).unwrap(), value);
+        assert_eq!(
+            DynDatabase::get_storage(&mut inner, &address, &slot).unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn overlays_tempo_commitment_on_native_accounts_without_code() {
+        let (anchor, account, commitment) = (42, Address::repeat_byte(0x11), B256::repeat_byte(1));
+        let l1 = TestL1::default();
+        l1.insert_commitment(account, anchor, commitment);
+        let mut db = test_overlay(anchor, l1.clone());
+
+        let info = db.get_account(&account).unwrap().unwrap();
+        assert_eq!(
+            account_config_commitment(&info, TempoHardfork::T14).unwrap(),
+            commitment
+        );
+        assert_eq!(info.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
+        assert_eq!(
+            info.code,
+            Some(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE))
+        );
+        assert_eq!(db.l1_state().get_anchor(), Some(anchor));
+
+        // Without a Tempo commitment, the local view is unchanged.
+        let unregistered = Address::repeat_byte(0x12);
+        assert_eq!(db.get_account(&unregistered).unwrap(), None);
+        assert_eq!(
+            l1.commitment_requests(),
+            [(account, anchor), (unregistered, anchor)]
+        );
+    }
+
+    #[test]
+    fn overlay_skips_accounts_that_cannot_carry_a_commitment() {
+        let (anchor, account) = (42, Address::repeat_byte(0x11));
+        let contract = Address::repeat_byte(0x12);
+        let mut inner = test_db(anchor);
+        inner.insert_account_info(
+            &contract,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0x00]))),
+        );
+        let l1 = TestL1::default();
+        let mut db = L1OverlayDB::new(inner, l1.clone(), Address::ZERO, TempoHardfork::T14);
+        db.l1_state().begin_transaction(U256::from(anchor));
+        db.get_account(&contract).unwrap();
+        db.get_account(&PATH_USD_ADDRESS).unwrap();
+        db.get_account(&Address::ZERO).unwrap();
+        // Zone system contracts are excluded by address, whatever their code.
+        db.get_account(&ZONE_OUTBOX_ADDRESS).unwrap();
+
+        let mut before_t14 = L1OverlayDB::new(
+            test_db(anchor),
+            l1.clone(),
+            Address::ZERO,
+            TempoHardfork::T13,
+        );
+        before_t14.l1_state().begin_transaction(U256::from(anchor));
+        before_t14.get_account(&account).unwrap();
+
+        // Block-level system calls load accounts outside any zone transaction.
+        let mut outside_transaction = L1OverlayDB::new(
+            test_db(anchor),
+            l1.clone(),
+            Address::ZERO,
+            TempoHardfork::T14,
+        );
+        outside_transaction.get_account(&account).unwrap();
+
+        assert_eq!(l1.commitment_requests(), []);
+    }
+
+    #[test]
+    fn commitment_overlay_is_removed_from_canonical_transition() {
+        let (anchor, account) = (42, Address::repeat_byte(0x11));
+        let bundle = |original: Option<AccountInfo>, current: Option<AccountInfo>| {
+            let mut state = PendingState::default();
+            state.insert_account(account, original, current);
+            let mut block = BlockState::new();
+            let mut changes = TransactionChanges::default();
+            state.visit(&mut changes).unwrap();
+            block.commit(&changes);
+            block.into_bundle()
+        };
+        // An account absent from the zone, and one that already sent from it.
+        for local in [None, Some(AccountInfo::empty().with_nonce(2))] {
+            let l1 = TestL1::default();
+            l1.insert_commitment(account, anchor, B256::repeat_byte(1));
+            let mut inner = test_db(anchor);
+            if let Some(local) = &local {
+                inner.insert_account_info(&account, local.clone());
+            }
+            let mut db = L1OverlayDB::new(inner, l1, Address::ZERO, TempoHardfork::T14);
+            db.l1_state().begin_transaction(U256::from(anchor));
+            let original = db.get_account(&account).unwrap().unwrap();
+            let nonce = original.nonce + 1;
+            let current = original.clone().with_nonce(nonce);
+            let local_current = AccountInfo::empty().with_nonce(nonce);
+
+            let mut update = StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: account,
+                    original: Some(original.clone()),
+                    current: Some(current.clone()),
+                    created: false,
+                    wiped: false,
+                    storage: Vec::new(),
+                }],
+            };
+            strip_update_commitment_overlays(&mut update);
+            assert_eq!(update.accounts[0].original, local);
+            assert_eq!(update.accounts[0].current, Some(local_current.clone()));
+
+            // The block state equals that of the same transition without the overlay.
+            let mut overlaid = bundle(Some(original), Some(current));
+            strip_bundle_commitment_overlays(&mut overlaid);
+            assert_eq!(overlaid, bundle(local, Some(local_current.clone())));
+
+            let mut inner = db.into_inner();
+            inner.commit_source(&BundleSource(&overlaid));
+            assert_eq!(
+                DynDatabase::get_account(&mut inner, &account).unwrap(),
+                Some(local_current)
+            );
+        }
     }
 }

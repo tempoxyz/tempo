@@ -1,25 +1,46 @@
-//! Keychain signature verification against retired roots and stored key types.
+//! Keychain signature verification against retired roots and stored key types, and the
+//! configurable account selector.
 
-use alloy::primitives::{Address, B256, Bytes};
+use alloy::{
+    primitives::{Address, B256, Bytes},
+    sol_types::{SolCall, SolValue},
+};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 use tempo_chainspec::hardfork::TempoHardfork::{self, T13, T14};
-use tempo_contracts::precompiles::IAccountKeychain::{
-    KeyRestrictions,
-    SignatureType::{self, P256, Secp256k1},
+use tempo_contracts::precompiles::{
+    IAccountKeychain::{
+        KeyRestrictions,
+        SignatureType::{self, P256, Secp256k1},
+    },
+    ISignatureVerifier, SignatureVerifierError,
 };
 use tempo_precompiles::{
+    Precompile,
     account_keychain::AccountKeychain,
     signature_verifier::SignatureVerifier,
-    storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
+    storage::{StorageCtx, hashmap::HashMapStorageProvider},
 };
-use tempo_primitives::transaction::tt_signature::{
-    KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
-    derive_p256_address, normalize_p256_s,
+use tempo_primitives::{
+    MAX_WEBAUTHN_SIGNATURE_LENGTH,
+    transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        configurable_account::{
+            MAX_CONFIGURABLE_ACCOUNT_OWNERS, MAX_CONFIGURABLE_ACCOUNT_SIGNATURES,
+        },
+        configurable_account_digest,
+        tt_signature::{
+            KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
+            derive_p256_address, normalize_p256_s,
+        },
+    },
 };
 
 use Committed::{Account, Nobody, Signer};
+use common::seed_commitment;
+
+mod common;
 
 const HASH: B256 = B256::repeat_byte(0x42);
 const COMMITMENT: B256 = B256::repeat_byte(0x11);
@@ -108,7 +129,8 @@ const fn admin_key(stored_type: SignatureType) -> Option<Grant> {
 }
 
 /// Storage at T14 with `grant` registered and a commitment on each of `committed`, switched to
-/// `spec` afterwards so that earlier forks can see state that only T14 can write.
+/// `spec` afterwards so that earlier forks can see state that only T14 can write. Admin grants are
+/// written at T13, since T14 drops their creation (TIP-1137).
 fn storage_at(
     spec: TempoHardfork,
     account: Address,
@@ -116,18 +138,27 @@ fn storage_at(
     grant: Option<Grant>,
     committed: &[Address],
 ) -> HashMapStorageProvider {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, T13);
     StorageCtx::enter(&mut storage, || {
         let mut keychain = AccountKeychain::new();
         keychain.initialize().unwrap();
+        if let Some(Grant {
+            stored_type,
+            admin: true,
+        }) = grant
+        {
+            keychain.set_tx_origin(account).unwrap();
+            keychain
+                .authorize_admin_key(account, key_id, stored_type, None)
+                .unwrap();
+        }
+    });
+    storage.set_spec(T14);
+    StorageCtx::enter(&mut storage, || {
+        let mut keychain = AccountKeychain::new();
         keychain.set_tx_origin(account).unwrap();
         match grant {
-            Some(Grant {
-                stored_type,
-                admin: true,
-            }) => keychain
-                .authorize_admin_key(account, key_id, stored_type, None)
-                .unwrap(),
+            Some(Grant { admin: true, .. }) | None => {}
             Some(Grant {
                 stored_type,
                 admin: false,
@@ -146,12 +177,9 @@ fn storage_at(
                     None,
                 )
                 .unwrap(),
-            None => {}
         }
         for address in committed {
-            StorageCtx
-                .set_config_commitment(*address, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
-                .unwrap();
+            seed_commitment(*address, COMMITMENT);
         }
     });
     storage.set_spec(spec);
@@ -200,16 +228,17 @@ fn keychain_verification_by_retired_roots_and_stored_key_types() {
         case(T14, Secp256k1, None, Nobody, (false, true)),
         case(T14, Secp256k1, None, Account, (false, false)),
         case(T13, Secp256k1, None, Account, (false, true)),
-        // An access key; a commitment on its own address retires it from T14.
+        // An access key; a commitment on its own address retires it from T14, and T14 turns
+        // admin keys into regular keys (TIP-1137).
         case(T14, Secp256k1, key(Secp256k1), Nobody, (true, false)),
-        case(T14, Secp256k1, admin_key(Secp256k1), Nobody, (true, true)),
+        case(T14, Secp256k1, admin_key(Secp256k1), Nobody, (true, false)),
         case(T14, Secp256k1, key(Secp256k1), Signer, (false, false)),
         case(T14, Secp256k1, admin_key(Secp256k1), Signer, (false, false)),
         case(T13, Secp256k1, key(Secp256k1), Signer, (true, false)),
         case(T13, Secp256k1, admin_key(Secp256k1), Signer, (true, true)),
         // A commitment on the granting account does not retire the grantee.
         case(T14, Secp256k1, key(Secp256k1), Account, (true, false)),
-        case(T14, Secp256k1, admin_key(Secp256k1), Account, (true, true)),
+        case(T14, Secp256k1, admin_key(Secp256k1), Account, (true, false)),
         // The stored type is compared with the signature type from T14.
         case(T14, P256, key(P256), Nobody, (true, false)),
         case(T14, P256, key(Secp256k1), Nobody, (false, false)),
@@ -242,10 +271,10 @@ fn keychain_verification_by_retired_roots_and_stored_key_types() {
             let verifier = SignatureVerifier::new();
             (
                 verifier
-                    .verify_keychain(account, HASH, signature.clone())
+                    .verify_keychain(account, HASH, &signature)
                     .expect(&name),
                 verifier
-                    .verify_keychain_admin(account, HASH, signature)
+                    .verify_keychain_admin(account, HASH, &signature)
                     .expect(&name),
             )
         });
@@ -262,14 +291,10 @@ fn keychain_signature_must_embed_the_verified_account() {
     StorageCtx::enter(&mut storage, || {
         let verifier = SignatureVerifier::new();
         let other = Address::repeat_byte(0x02);
+        assert!(!verifier.verify_keychain(other, HASH, &signature).unwrap());
         assert!(
             !verifier
-                .verify_keychain(other, HASH, signature.clone())
-                .unwrap()
-        );
-        assert!(
-            !verifier
-                .verify_keychain_admin(other, HASH, signature)
+                .verify_keychain_admin(other, HASH, &signature)
                 .unwrap()
         );
     });
@@ -315,4 +340,104 @@ fn implicit_root_admin_status_ends_with_the_commitment_from_t14() {
             );
         });
     }
+}
+
+#[test]
+fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14() {
+    // Eight P256 approvals over a full owner list encode longer than any primitive signature.
+    let mut signers: Vec<Key> = (0..MAX_CONFIGURABLE_ACCOUNT_SIGNATURES)
+        .map(|_| Key::random(P256))
+        .collect();
+    signers.sort_by_key(Key::address);
+    let fillers = u8::try_from(MAX_CONFIGURABLE_ACCOUNT_OWNERS - signers.len()).unwrap();
+    let mut owners: Vec<ConfigurableAccountOwner> = signers
+        .iter()
+        .map(Key::address)
+        .chain((1..=fillers).map(Address::with_last_byte))
+        .map(|owner| ConfigurableAccountOwner { owner, weight: 1 })
+        .collect();
+    owners.sort_by_key(|owner| owner.owner);
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: u8::try_from(signers.len()).unwrap(),
+        owners,
+    };
+    let account = config.derive_account().unwrap();
+    let digest = configurable_account_digest(HASH, account, config.version);
+    let approvals = signers.iter().map(|signer| signer.sign(digest)).collect();
+    let signature = TempoSignature::ConfigurableAccount(
+        ConfigurableAccountSignature::try_new(account, config, approvals).unwrap(),
+    )
+    .to_bytes();
+    assert!(signature.len() > (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32));
+
+    let calldata = ISignatureVerifier::verifyConfigurableAccountCall {
+        account,
+        hash: HASH,
+        signature,
+    }
+    .abi_encode();
+    let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
+    let output = StorageCtx::enter(&mut storage, || {
+        SignatureVerifier::new().call(&calldata, Address::ZERO)
+    })
+    .unwrap();
+    assert!(bool::abi_decode(output.bytes()).unwrap());
+}
+
+#[test]
+fn verify_keychain_accepts_configurable_delegates_from_t14() {
+    let owner = Key::random(Secp256k1);
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let delegate = config.derive_account().unwrap();
+    let account = Address::repeat_byte(0x01);
+    let digest = configurable_account_digest(
+        KeychainSignature::signing_hash(HASH, account),
+        delegate,
+        config.version,
+    );
+    let inner =
+        ConfigurableAccountSignature::try_new(delegate, config, vec![owner.sign(digest)]).unwrap();
+    let signature = TempoSignature::Keychain(KeychainSignature::new(account, inner)).to_bytes();
+    // `verifyKeychain` and `verifyKeychainAdmin` results for the delegate's signature.
+    let verify = |spec, grant, committed: &[Address]| {
+        let mut storage = storage_at(spec, account, delegate, grant, committed);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = SignatureVerifier::new();
+            [
+                verifier.verify_keychain(account, HASH, &signature),
+                verifier.verify_keychain_admin(account, HASH, &signature),
+            ]
+        })
+    };
+    let invalid_format = || Err(SignatureVerifierError::invalid_format().into());
+    let delegate_grant = key(SignatureType::ConfigurableAccount);
+    // An unregistered delegate is checked against its derived address.
+    assert_eq!(
+        verify(T14, delegate_grant, &[]),
+        [Ok(true), invalid_format()]
+    );
+    // A commitment of another configuration.
+    assert_eq!(
+        verify(T14, delegate_grant, &[delegate]),
+        [Ok(false), invalid_format()]
+    );
+    assert_eq!(
+        verify(T14, key(Secp256k1), &[]),
+        [Ok(false), invalid_format()]
+    );
+    assert_eq!(verify(T14, None, &[]), [Ok(false), invalid_format()]);
+    assert_eq!(
+        verify(T13, delegate_grant, &[]),
+        [invalid_format(), invalid_format()]
+    );
 }

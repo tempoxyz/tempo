@@ -196,7 +196,7 @@ async fn fetch_l1_block_at(
         .await
         .map_err(classify_rpc_error)?
         .ok_or_else(|| unavailable(eyre::eyre!("Tempo block {number} is unavailable")))?;
-    let header = validate_rpc_header(block.header()).map_err(L1ReadError::from)?;
+    let header = validate_rpc_header(block.header())?;
     if header.block.number != number {
         return Err(disable(eyre::eyre!(
             "Tempo RPC returned block {} for requested block {number}",
@@ -338,6 +338,7 @@ fn disable(error: impl Into<eyre::Report>) -> L1ReadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounting::{State, effects};
     use alloy_consensus::Header;
     use alloy_eips::NumHash;
     use alloy_primitives::{B256, Log};
@@ -352,8 +353,6 @@ mod tests {
 
     #[tokio::test]
     async fn checkpoint_deferred_range_preserves_order_and_authenticates_its_parent() {
-        use crate::accounting::{State, effects};
-
         let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_mocked_client(alloy_transport::mock::Asserter::new())
             .erased();

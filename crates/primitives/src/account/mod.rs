@@ -1,10 +1,18 @@
-//! TIP-1108 configuration commitments in the opaque account extension payload.
+//! Configurable account state: the TIP-1108 commitment in the account extension payload, and the
+//! code marker registered accounts carry.
 
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, b256};
 use alloy_rlp::Error;
 use tempo_contracts::TempoHardfork;
 
 const COMMITMENT_FORMAT_TAG: u8 = 0;
+
+/// Shared protocol-installed code for registered configurable accounts.
+pub const CONFIGURABLE_ACCOUNT_CODE: Bytes = Bytes::from_static(&[0xef]);
+
+/// Keccak-256 of [`CONFIGURABLE_ACCOUNT_CODE`], compared without loading code bytes.
+pub const CONFIGURABLE_ACCOUNT_CODE_HASH: B256 =
+    b256!("309b8896ee4c1ff7ec1966155373dee42663b6b40c3fedc70ba501684848d2a3");
 
 /// Returns the format tag followed by `hash`, or an empty payload when `hash` is zero.
 pub fn encode_config_commitment(hash: B256) -> Bytes {

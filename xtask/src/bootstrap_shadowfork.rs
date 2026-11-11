@@ -21,6 +21,7 @@ use commonware_math::algebra::Random as _;
 use commonware_runtime::{Runner as _, Supervisor as _};
 use commonware_storage::metadata::{Config as MetadataConfig, Metadata};
 use commonware_utils::{NZU32, ordered};
+use evm2::evm::{AccountInfo, StateCheckpoint};
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use rand::SeedableRng as _;
 use reth_db::{mdbx::DatabaseArguments, open_db};
@@ -36,10 +37,6 @@ use reth_provider::{
     BlockHashReader as _, HeaderProvider as _, StaticFileProviderBuilder, StaticFileSegment,
     StaticFileWriter as _,
 };
-use revm::{
-    context::{BlockEnv, journaled_state::JournalCheckpoint},
-    state::{AccountInfo, Bytecode},
-};
 use serde::Deserialize;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase, SigningShare};
@@ -47,7 +44,9 @@ use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageCtx},
+    storage::{
+        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx, account_config_commitment,
+    },
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_primitives::{TempoBlockEnv, TempoPrimitives};
@@ -362,10 +361,7 @@ where
             tx,
             chain_id,
             block_env: TempoBlockEnv {
-                inner: BlockEnv {
-                    number: U256::from(block_number),
-                    ..Default::default()
-                },
+                number: U256::from(block_number),
                 ..Default::default()
             },
             storage_settings,
@@ -490,7 +486,7 @@ where
         &self.block_env
     }
 
-    fn set_code(&mut self, _address: Address, _code: Bytecode) -> Result<(), TempoPrecompileError> {
+    fn set_code(&mut self, _address: Address, _code: Bytes) -> Result<(), TempoPrecompileError> {
         Ok(())
     }
 
@@ -502,13 +498,6 @@ where
         let account = self.read_db_account_info(address)?;
         f(&account);
         Ok(())
-    }
-
-    fn account_code(
-        &mut self,
-        _address: Address,
-    ) -> Result<(B256, Bytecode), TempoPrecompileError> {
-        unreachable!("account_code is not used during shadow-fork bootstrap")
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
@@ -588,39 +577,58 @@ where
         false
     }
 
-    fn checkpoint(&mut self) -> JournalCheckpoint {
+    fn checkpoint(&mut self) -> StateCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots
             .push((self.overlay.clone(), self.events.clone()));
-        JournalCheckpoint {
-            log_i: 0,
-            journal_i: idx,
-            selfdestructed_i: 0,
-        }
+        StateCheckpoint::new(idx, 0)
     }
 
-    fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint) {
+    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
         assert_eq!(
-            checkpoint.journal_i,
+            checkpoint.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint commit",
         );
         self.snapshots.pop();
     }
 
-    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
         assert_eq!(
-            checkpoint.journal_i,
+            checkpoint.journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint revert",
         );
-        let (overlay, events) = self.snapshots.remove(checkpoint.journal_i);
+        let (overlay, events) = self.snapshots.remove(checkpoint.journal_len());
         self.overlay = overlay;
         self.events = events;
     }
 
     fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
         // DbStorageOverlay does not run TIP-1060 accounting.
+    }
+
+    fn config_commitment(&mut self, address: Address) -> Result<B256, TempoPrecompileError> {
+        let account = self.read_db_account_info(address)?;
+        account_config_commitment(&account, self.spec())
+    }
+
+    fn set_config_commitment(
+        &mut self,
+        _address: Address,
+        _commitment: B256,
+        _gas: ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        // The overlay only persists storage slots; it cannot write account extensions.
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+    }
+
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        self.with_account_info(address, f)
     }
 }
 
@@ -642,7 +650,7 @@ fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgO
 fn decode_outcome(hex: &str) -> eyre::Result<OnchainDkgOutcome> {
     let bytes = const_hex::decode(hex.trim_start_matches("0x"))
         .wrap_err("failed decoding shadow_dkg_outcome hex")?;
-    OnchainDkgOutcome::read(&mut bytes.as_slice())
+    OnchainDkgOutcome::read(&mut commonware_codec::Copying(bytes.as_slice()))
         .wrap_err("failed decoding shadow_dkg_outcome payload")
 }
 
@@ -1014,8 +1022,10 @@ where
         "patched boundary block `{block_number}` has canonical hash `{canonical_hash}`, expected `{expected_hash}`",
     );
 
-    let decoded = OnchainDkgOutcome::read(&mut header.inner.extra_data.as_ref())
-        .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
+    let decoded = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+        header.inner.extra_data.as_ref(),
+    ))
+    .wrap_err("patched boundary header did not contain a valid generated shadow DKG outcome")?;
     ensure!(
         decoded.players() == expected_outcome.players()
             && decoded.next_players() == expected_outcome.next_players()
@@ -1203,7 +1213,7 @@ impl Read for BootstrapShareState {
     type Cfg = ();
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(buf)?;
@@ -1258,7 +1268,7 @@ impl Read for BootstrapDkgState {
     type Cfg = NonZeroU32;
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        buf: &mut impl commonware_codec::Buf,
         cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let epoch = ReadExt::read(buf)?;

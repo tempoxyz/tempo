@@ -165,7 +165,7 @@ mod tests {
         let mut buf = [0u8; 64];
         buf[32 - key.len()..32].copy_from_slice(key);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
-        U256::from_be_bytes(keccak256(buf).0)
+        keccak256(buf).into()
     }
 
     #[test]

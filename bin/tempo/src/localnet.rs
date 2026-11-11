@@ -41,12 +41,14 @@ const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
 const MIN_RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Grace period kept below Docker's default 10-second stop timeout.
 const CHILD_STOP_TIMEOUT: Duration = Duration::from_secs(8);
-/// Canonical localnet tokens: pathUSD, AlphaUSD, BetaUSD, and ThetaUSD.
-const TOKENS: [Address; 4] = [
+/// Canonical localnet tokens: pathUSD, AlphaUSD, BetaUSD, ThetaUSD, and OUSD, at its mainnet and
+/// testnet address.
+const TOKENS: [Address; 5] = [
     address!("0x20c0000000000000000000000000000000000000"),
     address!("0x20c0000000000000000000000000000000000001"),
     address!("0x20c0000000000000000000000000000000000002"),
     address!("0x20c0000000000000000000000000000000000003"),
+    address!("0x20c0000000000000000000006a37DA5C996874BE"),
 ];
 
 #[derive(Debug, Parser)]
@@ -130,9 +132,13 @@ fn node_args(args: &Args) -> Vec<String> {
         "node".into(),
         "--dev".into(),
         "--dev.block-time".into(),
-        format_duration_as_secs_or_ms(args.block_time),
+        // The node requires a unit; whole seconds would otherwise format as a bare number.
+        format!("{}ms", args.block_time.as_millis()),
         "--datadir".into(),
         "/data".into(),
+        // Keep file logs in the data volume rather than HOME, which non-root users lack.
+        "--log.file.directory".into(),
+        "/data/logs".into(),
         "--tempo.bootnodes-endpoint".into(),
         "none".into(),
         "--disable-discovery".into(),
@@ -258,9 +264,18 @@ fn fee_pool_needs_repair(reserve: u128) -> bool {
 }
 
 async fn wait_for_rpc(provider: &impl Provider<TempoNetwork>) -> Result<()> {
+    // Faucet nonces expire relative to the latest block, so wait for a block sealed by this run:
+    // a fresh genesis has timestamp zero and a reused datadir's tip dates from its last shutdown.
+    let mut first_block = None;
     for _ in 0..120 {
-        if matches!(provider.get_chain_id().await, Ok(1337)) {
-            return Ok(());
+        if matches!(provider.get_chain_id().await, Ok(1337))
+            && let Ok(number) = provider.get_block_number().await
+        {
+            match first_block {
+                None => first_block = Some(number),
+                Some(first) if number > first => return Ok(()),
+                Some(_) => {}
+            }
         }
         sleep(Duration::from_millis(500)).await;
     }
@@ -392,6 +407,11 @@ mod tests {
 
         assert!(!args.iter().any(|value| value.starts_with("--faucet")));
         assert!(args.windows(2).any(|v| v == ["--datadir", "/data"]));
+        assert!(args.windows(2).any(|v| v == ["--dev.block-time", "1000ms"]));
+        assert!(
+            args.windows(2)
+                .any(|v| v == ["--log.file.directory", "/data/logs"])
+        );
     }
 
     #[test]

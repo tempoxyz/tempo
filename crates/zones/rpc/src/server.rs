@@ -17,14 +17,11 @@ use std::{io, sync::Arc, time::Instant};
 use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
     KeyInfo, SignatureType as KeyInfoSignatureType,
 };
-use tempo_primitives::transaction::{
-    SignatureType as TempoSignatureType,
-    tt_signature::{KeychainSignature, TempoSignature},
-};
+use tempo_primitives::transaction::tt_signature::TempoSignature;
 use tracing::info;
 
 use crate::{
-    auth::{self, AuthContext, now_unix_seconds},
+    auth::{self, AuthContext, AuthSigner, now_unix_seconds},
     config::RedactedRpcConfig,
     error::{AuthError, AuthenticateError},
     handlers::{self, ZoneRpcApi},
@@ -330,47 +327,91 @@ pub(crate) async fn authenticate_token(
 
     let signature =
         TempoSignature::from_bytes(&token.signature).map_err(|_| AuthError::InvalidSignature)?;
+    // The legacy keychain signature does not cover `user_address`.
+    if signature.is_legacy_keychain() {
+        return Err(AuthError::InvalidSignature.into());
+    }
     let caller = signature
         .recover_signer(&token.digest)
         .map_err(|_| AuthError::InvalidSignature)?;
 
-    let keychain_key_id = if let TempoSignature::Keychain(keychain_signature) = &signature {
-        Some(validate_keychain_signature(api, caller, keychain_signature, &token.digest).await?)
-    } else {
-        None
+    let signer = match &signature {
+        TempoSignature::Primitive(_) => {
+            ensure_not_retired_root(api.get_config_commitment(caller).await?)?;
+            AuthSigner::Root
+        }
+        TempoSignature::Keychain(keychain_signature) => {
+            let key_id = keychain_signature
+                .key_id(&token.digest)
+                .map_err(|_| AuthError::InvalidSignature)?;
+            let (key_info, commitment) = tokio::try_join!(
+                api.get_keychain_key(caller, key_id),
+                api.get_config_commitment(key_id),
+            )?;
+            validate_keychain_key_info(&key_info)?;
+            let signature_type: KeyInfoSignatureType =
+                keychain_signature.signature.signature_type().into();
+            let migrated = commitment.is_some_and(|commitment| !commitment.is_zero());
+            // As in `AccountKeychain`, a primitive grant also accepts its key's owner quorum once
+            // the key migrated on Tempo.
+            if key_info.signatureType != signature_type
+                && !(signature_type == KeyInfoSignatureType::ConfigurableAccount && migrated)
+            {
+                return Err(AuthError::KeychainSignatureTypeMismatch.into());
+            }
+            let config_commitment = match keychain_signature.signature.as_configurable_account() {
+                None => {
+                    ensure_not_retired_root(commitment)?;
+                    None
+                }
+                Some(approval) => {
+                    // Before T14 zones reject configurable accounts.
+                    let commitment = commitment.ok_or(AuthError::InvalidSignature)?;
+                    approval
+                        .validate_account_commitment(commitment)
+                        .map_err(|_| AuthError::InvalidSignature)?;
+                    Some(approval.config_commitment())
+                }
+            };
+            AuthSigner::Keychain {
+                key_id,
+                config_commitment,
+            }
+        }
+        TempoSignature::ConfigurableAccount(configurable_signature) => {
+            // The owners' configuration must be the account's Tempo commitment at the anchor, or
+            // derive the account while it has none. Before T14 zones reject configurable accounts.
+            let commitment = api
+                .get_config_commitment(caller)
+                .await?
+                .ok_or(AuthError::InvalidSignature)?;
+            configurable_signature
+                .validate_account_commitment(commitment)
+                .map_err(|_| AuthError::InvalidSignature)?;
+            AuthSigner::ConfigurableAccount {
+                config_commitment: configurable_signature.config_commitment(),
+            }
+        }
     };
 
     Ok(AuthContext {
         caller,
         expires_at: token.expires_at,
-        keychain_key_id,
+        signer,
     })
 }
 
-async fn validate_keychain_signature(
-    api: &dyn ZoneRpcApi,
-    caller: alloy_primitives::Address,
-    keychain_signature: &KeychainSignature,
-    digest: &alloy_primitives::B256,
-) -> Result<alloy_primitives::Address, AuthenticateError> {
-    let key_id = keychain_signature
-        .key_id(digest)
-        .map_err(|_| AuthError::InvalidSignature)?;
-    let key_info = api.get_keychain_key(caller, key_id).await?;
-
-    validate_keychain_key_info(&key_info)?;
-
-    let expected_signature_type = match keychain_signature.signature.signature_type() {
-        TempoSignatureType::Secp256k1 => KeyInfoSignatureType::Secp256k1,
-        TempoSignatureType::P256 => KeyInfoSignatureType::P256,
-        TempoSignatureType::WebAuthn => KeyInfoSignatureType::WebAuthn,
-    };
-
-    if key_info.signatureType != expected_signature_type {
-        return Err(AuthError::KeychainSignatureTypeMismatch.into());
+/// Rejects a token signing key whose address has a nonzero Tempo `commitment`: from TIP-1113, such
+/// a key is a retired root and no longer signs for its address (TIP-1154). Before T14, when the
+/// commitment is `None`, no key is retired.
+pub(crate) fn ensure_not_retired_root(
+    commitment: Option<alloy_primitives::B256>,
+) -> Result<(), AuthenticateError> {
+    if commitment.is_none_or(|commitment| commitment.is_zero()) {
+        Ok(())
+    } else {
+        Err(AuthError::RetiredRootKey.into())
     }
-
-    Ok(key_id)
 }
 
 pub(crate) fn validate_keychain_key_info(key_info: &KeyInfo) -> Result<(), AuthenticateError> {
@@ -395,12 +436,12 @@ mod tests {
     };
     use crate::{
         RedactedRpcConfig,
-        auth::build_token_fields,
+        auth::{AuthContext, AuthError, AuthSigner, build_token_fields},
         error::AuthenticateError,
         handlers::ZoneRpcApi,
         types::{BoxEyreFut, BoxFut, JsonRpcError, JsonRpcResponse, to_raw},
     };
-    use alloy_primitives::{Address, Bytes};
+    use alloy_primitives::{Address, B256, Bytes};
     use axum::http::StatusCode;
     use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
     use parking_lot::Mutex;
@@ -408,6 +449,7 @@ mod tests {
     use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
         KeyInfo, SignatureType as KeyInfoSignatureType,
     };
+    use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 
     #[allow(dead_code)]
     mod auth_tokens {
@@ -417,23 +459,28 @@ mod tests {
         ));
     }
 
-    use auth_tokens::{build_token_with_signature, now_secs, sign_keychain_signature};
+    use auth_tokens::{
+        build_token_with_signature, now_secs, sign_configurable_account_signature,
+        sign_keychain_signature, sign_p256_signature,
+    };
 
     const ZONE_ID: u32 = 7;
     const CHAIN_ID: u64 = 99;
     const PORTAL: Address = Address::repeat_byte(0x22);
 
+    #[derive(Default)]
     struct TestApi {
         key_infos: Mutex<HashMap<(Address, Address), KeyInfo>>,
+        commitments: Mutex<HashMap<Address, B256>>,
+        /// Whether the zone has not activated configurable accounts yet.
+        before_t14: bool,
     }
 
     impl TestApi {
         fn with_key_info(account: Address, key_id: Address, key_info: KeyInfo) -> Self {
-            let mut key_infos = HashMap::new();
-            key_infos.insert((account, key_id), key_info);
-            Self {
-                key_infos: Mutex::new(key_infos),
-            }
+            let api = Self::default();
+            api.key_infos.lock().insert((account, key_id), key_info);
+            api
         }
     }
 
@@ -460,6 +507,17 @@ mod tests {
                     isRevoked: false,
                 });
             Box::pin(async move { Ok(key_info) })
+        }
+
+        fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>> {
+            let commitment = (!self.before_t14).then(|| {
+                self.commitments
+                    .lock()
+                    .get(&account)
+                    .copied()
+                    .unwrap_or_default()
+            });
+            Box::pin(async move { Ok(commitment) })
         }
 
         stub!(block_number);
@@ -561,9 +619,7 @@ mod tests {
         let mut blob = vec![0u8; 65];
         blob.extend_from_slice(&fields);
         let token = alloy_primitives::hex::encode(blob);
-        let api = TestApi {
-            key_infos: Mutex::new(HashMap::new()),
-        };
+        let api = TestApi::default();
 
         let err = authenticate_token(&token, &config, &api)
             .await
@@ -591,9 +647,7 @@ mod tests {
         let mut blob = vec![0u8; 65];
         blob.extend_from_slice(&fields);
         let token = alloy_primitives::hex::encode(blob);
-        let api = TestApi {
-            key_infos: Mutex::new(HashMap::new()),
-        };
+        let api = TestApi::default();
 
         let err = authenticate_token(&token, &config, &api)
             .await
@@ -667,5 +721,264 @@ mod tests {
             AuthenticateError::Invalid(crate::auth::AuthError::ExpiredKeychainKey)
         ));
         assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn retired_root_signing_keys_are_rejected() {
+        let signer = P256SigningKey::random(&mut OsRng);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+
+        // A primitive token from an address with a Tempo commitment.
+        let signature = sign_p256_signature(digest, &signer).expect("p256 signing failed");
+        let root = signature
+            .recover_signer(&digest)
+            .expect("the signature recovers");
+        let api = TestApi::default();
+        let token = build_token_with_signature(signature, &fields);
+        authenticate_token(&token, &test_config(), &api)
+            .await
+            .expect("an unregistered root signs");
+        api.commitments.lock().insert(root, B256::repeat_byte(1));
+        let err = authenticate_token(&token, &test_config(), &api)
+            .await
+            .expect_err("a retired root must not sign");
+        assert!(matches!(
+            err,
+            AuthenticateError::Invalid(crate::auth::AuthError::RetiredRootKey)
+        ));
+
+        // A keychain token whose access key ID has a Tempo commitment.
+        let account = Address::repeat_byte(0x55);
+        let (signature, key_id) = sign_keychain_signature(digest, &signer, account, 0x04)
+            .expect("keychain signing failed");
+        let api = TestApi::with_key_info(
+            account,
+            key_id,
+            KeyInfo {
+                signatureType: KeyInfoSignatureType::P256,
+                keyId: key_id,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                isRevoked: false,
+            },
+        );
+        api.commitments.lock().insert(key_id, B256::repeat_byte(1));
+        let err = authenticate_token(
+            &build_token_with_signature(signature, &fields),
+            &test_config(),
+            &api,
+        )
+        .await
+        .expect_err("a retired access key must not sign");
+        assert!(matches!(
+            err,
+            AuthenticateError::Invalid(crate::auth::AuthError::RetiredRootKey)
+        ));
+    }
+
+    #[tokio::test]
+    async fn legacy_keychain_tokens_are_rejected() {
+        let access_signer = P256SigningKey::random(&mut OsRng);
+        let root_account = Address::repeat_byte(0x55);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+        let token_and_api = |version| {
+            let (signature, key_id) =
+                sign_keychain_signature(digest, &access_signer, root_account, version)
+                    .expect("signing failed");
+            let token = build_token_with_signature(signature, &fields);
+            let api = TestApi::with_key_info(
+                root_account,
+                key_id,
+                KeyInfo {
+                    signatureType: KeyInfoSignatureType::P256,
+                    keyId: key_id,
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    isRevoked: false,
+                },
+            );
+            (token, api)
+        };
+
+        let (token, api_v1) = token_and_api(0x03);
+        let err = authenticate_token(&token, &test_config(), &api_v1)
+            .await
+            .expect_err("legacy keychain token must be rejected");
+        assert!(matches!(
+            err,
+            AuthenticateError::Invalid(AuthError::InvalidSignature)
+        ));
+
+        let (token, api_v2) = token_and_api(0x04);
+        let auth = authenticate_token(&token, &test_config(), &api_v2)
+            .await
+            .expect("the same key authenticates with a V2 token");
+        assert_eq!(auth.caller, root_account);
+    }
+
+    #[tokio::test]
+    async fn configurable_access_keys_follow_their_tempo_commitment() {
+        let owner = P256SigningKey::random(&mut OsRng);
+        let root = Address::repeat_byte(0x55);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+        // The access key is the configurable account of `owner`, signing for `root`.
+        let (approval, key_id, config) = sign_configurable_account_signature(
+            KeychainSignature::signing_hash(digest, root),
+            &owner,
+        )
+        .expect("signing failed");
+        let TempoSignature::ConfigurableAccount(approval) = approval else {
+            unreachable!("a configurable account signature")
+        };
+        let config_commitment = config.commitment().expect("valid configuration");
+        let token = build_token_with_signature(
+            TempoSignature::Keychain(KeychainSignature::new(root, approval)),
+            &fields,
+        );
+        let api = |signature_type| {
+            TestApi::with_key_info(
+                root,
+                key_id,
+                KeyInfo {
+                    signatureType: signature_type,
+                    keyId: key_id,
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    isRevoked: false,
+                },
+            )
+        };
+        let invalid = |result: Result<AuthContext, AuthenticateError>, expected: AuthError| {
+            assert!(
+                matches!(result, Err(AuthenticateError::Invalid(ref error))
+                    if std::mem::discriminant(error) == std::mem::discriminant(&expected)),
+                "{result:?}"
+            );
+        };
+
+        // Unregistered, the owners derive the key ID. Then its matching commitment.
+        let configurable = api(KeyInfoSignatureType::ConfigurableAccount);
+        for commitment in [B256::ZERO, config_commitment] {
+            configurable.commitments.lock().insert(key_id, commitment);
+            let auth = authenticate_token(&token, &test_config(), &configurable)
+                .await
+                .expect("the configurable access key signs");
+            assert_eq!(auth.caller, root);
+            assert_eq!(
+                auth.signer,
+                AuthSigner::Keychain {
+                    key_id,
+                    config_commitment: Some(config_commitment),
+                }
+            );
+        }
+        // An owner update on Tempo retires the signed configuration.
+        configurable
+            .commitments
+            .lock()
+            .insert(key_id, B256::repeat_byte(1));
+        invalid(
+            authenticate_token(&token, &test_config(), &configurable).await,
+            AuthError::InvalidSignature,
+        );
+
+        // A primitive grant accepts the owner quorum once its key migrated on Tempo.
+        let primitive = api(KeyInfoSignatureType::P256);
+        primitive
+            .commitments
+            .lock()
+            .insert(key_id, config_commitment);
+        authenticate_token(&token, &test_config(), &primitive)
+            .await
+            .expect("the migrated key signs under its primitive grant");
+        primitive.commitments.lock().insert(key_id, B256::ZERO);
+        invalid(
+            authenticate_token(&token, &test_config(), &primitive).await,
+            AuthError::KeychainSignatureTypeMismatch,
+        );
+
+        let before_t14 = TestApi {
+            before_t14: true,
+            ..api(KeyInfoSignatureType::ConfigurableAccount)
+        };
+        invalid(
+            authenticate_token(&token, &test_config(), &before_t14).await,
+            AuthError::InvalidSignature,
+        );
+    }
+
+    #[tokio::test]
+    async fn configurable_account_tokens_are_rejected_before_t14() {
+        let key = P256SigningKey::random(&mut OsRng);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+        let api = TestApi {
+            before_t14: true,
+            ..Default::default()
+        };
+
+        let (signature, _, _) =
+            sign_configurable_account_signature(digest, &key).expect("signing failed");
+        let err = authenticate_token(
+            &build_token_with_signature(signature, &fields),
+            &test_config(),
+            &api,
+        )
+        .await
+        .expect_err("configurable accounts are inactive before T14");
+        assert!(matches!(
+            err,
+            AuthenticateError::Invalid(crate::auth::AuthError::InvalidSignature)
+        ));
+
+        // No root is retired before T14.
+        let signature = sign_p256_signature(digest, &key).expect("p256 signing failed");
+        let auth = authenticate_token(
+            &build_token_with_signature(signature, &fields),
+            &test_config(),
+            &api,
+        )
+        .await
+        .expect("a root signs before T14");
+        assert_eq!(auth.signer, AuthSigner::Root);
+    }
+
+    #[tokio::test]
+    async fn configurable_account_tokens_follow_the_tempo_commitment() {
+        let owner = P256SigningKey::random(&mut OsRng);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+        let (signature, account, config) =
+            sign_configurable_account_signature(digest, &owner).expect("signing failed");
+        let config_commitment = config.commitment().expect("valid configuration");
+        let token = build_token_with_signature(signature, &fields);
+        let api = TestApi::default();
+
+        // Unregistered, the owners derive the account.
+        let auth = authenticate_token(&token, &test_config(), &api)
+            .await
+            .expect("the derived account signs");
+        assert_eq!(auth.caller, account);
+        assert_eq!(
+            auth.signer,
+            AuthSigner::ConfigurableAccount { config_commitment }
+        );
+        api.commitments.lock().insert(account, config_commitment);
+        authenticate_token(&token, &test_config(), &api)
+            .await
+            .expect("the registered account signs with its configuration");
+
+        // An owner update on Tempo retires the signed configuration.
+        api.commitments.lock().insert(account, B256::repeat_byte(1));
+        let err = authenticate_token(&token, &test_config(), &api)
+            .await
+            .expect_err("a stale configuration must not sign");
+        assert!(matches!(
+            err,
+            AuthenticateError::Invalid(crate::auth::AuthError::InvalidSignature)
+        ));
     }
 }

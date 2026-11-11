@@ -4,7 +4,7 @@ use commonware_consensus::{
     types::FixedEpocher,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
+use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::archive::{Archive as _, Identifier, immutable};
 use eyre::{OptionExt as _, WrapErr as _, eyre};
 use reth_provider::{BlockIdReader, BlockReader};
@@ -65,10 +65,10 @@ pub async fn prepare<TContext, P>(
     epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<State>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
     P: BlockIdReader + BlockReader<Block = tempo_primitives::Block>,
 {
-    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+    let page_cache = CacheRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let execution_finalized = execution_provider
         .finalized_block_num_hash()
         .wrap_err("failed to read finalized execution block num hash")?
@@ -143,9 +143,9 @@ pub async fn write_archive<TContext>(
     epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<()>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
-    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+    let page_cache = CacheRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let mut finalizations = init_finalizations_archive(
         context,
         storage_partition_prefix,
@@ -168,7 +168,7 @@ where
                 } = *cert;
                 let key = finalization.proposal.payload;
                 finalizations = finalizations
-                    .put(height, key, finalization)
+                    .put(height, key, &finalization)
                     .await
                     .wrap_err_with(|| {
                         format!(
@@ -179,7 +179,7 @@ where
             ArchiveEntryKind::Block(block) => {
                 let height = block.height().get();
                 let key = block.digest();
-                blocks = blocks.put(height, key, *block).await.wrap_err_with(|| {
+                blocks = blocks.put(height, key, &*block).await.wrap_err_with(|| {
                     format!("failed writing snapshot finalized block at height `{height}`")
                 })?;
             }
@@ -212,7 +212,7 @@ async fn stream_finalization_archive_entries<TContext>(
     archive_entries: &tokio::sync::mpsc::Sender<ArchiveEntry>,
 ) -> eyre::Result<()>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
     let mut height = anchor_height;
 
@@ -259,7 +259,7 @@ async fn stream_block_archive_entries<TContext>(
     archive_entries: &tokio::sync::mpsc::Sender<ArchiveEntry>,
 ) -> eyre::Result<()>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
     let Some(first_height) = execution_finalized_height.checked_add(1) else {
         return Ok(());
@@ -295,7 +295,7 @@ async fn find_anchor_and_tip_finalizations<TContext>(
     execution_finalized_height: u64,
 ) -> eyre::Result<AnchorAndTipFinalizations>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
     let tip_height = finalizations
         .last_index()
@@ -369,7 +369,7 @@ async fn find_first_prunable_hole<TContext>(
     floor: u64,
 ) -> eyre::Result<Option<u64>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
     while height > floor {
         if prunable
@@ -397,7 +397,7 @@ async fn find_nearest_finalization_below<TContext>(
     mut height: u64,
 ) -> eyre::Result<Option<(u64, Digest)>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
     loop {
         let Some(next_height) = height.checked_sub(1) else {
@@ -467,7 +467,7 @@ mod tests {
         let finalizations = init_finalizations_archive(
             context,
             "test-snapshot",
-            fresh_page_cache(context),
+            fresh_page_cache(),
             &FixedEpocher::new(commonware_utils::NZU64!(10)),
         )
         .await
@@ -492,7 +492,7 @@ mod tests {
                 digest,
             ),
             certificate: VrfCertificate {
-                signature: Lazy::deferred(&mut &signature_bytes[..], ()),
+                signature: Lazy::deferred(&mut commonware_codec::Copying(&signature_bytes[..]), ()),
             },
         }
     }
@@ -503,7 +503,7 @@ mod tests {
         digest: Digest,
     ) -> FinalizationsArchive<deterministic::Context> {
         finalizations
-            .put(height, digest, make_finalization(height, digest))
+            .put(height, digest, &make_finalization(height, digest))
             .await
             .expect("put finalization certificate")
     }
@@ -526,7 +526,7 @@ mod tests {
         block: &Block,
     ) -> Prunable<deterministic::Context> {
         prunable
-            .put(block.height().get(), block.digest(), block.clone())
+            .put(block.height().get(), block.digest(), block)
             .await
             .expect("put prunable finalized block")
     }

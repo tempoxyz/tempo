@@ -10,14 +10,14 @@ use alloy_network::{
     UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
-use alloy_provider::fillers::{ChainIdFiller, JoinFill, NonceFiller, RecommendedFillers};
-use alloy_rpc_types_eth::{AccessList, Block, Transaction};
+use alloy_provider::fillers::{ChainIdFiller, JoinFill, RecommendedFillers};
+use alloy_rpc_types_eth::{AccessList, Block, Transaction, TransactionInputKind};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
-use crate::fillers::TempoGasFiller;
+use crate::fillers::{TempoGasFiller, TempoNonceFiller};
 
 /// Set of recommended fillers.
 ///
@@ -69,6 +69,10 @@ impl TransactionBuilder for TempoTransactionRequest {
 
     fn set_input<T: Into<Bytes>>(&mut self, input: T) {
         TransactionBuilder::set_input(&mut self.inner, input)
+    }
+
+    fn set_input_kind<T: Into<Bytes>>(&mut self, input: T, kind: TransactionInputKind) {
+        TransactionBuilder::set_input_kind(&mut self.inner, input, kind)
     }
 
     fn from(&self) -> Option<Address> {
@@ -210,7 +214,21 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
         match self.output_tx_type() {
             TempoTxType::AA => match self.complete_aa() {
-                Ok(..) => Ok(self.build_aa().expect("checked by above condition").into()),
+                Ok(..) => {
+                    let tx = self.clone().build_aa().expect("checked by above condition");
+                    // Execution rejects this (EVM PRIORITY_FEE_CHECK), so never build it for signing.
+                    if tx.max_priority_fee_per_gas > tx.max_fee_per_gas {
+                        return Err(TransactionBuilderError::Custom(
+                            "max_priority_fee_per_gas must not exceed max_fee_per_gas".into(),
+                        )
+                        .into_unbuilt(self));
+                    }
+                    // Refuse to build what the node will not decode, so it is never signed.
+                    if let Err(err) = tx.validate() {
+                        return Err(TransactionBuilderError::Custom(err.into()).into_unbuilt(self));
+                    }
+                    Ok(tx.into())
+                }
                 Err(missing) => Err(TransactionBuilderError::InvalidTransactionRequest(
                     TempoTxType::AA,
                     missing,
@@ -292,7 +310,7 @@ impl TempoTransactionRequest {
 }
 
 impl RecommendedFillers for TempoNetwork {
-    type RecommendedFillers = TempoFillers<NonceFiller>;
+    type RecommendedFillers = TempoFillers<TempoNonceFiller>;
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
@@ -320,6 +338,16 @@ mod tests {
             TempoSignedAuthorization,
         },
     };
+
+    #[test]
+    fn test_set_input_kind_is_forwarded() {
+        let input = Bytes::from_static(&[0xab, 0xcd]);
+        let request = TempoTransactionRequest::default()
+            .with_input_kind(input.clone(), TransactionInputKind::Data);
+
+        assert_eq!(request.inner.input.data, Some(input));
+        assert_eq!(request.inner.input.input, None);
+    }
 
     #[test_case::test_case(
         TempoTransactionRequest {
@@ -497,6 +525,30 @@ mod tests {
             request.build_unsigned(),
             Ok(TempoTypedTransaction::AA(_))
         ));
+    }
+
+    #[test]
+    fn build_unsigned_rejects_aa_priority_fee_above_max_fee() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::ZERO)),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(2),
+                nonce: Some(0),
+                gas: Some(21_000),
+                ..Default::default()
+            },
+            nonce_key: Some(U256::ONE),
+            ..Default::default()
+        };
+        assert_eq!(request.output_tx_type(), TempoTxType::AA);
+        assert_eq!(
+            request
+                .build_unsigned()
+                .expect_err("priority fee above max fee must not build")
+                .to_string(),
+            "Failed to build transaction: max_priority_fee_per_gas must not exceed max_fee_per_gas"
+        );
     }
 
     #[test]

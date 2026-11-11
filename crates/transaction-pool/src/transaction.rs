@@ -9,10 +9,11 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
-use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
+    map::{AddressMap, AddressSet},
 };
+use evm2::registry::HandlerError;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
@@ -25,6 +26,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::PaymentSlots;
+use tempo_evm::{ResolvedFeeToken, TempoInvalidTransaction, TempoTxEnv};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -34,9 +36,10 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, SignatureType, calc_gas_balance_spending,
+    },
 };
-use tempo_revm::{ResolvedFeeToken, TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -47,8 +50,11 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
-    /// Cached T5+ payment classification for efficient block building.
-    is_payment: bool,
+    /// Cached T5-T14 payment classification for efficient block building.
+    // TODO: remove after T15 is active.
+    is_payment_v2: bool,
+    /// Cached T15+ payment classification for efficient block building.
+    is_payment_v3: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
@@ -102,13 +108,15 @@ impl TempoPooledTransaction {
         expiring_nonce_hash: Option<B256>,
         encoded_length: usize,
     ) -> Self {
-        let is_payment = transaction.is_payment_v2();
+        // V2 is strictly narrower than V3, so it only needs checking for V3 payments.
+        let is_payment_v3 = transaction.is_payment_v3();
+        let is_payment_v2 = is_payment_v3 && transaction.is_payment_v2();
         let value = transaction.value();
         let cost =
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
-        let in_memory_size = transaction.size();
+        let in_memory_size = transaction.size() + cached_tx_env_size(&transaction);
         Self {
             inner: EthPooledTransaction {
                 transaction,
@@ -119,7 +127,8 @@ impl TempoPooledTransaction {
                 blob_cell_availability: None,
             },
             fee_token_cost,
-            is_payment,
+            is_payment_v2,
+            is_payment_v3,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
@@ -180,9 +189,14 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction according to the T5+ builder criteria.
-    pub fn is_payment(&self) -> bool {
-        self.is_payment
+    /// Returns whether this is a payment transaction according to the T5-T14 builder criteria.
+    pub fn is_payment_v2(&self) -> bool {
+        self.is_payment_v2
+    }
+
+    /// Returns whether this is a payment transaction according to the T15+ builder criteria.
+    pub fn is_payment_v3(&self) -> bool {
+        self.is_payment_v3
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
@@ -229,7 +243,7 @@ impl TempoPooledTransaction {
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let key_id = key_authorization.recover_signer().ok()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             let fee_token = self.effective_fee_token();
@@ -250,12 +264,12 @@ impl TempoPooledTransaction {
             let aa_tx = self.inner().as_aa()?;
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             Some(KeyAuthorizationTargetSubject {
                 account,
-                key_id: key_authorization.authorization.key_id,
+                key_id: key_authorization.authorization().key_id,
             })
         })
     }
@@ -267,7 +281,7 @@ impl TempoPooledTransaction {
             .tx()
             .key_authorization
             .as_ref()?
-            .authorization
+            .authorization()
             .witness()?;
         Some(KeyAuthorizationWitnessSubject {
             account: *self.sender_ref(),
@@ -290,7 +304,7 @@ impl TempoPooledTransaction {
 
     /// Computes the [`TempoTxEnv`] for this transaction.
     pub(crate) fn tx_env_slow(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
+        TempoTxEnv::from(self.inner().clone())
     }
 
     /// Pre-computes and caches the [`TempoTxEnv`].
@@ -319,9 +333,15 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
-    /// Returns a tuple that can be passed to block executor.
-    pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
-        (self.tx_env().clone(), &self.inner.transaction)
+    /// Returns the transaction environment consumed by the EVM2 block executor.
+    ///
+    /// The recovered transaction is borrowed because execution consumes this wrapper
+    /// synchronously, avoiding a clone of the original transaction envelope.
+    pub fn executable(&self) -> (Recovered<TempoTxEnv>, &Recovered<TempoTxEnvelope>) {
+        (
+            Recovered::new_unchecked(self.clone_tx_env(), self.sender()),
+            self.inner(),
+        )
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
@@ -329,9 +349,11 @@ impl TempoPooledTransaction {
     ///
     /// This avoids cloning the full pooled transaction when the caller only
     /// needs an owned executable transaction.
-    pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+    pub fn clone_into_with_tx_env(
+        &self,
+    ) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
         WithTxEnv {
-            tx_env: self.clone_tx_env(),
+            tx_env: Recovered::new_unchecked(self.clone_tx_env(), self.sender()),
             tx: Arc::new(self.inner.transaction.clone()),
         }
     }
@@ -340,10 +362,13 @@ impl TempoPooledTransaction {
     ///
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
-    pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+    pub fn into_with_tx_env(
+        mut self,
+    ) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
+        let signer = self.sender();
         let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
         WithTxEnv {
-            tx_env,
+            tx_env: Recovered::new_unchecked(tx_env, signer),
             tx: Arc::new(self.inner.transaction),
         }
     }
@@ -374,6 +399,16 @@ impl TempoPooledTransaction {
             .is_some_and(|expiry| expiry <= cutoff)
     }
 
+    /// Returns whether the transaction can be included in a block with `timestamp`: its
+    /// `valid_after` has been reached and neither its `valid_before` nor its signing key has
+    /// expired.
+    ///
+    /// Unlike [`Self::is_expired_by`], this also rejects transactions that are not valid yet, so
+    /// it must not drive eviction.
+    pub(crate) fn is_includable_at(&self, timestamp: u64) -> bool {
+        self.inner().ensure_valid_after(timestamp).is_ok() && !self.is_expired_by(timestamp)
+    }
+
     /// Caches the effective fee token determined during transaction validation.
     ///
     /// The validator sets this after EVM validation resolves the token from the
@@ -391,7 +426,8 @@ impl TempoPooledTransaction {
         Self {
             inner: self.inner.clone(),
             fee_token_cost: self.fee_token_cost,
-            is_payment: self.is_payment,
+            is_payment_v2: self.is_payment_v2,
+            is_payment_v3: self.is_payment_v3,
             expiring_nonce_hash: self.expiring_nonce_hash,
             nonce_key_slot: self.nonce_key_slot.clone(),
             expiring_nonce_slot: self.expiring_nonce_slot.clone(),
@@ -497,7 +533,7 @@ impl TempoPooledTransaction {
     ///
     /// See `warm_payment_keccak_slots` for the exact set of slots this warms.
     pub fn precalculate_keccak_slots(&self) {
-        if !self.is_payment {
+        if !self.is_payment_v3 {
             return;
         }
 
@@ -508,6 +544,50 @@ impl TempoPooledTransaction {
             self.fee_payer().unwrap_or(sender),
             |_slot| {},
         );
+    }
+
+    /// The `key_id` of this transaction's inline grant of a configurable-account delegate, or
+    /// `None` without such a grant.
+    ///
+    /// The grant is valid only while that account's code matches its configuration commitment.
+    /// Registration installs the account marker in the same write and the commitment never
+    /// returns to zero, so a change to its code alone requires revalidation.
+    pub(crate) fn configurable_grant_target(&self) -> Option<Address> {
+        let authorization = self.inner().as_aa()?.tx().key_authorization.as_ref()?;
+        (authorization.key_type == SignatureType::ConfigurableAccount)
+            .then_some(authorization.key_id)
+    }
+
+    /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
+    /// an access key signs for it), the key authorization signer, a separate fee payer, the access
+    /// key, or the key ID a primitive inline key authorization grants (TIP-1111: a migrated key ID
+    /// only takes ConfigurableAccount grants, so its first commitment invalidates the grant).
+    pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let Some(tx) = self.inner().as_aa() else {
+            return accounts.contains(self.sender_ref());
+        };
+        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
+        // Recovery fails only for a transaction that validation already rejects.
+        let grant_signer = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.authorizing_account().ok());
+        let fee_payer = tx
+            .tx()
+            .fee_payer_signature
+            .and_then(|_| self.fee_payer().ok());
+        let access_key = self.keychain_subject().map(|subject| subject.key_id);
+        let granted_key = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .filter(|authorization| authorization.key_type != SignatureType::ConfigurableAccount)
+            .map(|authorization| authorization.key_id);
+        [sender, grant_signer, fee_payer, access_key, granted_key]
+            .into_iter()
+            .flatten()
+            .any(|authority| accounts.contains(&authority))
     }
 }
 
@@ -548,7 +628,7 @@ fn warm_payment_keccak_slots<'a>(
         if let Some(addr) = payment.to() {
             let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             warmed(slot);
-            warmed(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
+            warmed(keccak256(slot.to_be_bytes::<32>()).into());
         }
 
         // Allowance slots for transferFrom variants: allowances[from][sender]
@@ -709,7 +789,8 @@ pub enum TempoPoolTransactionError {
     /// The access key used by a keychain transaction expires too soon.
     ///
     /// Thrown after EVM validation when the effective access-key expiry is less
-    /// than or equal to the latest tip timestamp plus the pool's propagation buffer.
+    /// than or equal to the latest tip timestamp plus the pool's propagation buffer,
+    /// or to the transaction's `valid_after`.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
     AccessKeyExpired {
         /// The effective access-key expiry timestamp returned by EVM validation.
@@ -732,8 +813,9 @@ pub enum TempoPoolTransactionError {
 
     /// A transaction matched a configured address check.
     ///
-    /// Thrown during pool admission when the recovered sender or a direct call target
-    /// appears in the node's configured address filter.
+    /// Thrown during pool admission when an address of the transaction (sender, fee payer, call
+    /// target, authorization delegate or authority, or access list entry) appears in the node's
+    /// configured address filter.
     #[error("Transaction address check failed for {address}")]
     AddressCheck {
         /// The address that matched the configured filter.
@@ -742,18 +824,37 @@ pub enum TempoPoolTransactionError {
 
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
-    /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
-    /// a [`TempoInvalidTransaction`] that is not mapped to a standard reth
-    /// pool error. The pool also uses this wrapper for AMM liquidity failures
-    /// detected after EVM validation, as `CollectFeePreTx(InsufficientAmmLiquidity)`.
+    /// Thrown when an EVM2 handler rejects the transaction with an error that is
+    /// not mapped to a standard reth pool error. Tempo-specific validation errors
+    /// are stored as [`HandlerError::External`].
     #[error(transparent)]
-    Evm(TempoInvalidTransaction),
+    Evm(HandlerError),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::Evm(err) => err.is_bad_transaction(),
+            Self::Evm(err) => err.external_ref::<TempoInvalidTransaction>().map_or_else(
+                || {
+                    matches!(
+                        err,
+                        HandlerError::InvalidChainId { .. }
+                            | HandlerError::MissingChainId
+                            | HandlerError::IntrinsicGasTooLow { .. }
+                            | HandlerError::NonceOverflow
+                            | HandlerError::TxGasLimitGreaterThanCap { .. }
+                            | HandlerError::CreateInitCodeSizeLimit { .. }
+                            | HandlerError::EmptyAuthorizationList
+                            | HandlerError::EmptyBlobs
+                            | HandlerError::TooManyBlobs { .. }
+                            | HandlerError::BlobVersionNotSupported
+                            | HandlerError::PriorityFeeGreaterThanMaxFee
+                            | HandlerError::UnsupportedTransactionType(_)
+                            | HandlerError::WrongTransactionType { .. }
+                    )
+                },
+                TempoInvalidTransaction::is_bad_transaction,
+            ),
             Self::ExceedsNonPaymentLimit
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
@@ -1139,11 +1240,29 @@ impl KeyAuthorizationTargetSubject {
     }
 }
 
+/// Returns an estimate of the memory held by the [`TempoTxEnv`] cached for `transaction`.
+///
+/// The env is a second copy of the transaction that shares only its calldata [`Bytes`] (AA call
+/// inputs) with the envelope, so it is counted as the envelope minus that calldata. This is
+/// derived from the envelope at construction because the env is filled lazily and the pools
+/// subtract the same size they added on insert.
+fn cached_tx_env_size(transaction: &TempoTxEnvelope) -> usize {
+    let shared_calldata = match transaction {
+        TempoTxEnvelope::AA(tx) => tx.tx().calls.iter().map(|call| call.input.len()).sum(),
+        TempoTxEnvelope::Legacy(_)
+        | TempoTxEnvelope::Eip2930(_)
+        | TempoTxEnvelope::Eip1559(_)
+        | TempoTxEnvelope::Eip7702(_) => transaction.input().len(),
+    };
+    transaction.size().saturating_sub(shared_calldata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
+    use alloy_eips::eip2930::AccessListItem;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -1153,10 +1272,79 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        KeyAuthorization, KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature, TempoTransaction, tempo_transaction::Call,
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
+
+    fn large_access_list() -> AccessList {
+        (0..64u8)
+            .map(|i| AccessListItem {
+                address: Address::with_last_byte(i),
+                storage_keys: (0..32u8).map(B256::with_last_byte).collect(),
+            })
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    fn configurable_account_signature(
+        owners: u8,
+        approvals: usize,
+    ) -> ConfigurableAccountSignature {
+        let config = ConfigurableAccountConfig {
+            salt: B256::with_last_byte(1),
+            version: 0,
+            threshold: 1,
+            owners: (1..=owners)
+                .map(|owner| ConfigurableAccountOwner {
+                    owner: Address::with_last_byte(owner),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        ConfigurableAccountSignature::try_new(
+            Address::with_last_byte(0xaa),
+            config,
+            vec![PrimitiveSignature::Secp256k1(Signature::test_signature()); approvals],
+        )
+        .unwrap()
+    }
+
+    /// Re-signs the body of a pooled AA transaction with `signature`.
+    fn resign_aa(
+        pooled: &TempoPooledTransaction,
+        signature: TempoSignature,
+    ) -> TempoPooledTransaction {
+        let body = pooled.inner().inner().as_aa().unwrap().tx().clone();
+        let envelope = TempoTxEnvelope::from(body.into_signed(signature));
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, pooled.sender()))
+    }
+
+    /// Heap counted on top of the envelope size.
+    fn cached_env_overhead(pooled: &TempoPooledTransaction) -> usize {
+        pooled.size() - pooled.inner().inner().size()
+    }
+
+    fn eip1559_pooled(access_list: AccessList, input: Bytes) -> TempoPooledTransaction {
+        let tx = TxEip1559 {
+            to: TxKind::Call(Address::with_last_byte(2)),
+            gas_limit: 21000,
+            access_list,
+            input,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        TempoPooledTransaction::new(Recovered::new_unchecked(
+            envelope,
+            Address::with_last_byte(1),
+        ))
+    }
 
     fn signed_aa_envelope(tx: TempoTransaction) -> (TempoTxEnvelope, Address) {
         let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
@@ -1168,11 +1356,13 @@ mod tests {
     }
 
     fn raw_pooled_transaction(
-        tx: TempoTransaction,
+        mut tx: TempoTransaction,
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
+        // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
+        tx.key_authorization
+            .take_if(|auth| auth.signature().is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
-        let mut raw = Vec::with_capacity(envelope.encode_2718_len());
-        envelope.encode_2718(&mut raw);
+        let raw = envelope.encoded_2718();
         let encoded_length = raw.len();
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");
@@ -1195,6 +1385,95 @@ mod tests {
         assert!(fresh.cached_tx_env().is_some());
         assert_eq!(fresh.key_expiry(), None);
         assert_eq!(fresh.resolved_fee_token(), None);
+    }
+
+    #[test]
+    fn size_counts_cached_tx_env_access_list() {
+        let eip1559 = eip1559_pooled(large_access_list(), Bytes::new());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), 2 * envelope_size);
+
+        let aa = TxBuilder::aa(Address::random())
+            .access_list(large_access_list())
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert_eq!(aa.size(), 2 * envelope_size);
+    }
+
+    #[test]
+    fn size_counts_configurable_account_signature_heap() {
+        let minimal = TxBuilder::aa(Address::random()).build();
+        let overhead =
+            |signature: TempoSignature| cached_env_overhead(&resign_aa(&minimal, signature));
+        let small = configurable_account_signature(1, 1);
+        let large = configurable_account_signature(5, 3);
+        // Extra owners and approvals are owned vectors that the env copies.
+        let extra_heap =
+            4 * size_of::<ConfigurableAccountOwner>() + 2 * size_of::<PrimitiveSignature>();
+
+        let configurable = |signature: &ConfigurableAccountSignature| {
+            overhead(TempoSignature::ConfigurableAccount(signature.clone()))
+        };
+        assert!(configurable(&large) >= configurable(&small) + extra_heap);
+
+        let keychain = |signature: &ConfigurableAccountSignature| {
+            overhead(TempoSignature::Keychain(KeychainSignature::new(
+                Address::random(),
+                signature.clone(),
+            )))
+        };
+        assert!(keychain(&large) >= keychain(&small) + extra_heap);
+    }
+
+    #[test]
+    fn size_is_stable_across_tx_env_caching() {
+        let transactions = [
+            eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])),
+            TxBuilder::aa(Address::random())
+                .access_list(large_access_list())
+                .build(),
+        ];
+        for transaction in transactions {
+            let size = transaction.size();
+            assert!(transaction.cached_tx_env().is_none());
+            let _ = transaction.tx_env();
+            assert!(transaction.cached_tx_env().is_some());
+            assert_eq!(transaction.size(), size);
+            assert_eq!(transaction.with_discarded_caches().size(), size);
+        }
+    }
+
+    #[test]
+    fn size_does_not_double_count_shared_calldata() {
+        let input = Bytes::from(vec![7u8; 100_000]);
+        let eip1559 = eip1559_pooled(AccessList::default(), input.clone());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), 2 * envelope_size - input.len());
+        // The env holds the same buffer as the envelope, which is why it is not counted.
+        let env_input = &eip1559.tx_env().as_eip1559().unwrap().input;
+        assert_eq!(env_input.as_ptr(), eip1559.input().as_ptr());
+
+        let aa = TxBuilder::aa(Address::random())
+            .calls(vec![
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input: input.clone(),
+                },
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input,
+                },
+            ])
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert_eq!(aa.size(), 2 * envelope_size - 2 * 100_000);
+        let calls = &aa.tx_env().as_aa().unwrap().inner().tx().calls;
+        let envelope_calls = &aa.inner().inner().as_aa().unwrap().tx().calls;
+        for (call, envelope_call) in calls.iter().zip(envelope_calls) {
+            assert_eq!(call.input.as_ptr(), envelope_call.input.as_ptr());
+        }
     }
 
     #[test]
@@ -1222,7 +1501,7 @@ mod tests {
         let recovered = Recovered::new_unchecked(envelope, Address::with_last_byte(1));
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(pooled_tx.is_payment());
+        assert!(pooled_tx.is_payment_v2());
     }
 
     #[test]
@@ -1244,7 +1523,7 @@ mod tests {
         let recovered = Recovered::new_unchecked(envelope, Address::with_last_byte(1));
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
-        assert!(!pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment_v2());
     }
 
     #[test]
@@ -1254,7 +1533,7 @@ mod tests {
         let pooled_tx = TxBuilder::eip1559(non_payment_addr)
             .gas_limit(21000)
             .build_eip1559();
-        assert!(!pooled_tx.is_payment());
+        assert!(!pooled_tx.is_payment_v2());
     }
 
     #[test]
@@ -1387,28 +1666,34 @@ mod tests {
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
-                    "nonce error".to_string(),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::NonceManagerError("nonce error".to_string()),
                 )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotTip20 {
-                    address: Address::repeat_byte(0x20),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenNotTip20 {
+                        address: Address::repeat_byte(0x20),
+                    },
+                )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                    address: Address::repeat_byte(0x20),
-                    currency: "EUR".to_string(),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                        address: Address::repeat_byte(0x20),
+                        currency: "EUR".to_string(),
+                    },
+                )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenPaused {
-                    address: Address::repeat_byte(0x20),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenPaused {
+                        address: Address::repeat_byte(0x20),
+                    },
+                )),
                 false,
             ),
             (
@@ -1433,8 +1718,8 @@ mod tests {
             ),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::CallsValidation(
-                    "calls error",
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::CallsValidation("calls error"),
                 )),
                 true,
             ),
@@ -1480,8 +1765,6 @@ mod tests {
 
     #[test]
     fn test_validate_blob_returns_not_blob_transaction() {
-        use alloy_eips::eip7594::BlobTransactionSidecarVariant;
-
         let tx = TxBuilder::eip1559(Address::random())
             .gas_limit(21000)
             .build_eip1559();
@@ -1785,5 +2068,31 @@ mod tests {
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
         }
+    }
+
+    #[test]
+    fn primitive_granted_key_is_an_authority() {
+        let sender = Address::random();
+        let signer = PrivateKeySigner::random();
+        let key_id = Address::random();
+        let grant = |key_type| {
+            let authorization =
+                KeyAuthorization::unrestricted(42431, key_type, key_id).with_account(sender);
+            let signature = signer
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            TxBuilder::aa(sender)
+                .key_authorization(
+                    authorization.into_signed(PrimitiveSignature::Secp256k1(signature)),
+                )
+                .build()
+        };
+
+        let primitive = grant(SignatureType::Secp256k1);
+        assert!(primitive.has_authority_in(&AddressSet::from_iter([key_id])));
+        assert!(!primitive.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        // A configurable grant's validity doesn't depend on its key ID's commitment value.
+        let configurable = grant(SignatureType::ConfigurableAccount);
+        assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));
     }
 }

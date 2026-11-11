@@ -1,6 +1,10 @@
 //! Tempo Zone L2 Node.
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+// Links Antithesis's coverage runtime shim into binaries built with its sancov flags.
+#[cfg(all(target_os = "linux", feature = "antithesis-coverage"))]
+use antithesis_instrumentation as _;
+
 mod defaults;
 
 use zone_node::cli::ZoneCli;
@@ -9,6 +13,8 @@ use zone_node::cli::ZoneCli;
 static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
 
 fn main() {
+    #[cfg(feature = "fuzz")]
+    antithesis_sdk::antithesis_init();
     reth_cli_util::sigsegv_handler::install();
 
     rustls::crypto::aws_lc_rs::default_provider()

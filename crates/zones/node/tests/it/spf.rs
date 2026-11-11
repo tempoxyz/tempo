@@ -47,11 +47,15 @@ async fn spf_batch_execute() -> eyre::Result<()> {
     let provider = zone.provider();
     let (wallet_provider, sender) = crate::utils::local_dev_zone_account(&zone)?;
     let initial_fee_balance = zone.balance_of(PATH_USD_ADDRESS, sender).await?;
+    let (first_recipient, second_recipient) = (
+        address!("000000000000000000000000000000000000b001"),
+        address!("000000000000000000000000000000000000b002"),
+    );
+    fixture.seed_no_commitment(first_recipient);
+    fixture.seed_no_commitment(second_recipient);
 
     let first_pending = wallet_provider
-        .send_transaction(state_changing_transaction(address!(
-            "000000000000000000000000000000000000b001"
-        )))
+        .send_transaction(state_changing_transaction(first_recipient))
         .await?;
     let first_transaction_hash = *first_pending.tx_hash();
     let mut first_tempo_block = fixture.next_block();
@@ -61,9 +65,7 @@ async fn spf_batch_execute() -> eyre::Result<()> {
     zone.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
 
     let second_pending = wallet_provider
-        .send_transaction(state_changing_transaction(address!(
-            "000000000000000000000000000000000000b002"
-        )))
+        .send_transaction(state_changing_transaction(second_recipient))
         .await?;
     let second_transaction_hash = *second_pending.tx_hash();
     let mut second_tempo_block = fixture.next_block();
@@ -327,10 +329,10 @@ async fn build_single_transaction_block(
             .await?;
     let (wallet_provider, sender) = crate::utils::local_dev_zone_account(&zone)?;
     let initial_fee_balance = zone.balance_of(PATH_USD_ADDRESS, sender).await?;
+    let recipient = address!("000000000000000000000000000000000000b0b0");
+    fixture.seed_no_commitment(recipient);
     let pending = wallet_provider
-        .send_transaction(state_changing_transaction(address!(
-            "000000000000000000000000000000000000b0b0"
-        )))
+        .send_transaction(state_changing_transaction(recipient))
         .await?;
     let user_transaction_hash = *pending.tx_hash();
 
@@ -474,6 +476,7 @@ fn genesis_state_witness(genesis: &Genesis) -> (B256, Vec<Bytes>, Vec<Bytes>) {
             balance: account.balance,
             storage_root,
             code_hash,
+            ..Default::default()
         };
         account_leaves.push((keccak256(address), alloy_rlp::encode(trie_account)));
     }

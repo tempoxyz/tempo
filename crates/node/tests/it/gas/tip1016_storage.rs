@@ -22,12 +22,15 @@ use alloy::{
     network::ReceiptResponse,
     primitives::{Address, Bytes, U256},
     providers::Provider,
+    signers::SignerSync,
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX, Multicall3, precompiles::DEFAULT_FEE_TOKEN};
+use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use crate::utils::{TestNodeBuilder, t1_account};
 
@@ -274,8 +277,8 @@ async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Res
 /// is still exempted from protocol limits because protocol limits bound CPU time, and
 /// the SSTORE execution cost (5,000) is the only CPU-relevant part regardless of outcome.
 ///
-/// revm preserves state_gas_spent on all result paths (ok, revert, halt) via
-/// `last_frame_result`, so the block header gas_used should still exclude the 245,000
+/// EVM2 preserves state gas spent on all result paths (ok, revert, halt), so the block header
+/// gas_used should still exclude the 245,000
 /// storage creation gas.
 #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
@@ -594,12 +597,6 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
 #[ignore = "TODO: TIP-1016 deferred; re-enable when cfg_env.enable_amsterdam_eip8037 is wired into the test node"]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()> {
-    use alloy::signers::SignerSync;
-    use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
-    use tempo_primitives::{
-        TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call,
-    };
-
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;

@@ -6,11 +6,11 @@
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::{B256, U256, keccak256};
+use evm2::evm::{CacheDB, Db};
 use reth_chainspec::EthChainSpec as _;
-use reth_evm::execute::BlockAssemblerInput;
+use reth_evm::{DynDatabase as _, execute::BlockAssemblerInput};
 use reth_primitives_traits::SealedHeader;
 use reth_storage_api::noop::NoopProvider;
-use revm::{Database as _, database::State, database_interface::bal::EvmDatabaseError};
 use tempo_evm::{TempoBlockAssembler, TempoEvmConfig};
 use tempo_primitives::{TempoHeader, TempoPrimitives};
 use zone_precompiles::{inbox, outbox, tempo_state};
@@ -54,15 +54,12 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
 
     // The Zone database is backed by the parent state root and the supplied
     // trie nodes. Reads performed during execution are therefore limited to
-    // state proven by the witness, while writes remain in REVM's overlay.
+    // state proven by the witness, while writes remain in the EVM's accepted-state overlay.
     let zone_database = WitnessDatabase::from_zone_state_witness(
         witness.zone_state_witness,
         witness.parent_header.state_root(),
     )?;
-    let mut zone_state = State::builder()
-        .with_database(zone_database)
-        .with_bundle_update()
-        .build();
+    let mut zone_state = CacheDB::new(Db::new(zone_database));
 
     // Capture the pre-batch deposit state from the parent Zone state. The
     // transition output commits to this exact pair.
@@ -185,9 +182,11 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             }
         };
 
-        let bundle_state = zone_state.take_bundle();
-        let state_root = zone_state.database.state_root(bundle_state)?;
-        let gas_limit = executed_block.evm_env.block_env.inner.gas_limit;
+        let state_root = zone_state
+            .db
+            .inner_mut()
+            .state_root(&executed_block.output.state)?;
+        let gas_limit = executed_block.evm_env.block.gas_limit.to::<u64>();
         let execution_context =
             execution::evm::next_block_execution_context(config.chain_spec(), block, gas_limit);
         let state_provider = NoopProvider::<tempo_chainspec::TempoChainSpec, TempoPrimitives>::new(
@@ -201,8 +200,8 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
                     execution_context,
                     &sealed_parent,
                     executed_block.transactions,
-                    &executed_block.output,
-                    &zone_state.bundle_state,
+                    &executed_block.output.result,
+                    &executed_block.output.state,
                     &state_provider,
                     state_root,
                     None,
@@ -212,6 +211,9 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
                 None,
             )
             .map_err(|_| Error::BlockAssembly { block_index })?;
+        zone_state.commit_source(&reth_execution_types::BundleSource(
+            &executed_block.output.state,
+        ));
         previous_header = assembled.header;
     }
 
@@ -251,7 +253,7 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             outbox::slots::WITHDRAWAL_BATCH_INDEX,
         )?;
         // The index occupies the low 64 bits of a packed Solidity slot.
-        (hash, index_slot.as_limbs()[0])
+        (hash, index_slot.wrapping_to::<u64>())
     } else {
         (
             B256::ZERO,
@@ -349,14 +351,18 @@ fn validate_zone_block_timestamp(
 }
 
 fn read_zone_storage(
-    zone_state: &mut State<WitnessDatabase>,
+    zone_state: &mut CacheDB<Db<WitnessDatabase>>,
     address: alloy_primitives::Address,
     slot: U256,
 ) -> Result<U256, Error> {
-    match zone_state.storage(address, slot) {
+    match zone_state.get_storage(&address, &slot) {
         Ok(value) => Ok(value),
-        Err(EvmDatabaseError::Database(error)) => Err(error.into()),
-        Err(EvmDatabaseError::Bal(_)) => Err(Error::UnexpectedBalancedAccess { address, slot }),
+        Err(error) => {
+            if let Some(error) = error.downcast_ref::<WitnessDatabaseError>() {
+                return Err((*error).into());
+            }
+            Err(Error::UnexpectedBalancedAccess { address, slot })
+        }
     }
 }
 
@@ -498,11 +504,15 @@ pub enum Error {
     /// A read against the provided state witness failed.
     #[error(transparent)]
     WitnessDatabase(#[from] WitnessDatabaseError),
-    /// The Tempo witness omitted an L1 storage proof required by execution.
-    #[error("Tempo witness is missing account {account:?} slot {slot:?} at block {block_number}")]
+    /// The Tempo witness omitted an L1 account or storage proof required by execution. `slot` is
+    /// `None` when the read needed only the account proof.
+    #[error(
+        "Tempo witness is missing account {account:?}{} at block {block_number}",
+        .slot.map(|slot| format!(" slot {slot:?}")).unwrap_or_default()
+    )]
     MissingTempoStorage {
         account: alloy_primitives::Address,
-        slot: B256,
+        slot: Option<B256>,
         block_number: u64,
     },
     /// A batch must execute at least one Zone block.
@@ -691,17 +701,16 @@ mod tests {
     use alloy_consensus::Header;
     use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
     use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-    use reth_evm::ConfigureEvm;
+    use evm2::{
+        PendingState,
+        evm::{AccountInfo, CacheDB, Db, StateChangeSource},
+    };
+    use reth_evm::{ConfigureEvm, Database as _, DynDatabase};
+    use reth_execution_types::{BlockState, BundleSource, TransactionChanges};
     use reth_trie_common::{
         EMPTY_ROOT_HASH, LeafNode, Nibbles, TrieAccount, TrieNode, root::state_root_unhashed,
     };
-    use revm::{
-        DatabaseCommit as _,
-        database::{State, states::bundle_state::BundleRetention},
-    };
     use std::sync::Arc;
-    use tempo_chainspec::TempoHardfork;
-    use tempo_evm::TempoBlockEnv;
     use tempo_primitives::TempoHeader;
     use zone_evm::ZoneEvmConfig;
     use zone_precompiles::L1StorageReader as _;
@@ -829,6 +838,7 @@ mod tests {
             balance,
             storage_root,
             code_hash,
+            ..Default::default()
         };
         let account_node = TrieNode::Leaf(LeafNode::new(
             Nibbles::unpack(keccak256(address)),
@@ -1027,18 +1037,18 @@ mod tests {
         );
         let mut database = WitnessDatabase::from_zone_state_witness(witness, state_root).unwrap();
 
-        let info = database.basic(account).unwrap().unwrap();
+        let info = database.get_account(&account).unwrap().unwrap();
         assert_eq!(info.nonce, 7);
         assert_eq!(info.balance, U256::from(42));
         assert_eq!(
             database
-                .code_by_hash(code_hash)
+                .get_code_by_hash(&code_hash)
                 .unwrap()
                 .original_byte_slice(),
             code.as_ref()
         );
         assert_eq!(
-            database.storage(account, U256::from(3)).unwrap(),
+            database.get_storage(&account, &U256::from(3)).unwrap(),
             U256::from(9)
         );
     }
@@ -1058,7 +1068,7 @@ mod tests {
         );
         let mut database = WitnessDatabase::from_zone_state_witness(witness, state_root).unwrap();
 
-        assert_eq!(database.block_hash(number).unwrap(), hash);
+        assert_eq!(database.get_block_hash(&U256::from(number)).unwrap(), hash);
     }
 
     fn next_block_evm_env(
@@ -1066,7 +1076,7 @@ mod tests {
         tempo_database: TempoWitnessDatabase,
         parent: &TempoHeader,
         block: &ZoneBlock,
-    ) -> Result<alloy_evm::EvmEnv<TempoHardfork, TempoBlockEnv>, Error> {
+    ) -> Result<tempo_evm::TempoEvmEnv, Error> {
         let attributes = next_block_env_attributes(config.chain_spec().as_ref(), parent, block)?;
         let env = ZoneEvmConfig::new(config.chain_spec().clone(), tempo_database, config.portal())
             .next_evm_env(parent, &attributes)
@@ -1085,35 +1095,40 @@ mod tests {
             EMPTY_ROOT_HASH,
         )
         .unwrap();
-        let mut state = State::builder()
-            .with_database(database)
-            .with_bundle_update()
-            .build();
-        let mut changes = revm::primitives::AddressMap::default();
-        let mut account = revm::state::Account::default();
-        account.info.balance = U256::from(42);
-        account.mark_touch();
-        changes.insert(address, account);
-
-        state.commit(changes);
-        state.merge_transitions(BundleRetention::PlainState);
+        let mut database = CacheDB::new(Db::new(database));
+        let mut changes = PendingState::default();
+        let account = AccountInfo {
+            balance: U256::from(42),
+            ..Default::default()
+        };
+        changes.insert_account(address, None, Some(account));
+        let mut state = BlockState::new();
+        let mut transaction = TransactionChanges::default();
+        changes.visit(&mut transaction).unwrap();
+        state.commit(&transaction);
+        let state = state.into_bundle();
+        database.commit_source(&BundleSource(&state));
 
         assert_eq!(
-            state.basic(address).unwrap().unwrap().balance,
+            DynDatabase::get_account(&mut database, &address)
+                .unwrap()
+                .unwrap()
+                .balance,
             U256::from(42)
         );
-        assert_eq!(state.database.basic(address).unwrap(), None);
-        assert!(state.bundle_state.state.contains_key(&address));
+        assert_eq!(database.db.inner_mut().get_account(&address).unwrap(), None);
+        assert!(state.state().contains_key(&address));
 
         let expected_account = TrieAccount {
             nonce: 0,
             balance: U256::from(42),
             storage_root: EMPTY_ROOT_HASH,
             code_hash: alloy_consensus::constants::KECCAK_EMPTY,
+            ..Default::default()
         };
         let expected_root = state_root_unhashed([(address, expected_account)]);
         assert_eq!(
-            state.database.state_root(state.bundle_state).unwrap(),
+            database.db.inner_mut().state_root(&state).unwrap(),
             expected_root
         );
     }
@@ -1134,7 +1149,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(database.basic(address).unwrap(), None);
+        assert_eq!(database.get_account(&address).unwrap(), None);
     }
 
     #[test]
@@ -1146,7 +1161,7 @@ mod tests {
         let mut database = WitnessDatabase::from_zone_state_witness(witness, state_root).unwrap();
 
         assert_eq!(
-            database.code_by_hash(code_hash),
+            database.get_code_by_hash(&code_hash),
             Err(WitnessDatabaseError::MissingCode { code_hash })
         );
     }
@@ -1167,33 +1182,72 @@ mod tests {
     }
 
     #[test]
-    fn reports_the_exact_missing_tempo_storage_proof() {
+    fn reports_the_exact_missing_tempo_proof() {
         let account = Address::repeat_byte(0x33);
         let slot = B256::repeat_byte(0x07);
         let block_number = 9;
-        let header = TempoHeader {
-            inner: Header {
-                number: block_number,
-                state_root: B256::repeat_byte(0x44),
+        // A witness without the checkpoint's state root.
+        let database = || {
+            let header = TempoHeader {
+                inner: Header {
+                    number: block_number,
+                    state_root: B256::repeat_byte(0x44),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
+            };
+            TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
+                initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
+                node_pool: Vec::new(),
+            })
+            .unwrap()
         };
-        let database = TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
-            initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
-            node_pool: Vec::new(),
-        })
-        .unwrap();
 
+        let storage = database();
         assert!(
-            database
+            storage
                 .read_l1_storage(account, slot, block_number)
                 .is_err()
         );
-        let missing = database.missing_read().unwrap();
+        let missing = storage.missing_read().unwrap();
         assert_eq!(missing.account, account);
-        assert_eq!(missing.slot, slot);
+        assert_eq!(missing.slot, Some(slot));
         assert_eq!(missing.block_number, block_number);
+
+        let commitment = database();
+        assert_eq!(
+            commitment.read_l1_commitment(account, block_number),
+            Err(zone_precompiles::L1StateError::AccountUnavailable {
+                account,
+                block_number,
+                reason: "witness does not include the checkpoint state root".into(),
+            })
+        );
+        let missing = commitment.missing_read().unwrap();
+        assert_eq!(missing.account, account);
+        assert_eq!(missing.slot, None);
+        assert_eq!(missing.block_number, block_number);
+    }
+
+    #[test]
+    fn missing_tempo_storage_names_the_slot_only_for_storage_reads() {
+        let account = Address::repeat_byte(0x33);
+        let missing = |slot| Error::MissingTempoStorage {
+            account,
+            slot,
+            block_number: 9,
+        };
+        assert_eq!(
+            missing(None).to_string(),
+            format!("Tempo witness is missing account {account:?} at block 9")
+        );
+        assert_eq!(
+            missing(Some(B256::ZERO)).to_string(),
+            format!(
+                "Tempo witness is missing account {account:?} slot {:?} at block 9",
+                B256::ZERO
+            )
+        );
     }
 
     #[test]
@@ -1264,8 +1318,8 @@ mod tests {
                 .unwrap();
         let env =
             next_block_evm_env(&config, tempo_database, &witness.parent_header, &block).unwrap();
-        assert_eq!(env.cfg_env.chain_id, config.chain_spec().chain_id());
-        assert_eq!(env.block_env.inner.basefee, 0);
+        assert_eq!(env.version.chain_id, config.chain_spec().chain_id());
+        assert_eq!(env.block.basefee, U256::ZERO);
     }
 
     #[test]

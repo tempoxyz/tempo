@@ -99,12 +99,17 @@ impl VerifyPortalBacking {
             .add(portal.zoneId())
             .add(portal.isTokenEnabled(self.token))
             .add(factory.isZonePortal(self.portal));
-        let zone_reads = zone
-            .multicall()
-            .block(zone_block)
-            .add(zone_token.totalSupply())
-            .add(inbox.processedDepositNumber())
-            .add(inbox.tempoPortal());
+        // Zones have no Multicall3 from T15, so zone-side reads are separate calls.
+        let supply_call = zone_token.totalSupply().block(zone_block);
+        let processed_deposits_call = inbox.processedDepositNumber().block(zone_block);
+        let inbox_portal_call = inbox.tempoPortal().block(zone_block);
+        let zone_reads = async {
+            eyre::Ok(tokio::try_join!(
+                supply_call.call(),
+                processed_deposits_call.call(),
+                inbox_portal_call.call(),
+            )?)
+        };
         let (
             (
                 portal_balance,
@@ -117,7 +122,7 @@ impl VerifyPortalBacking {
                 portal_registered,
             ),
             (zone_supply, zone_processed_deposits, inbox_portal),
-        ) = tokio::try_join!(l1_reads.aggregate(), zone_reads.aggregate())
+        ) = tokio::try_join!(async { eyre::Ok(l1_reads.aggregate().await?) }, zone_reads)
             .wrap_err("failed reading backing state")?;
 
         let factory_zone = factory
@@ -245,8 +250,7 @@ async fn pending_deposit_liability<P: Provider<TempoNetwork>>(
     let portal = ZonePortal::new(portal_address, provider);
     let deposits = portal
         .DepositMade_filter()
-        .from_block(from_block)
-        .to_block(to_block)
+        .select(from_block..=to_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()
@@ -280,38 +284,32 @@ async fn withdrawal_liability<P: Provider<TempoNetwork>>(
 
     let requested_filter = outbox
         .WithdrawalRequested_filter()
-        .from_block(ranges.zone_from)
-        .to_block(ranges.zone_to)
+        .select(ranges.zone_from..=ranges.zone_to)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK);
     let paid_filter = portal
         .WithdrawalProcessed_filter()
-        .from_block(ranges.l1_from)
-        .to_block(ranges.l1_to)
+        .select(ranges.l1_from..=ranges.l1_to)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK);
     let reminted_filter = inbox
         .WithdrawalBounceBackProcessed_filter()
-        .from_block(ranges.zone_from)
-        .to_block(ranges.zone_to)
+        .select(ranges.zone_from..=ranges.zone_to)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK);
     let refunded_filter = inbox
         .WithdrawalBounceBackPending_filter()
-        .from_block(ranges.zone_from)
-        .to_block(ranges.zone_to)
+        .select(ranges.zone_from..=ranges.zone_to)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK);
     let deposit_bounce_back_filter = portal
         .DepositBounceBack_filter()
-        .from_block(ranges.l1_from)
-        .to_block(ranges.l1_to)
+        .select(ranges.l1_from..=ranges.l1_to)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK);
     let portal_refund_filter = portal
         .DepositBounceBackPending_filter()
-        .from_block(ranges.l1_from)
-        .to_block(ranges.l1_to)
+        .select(ranges.l1_from..=ranges.l1_to)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK);
     let (requested, paid, deposit_bounce_backs, portal_refunds, reminted, refunded) =
@@ -420,8 +418,7 @@ async fn portal_refund_liability<P: Provider<TempoNetwork>>(
     let portal = ZonePortal::new(portal, provider);
     let pending = portal
         .DepositBounceBackPending_filter()
-        .from_block(from_block)
-        .to_block(to_block)
+        .select(from_block..=to_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()
@@ -429,8 +426,7 @@ async fn portal_refund_liability<P: Provider<TempoNetwork>>(
         .wrap_err("failed scanning ZonePortal DepositBounceBackPending events")?;
     let claimed = portal
         .RefundClaimed_filter()
-        .from_block(from_block)
-        .to_block(to_block)
+        .select(from_block..=to_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()
@@ -466,8 +462,7 @@ async fn inbox_refund_liability<P: Provider<TempoNetwork>>(
     let inbox = IZoneInbox::new(ZONE_INBOX_ADDRESS, provider);
     let pending = inbox
         .WithdrawalBounceBackPending_filter()
-        .from_block(from_block)
-        .to_block(to_block)
+        .select(from_block..=to_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()
@@ -475,8 +470,7 @@ async fn inbox_refund_liability<P: Provider<TempoNetwork>>(
         .wrap_err("failed scanning ZoneInbox WithdrawalBounceBackPending events")?;
     let claimed = inbox
         .RefundClaimed_filter()
-        .from_block(from_block)
-        .to_block(to_block)
+        .select(from_block..=to_block)
         .chunked()
         .chunk_size(LOG_QUERY_BLOCK_CHUNK)
         .query()

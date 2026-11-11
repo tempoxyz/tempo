@@ -3,7 +3,6 @@
 mod error;
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
-use alloy_evm::block::BlockExecutionResult;
 pub use error::TempoConsensusError;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
@@ -12,6 +11,7 @@ use reth_consensus_common::validation::{
     validate_against_parent_gas_limit, validate_against_parent_hash_number,
 };
 use reth_ethereum_consensus::EthBeaconConsensus;
+use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{
@@ -252,16 +252,20 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::{
-        Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
-        transaction::TxHashRef,
+        Header, SignableTransaction, TxLegacy, constants::EMPTY_ROOT_HASH,
+        proofs::calculate_transaction_root, transaction::TxHashRef,
     };
     use alloy_genesis::Genesis;
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
     use reth_primitives_traits::SealedHeader;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::{
+        constants::moderato::MODERATO_T4_TIMESTAMP,
         hardfork::TempoHardfork,
-        spec::{DEV, MODERATO, TempoChainSpec},
+        spec::{
+            DEV, MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP,
+            TEMPO_T7_BASE_FEE_FLOOR, TempoChainSpec,
+        },
     };
 
     fn current_timestamp_millis() -> u64 {
@@ -395,7 +399,7 @@ mod tests {
             input: Default::default(),
         };
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
+        TempoTxEnvelope::Legacy(tx.into_signed(signature))
     }
 
     fn create_tx(chain_id: u64) -> TempoTxEnvelope {
@@ -408,7 +412,7 @@ mod tests {
             value: U256::from(100),
             input: Default::default(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+        TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()))
     }
 
     #[test]
@@ -681,8 +685,6 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent() {
-        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-
         let consensus = TempoConsensus::new(MODERATO.clone());
         let parent_ts = TempoHardfork::T6.moderato_activation_timestamp().unwrap();
         let parent = TestHeaderBuilder::default()
@@ -710,8 +712,6 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_equal_timestamp_is_configurable() {
-        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-
         let parent_ts = TempoHardfork::T6.moderato_activation_timestamp().unwrap();
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
@@ -748,8 +748,6 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_timestamp_not_increasing() {
-        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-
         let consensus = TempoConsensus::new(MODERATO.clone()).with_allow_equal_timestamps(true);
         let parent_ts = TempoHardfork::T6.moderato_activation_timestamp().unwrap();
         let parent = TestHeaderBuilder::default()
@@ -779,8 +777,6 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_t1() {
-        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-
         let chainspec = create_t1_chainspec();
         let consensus = TempoConsensus::new(chainspec);
 
@@ -812,8 +808,6 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_t1_wrong_base_fee() {
-        use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
-
         let chainspec = create_t1_chainspec();
         let consensus = TempoConsensus::new(chainspec);
 
@@ -849,8 +843,6 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_t7_dynamic_base_fee() {
-        use tempo_chainspec::spec::{TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR};
-
         let chainspec = create_t7_chainspec();
         let consensus = TempoConsensus::new(chainspec);
 
@@ -979,7 +971,7 @@ mod tests {
             input: Default::default(),
         };
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
-        let invalid_system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature));
+        let invalid_system_tx = TempoTxEnvelope::Legacy(tx.into_signed(signature));
         let tx_hash = *invalid_system_tx.tx_hash();
 
         let header = TestHeaderBuilder::default()
@@ -1006,8 +998,6 @@ mod tests {
         let chain_id = MODERATO.chain_id();
 
         let user_tx = create_tx(chain_id);
-
-        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
 
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
@@ -1124,8 +1114,6 @@ mod tests {
 
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);
-
-        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
 
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)

@@ -124,16 +124,28 @@ impl AddressRegistry {
             return Err(AddrRegistryError::master_id_collision(master).into());
         }
 
-        // Store the registration
+        self.write_master(master_id, msg_sender)
+    }
+
+    /// Registers `master` under `master_id` without the proof of work or any other check, so
+    /// test and fuzz fixtures can pick their master IDs. Overwrites an existing registration.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn register_virtual_master_unchecked(
+        &mut self,
+        master_id: MasterId,
+        master: Address,
+    ) -> Result<MasterId> {
+        self.write_master(master_id, master)
+    }
+
+    /// Stores `master` under `master_id`, emits `MasterRegistered` and returns `master_id`.
+    fn write_master(&mut self, master_id: MasterId, master: Address) -> Result<MasterId> {
         self.data[master_id].write(RegistryData {
-            master_address: msg_sender,
+            master_address: master,
             reserved: FixedBytes::ZERO,
             ty: 0,
         })?;
-
-        // Emit event
-        self.emit_event(AddrRegistryEvent::master_registered(master_id, msg_sender))?;
-
+        self.emit_event(AddrRegistryEvent::master_registered(master_id, master))?;
         Ok(master_id)
     }
 

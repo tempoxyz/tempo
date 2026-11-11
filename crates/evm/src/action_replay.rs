@@ -1,56 +1,53 @@
-use std::collections::hash_map::Entry;
-
-use crate::{TempoBlockExecutor, TempoTxResult};
-use alloy_evm::{
-    Database, Evm, RecoveredTx,
-    block::{BlockExecutionError, BlockExecutor, ExecutableTx},
-};
+use crate::{TempoBlockExecutor, TempoEvmTypes, TempoHardfork, TempoTxResult};
+use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, U256,
-    map::{AddressMap, U256Map},
+    map::{AddressMap, U256Map, hash_map::Entry},
 };
-use reth_evm::block::InternalBlockExecutionError;
-use reth_revm::{
-    Database as _, Inspector, State,
-    context::result::{ExecutionResult, HaltReason},
-    state::{Account, EvmState, EvmStorageSlot, TransactionId},
+use evm2::{
+    TxResult,
+    bytecode::Bytecode,
+    evm::{CacheDB, DynDatabase, PendingState},
+};
+use reth_evm::{
+    BlockExecutionError, BlockExecutor, ExecutorTx, InternalBlockExecutionError, RecoveredTx,
+    execute::map_database_error,
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     nonce::NonceManager,
-    storage::StorageAction,
+    storage::{StorageAction, account_config_commitment},
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
-use tempo_revm::evm::TempoContext;
+use tempo_primitives::account::encode_config_commitment;
 
-impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
-where
-    DB: Database,
-    I: Inspector<TempoContext<&'a mut State<DB>>>,
-{
+impl TempoBlockExecutor<'_> {
     /// Commits a precomputed transaction by replaying recorded storage actions.
     ///
     /// `result_closure` observes the synthesized result before the replayed state is committed.
     pub fn execute_transaction_with_actions(
         &mut self,
-        tx: impl ExecutableTx<Self>,
+        tx: impl ExecutorTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
     ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
+        let original = recovered.tx();
 
         let StorageActionReplay {
             result,
             mut actions,
             expiring_nonce,
-            validator_fee,
         } = replay;
         self.replay_state.reset_tx_changes();
 
         // TODO: handle reverted transactions
-        if !result.is_success() {
+        if !result.status {
             return Err(StorageActionReplayError::TransactionExecutionFailed.into());
         }
+
+        let is_system_tx = self.validate_tx_pre_execution(original)?;
 
         let state = self
             .replay_actions(actions.drain(..), expiring_nonce)
@@ -58,30 +55,32 @@ where
                 self.replay_state.reset_tx_changes();
             })?;
 
-        let cfg = self.inner.evm.cfg_env().clone();
-        let gas = result.gas();
-        let block_gas_used = if cfg.enable_amsterdam_eip8037 {
-            gas.block_regular_gas_used()
+        let cfg = self.evm().version();
+        let gas = &result;
+        let block_gas_used = if cfg.feature(evm2::EvmFeatures::EIP8037) {
+            gas.execution_gas_spent()
         } else {
             gas.tx_gas_used()
         };
-        let next_section = self
-            .validate_tx(recovered.tx(), block_gas_used)
-            .map_err(BlockExecutionError::from)?;
+        self.validate_tx(
+            *original.tx_hash(),
+            is_system_tx,
+            self.is_payment(original),
+            block_gas_used,
+        )?;
 
         let result = TempoTxResult::new_precomputed(
-            recovered.tx(),
-            tx_env.execution_context,
+            original,
+            tx_env.inner().execution_context(),
             result,
             state,
-            next_section,
-            self.is_payment(recovered.tx()),
+            is_system_tx,
+            self.is_payment(original),
             block_gas_used,
-            validator_fee,
         );
         result_closure(&result);
 
-        self.commit_transaction(result);
+        self.commit_transaction(result)?;
 
         Ok(())
     }
@@ -90,15 +89,18 @@ where
         &mut self,
         actions: impl IntoIterator<Item = StorageAction>,
         expiring_nonce: Option<ExpiringNonceReplay>,
-    ) -> Result<EvmState, BlockExecutionError> {
-        let block_timestamp = self.inner.evm.block().timestamp.to::<u64>();
+    ) -> Result<PendingState, BlockExecutionError> {
+        let block_timestamp = self.evm().block().timestamp.to::<u64>();
         let is_expiring_nonce = expiring_nonce.is_some();
 
         if let Some(expiring_nonce) = expiring_nonce {
             self.apply_expiring_nonce_replay(expiring_nonce, block_timestamp)?;
         }
 
-        let db = self.inner.evm.db_mut();
+        let spec = self.evm().config_spec_id();
+        let db = self.inner.evm_mut().overlay_db_mut();
+        // Config commitments per account, as (before the tx, current).
+        let mut commitments = AddressMap::<(B256, B256)>::default();
         for action in actions {
             // Expiring nonces are handled above
             if is_expiring_nonce && action.address() == NONCE_PRECOMPILE_ADDRESS {
@@ -181,41 +183,68 @@ where
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
+                StorageAction::ConfigCommitment(address, before, after) => {
+                    let (_, current) = match commitments.entry(address) {
+                        Entry::Occupied(entry) => entry.into_mut(),
+                        Entry::Vacant(entry) => {
+                            let initial = Self::config_commitment(db, address, spec)?;
+                            entry.insert((initial, initial))
+                        }
+                    };
+                    if *current != before {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
+                    *current = after;
+                }
             }
         }
 
-        let mut state = EvmState::default();
+        let mut state = PendingState::default();
 
         for (address, slots) in self.replay_state.tx_changes.iter() {
+            let mut inserted_account = false;
             for (slot, change) in slots {
                 if !change.written {
                     continue;
                 }
 
-                let account = match state.entry(*address) {
-                    Entry::Occupied(e) => e.into_mut(),
-                    Entry::Vacant(e) => {
-                        let mut account = Account::from(
-                            db.basic(*address)
-                                .map_err(BlockExecutionError::other)?
-                                .unwrap_or_default(),
-                        );
-                        account.mark_touch();
-                        e.insert(account)
-                    }
-                };
-                account.storage.insert(
-                    *slot,
-                    EvmStorageSlot::new_changed(
-                        change.original,
-                        change.current,
-                        TransactionId::ZERO,
-                    ),
-                );
+                if !inserted_account {
+                    let original = db.get_account(address).map_err(map_database_error)?;
+                    state.insert_account(*address, original.clone(), original);
+                    inserted_account = true;
+                }
+                state.insert_storage(*address, *slot, change.original, change.current);
             }
         }
 
+        // Mirrors set_config_commitment: the first commitment also installs the marker code.
+        for (address, (initial, commitment)) in commitments {
+            if initial == commitment {
+                continue;
+            }
+            let original = db.get_account(&address).map_err(map_database_error)?;
+            let mut current = original.clone().unwrap_or_default();
+            if initial.is_zero() {
+                current = current.with_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+            }
+            current.extension = encode_config_commitment(commitment).into();
+            state.insert_account(address, original, Some(current));
+        }
+
         Ok(state)
+    }
+
+    fn config_commitment<DB: DynDatabase>(
+        db: &mut CacheDB<DB>,
+        address: Address,
+        spec: TempoHardfork,
+    ) -> Result<B256, BlockExecutionError> {
+        db.get_account(&address)
+            .map_err(map_database_error)?
+            .map_or(Ok(B256::ZERO), |info| {
+                account_config_commitment(&info, spec)
+            })
+            .map_err(BlockExecutionError::other)
     }
 
     fn apply_expiring_nonce_replay(
@@ -223,7 +252,7 @@ where
         expiring_nonce: ExpiringNonceReplay,
         block_timestamp: u64,
     ) -> Result<(), BlockExecutionError> {
-        let spec = self.inner.evm.ctx().cfg.spec;
+        let spec = self.inner.evm().config_spec_id();
         let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
         let capacity = spec.expiring_nonce_set_capacity();
         if expiring_nonce.valid_before <= block_timestamp
@@ -232,7 +261,7 @@ where
             return Err(StorageActionReplayError::ActionConflict.into());
         }
 
-        let db = self.inner.evm_mut().db_mut();
+        let db = self.inner.evm_mut().overlay_db_mut();
 
         let nonce_manager = NonceManager::new();
         let now = U256::from(block_timestamp);
@@ -240,8 +269,8 @@ where
 
         let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
         let seen_expiry = db
-            .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot)
-            .map_err(BlockExecutionError::other)?;
+            .get_storage(&NONCE_PRECOMPILE_ADDRESS, &seen_slot)
+            .map_err(map_database_error)?;
         if !seen_expiry.is_zero() && seen_expiry > now {
             return Err(StorageActionReplayError::ActionConflict.into());
         }
@@ -251,13 +280,13 @@ where
             .map_err(|_| StorageActionReplayError::ActionConflict)?;
         let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
         let old_hash = db
-            .storage(NONCE_PRECOMPILE_ADDRESS, ring_slot)
-            .map_err(BlockExecutionError::other)?;
+            .get_storage(&NONCE_PRECOMPILE_ADDRESS, &ring_slot)
+            .map_err(map_database_error)?;
         if !old_hash.is_zero() {
             let old_seen_slot = nonce_manager.expiring_nonce_seen[B256::from(old_hash)].slot();
             let old_expiry = db
-                .storage(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)
-                .map_err(BlockExecutionError::other)?;
+                .get_storage(&NONCE_PRECOMPILE_ADDRESS, &old_seen_slot)
+                .map_err(map_database_error)?;
             if !old_expiry.is_zero() && old_expiry > now {
                 return Err(StorageActionReplayError::ActionConflict.into());
             }
@@ -273,7 +302,7 @@ where
             NONCE_PRECOMPILE_ADDRESS,
             ring_slot,
             old_hash,
-            U256::from_be_slice(expiring_nonce.hash.as_slice()),
+            expiring_nonce.hash.into(),
         );
         self.replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,
@@ -316,13 +345,11 @@ pub struct StorageActionReplayOutcome {
 #[derive(Debug)]
 pub struct StorageActionReplay {
     /// Precomputed transaction execution result that can be reused if actions are applied without conflicts.
-    pub result: ExecutionResult<HaltReason>,
+    pub result: TxResult<TempoEvmTypes>,
     /// Actions to replay in order to get to the state after the transaction execution.
     pub actions: Vec<StorageAction>,
     /// Semantic replay data for expiring nonce transactions.
     pub expiring_nonce: Option<ExpiringNonceReplay>,
-    /// Validator-credited fee amount
-    pub validator_fee: U256,
 }
 
 /// Replay data for expiring nonce transactions.
@@ -410,9 +437,9 @@ impl StorageActionReplayState {
     ///
     /// Uses [`Self::sload_exact`] to validate the recorded pre-store value against
     /// the tx-local/cache view when available, then records the store.
-    fn sstore_exact<DB: Database>(
+    fn sstore_exact<DB>(
         &mut self,
-        db: &mut State<DB>,
+        db: &CacheDB<DB>,
         address: Address,
         slot: U256,
         expected: U256,
@@ -441,27 +468,21 @@ impl StorageActionReplayState {
             });
     }
 
-    fn cached_storage_value<DB: Database>(
-        db: &State<DB>,
-        address: Address,
-        slot: U256,
-    ) -> Option<U256> {
+    fn cached_storage_value<DB>(db: &CacheDB<DB>, address: Address, slot: U256) -> Option<U256> {
         db.cache.accounts.get(&address).and_then(|cached_account| {
-            let Some(account) = cached_account.account.as_ref() else {
+            let Some(_account) = cached_account.as_ref() else {
                 // Account is in cache and known to not exist, so all its storage is zero.
                 return Some(U256::ZERO);
             };
 
-            if let Some(slot) = account.storage.get(&slot).copied() {
+            let cached_storage = db.cache.storage.get(&address)?;
+            if let Some(slot) = cached_storage.slots.get(&slot).copied() {
                 // Account and slot are in cache.
                 Some(slot)
             } else {
                 // Account is in cache, but the slot is not. If the storage is reported to be fully known,
                 // it means the slot doesn't exist, and its value is zero.
-                cached_account
-                    .status
-                    .is_storage_known()
-                    .then_some(U256::ZERO)
+                cached_storage.wiped.then_some(U256::ZERO)
             }
         })
     }
@@ -471,9 +492,9 @@ impl StorageActionReplayState {
     /// If the tx has already touched the slot, validates that the current value matches `expected`.
     /// On first touch, uses the EVM state cache when available and requires it to match `expected`.
     /// When the slot is not cached, records `expected` as the current value.
-    fn sload_exact<DB: Database>(
+    fn sload_exact<DB>(
         &mut self,
-        db: &mut State<DB>,
+        db: &CacheDB<DB>,
         address: Address,
         slot: U256,
         expected: U256,
@@ -509,9 +530,9 @@ impl StorageActionReplayState {
     /// Returns the current slot value for semantic replay.
     ///
     /// Falls back to `fallback` when the current value is not already known.
-    fn sload_current_or<DB: Database>(
+    fn sload_current_or<DB>(
         &mut self,
-        db: &mut State<DB>,
+        db: &CacheDB<DB>,
         address: Address,
         slot: U256,
         fallback: U256,
@@ -574,16 +595,19 @@ impl ExpiringNonceReplayState {
         }
     }
 
-    fn ring_ptr<DB: Database>(&mut self, db: &mut State<DB>) -> Result<U256, BlockExecutionError> {
+    fn ring_ptr<DB: DynDatabase>(
+        &mut self,
+        db: &mut CacheDB<DB>,
+    ) -> Result<U256, BlockExecutionError> {
         Ok(match self.ring_ptr {
             Some(ptr) => ptr,
             None => {
                 let ptr = db
-                    .storage(
-                        NONCE_PRECOMPILE_ADDRESS,
-                        NonceManager::new().expiring_nonce_ring_ptr.slot(),
+                    .get_storage(
+                        &NONCE_PRECOMPILE_ADDRESS,
+                        &NonceManager::new().expiring_nonce_ring_ptr.slot(),
                     )
-                    .map_err(BlockExecutionError::other)?;
+                    .map_err(map_database_error)?;
                 self.ring_ptr = Some(ptr);
                 ptr
             }
@@ -598,25 +622,157 @@ impl ExpiringNonceReplayState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::{
-        database::{EmptyDB, InMemoryDB},
-        state::AccountInfo,
+    use crate::{
+        TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm,
+        test_utils::{TestExecutorBuilder, test_chainspec},
     };
+    use alloy_consensus::{SignableTransaction, TxLegacy};
+    use alloy_primitives::{Signature, TxKind};
+    use evm2::evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles};
+    use reth_primitives_traits::SignedTransaction;
+    use std::sync::Arc;
+    use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+    use tempo_primitives::TempoTxEnvelope;
 
-    fn state_with_storage(address: Address, slot: U256, value: U256) -> State<EmptyDB> {
-        let mut db = State::builder().with_database(EmptyDB::default()).build();
-        db.insert_account_with_storage(
-            address,
-            AccountInfo::default(),
-            [(slot, value)].into_iter().collect(),
+    fn empty_evm(database: InMemoryDB) -> TempoEvm<'static> {
+        build_tempo_evm(
+            TempoHardfork::T7,
+            1,
+            TempoBlockEnv::default(),
+            database,
+            NoPrecompiles::default(),
+            TempoEvmExt::default(),
+        )
+    }
+
+    fn state_with_storage(address: Address, slot: U256, value: U256) -> TempoEvm<'static> {
+        let mut evm = empty_evm(InMemoryDB::default());
+        evm.overlay_db_mut()
+            .insert_account_info(&address, AccountInfo::default());
+        evm.overlay_db_mut()
+            .insert_account_storage(&address, &slot, &value);
+        evm
+    }
+
+    fn executor_with_storage(
+        chainspec: &Arc<TempoChainSpec>,
+        address: Address,
+        slot: U256,
+        value: U256,
+    ) -> TempoBlockExecutor<'_> {
+        let mut executor = TestExecutorBuilder::default().build(InMemoryDB::default(), chainspec);
+        let db = executor.evm_mut().overlay_db_mut();
+        db.insert_account_info(&address, AccountInfo::default());
+        db.insert_account_storage(&address, &slot, &value);
+        executor
+    }
+
+    #[test]
+    fn config_commitment_replays_only_when_unchanged() {
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let current = B256::repeat_byte(0x77);
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
         );
-        db
+        for recorded in [B256::ZERO, current] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T14)
+                .build(InMemoryDB::default(), &chainspec);
+            let info = AccountInfo {
+                extension: encode_config_commitment(current).into(),
+                ..Default::default()
+            };
+            executor
+                .evm_mut()
+                .overlay_db_mut()
+                .insert_account_info(&sender, info);
+            let replay = StorageActionReplay {
+                result: TxResult::<TempoEvmTypes> {
+                    status: true,
+                    ..Default::default()
+                },
+                actions: vec![StorageAction::ConfigCommitment(sender, recorded, recorded)],
+                expiring_nonce: None,
+            };
+            let result = executor.execute_transaction_with_actions(
+                tx.clone().with_signer(sender),
+                replay,
+                |_| {},
+            );
+            let reason = result
+                .as_ref()
+                .err()
+                .and_then(StorageActionReplayError::from_block_execution_error);
+            assert_eq!(
+                reason == Some(StorageActionReplayError::ActionConflict),
+                recorded != current,
+                "{recorded}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_commitment_write_replays_registration() {
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let commitment = B256::repeat_byte(0x77);
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .build(InMemoryDB::default(), &chainspec);
+        executor
+            .evm_mut()
+            .overlay_db_mut()
+            .insert_account_info(&sender, AccountInfo::default());
+        let replay = StorageActionReplay {
+            result: TxResult::<TempoEvmTypes> {
+                status: true,
+                ..Default::default()
+            },
+            actions: vec![
+                StorageAction::ConfigCommitment(sender, B256::ZERO, commitment),
+                StorageAction::ConfigCommitment(sender, commitment, commitment),
+            ],
+            expiring_nonce: None,
+        };
+        executor
+            .execute_transaction_with_actions(tx.with_signer(sender), replay, |_| {})
+            .unwrap();
+        let info = executor
+            .evm_mut()
+            .overlay_db_mut()
+            .get_account(&sender)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            account_config_commitment(&info, TempoHardfork::T14).unwrap(),
+            commitment
+        );
+        assert_eq!(
+            info.code_hash,
+            Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE).hash_slow()
+        );
     }
 
     #[test]
     fn fee_token_balance_check_replays_only_when_affordability_is_unchanged() {
-        use crate::test_utils::{TestExecutorBuilder, test_chainspec};
-
         let token = Address::repeat_byte(0x42);
         let slot = U256::from(7);
         let chainspec = test_chainspec();
@@ -629,8 +785,7 @@ mod tests {
             (20, 0, false, true),
             (20, 50, false, false),
         ] {
-            let mut db = state_with_storage(token, slot, U256::from(current));
-            let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+            let mut executor = executor_with_storage(&chainspec, token, slot, U256::from(current));
             let mut actions = vec![StorageAction::FeeTokenBalanceCheck(
                 token,
                 slot,
@@ -649,15 +804,16 @@ mod tests {
             let result = executor.replay_actions(actions, None);
             if succeeds {
                 let state = result.unwrap();
+                let value = state
+                    .account_changes()
+                    .find(|changes| changes.address == token)
+                    .and_then(|changes| changes.storage.slots.get(&slot).map(|slot| slot.value));
                 if sufficient {
-                    let value = &state[&token].storage[&slot];
-                    assert_eq!(value.original_value(), U256::from(current));
-                    assert_eq!(
-                        value.present_value(),
-                        U256::from(current - if sufficient { 10 } else { 0 })
-                    );
+                    let value = value.unwrap();
+                    assert_eq!(value.original, U256::from(current));
+                    assert_eq!(value.current, U256::from(current - 10));
                 } else {
-                    assert!(!state.contains_key(&token));
+                    assert!(value.is_none());
                 }
             } else {
                 assert_eq!(
@@ -670,13 +826,10 @@ mod tests {
 
     #[test]
     fn fee_token_balance_check_does_not_relax_later_exact_reads() {
-        use crate::test_utils::{TestExecutorBuilder, test_chainspec};
-
         let token = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut db = state_with_storage(token, slot, U256::from(80));
         let chainspec = test_chainspec();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = executor_with_storage(&chainspec, token, slot, U256::from(80));
         let result = executor.replay_actions(
             [
                 StorageAction::FeeTokenBalanceCheck(
@@ -700,11 +853,11 @@ mod tests {
     fn recorded_sload_rejects_changed_database_value() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut db = state_with_storage(address, slot, U256::from(11));
+        let evm = state_with_storage(address, slot, U256::from(11));
         let mut replay_state = StorageActionReplayState::default();
 
         let err = replay_state
-            .sload_exact(&mut db, address, slot, U256::from(10))
+            .sload_exact(evm.overlay_db(), address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
             StorageActionReplayError::from_block_execution_error(&err),
@@ -717,22 +870,14 @@ mod tests {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
         let mut cache_db = InMemoryDB::default();
-        cache_db.insert_account_info(
-            address,
-            AccountInfo {
-                nonce: 1,
-                ..Default::default()
-            },
-        );
-        cache_db
-            .insert_account_storage(address, slot, U256::from(11))
-            .expect("seed backing storage");
-        let mut db = State::builder().with_database(cache_db).build();
+        cache_db.insert_account_info(&address, AccountInfo::default().with_nonce(1));
+        cache_db.insert_account_storage(&address, &slot, &U256::from(11));
+        let evm = empty_evm(cache_db);
         let mut replay_state = StorageActionReplayState::default();
 
         assert_eq!(
             replay_state
-                .sload_exact(&mut db, address, slot, U256::from(10))
+                .sload_exact(evm.overlay_db(), address, slot, U256::from(10))
                 .expect("recorded sload should avoid backing storage lookup"),
             U256::from(10),
         );
@@ -751,22 +896,14 @@ mod tests {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
         let mut cache_db = InMemoryDB::default();
-        cache_db.insert_account_info(
-            address,
-            AccountInfo {
-                nonce: 1,
-                ..Default::default()
-            },
-        );
-        cache_db
-            .insert_account_storage(address, slot, U256::from(11))
-            .expect("seed backing storage");
-        let mut db = State::builder().with_database(cache_db).build();
+        cache_db.insert_account_info(&address, AccountInfo::default().with_nonce(1));
+        cache_db.insert_account_storage(&address, &slot, &U256::from(11));
+        let evm = empty_evm(cache_db);
         let mut replay_state = StorageActionReplayState::default();
 
         assert_eq!(
             replay_state
-                .sload_current_or(&mut db, address, slot, U256::from(10))
+                .sload_current_or(evm.overlay_db(), address, slot, U256::from(10))
                 .expect("uncached semantic sload should use recorded value"),
             U256::from(10),
         );
@@ -784,12 +921,12 @@ mod tests {
     fn recorded_sload_rejects_changed_transaction_view() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut db = state_with_storage(address, slot, U256::from(10));
+        let evm = state_with_storage(address, slot, U256::from(10));
         let mut replay_state = StorageActionReplayState::default();
 
         assert_eq!(
             replay_state
-                .sload_exact(&mut db, address, slot, U256::from(10))
+                .sload_exact(evm.overlay_db(), address, slot, U256::from(10))
                 .expect("load exact storage"),
             U256::from(10),
         );
@@ -798,7 +935,7 @@ mod tests {
             .expect("store loaded slot");
 
         let err = replay_state
-            .sload_exact(&mut db, address, slot, U256::from(10))
+            .sload_exact(evm.overlay_db(), address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
             StorageActionReplayError::from_block_execution_error(&err),
@@ -810,11 +947,11 @@ mod tests {
     fn recorded_sload_does_not_rebase_on_committed_delta() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut db = state_with_storage(address, slot, U256::from(11));
+        let evm = state_with_storage(address, slot, U256::from(11));
         let mut replay_state = StorageActionReplayState::default();
 
         let err = replay_state
-            .sload_exact(&mut db, address, slot, U256::from(10))
+            .sload_exact(evm.overlay_db(), address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
             StorageActionReplayError::from_block_execution_error(&err),
@@ -826,11 +963,17 @@ mod tests {
     fn first_touch_sstore_uses_recorded_prewrite_value() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut db = state_with_storage(address, slot, U256::from(10));
+        let evm = state_with_storage(address, slot, U256::from(10));
         let mut replay_state = StorageActionReplayState::default();
 
         replay_state
-            .sstore_exact(&mut db, address, slot, U256::from(10), U256::from(11))
+            .sstore_exact(
+                evm.overlay_db(),
+                address,
+                slot,
+                U256::from(10),
+                U256::from(11),
+            )
             .expect("first-touch store should establish the slot view");
 
         let change = replay_state
@@ -862,11 +1005,11 @@ mod tests {
     fn current_sload_allows_semantic_rebase() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut db = state_with_storage(address, slot, U256::from(11));
+        let evm = state_with_storage(address, slot, U256::from(11));
         let mut replay_state = StorageActionReplayState::default();
 
         let current = replay_state
-            .sload_current_or(&mut db, address, slot, U256::from(10))
+            .sload_current_or(evm.overlay_db(), address, slot, U256::from(10))
             .expect("load current storage");
         replay_state
             .sstore(address, slot, current + U256::from(3))

@@ -11,12 +11,12 @@ use alloy::primitives::{Address, B256, Bytes, U256, address};
 use alloy_consensus::Transaction;
 use alloy_eips::NumHash;
 use alloy_network::{ReceiptResponse, TransactionBuilder as _};
-use alloy_provider::{DynProvider, Provider};
+use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::{
-    precompiles::ITIP20,
+    precompiles::{ITIP20, ITIP403Registry::PolicyType, TIP_FEE_MANAGER_ADDRESS},
     zones::{
         IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, Withdrawal, ZONE_INBOX_ADDRESS,
         ZONE_OUTBOX_ADDRESS,
@@ -27,8 +27,9 @@ use zone_l1::ChainTempoStateExt;
 use zone_primitives::constants::zone_chain_id;
 
 use crate::utils::{
-    DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneTestNode,
-    approve_outbox, leader_p2p_config, local_dev_zone_account, poll_until, seed_fixture_for_zone,
+    DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, PolicySeed, TIP20_TX_GAS, WITHDRAWAL_TX_GAS,
+    ZoneTestNode, approve_outbox, leader_p2p_config, local_dev_zone_account, poll_until,
+    seed_fixture_for_zone, seed_raw_tip403_policy, seed_raw_tip403_token_policy, signer_at,
     start_chain_id_rpc, start_local_p2p_cluster, start_local_zone_with_fixture,
 };
 
@@ -96,7 +97,6 @@ async fn test_sequencer_exposes_simulation_endpoints() -> eyre::Result<()> {
 
 /// A follower imports the leader's executed block and exposes the resulting state over RPC.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -166,7 +166,7 @@ async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
     // bytes, then independently validated by the leader pool for the next L1-derived build.
     let (follower_wallet, sender) = local_dev_zone_account(&follower)?;
     let transfer_recipient = address!("0x0000000000000000000000000000000000009abc");
-    fixture.seed_no_receive_policy(transfer_recipient)?;
+    fixture.seed_transfer_recipient(transfer_recipient)?;
     let sender_deposit = fixture.make_deposit(PATH_USD_ADDRESS, sender, sender, amount);
     let observed = fixture.portal_events_from_deposits(std::slice::from_ref(&sender_deposit));
     let anchor = fixture.inject_deposits_into(
@@ -283,18 +283,7 @@ async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
 /// 4. The follower imports block 2 — only possible if it, too, reads policy at
 ///    height 2 and reproduces the revert, matching the leader's state root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Result<()> {
-    use alloy_provider::ProviderBuilder;
-    use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-    use tempo_contracts::precompiles::{
-        ITIP20, ITIP403Registry::PolicyType, TIP_FEE_MANAGER_ADDRESS,
-    };
-
-    use crate::utils::{
-        PolicySeed, TIP20_TX_GAS, seed_raw_tip403_policy, seed_raw_tip403_token_policy, signer_at,
-    };
-
     reth_tracing::init_test_tracing();
 
     let mut cluster = start_local_p2p_cluster(10).await?;
@@ -355,7 +344,7 @@ async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Res
     const POLICY_L1_BLOCK: u64 = 2;
     let policy_block = fixture.next_block();
     assert_eq!(policy_block.header.inner.number, POLICY_L1_BLOCK);
-    fixture.seed_no_receive_policy(bob)?;
+    fixture.seed_transfer_recipient(bob)?;
     for node in [&leader, &follower] {
         seed_raw_tip403_policy(
             node.l1_state_cache(),

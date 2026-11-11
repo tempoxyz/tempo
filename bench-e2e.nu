@@ -33,7 +33,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--consensus.no-legacy-archive"
     "--consensus.verification-mode" "deferred"
     "--engine.share-execution-cache-with-payload-builder"
-    "--builder.enable-prewarming"
+    "--builder.disable-prewarming=false"
     "--rpc.max-connections" "10000"
     "--txpool.pending-max-count" "200000"
     "--txpool.basefee-max-count" "200000"
@@ -41,6 +41,9 @@ const E2E_LOCAL_RETH_ARGS = [
     "--txpool.max-pending-txns" "200000"
     "--txpool.max-new-txns" "200000"
     "--txpool.max-batch-size" "200000"
+    # Bench presets send many transactions per sender; keep them clear of the node's
+    # 16-transaction per-sender default.
+    "--txpool.max-account-slots" "150000"
 ]
 
 def merge-e2e-features [...features: string] {
@@ -84,7 +87,9 @@ def supported-node-arg-filter [tempo_bin: string, args: list<string>] {
         }
 
         let key = ($arg | split row "=" | first)
-        if ($help | str contains $key) {
+        # Binaries before the flag took a value parse it as a bare switch and reject =false.
+        let value_unsupported = ($key == "--builder.disable-prewarming" and ($arg | str contains "=") and not ($help | str contains $"($key)[="))
+        if ($help | str contains $key) and not $value_unsupported {
             $supported = ($supported | append $arg)
         } else {
             print $"Skipping unsupported tempo node arg for ($tempo_bin): ($key)"
@@ -219,51 +224,79 @@ def e2e-db-size-bytes [datadir: string] {
         | math sum
 }
 
-def ensure-bloat-space [bloat: int] {
-    if $bloat <= 0 {
-        return
+# Remove cached e2e snapshot datadirs (other bloat sizes, old experiment keys)
+# from both bench volumes, keeping the ones this run rebuilds. Replay and zones
+# datadirs are left alone. Everything left on a schelk volume is promoted into
+# every new virgin snapshot, so stale dirs otherwise never go away.
+def prune-stale-e2e-snapshots [keep: list<string>] {
+    for mount in [$E2E_A_MOUNT $E2E_B_MOUNT] {
+        let stale = (
+            ls $mount
+                | where type == dir
+                | get name
+                | where { |dir| (($dir | path basename) starts-with "tempo_e2e_") and not ($dir in $keep) }
+        )
+        for dir in $stale {
+            print $"  Removing stale e2e snapshot ($dir)"
+            rm -rf $dir
+        }
     }
+}
 
+def bloat-space-requirements [bloat: int] {
     let import_working_set_mib = $bloat * $E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER
-    let a_required_mib = $bloat + $import_working_set_mib + $E2E_BLOAT_FREE_MARGIN_MIB
-    let b_required_mib = $import_working_set_mib + $E2E_BLOAT_FREE_MARGIN_MIB
-    let requirements = [
+    [
         {
             mount: $E2E_A_MOUNT
-            required_mib: $a_required_mib
+            required_mib: ($bloat + $import_working_set_mib + $E2E_BLOAT_FREE_MARGIN_MIB)
             components: $"dump=($bloat) MiB, import-working-set=($import_working_set_mib) MiB, margin=($E2E_BLOAT_FREE_MARGIN_MIB) MiB"
         }
         {
             mount: $E2E_B_MOUNT
-            required_mib: $b_required_mib
+            required_mib: ($import_working_set_mib + $E2E_BLOAT_FREE_MARGIN_MIB)
             components: $"import-working-set=($import_working_set_mib) MiB, margin=($E2E_BLOAT_FREE_MARGIN_MIB) MiB"
         }
     ]
+}
 
-    print "Checking e2e bloat rebuild free space..."
-    print $"  Bloat dump: ($bloat) MiB on ($E2E_A_MOUNT)"
-    print $"  Import working set: ($import_working_set_mib) MiB per side; multiplier=($E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER)x bloat for DB, ETL, static file, and trie writes"
-    print $"  Free-space margin: ($E2E_BLOAT_FREE_MARGIN_MIB) MiB per side"
-
-    mut failed = false
-    for requirement in $requirements {
+# Print free space per bench volume and return the requirements that don't fit.
+def bloat-space-shortfalls [requirements: list] {
+    $requirements | each { |requirement|
         let available_mib = (df-available-mib $requirement.mount)
         print $"  ($requirement.mount): available=($available_mib) MiB required=($requirement.required_mib) MiB \(($requirement.components)\)"
-        if $available_mib < $requirement.required_mib {
-            $failed = true
-        }
+        $requirement | insert available_mib $available_mib
+    } | where { |requirement| $requirement.available_mib < $requirement.required_mib }
+}
+
+# Check free space for a bloat rebuild. When it doesn't fit, prune stale e2e
+# snapshot datadirs (all but keep) and check again before failing.
+def ensure-bloat-space [bloat: int, keep: list<string>] {
+    if $bloat <= 0 {
+        return
     }
 
-    if $failed {
-        print "Error: insufficient free space for e2e bloat snapshot rebuild"
-        for requirement in $requirements {
-            let available_mib = (df-available-mib $requirement.mount)
-            if $available_mib < $requirement.required_mib {
-                print $"  ($requirement.mount) needs at least ($requirement.required_mib) MiB, has ($available_mib) MiB"
-            }
-        }
-        exit 1
+    let requirements = (bloat-space-requirements $bloat)
+    print "Checking e2e bloat rebuild free space..."
+    print $"  Bloat dump: ($bloat) MiB on ($E2E_A_MOUNT)"
+    print $"  Import working set: ($bloat * $E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER) MiB per side; multiplier=($E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER)x bloat for DB, ETL, static file, and trie writes"
+    print $"  Free-space margin: ($E2E_BLOAT_FREE_MARGIN_MIB) MiB per side"
+
+    if (bloat-space-shortfalls $requirements | is-empty) {
+        return
     }
+
+    print "Not enough free space; pruning stale e2e snapshots..."
+    prune-stale-e2e-snapshots $keep
+    let shortfalls = (bloat-space-shortfalls $requirements)
+    if ($shortfalls | is-empty) {
+        return
+    }
+
+    print "Error: insufficient free space for e2e bloat snapshot rebuild"
+    for requirement in $shortfalls {
+        print $"  ($requirement.mount) needs at least ($requirement.required_mib) MiB, has ($requirement.available_mib) MiB"
+    }
+    exit 1
 }
 
 def e2e-bloat-gib-to-mib [bloat: int] {
@@ -1353,14 +1386,20 @@ def "main render-txgen-spec" [
     --tps: int = 50000                                  # Public-mix target TPS
     --duration: int = 90                                # Public-mix duration in seconds
 ] {
+    # CI renders before the run, so apply the TXGEN_* assignments of BENCH_BENCH_ENV
+    # (bench-env) here too, such as TXGEN_NEOBANK_INSTANCES or TXGEN_NEOBANK_MODULES.
+    with-env (txgen-bench-env-txgen-vars ($env.BENCH_BENCH_ENV? | default "")) { render-txgen-spec-inner $preset $out_dir $accounts $tps $duration }
+}
+
+def render-txgen-spec-inner [preset: string, out_dir: string, accounts: int, tps: int, duration: int] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
-    if $spec.scenario_id == "public-mix" {
+    if $spec.scenario_id in $TXGEN_HELPER_PUBLIC_MIX_PRESETS {
         let window_ms = ($env.TXGEN_ZONE_SETTLEMENT_WINDOW_MS? | default "3000" | into int)
         if $window_ms < 1 or $tps < 1 or $duration < 1 {
             error make {msg: "Public mix requires positive TPS, duration, and zone sizing window"}
         }
         let automatic_zones = ([1 (($tps * $window_ms / 210000) | math ceil | into int)] | math max)
-        let zones = ($env.TXGEN_ZONE_COUNT? | default $automatic_zones | into int)
+        let zones = (txgen-zone-count $spec.scenario_id $automatic_zones)
         print (txgen-prepare-public-mix-preset $spec.spec_path ($tps * $duration) $accounts $zones 1337 --out-dir $out_dir)
     } else {
         print $spec.spec_path
@@ -1575,7 +1614,7 @@ def "main e2e" [
             print "Cleaning restored e2e datadirs before bloat snapshot rebuild..."
             bench-clean-datadir $a_db
             bench-clean-datadir $b_db
-            ensure-bloat-space $bloat_mib
+            ensure-bloat-space $bloat_mib [$a_db $b_db]
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
             cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --nonce-ring-hardfork $snapshot_state_hardfork --out $bloat_file ...$token_args

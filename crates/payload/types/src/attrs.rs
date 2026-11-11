@@ -4,7 +4,8 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tempo_dkg_onchain_artifacts::CeremonyOutput;
 use tempo_primitives::TempoConsensusContext;
 
 /// Container type for all components required to build a payload.
@@ -26,13 +27,13 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Remaining local proposal budget available to this payload build.
+    /// Local proposal budget and the monotonic clock reading when it was set.
     ///
     /// Consensus sets this to the proposal return budget left when it dispatches
     /// the build. `None` means the build was not requested by consensus, so the
     /// builder should not stop early for block pacing.
     #[serde(skip)]
-    payload_build_budget: Option<Duration>,
+    payload_build_budget: Option<(Duration, Instant)>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -46,6 +47,13 @@ pub struct TempoPayloadAttributes {
     proposer_public_key: Option<B256>,
     /// Consensus view for this block
     consensus_context: Option<TempoConsensusContext>,
+    /// The DKG ceremony output on the parent, set by consensus for a boundary block. The payload
+    /// builder fills in the rest of the block's [`tempo_dkg_onchain_artifacts::OnchainDkgOutcome`]
+    /// from the parent state. Consensus passes attributes in-process, so it is never sent over the
+    /// wire.
+    #[serde(skip)]
+    #[debug(skip)]
+    dkg_ceremony_output: Option<CeremonyOutput>,
 }
 
 impl TempoPayloadAttributes {
@@ -76,6 +84,7 @@ impl TempoPayloadAttributes {
             extra_data,
             proposer_public_key,
             consensus_context,
+            dkg_ceremony_output: None,
         }
     }
 
@@ -90,6 +99,17 @@ impl TempoPayloadAttributes {
         self
     }
 
+    /// Returns the DKG ceremony output on the parent, set for a boundary block.
+    pub fn dkg_ceremony_output(&self) -> Option<&CeremonyOutput> {
+        self.dkg_ceremony_output.as_ref()
+    }
+
+    /// Sets the DKG ceremony output on the parent of a boundary block.
+    pub fn with_dkg_ceremony_output(mut self, output: CeremonyOutput) -> Self {
+        self.dkg_ceremony_output = Some(output);
+        self
+    }
+
     /// Returns the proposer's public key.
     pub fn proposer_public_key(&self) -> Option<&B256> {
         self.proposer_public_key.as_ref()
@@ -99,19 +119,22 @@ impl TempoPayloadAttributes {
     ///
     /// The value should already account for any time spent before the build was
     /// requested. The builder treats it as a shared budget for leader
-    /// build/persist work and validator replay/persist work.
+    /// build/persist work and validator replay/persist work. Time between setting
+    /// this budget and starting the build counts against it.
     pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
-        self.payload_build_budget = Some(budget);
+        self.payload_build_budget = Some((budget, Instant::now()));
         self
     }
 
-    /// Returns the consensus-provided build budget, if this is a paced build.
+    /// Returns the remaining consensus-provided build budget, accounting for time
+    /// since it was set. An exhausted paced budget returns zero.
     ///
     /// `None` is intentional for non-consensus builds such as dev or external
     /// payload requests; those builds are not constrained by the consensus
     /// block-time budget.
     pub fn payload_build_budget(&self) -> Option<Duration> {
         self.payload_build_budget
+            .map(|(budget, observed)| budget.saturating_sub(observed.elapsed()))
     }
 
     /// Returns the milliseconds portion of the timestamp.
