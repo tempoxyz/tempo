@@ -820,7 +820,6 @@ provision_up() {
         --tempo.bootnodes-endpoint none
         --consensus.no-legacy-archive
         --engine.share-execution-cache-with-payload-builder
-        --builder.enable-prewarming
         --builder.gaslimit "$l1_gas_limit"
         --rpc.eth-proof-window 1024
         --rpc.max-connections 10000
@@ -830,7 +829,12 @@ provision_up() {
         --txpool.max-pending-txns 200000
         --txpool.max-new-txns 200000
         --txpool.max-batch-size 200000
+        --txpool.max-account-slots 150000
     )
+    # Keep payload builder prewarming on; older binaries reject a value for this flag.
+    if "$TEMPO_BIN" node --help 2>&1 | grep -qF -- '--builder.disable-prewarming[='; then
+        common_l1_args+=(--builder.disable-prewarming=false)
+    fi
 
     start_process tempo-a "$TEMPO_BIN" "${ZONES_BENCH_L1_A_CPUS:-0-3,16-19}" "$log_dir/tempo-a.log" \
         "$TEMPO_BIN" node \

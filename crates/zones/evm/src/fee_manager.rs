@@ -129,7 +129,7 @@ mod tests {
         TempoTxEnvelope,
         transaction::{TempoSignature, TempoTransaction},
     };
-    use zone_precompiles::{ZONE_FEE_MANAGER_ADDRESS, zone_fee_manager};
+    use zone_precompiles::{ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader, zone_fee_manager};
 
     use crate::zone_evm::tests::config;
 
@@ -158,7 +158,7 @@ mod tests {
             &zone_fee_manager::slots::DEFAULT_FEE_TOKEN,
             &U256::from_be_slice(default_token.as_slice()),
         );
-        let mut evm = config().evm_with_env(db, TempoEvmEnv::default());
+        let mut evm = config(MockL1Reader::default()).evm_with_env(db, TempoEvmEnv::default());
 
         assert_eq!(
             resolve_fee_token(
@@ -191,7 +191,7 @@ mod tests {
             &initialized_token,
             AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
         );
-        let mut evm = config().evm_with_env(db, TempoEvmEnv::default());
+        let mut evm = config(MockL1Reader::default()).evm_with_env(db, TempoEvmEnv::default());
         let manager = ZoneProtocolFeeManager::new();
 
         assert!(

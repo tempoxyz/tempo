@@ -15,6 +15,7 @@ pub mod engine;
 mod follower;
 pub mod genesis;
 pub mod node;
+mod pool_maintenance;
 mod replication;
 pub mod role;
 pub mod rpc;

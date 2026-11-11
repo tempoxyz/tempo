@@ -14,6 +14,7 @@ use evm2::{
     DatabaseError, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     evm::{DynDatabase, InMemoryDB, precompile::NoPrecompiles},
+    interpreter::gas::WARM_STORAGE_READ_COST,
 };
 use proptest::prelude::*;
 use tempo_contracts::precompiles::{AccountKeychainError, IFeeManager};
@@ -764,6 +765,109 @@ fn test_aa_gas_multiple_calls_overhead() {
     assert_eq!((gas.0 + gas.1), expected,);
 }
 
+const BATCH_BENEFICIARY: Address = Address::new([0xbe; 20]);
+
+fn batch_intrinsic_gas(spec: TempoHardfork, targets: &[Address], access_list: Vec<Address>) -> u64 {
+    let signer = PrivateKeySigner::random();
+    let caller = signer.address();
+    let gas_limit = 1_000_000;
+    let gas_price = 1_000_000_000_000;
+    let mut evm = test_evm(spec);
+    let mut block = *evm.block();
+    block.beneficiary = BATCH_BENEFICIARY;
+    evm.set_block(block);
+    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+        TIP20Setup::path_usd(caller)
+            .with_issuer(caller)
+            .with_mint(caller, calc_gas_balance_spending(gas_limit, gas_price))
+            .apply()
+    })
+    .unwrap();
+    let tx = TempoTransaction {
+        chain_id: 1,
+        fee_token: Some(PATH_USD_ADDRESS),
+        gas_limit,
+        max_fee_per_gas: gas_price,
+        max_priority_fee_per_gas: gas_price,
+        calls: targets
+            .iter()
+            .map(|&to| Call {
+                to: TxKind::Call(if to.is_zero() { caller } else { to }),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            })
+            .collect(),
+        access_list: access_list
+            .into_iter()
+            .map(|address| alloy_eips::eip2930::AccessListItem {
+                address,
+                storage_keys: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        ..Default::default()
+    };
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let env: TempoTxEnv = Recovered::new_unchecked(
+        TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Primitive(
+            PrimitiveSignature::Secp256k1(signature),
+        ))),
+        caller,
+    )
+    .into();
+    let prepared = prepare_aa(&mut TxRequest {
+        envelope: &env,
+        tx: Recovered::new_unchecked(env.as_aa().unwrap(), caller),
+        host: &mut evm,
+        _non_exhaustive: (),
+    })
+    .unwrap();
+    prepared.intrinsic
+}
+
+#[test]
+fn test_t14_batch_charges_cold_access_once_per_cold_target() {
+    let [a, b, c, listed] = [1, 2, 3, 4].map(Address::with_last_byte);
+    // `Address::ZERO` stands for the transaction's sender.
+    let sender = Address::ZERO;
+    let spec = TempoHardfork::T14;
+    let single = batch_intrinsic_gas(spec, &[a], vec![]);
+
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, b, c], vec![]),
+        single + 2 * COLD_ACCOUNT_ACCESS_COST
+    );
+    // Repeated targets, including the first call's, pay only the warm access.
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, b, b, a], vec![]),
+        single + COLD_ACCOUNT_ACCESS_COST + 2 * u64::from(WARM_STORAGE_READ_COST)
+    );
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, sender], vec![]),
+        single + u64::from(WARM_STORAGE_READ_COST)
+    );
+    // The block's fee recipient is warm during execution, but intrinsic gas must not depend on
+    // which validator builds the block.
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, BATCH_BENEFICIARY], vec![]),
+        single + COLD_ACCOUNT_ACCESS_COST
+    );
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, listed], vec![listed]),
+        batch_intrinsic_gas(spec, &[a], vec![listed]) + u64::from(WARM_STORAGE_READ_COST)
+    );
+}
+
+#[test]
+fn test_pre_t14_batch_charges_cold_access_per_call() {
+    let [a, b] = [1, 2].map(Address::with_last_byte);
+    let spec = TempoHardfork::T13;
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, b, b, a], vec![]),
+        batch_intrinsic_gas(spec, &[a], vec![]) + 3 * COLD_ACCOUNT_ACCESS_COST
+    );
+}
+
 #[test]
 fn test_aa_gas_p256_signature() {
     let spec = SpecId::CANCUN;
@@ -1193,10 +1297,12 @@ fn test_key_authorization_gas_with_limits() {
     let t5_sload = t5_gas_params.get(GasId::WarmStorageReadCost)
         + t5_gas_params.get(GasId::ColdStorageAdditionalCost);
     let base_t5_key_auth = create_key_auth(0);
-    let mut witness_t5_key_auth = create_key_auth(0);
-    witness_t5_key_auth.authorization = witness_t5_key_auth
-        .authorization
-        .with_witness(B256::repeat_byte(0x53));
+    let witness_t5_key_auth = create_key_auth(0);
+    let witness_t5_key_auth = witness_t5_key_auth
+        .authorization()
+        .clone()
+        .with_witness(B256::repeat_byte(0x53))
+        .into_signed(witness_t5_key_auth.signature().clone());
 
     let (base_t5_gas, base_t5_state_gas) =
         calculate_key_authorization_gas(&base_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
@@ -1216,16 +1322,24 @@ fn test_key_authorization_gas_with_limits() {
 
     let t6_gas_params = tempo_gas_params(TempoHardfork::T6);
     let base_t6_key_auth = create_key_auth(0);
-    let mut account_bound_t6_key_auth = create_key_auth(0);
-    account_bound_t6_key_auth.authorization = account_bound_t6_key_auth
-        .authorization
-        .with_account(Address::random());
-    let mut admin_t6_key_auth = create_key_auth(0);
-    admin_t6_key_auth.authorization = admin_t6_key_auth
-        .authorization
-        .into_admin(Address::random());
-    let mut unbound_admin_t6_key_auth = create_key_auth(0);
-    unbound_admin_t6_key_auth.authorization.is_admin = true;
+    let account_bound_t6_key_auth = create_key_auth(0);
+    let account_bound_t6_key_auth = account_bound_t6_key_auth
+        .authorization()
+        .clone()
+        .with_account(Address::random())
+        .into_signed(account_bound_t6_key_auth.signature().clone());
+    let admin_t6_key_auth = create_key_auth(0);
+    let admin_t6_key_auth = admin_t6_key_auth
+        .authorization()
+        .clone()
+        .into_admin(Address::random())
+        .into_signed(admin_t6_key_auth.signature().clone());
+    let unbound_admin_t6_key_auth = create_key_auth(0);
+    let unbound_admin_t6_key_auth = KeyAuthorization {
+        is_admin: true,
+        ..unbound_admin_t6_key_auth.authorization().clone()
+    }
+    .into_signed(unbound_admin_t6_key_auth.signature().clone());
 
     let (base_t6_gas, base_t6_state_gas) =
         calculate_key_authorization_gas(&base_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
@@ -1372,7 +1486,11 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
         TempoHardfork::T4,
     );
     assert_eq!(
-        regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
+        regular
+            - ECRECOVER_GAS
+            - load
+            - 2_000
+            - call_scope_extra_gas(authorization.authorization()),
         20_000
     );
     assert_eq!(state, 230_000);
@@ -1392,7 +1510,11 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
     );
     assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 5_000);
     assert_eq!(
-        regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
+        regular
+            - ECRECOVER_GAS
+            - load
+            - 2_000
+            - call_scope_extra_gas(authorization.authorization()),
         tempo_chainspec::constants::gas::SSTORE_CREATE_COST
     );
     assert_eq!(state, 0);

@@ -536,7 +536,7 @@ jobs:
             PR_NUMBER=$(gh pr view reth-auto-bump --json number --jq '.number')
           fi
 
-          BENCH_COMMAND="derek bench preset=tip20"
+          BENCH_COMMAND="derek bench preset=tip20 slack"
           EXISTING_BENCH_COMMENT=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
             --paginate \
             --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
@@ -568,9 +568,35 @@ jobs:
               echo "::error::CI fix loop gave up after $((ci_fix_attempt - 1)) attempts / $((SECONDS / 60))m"
               exit 1
             fi
-            echo "Polling CI checks..."
+            # Checks must belong to the commit just pushed: right after a push, the PR can still
+            # report the previous head's checks, whose stale failures would send Amp a problem it
+            # already fixed (and then give up when Amp finds nothing to change).
+            # Once the head has matched, later pushes (e.g. a maintainer's manual fix) are followed
+            # like before, since gh pr checks always reports the PR's current head.
+            EXPECTED_SHA=$(git rev-parse HEAD)
+            echo "Polling CI checks for $EXPECTED_SHA..."
+            HEAD_WAIT_START=$SECONDS
+            HEAD_MATCHED=false
+            while [ "$HEAD_MATCHED" != "true" ]; do
+              PR_HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+              if [ "$PR_HEAD_SHA" = "$EXPECTED_SHA" ]; then
+                HEAD_MATCHED=true
+              elif [ $(( SECONDS - HEAD_WAIT_START )) -ge 600 ]; then
+                echo "::error::PR head is still ${PR_HEAD_SHA:-unknown}, expected $EXPECTED_SHA after 10m"
+                exit 1
+              else
+                echo "Waiting for the PR head to become $EXPECTED_SHA (now ${PR_HEAD_SHA:-unknown})..."
+                sleep 15
+              fi
+            done
+
+            # The stuck-CI timer starts once CI can run on the pushed commit.
             WAIT_START=$SECONDS
+            # Gate checks that every CI run reports; until all of them appear, CI hasn't fully
+            # started and an empty pending list doesn't mean it passed.
+            EXPECTED_CHECKS='["lint success","specs success","test success"]'
             while true; do
+
               STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
               # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
               if ! echo "$STATUS" | jq empty 2>/dev/null; then
@@ -592,11 +618,21 @@ jobs:
               # so it is not waited on: only a failure reported before the other checks
               # finish is handled above, and a later E2E failure is left to reviewers.
               PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | length')
+              MISSING=$(echo "$STATUS" | jq -r --argjson expected "$EXPECTED_CHECKS" '$expected - map(.name) | join(", ")')
+              if [ "$PENDING" = "0" ] 2>/dev/null && [ -n "$MISSING" ]; then
+                if [ $(( (SECONDS - WAIT_START) / 60 )) -ge "$CI_TIMEOUT_MINUTES" ]; then
+                  echo "::error::Gate checks never reported after ${CI_TIMEOUT_MINUTES}m: $MISSING"
+                  exit 1
+                fi
+                echo "Waiting for gate checks to report: $MISSING"
+                sleep 60
+                continue
+              fi
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
                 PR_NUMBER=$(gh pr view "$PR_BRANCH" --json number --jq '.number')
 
-                BENCH_COMMAND="derek bench preset=tip20"
+                BENCH_COMMAND="derek bench preset=tip20 slack"
                 EXISTING_BENCH_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
                   --paginate \
                   --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
@@ -657,6 +693,9 @@ jobs:
                 elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
                   echo "Amp made no changes for stuck jobs — giving up"
                   exit 1
+                else
+                  # Amp committed itself; make sure the commit CI is polled for is pushed
+                  git push origin "HEAD:$PR_BRANCH"
                 fi
                 # Restart the outer loop to wait for new CI run
                 continue 2
@@ -706,6 +745,9 @@ jobs:
             elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
               echo "Amp made no changes but CI is still failing — giving up"
               exit 1
+            else
+              # Amp committed itself; make sure the commit CI is polled for is pushed
+              git push origin "HEAD:$PR_BRANCH"
             fi
           done
 
