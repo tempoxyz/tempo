@@ -23,6 +23,7 @@ use tempo_evm::{
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::{
     SignatureType, TempoTxEnvelope,
+    account::CONFIGURABLE_ACCOUNT_CODE,
     transaction::{
         CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN, Call, ConfigurableAccountConfig,
         ConfigurableAccountOwner, ConfigurableAccountSignature, KeyAuthorization,
@@ -407,8 +408,8 @@ async fn test_tempo_owner_rotation_reaches_the_zone() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Once an EOA migrates on Tempo, the zone reports its commitment, refuses the original key and
-/// accepts the configured owners.
+/// Once an EOA migrates on Tempo, the zone reports its commitment and the account code marker,
+/// refuses the original key and accepts the configured owners.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tempo_migration_retires_the_root_key_on_the_zone() -> eyre::Result<()> {
     let env = Env::start().await?;
@@ -422,6 +423,14 @@ async fn test_tempo_migration_retires_the_root_key_on_the_zone() -> eyre::Result
         .await?;
     let signature = root.sign_hash_sync(&tx.signature_hash())?.into();
     env.zone_chain.execute(tx, signature).await?;
+
+    assert!(
+        env.zone_chain
+            .provider
+            .get_code_at(root.address())
+            .await?
+            .is_empty()
+    );
 
     let account = Account::migrated(root.address(), 0x32, 2);
     let tx = env
@@ -437,6 +446,10 @@ async fn test_tempo_migration_retires_the_root_key_on_the_zone() -> eyre::Result
     assert_eq!(
         env.zone_chain.commitment(root.address()).await?,
         account.commitment()
+    );
+    assert_eq!(
+        env.zone_chain.provider.get_code_at(root.address()).await?,
+        CONFIGURABLE_ACCOUNT_CODE
     );
     let tx = env
         .zone_chain
