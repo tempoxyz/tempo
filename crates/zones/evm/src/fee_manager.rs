@@ -226,10 +226,10 @@ mod tests {
     }
 
     /// A sponsored transaction by the block beneficiary that withdraws its whole fee-token balance
-    /// clears the slot fee settlement then recreates without TIP-1060 accounting, so the clear
-    /// must not mint a storage credit.
+    /// clears the slot fee settlement then recreates without TIP-1060 accounting, so from T15 the
+    /// clear must not mint a storage credit. Earlier forks keep minting it.
     #[test]
-    fn fee_recipient_balance_clear_mints_no_storage_credit() -> eyre::Result<()> {
+    fn fee_recipient_balance_clear_mints_no_storage_credit_from_t15() -> eyre::Result<()> {
         const ANCHOR: u64 = 42;
         const BENEFICIARY_FUNDS: u128 = 10_000_000;
         let gas_limit = 5_000_000;
@@ -237,7 +237,15 @@ mod tests {
         let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
         let token = PATH_USD_ADDRESS;
 
-        for sponsored in [true, false] {
+        for (spec, sponsored) in [
+            TempoHardfork::T7,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ]
+        .into_iter()
+        .flat_map(|spec| [(spec, true), (spec, false)])
+        {
             let beneficiary = PrivateKeySigner::random();
             let sponsor = PrivateKeySigner::random();
             let fee_payer = if sponsored { &sponsor } else { &beneficiary };
@@ -256,11 +264,10 @@ mod tests {
                 U256::ONE,
             );
             let mut env = TempoEvmEnv {
-                spec: TempoHardfork::T7,
+                spec,
                 ..Default::default()
             };
-            env.version =
-                tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T7, false);
+            env.version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
             env.block.gas_limit = U256::from(30_000_000);
             env.block.beneficiary = beneficiary.address();
             let mut evm = config(l1).evm_with_env(db, env);
@@ -275,6 +282,9 @@ mod tests {
                     .apply()?;
                 Ok(())
             })?;
+            // Accept the setup so the mirrored-storage check sees only the transaction's writes.
+            evm.state_mut().commit_transaction();
+            evm.state_mut().clear_transaction_state();
 
             let amount = if sponsored {
                 BENEFICIARY_FUNDS
@@ -337,7 +347,8 @@ mod tests {
                 !fee_recipient_balance.is_zero(),
                 "fee settlement should recreate the beneficiary's cleared balance"
             );
-            assert_eq!(credits, 0, "sponsored: {sponsored}");
+            let expected = u64::from(sponsored && !spec.is_t15());
+            assert_eq!(credits, expected, "{spec}, sponsored: {sponsored}");
         }
         Ok(())
     }
