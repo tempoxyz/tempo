@@ -19,6 +19,11 @@ on:
       - "contrib/antithesis/trie-shapes/**"
       - ".github/workflows/antithesis-reth-state-root.yml"
   workflow_dispatch:
+    inputs:
+      workload_digest:
+        description: Existing workload digest to reuse for a config-only publication
+        type: string
+        required: false
 
 # Do not cancel a publication between the workload push and its paired config push.
 concurrency:
@@ -68,6 +73,7 @@ jobs:
           password: ${{ secrets.ANTITHESIS_REGISTRY_KEY }}
 
       - name: Build and push workload image
+        if: ${{ !inputs.workload_digest }}
         id: image
         uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -80,7 +86,7 @@ jobs:
 
       - name: Prepare digest-paired configuration
         env:
-          DIGEST: ${{ steps.image.outputs.digest }}
+          DIGEST: ${{ inputs.workload_digest || steps.image.outputs.digest }}
         run: |
           # Fail closed rather than publish a config that silently uses a moving tag.
           [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -107,7 +113,7 @@ jobs:
       - name: Record immutable image pair
         env:
           TAG: ${{ steps.tags.outputs.tag }}
-          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_DIGEST: ${{ inputs.workload_digest || steps.image.outputs.digest }}
           CONFIG_DIGEST: ${{ steps.config.outputs.digest }}
         run: |
           [[ "$CONFIG_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
