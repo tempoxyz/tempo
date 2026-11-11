@@ -15,7 +15,10 @@ use crate::{
         EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
         block_transaction_length,
     },
-    metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    metrics::{
+        BlockBuildStopReason, InstrumentedFinishProvider, PoolTxSkippedCounters,
+        TempoPayloadBuilderMetrics,
+    },
     prewarming::{
         BestTransactionsLookahead, BestTransactionsParallel, PrewarmedTransaction,
         PrewarmingExecutionContext,
@@ -87,6 +90,21 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 /// How often a build that waits for its worker thread checks whether its job was cancelled.
 const BUILD_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+/// Consecutive pool transactions whose gas limit exceeds the remaining block gas before the builder
+/// treats the block as full.
+///
+/// Every skipped transaction still passes through the prewarming lookahead, so draining a large
+/// pool after the block is full costs time linear in the pool size. Stopping early can only miss a
+/// transaction whose gas limit fits in the gas that is left, and ends paced builds without waiting
+/// for new pool transactions.
+///
+/// Skips only count once less than `1 / EARLY_STOP_REMAINING_GAS_DIVISOR` of the block gas
+/// limit remains, so transactions with large gas limits cannot end a block that still has room.
+const MAX_CONSECUTIVE_GAS_LIMIT_SKIPS: u32 = 128;
+
+/// See [`MAX_CONSECUTIVE_GAS_LIMIT_SKIPS`]: at most 1% of the block gas can be left unused.
+const EARLY_STOP_REMAINING_GAS_DIVISOR: u64 = 100;
+
 /// Source of transactions for payload building.
 enum PayloadTransactions<Provider> {
     /// Executed by the builder in pool order, with or without prewarming.
@@ -139,6 +157,7 @@ pub struct TempoPayloadBuilder<Provider> {
     config: TempoPayloadBuilderConfig,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
+    skipped: PoolTxSkippedCounters,
     cache_metrics: CachedStateMetrics,
     /// Proposal budget estimator that paces builds with a `payload_build_budget`.
     ///
@@ -216,6 +235,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             config,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
+            skipped: PoolTxSkippedCounters::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
             build_workers: Arc::new(Semaphore::new(config.max_build_tasks)),
@@ -367,7 +387,7 @@ where
                 "removing a transaction that outlasted the build budget from the pool"
             );
             self.pool.remove_transactions(vec![tx]);
-            self.metrics.inc_pool_tx_skipped("execution_timeout");
+            self.skipped.execution_timeout.increment(1);
         }
         if cancelled {
             return Ok(BuildOutcome::Cancelled);
@@ -613,7 +633,11 @@ where
             executor.evm().block().timestamp.to(),
         );
         let raw_best_txs = Box::new(raw_best_txs);
-        let prewarm_ctx = self.config.enable_prewarming.then(|| {
+        // Without an execution cache, sequential prewarming has nowhere to keep what it reads and
+        // only competes with the builder for CPU. Parallel planning needs it for replay.
+        let enable_prewarming = self.config.enable_prewarming
+            && (self.config.enable_parallel || execution_cache.is_some());
+        let prewarm_ctx = enable_prewarming.then(|| {
             PrewarmingExecutionContext::new(
                 self.provider.clone(),
                 self.executor.clone(),
@@ -1119,6 +1143,7 @@ where
         let mut total_fees = U256::ZERO;
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        let mut consecutive_gas_limit_skips = 0u32;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let block_build_stop_reason = loop {
             check_cancel!();
@@ -1211,9 +1236,20 @@ where
                         block_gas_limit - cumulative_gas_used,
                     ),
                 );
-                self.metrics.inc_pool_tx_skipped("exceeds_block_gas_limit");
+                self.skipped.exceeds_block_gas_limit.increment(1);
+                if block_gas_limit - cumulative_gas_used
+                    < block_gas_limit / EARLY_STOP_REMAINING_GAS_DIVISOR
+                {
+                    consecutive_gas_limit_skips += 1;
+                } else {
+                    consecutive_gas_limit_skips = 0;
+                }
+                if consecutive_gas_limit_skips >= MAX_CONSECUTIVE_GAS_LIMIT_SKIPS {
+                    break BlockBuildStopReason::GasLimitSkips;
+                }
                 continue;
             }
+            consecutive_gas_limit_skips = 0;
 
             let is_payment = if hardfork.is_t15() {
                 tx.transaction.is_payment_v3()
@@ -1237,8 +1273,7 @@ where
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                self.skipped.exceeds_general_gas_limit.increment(1);
                 continue;
             }
 
@@ -1259,7 +1294,7 @@ where
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
                 );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
+                self.skipped.oversized_block.increment(1);
                 skipped_oversized_block = true;
                 continue;
             }
@@ -1313,7 +1348,7 @@ where
                         if error.is_nonce_too_low() {
                             // if the nonce is too low, we can skip this transaction
                             trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                            self.skipped.nonce_too_low.increment(1);
                         } else if matches!(
                             TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
                             Some(TempoInvalidTransaction::ExpiringNonceReplay)
@@ -1326,7 +1361,7 @@ where
                                 "Payload builder skips an expiring nonce transaction already included"
                             );
                             trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
-                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
+                            self.skipped.expiring_nonce_replay.increment(1);
                         } else {
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
@@ -1342,7 +1377,7 @@ where
                                     InvalidTransactionError::TxTypeNotSupported,
                                 ),
                             );
-                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                            self.skipped.invalid_tx.increment(1);
                         }
                         continue;
                     }
@@ -1357,7 +1392,7 @@ where
                                     InvalidTransactionError::TxTypeNotSupported,
                                 ),
                             );
-                            self.metrics.inc_pool_tx_skipped("invalid_replay");
+                            self.skipped.invalid_replay.increment(1);
                             trace!(
                                 target: "payload_builder",
                                 tx_hash = ?tx.hash(),

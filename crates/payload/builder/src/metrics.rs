@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256, BlockNumber, Bytes, StorageKey, StorageValue};
-use metrics::Gauge;
+use metrics::{Counter, Gauge};
 use reth_errors::ProviderResult;
 use reth_metrics::{Metrics, metrics::Histogram};
 use reth_primitives_traits::{Account, Bytecode};
@@ -102,12 +102,49 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) build_time_multiplier_last: Gauge,
 }
 
+/// Counters of `tempo_payload_builder_pool_transactions_skipped_total`, one per reason label.
+///
+/// Registered once per builder so the block fill loop increments a handle instead of resolving the
+/// labeled counter in the metrics registry on every skip.
+///
+/// Note: `mark_invalid` may also prune descendant transactions from the iterator, so the skip
+/// count represents skip *events*, not total transactions removed.
+#[derive(Clone, Debug)]
+pub(crate) struct PoolTxSkippedCounters {
+    pub(crate) exceeds_block_gas_limit: Counter,
+    pub(crate) exceeds_general_gas_limit: Counter,
+    pub(crate) oversized_block: Counter,
+    pub(crate) nonce_too_low: Counter,
+    pub(crate) expiring_nonce_replay: Counter,
+    pub(crate) invalid_tx: Counter,
+    pub(crate) invalid_replay: Counter,
+    pub(crate) execution_timeout: Counter,
+}
+
+impl Default for PoolTxSkippedCounters {
+    fn default() -> Self {
+        let counter = |reason: &'static str| metrics::counter!("tempo_payload_builder_pool_transactions_skipped_total", "reason" => reason);
+        Self {
+            exceeds_block_gas_limit: counter("exceeds_block_gas_limit"),
+            exceeds_general_gas_limit: counter("exceeds_general_gas_limit"),
+            oversized_block: counter("oversized_block"),
+            nonce_too_low: counter("nonce_too_low"),
+            expiring_nonce_replay: counter("expiring_nonce_replay"),
+            invalid_tx: counter("invalid_tx"),
+            invalid_replay: counter("invalid_replay"),
+            execution_timeout: counter("execution_timeout"),
+        }
+    }
+}
+
 /// Reason the payload builder stopped adding pool transactions to the block.
 pub(crate) enum BlockBuildStopReason {
     GasLimit,
     RlpBlockSizeLimit,
     TxPoolEmpty,
     BuildBudget,
+    /// Too many consecutive pool transactions exceeded the remaining block gas.
+    GasLimitSkips,
 }
 
 impl BlockBuildStopReason {
@@ -117,21 +154,12 @@ impl BlockBuildStopReason {
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",
             Self::TxPoolEmpty => "tx_pool_empty",
             Self::BuildBudget => "build_budget",
+            Self::GasLimitSkips => "gas_limit_skips",
         }
     }
 }
 
 impl TempoPayloadBuilderMetrics {
-    /// Increments the unified pool transaction skip counter with the given reason label.
-    ///
-    /// Note: `mark_invalid` may also prune descendant transactions from the iterator,
-    /// so the skip count represents skip *events*, not total transactions removed.
-    #[inline]
-    pub(crate) fn inc_pool_tx_skipped(&self, reason: &'static str) {
-        metrics::counter!("tempo_payload_builder_pool_transactions_skipped_total", "reason" => reason)
-            .increment(1);
-    }
-
     /// Increments the counter of builds replaced by an empty payload, by the reason they were.
     #[inline]
     pub(crate) fn inc_empty_fallback(&self, reason: &'static str) {
