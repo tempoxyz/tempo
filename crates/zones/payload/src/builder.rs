@@ -312,9 +312,12 @@ where
             // the size budget
             // The block executor owns gas-capacity accounting.
             let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
+            let pool = self.pool.clone();
+            let timestamp = attributes.timestamp();
             let raw_best_txs = self
                 .pool
-                .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
+                .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None))
+                .filter_transactions(move |tx| !pool.defers_2d_create(tx, timestamp));
             // Zones resolve fee tokens without a fallback list.
             let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
             let mut unlisted = Vec::new();

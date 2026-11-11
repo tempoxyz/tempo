@@ -112,26 +112,41 @@ where
     /// iterator only. Future-valid transactions remain in the pool for later blocks. Apply this
     /// filter before prewarming so skipped transactions are never prewarmed.
     ///
-    /// A 2D nonce transaction whose first call is a CREATE also bumps the sender's protocol
-    /// nonce, so it is skipped while the sender has a pending protocol nonce transaction that is
-    /// includable at `timestamp`.
+    /// 2D nonce CREATE transactions are deferred to a later block, not reordered within this
+    /// one, while [`Self::defers_2d_create`] holds for them.
     pub fn best_transactions_for_block(
         &self,
         attributes: BestTransactionsAttributes,
         timestamp: u64,
     ) -> impl BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
     + use<Client, EvmConfig> {
-        let protocol_pool = self.protocol_pool.clone();
+        let pool = self.clone();
         self.best_transactions_with_attributes(attributes)
             .filter_transactions(move |tx| {
-                tx.transaction.is_includable_at(timestamp)
-                    && !(tx.transaction.is_aa_2d()
-                        && tx.transaction.is_create()
-                        && protocol_pool
-                            .get_pending_transactions_by_sender(tx.sender())
-                            .iter()
-                            .any(|pending| pending.transaction.is_includable_at(timestamp)))
+                tx.transaction.is_includable_at(timestamp) && !pool.defers_2d_create(tx, timestamp)
             })
+    }
+
+    /// Returns true if `tx` is a 2D nonce transaction whose first call is a CREATE and the
+    /// sender's next protocol nonce transaction is pending and includable at `timestamp`.
+    ///
+    /// Such a CREATE also bumps the sender's protocol nonce, so including it first would leave that
+    /// protocol nonce transaction nonce-too-low. Block builders skip it until a later block, once
+    /// the protocol nonce transaction is mined or can no longer run. Later protocol nonce
+    /// transactions don't count, since they can't run before the next one.
+    pub fn defers_2d_create(
+        &self,
+        tx: &ValidPoolTransaction<TempoPooledTransaction>,
+        timestamp: u64,
+    ) -> bool {
+        tx.transaction.is_aa_2d()
+            && tx.transaction.is_create()
+            && self
+                .protocol_pool
+                .get_pending_transactions_by_sender(tx.sender())
+                .into_iter()
+                .min_by_key(|pending| pending.nonce())
+                .is_some_and(|next| next.transaction.is_includable_at(timestamp))
     }
 
     /// Returns the configured client
@@ -2005,7 +2020,7 @@ mod tests {
 
     #[test_case::test_case(U256::ONE; "2d")]
     #[test_case::test_case(U256::MAX; "expiring")]
-    fn best_transactions_for_block_selects_2d_create_after_protocol_nonce(nonce_key: U256) {
+    fn best_transactions_for_block_defers_2d_create_while_protocol_nonce_pending(nonce_key: U256) {
         let pool = create_test_pool(create_provider_with_tip());
         let sender = Address::random();
         let create_calls = vec![Call {
@@ -2117,6 +2132,99 @@ mod tests {
             .map(|tx| *tx.hash())
             .collect();
         assert_eq!(hashes, vec![create_hash]);
+    }
+
+    #[test]
+    fn best_transactions_for_block_ignores_later_protocol_nonce_when_next_is_not_includable() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let create = TxBuilder::aa(sender)
+            .nonce_key(U256::ONE)
+            .calls(vec![Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: Default::default(),
+            }])
+            .build();
+        let create_hash = *create.hash();
+        add_validated(&pool, create);
+        // Nonce 0 is not valid yet, so nonce 1 cannot run either.
+        for protocol in [
+            TxBuilder::aa(sender).valid_after(100).build(),
+            TxBuilder::aa(sender).nonce(1).build(),
+        ] {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: U256::MAX,
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(protocol, None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .unwrap();
+        }
+        assert_eq!(pool.pool_size().total, 3);
+
+        let hashes: Vec<_> = pool
+            .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), 50)
+            .without_updates()
+            .map(|tx| *tx.hash())
+            .collect();
+        assert_eq!(hashes, vec![create_hash]);
+    }
+
+    #[test]
+    fn defers_2d_create_only_for_create_behind_includable_protocol_nonce() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let create_calls = vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Default::default(),
+        }];
+        let create = wrap_valid_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(U256::ONE)
+                .calls(create_calls.clone())
+                .build(),
+            TransactionOrigin::External,
+        );
+        let call = wrap_valid_tx(
+            TxBuilder::aa(sender).nonce_key(U256::ONE).build(),
+            TransactionOrigin::External,
+        );
+        let protocol_create = wrap_valid_tx(
+            TxBuilder::aa(sender).calls(create_calls).build(),
+            TransactionOrigin::External,
+        );
+        assert!(
+            !pool.defers_2d_create(&create, 50),
+            "no protocol nonce tx pending"
+        );
+
+        let protocol = TxBuilder::aa(sender).valid_before(100).build();
+        let protocol_hash = *protocol.hash();
+        add_validated(&pool, protocol);
+        assert!(pool.defers_2d_create(&create, 50));
+        assert!(
+            !pool.defers_2d_create(&create, 100),
+            "protocol nonce tx expired"
+        );
+        assert!(
+            !pool.defers_2d_create(&call, 50),
+            "2D call does not bump the protocol nonce"
+        );
+        assert!(
+            !pool.defers_2d_create(&protocol_create, 50),
+            "protocol nonce CREATE is ordered by nonce"
+        );
+
+        assert_eq!(
+            tx_hashes(&pool.remove_transactions(vec![protocol_hash])),
+            vec![protocol_hash]
+        );
+        assert!(!pool.defers_2d_create(&create, 50));
     }
 
     #[test_case::test_case(U256::ZERO; "protocol")]
