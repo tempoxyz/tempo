@@ -1263,6 +1263,7 @@ dependencies = [
  "antithesis_sdk",
  "eyre",
  "rand 0.9.5",
+ "reth-trie-common",
  "serde",
  "serde_json",
 ]
@@ -5198,7 +5199,7 @@ dependencies = [
 
 [[package]]
 name = "exithatch"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "eyre"
@@ -11798,44 +11799,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reth-proofs-antithesis"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "alloy-rlp",
- "alloy-trie",
- "antithesis-instrumentation",
- "antithesis-trie-shapes",
- "antithesis_sdk",
- "evm2",
- "eyre",
- "rand 0.9.5",
- "reth-chain-state",
- "reth-chainspec",
- "reth-db",
- "reth-db-common",
- "reth-engine-primitives",
- "reth-engine-tree",
- "reth-ethereum-primitives",
- "reth-evm",
- "reth-evm-ethereum",
- "reth-execution-types",
- "reth-node-builder",
- "reth-node-core",
- "reth-primitives-traits",
- "reth-provider",
- "reth-stages-types",
- "reth-storage-overlay",
- "reth-tasks",
- "reth-trie",
- "reth-trie-common",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "reth-provider"
 version = "2.10.1"
 source = "git+https://github.com/paradigmxyz/reth?rev=467449357b6d0aca6c1fb7cc2d87a304bb8fbff5#467449357b6d0aca6c1fb7cc2d87a304bb8fbff5"
@@ -14365,7 +14328,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -14536,7 +14499,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "age",
  "alloy-consensus",
@@ -14612,7 +14575,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus-config"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "age",
  "commonware-codec",
@@ -14646,7 +14609,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-corpus"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -14693,7 +14656,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -14707,7 +14670,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy",
  "alloy-genesis",
@@ -14761,7 +14724,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -14825,7 +14788,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-ext"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "clap",
  "dirs-next",
@@ -14844,7 +14807,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "eyre",
  "indenter",
@@ -14852,7 +14815,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy",
  "async-trait",
@@ -14865,7 +14828,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-harness"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14895,7 +14858,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-types"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-primitives",
  "evm2",
@@ -14919,7 +14882,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-invariants"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -14930,7 +14893,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-nitro-attestation"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "arrayvec",
  "aws-lc-rs",
@@ -14955,7 +14918,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -15036,7 +14999,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node-launcher"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "eyre",
  "futures",
@@ -15047,7 +15010,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -15087,7 +15050,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -15111,7 +15074,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy",
  "alloy-json-abi",
@@ -15153,7 +15116,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -15202,7 +15165,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-state-bloat"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -15233,7 +15196,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "eyre",
  "jiff",
@@ -15242,7 +15205,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -15285,7 +15248,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-validator-config"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
@@ -15313,7 +15276,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "1.18.2"
+version = "1.18.3"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -15323,7 +15286,6 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-eth",
  "antithesis-instrumentation",
- "antithesis_sdk",
  "base64 0.22.1",
  "bytes",
  "clap",
@@ -15378,7 +15340,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-primitives",
  "antithesis-instrumentation",
@@ -15450,6 +15412,26 @@ dependencies = [
  "zone-prover",
  "zone-rpc",
  "zone-spf",
+]
+
+[[package]]
+name = "tempo-zones-antithesis"
+version = "1.18.3"
+dependencies = [
+ "alloy",
+ "antithesis_sdk",
+ "clap",
+ "eyre",
+ "futures",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-contracts",
+ "tempo-primitives",
+ "tokio",
+ "zone-precompiles",
+ "zone-rpc",
 ]
 
 [[package]]
@@ -17592,7 +17574,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zone-chainspec"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
@@ -17610,7 +17592,7 @@ dependencies = [
 
 [[package]]
 name = "zone-checker"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
@@ -17659,7 +17641,7 @@ dependencies = [
 
 [[package]]
 name = "zone-evm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -17697,7 +17679,7 @@ dependencies = [
 
 [[package]]
 name = "zone-l1"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17738,7 +17720,7 @@ dependencies = [
 
 [[package]]
 name = "zone-node"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy",
  "alloy-chains",
@@ -17844,7 +17826,7 @@ dependencies = [
 
 [[package]]
 name = "zone-p2p"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
@@ -17870,7 +17852,7 @@ dependencies = [
 
 [[package]]
 name = "zone-payload"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -17881,10 +17863,12 @@ dependencies = [
  "alloy-sol-types",
  "evm2",
  "eyre",
+ "metrics",
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-errors",
  "reth-evm",
+ "reth-metrics",
  "reth-node-api",
  "reth-node-builder",
  "reth-payload-builder",
@@ -17910,7 +17894,7 @@ dependencies = [
 
 [[package]]
 name = "zone-precompiles"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "alloy",
@@ -17939,7 +17923,7 @@ dependencies = [
 
 [[package]]
 name = "zone-primitives"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -17951,7 +17935,7 @@ dependencies = [
 
 [[package]]
 name = "zone-prover"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -17982,7 +17966,7 @@ dependencies = [
 
 [[package]]
 name = "zone-rpc"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -18020,7 +18004,7 @@ dependencies = [
 
 [[package]]
 name = "zone-sequencer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -18073,7 +18057,7 @@ dependencies = [
 
 [[package]]
 name = "zone-spf"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
