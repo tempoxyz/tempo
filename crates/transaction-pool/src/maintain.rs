@@ -419,6 +419,8 @@ pub(crate) struct PoolInvalidations {
     pub(crate) updates: TempoPoolUpdates,
     /// Transactions the update mined. They follow reth's mined path instead of revalidation.
     pub(crate) mined: B256Set,
+    /// Transactions of the orphaned branch the update did not mine again.
+    pub(crate) orphaned: B256Set,
     /// Accounts whose configuration commitment changed, on either branch of a reorg.
     pub(crate) changed_commitments: AddressSet,
     /// Accounts whose code changed, on either branch of a reorg.
@@ -469,9 +471,19 @@ impl PoolInvalidations {
         } else {
             Default::default()
         };
+        let mined: B256Set = new.transaction_hashes().copied().collect();
+        let orphaned = orphaned
+            .map(|old| {
+                old.transaction_hashes()
+                    .filter(|hash| !mined.contains(*hash))
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             updates: TempoPoolUpdates::from_chain(&new),
-            mined: new.transaction_hashes().copied().collect(),
+            mined,
+            orphaned,
             changed_commitments,
             changed_code,
             fallback_balances,
