@@ -406,7 +406,7 @@ pub struct Args {
     /// allowed peer. The default matches the capacity of the previous fixed
     /// 16,384-message backlog on the 128/s channels.
     #[arg(long = "consensus.max-peers-per-set", default_value = "128")]
-    pub max_peers_per_set: NonZeroUsize,
+    pub max_peers_per_set: NonZeroU32,
 
     /// Maximum number of concurrent handshake attempts allowed.
     #[arg(
