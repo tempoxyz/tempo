@@ -1089,57 +1089,17 @@ jobs:
           done < "$RUNNER_TEMP/prover-image-refs.txt"
 
   attest-companion-images:
-    name: Attest published companion image
+    name: Attest published companion images
     needs: publish-companion-images
-    runs-on: ubuntu-latest
     permissions:
       packages: write
       id-token: write
       attestations: write
-    strategy:
-      fail-fast: false
-      matrix:
-        ref: ${{ fromJSON(needs.publish-companion-images.outputs.image_refs) }}
-    steps:
-      - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Log in to Docker Hub
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          username: ${{ vars.DOCKER_HUB_USER }}
-          password: ${{ secrets.DOCKER_HUB_TOKEN }}
-
-      # Each reference is a repository@digest from the push receipt, never a mutable tag.
-      - name: Split the image reference
-        id: subject
-        env:
-          REF: ${{ matrix.ref }}
-        run: |
-          set -euo pipefail
-          [[ "$REF" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-(xtask|prover|prover-utils|prover-eif-builder)@sha256:[0-9a-f]{64}$ ]] || {
-            echo "Invalid companion image reference: $REF" >&2
-            exit 1
-          }
-          name="${REF%@*}"
-          # Docker Hub attestations are pushed to and verified against index.docker.io.
-          [[ "$name" == docker.io/* ]] && name="index.$name"
-          {
-            echo "name=$name"
-            echo "digest=${REF#*@}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Attest the companion image
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ steps.subject.outputs.name }}
-          subject-digest: ${{ steps.subject.outputs.digest }}
-          push-to-registry: true
+    uses: ./.github/workflows/attest-images.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    secrets:
+      DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+    with:
+      image_refs: ${{ needs.publish-companion-images.outputs.image_refs }}
 
   production-reproducible-clean-rebuild:
     name: Rebuild production tempo-zone image without cache

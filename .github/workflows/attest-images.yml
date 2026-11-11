@@ -1,0 +1,74 @@
+name: Attest Images
+
+# Attaches GitHub build provenance to published images, one matrix job per
+# repository@digest, and pushes each attestation next to its image so Kyverno
+# can verify it. Callers pass digests from push receipts, never mutable tags.
+on:
+  workflow_call:
+    inputs:
+      image_refs:
+        description: JSON array of ghcr.io or docker.io tempoxyz repository@sha256 references
+        type: string
+        required: true
+    secrets:
+      DOCKER_HUB_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  attest:
+    name: Attest ${{ matrix.ref }}
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(inputs.image_refs) }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Split the image reference
+        id: subject
+        env:
+          REF: ${{ matrix.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$REF" =~ ^(ghcr.io|docker.io)/tempoxyz/[a-z0-9-]+@sha256:[0-9a-f]{64}$ ]] || {
+            echo "Invalid image reference: $REF" >&2
+            exit 1
+          }
+          name="${REF%@*}"
+          # Docker Hub attestations are pushed to and verified against index.docker.io.
+          [[ "$name" == docker.io/* ]] && name="index.$name"
+          {
+            echo "name=$name"
+            echo "digest=${REF#*@}"
+            echo "registry=${REF%%/*}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Container Registry
+        if: steps.subject.outputs.registry == 'ghcr.io'
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: steps.subject.outputs.registry == 'docker.io'
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.subject.outputs.name }}
+          subject-digest: ${{ steps.subject.outputs.digest }}
+          push-to-registry: true

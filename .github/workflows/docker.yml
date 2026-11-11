@@ -50,6 +50,10 @@ jobs:
     environment: ${{ startsWith(github.ref, 'refs/tags/tempo/v') && 'release' || '' }}
     outputs:
       tempo_image_tag: ${{ steps.source.outputs.image_tag || steps.meta-tempo.outputs.version }}
+      image_refs: ${{ steps.sign-images.outputs.image_refs }}
+      sha: ${{ steps.source.outputs.sha }}
+      short_sha: ${{ steps.source.outputs.short_sha }}
+      branch: ${{ steps.source.outputs.branch }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     # Compilation runs on the Depot builders; this runner only waits on bake.
     runs-on: depot-ubuntu-latest-4
@@ -59,7 +63,6 @@ jobs:
       pull-requests: read
       packages: write
       id-token: write
-      attestations: write
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -404,154 +407,7 @@ jobs:
             exit 1
           fi
 
-      # Kyverno admits tempoxyz images only with registry-attached build provenance;
-      # cosign signatures above stay for consumers that verify with cosign. PR-head
-      # builds would attest unreviewed code as the dispatching ref, so they are skipped.
-      - name: Attest the ghcr.io tempo image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.REGISTRY }}/tempo
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo']['containerimage.digest'] }}
-          push-to-registry: true
-
-      - name: Attest the Docker Hub tempo image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: index.docker.io/tempoxyz/tempo
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo']['containerimage.digest'] }}
-          push-to-registry: true
-
-      - name: Attest the ghcr.io tempo-devnet image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.REGISTRY }}/tempo-devnet
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-devnet']['containerimage.digest'] }}
-          push-to-registry: true
-
-      - name: Attest the Docker Hub tempo-devnet image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: index.docker.io/tempoxyz/tempo-devnet
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-devnet']['containerimage.digest'] }}
-          push-to-registry: true
-
-      - name: Attest the ghcr.io tempo-localnet image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.REGISTRY }}/tempo-localnet
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-localnet']['containerimage.digest'] }}
-          push-to-registry: true
-
-      - name: Attest the Docker Hub tempo-localnet image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: index.docker.io/tempoxyz/tempo-localnet
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-localnet']['containerimage.digest'] }}
-          push-to-registry: true
-
-      - name: Attest the ghcr.io tempo-xtask image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.REGISTRY }}/tempo-xtask
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-xtask']['containerimage.digest'] }}
-          push-to-registry: true
-
-      - name: Attest the Docker Hub tempo-xtask image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: index.docker.io/tempoxyz/tempo-xtask
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-xtask']['containerimage.digest'] }}
-          push-to-registry: true
-
-      - name: Attest the ghcr.io tempo-fuzz image
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == '' && fromJSON(steps.build-and-push.outputs.metadata)['tempo-fuzz']['containerimage.digest'] != null
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.REGISTRY }}/tempo
-          subject-digest: ${{ fromJSON(steps.build-and-push.outputs.metadata)['tempo-fuzz']['containerimage.digest'] }}
-          push-to-registry: true
-
-      # Network E2E dispatches its own suite; the generic event starts three others.
-      - name: Publish event (sha tag)
-        id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
-        shell: bash
-        env:
-          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
-          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
-          RUNNER_TEMP: ${{ runner.temp }}
-          GH_REPO: ${{ github.repository }}
-          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
-          COMMIT_SHA: ${{ steps.source.outputs.sha }}
-          BRANCH_NAME: ${{ steps.source.outputs.branch }}
-        run: |
-          set -euo pipefail
-
-          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
-          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
-
-          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
-          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
-            --key "${RUNNER_TEMP}/key" \
-            --cert "${RUNNER_TEMP}/cert" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"repository\": \"${GH_REPO}\",
-              \"event\": \"registry_package\",
-              \"data\": {
-                \"tag\": \"sha-${SHORT_SHA}\",
-                \"sha\": \"${COMMIT_SHA}\",
-                \"branch\": \"${BRANCH_NAME}\"
-              }
-            }"
-
-      - name: Publish event (nightly tag)
-        id: publish-nightly-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
-        shell: bash
-        env:
-          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
-          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
-          RUNNER_TEMP: ${{ runner.temp }}
-          GH_REPO: ${{ github.repository }}
-          COMMIT_SHA: ${{ steps.source.outputs.sha }}
-          BRANCH_NAME: ${{ steps.source.outputs.branch }}
-        run: |
-          set -euo pipefail
-
-          DAY_OF_WEEK="$(date -u +%u)"
-          if [ "$DAY_OF_WEEK" = "5" ]; then
-            INVARIANT_TIMEOUT="172800"
-          else
-            INVARIANT_TIMEOUT="18000"
-          fi
-
-          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
-          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
-
-          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
-          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
-            --key "${RUNNER_TEMP}/key" \
-            --cert "${RUNNER_TEMP}/cert" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"repository\": \"${GH_REPO}\",
-              \"event\": \"registry_package\",
-              \"data\": {
-                \"tag\": \"nightly\",
-                \"sha\": \"${COMMIT_SHA}\",
-                \"branch\": \"${BRANCH_NAME}\",
-                \"invariant_timeout\": \"${INVARIANT_TIMEOUT}\"
-              }
-            }"
+          printf 'image_refs=%s\n' "$(printf '%s\n' "${refs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
 
       - name: Summarize Docker build
         if: ${{ always() }}
@@ -566,8 +422,6 @@ jobs:
           BRANCH_NAME: ${{ steps.source.outputs.branch }}
           BUILD_OUTCOME: ${{ steps.build-and-push.outcome }}
           SIGN_OUTCOME: ${{ steps.sign-images.outcome }}
-          SHA_EVENT_OUTCOME: ${{ steps.publish-sha-event.outcome }}
-          NIGHTLY_EVENT_OUTCOME: ${{ steps.publish-nightly-event.outcome }}
           BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -633,12 +487,105 @@ jobs:
           summarize_image "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "$TEMPO_LOCALNET_TAGS" "tempo-localnet"
           summarize_image "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS" "tempo-xtask"
 
-          {
-            echo
-            echo "## Publish events"
-            echo
-            echo "| Event | Tag | Outcome |"
-            echo "| --- | --- | --- |"
-            echo "| registry_package | \`sha-${SHORT_SHA}\` | \`${SHA_EVENT_OUTCOME:-skipped}\` |"
-            echo "| registry_package | \`nightly\` | \`${NIGHTLY_EVENT_OUTCOME:-skipped}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
+  # Kyverno admits tempoxyz images only with registry-attached build provenance;
+  # the cosign signatures stay for consumers that verify with cosign. PR-head
+  # builds would attest unreviewed code as the dispatching ref, so they are skipped.
+  attest:
+    name: Attest images
+    needs: build-and-push
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/attest-images.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    secrets:
+      DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+    with:
+      image_refs: ${{ needs.build-and-push.outputs.image_refs }}
+
+  # Events start deployments, so they wait for the attestations Kyverno admits
+  # images by; skipped attestations (merge-group and PR-head builds) don't block them.
+  publish-events:
+    name: Publish build events
+    needs: [build-and-push, attest]
+    if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') && github.repository == 'tempoxyz/tempo' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      # Network E2E dispatches its own suite; the generic event starts three others.
+      - name: Publish event (sha tag)
+        id: publish-sha-event
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+        shell: bash
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GH_REPO: ${{ github.repository }}
+          SHORT_SHA: ${{ needs.build-and-push.outputs.short_sha }}
+          COMMIT_SHA: ${{ needs.build-and-push.outputs.sha }}
+          BRANCH_NAME: ${{ needs.build-and-push.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key "${RUNNER_TEMP}/key" \
+            --cert "${RUNNER_TEMP}/cert" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repository\": \"${GH_REPO}\",
+              \"event\": \"registry_package\",
+              \"data\": {
+                \"tag\": \"sha-${SHORT_SHA}\",
+                \"sha\": \"${COMMIT_SHA}\",
+                \"branch\": \"${BRANCH_NAME}\"
+              }
+            }"
+
+      - name: Publish event (nightly tag)
+        id: publish-nightly-event
+        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
+        shell: bash
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ needs.build-and-push.outputs.sha }}
+          BRANCH_NAME: ${{ needs.build-and-push.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          DAY_OF_WEEK="$(date -u +%u)"
+          if [ "$DAY_OF_WEEK" = "5" ]; then
+            INVARIANT_TIMEOUT="172800"
+          else
+            INVARIANT_TIMEOUT="18000"
+          fi
+
+          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key "${RUNNER_TEMP}/key" \
+            --cert "${RUNNER_TEMP}/cert" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repository\": \"${GH_REPO}\",
+              \"event\": \"registry_package\",
+              \"data\": {
+                \"tag\": \"nightly\",
+                \"sha\": \"${COMMIT_SHA}\",
+                \"branch\": \"${BRANCH_NAME}\",
+                \"invariant_timeout\": \"${INVARIANT_TIMEOUT}\"
+              }
+            }"
