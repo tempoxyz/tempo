@@ -35,7 +35,7 @@ use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
 
-use super::parent_state::TempoParentState;
+use super::{ProposalRequests, parent_state::TempoParentState};
 use crate::{
     consensus::{Digest, block::Block},
     executor::DeferredCeremonyOutput,
@@ -63,6 +63,9 @@ pub(in crate::consensus) struct Config<TContext> {
     /// How long voters wait for the leader's proposal before they nullify the view.
     pub(in crate::consensus) time_to_propose: Duration,
 
+    /// When consensus asked for the proposal this node is building.
+    pub(in crate::consensus) proposal_requests: ProposalRequests,
+
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
 }
@@ -76,6 +79,7 @@ pub(crate) struct Inner {
     estimator: Estimator,
     /// How long voters wait for the leader's proposal before they nullify the view.
     time_to_propose: Duration,
+    proposal_requests: ProposalRequests,
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
@@ -93,6 +97,7 @@ impl Inner {
             epoch_strategy: config.epoch_strategy,
             estimator: config.estimator,
             time_to_propose: config.time_to_propose,
+            proposal_requests: config.proposal_requests,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
@@ -118,6 +123,7 @@ impl Inner {
         context: Context<Digest, PublicKey>,
         parent: &Digested<Block>,
         propose_start: Instant,
+        requested: Instant,
     ) -> eyre::Result<Block> {
         self.executor
             .report_pending_head(context.round, context.parent)?;
@@ -197,9 +203,11 @@ impl Inner {
         let return_budget = proposal_budget.return_budget();
         let build_budget = return_budget.saturating_sub(window_opened.elapsed());
         // Past this point the voters have nullified the view, so the builder gives up on the
-        // block it is filling and returns an empty one instead.
+        // block it is filling and returns an empty one instead. Voters count from the start of
+        // the view, when consensus asked for this proposal.
         let build_timeout = proposal_budget
             .build_timeout(self.time_to_propose)
+            .saturating_sub(propose_start.saturating_duration_since(requested))
             .saturating_sub(window_opened.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
@@ -501,8 +509,17 @@ where
         (): (),
     ) -> Option<Digested<Block>> {
         let propose_start = Instant::now();
+        // The wrapper resolved the parent before it called this, which takes a while if this
+        // node has to fetch the block.
+        let requested = self
+            .proposal_requests
+            .requested_at(context.round)
+            .unwrap_or(propose_start);
         let parent = ancestry.next().await?;
-        match self.build(&runtime, context, &parent, propose_start).await {
+        match self
+            .build(&runtime, context, &parent, propose_start, requested)
+            .await
+        {
             Ok(block) => {
                 let digest = block.digest();
                 info!(proposal.digest = %digest, "constructed proposal");

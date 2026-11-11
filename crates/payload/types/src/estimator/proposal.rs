@@ -39,7 +39,9 @@ impl ProposalBudget {
     /// voters after `leader_timeout`, which they measure from the start of the view.
     ///
     /// Unlike [`Self::return_budget`] this is a deadline: a proposal returned later is lost to
-    /// a nullified view. Zero means the deadline has already passed.
+    /// a nullified view. Zero means the deadline has already passed. Preparation is counted
+    /// from the start of the proposal, so the caller subtracts any time the view had already
+    /// run by then.
     pub fn build_timeout(&self, leader_timeout: Duration) -> Duration {
         leader_timeout.saturating_sub(self.outside_build)
     }
