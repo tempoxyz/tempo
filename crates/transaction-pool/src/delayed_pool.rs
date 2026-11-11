@@ -340,8 +340,8 @@ pub struct Config {
     pub max_count: NonZeroUsize,
     /// Maximum total size of held transactions in bytes.
     pub max_size: NonZeroUsize,
-    /// Maximum number of held transactions per authority: the accounts that signed or back a
-    /// transaction, see [`TempoPooledTransaction::authorities`].
+    /// Maximum number of held transactions per authority: the sender, the key authorization
+    /// signer, a sponsoring fee payer and the access key.
     pub max_per_authority: NonZeroUsize,
 }
 
