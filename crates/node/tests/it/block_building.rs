@@ -1,10 +1,12 @@
 use crate::utils::{TestNode, TestNodeBuilder, t1_account};
 use alloy::{
-    consensus::Transaction,
-    primitives::{Address, B256, U256, aliases::U96},
+    consensus::{BlockHeader, Transaction},
+    primitives::{Address, B256, Bytes, U256, aliases::U96, keccak256},
     providers::Provider,
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolEvent,
 };
+use alloy_eips::{BlockNumberOrTag, eip2718::Encodable2718};
 use alloy_network::ReceiptResponse;
 use reth_e2e_test_utils::wallet::{TestAccount, Wallet};
 use reth_node_api::BuiltPayload;
@@ -15,7 +17,10 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
 };
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{Call, TempoTransaction, calc_gas_balance_spending},
+};
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks
 async fn setup_token_manual<P>(
@@ -705,6 +710,144 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
     let (payment, non_payment) = count_transaction_types(&all_user_txs);
     assert_eq!(payment, 5);
     assert_eq!(non_payment, 3);
+
+    Ok(())
+}
+
+/// Signs a sender-paid AA call paying fees in pathUSD on its own 2D nonce sequence.
+fn path_usd_aa_tx(
+    chain_id: u64,
+    signer: &PrivateKeySigner,
+    nonce_key: u64,
+    gas_limit: u64,
+    max_fee_per_gas: u128,
+    max_priority_fee_per_gas: u128,
+) -> eyre::Result<Bytes> {
+    let tx = TempoTransaction {
+        chain_id,
+        nonce_key: U256::from(nonce_key),
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        fee_token: Some(PATH_USD_ADDRESS),
+        calls: vec![Call {
+            to: Address::ZERO.into(),
+            value: U256::ZERO,
+            input: Default::default(),
+        }],
+        ..Default::default()
+    };
+    let signature = signer.sign_hash_sync(&tx.signature_hash())?;
+    let tx: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+    Ok(tx.encoded_2718().into())
+}
+
+/// A fee payer that can afford only one of its high-tip transactions gets exactly that one
+/// included, while its cheaper transaction and unrelated lower-tip transactions still make the
+/// block.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_block_building_shared_fee_payer_partial_balance() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
+    let provider = setup.node.rpc_provider();
+    let chain_id = provider.get_chain_id().await?;
+    let wallet = Wallet::default().with_chain_id(chain_id);
+    let mut funder = t1_account(&wallet, 0);
+    let base_fee = u128::from(
+        provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .expect("latest block")
+            .header
+            .base_fee_per_gas()
+            .expect("base fee"),
+    );
+    let high_fee = base_fee * 10;
+    let low_fee = base_fee * 2;
+
+    // Measure the gas one such transaction uses from a fresh account, so the payer's high-tip
+    // transactions are charged close to their full max fee.
+    let calibration = PrivateKeySigner::random();
+    fund_path_usd(&mut setup.node, &mut funder, calibration.address()).await?;
+    let (hash, _) = setup
+        .node
+        .inject_and_advance(path_usd_aa_tx(
+            chain_id,
+            &calibration,
+            1,
+            5_000_000,
+            high_fee,
+            high_fee - base_fee,
+        )?)
+        .await?;
+    let gas = setup
+        .node
+        .transaction_receipt(hash)
+        .await?
+        .expect("calibration receipt")
+        .gas_used();
+
+    // The payer holds 1.5x one high-tip fee: after one is charged, only the cheap one fits.
+    let payer = PrivateKeySigner::random();
+    let high_cost = calc_gas_balance_spending(gas, high_fee);
+    let cheap_cost = calc_gas_balance_spending(gas * 2, low_fee);
+    let balance = high_cost * U256::from(3) / U256::from(2);
+    assert!(cheap_cost <= balance - high_cost);
+    let token = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
+    let transfer = funder
+        .sign_tx_bytes(
+            token
+                .transfer(payer.address(), balance)
+                .into_transaction_request(),
+        )
+        .await;
+    setup.node.inject_and_advance(transfer).await?;
+
+    let mut high = Vec::new();
+    for nonce_key in 1..=8 {
+        let raw = path_usd_aa_tx(
+            chain_id,
+            &payer,
+            nonce_key,
+            gas,
+            high_fee,
+            high_fee - base_fee,
+        )?;
+        high.push(setup.node.inject_tx(raw).await?);
+    }
+    let cheap = setup
+        .node
+        .inject_tx(path_usd_aa_tx(chain_id, &payer, 100, gas * 2, low_fee, 0)?)
+        .await?;
+    let unrelated = setup
+        .node
+        .inject_tx(
+            t1_account(&wallet, 1)
+                .tx()
+                .to(Address::ZERO)
+                .gas_limit(1_000_000)
+                .fees(low_fee, 0)
+                .await,
+        )
+        .await?;
+
+    let payload = setup.node.advance_block().await?;
+    let included = extract_user_txs(payload.block().body().transactions().cloned().collect())
+        .iter()
+        .map(|tx| keccak256(tx.encoded_2718()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        high.iter().filter(|hash| included.contains(hash)).count(),
+        1,
+        "exactly one high-tip transaction of the payer fits its balance"
+    );
+    assert!(included.contains(&cheap), "cheaper payer transaction");
+    assert!(included.contains(&unrelated), "unrelated transaction");
+    assert_eq!(included.len(), 3);
 
     Ok(())
 }
