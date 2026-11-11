@@ -46,8 +46,9 @@ on:
         type: string
         default: "5"
       max-concurrent:
+        description: Journeys in flight (default min(accounts, tps x 30), 30 s journeys at the target rate).
         type: string
-        default: "4"
+        default: ""
       state-bloat-mib:
         description: Tempo L1 bloat. Start with 0 for the Nitro smoke test.
         type: string
@@ -112,6 +113,9 @@ on:
         type: string
         required: false
       l1-latency-ms:
+        type: string
+        required: false
+      max-concurrent:
         type: string
         required: false
       run-type:
@@ -179,7 +183,7 @@ jobs:
       BENCH_ACCOUNTS: ${{ inputs.accounts || '20' }}
       BENCH_COUNT: ${{ inputs.count }}
       BENCH_TPS: ${{ inputs.tps || '5' }}
-      BENCH_MAX_CONCURRENT: ${{ inputs.max-concurrent || '4' }}
+      BENCH_MAX_CONCURRENT: ${{ inputs.max-concurrent }}
       BENCH_L1_BLOAT_MIB: ${{ inputs.state-bloat-mib || '0' }}
       BENCH_ZONE_BLOAT_MIB: ${{ inputs.zone-state-bloat-mib || '0' }}
       BENCH_RECIPIENT_MODE: ${{ inputs.recipient-mode || 'existing' }}
@@ -238,7 +242,7 @@ jobs:
             core.exportVariable('BENCH_BASELINE_NAME', baselineName);
             core.exportVariable('BENCH_FEATURE_NAME', featureName);
             core.exportVariable('BENCH_JOB_URL', `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`);
-            const workload = `tempo-hardfork: \`${process.env.BENCH_TEMPO_HARDFORK}\`, tps: \`${process.env.BENCH_TPS}\`, accounts: \`${process.env.BENCH_ACCOUNTS}\`, count: \`${process.env.BENCH_COUNT || Number(process.env.BENCH_TPS) * 20}\`, recipient-mode: \`${process.env.BENCH_RECIPIENT_MODE}\`, l1-latency-ms: \`${process.env.BENCH_L1_LATENCY_MS}\``;
+            const workload = `tempo-hardfork: \`${process.env.BENCH_TEMPO_HARDFORK}\`, tps: \`${process.env.BENCH_TPS}\`, accounts: \`${process.env.BENCH_ACCOUNTS}\`, count: \`${process.env.BENCH_COUNT || Number(process.env.BENCH_TPS) * 20}\`, max-concurrent: \`${process.env.BENCH_MAX_CONCURRENT || Math.min(Number(process.env.BENCH_ACCOUNTS), Number(process.env.BENCH_TPS) * 30)}\`, recipient-mode: \`${process.env.BENCH_RECIPIENT_MODE}\`, l1-latency-ms: \`${process.env.BENCH_L1_LATENCY_MS}\``;
             core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`zones\`, prover: \`${process.env.BENCH_PROVER}\`, preset: \`${process.env.BENCH_PRESET}\`, ${workload}, baseline: \`${baselineName}\`, feature: \`${featureName}\``);
       - name: Update status (running)
         if: env.BENCH_COMMENT_ID
@@ -274,7 +278,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 05f00f831e08f6043a6d027333072d60f15c6495 # tempo-multi-region-benchmark main (#493)
+          ref: 373034659051eb9f251fceab6826ce64b8d4a00b # tempo-multi-region-benchmark #496
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
