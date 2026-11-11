@@ -35,6 +35,11 @@ that touches the node or this directory, and on a manual dispatch of any branch,
 config image adds an `.env` that pins `ZONES_IMAGE` and `WORKLOAD_IMAGE` to the digests just built. It needs the registry's JSON
 key in the `ANTITHESIS_REGISTRY_KEY` repository secret.
 
+To check an already-published config without rebuilding, manually dispatch the same workflow with
+`validate_config_digest` set to its `sha256:...` digest. It pulls the config and its pinned images
+using the existing registry secret, then runs `snouty validate` to check startup and the test template.
+This does not launch a paid Antithesis run.
+
 ## Test template
 
 `test/v1/zone_payments` ships at `/opt/antithesis/test/v1` in the workload image only (the Dockerfile's
