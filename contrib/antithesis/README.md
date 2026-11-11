@@ -13,8 +13,9 @@ Each directory is one Antithesis target with its own workload image, config imag
 (spikes, fans, nested groups, a dense storage trie) and reports the shapes each block reaches.
 
 Both reth targets run a `serve` process that owns the database and the model and builds blocks only
-when a test template command asks over a Unix socket (`trie-shapes/src/harness.rs`). The commands are
-subcommands of the same binary, in `test/v1/<template>/`:
+when a test template command asks over a Unix socket (`trie-shapes/src/harness.rs`). The commands, in
+`test/v1/<template>/`, are subcommands of a separate binary (`<target>-commands` in `trie-shapes/src/bin`)
+built without coverage instrumentation, so only the server reports coverage and has its threads paused:
 
 | Command | What it does |
 |---|---|
@@ -30,4 +31,4 @@ Launch both reth targets with `--fault-tolerance legacy` (network faults and thr
 kills), which leaves restart recovery unexercised: "Restart recovers persisted blocks" stays unreached. A command that finds the server down exits successfully, so a restart is not a failure. Run one
 locally with `ANTITHESIS_TRIE_SOCKET=/tmp/trie.sock` set for both the server and the commands.
 
-The zones workload drivers live in `xtask/src/zones/antithesis`; see [`zones/README.md`](zones/README.md).
+The zones workload drivers live in `xtask/zones-antithesis`, also built uninstrumented; see [`zones/README.md`](zones/README.md).

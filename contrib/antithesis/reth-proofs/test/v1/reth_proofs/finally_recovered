@@ -1,2 +1,2 @@
 #!/bin/sh
-exec reth-proofs-antithesis finally_recovered
+exec reth-proofs-commands finally_recovered

@@ -33,18 +33,18 @@ mod persistence;
 mod generate;
 mod proof;
 
-use alloy_primitives::{Bytes, B256};
+use alloy_primitives::B256;
 use antithesis_instrumentation as _;
 use antithesis_sdk::{
-    assert_always, assert_always_or_unreachable, assert_sometimes, assert_unreachable,
-    random::AntithesisRng,
+    assert_always_or_unreachable, assert_sometimes, assert_unreachable, random::AntithesisRng,
 };
 use antithesis_trie_shapes::{
-    harness::{self, BlockRoot, Client, ProofTarget, Request, Response, Summary},
+    harness::{self, BlockRoot, ProofTarget, Request, Response, Summary},
+    proofs::Proved,
     Collider, ShapeTracker, Write,
 };
 use engine::{Engine, Settings};
-use eyre::{bail, ensure, eyre, Context, Result};
+use eyre::{ensure, eyre, Context, Result};
 use model::{apply, root, write_updates, Model};
 use rand_09::Rng;
 use reth_db::{init_db, DatabaseEnv};
@@ -52,8 +52,7 @@ use reth_engine_tree::tree::TreeConfig;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{test_utils::MockNodeTypesWithDB, DatabaseProviderROFactory, ProviderFactory};
 use reth_storage_overlay::OverlayStateProviderFactory;
-use reth_trie::AccountProof;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -297,15 +296,6 @@ impl Round {
     }
 }
 
-/// The answer to one proof request.
-#[derive(Serialize, Deserialize)]
-struct Proved {
-    /// `eth_getMultiProof`'s proofs, one per target.
-    proofs: Vec<AccountProof>,
-    /// The execution witness of a block reading the same targets.
-    witness: Vec<Bytes>,
-}
-
 /// Serves one `eth_getMultiProof` request, with the witness of the same reads, at a block of
 /// the view's round.
 fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Result<Response> {
@@ -362,61 +352,6 @@ fn serve(config: Option<String>) -> Result<()> {
     )
 }
 
-/// Requests proofs at count random blocks of the summary's round, for targets drawn from its
-/// accounts, and verifies each against the model's state root at that block. Returns false when
-/// the server went away or the round ended before every proof was checked.
-fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
-    let Some(summary) = client.summary()? else { return harness::unavailable().map(|()| false) };
-    let mut rng = AntithesisRng;
-    for _ in 0..count {
-        let BlockRoot { number, root } = summary.roots[rng.random_range(0..summary.roots.len())];
-        let targets = generate::targets(&mut rng, &summary.accounts, &summary.collider);
-        let request =
-            Request::GetProof { round: summary.round, block: number, targets: targets.clone() };
-        let Proved { proofs, witness } = match client.call(&request)? {
-            None => return harness::unavailable().map(|()| false),
-            Some(Response::Proofs { proofs }) => serde_json::from_value(proofs)?,
-            Some(Response::Rejected { reason }) => {
-                return harness::rejected(&reason).map(|()| false)
-            }
-            Some(other) => bail!("unexpected answer to get_proof: {other:?}"),
-        };
-        let result = proof::check(root, &targets, &proofs);
-        assert_always!(
-            result.is_ok(),
-            "eth_getMultiProof proofs verify against the model's state root",
-            &json!({"block": number, "targets": targets,
-                "error": result.as_ref().err().map(|error| format!("{error:#}"))})
-        );
-        result.wrap_err_with(|| format!("proofs at block {number}"))?;
-        let result = proof::from_witness(root, &targets, &witness)
-            .and_then(|proofs| proof::check(root, &targets, &proofs));
-        assert_always!(
-            result.is_ok(),
-            "Proofs rebuilt from the execution witness verify against the model's state root",
-            &json!({"block": number, "targets": targets,
-                "error": result.as_ref().err().map(|error| format!("{error:#}"))})
-        );
-        result.wrap_err_with(|| format!("witness proofs at block {number}"))?;
-    }
-    Ok(true)
-}
-
-/// parallel_driver_proofs: one to four proof requests.
-fn parallel_driver_proofs() -> Result<()> {
-    let Some(mut client) = Client::connect()? else { return harness::unavailable() };
-    request_proofs(&mut client, AntithesisRng.random_range(1..=4)).map(drop)
-}
-
-/// eventually_persisted and finally_recovered: proofs once every block is persisted, most of them
-/// reverted from the tip. Returns false when the server went away before they were checked.
-fn persisted_proofs() -> Result<bool> {
-    match harness::persisted()? {
-        Some(mut client) => request_proofs(&mut client, 8),
-        None => Ok(false),
-    }
-}
-
 fn main() -> Result<()> {
     antithesis_sdk::antithesis_init();
     let previous_hook = std::panic::take_hook();
@@ -431,12 +366,6 @@ fn main() -> Result<()> {
     let command = arguments.next().unwrap_or_default();
     let result = match command.as_str() {
         "serve" => serve(arguments.next()),
-        "first_genesis" => harness::first_genesis(),
-        "parallel_driver_writes" => harness::parallel_driver_writes(),
-        "parallel_driver_blocks" => harness::parallel_driver_blocks(),
-        "parallel_driver_proofs" => parallel_driver_proofs(),
-        "eventually_persisted" => persisted_proofs().map(drop),
-        "finally_recovered" => harness::finally(persisted_proofs),
         other => Err(eyre!("unknown command {other:?}")),
     };
     assert_always_or_unreachable!(

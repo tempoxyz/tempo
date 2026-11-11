@@ -1,2 +1,2 @@
 #!/bin/sh
-exec reth-proofs-antithesis parallel_driver_proofs
+exec reth-proofs-commands parallel_driver_proofs

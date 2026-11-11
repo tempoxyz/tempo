@@ -1,2 +1,2 @@
 #!/bin/sh
-exec reth-proofs-antithesis first_genesis
+exec reth-proofs-commands first_genesis

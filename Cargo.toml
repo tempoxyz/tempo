@@ -46,6 +46,7 @@ members = [
   "crates/transaction-pool",
   "crates/state-bloat",
   "xtask",
+  "xtask/zones-antithesis",
   "bin/tempo-zone",
   "bin/prover/enclave",
   "bin/prover/utils",

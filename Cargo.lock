@@ -1263,6 +1263,7 @@ dependencies = [
  "antithesis_sdk",
  "eyre",
  "rand 0.9.5",
+ "reth-trie-common",
  "serde",
  "serde_json",
 ]
@@ -15323,7 +15324,6 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-eth",
  "antithesis-instrumentation",
- "antithesis_sdk",
  "base64 0.22.1",
  "bytes",
  "clap",
@@ -15450,6 +15450,26 @@ dependencies = [
  "zone-prover",
  "zone-rpc",
  "zone-spf",
+]
+
+[[package]]
+name = "tempo-zones-antithesis"
+version = "1.18.3"
+dependencies = [
+ "alloy",
+ "antithesis_sdk",
+ "clap",
+ "eyre",
+ "futures",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-contracts",
+ "tempo-primitives",
+ "tokio",
+ "zone-precompiles",
+ "zone-rpc",
 ]
 
 [[package]]

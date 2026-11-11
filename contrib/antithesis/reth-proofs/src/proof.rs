@@ -1,14 +1,13 @@
-//! The `eth_getMultiProof` proof path, the execution witness of the same reads, and the check
-//! of their proofs against the state root.
+//! The server's `eth_getMultiProof` proof path and the execution witness of the same reads. The
+//! test commands check both (antithesis-trie-shapes `proofs`).
 
-use alloy_primitives::{keccak256, map::B256Map, Bytes, B256};
-use antithesis_sdk::assert_sometimes;
+use alloy_primitives::{keccak256, Bytes};
 use antithesis_trie_shapes::harness::ProofTarget;
-use eyre::{ensure, eyre, Result};
+use eyre::Result;
 use reth_provider::StateProofProvider;
 use reth_trie::{
-    AccountProof, DecodedMultiProofV2, ExecutionWitnessMode, HashedPostState, MultiProofTargetsV2,
-    ProofV2Target, TrieInput, TrieNodeV2,
+    AccountProof, ExecutionWitnessMode, HashedPostState, MultiProofTargetsV2, ProofV2Target,
+    TrieInput,
 };
 
 /// Mirrors `EthState::get_multi_proof` once the block's state provider is resolved: one V2
@@ -53,50 +52,4 @@ pub(crate) fn witness(
         }
     }
     Ok(state.witness(TrieInput::default(), post_state, ExecutionWitnessMode::Legacy)?)
-}
-
-/// Rebuilds the targets' proofs from a flat witness the way a stateless prover does, starting
-/// from `root`.
-pub(crate) fn from_witness(
-    root: B256,
-    targets: &[ProofTarget],
-    witness: &[Bytes],
-) -> Result<Vec<AccountProof>> {
-    let nodes = witness.iter().map(|node| (keccak256(node), node)).collect::<B256Map<_>>();
-    let decoded = DecodedMultiProofV2::from_witness(root, &nodes)?;
-    // A leaf shorter than a hash is embedded in its parent, never a witness entry of its own.
-    assert_sometimes!(
-        decoded.storage_proofs.values().flatten().any(|node| {
-            matches!(&node.node, TrieNodeV2::Leaf(leaf) if !node.path.is_empty() &&
-                alloy_rlp::encode(leaf).len() < B256::len_bytes())
-        }),
-        "Witness decodes an inline storage leaf"
-    );
-    Ok(targets
-        .iter()
-        .map(|target| decoded.account_proof(target.address, &target.slots))
-        .collect::<Result<_, _>>()?)
-}
-
-/// Checks that every proof answers its target and verifies against the block's state `root`.
-pub(crate) fn check(root: B256, targets: &[ProofTarget], proofs: &[AccountProof]) -> Result<()> {
-    ensure!(proofs.len() == targets.len(), "{} proofs for {} targets", proofs.len(), targets.len());
-    for (ProofTarget { address, slots }, proof) in targets.iter().zip(proofs) {
-        ensure!(proof.address == *address, "proof for {} answers {address}", proof.address);
-        ensure!(proof.storage_proofs.len() == slots.len(), "{address}: storage proof count");
-        for (slot, storage_proof) in slots.iter().zip(&proof.storage_proofs) {
-            ensure!(
-                storage_proof.key == *slot,
-                "{address}: storage proof for {}",
-                storage_proof.key
-            );
-            assert_sometimes!(
-                proof.info.is_some() && storage_proof.value.is_zero(),
-                "Storage exclusion proof checked"
-            );
-        }
-        assert_sometimes!(proof.info.is_none(), "Account exclusion proof checked");
-        proof.verify(root).map_err(|error| eyre!("{address} does not verify: {error:?}"))?;
-    }
-    Ok(())
 }
