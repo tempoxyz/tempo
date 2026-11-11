@@ -254,3 +254,16 @@ fn test_no_collision_when_using_manual_slot_with_packing() {
 
     assert_eq!(slots::D, U256::from(100));
 }
+
+#[test]
+fn test_field_at_last_slot() {
+    #[contract]
+    pub struct Layout {
+        #[slot(0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)]
+        last: U256,
+        first: U256,
+    }
+
+    assert_eq!(slots::LAST, U256::MAX);
+    assert_eq!(slots::FIRST, U256::ZERO);
+}

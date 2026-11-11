@@ -401,20 +401,21 @@ pub(crate) fn gen_collision_assertions(
         );
 
         // Two fields collide if their slot ranges overlap AND (if same slot) their byte ranges overlap.
-        // `a <= b` is written as `b.checked_sub(a).is_some()` because `U256` comparisons aren't const.
+        // Ranges use inclusive last slots so a field ending at `U256::MAX` can't overflow.
+        // `a < b` is written as `a.checked_sub(b).is_none()` because `U256` comparisons aren't const.
         checks.extend(quote! {
             {
                 let slot = #slot_const;
-                let slot_end = slot.checked_add(#current_count_expr).expect("slot range overflow");
+                let slot_last = slot.saturating_add(#current_count_expr).saturating_sub(::alloy::primitives::U256::ONE);
                 let other_slot = #other_slot_const;
-                let other_slot_end = other_slot.checked_add(#other_count_expr).expect("slot range overflow");
+                let other_slot_last = other_slot.saturating_add(#other_count_expr).saturating_sub(::alloy::primitives::U256::ONE);
 
                 let no_overlap = if slot.const_eq(&other_slot) {
                     let byte_end = #offset_const + <#field_ty as crate::storage::StorableType>::BYTES;
                     let other_byte_end = #other_offset_const + <#other_ty as crate::storage::StorableType>::BYTES;
                     byte_end <= #other_offset_const || other_byte_end <= #offset_const
                 } else {
-                    other_slot.checked_sub(slot_end).is_some() || slot.checked_sub(other_slot_end).is_some()
+                    slot_last.checked_sub(other_slot).is_none() || other_slot_last.checked_sub(slot).is_none()
                 };
 
                 assert!(no_overlap, #message);
@@ -663,6 +664,8 @@ mod tests {
         let allocated = allocate_slots(&fields).unwrap();
         let slots = crate::layout::gen_slots_module(&allocated).to_string();
         assert!(slots.contains("const _ : () ="), "{slots}");
+        assert!(!slots.contains("debug_assertions"), "{slots}");
+        assert!(!slots.contains("cfg"), "{slots}");
         assert!(
             slots.contains("Storage slot collision: field `a` overlaps with field `b`"),
             "{slots}"
