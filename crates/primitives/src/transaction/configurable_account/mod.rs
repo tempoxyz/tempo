@@ -644,7 +644,7 @@ pub enum ConfigurableAccountQuorumError {
     EmptySignatures,
     /// The signature list exceeds [`MAX_CONFIGURABLE_ACCOUNT_SIGNATURES`].
     TooManySignatures,
-    /// The signature list has entries after quorum is reached.
+    /// The signature list has an approval the quorum does not need.
     ExcessSignatures,
     /// A recovered signer is not a configured owner.
     SignerNotOwner,
@@ -687,6 +687,8 @@ pub struct ConfigurableAccountWeightAccumulator {
     threshold: u8,
     prev_owner: Option<Address>,
     recovered_weight: u16,
+    /// Lightest recorded approval weight; `u8::MAX` until the first.
+    min_weight: u8,
     signer_count: usize,
 }
 
@@ -700,6 +702,7 @@ impl ConfigurableAccountWeightAccumulator {
             threshold,
             prev_owner: None,
             recovered_weight: 0,
+            min_weight: u8::MAX,
             signer_count: 0,
         })
     }
@@ -727,6 +730,7 @@ impl ConfigurableAccountWeightAccumulator {
         self.prev_owner = Some(owner);
 
         self.recovered_weight += u16::from(weight);
+        self.min_weight = self.min_weight.min(weight);
         Ok(())
     }
 
@@ -735,13 +739,18 @@ impl ConfigurableAccountWeightAccumulator {
         self.signer_count > 0 && self.recovered_weight >= u16::from(self.threshold)
     }
 
-    /// Enforces that at least one signer reached the configured threshold.
+    /// Enforces that the signers reach the configured threshold and that every approval is needed.
     pub fn finish(self) -> Result<(), ConfigurableAccountQuorumError> {
         if self.signer_count == 0 {
             return Err(ConfigurableAccountQuorumError::EmptySignatures);
         }
         if self.recovered_weight < u16::from(self.threshold) {
             return Err(ConfigurableAccountQuorumError::WeightBelowThreshold);
+        }
+        // Dropping the lightest approval must fall below the threshold, so no approval can be
+        // stripped from a valid quorum.
+        if self.recovered_weight >= u16::from(self.threshold) + u16::from(self.min_weight) {
+            return Err(ConfigurableAccountQuorumError::ExcessSignatures);
         }
         Ok(())
     }
