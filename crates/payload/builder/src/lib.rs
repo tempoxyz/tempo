@@ -42,8 +42,8 @@ use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::BuiltPayloadExecutedBlock;
 use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
 use reth_storage_api::{
-    EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
-    StateRootProvider,
+    BlockHashReader as _, EvmStateProvider, HashedPostStateProvider, StateProvider as _,
+    StateProviderFactory, StateRootProvider,
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
@@ -697,9 +697,7 @@ where
                             // it invalid only skips it in this iterator, so every later build
                             // would retry it. Drop it from the pool after this build instead.
                             if TempoInvalidTransaction::from_invalid_tx_error(error.as_ref())
-                                .is_some_and(|error| {
-                                    error.is_stale_authority() || error.is_bad_transaction()
-                                })
+                                .is_some_and(evicts_failed_pool_transaction)
                             {
                                 stale_pool_transactions.push(*tx.hash());
                             }
@@ -761,13 +759,30 @@ where
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
 
-        if !stale_pool_transactions.is_empty() {
-            let removed = self.pool.remove_transactions(stale_pool_transactions).len();
-            self.metrics.inc_pool_tx_evicted(removed as u64);
-            debug!(
-                removed,
-                "removed pool transactions whose authority is stale"
-            );
+        // The pool validated its transactions against its own tip. A failure against a parent
+        // that does not descend from that tip, such as a notarized block that is later
+        // nullified, says nothing about the transaction at the pool's tip, so keep it pooled.
+        let pool_tip = self.pool.block_info();
+        if !stale_pool_transactions.is_empty()
+            && (pool_tip.last_seen_block_hash == parent_header.hash()
+                || (pool_tip.last_seen_block_number < parent_header.number()
+                    && state_provider.block_hash(pool_tip.last_seen_block_number)?
+                        == Some(pool_tip.last_seen_block_hash)))
+        {
+            // Removal takes the pool's write locks, so it runs off the build path. A build that
+            // starts before it finishes skips these transactions again.
+            let pool = self.pool.clone();
+            let metrics = self.metrics.clone();
+            self.executor
+                .spawn_blocking_named("builder-evict-stale", move || {
+                    let removed = pool.remove_transactions(stale_pool_transactions).len();
+                    metrics.inc_pool_tx_evicted(removed as u64);
+                    debug!(
+                        target: "payload_builder",
+                        removed,
+                        "removed pool transactions whose authority is stale"
+                    );
+                });
         }
 
         let elapsed_at_tx_cutoff = start.elapsed();
@@ -1252,9 +1267,52 @@ pub(crate) struct RootsTaskResult {
     encoded_block_transactions: EncodedBlockTransactionList,
 }
 
+/// Returns `true` if a pool transaction that failed execution with `error` should leave the
+/// pool: its authority is stale or it is malformed, so every later build would reject it again.
+/// Errors that can resolve as state advances, such as nonce, balance or expiry, keep it pooled.
+fn evicts_failed_pool_transaction(error: &TempoInvalidTransaction) -> bool {
+    error.is_stale_authority() || error.is_bad_transaction()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempo_evm::transaction_error::{ConfigurableAccountError, RootKeyRole};
+
+    #[test]
+    fn test_evicts_failed_pool_transaction() {
+        let account = Address::repeat_byte(0x30);
+        let evicted = [
+            TempoInvalidTransaction::RootKeyRetired {
+                account,
+                role: RootKeyRole::Sender,
+            },
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: B256::repeat_byte(1),
+                actual: B256::repeat_byte(2),
+            }
+            .into(),
+            ConfigurableAccountError::InvalidAccount { account }.into(),
+            TempoInvalidTransaction::InvalidFeePayerSignature,
+        ];
+        for error in evicted {
+            assert!(
+                evicts_failed_pool_transaction(&error),
+                "{error} should be evicted"
+            );
+        }
+
+        let kept = [
+            TempoInvalidTransaction::InvalidFeeToken(account),
+            TempoInvalidTransaction::ExpiringNonceReplay,
+        ];
+        for error in kept {
+            assert!(
+                !evicts_failed_pool_transaction(&error),
+                "{error} should stay pooled"
+            );
+        }
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
