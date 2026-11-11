@@ -13,10 +13,10 @@ use serde_json::json;
 use std::{collections::BTreeMap, time::Duration};
 use tempo_contracts::{
     precompiles::{ITIP20, PATH_USD_ADDRESS},
-    zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZonePortal},
+    zones::{IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS, ZonePortal},
 };
 
-use super::{Context, Record, is_rpc_error, poll_until, shuffled};
+use super::{Context, Record, is_rpc_error, poll_until, random_below, shuffled};
 
 /// How long `check-settled` waits for the system to recover once faults stop.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -29,6 +29,59 @@ const BALANCE_READS: usize = 32;
 
 impl Context {
     pub(super) async fn check_consistency(&self) -> eyre::Result<()> {
+        // A zone block must come from the sequencer the portal names leader at the Tempo block
+        // the zone block anchors to: a handoff takes effect at its activation block. Checked at
+        // each node's tip, where a handoff shows first, and at one earlier block. A node that
+        // faults make unreachable is skipped.
+        let portal = ZonePortal::new(self.portal, &self.l1);
+        for (url, zone) in self.zone_urls.iter().zip(&self.zones) {
+            let checked: eyre::Result<()> = async {
+                let tip = zone.get_block_number().await?;
+                // Genesis has no producer.
+                if tip == 0 {
+                    return Ok(());
+                }
+                for number in [tip, random_below(tip) + 1] {
+                    let Some(block) = zone
+                        .get_block_by_number(BlockNumberOrTag::Number(number))
+                        .await?
+                    else {
+                        continue;
+                    };
+                    let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
+                        .tempoBlockNumber()
+                        .block(BlockId::hash(block.header.hash))
+                        .call()
+                        .await?;
+                    let leader = portal
+                        .leader()
+                        .block(BlockId::number(anchor))
+                        .call()
+                        .await?;
+                    assert_always!(
+                        block.header.beneficiary == leader,
+                        "Zone blocks come from the leader of their Tempo anchor",
+                        &json!({
+                            "node": url.as_str(),
+                            "height": number,
+                            "hash": block.header.hash,
+                            "producer": block.header.beneficiary,
+                            "tempo_anchor": anchor,
+                            "leader": leader,
+                        })
+                    );
+                }
+                Ok(())
+            }
+            .await;
+            match checked {
+                Err(error) if is_rpc_error(&error) => {
+                    println!("check-consistency: producer check skipped {url}: {error:#}");
+                }
+                result => result?,
+            }
+        }
+
         // L1 can be paused or partitioned while faults run, like the zone nodes skipped below.
         let (height, hash) = match self.settled_block().await {
             Ok(settled) => settled,

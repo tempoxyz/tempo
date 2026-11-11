@@ -2,21 +2,22 @@
 //!
 //! Each subcommand is one test command: drivers send deposits, withdrawals and TIP-20 transfers
 //! between accounts the workload keeps creating, so the L1 and zone tries grow during a run, and
-//! checks assert what must hold under faults and after recovery. Commands share state through the
-//! [`Ledger`] in the workload container.
+//! hand zone leadership between the sequencers; checks assert what must hold under faults and
+//! after recovery. Commands share state through the [`Ledger`] in the workload container.
 
 use alloy::{
     primitives::{Address, B256, Bytes, I256, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
     },
-    rpc::types::{BlockId, Filter, TransactionReceipt},
+    rpc::types::{BlockId, BlockNumberOrTag, Filter, TransactionReceipt},
     signers::local::PrivateKeySigner,
     sol_types::SolEvent as _,
     transports::{TransportError, http::reqwest},
 };
 use antithesis_sdk::{
-    assert_always, assert_sometimes, assert_sometimes_greater_than, random::get_random,
+    assert_always, assert_reachable, assert_sometimes, assert_sometimes_greater_than,
+    random::get_random,
 };
 use clap::Parser as _;
 use eyre::{OptionExt as _, WrapErr as _, eyre};
@@ -25,12 +26,13 @@ use std::{path::PathBuf, time::Duration};
 use tempo_contracts::{
     precompiles::{ITIP20, PATH_USD_ADDRESS},
     zones::{
-        DepositPayload, IZoneInbox, IZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
-        ZonePortal,
+        DepositPayload, IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState,
+        ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal,
     },
 };
 use tempo_primitives::transaction::calc_gas_balance_spending;
 use zone_precompiles::ecies::encrypt_deposit;
+use zone_rpc::types::SetLeaderResponse;
 
 use ledger::{Account, Lease, Ledger, Record};
 
@@ -51,6 +53,10 @@ async fn main() -> eyre::Result<()> {
 /// Dev accounts 8..=19 of the test mnemonic fund deposits. 0 administers the portal and 5..=7
 /// are the sequencers, which pay their own settlement gas.
 const FUNDER_INDICES: std::ops::RangeInclusive<u32> = 8..=19;
+/// Dev account that administers the portal and may hand leadership to any sequencer.
+const ADMIN_INDEX: u32 = 0;
+/// Dev accounts of the three quorum sequencers, any of which may lead.
+const SEQUENCER_INDICES: std::ops::RangeInclusive<u32> = 5..=7;
 /// pathUSD has 6 decimals.
 const USD: u128 = 1_000_000;
 /// Zone accounts `first-seed` funds so transfers and withdrawals can start right away.
@@ -71,7 +77,8 @@ const WITHDRAWAL_TX_GAS: u64 = 10_000_000;
 const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound on waiting for a transaction's receipt.
 const RECEIPT_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a driver watches for its deposit or withdrawal to land on the other chain.
+/// How long a driver watches for its deposit or withdrawal to land on the other chain, or for a
+/// new leader to produce and settle.
 const BRIDGE_WAIT: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(500);
 /// How many leased-account candidates a driver tries before giving up for this run.
@@ -117,6 +124,9 @@ enum Command {
     Withdraw,
     /// Funds a batch of new zone accounts from one sender.
     Fanout,
+    /// Hands zone leadership to another sequencer, through the admin or a node's
+    /// `zone_setLeader` relay.
+    RotateLeader,
     /// Checks that zone nodes agree with L1 settlement while faults run.
     CheckConsistency,
     /// After faults stop: every confirmed deposit and withdrawal lands and nodes converge.
@@ -139,6 +149,7 @@ impl Antithesis {
             Command::Transfer => ctx.transfer().await,
             Command::Withdraw => ctx.withdraw().await,
             Command::Fanout => ctx.fanout().await,
+            Command::RotateLeader => ctx.rotate_leader().await,
         };
         // Under faults, or on a node that lags the sequencer, a send can be rejected (nonce too
         // low) or never confirm. Drivers record only confirmed operations, so such an RPC error
@@ -524,6 +535,131 @@ impl Context {
         println!(
             "fanout: {count} new accounts from {}, {accounts} total",
             sender.address()
+        );
+        Ok(())
+    }
+
+    async fn rotate_leader(&self) -> eyre::Result<()> {
+        let portal = ZonePortal::new(self.portal, &self.l1);
+        let leader = portal.leader().call().await?;
+        let mut candidates = Vec::new();
+        for index in SEQUENCER_INDICES {
+            let sequencer = Account::at(index)?.address();
+            if sequencer != leader {
+                candidates.push(sequencer);
+            }
+        }
+        let target = random_choice(candidates).ok_or_eyre("no sequencer besides the leader")?;
+        // Half of the handoffs go through a zone node, which relays them with its own sequencer
+        // key against the finalized epoch. The rpc-only node refuses, which ends this run.
+        let relayed = random_below(2) == 0;
+        let (l1_tx, update) = if relayed {
+            let from_block = self.l1.get_block_number().await?;
+            let node = random_index(self.zones.len());
+            let response: SetLeaderResponse = self.zones[node]
+                .raw_request("zone_setLeader".into(), [target])
+                .await?;
+            // `alreadyActive`: the finalized portal already names the target.
+            let Some(tx) = response.tx_hash else {
+                println!("rotate-leader: {target} already leads");
+                return Ok(());
+            };
+            // The node relays a Tempo transaction, whose receipt the L1 provider's Ethereum
+            // types cannot decode, so look for its event instead. The relay returns once the
+            // transaction is mined.
+            let filter = Filter::new()
+                .address(self.portal)
+                .event_signature(ZonePortal::LeaderUpdated::SIGNATURE_HASH)
+                .from_block(from_block);
+            let update = self
+                .l1
+                .get_logs(&filter)
+                .await?
+                .iter()
+                .find(|log| log.transaction_hash == Some(tx))
+                .map(|log| ZonePortal::LeaderUpdated::decode_log(&log.inner))
+                .transpose()?
+                .map(|log| log.data);
+            (tx, update)
+        } else {
+            let admin = Account::at(ADMIN_INDEX)?;
+            let Some(_lease) = self.ledger.try_lease(&admin)? else {
+                println!("rotate-leader: admin is busy");
+                return Ok(());
+            };
+            let epoch = portal.leaderEpoch().call().await?;
+            let receipt = ZonePortal::new(self.portal, self.wallet(&admin, &self.l1_url))
+                .setLeader(target, epoch)
+                .send()
+                .await?
+                .with_timeout(Some(RECEIPT_TIMEOUT))
+                .get_receipt()
+                .await?;
+            let update = receipt
+                .decoded_log::<ZonePortal::LeaderUpdated>()
+                .map(|log| log.data);
+            (receipt.transaction_hash, update)
+        };
+        // A concurrent handoff can win the epoch or the L1 block, which reverts this one.
+        let Some(update) = update else {
+            println!("rotate-leader: {target} not applied ({l1_tx})");
+            return Ok(());
+        };
+        let details = json!({
+            "l1_tx": l1_tx,
+            "previous": update.previousLeader,
+            "leader": update.newLeader,
+            "epoch": update.epoch,
+            "activation_tempo_block": update.activationTempoBlock,
+            "relayed": relayed,
+        });
+        assert_reachable!("Zone leadership moves to another sequencer", &details);
+        assert_sometimes!(relayed, "A zone node relays a leadership handoff", &details);
+
+        let zone = self.random_zone();
+        let mut produced = None;
+        poll_until(BRIDGE_WAIT, async || {
+            let block = zone
+                .get_block_by_number(BlockNumberOrTag::Latest)
+                .await?
+                .ok_or_eyre("no latest zone block")?;
+            if block.header.beneficiary != target {
+                return Ok(false);
+            }
+            // The target may have led before: only a block anchored at or after the activation
+            // block is from this term.
+            let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
+                .tempoBlockNumber()
+                .block(BlockId::hash(block.header.hash))
+                .call()
+                .await?;
+            if anchor >= update.activationTempoBlock {
+                produced = Some(block.header.number);
+            }
+            Ok(produced.is_some())
+        })
+        .await?;
+        assert_sometimes!(
+            produced.is_some(),
+            "New leader produces zone blocks",
+            &details
+        );
+        let Some(height) = produced else {
+            println!("rotate-leader: {target} produced no block within {BRIDGE_WAIT:?}");
+            return Ok(());
+        };
+        let settled = poll_until(BRIDGE_WAIT, async || {
+            Ok(portal.zoneHeight().call().await? >= U256::from(height))
+        })
+        .await?;
+        assert_sometimes!(
+            settled,
+            "A batch settles after a leadership handoff",
+            &json!({ "handoff": details, "zone_block": height })
+        );
+        println!(
+            "rotate-leader: {leader} -> {target} at epoch {}, settled={settled}",
+            update.epoch
         );
         Ok(())
     }

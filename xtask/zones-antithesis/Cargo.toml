@@ -22,6 +22,7 @@ workspace = true
 tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 tempo-primitives = { workspace = true, features = ["std"] }
 zone-precompiles = { workspace = true, features = ["std"] }
+zone-rpc.workspace = true
 
 alloy = { workspace = true, features = ["contract", "providers", "reqwest", "reqwest-rustls-tls", "rpc-types", "signer-local", "signer-mnemonic", "signers", "sol-types"] }
 antithesis_sdk = { workspace = true, features = ["full"] }

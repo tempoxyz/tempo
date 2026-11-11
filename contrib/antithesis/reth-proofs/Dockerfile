@@ -4,6 +4,13 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
     && apt-get install --no-install-recommends -y clang libclang-dev pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+# Match the regular Tempo Docker builders; keep installation cached across source changes.
+RUN cargo install sccache --version 0.14.0 --locked
+
+ENV CARGO_INCREMENTAL=0 \
+    RUSTC_WRAPPER=sccache \
+    SCCACHE_DIR=/sccache
+
 WORKDIR /work
 # The Dockerfile-specific allowlist includes every workspace member manifest.
 COPY . ./
@@ -22,6 +29,7 @@ ENV CARGO_PROFILE_ANTITHESIS_DEBUG=line-tables-only \
 # registry mount, so concurrent builds must not share it.
 RUN --mount=type=cache,id=antithesis-reth-proofs-cargo-registry,target=/usr/local/cargo/registry,sharing=private \
     --mount=type=cache,id=antithesis-reth-proofs-cargo-git,target=/usr/local/cargo/git,sharing=private \
+    --mount=type=cache,id=antithesis-reth-proofs-sccache,target=/sccache,sharing=private \
     --mount=type=cache,id=antithesis-reth-proofs-target,target=/work/target,sharing=private \
     touch contrib/antithesis/reth-proofs/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
       contrib/antithesis/trie-shapes/src/bin/reth-proofs-commands/main.rs \
@@ -29,6 +37,7 @@ RUN --mount=type=cache,id=antithesis-reth-proofs-cargo-registry,target=/usr/loca
       --features reth-proofs-antithesis/fuzz --bin reth-proofs-antithesis \
       --target x86_64-unknown-linux-gnu \
       --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
+    && sccache --show-stats \
     && mkdir /out \
     && cp target/x86_64-unknown-linux-gnu/antithesis/reth-proofs-antithesis /out/ \
     && nm /out/reth-proofs-antithesis | grep ' T antithesis_load_libvoidstar$' \
