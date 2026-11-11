@@ -355,7 +355,13 @@ impl AA2dPool {
         }
 
         // clean up replaced
+        let mut on_chain_nonce = on_chain_nonce;
         if let Some(replaced) = &replaced {
+            // The lane's independent transaction is at the latest on-chain nonce the pool has
+            // seen, which can be ahead of the nonce validation read.
+            if let Some(independent) = self.independent_transactions.get(&tx_id.seq_id) {
+                on_chain_nonce = on_chain_nonce.max(independent.transaction.nonce());
+            }
             // it's already replaced in the by id set; if it was the independent transaction, the
             // replacement is re-added below only if it is pending at the on-chain nonce
             self.by_hash.remove(replaced.inner.transaction.hash());
@@ -5302,38 +5308,51 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn test_queued_replacement_drops_stale_independent_entry() {
+    #[test_case::test_case(5 ; "replacing independent transaction")]
+    #[test_case::test_case(6 ; "replacing pending descendant")]
+    fn test_replacement_with_outdated_nonce_stays_pending(replaced_nonce: u64) {
         let sender = Address::random();
         let nonce_key = U256::ONE;
         let seq_id = AASequenceId::new(sender, nonce_key);
-        let original = wrap_valid_tx(
+        let head = wrap_valid_tx(
             TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build(),
+            TransactionOrigin::Local,
+        );
+        let next = wrap_valid_tx(
+            TxBuilder::aa(sender).nonce_key(nonce_key).nonce(6).build(),
             TransactionOrigin::Local,
         );
         let replacement = wrap_valid_tx(
             TxBuilder::aa(sender)
                 .nonce_key(nonce_key)
-                .nonce(5)
+                .nonce(replaced_nonce)
                 .max_priority_fee(4_000_000_000)
                 .max_fee(60_000_000_000)
                 .build(),
             TransactionOrigin::Local,
         );
+        let replacement_hash = *replacement.hash();
         let mut pool = AA2dPool::default();
 
-        pool.add_transaction(Arc::new(original), 5, TempoHardfork::T1)
+        pool.add_transaction(Arc::new(head), 5, TempoHardfork::T1)
             .unwrap();
-        assert!(pool.independent_transactions.contains_key(&seq_id));
+        pool.add_transaction(Arc::new(next), 5, TempoHardfork::T1)
+            .unwrap();
 
-        // A lower on-chain nonce leaves the replacement behind a nonce gap.
+        // Validation read the lane nonce before the pool saw it advance to 5.
         let added = pool
             .add_transaction(Arc::new(replacement), 4, TempoHardfork::T1)
             .unwrap();
-        assert!(added.as_pending().is_none());
-        assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
-        assert!(!pool.independent_transactions.contains_key(&seq_id));
-        assert!(pool.best_transactions().next().is_none());
+        assert!(added.as_pending().is_some());
+        assert_eq!(pool.pending_and_queued_txn_count(), (2, 0));
+        assert_eq!(
+            pool.independent_transactions[&seq_id].transaction.nonce(),
+            5
+        );
+        assert!(
+            pool.best_transactions()
+                .any(|tx| tx.hash() == &replacement_hash)
+        );
         pool.assert_invariants();
     }
 
