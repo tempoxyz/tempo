@@ -1,6 +1,6 @@
-//! Block production as the engine tree does it, shared with reth-proofs: the sparse-trie state
-//! root task computes each block's root, blocks go into the OverlayManager, and one background
-//! writer persists them with state masking. Blocks are produced only when the server is asked.
+//! Block production as the engine tree does it: the sparse-trie state root task computes each
+//! block's root, blocks go into the OverlayManager, and one background writer persists them with
+//! state masking. Blocks are produced only when the server is asked.
 
 use crate::{input::Operation, persistence::Persistence, Node};
 use alloy_consensus::Header;
@@ -36,7 +36,7 @@ use reth_trie::{bundle_state::BundleState, HashedPostState, SortedTrieData};
 use serde_json::json;
 use std::{collections::BTreeSet, fs, path::Path, sync::Arc, time::Duration};
 
-/// Engine and persistence settings both workloads take from their configuration.
+/// Engine and persistence settings the workload takes from its configuration.
 pub(crate) struct Settings {
     pub proof_workers: usize,
     pub timeout_secs: u64,
@@ -179,11 +179,6 @@ impl Engine {
 
     pub(crate) const fn factory(&self) -> &ProviderFactory<Node> {
         &self.factory
-    }
-
-    /// The newest block's header.
-    pub(crate) const fn parent(&self) -> &SealedHeader {
-        &self.parent
     }
 
     /// The newest block's number.

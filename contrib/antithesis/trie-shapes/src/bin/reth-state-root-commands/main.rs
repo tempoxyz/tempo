@@ -1,7 +1,7 @@
-//! The reth-proofs test template's commands (`test/v1/reth_proofs`). Each asks the `serve` process
-//! of reth-proofs-antithesis over the harness socket. Built without coverage instrumentation (see
-//! contrib/antithesis/reth-proofs/Dockerfile), so only the server reports coverage and has its
-//! threads paused.
+//! The reth-state-root test template's commands (`test/v1/reth_state_root`). Each asks the `serve`
+//! process of reth-state-root-antithesis over the harness socket. Built without coverage
+//! instrumentation (see contrib/antithesis/reth-state-root/Dockerfile), so only the server reports
+//! coverage and has its threads paused.
 
 mod check;
 
@@ -15,6 +15,19 @@ use antithesis_trie_shapes::{
 use eyre::{bail, eyre, Result, WrapErr};
 use rand_09::Rng;
 use serde_json::json;
+
+/// Checks that the root the overlay serves at the tip equals the model's. Returns false when the
+/// server went away.
+fn check_root(client: &mut Client) -> Result<bool> {
+    match client.call(&Request::CheckRoot)? {
+        None => harness::unavailable().map(|()| false),
+        Some(Response::Root { number, root }) => {
+            println!("{}", json!({"root": {"number": number, "root": root}}));
+            Ok(true)
+        }
+        Some(other) => bail!("unexpected answer to check_root: {other:?}"),
+    }
+}
 
 /// Requests proofs at count random blocks of the summary's round, for targets drawn from its
 /// accounts, and verifies each against the model's state root at that block. Returns false when
@@ -56,19 +69,24 @@ fn request_proofs(client: &mut Client, count: usize) -> Result<bool> {
     Ok(true)
 }
 
+/// anytime_root: the root the overlay serves at the tip equals the model's.
+fn anytime_root() -> Result<()> {
+    let Some(mut client) = Client::connect()? else { return harness::unavailable() };
+    check_root(&mut client).map(drop)
+}
+
 /// parallel_driver_proofs: one to four proof requests.
 fn parallel_driver_proofs() -> Result<()> {
     let Some(mut client) = Client::connect()? else { return harness::unavailable() };
     request_proofs(&mut client, AntithesisRng.random_range(1..=4)).map(drop)
 }
 
-/// eventually_persisted and finally_recovered: proofs once every block is persisted, most of them
-/// reverted from the tip. Returns false when the server went away before they were checked.
-fn persisted_proofs() -> Result<bool> {
-    match harness::persisted()? {
-        Some(mut client) => request_proofs(&mut client, 8),
-        None => Ok(false),
-    }
+/// eventually_persisted and finally_recovered: once every block is persisted, which makes the
+/// server check the persisted state, the root at the tip and proofs, most of them reverted from
+/// the tip. Returns false when the server went away or the round ended before they were checked.
+fn persisted_checks() -> Result<bool> {
+    let Some(mut client) = harness::persisted()? else { return Ok(false) };
+    Ok(check_root(&mut client)? && request_proofs(&mut client, 8)?)
 }
 
 fn main() -> Result<()> {
@@ -76,7 +94,7 @@ fn main() -> Result<()> {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |information| {
         assert_unreachable!(
-            "Proof workload or worker thread panicked",
+            "Trie workload or worker thread panicked",
             &json!({"panic": information.to_string()})
         );
         previous_hook(information);
@@ -87,13 +105,14 @@ fn main() -> Result<()> {
         "parallel_driver_writes" => harness::parallel_driver_writes(),
         "parallel_driver_blocks" => harness::parallel_driver_blocks(),
         "parallel_driver_proofs" => parallel_driver_proofs(),
-        "eventually_persisted" => persisted_proofs().map(drop),
-        "finally_recovered" => harness::finally(persisted_proofs),
+        "anytime_root" => anytime_root(),
+        "eventually_persisted" => persisted_checks().map(drop),
+        "finally_recovered" => harness::finally(persisted_checks),
         other => Err(eyre!("unknown command {other:?}")),
     };
     assert_always_or_unreachable!(
         result.is_ok(),
-        "Proof workload completes without errors",
+        "Trie workload completes without errors",
         &json!({
             "command": command,
             "error": result.as_ref().err().map(|error| format!("{error:#}"))
