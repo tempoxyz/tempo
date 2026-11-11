@@ -99,11 +99,11 @@ impl SignatureVerifier {
 
     /// Returns whether `signature` approves `hash` for `account`.
     ///
-    /// Before T15, whether a primitive `signature` recovers to `account`. From T15 (TIP-1168), whether
-    /// it approves under `account`'s current state: a primitive signature counts only when it
-    /// recovers to `account` and `account` has no configuration commitment (TIP-1113), a keychain
-    /// signature follows [`Self::verify_keychain_admin`], and a configurable account signature
-    /// follows `verifyConfigurableAccount`, including their reverts.
+    /// Checks that a primitive `signature` recovers to `account`. (+T15) checks `account`'s current
+    /// state instead, by signature type and including the routed checks' reverts (TIP-1168):
+    /// - primitive: recovers to `account`, which has no configuration commitment
+    /// - keychain: [`Self::verify_keychain_admin`]
+    /// - configurable account: `verifyConfigurableAccount`
     pub fn verify(&self, account: Address, hash: B256, signature: &[u8]) -> Result<bool> {
         if !self.storage.spec().is_t15() {
             return Ok(self.recover(hash, signature)? == account);

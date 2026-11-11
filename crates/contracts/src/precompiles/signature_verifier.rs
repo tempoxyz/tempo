@@ -11,18 +11,18 @@ crate::sol! {
         /// @return Address of the signer if valid, reverts otherwise
         function recover(bytes32 hash, bytes calldata signature) external view returns (address signer);
 
-        /// @notice Verifies whether a Tempo signature approves a hash for an account.
-        /// @param account Before T15, the expected signer. From T15, the account expected to approve
-        /// hash under its current state (TIP-1168).
+        /// @notice Verifies whether a signature approves a hash for an account.
+        /// @param account The account expected to approve
         /// @param hash The message hash that was signed
-        /// @param signature Before T15, a primitive signature. From T15, a primitive, keychain or
-        /// configurable account signature.
-        /// @dev From T15, a primitive signature counts only while account has no configuration
-        /// commitment (TIP-1113), a keychain signature follows `verifyKeychainAdmin`, and a
-        /// configurable account signature follows `verifyConfigurableAccount`. Use `recover` for a
-        /// stateless check of which key signed.
-        /// @return True if the signature approves hash for account, false otherwise. Reverts for
-        /// malformed or invalid signatures.
+        /// @param signature The encoded signature
+        /// @dev Checks that a primitive signature recovers to account. (+T15) checks account's
+        /// current state instead, by signature type (TIP-1168):
+        /// - primitive: recovers to account, which has no configuration commitment
+        /// - keychain: same as `verifyKeychainAdmin`
+        /// - configurable account: same as `verifyConfigurableAccount`
+        /// Use `recover` for a stateless check.
+        /// @return True if the signature approves hash for account. Reverts on malformed or invalid
+        /// signatures.
         function verify(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
 
         /// @notice Verifies whether a keychain signature was produced by an active key.

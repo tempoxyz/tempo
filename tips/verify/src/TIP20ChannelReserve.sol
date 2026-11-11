@@ -408,8 +408,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             ? descriptor.authorizedSigner
             : descriptor.payer;
 
-        // Settlement must not depend on the signer's current account state (TIP-1113), so this uses
-        // the stateless `recover` rather than `verify`, which checks it from T15 (TIP-1168).
+        // `recover`, not `verify`: settlement must not depend on the signer's account state (TIP-1168).
         try ISignatureVerifier(SIGNATURE_VERIFIER_PRECOMPILE).recover(digest, signature) returns (
             address signer
         ) {

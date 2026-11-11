@@ -17,9 +17,8 @@ impl Precompile for SignatureVerifier {
             return err;
         }
 
-        // `verifyConfigurableAccount` and `verifyKeychain` input from T14, and `verify` input from
-        // T15, can carry a configurable account signature, which its decoder bounds and is already
-        // charged.
+        // Configurable account signatures, which their decoder bounds and are already charged, skip
+        // the cap: `verifyConfigurableAccount` and `verifyKeychain` (+T14), `verify` (+T15).
         let spec = self.storage.spec();
         if calldata.len() > MAX_CALLDATA_LEN
             && !((spec.is_t14()
