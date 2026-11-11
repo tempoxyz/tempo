@@ -98,6 +98,7 @@ reth-codecs.workspace = true
 reth-basic-payload-builder.workspace = true
 reth-db.workspace = true
 reth-execution-cache.workspace = true
+reth-execution-types.workspace = true
 reth-payload-builder.workspace = true
 reth-db-api.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli", "network"] }
@@ -116,7 +117,9 @@ reth-static-file-types.workspace = true
 reth-trie.workspace = true
 reth-trie-common.workspace = true
 reth-trie-db.workspace = true
+reth-trie-parallel.workspace = true
 clap.workspace = true
+crossbeam-channel.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 jiff.workspace = true

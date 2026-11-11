@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
 };
@@ -23,6 +23,43 @@ use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
 
+/// How many transactions prewarming may run ahead of the builder.
+///
+/// Without a bound, prewarming keeps pulling transactions while the builder executes, and on a
+/// warm cache it runs thousands of transactions ahead, past what the block can hold, taking CPU
+/// from the builder. Once this many transactions wait for the builder, finished prewarm jobs stop
+/// pulling new ones until the builder has consumed half of them.
+const MAX_PREWARM_LOOKAHEAD: usize = 256;
+
+/// Progress shared between the builder and the prewarm coordinator, to bound the lookahead.
+#[derive(Debug, Default)]
+struct PrewarmLookahead {
+    /// Transactions the coordinator pulled from the source iterator.
+    pulled: AtomicUsize,
+    /// Transactions the builder took from [`BestTransactionsPrewarming`].
+    consumed: AtomicUsize,
+    /// Set by the coordinator when it defers advances; cleared by the builder when it asks the
+    /// coordinator to resume.
+    paused: AtomicBool,
+}
+
+impl PrewarmLookahead {
+    fn ahead(&self) -> usize {
+        self.pulled
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.consumed.load(Ordering::Relaxed))
+    }
+
+    /// Records a transaction taken by the builder and returns whether the coordinator should
+    /// resume deferred advances.
+    fn consume(&self) -> bool {
+        self.consumed.fetch_add(1, Ordering::Relaxed);
+        self.paused.load(Ordering::Relaxed)
+            && self.ahead() <= MAX_PREWARM_LOOKAHEAD / 2
+            && self.paused.swap(false, Ordering::Relaxed)
+    }
+}
+
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
@@ -34,6 +71,7 @@ pub(crate) struct BestTransactionsPrewarming {
     /// Lanes passed to [`BestTransactions::mark_invalid`]. Buffered transactions on them are
     /// skipped in [`Iterator::next`] instead of re-scanning the buffer on every invalidation.
     invalidated: InvalidatedLanes,
+    lookahead: Arc<PrewarmLookahead>,
 }
 
 impl BestTransactionsPrewarming {
@@ -48,11 +86,13 @@ impl BestTransactionsPrewarming {
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
+        let lookahead = Arc::new(PrewarmLookahead::default());
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
             invalidated: InvalidatedLanes::default(),
+            lookahead: lookahead.clone(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -69,6 +109,8 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        lookahead,
+                        deferred_advances: 0,
                     },
                 );
             });
@@ -100,6 +142,7 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
+                ctx.lookahead.pulled.fetch_add(1, Ordering::Relaxed);
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
@@ -126,7 +169,7 @@ impl BestTransactionsPrewarming {
                     if let Some(transactions_tx) = transactions_tx {
                         let _ = transactions_tx.send(Some(tx));
                     }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    let _ = commands_tx.send(BestTransactionsCommand::Prewarmed);
                 });
             };
 
@@ -141,6 +184,19 @@ impl BestTransactionsPrewarming {
                 match command {
                     BestTransactionsCommand::Advance => {
                         advance(&mut ctx);
+                    }
+                    BestTransactionsCommand::Prewarmed => {
+                        if ctx.lookahead.ahead() >= MAX_PREWARM_LOOKAHEAD {
+                            ctx.deferred_advances += 1;
+                            ctx.lookahead.paused.store(true, Ordering::Relaxed);
+                        } else {
+                            advance(&mut ctx);
+                        }
+                    }
+                    BestTransactionsCommand::Resume => {
+                        for _ in 0..core::mem::take(&mut ctx.deferred_advances) {
+                            advance(&mut ctx);
+                        }
                     }
                     BestTransactionsCommand::Invalid(invalid) => {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
@@ -244,6 +300,14 @@ impl BestTransactionsPrewarming {
         PrewarmedTransaction { tx, replay }
     }
 
+    /// Records that the builder takes `tx` and resumes prewarming once it caught up.
+    fn consumed(&self, tx: PrewarmedTransaction) -> PrewarmedTransaction {
+        if self.lookahead.consume() {
+            let _ = self.commands_tx.send(BestTransactionsCommand::Resume);
+        }
+        tx
+    }
+
     /// Returns the next already-received transaction that is not on an invalidated lane.
     fn next_buffered(&mut self) -> Option<PrewarmedTransaction> {
         let invalidated = &self.invalidated;
@@ -274,7 +338,7 @@ impl Iterator for BestTransactionsPrewarming {
             // Empty replies describe earlier source polls. Drain them before deciding
             // whether a ready transaction exists, preserving the order of actual txs.
             if let Some(tx) = self.next_buffered() {
-                return Some(tx);
+                return Some(self.consumed(tx));
             }
             self.commands_tx
                 .send(BestTransactionsCommand::Advance)
@@ -286,8 +350,8 @@ impl Iterator for BestTransactionsPrewarming {
                 // The source yielded a transaction on an invalidated lane before it saw the
                 // invalidation; poll again for one the builder can use.
                 Some(tx) if self.invalidated.contains(&tx.tx) => continue,
-                Some(tx) => return Some(tx),
-                None => return self.next_buffered(),
+                Some(tx) => return Some(self.consumed(tx)),
+                None => return self.next_buffered().map(|tx| self.consumed(tx)),
             }
         }
     }
@@ -329,6 +393,9 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     /// provider, EVM environment and EVM config.
     prewarm: Arc<PrewarmingExecutionContext<Provider>>,
     next_expiring_nonce_offset: usize,
+    lookahead: Arc<PrewarmLookahead>,
+    /// Advances skipped while prewarming was [`MAX_PREWARM_LOOKAHEAD`] ahead of the builder.
+    deferred_advances: usize,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -452,7 +519,12 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
 #[derive(Debug)]
 enum BestTransactionsCommand {
+    /// The builder found no buffered transaction: pull the next one now.
     Advance,
+    /// A prewarm job finished: pull the next transaction unless prewarming is too far ahead.
+    Prewarmed,
+    /// The builder caught up: pull the transactions deferred by [`Self::Prewarmed`].
+    Resume,
     Invalid(InvalidTransaction),
     NoUpdates,
     SkipBlobs(bool),
@@ -858,6 +930,49 @@ mod tests {
     }
 
     #[test]
+    fn lookahead_resumes_once_the_builder_consumed_half() {
+        let lookahead = PrewarmLookahead::default();
+        lookahead
+            .pulled
+            .store(MAX_PREWARM_LOOKAHEAD, Ordering::Relaxed);
+        assert!(!lookahead.consume(), "not paused");
+
+        lookahead.paused.store(true, Ordering::Relaxed);
+        for _ in 1..MAX_PREWARM_LOOKAHEAD / 2 - 1 {
+            assert!(!lookahead.consume());
+        }
+        assert!(lookahead.consume());
+        assert!(!lookahead.paused.load(Ordering::Relaxed));
+        assert!(!lookahead.consume(), "resumes once");
+    }
+
+    #[test]
+    fn prewarming_stops_pulling_far_ahead_of_the_builder_and_resumes() {
+        let sender = Address::random();
+        let executor = TaskExecutor::test();
+        let in_flight = executor.prewarming_pool().current_num_threads() * 2;
+        let txs = (0..MAX_PREWARM_LOOKAHEAD * 3)
+            .map(|nonce| test_tx(sender, nonce as u64))
+            .collect::<Vec<_>>();
+        let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+
+        let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
+        wait_until(|| log.lock().unwrap().yielded >= MAX_PREWARM_LOOKAHEAD);
+        thread::sleep(Duration::from_millis(50));
+        let yielded = log.lock().unwrap().yielded;
+        assert!(
+            yielded <= MAX_PREWARM_LOOKAHEAD + in_flight,
+            "pulled {yielded} transactions without the builder consuming any"
+        );
+
+        let actual = (0..expected.len())
+            .map(|_| *prewarming.next().expect("transaction").tx.hash())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn stale_empty_replies_do_not_hide_buffered_transactions() {
         for empty_replies in [2, 32] {
             let (transactions_tx, transactions_rx) = mpsc::channel();
@@ -878,6 +993,7 @@ mod tests {
                 commands_tx,
                 stop: Arc::default(),
                 invalidated: InvalidatedLanes::default(),
+                lookahead: Arc::default(),
             };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
@@ -912,6 +1028,7 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            lookahead: Arc::default(),
         };
 
         let next = prewarming.next();
@@ -939,6 +1056,7 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            lookahead: Arc::default(),
         };
 
         assert!(prewarming.next().is_none());
@@ -967,6 +1085,7 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            lookahead: Arc::default(),
         };
 
         assert_eq!(
@@ -1223,6 +1342,7 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            lookahead: Arc::default(),
         };
 
         for invalid in [&invalid_regular, &invalid_2d] {
@@ -1256,6 +1376,7 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            lookahead: Arc::default(),
         };
         prewarming.mark_invalid(
             &PrewarmedTransaction::without_replay(invalid),
@@ -1299,6 +1420,7 @@ mod tests {
             commands_tx,
             stop: Arc::default(),
             invalidated: InvalidatedLanes::default(),
+            lookahead: Arc::default(),
         };
 
         // Leave the coordinator commands unprocessed: the original buffer must

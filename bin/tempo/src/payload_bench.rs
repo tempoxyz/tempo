@@ -6,13 +6,13 @@
 //! same parent state and the same pool, which makes runs repeatable and easy to profile.
 
 use alloy_consensus::BlockHeader as _;
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_signer::SignerSync as _;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
 use alloy_sol_types::SolCall as _;
 use clap::Parser;
 use eyre::{OptionExt as _, ensure};
-use rand::RngExt as _;
+use rand::{RngExt as _, SeedableRng as _, rngs::StdRng};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, PayloadBuilder as _, PayloadConfig,
 };
@@ -26,13 +26,18 @@ use reth_ethereum::{
     tasks::Runtime,
 };
 use reth_execution_cache::{ExecutionCache, SavedCache};
+use reth_execution_types::state_update_to_hashed_post_state;
 use reth_node_builder::BuiltPayload as _;
 use reth_payload_builder::PayloadId;
 use reth_primitives_traits::{Recovered, SignerRecoverable as _};
 use reth_provider::{BlockNumReader as _, HeaderProvider as _, providers::BlockchainProvider};
+use reth_trie_common::HashedPostState;
+use reth_trie_parallel::state_root_task::{
+    PayloadStateRootHandle, StateRootHandle, StateRootMessage, StateRootTaskCancelGuard,
+};
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -104,6 +109,21 @@ pub struct PayloadBench {
     /// 0 builds without one.
     #[arg(long, default_value_t = 0)]
     execution_cache_mib: usize,
+
+    /// Give every build a new, empty execution cache, as a block of new transactions finds it
+    /// cold. Needs `--execution-cache-mib`.
+    #[arg(long, requires = "execution_cache_mib")]
+    fresh_execution_cache: bool,
+
+    /// Stream state updates to a stand-in for the engine's state-root task, which hashes and
+    /// merges them as reth's sparse trie task does before it updates the trie. The payload's
+    /// state root is then computed from the merged state.
+    #[arg(long)]
+    state_root_task: bool,
+
+    /// Seed for generated transactions, to build the same block in separate runs.
+    #[arg(long)]
+    seed: Option<u64>,
 }
 
 impl PayloadBench {
@@ -213,13 +233,19 @@ impl PayloadBench {
                 Default::default(),
                 None,
             );
-            let execution_cache = execution_cache
+            let fresh_execution_cache = (self.fresh_execution_cache && iteration > 0)
+                .then(|| ExecutionCache::new(self.execution_cache_mib * 1024 * 1024));
+            let execution_cache = fresh_execution_cache
                 .as_ref()
+                .or(execution_cache.as_ref())
                 .map(|cache: &ExecutionCache| SavedCache::new(parent.hash(), cache.clone()));
+            let state_root_handle = self
+                .state_root_task
+                .then(|| state_root_task_stub(parent.state_root()));
             let args = BuildArguments::new(
                 Default::default(),
                 execution_cache,
-                None,
+                state_root_handle,
                 PayloadConfig::new(parent.clone(), attributes, PayloadId::new([0; 8])),
                 Default::default(),
                 None,
@@ -264,7 +290,7 @@ impl PayloadBench {
         let signers = (0..self.accounts)
             .map(|index| MnemonicBuilder::from_phrase_nth(self.mnemonic.as_str(), index))
             .collect::<Vec<PrivateKeySigner>>();
-        let mut rng = rand::rng();
+        let mut rng = StdRng::seed_from_u64(self.seed.unwrap_or_else(rand::random));
         (0..self.txs)
             .map(|_| -> eyre::Result<TempoPooledTransaction> {
                 let sender = &signers[rng.random_range(0..signers.len())];
@@ -344,4 +370,45 @@ fn report(samples: &[(Duration, u64, usize)]) {
         median_mgas_per_second = gas / median.as_secs_f64() / 1e6,
         "Payload builder benchmark"
     );
+}
+
+/// Stand-in for the engine's state-root task: hashes every update on one thread and merges the
+/// hashed states on another, as reth's sparse trie task does before it updates the trie. It
+/// sends no root, so the builder computes the state root from the merged state.
+fn state_root_task_stub(parent_state_root: B256) -> PayloadStateRootHandle {
+    let (updates_tx, updates_rx) = crossbeam_channel::unbounded();
+    let (hashed_tx, hashed_rx) = crossbeam_channel::unbounded();
+    let (_state_root_tx, state_root_rx) = mpsc::channel();
+    let (hashed_state_tx, hashed_state_rx) = mpsc::channel();
+    let (cancel_guard, _cancel_rx) = StateRootTaskCancelGuard::channel();
+    std::thread::spawn(move || {
+        for message in updates_rx {
+            let hashed = match message {
+                StateRootMessage::StateUpdate(update) => {
+                    Some(state_update_to_hashed_post_state(&update))
+                }
+                StateRootMessage::HashedStateUpdate(state) => Some(state),
+                StateRootMessage::FinishedStateUpdates => None,
+                StateRootMessage::PrefetchProofs(_) => continue,
+            };
+            if hashed_tx.send(hashed).is_err() {
+                break;
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        let mut state = HashedPostState::default();
+        while let Ok(Some(hashed)) = hashed_rx.recv() {
+            state.extend(hashed);
+        }
+        let _ = hashed_state_tx.send(Arc::new(state));
+    });
+    StateRootHandle::new(
+        parent_state_root,
+        updates_tx,
+        cancel_guard,
+        state_root_rx,
+        hashed_state_rx,
+    )
+    .into_payload_state_root_handle()
 }

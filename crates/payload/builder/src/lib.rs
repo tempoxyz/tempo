@@ -6,6 +6,7 @@
 mod encode;
 mod metrics;
 mod prewarming;
+mod state_hook;
 
 use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
@@ -20,6 +21,7 @@ use crate::{
         TempoPayloadBuilderMetrics,
     },
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
+    state_hook::{BatchedStateHook, STATE_UPDATE_BATCH_SIZE},
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
@@ -96,6 +98,12 @@ const MAX_CONSECUTIVE_GAS_LIMIT_SKIPS: u32 = 128;
 
 /// See [`MAX_CONSECUTIVE_GAS_LIMIT_SKIPS`]: at most 1% of the block gas can be left unused.
 const EARLY_STOP_REMAINING_GAS_DIVISOR: u64 = 100;
+
+/// Number of executed transactions sent to the roots task at once.
+///
+/// Every send wakes the roots task, so sending each transaction on its own costs the builder
+/// thread a wakeup per transaction.
+const ROOTS_BATCH_SIZE: usize = 64;
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -453,7 +461,7 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let mut hook = handle.take_state_hook();
+            let mut hook = BatchedStateHook::new(handle.take_state_hook(), STATE_UPDATE_BATCH_SIZE);
             executor.set_state_hook(move |state| hook.on_state(state));
         }
 
@@ -466,6 +474,7 @@ where
         debug!("building new payload");
 
         let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let mut roots_batch = Vec::with_capacity(ROOTS_BATCH_SIZE);
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -775,7 +784,13 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let _ = roots_tx.send((tx, receipt));
+            roots_batch.push((tx, receipt));
+            if roots_batch.len() >= ROOTS_BATCH_SIZE {
+                let _ = roots_tx.send(core::mem::replace(
+                    &mut roots_batch,
+                    Vec::with_capacity(ROOTS_BATCH_SIZE),
+                ));
+            }
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -829,7 +844,10 @@ where
 
         let builder_finish_start = Instant::now();
 
-        // Drop the roots task handle to trigger finalization
+        // Flush the last batch and drop the roots task handle to trigger finalization
+        if !roots_batch.is_empty() {
+            let _ = roots_tx.send(roots_batch);
+        }
         drop(roots_tx);
 
         let execution_output = executor.finish()?;
@@ -1164,11 +1182,11 @@ where
     fn spawn_roots_task(
         &self,
     ) -> (
-        Sender<(BestTransaction, TempoReceipt)>,
+        Sender<Vec<(BestTransaction, TempoReceipt)>>,
         oneshot::Receiver<RootsTaskResult>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
+            crossbeam_channel::unbounded::<Vec<(BestTransaction, TempoReceipt)>>();
         let (result_tx, result_rx) = oneshot::channel();
         let parent = Span::current();
 
@@ -1187,7 +1205,7 @@ where
 
                 let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
+                for (tx, receipt) in transactions_rx.into_iter().flatten() {
                     let (tx, sender) = tx.transaction.inner().clone().into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
