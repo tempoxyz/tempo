@@ -476,10 +476,15 @@ where
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
                     raw_best_txs,
+                    hardfork.fallback_fee_tokens(),
                 ))
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
-                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    BestTransactionsPrewarming::new(
+                        prewarm_ctx,
+                        raw_best_txs,
+                        hardfork.fallback_fee_tokens(),
+                    ),
                     hardfork.fallback_fee_tokens(),
                 ))
             }

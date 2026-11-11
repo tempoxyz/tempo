@@ -39,9 +39,13 @@ pub(crate) struct BestTransactionsPrewarming {
 
 impl BestTransactionsPrewarming {
     /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
+    ///
+    /// `fallback_fee_tokens` lists the tokens execution may fall back to for the block being
+    /// built.
     pub(crate) fn new<Txs, Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         best_txs: Txs,
+        fallback_fee_tokens: &'static [Address],
     ) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
@@ -70,6 +74,7 @@ impl BestTransactionsPrewarming {
                         prewarm,
                         next_expiring_nonce_offset: 0,
                         insufficient_fee_balances: HashMap::default(),
+                        fallback_fee_tokens,
                     },
                 );
             });
@@ -103,12 +108,18 @@ impl BestTransactionsPrewarming {
                         return;
                     };
                     let fee = tx.transaction.fee_token_cost();
-                    // Fallback-token payers may still pay with another token, so the builder
-                    // decides for them.
-                    if let Some(key) = tx.transaction.fee_balance_slot()
-                        && let Some(&balance) = ctx.insufficient_fee_balances.get(&key)
+                    if let Some((token, slot)) = tx.transaction.fee_balance_slot()
+                        && let Some(&balance) = ctx.insufficient_fee_balances.get(&(token, slot))
                         && balance < fee
-                        && !tx.transaction.is_fallback_fee_token()
+                        && !(tx.transaction.is_fallback_fee_token()
+                            && ctx.fallback_fee_tokens.iter().any(|&candidate| {
+                                // TIP-20 balance slots share a layout.
+                                candidate != token
+                                    && ctx
+                                        .insufficient_fee_balances
+                                        .get(&(candidate, slot))
+                                        .is_none_or(|&balance| balance >= fee)
+                            }))
                     {
                         ctx.best_txs.mark_invalid(
                             &tx,
@@ -166,9 +177,25 @@ impl BestTransactionsPrewarming {
                         if let InvalidPoolTransactionError::Consensus(
                             InvalidTransactionError::InsufficientFunds(funds),
                         ) = &invalid.kind
-                            && let Some(key) = invalid.tx.transaction.fee_balance_slot()
+                            && let Some((token, slot)) = invalid.tx.transaction.fee_balance_slot()
                         {
-                            ctx.insufficient_fee_balances.insert(key, funds.got);
+                            ctx.insufficient_fee_balances
+                                .insert((token, slot), funds.got);
+                            // The builder rejects a fallback-token transaction only once every
+                            // other fallback token is also below its fee.
+                            if invalid.tx.transaction.is_fallback_fee_token() {
+                                let below_fee = funds.expected.saturating_sub(U256::ONE);
+                                for &candidate in ctx.fallback_fee_tokens {
+                                    if candidate != token {
+                                        ctx.insufficient_fee_balances
+                                            .entry((candidate, slot))
+                                            .and_modify(|balance| {
+                                                *balance = (*balance).min(below_fee)
+                                            })
+                                            .or_insert(below_fee);
+                                    }
+                                }
+                            }
                         }
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                     }
@@ -359,6 +386,8 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     /// being prewarmed or forwarded. A balance topped up later in the block is not observed, so
     /// such candidates wait for the next block.
     insufficient_fee_balances: HashMap<(Address, U256), U256>,
+    /// Ordered fallback fee tokens active for the block being built.
+    fallback_fee_tokens: &'static [Address],
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -563,7 +592,7 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
-    use tempo_chainspec::TempoChainSpec;
+    use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
     use tempo_evm::{ResolvedFeeToken, TempoEvmConfig, TempoNextBlockEnvAttributes};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
@@ -774,7 +803,7 @@ mod tests {
     ) -> TestPrewarming {
         let context = prewarming_context(executor.clone(), false);
         let prewarming =
-            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log));
+            BestTransactionsPrewarming::new(context, TestBestTransactions::new(txs, log), &[]);
         TestPrewarming {
             prewarming: Some(prewarming),
             executor,
@@ -1418,45 +1447,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn insufficient_fee_balance_invalidates_same_payer_candidates_before_prewarming() {
+    /// Runs the coordinator with `invalid` already queued, then returns the hashes it forwarded
+    /// and the number of source invalidations.
+    fn forwarded_after_invalidation(
+        invalid: InvalidTransaction,
+        candidates: Vec<BestTransaction>,
+        fallback_fee_tokens: &'static [Address],
+    ) -> (HashSet<B256>, usize) {
         let executor = TaskExecutor::test();
-        let payer = Address::random();
-        let expensive = (1..=4)
-            .map(|nonce_key| test_fee_paying_tx(payer, U256::from(nonce_key), 2_000_000_000_000))
-            .collect::<Vec<_>>();
-        let fee = expensive[0].transaction.fee_token_cost();
-        let affordable = test_fee_paying_tx(payer, U256::from(5), 1_000_000_000_000);
-        let balance = affordable.transaction.fee_token_cost();
-        assert!(balance < fee);
-        let fallback = test_fee_paying_tx(payer, U256::from(6), 2_000_000_000_000);
-        let (fee_token, _) = expensive[0].transaction.fee_balance_slot().unwrap();
-        fallback
-            .transaction
-            .set_resolved_fee_token(ResolvedFeeToken::Fallback(fee_token));
-        assert_eq!(
-            fallback.transaction.fee_balance_slot(),
-            expensive[0].transaction.fee_balance_slot()
-        );
-
-        // Fill the eager initial batch so every payer transaction is pulled after the
-        // invalidation below is handled.
+        // Fill the eager initial batch so every candidate is pulled after the invalidation is
+        // handled.
         let mut txs = (0..executor.prewarming_pool().current_num_threads() * 2)
             .map(|_| test_tx(Address::random(), 0))
             .collect::<Vec<_>>();
-        txs.extend(expensive.iter().cloned());
-        txs.extend([affordable.clone(), fallback.clone()]);
+        txs.extend(candidates);
         let total = txs.len();
 
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         commands_tx
-            .send(BestTransactionsCommand::Invalid(InvalidTransaction {
-                tx: test_fee_paying_tx(payer, U256::from(100), 2_000_000_000_000),
-                kind: InvalidPoolTransactionError::Consensus(
-                    InvalidTransactionError::InsufficientFunds((balance, fee).into()),
-                ),
-            }))
+            .send(BestTransactionsCommand::Invalid(invalid))
             .unwrap();
         let log = Arc::new(Mutex::new(TestLog::default()));
         let ctx = BestTransactionsPrewarmingContext {
@@ -1467,6 +1477,7 @@ mod tests {
             prewarm: prewarming_context(executor.clone(), false),
             next_expiring_nonce_offset: 0,
             insufficient_fee_balances: HashMap::default(),
+            fallback_fee_tokens,
         };
         let coordinator = thread::spawn(move || {
             BestTransactionsPrewarming::start_prewarming(executor, ctx);
@@ -1483,7 +1494,58 @@ mod tests {
             .try_iter()
             .flatten()
             .map(|tx| *tx.tx.hash())
-            .collect::<HashSet<_>>();
+            .collect();
+        let invalid = log.lock().unwrap().invalid;
+        (forwarded, invalid)
+    }
+
+    fn insufficient_funds(balance: U256, fee: U256) -> InvalidPoolTransactionError {
+        InvalidPoolTransactionError::Consensus(InvalidTransactionError::InsufficientFunds(
+            (balance, fee).into(),
+        ))
+    }
+
+    fn fallback_tx(
+        payer: Address,
+        nonce_key: u64,
+        max_fee_per_gas: u128,
+        token: Address,
+    ) -> BestTransaction {
+        let tx = test_fee_paying_tx(payer, U256::from(nonce_key), max_fee_per_gas);
+        tx.transaction
+            .set_resolved_fee_token(ResolvedFeeToken::Fallback(token));
+        tx
+    }
+
+    #[test]
+    fn insufficient_fee_balance_invalidates_same_payer_candidates_before_prewarming() {
+        let payer = Address::random();
+        let expensive = (1..=4)
+            .map(|nonce_key| test_fee_paying_tx(payer, U256::from(nonce_key), 2_000_000_000_000))
+            .collect::<Vec<_>>();
+        let fee = expensive[0].transaction.fee_token_cost();
+        let affordable = test_fee_paying_tx(payer, U256::from(5), 1_000_000_000_000);
+        let balance = affordable.transaction.fee_token_cost();
+        assert!(balance < fee);
+        let (fee_token, _) = expensive[0].transaction.fee_balance_slot().unwrap();
+        // Another fallback token has no known shortfall, so this may still pay.
+        let fallback = fallback_tx(payer, 6, 2_000_000_000_000, fee_token);
+        assert_eq!(
+            fallback.transaction.fee_balance_slot(),
+            expensive[0].transaction.fee_balance_slot()
+        );
+        let mut candidates = expensive.clone();
+        candidates.extend([affordable.clone(), fallback.clone()]);
+
+        let (forwarded, invalid) = forwarded_after_invalidation(
+            InvalidTransaction {
+                tx: test_fee_paying_tx(payer, U256::from(100), 2_000_000_000_000),
+                kind: insufficient_funds(balance, fee),
+            },
+            candidates,
+            TempoHardfork::T13.fallback_fee_tokens(),
+        );
+
         for tx in &expensive {
             assert!(
                 !forwarded.contains(tx.hash()),
@@ -1492,6 +1554,49 @@ mod tests {
         }
         assert!(forwarded.contains(affordable.hash()));
         assert!(forwarded.contains(fallback.hash()));
-        assert_eq!(log.lock().unwrap().invalid, 1 + expensive.len());
+        assert_eq!(invalid, 1 + expensive.len());
+    }
+
+    #[test]
+    fn insufficient_fallback_balances_invalidate_same_payer_fallback_candidates() {
+        let fallback_fee_tokens = TempoHardfork::T13.fallback_fee_tokens();
+        let &[path_usd, ousd] = fallback_fee_tokens else {
+            panic!("T13 falls back to pathUSD, then OUSD");
+        };
+        let payer = Address::random();
+        let expensive = (1..=4)
+            .flat_map(|nonce_key| {
+                [
+                    fallback_tx(payer, nonce_key, 2_000_000_000_000, path_usd),
+                    fallback_tx(payer, nonce_key + 10, 2_000_000_000_000, ousd),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let fee = expensive[0].transaction.fee_token_cost();
+        let affordable = fallback_tx(payer, 5, 1_000_000_000_000, path_usd);
+        let balance = affordable.transaction.fee_token_cost();
+        assert!(balance < fee);
+        let other_payer = fallback_tx(Address::random(), 6, 2_000_000_000_000, path_usd);
+        let mut candidates = expensive.clone();
+        candidates.extend([affordable.clone(), other_payer.clone()]);
+
+        let (forwarded, invalid) = forwarded_after_invalidation(
+            InvalidTransaction {
+                tx: fallback_tx(payer, 100, 2_000_000_000_000, path_usd),
+                kind: insufficient_funds(balance, fee),
+            },
+            candidates,
+            fallback_fee_tokens,
+        );
+
+        for tx in &expensive {
+            assert!(
+                !forwarded.contains(tx.hash()),
+                "insolvent fallback candidate was prewarmed"
+            );
+        }
+        assert!(forwarded.contains(affordable.hash()));
+        assert!(forwarded.contains(other_payer.hash()));
+        assert_eq!(invalid, 1 + expensive.len());
     }
 }
