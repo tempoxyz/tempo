@@ -370,7 +370,7 @@ pub(crate) fn gen_layout_ctx_expr(
     }
 }
 
-/// Generate collision detection debug assertions for a field against all other fields.
+/// Generate collision detection assertions for a field against all other fields.
 ///
 /// This function generates runtime checks that verify storage slots don't overlap.
 /// Checks are generated for all fields (both manual and auto-assigned) to ensure
@@ -426,7 +426,7 @@ pub(crate) fn gen_collision_check_fn(
                     slot_end.le(&other_slot) || other_slot_end.le(&slot)
                 };
 
-                debug_assert!(
+                assert!(
                     no_overlap,
                     "Storage slot collision: field `{}` (slot {:?}, offset {}) overlaps with field `{}` (slot {:?}, offset {})",
                     stringify!(#field_name),
@@ -443,7 +443,7 @@ pub(crate) fn gen_collision_check_fn(
     let check_fn = quote! {
         // Never inline: unoptimized builds keep every inlined check's temporaries in the caller's
         // frame, which for large contracts outgrows a 2 MiB thread stack.
-        #[cfg(all(debug_assertions, not(feature = "fuzz")))]
+        #[cfg(not(feature = "fuzz"))]
         #[inline(never)]
         #[allow(non_snake_case)]
         fn #check_fn_name() {
@@ -681,5 +681,18 @@ mod tests {
             },
             U256::from(u64::MAX),
         );
+    }
+
+    #[test]
+    fn collision_check_is_not_gated_on_debug_assertions() {
+        let fields = [
+            field("a", parse_quote!(U256), Some(5), None),
+            field("b", parse_quote!(U256), Some(5), None),
+        ];
+        let allocated = allocate_slots(&fields).unwrap();
+        let (_, check_fn) = gen_collision_check_fn(0, &allocated[0], &allocated);
+        let code = check_fn.to_string();
+        assert!(code.contains("assert !"), "{code}");
+        assert!(!code.contains("debug_assert"), "{code}");
     }
 }
