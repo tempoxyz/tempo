@@ -13,7 +13,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, B256Set, Entry, HashMap},
+    map::{AddressMap, AddressSet, Entry, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -626,28 +626,6 @@ where
             "Evicting invalidated or expired transactions"
         );
         self.remove_transactions(to_remove)
-    }
-
-    /// Removes delayed transactions whose expiring nonce the committed `state` marks as seen and
-    /// returns them. The live 2D pool drops such transactions in the same block.
-    ///
-    /// Listeners see the ones in `mined`, the block's transaction hashes, as mined through
-    /// reth's canonical update, so only the others are notified as discarded.
-    pub(crate) fn remove_consumed_delayed_transactions(
-        &self,
-        state: &AddressMap<BundleAccount>,
-        mined: &B256Set,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let mut removed = Vec::new();
-        let (included, discarded) = self
-            .aa_2d_pool
-            .write()
-            .remove_consumed_delayed(state)
-            .into_iter()
-            .partition(|tx| mined.contains(tx.hash()));
-        self.notify_delayed_removed(&mut removed, discarded);
-        removed.extend(included);
-        removed
     }
 
     /// Delays a validated expiring nonce transaction in the delayed sub-pool until `valid_after`.
@@ -1829,7 +1807,6 @@ mod tests {
 
     use crate::delayed_pool;
     use reth_transaction_pool::TransactionListenerKind;
-    use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
     use tempo_primitives::TempoTxType;
@@ -4107,46 +4084,5 @@ mod tests {
             next_event_for(&mut events, cheap_hash),
             Some(FullTransactionEvent::Discarded(_))
         ));
-    }
-
-    #[tokio::test]
-    async fn delayed_transaction_mined_in_block_is_not_discarded() {
-        let sender = Address::random();
-        let tip = now_secs();
-        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
-        let mined = delayed_tx(sender, tip).build();
-        let consumed = delayed_tx(sender, tip).build();
-        let mut storage = HashMap::default();
-        for tx in [&mined, &consumed] {
-            storage.insert(
-                tx.expiring_nonce_slot().unwrap(),
-                StorageSlot::new_changed(U256::ZERO, U256::from(tip + 28)),
-            );
-        }
-        let (mined, consumed) = (*mined.hash(), {
-            let hash = *consumed.hash();
-            for tx in [mined, consumed] {
-                pool.add_transaction(TransactionOrigin::External, tx)
-                    .await
-                    .expect("transaction should be delayed");
-            }
-            hash
-        });
-        let mut events = pool.all_transactions_event_listener();
-
-        let mut state = AddressMap::default();
-        state.insert(
-            tempo_precompiles::NONCE_PRECOMPILE_ADDRESS,
-            BundleAccount::new(None, None, storage, AccountStatus::Changed),
-        );
-        let mut removed = tx_hashes(
-            &pool.remove_consumed_delayed_transactions(&state, &B256Set::from_iter([mined])),
-        );
-        removed.sort();
-        let mut expected = vec![mined, consumed];
-        expected.sort();
-        assert_eq!(removed, expected);
-        assert_eq!(pool.aa_2d_pool.read().delayed().len(), 0);
-        assert_eq!(discarded_hashes(&mut events), vec![consumed]);
     }
 }

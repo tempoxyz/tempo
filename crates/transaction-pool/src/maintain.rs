@@ -549,16 +549,9 @@ where
 
         // 1. Update 2D nonce pool before scan-based maintenance.
         // This removes mined 2D nonce transactions and promotes newly
-        // unblocked transactions before later pool scans. Delayed transactions whose nonce the
-        // block used are dropped too.
+        // unblocked transactions before later pool scans.
         let nonce_pool_start = Instant::now();
-        // Reth's canonical-update handling may not have pruned mined transactions yet.
-        // Exclude them from every snapshot-based maintenance phase so they follow the
-        // normal mined path rather than being discarded from the pool.
-        let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
         removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
-        removed_txs
-            .push(pool.remove_consumed_delayed_transactions(bundle_state, &removed_this_iteration));
         metrics
             .nonce_pool_update_duration_seconds
             .record(nonce_pool_start.elapsed());
@@ -580,6 +573,10 @@ where
         let updates = TempoPoolUpdates::from_chain(tip);
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
+        // Reth's canonical-update handling may not have pruned mined transactions yet.
+        // Exclude them from every snapshot-based maintenance phase so they follow the
+        // normal mined path rather than being discarded from the pool.
+        let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
         let mut revalidate_txs = Vec::new();
 

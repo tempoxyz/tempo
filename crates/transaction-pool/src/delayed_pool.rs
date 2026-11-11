@@ -13,13 +13,11 @@ use crate::{metrics::DelayedPoolMetrics, transaction::TempoPooledTransaction};
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, B256Map, B256Set},
+    map::{B256Map, B256Set},
 };
 use reth_primitives_traits::InMemorySize;
 use reth_transaction_pool::ValidPoolTransaction;
-use reth_trie_common::bundle_state::BundleAccount;
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
-use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 
 /// Default number of seconds before `valid_after` at which a delayed transaction is released.
 pub const DEFAULT_DELAYED_LEAD_SECS: u64 = 2;
@@ -173,32 +171,6 @@ impl DelayedPool {
             .collect()
     }
 
-    /// Removes and returns the delayed transactions whose expiring nonce `state` marks as seen.
-    pub(crate) fn remove_consumed(
-        &mut self,
-        state: &AddressMap<BundleAccount>,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        if self.by_hash.is_empty() {
-            return Vec::new();
-        }
-        let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
-            return Vec::new();
-        };
-        let consumed: Vec<_> = self
-            .by_hash
-            .iter()
-            .filter(|(_, delayed)| {
-                delayed
-                    .transaction
-                    .expiring_nonce_slot()
-                    .and_then(|slot| nonce_state.storage.get(&slot))
-                    .is_some_and(|seen| !seen.present_value.is_zero())
-            })
-            .map(|(hash, _)| *hash)
-            .collect();
-        self.remove_transactions(&consumed)
-    }
-
     /// Removes the delayed transactions sent by `sender` and returns them.
     pub(crate) fn remove_transactions_by_sender(
         &mut self,
@@ -336,9 +308,8 @@ fn valid_after(transaction: &ValidPoolTransaction<TempoPooledTransaction>) -> u6
 mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
-    use alloy_primitives::{U256, map::HashMap};
+    use alloy_primitives::U256;
     use reth_transaction_pool::{PoolTransaction, TransactionOrigin};
-    use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
 
     fn valid(tx: TempoPooledTransaction) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         Arc::new(wrap_valid_tx(tx, TransactionOrigin::External))
@@ -535,30 +506,5 @@ mod tests {
             2,
             "taken transactions stay delayed until removed"
         );
-    }
-
-    #[test]
-    fn removes_delayed_transactions_whose_expiring_nonce_was_seen() {
-        let mut pool = DelayedPool::default();
-        let sender = Address::random();
-        let seen = valid(expiring(sender).build());
-        let unseen = valid(expiring(sender).valid_before(201).build());
-        for tx in [&seen, &unseen] {
-            insert(&mut pool, Arc::clone(tx)).unwrap();
-        }
-
-        let mut storage = HashMap::default();
-        storage.insert(
-            seen.transaction.expiring_nonce_slot().unwrap(),
-            StorageSlot::new_changed(U256::ZERO, U256::from(200)),
-        );
-        let mut state = AddressMap::default();
-        state.insert(
-            NONCE_PRECOMPILE_ADDRESS,
-            BundleAccount::new(None, None, storage, AccountStatus::Changed),
-        );
-
-        assert_eq!(hashes(&pool.remove_consumed(&state)), vec![*seen.hash()]);
-        assert!(pool.contains(unseen.hash()));
     }
 }

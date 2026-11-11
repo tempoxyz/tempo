@@ -219,16 +219,6 @@ impl AA2dPool {
         removed
     }
 
-    /// Removes and returns the delayed transactions whose expiring nonce `state` marks as seen.
-    pub(crate) fn remove_consumed_delayed(
-        &mut self,
-        state: &AddressMap<BundleAccount>,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let removed = self.delayed.remove_consumed(state);
-        self.uncount_delayed(&removed);
-        removed
-    }
-
     /// Releases the authority slots of delayed transactions that left the delayed set.
     fn uncount_delayed(&mut self, removed: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) {
         for tx in removed {
