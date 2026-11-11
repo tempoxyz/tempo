@@ -234,9 +234,9 @@ impl RecoveryMode {
     }
 }
 
-/// Decodes a claim receipt. From T14 only its canonical ABI encoding is accepted.
+/// Decodes a claim receipt. From T15 only its canonical ABI encoding is accepted.
 fn decode_receipt(bytes: Bytes) -> Result<ClaimReceiptV1> {
-    if !StorageCtx.spec().is_t14() {
+    if !StorageCtx.spec().is_t15() {
         return Ok(ClaimReceiptV1::try_from(bytes)?);
     }
     ClaimReceiptV1::abi_decode_with_config(&bytes, AbiDecoderConfig::new().strict(true))
@@ -738,8 +738,8 @@ mod tests {
     }
 
     #[test]
-    fn test_receipt_rejects_non_canonical_encoding_post_t14() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+    fn test_receipt_rejects_non_canonical_encoding_post_t15() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             storage.set_timestamp(U256::from(1_728_001u64));
 
@@ -783,7 +783,7 @@ mod tests {
 
                 let mut guard = ReceivePolicyGuard::new();
                 for encoding in [trailing, dirty] {
-                    if spec.is_t14() {
+                    if spec.is_t15() {
                         assert_invalid_receipt(
                             guard.balance_of(encoding.clone().into()).map(|_| ()),
                         );
