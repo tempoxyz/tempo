@@ -520,13 +520,13 @@ impl ProofStore {
             .context("sync temporary block proof")?;
         fs::rename(temporary.path(), &path)
             .wrap_err_with(|| format!("publish stored proof {}", path.display()))?;
-        sync_directory(&self.directory)?;
-
+        // Index the file once it is published, so a failed directory sync cannot leave a file
+        // that `remove_files` does not know about.
         self.state
             .write()
             .proofs
             .insert(proof.witness.block_number, Arc::new(proof));
-        Ok(())
+        sync_directory(&self.directory)
     }
 
     fn contains(&self, number: u64, hash: B256) -> bool {
