@@ -1,0 +1,58 @@
+# Batched vs solo TIP-20 transfers: 1 transfer call(s) per Tempo transaction.
+# tip20-batch-solo and tip20-batch-32 differ only in calls per transaction (32 is
+# the txpool's MAX_AA_CALLS). Same 1000-account sender pool, expiring nonces,
+# token choice and state-bloat recipients; every call is a payment, so both stay
+# in the payment lane. Compare included transfers/s (TPS x calls per tx).
+# Needs nonzero state bloat.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+address_pools:
+  existing_recipients:
+    fast:
+      seed: "test test test test test test test test test test test junk"
+      range:
+        - ${TXGEN_EXISTING_RECIPIENTS_START}
+        - ${TXGEN_EXISTING_RECIPIENTS_END}
+
+artifacts:
+  ERC20: ../tip20.abi.json
+
+templates:
+  tip20_transfer_batch:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 10
+    calls:
+      - &transfer
+        to:
+          choice: ${TXGEN_TIP20_TOKENS}
+        abi: ERC20
+        function: transfer
+        args:
+          - address_pool:
+              pool: existing_recipients
+              select: random
+          - 1
+
+mix:
+  - template: tip20_transfer_batch
+    weight: 100
