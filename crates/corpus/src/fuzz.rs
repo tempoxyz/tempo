@@ -209,18 +209,39 @@ fn dense(blocks: &[u64]) -> bool {
     }
 }
 
-/// How many of `blocks`, sorted, the next window takes, out of at most `size`. A dense run ends at
-/// the first gap longer than `window`, so it is scanned without the gap. Lone blocks before a run
-/// are read on their own, so the run starts the next window. Any other window takes all `size`.
+/// A run of neighbouring blocks shorter than this stays in a sparse window, where the window's
+/// parallel point reads cover it, rather than getting a scan of its own.
+const MIN_RUN: usize = 32;
+
+/// How many of `blocks`, sorted, the next window takes, out of at most `size`. A dense run of at
+/// least `MIN_RUN` blocks ends at the first gap longer than `window`, so it is scanned without the
+/// gap. Other blocks before such a run are read on their own, so the run starts the next window.
+/// Any other window takes all `size`.
 fn window_len(blocks: &[u64], size: usize, window: u64) -> usize {
-    let blocks = &blocks[..size.min(blocks.len())];
+    let cap = size.min(blocks.len());
     let near = |pair: &[u64]| pair[1] - pair[0] <= window;
-    match blocks.windows(2).position(|pair| !near(pair)) {
-        None => blocks.len(),
-        Some(0) => blocks.windows(2).position(near).unwrap_or(blocks.len()),
-        Some(gap) if dense(&blocks[..=gap]) => gap + 1,
-        Some(_) => blocks.len(),
+    let long_run = |at: usize| {
+        let head = &blocks[at..blocks.len().min(at + MIN_RUN)];
+        head.len() == MIN_RUN && head.windows(2).all(near) && dense(head)
+    };
+    let run_end = |at: usize| {
+        blocks[at..cap]
+            .windows(2)
+            .position(|pair| !near(pair))
+            .map_or(cap, |gap| at + gap + 1)
+    };
+    if long_run(0) {
+        let end = run_end(0);
+        return if dense(&blocks[..end]) { end } else { cap };
     }
+    let mut at = 0;
+    while at < cap {
+        at = run_end(at);
+        if at < cap && long_run(at) {
+            return at;
+        }
+    }
+    cap
 }
 
 /// A corpus block read by [Corpus::windows].
@@ -402,10 +423,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn window_ends_dense_run_at_gap() {
-        let blocks: Vec<u64> = (0..10).chain(1_000..1_010).collect();
-        assert_eq!(window_len(&blocks, 64, 64), 10);
-        assert_eq!(window_len(&blocks[10..], 64, 64), 10);
+    fn window_ends_long_run_at_gap() {
+        let blocks: Vec<u64> = (0..40).chain(1_000..1_040).collect();
+        assert_eq!(window_len(&blocks, 128, 64), 40);
+        assert_eq!(window_len(&blocks[40..], 128, 64), 40);
     }
 
     #[test]
@@ -415,15 +436,25 @@ mod tests {
     }
 
     #[test]
-    fn window_reads_lone_blocks_before_run() {
-        let blocks: Vec<u64> = [0, 1_000, 2_000].into_iter().chain(5_000..5_010).collect();
-        assert_eq!(window_len(&blocks, 64, 64), 3);
+    fn window_keeps_short_runs_together() {
+        let blocks: Vec<u64> = (0..20).flat_map(|i| [i * 1_000, i * 1_000 + 1]).collect();
+        assert_eq!(window_len(&blocks, 32, 64), 32);
+        assert_eq!(window_len(&blocks[1..], 32, 64), 32);
+    }
+
+    #[test]
+    fn window_reads_blocks_before_long_run() {
+        let blocks: Vec<u64> = [0, 1_000, 1_001, 2_000]
+            .into_iter()
+            .chain(5_000..5_040)
+            .collect();
+        assert_eq!(window_len(&blocks, 128, 64), 4);
     }
 
     #[test]
     fn window_keeps_sparse_run_across_gap() {
-        let blocks: Vec<u64> = (0..5).map(|i| i * 50).chain([10_000]).collect();
-        assert_eq!(window_len(&blocks, 64, 64), 6);
+        let blocks: Vec<u64> = (0..40).map(|i| i * 50).chain([10_000]).collect();
+        assert_eq!(window_len(&blocks, 128, 64), 41);
     }
 
     #[test]
