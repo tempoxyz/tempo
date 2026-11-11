@@ -316,6 +316,24 @@ impl TempoInvalidTransaction {
         }
     }
 
+    /// Returns `true` if the transaction's authority no longer matches the account state it was
+    /// validated against: its root key was retired, or the configurable account it relies on now
+    /// has a different configuration commitment or can no longer hold one.
+    ///
+    /// Such errors are not [`Self::is_bad_transaction`], since a reorg or a later rotation can
+    /// restore the old state, but the transaction rarely becomes executable again. A block builder
+    /// that hits one may drop the transaction from the pool rather than retrying it every build.
+    pub fn is_stale_authority(&self) -> bool {
+        matches!(
+            self,
+            Self::RootKeyRetired { .. }
+                | Self::ConfigurableAccount(
+                    ConfigurableAccountError::ConfigurationCommitmentMismatch { .. }
+                        | ConfigurableAccountError::InvalidAccount { .. }
+                )
+        )
+    }
+
     /// Returns the Tempo validation error carried by a block executor's invalid-tx error,
     /// or `None` if it is a generic EVM validation error.
     pub fn from_invalid_tx_error(error: &dyn InvalidTxError) -> Option<&Self> {
@@ -541,6 +559,42 @@ mod tests {
     #[test]
     fn test_expiring_nonce_replay_is_not_bad() {
         assert!(!TempoInvalidTransaction::ExpiringNonceReplay.is_bad_transaction());
+    }
+
+    #[test]
+    fn test_stale_authority() {
+        let account = Address::repeat_byte(0x30);
+        let stale = [
+            TempoInvalidTransaction::RootKeyRetired {
+                account,
+                role: RootKeyRole::Sender,
+            },
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: B256::repeat_byte(1),
+                actual: B256::repeat_byte(2),
+            }
+            .into(),
+            ConfigurableAccountError::InvalidAccount { account }.into(),
+        ];
+        for err in stale {
+            assert!(err.is_stale_authority(), "{err} should be stale authority");
+            assert!(!err.is_bad_transaction(), "{err} should not be bad");
+        }
+
+        let not_stale = [
+            TempoInvalidTransaction::ConfigurableAccount(
+                ConfigurableAccountError::UnsupportedContext,
+            ),
+            TempoInvalidTransaction::InvalidFeeToken(account),
+            TempoInvalidTransaction::ExpiringNonceReplay,
+            TempoInvalidTransaction::InvalidFeePayerSignature,
+        ];
+        for err in not_stale {
+            assert!(
+                !err.is_stale_authority(),
+                "{err} should not be stale authority"
+            );
+        }
     }
 
     #[test]

@@ -47,7 +47,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -497,6 +497,9 @@ where
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        // Pool transactions to remove from the pool once the block is filled, because their
+        // authority no longer matches state and later builds would only reject them again.
+        let mut stale_pool_transactions = Vec::new();
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
@@ -688,6 +691,18 @@ where
                             trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
                             self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
                         } else {
+                            // A transaction validated against an account's earlier configuration
+                            // (a retired root key or a rotated configurable account) can land in
+                            // the pool after maintenance already rescanned that account. Marking
+                            // it invalid only skips it in this iterator, so every later build
+                            // would retry it. Drop it from the pool after this build instead.
+                            if TempoInvalidTransaction::from_invalid_tx_error(error.as_ref())
+                                .is_some_and(|error| {
+                                    error.is_stale_authority() || error.is_bad_transaction()
+                                })
+                            {
+                                stale_pool_transactions.push(*tx.hash());
+                            }
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
                             #[cfg(feature = "fuzz")]
@@ -745,6 +760,15 @@ where
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
+
+        if !stale_pool_transactions.is_empty() {
+            let removed = self.pool.remove_transactions(stale_pool_transactions).len();
+            self.metrics.inc_pool_tx_evicted(removed as u64);
+            debug!(
+                removed,
+                "removed pool transactions whose authority is stale"
+            );
+        }
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =

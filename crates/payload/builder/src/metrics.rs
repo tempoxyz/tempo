@@ -130,6 +130,13 @@ impl TempoPayloadBuilderMetrics {
             .increment(1);
     }
 
+    /// Counts pool transactions the payload builder removed from the pool after they failed
+    /// execution with an error that later builds would repeat.
+    #[inline]
+    pub(crate) fn inc_pool_tx_evicted(&self, count: u64) {
+        metrics::counter!("tempo_payload_builder_pool_transactions_evicted_total").increment(count);
+    }
+
     /// Increments the counter for why the payload builder stopped adding pool transactions.
     #[inline]
     pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {
