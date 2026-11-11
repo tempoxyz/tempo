@@ -110,8 +110,8 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.delayed-max-size", default_value_t = DEFAULT_DELAYED_MAX_SIZE_MB)]
     pub delayed_max_size_mb: NonZeroUsize,
 
-    /// Maximum number of transactions in the delayed sub-pool per authority: the sender and each
-    /// authority recovered from the transaction's authorization lists.
+    /// Maximum number of transactions in the delayed sub-pool per authority: the sender, the key
+    /// authorization signer, a sponsoring fee payer and the access key.
     #[arg(
         long = "txpool.delayed-max-per-authority",
         default_value_t = DEFAULT_DELAYED_MAX_PER_AUTHORITY

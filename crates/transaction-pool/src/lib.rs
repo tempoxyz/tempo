@@ -7,6 +7,7 @@ pub mod transaction;
 pub mod validator;
 
 mod address_filter;
+mod authority_counts;
 pub use address_filter::AddressFilter;
 
 pub use transaction::{KeychainSubject, RevokedKeys, SpendingLimitUpdates};

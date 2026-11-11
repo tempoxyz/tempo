@@ -694,11 +694,7 @@ where
         let evicted = self
             .delayed_pool
             .write()
-            .insert(
-                Arc::clone(&tx),
-                valid_after,
-                authorities.unwrap_or_default(),
-            )
+            .insert(Arc::clone(&tx), valid_after)
             // Reported with the live pool's kinds so RPC returns the standard txpool errors.
             .map_err(|err| {
                 let kind = match err {
