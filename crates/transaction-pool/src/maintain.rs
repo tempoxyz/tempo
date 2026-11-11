@@ -498,6 +498,7 @@ impl Default for PendingStalenessTracker {
 /// - Refreshing the AMM liquidity cache from `FeeManager` updates
 /// - Removing transactions signed with revoked keychain keys
 /// - Evicting transactions when their fee token is paused
+/// - Releasing delayed transactions shortly before their `valid_after`
 ///
 /// Consolidates these operations into a single event loop to avoid multiple tasks
 /// competing for canonical state updates and to minimize contention on pool locks.
@@ -762,7 +763,11 @@ where
             .expired_eviction_duration_seconds
             .record(invalidation_start.elapsed());
 
-        // 6. Evict stale pending transactions (must happen after AA pool promotions in step 1)
+        // 6. Release held transactions that are about to become valid. Runs after the scans above
+        // so transactions they evicted are not revalidated.
+        pool.release_delayed_transactions(tip_timestamp).await;
+
+        // 7. Evict stale pending transactions (must happen after AA pool promotions in step 1)
         // Only runs once per interval (~30 min) to avoid overhead on every block.
         // Transactions pending across two consecutive snapshots are considered stale.
         if pending_staleness.should_check(tip_timestamp) {

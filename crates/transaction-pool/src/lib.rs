@@ -19,6 +19,7 @@ pub use tempo_pool::{TempoTransactionPool, TempoTransactionPoolExt};
 
 pub mod amm;
 pub mod best;
+pub mod delayed_pool;
 pub mod maintain;
 pub mod metrics;
 pub mod ordering;
@@ -28,7 +29,8 @@ pub mod tt_2d_pool;
 pub use best::{StateAwareBestTransactions, StateAwarePoolTransaction};
 pub use maintain::TempoPoolUpdates;
 
-pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
+pub use delayed_pool::DelayedPool;
+pub use metrics::{AA2dPoolMetrics, DelayedPoolMetrics, TempoPoolMaintenanceMetrics};
 pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_SENDER};
 
 #[cfg(test)]

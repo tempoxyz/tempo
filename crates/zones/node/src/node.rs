@@ -81,7 +81,7 @@ use tempo_primitives::{
     self as primitives, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
 };
 use tempo_transaction_pool::{
-    AA2dPool, AA2dPoolConfig, TempoTransactionPool, TempoTransactionPoolExt,
+    AA2dPool, AA2dPoolConfig, DelayedPool, TempoTransactionPool, TempoTransactionPoolExt,
     amm::AmmLiquidityCache,
     ordering::TempoTipOrdering,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
@@ -2109,7 +2109,8 @@ where
             pool_config.clone(),
         );
 
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+        let transaction_pool =
+            TempoTransactionPool::new(protocol_pool, aa_2d_pool, DelayedPool::default());
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 

@@ -1456,6 +1456,21 @@ impl AA2dPool {
         self.by_hash.contains_key(tx_hash)
     }
 
+    /// Returns whether the pool holds a transaction that uses the same nonce as `transaction`:
+    /// the same expiring nonce hash, or the same sender, nonce key and nonce.
+    pub(crate) fn contains_nonce(&self, transaction: &TempoPooledTransaction) -> bool {
+        if transaction.is_expiring_nonce()
+            && transaction
+                .expiring_nonce_hash()
+                .is_some_and(|hash| self.expiring_nonce_txs.contains_key(&hash))
+        {
+            return true;
+        }
+        transaction
+            .aa_transaction_id()
+            .is_some_and(|id| self.by_id.contains_key(&id))
+    }
+
     /// Returns hashes of transactions in the pool that can be propagated.
     pub(crate) fn pooled_transactions_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
         self.by_hash

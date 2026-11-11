@@ -5,6 +5,7 @@
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
+    delayed_pool::DelayedPool,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
@@ -23,13 +24,13 @@ use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
-    PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
-    TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
+    PoolSize, PoolTransaction, PropagatedTransactions, SubPool, TransactionEvents,
+    TransactionOrigin, TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
     TransactionValidationTaskExecutor, TransactionValidator, ValidPoolTransaction,
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
-    pool::AddedTransaction,
+    pool::{AddedTransaction, AddedTransactionState, QueuedReason},
 };
 use reth_trie_common::bundle_state::BundleAccount;
 use std::{sync::Arc, time::Instant};
@@ -44,6 +45,7 @@ use tempo_precompiles::{
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::{Block, TempoHeader};
+use tokio::sync::mpsc;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -53,6 +55,14 @@ pub trait TempoTransactionPoolExt: TransactionPool {
         address: Address,
         nonce_key: U256,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
+
+    /// Returns a receiver of the hashes of propagatable transactions as they enter the delayed
+    /// sub-pool.
+    ///
+    /// Reth's network propagates only transactions that fire the pending notification, which held
+    /// transactions never do, so the node forwards these hashes to the network itself. Hashes are
+    /// dropped while the receiver's buffer is full.
+    fn delayed_transactions_listener(&self) -> mpsc::Receiver<TxHash>;
 }
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -65,6 +75,8 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Transactions whose `valid_after` is too far ahead of the tip, held out of both live pools.
+    delayed_pool: Arc<RwLock<DelayedPool>>,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -81,11 +93,13 @@ where
             InMemoryBlobStore,
         >,
         mut aa_2d_pool: AA2dPool,
+        delayed_pool: DelayedPool,
     ) -> Self {
         aa_2d_pool.set_base_fee(protocol_pool.inner().block_info().pending_basefee);
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            delayed_pool: Arc::new(RwLock::new(delayed_pool)),
         }
     }
 }
@@ -124,6 +138,87 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.protocol_pool.validator().validator().client()
+    }
+
+    /// Returns the timestamp of the tip the validator last saw.
+    fn tip_timestamp(&self) -> u64 {
+        self.protocol_pool
+            .validator()
+            .validator()
+            .inner
+            .fork_tracker()
+            .tip_timestamp()
+    }
+
+    /// Moves held transactions whose `valid_after` is within the lead time of `tip_timestamp`
+    /// into the live sub-pools.
+    ///
+    /// Each one is revalidated against current state with validation caches discarded and
+    /// inserted with all normal limits applied. It is dropped, with a discarded event, if it
+    /// fails revalidation, if the live pool already holds a transaction with the same nonce, or
+    /// if a limit rejects it. Called by pool maintenance on each new block.
+    pub(crate) async fn release_delayed_transactions(&self, tip_timestamp: u64) {
+        let due = self.delayed_pool.read().due(tip_timestamp);
+        if due.is_empty() {
+            return;
+        }
+
+        let outcomes = self
+            .protocol_pool
+            .validator()
+            .validate_transactions(
+                due.iter()
+                    .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+                    .collect::<Vec<_>>(),
+            )
+            .await;
+
+        let mut released = 0;
+        let mut discarded = Vec::new();
+        for (held, outcome) in due.into_iter().zip(outcomes) {
+            // Removed, for example by eviction, while it was revalidated.
+            if self.delayed_pool.write().remove(held.hash()).is_none() {
+                continue;
+            }
+
+            let has_nonce_conflict = if held.transaction.is_aa_2d() {
+                self.aa_2d_pool.read().contains_nonce(&held.transaction)
+            } else {
+                self.protocol_pool
+                    .get_transaction_by_sender_and_nonce(held.sender(), held.nonce())
+                    .is_some()
+            };
+            if !outcome.is_valid() || has_nonce_conflict {
+                discarded.push(held);
+                continue;
+            }
+
+            match self.add_validated_transaction(held.origin, outcome) {
+                Ok(_) => released += 1,
+                // Listeners were notified by the insert, or the transaction is live already.
+                Err(err)
+                    if matches!(
+                        err.kind,
+                        PoolErrorKind::DiscardedOnInsert | PoolErrorKind::AlreadyImported
+                    ) => {}
+                Err(_) => discarded.push(held),
+            }
+        }
+
+        {
+            let delayed_pool = self.delayed_pool.read();
+            let metrics = delayed_pool.metrics();
+            metrics.released_transactions.increment(released);
+            metrics
+                .discarded_on_release
+                .increment(discarded.len() as u64);
+        }
+
+        if !discarded.is_empty() {
+            self.protocol_pool
+                .inner()
+                .notify_on_transaction_updates(Vec::new(), discarded);
+        }
     }
 
     /// Updates the 2d nonce pool with the given state changes.
@@ -200,13 +295,7 @@ where
         };
 
         // Resolve the active hardfork for storage context.
-        let tip_timestamp = self
-            .protocol_pool
-            .validator()
-            .validator()
-            .inner
-            .fork_tracker()
-            .tip_timestamp();
+        let tip_timestamp = self.tip_timestamp();
         let spec = self.protocol_pool.validator().validator().active_hardfork();
 
         // Cache policy lookups per fee token to avoid redundant storage reads.
@@ -562,6 +651,79 @@ where
         self.remove_transactions(to_remove)
     }
 
+    /// Holds a validated transaction in the delayed sub-pool until `valid_after`.
+    ///
+    /// Listeners see it as queued: it fires no pending notification, and is announced to peers
+    /// through [`TempoTransactionPoolExt::delayed_transactions_listener`].
+    fn hold_transaction(
+        &self,
+        origin: TransactionOrigin,
+        transaction: TempoPooledTransaction,
+        propagate: bool,
+        authorities: Option<Vec<Address>>,
+        valid_after: u64,
+    ) -> PoolResult<AddedTransactionOutcome> {
+        let hash = *transaction.hash();
+        if self.protocol_pool.contains(&hash) || self.aa_2d_pool.read().contains(&hash) {
+            return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported));
+        }
+
+        let protocol_pool = self.protocol_pool.inner();
+        let transaction_id = TransactionId::new(
+            protocol_pool.get_sender_id(transaction.sender()),
+            transaction.nonce(),
+        );
+        let tx = Arc::new(ValidPoolTransaction {
+            transaction,
+            transaction_id,
+            propagate,
+            timestamp: Instant::now(),
+            origin,
+            authority_ids: authorities
+                .as_ref()
+                .map(|auths| protocol_pool.get_sender_ids(auths.iter().copied())),
+        });
+        self.delayed_pool
+            .write()
+            .insert(
+                Arc::clone(&tx),
+                valid_after,
+                authorities.unwrap_or_default(),
+            )
+            .map_err(|err| PoolError::new(hash, PoolErrorKind::Other(Box::new(err))))?;
+
+        let added = AddedTransaction::Parked {
+            transaction: tx,
+            replaced: None,
+            subpool: SubPool::Queued,
+            queued_reason: None,
+            promoted: Vec::new(),
+        };
+        protocol_pool.notify_event_listeners(&added);
+        protocol_pool.on_new_transaction(added.into_new_transaction_event());
+
+        // Reth has no queued reason for a transaction that is not valid yet.
+        Ok(AddedTransactionOutcome {
+            hash,
+            state: AddedTransactionState::Queued(QueuedReason::ParkedAncestors),
+        })
+    }
+
+    /// Notifies listeners that the held transactions were removed and appends them to `removed`.
+    fn notify_held_removed(
+        &self,
+        removed: &mut Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        held: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) {
+        if held.is_empty() {
+            return;
+        }
+        self.protocol_pool
+            .inner()
+            .notify_on_transaction_updates(Vec::new(), held.clone());
+        removed.extend(held);
+    }
+
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
     ///
     /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
@@ -681,6 +843,7 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            delayed_pool: Arc::clone(&self.delayed_pool),
         }
     }
 }
@@ -691,6 +854,7 @@ impl<Client, EvmConfig> std::fmt::Debug for TempoTransactionPool<Client, EvmConf
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
             .field("aa_2d_nonce_pool", &"AA2dPool<...>")
+            .field("delayed_pool", &"DelayedPool<...>")
             .finish_non_exhaustive()
     }
 }
@@ -716,6 +880,10 @@ where
         size.queued += queued;
         size.queued_size += queued_size;
         size.total += pending + queued;
+        let delayed_pool = self.delayed_pool.read();
+        size.queued += delayed_pool.len();
+        size.queued_size += delayed_pool.size();
+        size.total += delayed_pool.len();
         size
     }
 
@@ -763,30 +931,99 @@ where
             return Vec::new();
         }
 
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
+        // Fully delegate to the protocol pool unless a transaction is 2D, must be held, or is
+        // held already.
+        let needs_routing = {
+            let tip_timestamp = self.tip_timestamp();
+            let delayed_pool = self.delayed_pool.read();
+            transactions.iter().any(|(_, tx)| {
+                tx.is_aa_2d()
+                    || delayed_pool.hold_until(tx, tip_timestamp).is_some()
+                    || delayed_pool.contains(tx.hash())
+            })
+        };
+        if !needs_routing {
             return self
                 .protocol_pool
                 .add_transactions_with_origins(transactions)
                 .await;
         }
 
-        let origins = transactions
+        let mut results = Vec::with_capacity(transactions.len());
+        let mut to_validate = Vec::with_capacity(transactions.len());
+        {
+            let delayed_pool = self.delayed_pool.read();
+            for (origin, tx) in transactions {
+                if delayed_pool.contains(tx.hash()) {
+                    results.push(Some(Err(PoolError::new(
+                        *tx.hash(),
+                        PoolErrorKind::AlreadyImported,
+                    ))));
+                } else {
+                    results.push(None);
+                    to_validate.push((origin, tx));
+                }
+            }
+        }
+        let origins = to_validate
             .iter()
             .map(|(origin, _)| *origin)
             .collect::<Vec<_>>();
 
-        self.protocol_pool
+        let mut outcomes = self
+            .protocol_pool
             .validator()
-            .validate_transactions(transactions)
+            .validate_transactions(to_validate)
             .await
             .into_iter()
-            .zip(origins)
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
+            .zip(origins);
+        let tip_timestamp = self.tip_timestamp();
+
+        results
+            .into_iter()
+            .map(|result| {
+                result.unwrap_or_else(|| {
+                    let (outcome, origin) = outcomes
+                        .next()
+                        .expect("one outcome per validated transaction");
+                    let valid_after = match &outcome {
+                        TransactionValidationOutcome::Valid { transaction, .. } => self
+                            .delayed_pool
+                            .read()
+                            .hold_until(transaction.transaction(), tip_timestamp),
+                        _ => None,
+                    };
+                    match (outcome, valid_after) {
+                        (
+                            TransactionValidationOutcome::Valid {
+                                transaction,
+                                propagate,
+                                authorities,
+                                ..
+                            },
+                            Some(valid_after),
+                        ) => self.hold_transaction(
+                            origin,
+                            transaction.into_transaction(),
+                            propagate,
+                            authorities,
+                            valid_after,
+                        ),
+                        (outcome, _) => self.add_validated_transaction(origin, outcome),
+                    }
+                })
+            })
             .collect()
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
+        if self.delayed_pool.read().contains(&tx_hash) {
+            return Some(
+                self.protocol_pool
+                    .inner()
+                    .subscribe_transaction_events(tx_hash),
+            );
+        }
         self.protocol_pool.transaction_event_listener(tx_hash)
     }
 
@@ -818,6 +1055,12 @@ where
     fn pooled_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.pooled_transaction_hashes();
         hashes.extend(self.aa_2d_pool.read().pooled_transactions_hashes_iter());
+        hashes.extend(
+            self.delayed_pool
+                .read()
+                .pooled_transactions()
+                .map(|tx| *tx.hash()),
+        );
         hashes
     }
 
@@ -834,12 +1077,21 @@ where
                 .pooled_transactions_hashes_iter()
                 .take(remaining),
         );
+        let remaining = max - hashes.len();
+        hashes.extend(
+            self.delayed_pool
+                .read()
+                .pooled_transactions()
+                .map(|tx| *tx.hash())
+                .take(remaining),
+        );
         hashes
     }
 
     fn pooled_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut txs = self.protocol_pool.pooled_transactions();
         txs.extend(self.aa_2d_pool.read().pooled_transactions_iter());
+        txs.extend(self.delayed_pool.read().pooled_transactions().cloned());
         txs
     }
 
@@ -858,6 +1110,14 @@ where
                 .read()
                 .pooled_transactions_iter()
                 .take(remaining),
+        );
+        let remaining = max - txs.len();
+        txs.extend(
+            self.delayed_pool
+                .read()
+                .pooled_transactions()
+                .take(remaining)
+                .cloned(),
         );
         txs
     }
@@ -885,6 +1145,14 @@ where
             &mut accumulated_size,
             out,
         );
+        if !limit.exceeds(accumulated_size) {
+            self.delayed_pool.read().append_pooled_transaction_elements(
+                tx_hashes,
+                limit,
+                &mut accumulated_size,
+                out,
+            );
+        }
 
         // If the limit is already exceeded, don't query the protocol pool
         if limit.exceeds(accumulated_size) {
@@ -916,6 +1184,13 @@ where
                 self.aa_2d_pool
                     .read()
                     .get(&tx_hash)
+                    .and_then(|tx| tx.transaction.clone_into_pooled().ok())
+            })
+            .or_else(|| {
+                self.delayed_pool
+                    .read()
+                    .get(&tx_hash)
+                    .filter(|tx| tx.propagate)
                     .and_then(|tx| tx.transaction.clone_into_pooled().ok())
             })
     }
@@ -972,13 +1247,18 @@ where
     fn queued_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut queued = self.protocol_pool.queued_transactions();
         queued.extend(self.aa_2d_pool.read().queued_transactions());
+        queued.extend(self.delayed_pool.read().transactions().cloned());
         queued
     }
 
     fn pending_and_queued_txn_count(&self) -> (usize, usize) {
         let (protocol_pending, protocol_queued) = self.protocol_pool.pending_and_queued_txn_count();
         let (aa_pending, aa_queued) = self.aa_2d_pool.read().pending_and_queued_txn_count();
-        (protocol_pending + aa_pending, protocol_queued + aa_queued)
+        let delayed = self.delayed_pool.read().len();
+        (
+            protocol_pending + aa_pending,
+            protocol_queued + aa_queued + delayed,
+        )
     }
 
     fn all_transactions(&self) -> AllPoolTransactions<Self::Transaction> {
@@ -986,6 +1266,9 @@ where
         self.aa_2d_pool
             .read()
             .append_all_transactions(&mut transactions);
+        transactions
+            .queued
+            .extend(self.delayed_pool.read().transactions().cloned());
         transactions
     }
 
@@ -997,12 +1280,20 @@ where
         self.aa_2d_pool
             .read()
             .append_all_transactions_by_sender(sender, &mut transactions);
+        transactions.queued.extend(
+            self.delayed_pool
+                .read()
+                .transactions()
+                .filter(|tx| tx.sender() == sender)
+                .cloned(),
+        );
         transactions
     }
 
     fn all_transaction_hashes(&self) -> Vec<B256> {
         let mut hashes = self.protocol_pool.all_transaction_hashes();
         hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
+        hashes.extend(self.delayed_pool.read().transactions().map(|tx| *tx.hash()));
         hashes
     }
 
@@ -1010,8 +1301,10 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        let held = self.delayed_pool.write().remove_transactions(hashes.iter());
         let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
         txs.extend(self.protocol_pool.remove_transactions(hashes));
+        self.notify_held_removed(&mut txs, held);
         txs
     }
 
@@ -1019,6 +1312,7 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        let held = self.delayed_pool.write().remove_transactions(hashes.iter());
         let mut txs = self
             .aa_2d_pool
             .write()
@@ -1027,6 +1321,7 @@ where
             self.protocol_pool
                 .remove_transactions_and_descendants(hashes),
         );
+        self.notify_held_removed(&mut txs, held);
         txs
     }
 
@@ -1034,11 +1329,16 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        let held = self
+            .delayed_pool
+            .write()
+            .remove_transactions_by_sender(sender);
         let mut txs = self
             .aa_2d_pool
             .write()
             .remove_transactions_by_sender(sender);
         txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
+        self.notify_held_removed(&mut txs, held);
         txs
     }
 
@@ -1046,7 +1346,8 @@ where
         &self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        let mut txs = self.delayed_pool.write().remove_transactions(hashes.iter());
+        txs.extend(self.aa_2d_pool.write().remove_transactions(hashes.iter()));
         txs.extend(self.protocol_pool.prune_transactions(hashes));
         txs
     }
@@ -1057,7 +1358,8 @@ where
             return;
         }
         let aa_pool = self.aa_2d_pool.read();
-        announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
+        let delayed_pool = self.delayed_pool.read();
+        announcement.retain_by_hash(|tx| !aa_pool.contains(tx) && !delayed_pool.contains(tx))
     }
 
     fn retain_contains<A>(&self, announcement: &mut A)
@@ -1071,17 +1373,24 @@ where
     }
 
     fn contains(&self, tx_hash: &B256) -> bool {
-        self.protocol_pool.contains(tx_hash) || self.aa_2d_pool.read().contains(tx_hash)
+        self.protocol_pool.contains(tx_hash)
+            || self.aa_2d_pool.read().contains(tx_hash)
+            || self.delayed_pool.read().contains(tx_hash)
     }
 
     fn get(&self, tx_hash: &B256) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         self.protocol_pool
             .get(tx_hash)
             .or_else(|| self.aa_2d_pool.read().get(tx_hash))
+            .or_else(|| self.delayed_pool.read().get(tx_hash))
     }
 
     fn get_all(&self, txs: Vec<B256>) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut result = self.aa_2d_pool.read().get_all(txs.iter());
+        {
+            let delayed_pool = self.delayed_pool.read();
+            result.extend(txs.iter().filter_map(|hash| delayed_pool.get(hash)));
+        }
         result.extend(self.protocol_pool.get_all(txs));
         result
     }
@@ -1099,6 +1408,13 @@ where
             self.aa_2d_pool
                 .read()
                 .get_transactions_by_sender_iter(sender),
+        );
+        txs.extend(
+            self.delayed_pool
+                .read()
+                .transactions()
+                .filter(|tx| tx.sender() == sender)
+                .cloned(),
         );
         txs
     }
@@ -1147,6 +1463,13 @@ where
                 .queued_transactions()
                 .filter(|tx| tx.sender() == sender),
         );
+        txs.extend(
+            self.delayed_pool
+                .read()
+                .transactions()
+                .filter(|tx| tx.sender() == sender)
+                .cloned(),
+        );
 
         txs
     }
@@ -1190,6 +1513,13 @@ where
                 .read()
                 .get_transactions_by_origin_iter(origin),
         );
+        txs.extend(
+            self.delayed_pool
+                .read()
+                .transactions()
+                .filter(|tx| tx.origin == origin)
+                .cloned(),
+        );
         txs
     }
 
@@ -1211,6 +1541,12 @@ where
     fn unique_senders(&self) -> AddressSet {
         let mut senders = self.protocol_pool.unique_senders();
         senders.extend(self.aa_2d_pool.read().senders_iter().copied());
+        senders.extend(
+            self.delayed_pool
+                .read()
+                .transactions()
+                .map(|tx| tx.sender()),
+        );
         senders
     }
 
@@ -1321,6 +1657,10 @@ where
             .read()
             .get_pending_transactions_by_address_and_nonce_key(address, nonce_key)
             .collect()
+    }
+
+    fn delayed_transactions_listener(&self) -> mpsc::Receiver<TxHash> {
+        self.delayed_pool.write().held_transactions_listener()
     }
 }
 
@@ -1531,6 +1871,13 @@ mod tests {
         },
     };
 
+    use crate::delayed_pool;
+    use reth_transaction_pool::{TransactionEvent, TransactionListenerKind};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
+    use tempo_primitives::TempoTxType;
+    use tokio::sync::mpsc::error::TryRecvError;
+
     fn provider_with_spending_limit(
         account: Address,
         key_id: Address,
@@ -1677,7 +2024,11 @@ mod tests {
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()))
+        TempoTransactionPool::new(
+            protocol_pool,
+            AA2dPool::new(Default::default()),
+            DelayedPool::default(),
+        )
     }
 
     fn add_validated(
@@ -2377,7 +2728,11 @@ mod tests {
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(
+            protocol_pool,
+            AA2dPool::new(Default::default()),
+            DelayedPool::default(),
+        );
 
         pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
         let validated = TransactionValidationOutcome::Valid {
@@ -2536,7 +2891,11 @@ mod tests {
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(
+            protocol_pool,
+            AA2dPool::new(Default::default()),
+            DelayedPool::default(),
+        );
 
         let validated = TransactionValidationOutcome::Valid {
             balance: *pooled.cost(),
@@ -2617,7 +2976,11 @@ mod tests {
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(
+            protocol_pool,
+            AA2dPool::new(Default::default()),
+            DelayedPool::default(),
+        );
 
         for pooled in [&matching, &untouched] {
             add_validated(&pool, pooled.clone());
@@ -2699,7 +3062,11 @@ mod tests {
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(
+            protocol_pool,
+            AA2dPool::new(Default::default()),
+            DelayedPool::default(),
+        );
 
         for pooled in [&matching, &untouched] {
             add_validated(&pool, pooled.clone());
@@ -2777,7 +3144,11 @@ mod tests {
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(
+            protocol_pool,
+            AA2dPool::new(Default::default()),
+            DelayedPool::default(),
+        );
 
         for pooled in [&matching, &untouched] {
             add_validated(&pool, pooled.clone());
@@ -3402,5 +3773,365 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// Moves the validator's tip to a block at `timestamp`.
+    fn set_tip(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        timestamp: u64,
+    ) {
+        pool.protocol_pool
+            .validator()
+            .validator()
+            .on_new_head_block(&SealedBlock::seal_slow(Block {
+                header: TempoHeader {
+                    inner: Header {
+                        timestamp,
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        excess_blob_gas: Some(0),
+                        base_fee_per_gas: Some(TEMPO_T0_BASE_FEE),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                body: Default::default(),
+            }));
+    }
+
+    /// Returns a pool that fully validates transactions, with `sender` funded in pathUSD and
+    /// the tip at `tip`. Must run inside a Tokio runtime, which drives validation.
+    fn create_validating_pool(
+        sender: Address,
+        tip: u64,
+        delayed_config: delayed_pool::Config,
+    ) -> (
+        MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+    ) {
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(0, U256::ZERO));
+        set_fee_token_balance(
+            &provider,
+            PATH_USD_ADDRESS,
+            sender,
+            U256::from(1_000_000_000_000u64),
+        );
+
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(provider.chain_spec()),
+        )
+        .with_custom_tx_type(TempoTxType::AA as u8)
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider.clone()).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+        let (executor, task) = TransactionValidationTaskExecutor::new(validator);
+        tokio::spawn(task.run());
+
+        let pool = TempoTransactionPool::new(
+            Pool::new(
+                executor,
+                TempoTipOrdering::default(),
+                InMemoryBlobStore::default(),
+                PoolConfig::default(),
+            ),
+            AA2dPool::new(Default::default()),
+            DelayedPool::new(delayed_config),
+        );
+        set_tip(&pool, tip);
+        (provider, pool)
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[tokio::test]
+    async fn delayed_transaction_is_held_and_visible(nonce_key: U256) {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let mut pending = pool.pending_transactions_listener_for(TransactionListenerKind::All);
+        let mut new_transactions = pool.new_transactions_listener_for(TransactionListenerKind::All);
+        let mut delayed = pool.delayed_transactions_listener();
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .valid_after(tip + 60)
+            .build();
+        let hash = *tx.hash();
+
+        let outcome = pool
+            .add_transaction(TransactionOrigin::External, tx.clone())
+            .await
+            .expect("transaction should be held");
+        assert!(outcome.is_queued());
+        assert!(pool.delayed_pool.read().contains(&hash));
+        assert!(!pool.protocol_pool.contains(&hash));
+        assert!(!pool.aa_2d_pool.read().contains(&hash));
+
+        assert!(pool.contains(&hash));
+        assert!(pool.get(&hash).is_some());
+        assert_eq!(tx_hashes(&pool.get_all(vec![hash])), vec![hash]);
+        assert_eq!(pool.all_transaction_hashes(), vec![hash]);
+        assert_eq!(tx_hashes(&pool.all_transactions().queued), vec![hash]);
+        assert_eq!(
+            tx_hashes(&pool.all_transactions_by_sender(sender).queued),
+            vec![hash]
+        );
+        assert_eq!(
+            tx_hashes(&pool.get_transactions_by_sender(sender)),
+            vec![hash]
+        );
+        assert_eq!(
+            tx_hashes(&pool.get_queued_transactions_by_sender(sender)),
+            vec![hash]
+        );
+        assert_eq!(tx_hashes(&pool.queued_transactions()), vec![hash]);
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
+        assert_eq!(pool.pooled_transaction_hashes(), vec![hash]);
+        assert_eq!(pool.pooled_transaction_hashes_max(1), vec![hash]);
+        assert_eq!(
+            pool.get_pooled_transaction_elements(vec![hash], GetPooledTransactionLimit::None)
+                .len(),
+            1
+        );
+        assert!(pool.get_pooled_transaction_element(hash).is_some());
+        let size = pool.pool_size();
+        assert_eq!((size.pending, size.queued, size.total), (0, 1, 1));
+        assert_eq!(size.queued_size, InMemorySize::size(&tx));
+
+        assert!(pool.pending_transactions().is_empty());
+        assert!(pool.best_transactions().next().is_none());
+        assert_eq!(pending.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(delayed.try_recv(), Ok(hash));
+        let event = new_transactions.try_recv().expect("new transaction event");
+        assert_eq!(event.subpool, SubPool::Queued);
+        assert_eq!(*event.transaction.hash(), hash);
+
+        let err = pool
+            .add_transaction(TransactionOrigin::External, tx)
+            .await
+            .expect_err("held transaction is already imported");
+        assert!(matches!(err.kind, PoolErrorKind::AlreadyImported));
+    }
+
+    #[tokio::test]
+    async fn transaction_valid_within_lead_time_enters_live_pool() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(
+            sender,
+            tip,
+            delayed_pool::Config {
+                lead_secs: 2,
+                ..Default::default()
+            },
+        );
+        let tx = TxBuilder::aa(sender).valid_after(tip + 2).build();
+        let hash = *tx.hash();
+
+        pool.add_transaction(TransactionOrigin::External, tx)
+            .await
+            .expect("transaction should be admitted");
+
+        assert_eq!(pool.delayed_pool.read().len(), 0);
+        assert_eq!(tx_hashes(&pool.pending_transactions()), vec![hash]);
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[tokio::test]
+    async fn release_moves_due_transaction_into_live_pool(nonce_key: U256) {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(
+            sender,
+            tip,
+            delayed_pool::Config {
+                lead_secs: 2,
+                ..Default::default()
+            },
+        );
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .valid_after(tip + 60)
+            .build();
+        let hash = *tx.hash();
+        pool.add_transaction(TransactionOrigin::External, tx)
+            .await
+            .expect("transaction should be held");
+        let mut events = pool
+            .transaction_event_listener(hash)
+            .expect("held transactions can be subscribed to");
+
+        set_tip(&pool, tip + 57);
+        pool.release_delayed_transactions(tip + 57).await;
+        assert!(pool.delayed_pool.read().contains(&hash));
+
+        set_tip(&pool, tip + 58);
+        pool.release_delayed_transactions(tip + 58).await;
+        assert!(!pool.delayed_pool.read().contains(&hash));
+        assert_eq!(tx_hashes(&pool.pending_transactions()), vec![hash]);
+        assert!(matches!(
+            events.next().now_or_never().flatten(),
+            Some(TransactionEvent::Pending)
+        ));
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[tokio::test]
+    async fn release_drops_transaction_with_live_nonce_conflict(nonce_key: U256) {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let held = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .valid_after(tip + 60)
+            .build();
+        let held_hash = *held.hash();
+        let live = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let live_hash = *live.hash();
+        pool.add_transaction(TransactionOrigin::External, held)
+            .await
+            .expect("transaction should be held");
+        pool.add_transaction(TransactionOrigin::External, live)
+            .await
+            .expect("transaction should be admitted");
+        let mut events = pool.transaction_event_listener(held_hash).unwrap();
+
+        set_tip(&pool, tip + 59);
+        pool.release_delayed_transactions(tip + 59).await;
+
+        assert!(!pool.contains(&held_hash));
+        assert_eq!(tx_hashes(&pool.pending_transactions()), vec![live_hash]);
+        assert!(matches!(
+            events.next().now_or_never().flatten(),
+            Some(TransactionEvent::Discarded)
+        ));
+    }
+
+    #[tokio::test]
+    async fn release_drops_transaction_failing_revalidation() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let tx = TxBuilder::aa(sender).valid_after(tip + 60).build();
+        let hash = *tx.hash();
+        pool.add_transaction(TransactionOrigin::External, tx)
+            .await
+            .expect("transaction should be held");
+        let mut events = pool.transaction_event_listener(hash).unwrap();
+
+        // The nonce is consumed while the transaction waits.
+        provider.add_account(sender, ExtendedAccount::new(1, U256::ZERO));
+        set_tip(&pool, tip + 59);
+        pool.release_delayed_transactions(tip + 59).await;
+
+        assert!(!pool.contains(&hash));
+        assert!(matches!(
+            events.next().now_or_never().flatten(),
+            Some(TransactionEvent::Discarded)
+        ));
+    }
+
+    #[tokio::test]
+    async fn removal_and_expiry_cover_held_transactions() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let txs = [
+            TxBuilder::aa(sender).valid_after(tip + 60).build(),
+            TxBuilder::aa(sender)
+                .nonce(1)
+                .valid_after(tip + 60)
+                .valid_before(tip + 100)
+                .build(),
+            TxBuilder::aa(sender)
+                .nonce_key(U256::ONE)
+                .valid_after(tip + 60)
+                .build(),
+        ];
+        let [removed, expiring, by_sender] = [0, 1, 2].map(|i| *txs[i].hash());
+        for tx in txs {
+            pool.add_transaction(TransactionOrigin::External, tx)
+                .await
+                .expect("transaction should be held");
+        }
+        assert_eq!(pool.delayed_pool.read().len(), 3);
+        let mut events = pool.transaction_event_listener(removed).unwrap();
+
+        assert_eq!(
+            tx_hashes(&pool.remove_transactions(vec![removed])),
+            vec![removed]
+        );
+        assert!(matches!(
+            events.next().now_or_never().flatten(),
+            Some(TransactionEvent::Discarded)
+        ));
+
+        let all = pool.all_transactions();
+        assert_eq!(
+            tx_hashes(&pool.evict_invalidated_transactions_from(
+                &crate::TempoPoolUpdates::new(),
+                all.iter(),
+                Some(tip + 100),
+            )),
+            vec![expiring]
+        );
+
+        assert_eq!(
+            tx_hashes(&pool.remove_transactions_by_sender(sender)),
+            vec![by_sender]
+        );
+        assert_eq!(pool.delayed_pool.read().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn delayed_limits_reject_transactions() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(
+            sender,
+            tip,
+            delayed_pool::Config {
+                max_per_authority: 1,
+                ..Default::default()
+            },
+        );
+        pool.add_transaction(
+            TransactionOrigin::External,
+            TxBuilder::aa(sender).valid_after(tip + 60).build(),
+        )
+        .await
+        .expect("transaction should be held");
+
+        let err = pool
+            .add_transaction(
+                TransactionOrigin::External,
+                TxBuilder::aa(sender).nonce(1).valid_after(tip + 60).build(),
+            )
+            .await
+            .expect_err("authority limit is reached");
+        assert!(!err.is_bad_transaction());
+        let PoolErrorKind::Other(err) = &err.kind else {
+            panic!("unexpected error kind: {err:?}");
+        };
+        assert_eq!(
+            err.downcast_ref::<delayed_pool::Error>(),
+            Some(&delayed_pool::Error::AuthorityLimit(sender))
+        );
     }
 }
