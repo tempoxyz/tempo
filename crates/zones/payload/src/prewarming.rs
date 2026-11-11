@@ -47,10 +47,10 @@ where
         parent_header: SealedHeader<TempoHeader>,
         next_block_env_attributes: TempoNextBlockEnvAttributes,
         chain_id: u64,
-        tempo_block_number: u64,
+        l1_block_number: u64,
     ) -> Arc<Self> {
         let (reader, fetch_task) =
-            L1StoragePrewarmer::new(evm_config.l1_reader().clone(), tempo_block_number);
+            L1StoragePrewarmer::new(evm_config.l1_reader().clone(), l1_block_number);
         task_executor.spawn_task(fetch_task);
         let evm_config = ZoneEvmConfig::new(
             evm_config.chain_spec().clone(),
@@ -163,15 +163,14 @@ impl Drop for Prewarming {
     }
 }
 
-/// An [`L1StorageReader`] for prewarming simulations that never blocks on a Tempo commitment.
+/// A [`L1StorageReader`], used for simulations, that never blocks on a Tempo L1 commitment read.
 ///
-/// A cached commitment is returned as is. On a miss the account is sent for a parallel fetch and
-/// the read returns zero, which is exact for accounts never configured on Tempo, such as fresh
-/// addresses. Storage reads go to the cache-backed provider unchanged.
+/// Cached commitments are returned as is. Misses are queued for a parallel fetch and read as zero,
+/// which is exact for accounts never configured on Tempo. Storage reads pass through unchanged.
 #[derive(Clone)]
 struct L1StoragePrewarmer {
     provider: L1StateProvider,
-    tempo_block_number: u64,
+    l1_block_number: u64,
     fetches: mpsc::UnboundedSender<Address>,
 }
 
@@ -194,7 +193,7 @@ impl L1StorageReader for L1StoragePrewarmer {
             .provider
             .cache()
             .lock()
-            .get_commitment(account, self.tempo_block_number)
+            .get_commitment(account, self.l1_block_number)
         {
             return Ok(commitment);
         }
@@ -206,18 +205,18 @@ impl L1StorageReader for L1StoragePrewarmer {
 }
 
 impl L1StoragePrewarmer {
-    /// Returns a reader whose commitment misses are fetched at `tempo_block_number`, and the task
+    /// Returns a reader whose commitment misses are fetched at `l1_block_number`, and the task
     /// that fetches each missed account once, up to [`MAX_COMMITMENT_FETCHES`] at a time.
     ///
     /// The task ends once every clone of the reader is dropped and its fetches finish.
     fn new(
         provider: L1StateProvider,
-        tempo_block_number: u64,
+        l1_block_number: u64,
     ) -> (Self, impl Future<Output = ()> + Send + 'static) {
         let (fetches, accounts) = mpsc::unbounded();
         let reader = Self {
             provider: provider.clone(),
-            tempo_block_number,
+            l1_block_number,
             fetches,
         };
         let task = async move {
@@ -228,7 +227,7 @@ impl L1StoragePrewarmer {
                 .for_each_concurrent(MAX_COMMITMENT_FETCHES, |account| async move {
                     // A failed fetch is retried by canonical execution on its own cache miss.
                     if let Err(error) = provider
-                        .read_l1_commitment_async(account, tempo_block_number)
+                        .read_l1_commitment_async(account, l1_block_number)
                         .await
                     {
                         debug!(target: "zone::payload", %account, %error, "Commitment prewarm fetch failed");
@@ -280,7 +279,7 @@ mod tests {
         let (fetches, sent) = mpsc::unbounded();
         let reader = L1StoragePrewarmer {
             provider,
-            tempo_block_number: TEMPO_BLOCK,
+            l1_block_number: TEMPO_BLOCK,
             fetches,
         };
 
