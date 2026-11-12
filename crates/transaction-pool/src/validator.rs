@@ -379,7 +379,8 @@ where
         // Runs once per admission epoch: the state opened here serves the transactions that
         // follow until the epoch advances.
         while transactions.peek().is_some() {
-            let admission_epoch = *self.admission_epoch.read();
+            // Not `read`, which would park behind an advance that waits on an admission's insert.
+            let admission_epoch = *self.admission_epoch.read_recursive();
             let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
                 Ok(provider_and_cache) => provider_and_cache,
                 Err(err) => {
@@ -420,7 +421,7 @@ where
                     admission_epoch,
                     self.validate_one_with_evm(origin, transaction, &mut evm),
                 );
-                if *self.admission_epoch.read() != admission_epoch {
+                if *self.admission_epoch.read_recursive() != admission_epoch {
                     break;
                 }
             }
