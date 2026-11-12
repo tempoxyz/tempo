@@ -20,6 +20,7 @@ tempo-primitives.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-alloy.workspace = true
 tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+tempo-corpus = { workspace = true, optional = true }
 tempo-state-bloat = { workspace = true, optional = true }
 zone-chainspec.workspace = true
 zone-evm.workspace = true
@@ -59,8 +60,10 @@ reth-tasks.workspace = true
 reth-tracing = { workspace = true, optional = true }
 reth-transaction-pool.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
+reth-cli = { workspace = true, optional = true }
 reth-cli-runner = { workspace = true, optional = true }
 reth-cli-commands = { workspace = true, optional = true }
+reth-cli-util = { workspace = true, optional = true }
 reth-db-api = { workspace = true, optional = true }
 reth-trie = { workspace = true, optional = true }
 reth-trie-db = { workspace = true, optional = true }
@@ -169,6 +172,8 @@ cli = [
   "dep:zone-checker",
   "zone-chainspec/cli",
 ]
+# Historical execution corpus commands (`tempo-zone corpus fill/replay/gc`).
+corpus = ["cli", "dep:tempo-corpus", "dep:reth-cli", "dep:reth-cli-util"]
 jemalloc = [
   "reth-ethereum?/jemalloc",
   "reth-node-core/jemalloc",

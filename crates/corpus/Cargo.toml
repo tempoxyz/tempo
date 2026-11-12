@@ -36,7 +36,7 @@ exec = [
 ]
 
 [dependencies]
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["serde"] }
 reth-primitives-traits.workspace = true
 reth-execution-types = { workspace = true, optional = true }
 evm2 = { workspace = true, optional = true }

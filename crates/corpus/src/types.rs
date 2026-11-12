@@ -24,6 +24,25 @@ pub struct Input {
     pub code: BTreeSet<[u8; 32]>,
     pub hashes: BTreeMap<u64, [u8; 32]>,
     pub phases: Option<Phases>,
+    /// Tempo L1 state a zone block reads; empty for a Tempo L1 block. Stored after the input
+    /// rather than in it, so Tempo L1 payloads keep their encoding (see [`crate::store::encode`]).
+    #[wincode(skip)]
+    pub l1: L1Reads,
+}
+
+/// The Tempo L1 storage a zone block reads, with the value each read returned. Replay serves L1
+/// reads only from here, so a read the block did not record fails it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct L1Reads(pub BTreeMap<L1Read, [u8; 32]>);
+
+/// One read of Tempo L1 state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, SchemaRead, SchemaWrite)]
+pub struct L1Read {
+    /// The L1 block the read is anchored at.
+    pub block: u64,
+    pub account: [u8; 20],
+    /// The storage slot read, or `None` for the account's TIP-1108 configuration commitment.
+    pub slot: Option<[u8; 32]>,
 }
 
 /// Canonical block and historical pre-change expectations, not replay-derived outputs.

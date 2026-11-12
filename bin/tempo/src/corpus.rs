@@ -1,7 +1,6 @@
 //! `tempo corpus`: capture an archive range into an object-store corpus and replay it.
 
 use clap::{Parser, Subcommand};
-use reth_chainspec::EthChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
 use reth_cli_util::cancellation::CancellationToken;
@@ -9,8 +8,8 @@ use reth_ethereum::tasks::Runtime;
 use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_corpus::{
-    exec::{fill, replay},
-    fuzz, gc,
+    exec::{fill, replay, workers},
+    gc,
     store::Store,
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
@@ -42,13 +41,6 @@ fn components(chain: Arc<TempoChainSpec>) -> (TempoEvmConfig, TempoConsensus) {
         TempoEvmConfig::new(chain.clone()),
         TempoConsensus::new(chain),
     )
-}
-
-/// `workers`, defaulting to the available parallelism; at least one.
-fn workers(workers: Option<usize>) -> usize {
-    workers
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-        .max(1)
 }
 
 /// Capture archive blocks from an archive datadir up to a pinned exclusive end, appending
@@ -148,54 +140,18 @@ impl ReplayCommand {
             .catalog()
             .await?
             .ok_or_else(|| eyre::eyre!("no corpus catalog at {}", self.corpus))?;
-        let context = &catalog.context;
-        eyre::ensure!(
-            context.chain_id == self.chain.chain_id()
-                && context.genesis == self.chain.genesis_hash().to_string(),
-            "corpus chain context mismatch"
-        );
-        let published = &catalog.cursor;
-        let from = self.from.unwrap_or(context.start);
-        let end = self.to.unwrap_or(published.next).min(published.next);
-        let standalone = self.tx_from.zip(self.tx_to);
-        if let Some((from, to)) = standalone {
-            eyre::ensure!(
-                from >= context.first_tx && from < to && to <= published.tx,
-                "transaction ordinal range outside the corpus"
-            );
-        } else {
-            eyre::ensure!(
-                from >= context.start && from < end,
-                "corpus block range mismatch"
-            );
-        }
-        let workers = workers(self.workers);
+        let request = replay::Request {
+            from: self.from,
+            to: self.to,
+            transactions: self.tx_from.zip(self.tx_to),
+            blocks: self.blocks,
+            workers: workers(self.workers),
+        };
         let (config, consensus) = components(self.chain);
-        if let Some(path) = &self.blocks {
-            let blocks = fuzz::read_blocks(path, &catalog)?;
-            eyre::ensure!(
-                !blocks.is_empty(),
-                "{} lists no block of the corpus",
-                path.display()
-            );
-            return tokio::task::spawn_blocking(move || {
-                replay::run_blocks(store, catalog, &blocks, config, consensus, workers)
-            })
-            .await?;
-        }
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         tokio::task::spawn_blocking(move || {
-            replay::run(
-                store,
-                catalog,
-                from..end,
-                config,
-                consensus,
-                workers,
-                standalone,
-                cancellation,
-            )
+            replay::run_request(store, catalog, config, consensus, request, cancellation)
         })
         .await?
     }

@@ -5,7 +5,7 @@ use crate::{
     types::{Case, Input},
 };
 use alloy_consensus::BlockHeader;
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use bytes::Bytes;
 use eyre::{OptionExt, WrapErr};
 use futures::TryStreamExt;
@@ -26,6 +26,10 @@ use std::{sync::Arc, time::Duration};
 use tempo_primitives::Block;
 use tracing::warn;
 use url::Url;
+use wincode::SchemaRead;
+
+/// The type of [`WINCODE`].
+type Wincode = wincode::config::Configuration<true, MAX_RECORD_BYTES>;
 
 /// Maximum serialized size of one block record (block plus its transactions) or one
 /// metadata entry. Capture rejects larger records; readers reject larger entries.
@@ -33,7 +37,7 @@ pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 /// wincode configuration of every stored record: the default encoding, with sequences
 /// allowed up to a whole record ([`MAX_RECORD_BYTES`]) instead of wincode's 4 MiB. The limit
 /// only bounds preallocation, so the encoded bytes are unchanged.
-pub(crate) const WINCODE: wincode::config::Configuration<true, MAX_RECORD_BYTES> =
+pub(crate) const WINCODE: Wincode =
     wincode::config::Configuration::default().with_preallocation_size_limit::<MAX_RECORD_BYTES>();
 const MAX_CATALOG_BYTES: usize = 1024 * 1024;
 pub const PAGE_RECORDS: usize = 1000;
@@ -72,6 +76,10 @@ pub struct Context {
     pub start: u64,
     pub parent: String,
     pub first_tx: u64,
+    /// The zone portal on Tempo L1 whose zone the corpus captures, or `None` for a Tempo L1
+    /// corpus, so neither replays as the other. Tempo L1 contexts omit it and keep their bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portal: Option<Address>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -572,12 +580,29 @@ pub async fn published_payload(reader: &DbReader, block: u64) -> eyre::Result<(R
     Ok((record, bytes))
 }
 
+/// Encodes a block payload: the input, followed by its L1 reads when it has any. A Tempo L1 block
+/// reads no L1 state, so its payload is the input alone, unchanged from before zone corpora.
+pub fn encode(input: &Input) -> eyre::Result<Vec<u8>> {
+    let mut bytes = wincode::config::serialize(input, WINCODE)?;
+    if !input.l1.0.is_empty() {
+        wincode::config::serialize_into(&mut bytes, &input.l1, WINCODE)?;
+    }
+    Ok(bytes)
+}
+
+/// Decodes a block payload [`encode`] wrote and checks it against its record.
 pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Input>> {
     eyre::ensure!(
         bytes.len() == record.block_bytes,
         "corpus record size mismatch"
     );
-    let input: Input = wincode::config::deserialize_exact(bytes, WINCODE)?;
+    let mut rest = bytes;
+    let mut input = <Input as SchemaRead<'_, Wincode>>::get(&mut rest)?;
+    if !rest.is_empty() {
+        input.l1 = wincode::config::deserialize_exact(rest, WINCODE)?;
+        // `encode` writes no section for a block without L1 reads.
+        eyre::ensure!(!input.l1.0.is_empty(), "empty L1 read section");
+    }
     eyre::ensure!(
         input.number == record.number
             && input.parent == record.parent
@@ -585,6 +610,11 @@ pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Input>> {
         "corpus record/context mismatch"
     );
     Ok(Arc::new(input))
+}
+
+/// Encodes a stored transaction record, as [`decode_case`] reads it.
+pub fn encode_case(case: &Case) -> eyre::Result<Vec<u8>> {
+    Ok(wincode::config::serialize(case, WINCODE)?)
 }
 
 pub fn decode_case(bytes: &[u8], expected: &CaseRecord, ordinal: u64) -> eyre::Result<Case> {
@@ -911,6 +941,7 @@ fn scan_options() -> ScanOptions {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::types::{self, L1Read, L1Reads};
     use object_store::memory::InMemory;
     use proptest::prelude::*;
 
@@ -995,6 +1026,7 @@ pub mod tests {
                 start,
                 parent: B256::ZERO.to_string(),
                 first_tx: 0,
+                portal: None,
             },
             records,
             checkpoint: Some("00000000-0000-0000-0000-000000000000".to_owned()),
@@ -1315,5 +1347,90 @@ pub mod tests {
         let (published, _) = store.catalog().await?.expect("published catalog");
         assert_eq!(published.generation, catalog.generation);
         Ok(())
+    }
+
+    #[test]
+    fn payload_carries_l1_reads_only_when_present() {
+        let mut input = Input {
+            number: 1,
+            parent: [0; 32],
+            block: types::Block {
+                hash: [1; 32],
+                rlp: Vec::new(),
+                senders: Vec::new(),
+                changed_accounts: Vec::new(),
+                changed_storage: Vec::new(),
+            },
+            accounts: Default::default(),
+            storage: Default::default(),
+            code: Default::default(),
+            hashes: Default::default(),
+            phases: None,
+            l1: L1Reads::default(),
+        };
+        let record = |bytes: &[u8]| Record {
+            number: 1,
+            parent: [0; 32],
+            hash: [1; 32],
+            bytes: bytes.len(),
+            block_bytes: bytes.len(),
+            transactions: 0,
+            gas: 0,
+            first_tx: 0,
+            cases: Vec::new(),
+        };
+        // Without L1 reads the payload is the input alone, as every Tempo L1 payload is.
+        let bytes = encode(&input).unwrap();
+        assert_eq!(bytes, wincode::config::serialize(&input, WINCODE).unwrap());
+        assert_eq!(decode(&bytes, &record(&bytes)).unwrap().l1, input.l1);
+
+        let account = [2; 20];
+        input.l1.0.insert(
+            L1Read {
+                block: 7,
+                account,
+                slot: Some([3; 32]),
+            },
+            [4; 32],
+        );
+        input.l1.0.insert(
+            L1Read {
+                block: 7,
+                account,
+                slot: None,
+            },
+            [5; 32],
+        );
+        let bytes = encode(&input).unwrap();
+        assert_eq!(decode(&bytes, &record(&bytes)).unwrap().l1, input.l1);
+
+        // `encode` writes no section for a block without L1 reads, so an empty one is corrupt.
+        let mut empty = wincode::config::serialize(&input, WINCODE).unwrap();
+        wincode::config::serialize_into(&mut empty, &L1Reads::default(), WINCODE).unwrap();
+        assert_eq!(
+            decode(&empty, &record(&empty)).unwrap_err().to_string(),
+            "empty L1 read section"
+        );
+    }
+
+    #[test]
+    fn tempo_context_keeps_its_bytes() {
+        let context = catalog(1, 0, 0).context;
+        let json = serde_json::to_string(&context).unwrap();
+        assert_eq!(
+            json,
+            format!(
+                r#"{{"chain_id":1,"genesis":"{zero}","forks":"test","start":1,"parent":"{zero}","first_tx":0}}"#,
+                zero = B256::ZERO
+            )
+        );
+        assert_eq!(serde_json::from_str::<Context>(&json).unwrap(), context);
+
+        let zone = Context {
+            portal: Some(Address::repeat_byte(1)),
+            ..context
+        };
+        let json = serde_json::to_string(&zone).unwrap();
+        assert_eq!(serde_json::from_str::<Context>(&json).unwrap(), zone);
     }
 }

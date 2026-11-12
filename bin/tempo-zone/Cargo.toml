@@ -51,6 +51,8 @@ asm-keccak = [
 	"zone-node/asm-keccak",
 ]
 jemalloc = ["reth-cli-util/jemalloc", "reth-node-core/jemalloc", "zone-node/jemalloc"]
+# Historical execution corpus commands (`tempo-zone corpus fill/replay/gc`).
+corpus = ["zone-node/corpus"]
 keccak-cache-global = [
 	"alloy-primitives/keccak-cache-global",
 	"reth-node-core/keccak-cache-global",

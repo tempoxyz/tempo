@@ -78,12 +78,23 @@ pub type ZoneNodeCli =
 pub enum ZoneSubcommand {
     /// Initialize a fresh database with TIP20 bloat committed in Zone genesis.
     InitFromBinaryDump(Box<InitZoneFromBinaryDump>),
+    /// Historical execution corpus: capture an archive range once, replay it without a database
+    /// or L1 access.
+    #[cfg(feature = "corpus")]
+    #[command(subcommand)]
+    Corpus(crate::corpus::CorpusCommand),
 }
 
 impl ExtendedCommand for ZoneSubcommand {
     fn execute(self, runner: CliRunner) -> eyre::Result<()> {
         match self {
             Self::InitFromBinaryDump(command) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(command.execute(runtime))?;
+                Ok(())
+            }
+            #[cfg(feature = "corpus")]
+            Self::Corpus(command) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(command.execute(runtime))?;
                 Ok(())
@@ -297,6 +308,13 @@ fn cli_evm_config(chain_spec: Arc<ZoneChainSpec>, l1_rpc_url: Option<url::Url>) 
     };
 
     let portal_address = portal_address(chain_spec.zone_id());
+    let l1_provider = cli_l1_provider(portal_address, l1_rpc_url);
+    ZoneEvmConfig::new(chain_spec, l1_provider, portal_address)
+}
+
+/// Reads the L1 state of the zone behind `portal_address` over `l1_rpc_url`, for CLI
+/// subcommands that execute zone blocks.
+pub(crate) fn cli_l1_provider(portal_address: Address, l1_rpc_url: url::Url) -> L1StateProvider {
     let cache = L1StateCache::default();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .connect_http(l1_rpc_url)
@@ -306,8 +324,7 @@ fn cli_evm_config(chain_spec: Arc<ZoneChainSpec>, l1_rpc_url: Option<url::Url>) 
         portal_address,
         ..Default::default()
     };
-    let l1_provider = L1StateProvider::new_raw(config, cache, provider, runtime_handle);
-    ZoneEvmConfig::new(chain_spec, l1_provider, portal_address)
+    L1StateProvider::new_raw(config, cache, provider, runtime_handle)
 }
 
 /// Load and attach all sequencer resources to the node.
