@@ -46,14 +46,10 @@ fn validators_agree_on_boundary_outcomes_across_t15() {
         })
         .await;
         // Stopping any validator halts the chain, so epoch 1's boundary is still
-        // to come. One at a time: `stop_consensus` drains the aborted engine's
-        // tasks so its storage can be reopened, which concurrent stops don't
-        // guarantee.
+        // to come. One at a time: `stop` drains the aborted engine's tasks so its
+        // storage can be reopened, which concurrent stops don't guarantee.
         for node in &mut validators {
-            node.stop_consensus().await;
-        }
-        for node in &mut validators {
-            node.stop_execution().await;
+            node.stop().await;
         }
 
         // Every block so far is stamped before `activation`. Restart only once
