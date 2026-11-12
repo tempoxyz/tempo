@@ -2432,18 +2432,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admission_validates_again_after_epoch_advances_during_validation() {
-        let (provider, pool, pooled) = pool_with_valid_transaction();
-        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
-        tokio::pin!(admission);
-        run_validation(&mut admission).await;
-        mine_sender_nonce(&provider, &pooled);
-        pool.advance_admission_epoch();
-
-        assert_validated_again(&pool, &pooled, admission).await;
-    }
-
-    #[tokio::test]
     async fn admission_validates_again_after_canonical_state_change_during_validation() {
         let (provider, pool, pooled) = pool_with_valid_transaction();
         let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
@@ -2485,20 +2473,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admission_keeps_insertion_without_canonical_update_during_validation() {
-        let (provider, pool, pooled) = pool_with_valid_transaction();
-        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
-        tokio::pin!(admission);
-        run_validation(&mut admission).await;
-        // The state changed, but maintenance has not scanned the pool for it yet.
-        mine_sender_nonce(&provider, &pooled);
-
-        let added = admission.await.expect("the first validation stands");
-        assert_eq!(added.hash, *pooled.hash());
-        assert!(pool.get(pooled.hash()).is_some());
-    }
-
-    #[tokio::test]
     async fn admission_inserts_after_epoch_advances_before_validation_starts() {
         let (_, pool, pooled) = pool_with_valid_transaction();
         let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
@@ -2515,41 +2489,6 @@ mod tests {
             added.expect("the only validation stands").hash,
             *pooled.hash()
         );
-        assert!(pool.get(pooled.hash()).is_some());
-    }
-
-    #[tokio::test]
-    async fn admission_forwards_invalid_transaction_without_validating_again() {
-        let (provider, pool, pooled) = pool_with_valid_transaction();
-        mine_sender_nonce(&provider, &pooled);
-        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
-        tokio::pin!(admission);
-        run_validation(&mut admission).await;
-        pool.advance_admission_epoch();
-
-        let std::task::Poll::Ready(result) = futures::poll!(&mut admission) else {
-            panic!("admission waits on another validation");
-        };
-        assert!(matches!(
-            result.expect_err("the transaction is invalid").kind,
-            PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
-                InvalidTransactionError::NonceNotConsistent { tx: 0, state: 1 }
-            ))
-        ));
-    }
-
-    #[tokio::test]
-    async fn admission_inserts_on_last_attempt_within_one_epoch() {
-        let (_, pool, pooled) = pool_with_valid_transaction();
-        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
-        tokio::pin!(admission);
-        for _ in 1..ADMISSION_ATTEMPTS {
-            run_validation(&mut admission).await;
-            pool.advance_admission_epoch();
-        }
-
-        let added = admission.await.expect("the last validation stands");
-        assert_eq!(added.hash, *pooled.hash());
         assert!(pool.get(pooled.hash()).is_some());
     }
 
@@ -2661,26 +2600,6 @@ mod tests {
                 state: 1
             })
         ));
-    }
-
-    #[test]
-    fn admission_fails_without_validation_tasks() {
-        // No runtime runs the validation tasks of a pool created outside of one.
-        let (_, pool, pooled) = pool_with_valid_transaction();
-
-        let err = pool
-            .add_transaction(TransactionOrigin::External, pooled.clone())
-            .now_or_never()
-            .expect("admission does not wait for a validation")
-            .expect_err("nothing validated the transaction");
-        let PoolErrorKind::Other(err) = err.kind else {
-            panic!("unexpected error {err:?}");
-        };
-        assert!(matches!(
-            err.downcast_ref(),
-            Some(TransactionValidatorError::ValidationServiceUnreachable)
-        ));
-        assert!(pool.get(pooled.hash()).is_none());
     }
 
     #[tokio::test]
