@@ -17,7 +17,7 @@ use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{NewSubpoolTransactionStream, ValidPoolTransaction};
-use std::{error::Error, future::Future, sync::Arc};
+use std::{error::Error, future::Future, sync::Arc, time::Duration};
 use tempo_contracts::zones::DepositType;
 use tempo_evm::{TempoNextBlockEnvAttributes, TempoTxEnv};
 use tempo_primitives::TempoHeader;
@@ -29,6 +29,10 @@ use zone_precompiles::{L1StateError, L1StorageReader};
 
 /// Most Tempo commitment fetches in flight while prewarming one Zone block.
 const MAX_COMMITMENT_FETCHES: usize = 64;
+
+/// Longest wait for one prewarm commitment fetch, so a stalled Tempo RPC cannot leave a fetch task
+/// behind per Zone block.
+const COMMITMENT_FETCH_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// One disposable simulation.
 enum Simulation {
@@ -258,11 +262,19 @@ impl L1StoragePrewarmer {
                 .filter(move |account| ready(fetched.insert(*account)))
                 .for_each_concurrent(MAX_COMMITMENT_FETCHES, |account| async move {
                     // A failed fetch is retried by canonical execution on its own cache miss.
-                    if let Err(error) = provider
-                        .read_l1_commitment_async(account, l1_block_number)
-                        .await
+                    match tokio::time::timeout(
+                        COMMITMENT_FETCH_TIMEOUT,
+                        provider.read_l1_commitment_async(account, l1_block_number),
+                    )
+                    .await
                     {
-                        debug!(target: "zone::payload", %account, %error, "Commitment prewarm fetch failed");
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            debug!(target: "zone::payload", %account, %error, "Commitment prewarm fetch failed");
+                        }
+                        Err(_) => {
+                            debug!(target: "zone::payload", %account, "Commitment prewarm fetch timed out");
+                        }
                     }
                 })
                 .await;

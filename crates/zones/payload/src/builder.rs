@@ -271,7 +271,7 @@ where
 
         // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency).
         let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
-        let (prewarming, _pool_prewarming) = match tempo_import {
+        let (prewarming, pool_prewarming) = match tempo_import {
             TempoImport::Full(prepared) => {
                 let context = PrewarmingExecutionContext::new(
                     self.task_executor.clone(),
@@ -348,6 +348,8 @@ where
                 self.transfer_allowlist.as_deref(),
                 &mut unlisted,
             );
+            // Later arrivals can no longer reach this block.
+            drop(pool_prewarming);
             if !unlisted.is_empty() {
                 // Otherwise every later build would check and skip them again. Removal locks the
                 // pool, so it runs off the build path; a build that starts first skips them again.
