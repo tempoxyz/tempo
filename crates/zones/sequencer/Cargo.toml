@@ -1,7 +1,7 @@
 [package]
 name = "zone-sequencer"
 description = "Tempo Zone sequencer settlement and withdrawal tasks"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -63,6 +63,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 jsonrpsee.workspace = true
 proptest.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
