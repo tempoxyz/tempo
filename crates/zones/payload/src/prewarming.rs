@@ -2,16 +2,13 @@
 //!
 //! Deposits and pool transactions are executed in independent throwaway Zone builders. Execution
 //! output is discarded; only L1 reads populate the cache shared with canonical execution.
-//!
-//! Pool transactions run on the bare EVM, since the Zone block executor rejects anything before
-//! the block's `advanceTempo`, which would end the simulation before any account is read.
 
 use crate::builder::build_advance_tempo_tx_owned;
 use alloy_primitives::{Address, B256, map::HashSet};
 use futures::{
-    Stream, StreamExt as _,
-    channel::{mpsc, oneshot},
-    future::{Either, ready, select},
+    FutureExt as _, Stream, StreamExt as _,
+    channel::mpsc,
+    future::{AbortHandle, abortable, ready},
 };
 use reth_evm::{
     BlockExecutor as _, ConfigureEvm, database::StateProviderDatabase, execute::BlockBuilder,
@@ -23,7 +20,7 @@ use reth_transaction_pool::ValidPoolTransaction;
 use std::{error::Error, future::Future, sync::Arc};
 use tempo_contracts::zones::DepositType;
 use tempo_evm::{TempoNextBlockEnvAttributes, TempoTxEnv};
-use tempo_primitives::{TempoHeader, TempoTxEnvelope};
+use tempo_primitives::TempoHeader;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 use tracing::{debug, trace};
 use zone_evm::ZoneEvmConfig;
@@ -33,25 +30,14 @@ use zone_precompiles::{L1StateError, L1StorageReader};
 /// Most Tempo commitment fetches in flight while prewarming one Zone block.
 const MAX_COMMITMENT_FETCHES: usize = 64;
 
-/// A throwaway builder for the next block on the parent state. A macro, since the builder's type
-/// is opaque and a helper returning it would hide its EVM's transaction type.
-macro_rules! prewarm_worker {
-    ($context:expr) => {
-        $context.evm_config.builder_for_next_block(
-            StateProviderDatabase::new(
-                $context
-                    .provider
-                    .state_by_block_hash($context.parent_header.hash())?
-                    .into_evm_state_provider(),
-            ),
-            &$context.parent_header,
-            $context.next_block_env_attributes.clone(),
-        )?
-    };
+/// One disposable simulation.
+enum Simulation {
+    /// A single-deposit `advanceTempo`, run through the Zone block executor.
+    Deposit(Box<PreparedL1Block>),
+    /// A pool transaction, run on the bare EVM: the Zone block executor rejects anything before the
+    /// block's `advanceTempo`, which would end the simulation before any account is read.
+    Pool(Arc<ValidPoolTransaction<TempoPooledTransaction>>),
 }
-
-/// A prewarm simulation's outcome; only its L1 reads matter.
-type SimulationResult = Result<(), Box<dyn Error + Send + Sync>>;
 
 /// Immutable canonical inputs used to construct isolated prewarming workers.
 pub(crate) struct PrewarmingExecutionContext<Provider> {
@@ -99,28 +85,28 @@ where
         task_executor: &TaskExecutor,
         prepared: &PreparedL1Block,
     ) -> Prewarming {
+        let handle = Prewarming::default();
         let mut decryptions = prepared.decryptions.iter();
-        let partials = prepared.queued_deposits.iter().map(|deposit| {
+        for deposit in &prepared.queued_deposits {
             let decryptions = (deposit.depositType == DepositType::Deposit)
                 .then(|| decryptions.next().cloned())
                 .flatten()
                 .into_iter()
                 .collect();
-            PreparedL1Block {
+            // Queue-hash validation may fail, but earlier reads have already warmed the cache.
+            let partial = PreparedL1Block {
                 header: prepared.header.clone(),
                 enabled_tokens: prepared.enabled_tokens.clone(),
                 queued_deposits: vec![deposit.clone()],
                 decryptions,
                 recipients: Vec::new(),
                 follows_checkpoint_blocks: false,
-            }
-        });
-        // Queue-hash validation may fail, but earlier reads have already warmed the cache.
-        let handle = Prewarming::default();
-        for partial in partials {
-            self.spawn(task_executor, &handle, partial, |partial, context| {
-                context.execute_opening(build_advance_tempo_tx_owned(partial, context.chain_id))
-            });
+            };
+            self.spawn(
+                task_executor,
+                &handle.cancel,
+                Simulation::Deposit(Box::new(partial)),
+            );
         }
         handle
     }
@@ -139,38 +125,35 @@ where
         + Unpin
         + 'static,
     ) -> Prewarming {
-        let mut handle = Prewarming::default();
+        let cancel = ManualCancel::default();
         for transaction in transactions {
-            self.spawn(task_executor, &handle, transaction, Self::execute_pool);
+            self.spawn(task_executor, &cancel, Simulation::Pool(transaction));
         }
-        let (stop, mut stopped) = oneshot::channel::<()>();
-        handle.stop = Some(stop);
-        let (context, executor, follower) = (self.clone(), task_executor.clone(), handle.child());
-        task_executor.spawn_task(async move {
-            while let Either::Left((Some(transaction), pending)) =
-                select(arrivals.next(), stopped).await
-            {
-                stopped = pending;
-                context.spawn(&executor, &follower, transaction, Self::execute_pool);
+        let (context, executor, follower_cancel) =
+            (self.clone(), task_executor.clone(), cancel.clone());
+        let (follow, abort) = abortable(async move {
+            while let Some(transaction) = arrivals.next().await {
+                context.spawn(&executor, &follower_cancel, Simulation::Pool(transaction));
             }
         });
-        handle
+        task_executor.spawn_task(follow.map(drop));
+        Prewarming {
+            cancel,
+            follow: Some(abort),
+        }
     }
 
-    /// Enqueues one simulation of `item` on the prewarming pool, skipped once `handle` is
-    /// cancelled.
-    fn spawn<T: Send + 'static>(
+    /// Enqueues `simulation` on the prewarming pool, skipped once `cancel` is cancelled.
+    fn spawn(
         self: &Arc<Self>,
         task_executor: &TaskExecutor,
-        handle: &Prewarming,
-        item: T,
-        simulate: fn(T, &Self) -> SimulationResult,
+        cancel: &ManualCancel,
+        simulation: Simulation,
     ) {
-        let context = self.clone();
-        let cancel = handle.cancel.clone();
+        let (context, cancel) = (self.clone(), cancel.clone());
         task_executor.prewarming_pool().spawn(move || {
             if !cancel.is_cancelled()
-                && let Err(error) = simulate(item, &context)
+                && let Err(error) = context.simulate(simulation)
             {
                 // Failures are expected (queue-hash checks, parent-state nonces); reads before
                 // the failure have already warmed the cache.
@@ -179,34 +162,37 @@ where
         });
     }
 
-    /// Executes the opening `advanceTempo` through the Zone block executor and discards the
-    /// result.
-    fn execute_opening(&self, transaction: Recovered<TempoTxEnvelope>) -> SimulationResult {
-        let mut worker = prewarm_worker!(self);
+    /// Executes `simulation` on a throwaway builder for the next block and discards the result.
+    fn simulate(&self, simulation: Simulation) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut worker = self.evm_config.builder_for_next_block(
+            StateProviderDatabase::new(
+                self.provider
+                    .state_by_block_hash(self.parent_header.hash())?
+                    .into_evm_state_provider(),
+            ),
+            &self.parent_header,
+            self.next_block_env_attributes.clone(),
+        )?;
         worker.apply_pre_execution_changes()?;
-        worker
-            .executor_mut()
-            .execute_transaction_without_commit(transaction)?;
-        Ok(())
-    }
-
-    /// Executes a pool transaction on the bare EVM and discards the result.
-    fn execute_pool(
-        transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-        context: &Self,
-    ) -> SimulationResult {
-        let mut worker = prewarm_worker!(context);
-        worker.apply_pre_execution_changes()?;
-        let transaction = transaction.to_consensus();
-        let signer = transaction.signer();
-        // A reverted transaction still warmed whatever it read.
-        let _ = worker
-            .evm_mut()
-            .transact(&Recovered::new_unchecked(
-                TempoTxEnv::from(transaction),
-                signer,
-            ))?
-            .discard();
+        match simulation {
+            Simulation::Deposit(partial) => {
+                worker.executor_mut().execute_transaction_without_commit(
+                    build_advance_tempo_tx_owned(*partial, self.chain_id),
+                )?;
+            }
+            Simulation::Pool(transaction) => {
+                let transaction = transaction.to_consensus();
+                let signer = transaction.signer();
+                // A reverted transaction still warmed whatever it read.
+                let _ = worker
+                    .evm_mut()
+                    .transact(&Recovered::new_unchecked(
+                        TempoTxEnv::from(transaction),
+                        signer,
+                    ))?
+                    .discard();
+            }
+        }
         Ok(())
     }
 }
@@ -215,23 +201,15 @@ where
 #[derive(Debug, Default)]
 pub(crate) struct Prewarming {
     cancel: ManualCancel,
-    /// Dropping it ends the task that follows new pool transactions.
-    stop: Option<oneshot::Sender<()>>,
-}
-
-impl Prewarming {
-    /// A handle sharing this one's cancellation, for work queued after it was created.
-    fn child(&self) -> Self {
-        Self {
-            cancel: self.cancel.clone(),
-            stop: None,
-        }
-    }
+    follow: Option<AbortHandle>,
 }
 
 impl Drop for Prewarming {
     fn drop(&mut self) {
         self.cancel.clone().cancel();
+        if let Some(follow) = &self.follow {
+            follow.abort();
+        }
     }
 }
 
