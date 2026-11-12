@@ -1,6 +1,8 @@
 name: Prover E2E
 
-"on":
+# workflow_run runs trusted default-branch code only, for scheduled upstream runs of
+# this repository; the publisher never checks out or executes candidate code.
+"on": # zizmor: ignore[dangerous-triggers]
   workflow_dispatch:
     inputs:
       sha:
