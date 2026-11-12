@@ -498,6 +498,9 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        // Execution time of a transaction discarded for exhausting the build budget.
+        // Validators never replay it, so it is excluded from replayable work.
+        let mut discarded_transaction_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window. A transaction, other than the first, whose
@@ -650,6 +653,7 @@ where
                 best_txs.on_new_result(result);
             };
 
+            let transaction_execution_start = Instant::now();
             let executed = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions_without_commit(
@@ -756,6 +760,7 @@ where
             }
 
             if exceeded_build_budget {
+                discarded_transaction_elapsed = transaction_execution_start.elapsed();
                 debug!(
                     target: "payload_builder",
                     tx_hash = ?tx.hash(),
@@ -782,8 +787,8 @@ where
         drop(best_txs);
 
         let elapsed_at_tx_cutoff = start.elapsed();
-        let validation_work_at_tx_cutoff =
-            elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_at_tx_cutoff = elapsed_at_tx_cutoff
+            .saturating_sub(normal_transaction_fill_idle_elapsed + discarded_transaction_elapsed);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
@@ -1013,7 +1018,8 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
-        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_duration = elapsed
+            .saturating_sub(normal_transaction_fill_idle_elapsed + discarded_transaction_elapsed);
         if payload_build_budget.is_some() {
             let finished_at = Instant::now();
             self.estimator.on_build_finished(
