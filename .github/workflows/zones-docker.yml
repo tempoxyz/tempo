@@ -1179,7 +1179,7 @@ jobs:
       - name: Move held tags to the attested digests
         env:
           DEFERRED_TAGS: ${{ needs.publish-companion-images.outputs.deferred_tags }}
-        run: .github/scripts/move-image-tags.sh
+        run: bash .github/scripts/move-image-tags.sh
 
   production-reproducible-clean-rebuild:
     name: Rebuild production tempo-zone image without cache
@@ -1646,7 +1646,7 @@ jobs:
         if: steps.promote.outputs.deferred_tags != '' && steps.promote.outputs.deferred_tags != '[]'
         env:
           DEFERRED_TAGS: ${{ steps.promote.outputs.deferred_tags }}
-        run: .github/scripts/move-image-tags.sh
+        run: bash .github/scripts/move-image-tags.sh
 
       - name: Publish Zones CI event
         if: github.ref == 'refs/heads/main'

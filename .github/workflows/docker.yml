@@ -610,7 +610,7 @@ jobs:
       - name: Move held tags to the attested digests
         env:
           DEFERRED_TAGS: ${{ needs.build-and-push.outputs.deferred_tags }}
-        run: .github/scripts/move-image-tags.sh
+        run: bash .github/scripts/move-image-tags.sh
 
   # Events start deployments, so they wait for the attestations Kyverno admits
   # images by and for the tags that follow them; skipped attestations (merge-group
