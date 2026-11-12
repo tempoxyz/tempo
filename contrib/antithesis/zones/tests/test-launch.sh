@@ -13,9 +13,9 @@ image="example.invalid/config@sha256:$(printf '%064d' 0)"
 bash "$root/launch.sh" "$image" 24 > "$tmp/printed"
 [[ ! -e "$ARGS_FILE" ]]
 for network in false true; do
-    options=()
-    if [[ "$network" == true ]]; then options+=(--network-faults); fi
-    bash "$root/launch.sh" "$image" 24 "${options[@]}" --launch
+    set -- "$image" 24
+    if [[ "$network" == true ]]; then set -- "$@" --network-faults; fi
+    bash "$root/launch.sh" "$@" --launch
     grep -qx 'custom_faults' "$ARGS_FILE"
     grep -Fqx 'custom.include_for_node_termination=^zone-[0-2]$' "$ARGS_FILE"
     grep -qx -- '--max-compute-hours' "$ARGS_FILE"

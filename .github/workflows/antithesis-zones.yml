@@ -138,10 +138,17 @@ jobs:
             echo "ZONE_HANDOFF_DIRECT_ONLY=$DIRECT_HANDOFFS"
           } > "$dir/.env"
           printf 'FROM scratch\nCOPY docker-compose.yaml .env /\n' > "$dir/Dockerfile"
+          suffix=
+          if [[ "$DIRECT_HANDOFFS" == true ]]; then suffix=-direct; fi
+          image="$REGISTRY/tempo-zones-antithesis-config"
           docker build --platform linux/amd64 \
-            -t "$REGISTRY/tempo-zones-antithesis-config:$TAG" \
-            -t "$REGISTRY/tempo-zones-antithesis-config:$BRANCH" "$dir"
-          docker push --all-tags "$REGISTRY/tempo-zones-antithesis-config"
+            -t "$image:$TAG$suffix" -t "$image:$BRANCH$suffix" "$dir"
+          docker push "$image:$TAG$suffix"
+          docker push "$image:$BRANCH$suffix"
+          ref=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$TAG$suffix")
+          config_digest="${ref##*@}"
+          [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "Config image: $image@$config_digest"
           {
             echo "### Antithesis zones images"
             echo ""
@@ -149,7 +156,8 @@ jobs:
             echo "|---|---|"
             echo "| Node image | \`$REGISTRY/tempo-zones-antithesis@$DIGEST\` |"
             echo "| Workload image | \`$REGISTRY/tempo-zones-antithesis-workload@$WORKLOAD_DIGEST\` |"
-            echo "| Config image | \`$REGISTRY/tempo-zones-antithesis-config:$TAG\` |"
+            echo "| Config image | \`$image@$config_digest\` |"
+            echo "| Direct handoffs | \`$DIRECT_HANDOFFS\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   validate-config:

@@ -301,7 +301,7 @@ impl Context {
     /// follower and requires its fresh attestation before restoring the final follower.
     pub(super) async fn quorum_loss_recovery(&self, dir: &Path) -> eyre::Result<()> {
         let mut executed = false;
-        // Component bounds total at most 1055 seconds, including lock acquisition and cleanup.
+        // Component bounds total 1235 seconds; the 1200-second aggregate cap still takes precedence.
         let result = timeout(EPISODE_TIMEOUT, async {
         let _lock = self.ledger.episode_lock(true).await?;
         self.release_outages(dir).await?;
@@ -314,8 +314,7 @@ impl Context {
             .collect::<eyre::Result<Vec<_>>>()?;
         // Unknown prior handoffs are inconclusive, not passing observations. Conflicting
         // canonical evidence remains an error even before any process is killed.
-        let ready_deadline = Instant::now() + PHASE_TIMEOUT;
-        let drained = recover_until(ready_deadline, async || {
+        let drained = recover_until(Instant::now() + PHASE_TIMEOUT, async || {
             if !self.handoffs_drained().await? {
                 self.reconcile_intents().await?;
                 return Ok(None);
@@ -329,7 +328,7 @@ impl Context {
         drained?;
         let (baseline, expected) = phase!(
             "Quorum loss: Fixed membership and activated leader establish a canonical baseline",
-            ready_deadline.saturating_duration_since(Instant::now()),
+            PHASE_TIMEOUT,
             self.outage_preconditions(&members)
         )?;
         let active = members
@@ -2159,6 +2158,9 @@ mod tests {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum QuorumFixture {
         Success,
+        LateDrain,
+        LateDrainStartupDeadline,
+        AggregateDeadline,
         OneSignerSettlement,
         EarlyWatchdog,
         MissingReceipt,
@@ -2200,6 +2202,26 @@ mod tests {
         let members: Vec<_> = SEQUENCER_INDICES
             .map(|index| Account::at(index).unwrap().address())
             .collect();
+        let late_drain = matches!(
+            case,
+            QuorumFixture::LateDrain
+                | QuorumFixture::LateDrainStartupDeadline
+                | QuorumFixture::AggregateDeadline
+        );
+        let prior_tx = B256::repeat_byte(42);
+        if late_drain {
+            ctx.ledger
+                .append(&Record::HandoffRequest(handoff::Request {
+                    id: 100,
+                    previous_leader: members[1],
+                    expected_epoch: 0,
+                    target: members[0],
+                    relayed: true,
+                    from_l1_block: 8,
+                    l1_tx: Some(prior_tx),
+                }))
+                .unwrap();
+        }
         let mut l1_block = Block::<B256>::default();
         l1_block.header.number = 10;
         l1_block.header.hash = B256::repeat_byte(1);
@@ -2214,6 +2236,7 @@ mod tests {
         let mut fresh = prefix.clone();
         fresh.header.number = 102;
         fresh.header.hash = B256::repeat_byte(4);
+        let started = Instant::now();
         let supervisor = async {
             let mut replied = [0; 3];
             let mut killed = [false; 3];
@@ -2247,7 +2270,11 @@ mod tests {
                     if !down
                         && killed[node]
                         && node == 1
-                        && case == QuorumFixture::StartupDeadline
+                        && matches!(
+                            case,
+                            QuorumFixture::StartupDeadline
+                                | QuorumFixture::LateDrainStartupDeadline
+                        )
                         && !deadline_injected
                     {
                         deadline_injected = true;
@@ -2275,6 +2302,8 @@ mod tests {
         let mut recovered_receipts = 0;
         let mut returned_receipts = 0;
         let mut startup_delay_injected = false;
+        let mut drain_finished = None;
+        let mut baseline_delay_injected = false;
         let rpc = async {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -2310,11 +2339,25 @@ mod tests {
                     });
                 let restored = read_status(dir.path(), 1)
                     .is_ok_and(|status| status.generation == 4 && status.state == State::Running);
-                if restored && case == QuorumFixture::StartupDeadline && !startup_delay_injected {
+                if restored
+                    && matches!(
+                        case,
+                        QuorumFixture::StartupDeadline | QuorumFixture::LateDrainStartupDeadline
+                    )
+                    && !startup_delay_injected
+                {
                     startup_delay_injected = true;
                     tokio::time::pause();
                     tokio::time::advance(QUORUM_RECOVERY - Duration::from_secs(19)).await;
                     tokio::time::resume();
+                }
+                if restored && case == QuorumFixture::AggregateDeadline {
+                    tokio::time::pause();
+                    tokio::time::advance(
+                        (started + EPISODE_TIMEOUT + Duration::from_secs(1)) - Instant::now(),
+                    )
+                    .await;
+                    std::future::pending::<()>().await;
                 }
                 if intent.is_some() && !restored {
                     assert_eq!(
@@ -2377,6 +2420,24 @@ mod tests {
                             .unwrap();
                         let call = &data[..10];
                         if call == selector("zoneHeight()") {
+                            if late_drain && !baseline_delay_injected {
+                                baseline_delay_injected = true;
+                                assert!(
+                                    drain_finished.is_some(),
+                                    "baseline preceded handoff drain"
+                                );
+                                for node in 0..3 {
+                                    assert_eq!(
+                                        read_status(dir.path(), node).unwrap().generation,
+                                        3
+                                    );
+                                }
+                                // A valid baseline may take longer than the old shared budget's
+                                // remaining two seconds, without consuming the recovery budget.
+                                tokio::time::pause();
+                                tokio::time::advance(PHASE_TIMEOUT / 2).await;
+                                tokio::time::resume();
+                            }
                             if intent.is_some() && !restored {
                                 negative_reads += 1;
                             }
@@ -2434,6 +2495,19 @@ mod tests {
                             panic!("unexpected quorum eth_call {data}");
                         }
                     }
+                    "eth_getTransactionReceipt" if request["params"][0] == json!(prior_tx) => {
+                        assert!(late_drain);
+                        assert!(drain_finished.is_none());
+                        tokio::time::pause();
+                        tokio::time::advance(PHASE_TIMEOUT - Duration::from_secs(2)).await;
+                        tokio::time::resume();
+                        drain_finished = Some(Instant::now());
+                        json!({"type":"0x0", "status":"0x1", "cumulativeGasUsed":"0x1",
+                            "logs":[], "logsBloom":Bloom::ZERO, "transactionHash":prior_tx,
+                            "transactionIndex":"0x0", "blockHash":l1_block.header.hash,
+                            "blockNumber":"0xa", "gasUsed":"0x1", "effectiveGasPrice":"0x1",
+                            "from":members[1], "to":ctx.portal, "contractAddress":null})
+                    }
                     "eth_getTransactionReceipt" => {
                         returned_receipts += 1;
                         let intent = intent
@@ -2485,7 +2559,7 @@ mod tests {
                 stream.write_all(response.as_bytes()).await.unwrap();
             }
         };
-        let result = timeout(Duration::from_secs(400), async {
+        let result = timeout(EPISODE_TIMEOUT + Duration::from_secs(400), async {
             tokio::select! {
                 result = ctx.quorum_loss_recovery(dir.path()) => result,
                 () = supervisor => panic!("supervisor stopped"),
@@ -2494,6 +2568,40 @@ mod tests {
         })
         .await
         .unwrap();
+        if late_drain {
+            assert!(
+                baseline_delay_injected,
+                "late drain never reached the baseline"
+            );
+            assert!(Instant::now() - drain_finished.unwrap() >= PHASE_TIMEOUT / 2);
+        }
+        if case == QuorumFixture::AggregateDeadline {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "quorum episode exceeded its aggregate deadline"
+            );
+            assert_eq!(
+                Instant::now() - started,
+                EPISODE_TIMEOUT + Duration::from_secs(1)
+            );
+            for node in 1..3 {
+                let request: serde_json::Value = serde_json::from_slice(
+                    &fs::read(dir.path().join(format!("zone-{node}.request"))).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    request["action"], "start",
+                    "aggregate cancellation stranded a hold"
+                );
+            }
+            return;
+        }
+        if case == QuorumFixture::LateDrain {
+            assert!(
+                result.is_ok(),
+                "late successful drain shortened baseline budget: {result:?}"
+            );
+        }
         if matches!(
             case,
             QuorumFixture::MissingMembership
@@ -2535,7 +2643,7 @@ mod tests {
             assert_eq!(status.id, request["id"].as_u64().unwrap());
         }
         let expected = match case {
-            QuorumFixture::Success => {
+            QuorumFixture::Success | QuorumFixture::LateDrain => {
                 result.unwrap();
                 assert!(
                     negative_reads > 2,
@@ -2553,7 +2661,7 @@ mod tests {
             }
             QuorumFixture::MissingReceipt => "quorum canary receipt is missing",
             QuorumFixture::Reverted => "outage canary reverted",
-            QuorumFixture::StartupDeadline => {
+            QuorumFixture::StartupDeadline | QuorumFixture::LateDrainStartupDeadline => {
                 "Restored follower freshly attests before the recovery deadline:"
             }
             QuorumFixture::WrongRecoveredReceipt => "canary receipt changed",
@@ -2563,7 +2671,8 @@ mod tests {
             }
             QuorumFixture::MissingMembership
             | QuorumFixture::BadThreshold
-            | QuorumFixture::BadBaseline => unreachable!(),
+            | QuorumFixture::BadBaseline
+            | QuorumFixture::AggregateDeadline => unreachable!(),
         };
         let error = format!("{:#}", result.unwrap_err());
         assert!(error.contains(expected), "{case:?}: {error}");
@@ -2584,6 +2693,21 @@ mod tests {
         for case in [QuorumFixture::MissingReceipt, QuorumFixture::Reverted] {
             quorum_episode_fixture(case).await;
         }
+    }
+
+    #[tokio::test]
+    async fn quorum_episode_late_drain_leaves_a_fresh_baseline_budget() {
+        quorum_episode_fixture(QuorumFixture::LateDrain).await;
+    }
+
+    #[tokio::test]
+    async fn quorum_episode_aggregate_deadline_cancels_and_releases_both_holds() {
+        quorum_episode_fixture(QuorumFixture::AggregateDeadline).await;
+    }
+
+    #[tokio::test]
+    async fn quorum_episode_late_drain_does_not_reset_the_recovery_deadline() {
+        quorum_episode_fixture(QuorumFixture::LateDrainStartupDeadline).await;
     }
 
     #[tokio::test]

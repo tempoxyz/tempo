@@ -33,7 +33,9 @@ docker compose -f contrib/antithesis/zones/docker-compose.yaml up
 that touches the node or this directory, and on a manual dispatch of any branch, and pushes them to
 `us-central1-docker.pkg.dev/molten-verve-216720/tempo-repository` as `<branch>-<sha>` and `<branch>`. The
 config image adds an `.env` that pins `ZONES_IMAGE` and `WORKLOAD_IMAGE` to the digests just built. It needs the registry's JSON
-key in the `ANTITHESIS_REGISTRY_KEY` repository secret.
+key in the `ANTITHESIS_REGISTRY_KEY` repository secret. A `direct_handoffs=true` build appends
+`-direct` to both config tags so it cannot replace the default profile. The workflow logs and
+summary publish the immutable config digest and the selected profile.
 
 To check an already-published config without rebuilding, manually dispatch the same workflow with
 `validate_config_digest` set to its `sha256:...` digest. It pulls the config and its pinned images
@@ -195,6 +197,7 @@ Run the local harness fixtures without contacting Antithesis:
 ```bash
 bash contrib/antithesis/zones/tests/test-launch.sh
 bash contrib/antithesis/zones/tests/test-compose.sh
+bash contrib/antithesis/zones/tests/test-config-profile.sh
 bash contrib/antithesis/zones/tests/test-zone-supervisor.sh
 cargo test -p tempo-zones-antithesis --locked
 ```
