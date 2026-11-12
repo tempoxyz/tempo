@@ -14,7 +14,10 @@ use std::{
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_sol_types::SolCall;
 use tempo_contracts::{
-    precompiles::IConfigurableAccountShim::onERC721ReceivedCall,
+    precompiles::{
+        IConfigurableAccountShim::onERC721ReceivedCall,
+        ISignatureVerifier::{verifyConfigurableAccountCall, verifyKeychainAdminCall},
+    },
     zones::{
         TEMPO_STATE_ADDRESS,
         TempoState::{tempoBlockHashCall, tempoBlockNumberCall},
@@ -24,8 +27,10 @@ use tempo_contracts::{
 
 use crate::{
     Observe, ObserveError, Step, Tx, Views,
-    configurable_account::{Leaf, read_commitments, spec as account_spec},
-    view,
+    configurable_account::{
+        ConfigurableAccountConfig, Leaf, read_commitments, spec as account_spec,
+    },
+    view, view_many,
 };
 
 mod checks;
@@ -60,6 +65,48 @@ pub struct Zone {
     marked: BTreeMap<Address, bool>,
     /// The observed accounts that hold zone code, so never read Tempo.
     coded: BTreeSet<Address>,
+    /// The signature verifier's answer to each probe it answered.
+    verified: Vec<Verified>,
+}
+
+/// A signature the producer asks the zone's signature verifier about, signed over `hash`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probe {
+    /// The account the signature claims to act for.
+    pub account: Address,
+    pub hash: B256,
+    /// The encoded Tempo signature.
+    pub signature: Bytes,
+    pub kind: ProbeKind,
+}
+
+/// What a probe's signature is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeKind {
+    /// An owner quorum carrying this configuration, asked through `verifyConfigurableAccount`.
+    Quorum(ConfigurableAccountConfig),
+    /// A keychain signature by the account's own root key, asked through `verifyKeychainAdmin`,
+    /// which also guards TIP-20 `permit`'s retirement check.
+    RootKey,
+}
+
+/// The verifier's answer to one probe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verified {
+    pub account: Address,
+    pub kind: ProbeKind,
+    pub accepted: bool,
+}
+
+impl fmt::Display for Verified {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            ProbeKind::Quorum(config) => {
+                write!(f, "version {} quorum of {}", config.version, self.account)
+            }
+            ProbeKind::RootKey => write!(f, "root key of {}", self.account),
+        }
+    }
 }
 
 impl Zone {
@@ -69,14 +116,16 @@ impl Zone {
     }
 }
 
-/// The predeploys and the accounts to read; `coded` are those of `accounts` whose code in zone
-/// state is not empty.
+/// The predeploys, the accounts to read and the signatures to verify; `coded` are those of
+/// `accounts` whose code in zone state is not empty.
 #[derive(Debug, Clone, Copy)]
 pub struct ZoneAt<'a> {
     pub tempo_state: Address,
     pub precompile: Address,
+    pub verifier: Address,
     pub accounts: &'a [Address],
     pub coded: &'a [Address],
+    pub probes: &'a [Probe],
 }
 
 impl Observe for Zone {
@@ -89,8 +138,10 @@ impl Observe for Zone {
         let ZoneAt {
             tempo_state,
             precompile,
+            verifier,
             accounts,
             coded,
+            probes,
         } = at;
         let anchor = Anchor {
             number: view(views, tempo_state, tempoBlockNumberCall {})?,
@@ -145,8 +196,58 @@ impl Observe for Zone {
             of,
             marked,
             coded,
+            verified: verify(views, verifier, probes)?,
         })
     }
+}
+
+/// Asks the verifier about each probe, leaving out unanswered ones (a malformed or invalid
+/// signature reverts).
+fn verify<V: Views>(
+    views: &mut V,
+    verifier: Address,
+    probes: &[Probe],
+) -> Result<Vec<Verified>, ObserveError<V::Error>> {
+    let (quorums, roots): (Vec<_>, Vec<_>) = probes
+        .iter()
+        .partition(|probe| matches!(probe.kind, ProbeKind::Quorum(_)));
+    let quorum_calls: Vec<_> = quorums
+        .iter()
+        .map(|probe| {
+            let call = verifyConfigurableAccountCall {
+                account: probe.account,
+                hash: probe.hash,
+                signature: probe.signature.clone(),
+            };
+            (verifier, call)
+        })
+        .collect();
+    let root_calls: Vec<_> = roots
+        .iter()
+        .map(|probe| {
+            let call = verifyKeychainAdminCall {
+                account: probe.account,
+                hash: probe.hash,
+                signature: probe.signature.clone(),
+            };
+            (verifier, call)
+        })
+        .collect();
+    let answers = view_many(views, &quorum_calls)?
+        .into_iter()
+        .chain(view_many(views, &root_calls)?);
+    Ok(quorums
+        .into_iter()
+        .chain(roots)
+        .zip(answers)
+        .filter_map(|(probe, accepted)| {
+            Some(Verified {
+                account: probe.account,
+                kind: probe.kind.clone(),
+                accepted: accepted?,
+            })
+        })
+        .collect())
 }
 
 /// Tempo's commitments of the observed accounts at one block.

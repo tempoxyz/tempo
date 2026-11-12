@@ -1,14 +1,18 @@
 //! Zone configurable account invariants (TIP-1154).
 
-use alloy_primitives::KECCAK256_EMPTY;
-use invariants_core::{check, ensure};
-use tempo_contracts::zones::TempoState::TempoBlockFinalized;
+use std::fmt;
 
-use super::{Mirror, ZoneLeaves, ZoneStep, reserved};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY};
+use alloy_sol_types::SolEvent;
+use invariants_core::{check, ensure};
+use tempo_contracts::{precompiles::ITIP20::Approval, zones::TempoState::TempoBlockFinalized};
+use tempo_primitives::is_tip20_prefix;
+
+use super::{Mirror, ProbeKind, ZoneLeaves, ZoneStep, reserved};
 use crate::{
     Check, Checked, StepChecked, Tx, Verdict,
     configurable_account::{
-        Quorum,
+        ConfigurableAccountConfig, Quorum,
         spec::{self, MARKER_CODE_HASH},
     },
 };
@@ -77,6 +81,32 @@ pub const CHECKS: &[Check<Mirror>] = &[
             )
         },
     },
+    // The signature verifier accepts exactly the quorums Tempo's commitment at the anchor
+    // authorizes, and an account's root key only while that commitment is zero.
+    // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L60>
+    // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L90>
+    check! {
+        id: "TEMPO-ZONE-ACCOUNT-VERIFIER-MIRROR",
+        over: |m: &Mirror| m.zone.verified.iter(),
+        judge: |m, v| {
+            if m.zone.coded.contains(&v.account) {
+                return None;
+            }
+            let reserved = reserved(v.account);
+            let tempo = if reserved.is_some() { B256::ZERO } else { m.tempo(v.account)? };
+            let expected = reserved.is_none()
+                && match &v.kind {
+                    ProbeKind::Quorum(config) => authorizes(tempo, v.account, config),
+                    ProbeKind::RootKey => tempo.is_zero(),
+                };
+            ensure!(
+                v.accepted == expected,
+                "{} the {v}, Tempo's commitment at {} is {tempo}",
+                if v.accepted { "accepted" } else { "rejected" },
+                m.zone.anchor
+            )
+        },
+    },
 ];
 
 /// A zone transaction or block against its events and signatures.
@@ -139,6 +169,23 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
         judge: |s, precompile| {
             let logs = s.logs_from(*precompile).count();
             ensure!(logs == 0, "emitted {logs} configuration events on a zone")
+        },
+    },
+    // A TIP-20 approval for another account than the sender's is a `permit`, whose owner's root
+    // key Tempo's commitment at the anchor must not have retired.
+    // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L60>
+    check! {
+        id: "TEMPO-ZONE-ACCOUNT-PERMIT-RETIRED",
+        over: |step: &ZoneStep| permits(step),
+        judge: |s, permit| {
+            let Permit { token, owner } = permit;
+            let tempo = at_tx(s)?.tempo(*owner)?;
+            ensure!(
+                tempo.is_zero(),
+                "{token} accepted a permit signed by the root key of {owner}, Tempo's commitment \
+                 at {} is {tempo}",
+                s.pre.zone.anchor
+            )
         },
     },
     // No zone transaction carries an authorization list, so no zone account has a delegation.
@@ -288,6 +335,49 @@ impl Checked for ZoneLeaves {
 }
 
 /// The quorums of the step's transaction.
+/// Whether a quorum carrying `config` authorizes for `account` given Tempo's commitment `tempo`:
+/// it matches the commitment, or derives the unregistered account at version zero without listing
+/// it as an owner.
+fn authorizes(tempo: B256, account: Address, config: &ConfigurableAccountConfig) -> bool {
+    if !tempo.is_zero() {
+        return spec::commitment(config) == Some(tempo);
+    }
+    config.version == 0
+        && spec::derived_address(config) == Some(account)
+        && config.owners.iter().all(|o| o.owner != account)
+}
+
+/// The token and owner of each TIP-20 approval in a user transaction's step whose owner is not the
+/// sender. Zones run no contracts, so only `permit` approves for another account.
+fn permits(step: &ZoneStep) -> impl Iterator<Item = Permit> + '_ {
+    let sender = step.tx.as_ref().filter(|tx| tx.success).map(|tx| tx.sender);
+    step.logs
+        .iter()
+        .filter(move |_| sender.is_some())
+        .filter(|log| is_tip20_prefix(log.address))
+        .filter_map(|log| {
+            Some((
+                log.address,
+                Approval::decode_log_data(&log.data).ok()?.owner,
+            ))
+        })
+        .filter(move |(_, owner)| Some(*owner) != sender)
+        .map(|(token, owner)| Permit { token, owner })
+}
+
+/// A TIP-20 approval `permit` made for `owner`.
+#[derive(Debug, Clone, Copy)]
+struct Permit {
+    token: Address,
+    owner: Address,
+}
+
+impl fmt::Display for Permit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "permit of {} on {}", self.owner, self.token)
+    }
+}
+
 fn quorums(step: &ZoneStep) -> impl Iterator<Item = &Quorum> {
     step.tx.iter().flat_map(|tx| tx.authority.quorums.iter())
 }
