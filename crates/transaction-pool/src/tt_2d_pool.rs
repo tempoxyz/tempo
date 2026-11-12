@@ -285,10 +285,11 @@ impl AA2dPool {
         // At the per-authority limit, the on-chain nonce of a lane whose transactions wait behind
         // a gap is still added, which makes them executable, in place of the lane's highest nonce.
         // That one must free a slot for each authority at the limit, or the transaction is
-        // rejected below.
+        // rejected below. A lane with a nonce at or below the on-chain one still holds
+        // transactions the pool hasn't removed as mined, so it has no gap to fill.
         let evicted = if tx_id.nonce == on_chain_nonce
-            && !self.by_id.contains_key(&tx_id)
-            && let Some((_, lowest)) = self.by_id.range(tx_id.seq_id.range()).next()
+            && let Some((lowest_id, lowest)) = self.by_id.range(tx_id.seq_id.range()).next()
+            && lowest_id.nonce > tx_id.nonce
             && !lowest.is_pending()
         {
             let highest = self.by_id.range(tx_id.seq_id.range()).next_back();
@@ -6160,6 +6161,16 @@ mod tests {
                 err.kind
             );
         }
+        // Nor does a nonce validated past the lane's transactions, which the pool has yet to
+        // remove as mined, evict one of them.
+        let tx = wrap_valid_tx(build(U256::ONE, 4), TransactionOrigin::External);
+        let err = pool
+            .add_transaction(Arc::new(tx), 4, TempoHardfork::T1)
+            .unwrap_err();
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::SpammerExceededCapacity(address) if address == sender
+        ));
         assert_eq!(pool.pending_and_queued_txn_count(), (1, 3));
 
         let added = add_expiring(&mut pool, build(U256::ONE, 0)).unwrap();
@@ -6174,10 +6185,17 @@ mod tests {
             assert_eq!(pool.txs_by_authority.get(&authority), 3);
         }
 
-        // The lane is executable now, so a nonce validated ahead of it fills no gap.
+        // Once nonce 0 is mined the lane is executable from nonce 1, so a replay of nonce 0 that
+        // was validated before that block fills no gap.
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(AASequenceId::new(sender, U256::ONE), 1);
+        pool.on_nonce_changes(on_chain_ids);
         let tx = wrap_valid_tx(build(U256::ONE, 3), TransactionOrigin::External);
+        pool.add_transaction(Arc::new(tx), 1, TempoHardfork::T1)
+            .unwrap();
+        let tx = wrap_valid_tx(build(U256::ONE, 0), TransactionOrigin::External);
         let err = pool
-            .add_transaction(Arc::new(tx), 3, TempoHardfork::T1)
+            .add_transaction(Arc::new(tx), 0, TempoHardfork::T1)
             .unwrap_err();
         assert!(matches!(
             err.kind,
