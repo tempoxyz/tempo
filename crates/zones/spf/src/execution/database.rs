@@ -69,11 +69,7 @@ impl WitnessDatabase {
             node_pool,
             bytecodes,
         } = witness;
-        let state = StatelessSparseTrie::new(
-            state_root,
-            &index_witness_nodes(&node_pool)?,
-            &mut B256Map::default(),
-        )?;
+        let state = StatelessSparseTrie::new(state_root, &index_witness_nodes(&node_pool)?, None)?;
         let mut code_by_hash = B256Map::default();
         for code in bytecodes {
             let bytecode = Bytecode::new_raw(code);
@@ -194,7 +190,7 @@ impl TempoWitnessDatabase {
     /// Construct the reader for the initial Tempo checkpoint.
     ///
     /// `decoded` caches decoded witness nodes by hash; pass the same map to every
-    /// later [`Self::with_imported_checkpoint`] of this witness.
+    /// later checkpoint imported from this witness.
     pub fn from_tempo_state_witness(
         witness: TempoStateWitness,
         decoded: &mut B256Map<TrieNode>,
@@ -284,7 +280,7 @@ fn checkpoint_state(
         .map_err(|_| WitnessDatabaseError::InvalidTempoHeader)?;
 
     let state_root = header.state_root();
-    let state = match StatelessSparseTrie::new(state_root, nodes, decoded) {
+    let state = match StatelessSparseTrie::new(state_root, nodes, Some(decoded)) {
         Ok(state) => Some(Arc::new(state)),
         Err(StatelessSparseTrieError::MissingStateRootNode { .. }) => None,
         Err(error) => return Err(error.into()),

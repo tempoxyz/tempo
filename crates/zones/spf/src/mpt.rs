@@ -23,13 +23,13 @@ impl StatelessSparseTrie {
     /// Construct and validate a sparse trie rooted at `state_root` from witness
     /// nodes indexed by [`index_witness_nodes`].
     ///
-    /// `decoded` caches decoded nodes by hash across calls over the same `nodes`:
-    /// each node is read from it first, and decoded from `nodes` and inserted on
-    /// a miss.
+    /// `Some(decoded)` caches decoded nodes by hash across calls over the same
+    /// `nodes`: each node is read from it first, and decoded from `nodes` and
+    /// inserted on a miss. With `None` every node is decoded and nothing is kept.
     pub(crate) fn new(
         state_root: B256,
         nodes: &B256Map<Bytes>,
-        decoded: &mut B256Map<TrieNode>,
+        mut maybe_decoded: Option<&mut B256Map<TrieNode>>,
     ) -> Result<Self, StatelessSparseTrieError> {
         let mut inner = SparseStateTrie::new();
         if state_root == EMPTY_ROOT_HASH {
@@ -42,14 +42,19 @@ impl StatelessSparseTrie {
 
         guarded(|| {
             let multiproof = DecodedMultiProofV2::from_witness_with(state_root, |hash| {
-                if let Some(node) = decoded.get(hash) {
+                if let Some(node) = maybe_decoded
+                    .as_deref()
+                    .and_then(|decoded| decoded.get(hash))
+                {
                     return Ok(Some(node.clone()));
                 }
                 let Some(bytes) = nodes.get(hash) else {
                     return Ok(None);
                 };
                 let node = TrieNode::decode(&mut bytes.as_ref())?;
-                decoded.insert(*hash, node.clone());
+                if let Some(decoded) = maybe_decoded.as_deref_mut() {
+                    decoded.insert(*hash, node.clone());
+                }
                 Ok(Some(node))
             })
             .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?;
