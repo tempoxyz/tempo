@@ -53,6 +53,9 @@ pub struct TempoPoolUpdates {
     /// Uses `AddressMap` to deduplicate by validator, preventing resource amplification
     /// when a validator emits multiple `ValidatorTokenSet` events in the same block.
     pub validator_token_changes: AddressMap<Address>,
+    /// User fee tokens whose cached FeeAMM liquidity decreased in this block.
+    /// Pooled transactions paying fees in them are rechecked for liquidity.
+    pub liquidity_decreased_tokens: AddressSet,
     /// User token preference changes.
     /// When a user changes their fee token preference via `setUserToken()`, pending
     /// transactions from that user that don't have an explicit fee_token set may now
@@ -106,6 +109,7 @@ impl TempoPoolUpdates {
             && self.key_authorization_target_changes.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
+            && self.liquidity_decreased_tokens.is_empty()
             && self.user_token_changes.is_empty()
             && self.blacklist_additions.is_empty()
             && self.whitelist_removals.is_empty()
@@ -244,6 +248,7 @@ impl TempoPoolUpdates {
         self.has_keychain_subject_updates()
             || !self.key_authorization_target_changes.is_empty()
             || !self.validator_token_changes.is_empty()
+            || !self.liquidity_decreased_tokens.is_empty()
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
@@ -557,7 +562,7 @@ where
 
         // 2. Update AMM liquidity cache before revalidation/invalidation scans.
         let amm_start = Instant::now();
-        amm_cache.on_new_state(tip.execution_outcome());
+        let liquidity_decreased_tokens = amm_cache.on_new_state(tip.execution_outcome());
         if let Err(err) = amm_cache.on_new_blocks(
             tip.blocks_iter().map(|block| block.sealed_header()),
             pool.client(),
@@ -569,7 +574,8 @@ where
             .record(amm_start.elapsed());
 
         // 3. Collect all block-level invalidation events
-        let updates = TempoPoolUpdates::from_chain(tip);
+        let mut updates = TempoPoolUpdates::from_chain(tip);
+        updates.liquidity_decreased_tokens = liquidity_decreased_tokens;
 
         let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
         // Reth's canonical-update handling may not have pruned mined transactions yet.

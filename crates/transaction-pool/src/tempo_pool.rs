@@ -183,12 +183,17 @@ where
             return Vec::new();
         }
 
+        // Sampled before the state provider is pinned, see `AmmLiquidityCache::generation`.
+        let amm_cache = self.amm_liquidity_cache();
+        let amm_generation = amm_cache.generation();
+
         // Fetch state provider if any check needs on-chain reads:
-        // - validator token changes (liquidity check)
+        // - validator token changes or decreased liquidity (liquidity check)
         // - blacklist/whitelist (policy check)
         // - fee payer balance changes (balance check)
         // - spending limit spends (remaining limit check)
         let mut state_provider = if !updates.validator_token_changes.is_empty()
+            || !updates.liquidity_decreased_tokens.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
             || !updates.fee_balance_changes.is_empty()
@@ -241,7 +246,6 @@ where
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
         // enough liquidity, matching admission and preventing mass-eviction of valid txs.
-        let amm_cache = self.amm_liquidity_cache();
         let has_active_validator_token_changes = !updates.validator_token_changes.is_empty() && {
             let active_new_tokens: Vec<_> = updates
                 .validator_token_changes
@@ -377,15 +381,22 @@ where
                 continue;
             }
 
-            // Check 3: Validator token changes (re-check liquidity for all transactions)
+            // Check 3: Liquidity re-check, for all transactions on validator token changes and
+            // for transactions paying in a token whose cached liquidity decreased.
             // Prevents mass eviction because it only:
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
-            if has_active_validator_token_changes && let Some(ref provider) = state_provider {
+            if (has_active_validator_token_changes
+                || (!updates.liquidity_decreased_tokens.is_empty()
+                    && updates
+                        .liquidity_decreased_tokens
+                        .contains(&tx.transaction.effective_fee_token())))
+                && let Some(ref provider) = state_provider
+            {
                 let user_token = tx.transaction.effective_fee_token();
                 let cost = tx.transaction.fee_token_cost();
 
-                match amm_cache.has_enough_liquidity(user_token, cost, provider) {
+                match amm_cache.has_enough_liquidity(user_token, cost, provider, amm_generation) {
                     Ok(true) => {}
                     Ok(false) => {
                         to_remove.push(*tx.hash());
@@ -1579,7 +1590,7 @@ mod tests {
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_evm::{ResolvedFeeToken, TempoEvmConfig};
     use tempo_precompiles::{
-        PATH_USD_ADDRESS,
+        DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS,
         account_keychain::{
             AccountKeychain, AuthorizedKey, SpendingLimitState, StoredSignatureType,
         },
@@ -3539,5 +3550,94 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn evicts_transactions_after_their_fee_pool_is_drained() {
+        let sender = Address::random();
+        let user_token = address!("20C0000000000000000000000000000000000005");
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(user_token));
+
+        let manager = tempo_precompiles::tip_fee_manager::TipFeeManager::new();
+        let slot = manager.pools[manager.pool_id(user_token, DEFAULT_FEE_TOKEN)].base_slot();
+        let pool_word = |reserve_validator_token| {
+            tempo_precompiles::tip_fee_manager::amm::Pool {
+                reserve_user_token: 0,
+                reserve_validator_token,
+            }
+            .encode_to_slot()
+            .unwrap()
+        };
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        provider.add_account(
+            TIP_FEE_MANAGER_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO)
+                .extend_storage([(B256::from(slot), pool_word(u64::MAX.into()))]),
+        );
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let pool = create_test_pool(provider.clone());
+        let amm_cache = pool.amm_liquidity_cache();
+        let cost = pooled.fee_token_cost();
+        let state = provider.latest().unwrap();
+        assert!(
+            amm_cache
+                .has_enough_liquidity(user_token, cost, &state, amm_cache.generation())
+                .unwrap()
+        );
+        add_validated(&pool, pooled.clone());
+
+        // A committed fee swap drains the pool without any FeeManager event.
+        let mut storage = HashMap::default();
+        storage.insert(
+            slot,
+            reth_trie_common::bundle_state::StorageSlot::new_changed(
+                pool_word(u64::MAX.into()),
+                pool_word(0),
+            ),
+        );
+        let mut bundle_state = AddressMap::default();
+        bundle_state.insert(
+            TIP_FEE_MANAGER_ADDRESS,
+            BundleAccount::new(
+                None,
+                None,
+                storage,
+                reth_trie_common::bundle_state::AccountStatus::Changed,
+            ),
+        );
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.liquidity_decreased_tokens =
+            amm_cache.on_new_state(&reth_provider::ExecutionOutcome {
+                bundle: reth_trie_common::bundle_state::BundleState {
+                    state: bundle_state,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        assert_eq!(
+            updates.liquidity_decreased_tokens,
+            AddressSet::from_iter([user_token])
+        );
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
     }
 }

@@ -3,7 +3,7 @@ use std::{collections::VecDeque, sync::Arc};
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{
     Address, U256,
-    map::{AddressMap, HashMap, U256Map},
+    map::{AddressMap, AddressSet, HashMap, U256Map},
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
@@ -52,9 +52,19 @@ impl AmmLiquidityCache {
         Ok(this)
     }
 
+    /// Returns the current cache generation, bumped whenever canonical state is applied.
+    ///
+    /// Sample it before pinning the state passed to [`Self::has_enough_liquidity`].
+    pub fn generation(&self) -> u64 {
+        self.inner.read().generation
+    }
+
     /// Checks whether there's enough liquidity in at least one of the AMM pools used by recent
     /// validators for the given fee token and fee amount. On T5+, as per [TIP-1033], considers
     /// the two-hop fallback through an intermediate `userToken.quoteToken()`.
+    ///
+    /// `generation` is [`Self::generation`] sampled before `state_provider` was pinned. Reserves
+    /// read on a cache miss are only cached if no newer state was applied since.
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
     pub fn has_enough_liquidity<S, M>(
@@ -62,19 +72,18 @@ impl AmmLiquidityCache {
         user_token: Address,
         fee: U256,
         mut state_provider: S,
+        generation: u64,
     ) -> Result<bool, ProviderError>
     where
         S: TempoStateAccess<M>,
     {
         let mut missing_in_cache = Vec::new();
         let hardfork;
-        let generation;
 
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
         {
             let inner = self.inner.read();
             hardfork = inner.hardfork;
-            generation = inner.generation;
 
             // Validators always accept fees in their own token, and this is the common case, so
             // answer it before doing any swap math.
@@ -139,7 +148,7 @@ impl AmmLiquidityCache {
                         if !pools.is_empty() || intermediate.is_some() {
                             let mut inner = self.inner.write();
                             // The state read here can be older than the cache: skip caching if
-                            // newer state was applied since the lookup started, and never
+                            // newer state was applied since the state was pinned, and never
                             // overwrite cached entries, which `on_new_state` keeps current.
                             if inner.generation == generation {
                                 for &(pair, reserve) in &pools {
@@ -151,6 +160,9 @@ impl AmmLiquidityCache {
                                 if let Some(hop) = intermediate {
                                     inner.quote_token_cache.entry(user_token).or_insert(hop);
                                 }
+                            } else {
+                                // Uncached pools miss later reserve writes, so recheck instead.
+                                inner.pending_rechecks.insert(user_token);
                             }
                         }
                         // If there is enough liquidity, short circuit and return `true`
@@ -167,11 +179,18 @@ impl AmmLiquidityCache {
 
     /// Clears all cached state. Used on reorg to invalidate stale entries
     /// from orphaned blocks.
+    ///
+    /// User tokens with cached pools are reported by the next [`Self::on_new_state`], since the
+    /// new chain may have lowered their liquidity.
     pub fn clear(&self) {
         let mut inner = self.inner.write();
         let generation = inner.generation + 1;
+        let mut pending_rechecks = std::mem::take(&mut inner.pending_rechecks);
+        pending_rechecks.extend(inner.pool_cache.keys().map(|(user_token, _)| *user_token));
+        pending_rechecks.extend(inner.quote_token_cache.keys().copied());
         *inner = AmmLiquidityCacheInner {
             generation,
+            pending_rechecks,
             ..Default::default()
         };
     }
@@ -198,9 +217,14 @@ impl AmmLiquidityCache {
     ///
     /// On T5+ also invalidates `AmmLiquidityCacheInner::quote_token_cache` entries for TIP-20
     /// tokens whose `quoteToken` storage slot was written.
-    pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) {
+    ///
+    /// Returns the user tokens whose cached liquidity decreased, directly or through a cached
+    /// two-hop intermediate, plus those whose pools were cleared or left uncached since the last
+    /// call, so pooled transactions paying fees in them can be rechecked.
+    pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) -> AddressSet {
         let mut inner = self.inner.write();
         inner.generation += 1;
+        let mut decreased = std::mem::take(&mut inner.pending_rechecks);
 
         // Process FeeManager slot changes: update pool reserves and validator preferences.
         if let Some(storage) = execution_outcome
@@ -213,7 +237,13 @@ impl AmmLiquidityCache {
                     let validator_reserve = U256::from(
                         Pool::decode_from_slot(value.present_value).reserve_validator_token,
                     );
-                    inner.pool_cache.insert(pool, validator_reserve);
+                    if inner
+                        .pool_cache
+                        .insert(pool, validator_reserve)
+                        .is_some_and(|previous| validator_reserve < previous)
+                    {
+                        decreased.insert(pool.0);
+                    }
                 } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
                     // Update validator fee token preferences
                     inner
@@ -230,6 +260,16 @@ impl AmmLiquidityCache {
                 .and_then(|acc| acc.storage.get(&tip20::slots::QUOTE_TOKEN))
                 .is_none()
         });
+
+        // A pool whose user token is another token's intermediate is that route's second leg.
+        let routed: Vec<Address> = inner
+            .quote_token_cache
+            .iter()
+            .filter(|(_, hop)| decreased.contains(*hop))
+            .map(|(token, _)| *token)
+            .collect();
+        decreased.extend(routed);
+        decreased
     }
 
     /// Processes new blocks and records recent validators and their fee token preferences in the cache.
@@ -360,6 +400,10 @@ struct AmmLiquidityCacheInner {
     /// Bumped whenever canonical state is applied or the cache is cleared, so a slow-path lookup
     /// can tell that the state it read may be older than the cache.
     generation: u64,
+
+    /// User tokens whose pools were cleared or left uncached because their state was outdated.
+    /// Drained by the next `on_new_state`, which reports them for a liquidity recheck.
+    pending_rechecks: AddressSet,
 }
 
 impl AmmLiquidityCache {
@@ -428,7 +472,8 @@ mod tests {
     use super::*;
     use crate::test_utils::create_mock_provider;
     use alloy_consensus::Header;
-    use alloy_primitives::address;
+    use alloy_primitives::{B256, address};
+    use reth_provider::test_utils::ExtendedAccount;
     use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, BundleState, StorageSlot};
 
     // ============================================
@@ -448,7 +493,8 @@ mod tests {
         let state = provider.latest().unwrap();
 
         let user_token = Address::repeat_byte(0x11);
-        let result = cache.has_enough_liquidity(user_token, U256::from(100), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(100), &state, cache.generation());
 
         assert!(result.is_ok());
         assert!(
@@ -474,7 +520,8 @@ mod tests {
                     })),
                 };
 
-                let result = cache.has_enough_liquidity(user_token, U256::MAX, &state);
+                let result =
+                    cache.has_enough_liquidity(user_token, U256::MAX, &state, cache.generation());
                 if validator_token == user_token {
                     assert!(result.unwrap(), "same-token fees need no swap arithmetic");
                 } else {
@@ -507,7 +554,8 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), &state, cache.generation());
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -535,7 +583,8 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), &state, cache.generation());
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -553,7 +602,8 @@ mod tests {
         let state = provider.latest().unwrap();
 
         let user_token = Address::repeat_byte(0x11);
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), &state, cache.generation());
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -592,7 +642,7 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user, U256::from(100), &state);
+        let result = cache.has_enough_liquidity(user, U256::from(100), &state, cache.generation());
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -617,7 +667,8 @@ mod tests {
         let state = provider.latest().unwrap();
 
         // Provider returns default (zero) storage values
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), &state, cache.generation());
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -662,7 +713,8 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), &state, cache.generation());
         assert!(!result.unwrap());
         assert_eq!(
             cache
@@ -673,6 +725,104 @@ mod tests {
             Some(&U256::ONE),
             "slow path must not overwrite a cached reserve",
         );
+    }
+
+    #[test]
+    fn test_has_enough_liquidity_does_not_cache_state_pinned_before_new_state() {
+        let user_token = Address::repeat_byte(0x22);
+        let validator_token = Address::repeat_byte(0x33);
+        let manager = TipFeeManager::new();
+        let slot = manager.pools[manager.pool_id(user_token, validator_token)].base_slot();
+        let pool_word = |reserve_validator_token| {
+            Pool {
+                reserve_user_token: 0,
+                reserve_validator_token,
+            }
+            .encode_to_slot()
+            .unwrap()
+        };
+        let provider_with_reserve = |reserve| {
+            let provider = create_mock_provider();
+            provider.add_account(
+                TIP_FEE_MANAGER_ADDRESS,
+                ExtendedAccount::new(0, U256::ZERO)
+                    .extend_storage([(B256::from(slot), pool_word(reserve))]),
+            );
+            provider
+        };
+        let pinned = provider_with_reserve(10);
+        let canonical = provider_with_reserve(1_000_000);
+        let cache = AmmLiquidityCache::with_unique_tokens(vec![validator_token]);
+        let fee = U256::from(1000);
+
+        // Admission pins its state, then the next block's reserve write is applied for a pair
+        // the cache doesn't track yet, so the write itself is dropped.
+        let pinned_state = pinned.latest().unwrap();
+        let generation = cache.generation();
+        let mut storage = HashMap::default();
+        storage.insert(
+            slot,
+            StorageSlot::new_changed(pool_word(10), pool_word(1_000_000)),
+        );
+        let mut bundle_state = AddressMap::default();
+        bundle_state.insert(
+            TIP_FEE_MANAGER_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+        cache.on_new_state(&ExecutionOutcome {
+            bundle: BundleState {
+                state: bundle_state,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        assert!(
+            !cache
+                .has_enough_liquidity(user_token, fee, &pinned_state, generation)
+                .unwrap()
+        );
+        assert!(
+            cache
+                .has_enough_liquidity(
+                    user_token,
+                    fee,
+                    &canonical.latest().unwrap(),
+                    cache.generation()
+                )
+                .unwrap(),
+            "a reserve read from state pinned before the update must not be cached",
+        );
+        assert_eq!(
+            cache.on_new_state(&ExecutionOutcome::default()),
+            AddressSet::from_iter([user_token]),
+            "a lookup that couldn't cache its pools must queue a recheck",
+        );
+    }
+
+    #[test]
+    fn test_clear_queues_rechecks_for_cached_tokens() {
+        let (direct_user, routed_user, hop, validator_token) = (
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            Address::repeat_byte(0x33),
+            Address::repeat_byte(0x44),
+        );
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                pool_cache: HashMap::from_iter([((direct_user, validator_token), U256::ONE)]),
+                quote_token_cache: AddressMap::from_iter([(routed_user, hop)]),
+                ..Default::default()
+            })),
+        };
+
+        cache.clear();
+
+        assert_eq!(
+            cache.on_new_state(&ExecutionOutcome::default()),
+            AddressSet::from_iter([direct_user, routed_user])
+        );
+        assert!(cache.on_new_state(&ExecutionOutcome::default()).is_empty());
     }
 
     // ============================================
@@ -746,6 +896,57 @@ mod tests {
             Some(&hop_old),
             "untouched user tokens must keep their cached intermediate",
         );
+    }
+
+    #[test]
+    fn test_on_new_state_reports_decreased_liquidity() {
+        let user_token = address!("20c0000000000000000000000000000000000001");
+        let hop = address!("20c0000000000000000000000000000000000002");
+        let validator_token = address!("20c0000000000000000000000000000000000003");
+        let manager = TipFeeManager::new();
+        let slot = manager.pools[manager.pool_id(hop, validator_token)].base_slot();
+        let pool_word = |reserve_validator_token| {
+            Pool {
+                reserve_user_token: 0,
+                reserve_validator_token,
+            }
+            .encode_to_slot()
+            .unwrap()
+        };
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                pool_cache: HashMap::from_iter([((hop, validator_token), U256::from(100))]),
+                slot_to_pool: U256Map::from_iter([(slot, (hop, validator_token))]),
+                quote_token_cache: AddressMap::from_iter([(user_token, hop)]),
+                ..Default::default()
+            })),
+        };
+        let write_reserve = |from, to| {
+            let mut storage = HashMap::default();
+            storage.insert(
+                slot,
+                StorageSlot::new_changed(pool_word(from), pool_word(to)),
+            );
+            let mut bundle_state = AddressMap::default();
+            bundle_state.insert(
+                TIP_FEE_MANAGER_ADDRESS,
+                BundleAccount::new(None, None, storage, AccountStatus::Changed),
+            );
+            cache.on_new_state(&ExecutionOutcome {
+                bundle: BundleState {
+                    state: bundle_state,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        };
+
+        // The drained pool is the direct route for `hop` and the second leg for `user_token`.
+        assert_eq!(
+            write_reserve(100, 50),
+            AddressSet::from_iter([hop, user_token])
+        );
+        assert!(write_reserve(50, 80).is_empty());
     }
 
     // ============================================
