@@ -1421,6 +1421,10 @@ where
         let Ok(tip_state) = self.client().latest() else {
             return;
         };
+        let reloaded: AddressMap<u64> = accounts
+            .iter()
+            .map(|account| (account.address, account.nonce))
+            .collect();
         let state = accounts
             .into_iter()
             .filter_map(|account| {
@@ -1437,8 +1441,14 @@ where
                 Some((account.address, account_state))
             })
             .collect();
-        let removed = self.notify_aa_pool_on_state_updates(&state);
-        // No canonical update reports these as mined.
+        let mut removed = self.notify_aa_pool_on_state_updates(&state);
+        // No canonical update reports a transaction below the reloaded nonce as mined. One at or
+        // above it was included in a block whose canonical update is still to come.
+        removed.retain(|tx| {
+            reloaded
+                .get(tx.sender_ref())
+                .is_some_and(|nonce| tx.nonce() < *nonce)
+        });
         self.notify_discarded(&removed);
     }
 
@@ -2218,11 +2228,15 @@ mod tests {
         );
 
         // A drifted pool reloads the account. The lane moves to the tip's nonce, not to the one
-        // Reth read at an earlier block, and what it leaves behind is discarded.
-        provider.add_account(sender, ExtendedAccount::new(4, U256::ZERO));
+        // Reth read at an earlier block. What was below Reth's nonce is discarded, and the rest is
+        // left to the canonical update of the block that included it.
+        let (unprocessed, result) = add_aa_2d(&pool, TxBuilder::aa(sender).nonce(4).build());
+        assert!(result.is_ok());
+        let mut unprocessed_events = pool.transaction_event_listener(unprocessed).unwrap();
+        provider.add_account(sender, ExtendedAccount::new(5, U256::ZERO));
         pool.update_accounts(vec![ChangedAccount {
             address: sender,
-            nonce: 3,
+            nonce: 4,
             balance: U256::ZERO,
         }]);
         assert_eq!(pool.pool_size().total, 0);
@@ -2230,6 +2244,7 @@ mod tests {
             events.next().now_or_never().flatten(),
             Some(TransactionEvent::Discarded)
         );
+        assert_eq!(unprocessed_events.next().now_or_never(), None);
     }
 
     #[test]
