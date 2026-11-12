@@ -153,6 +153,8 @@ jobs:
 
       - name: Validate Compose setup and test commands
         timeout-minutes: 4
+        env:
+          SNOUTY_CONTAINER_ENGINE: docker
         run: |
           tools="$RUNNER_TEMP/snouty-0.10.0"
           mkdir -p "$tools"
