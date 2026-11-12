@@ -8,12 +8,17 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(unnameable_types)]
 
+mod builder;
 mod database;
 mod executor;
 mod fee_manager;
 pub mod precompiles;
 mod zone_evm;
 
+pub use builder::{
+    BLOCK_SIZE_SAFETY_MARGIN, BlockCandidates, FillOutcome, Skipped,
+    build_advance_tempo_tx_from_parts, fill_block, is_l1_storage_unavailable,
+};
 pub use database::{L1OverlayDB, ZoneDbError};
 pub use executor::{ZoneBlockExecutor, ZoneTxResult};
 pub use zone_evm::validate_transaction;

@@ -6,16 +6,30 @@ use std::{
     rc::Rc,
 };
 
-use alloy_primitives::{Address, B256, Bytes, U256, map::HashMap};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, map::HashMap};
 use evm2::{
+    EvmFeatures,
     bytecode::Bytecode,
     evm::{AccountInfo, SystemTx},
 };
 use invariants_core::Views;
 use reth_evm::{ConfigureEvm as _, Database};
+use reth_primitives_traits::Recovered;
+use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv};
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{TempoSignature, TempoTransaction},
+};
+use zone_evm::ZoneEvmConfig;
 
-use crate::state::{Net, PreStateDb, Reader};
+use crate::{
+    state::{Net, PreStateDb, Reader},
+    zone::AnchorReader,
+};
+
+/// The gas each zone view's simulated transaction may use.
+const ZONE_VIEW_GAS_LIMIT: u64 = 10_000_000;
 
 /// Read-only calls against the state an EVM reads, noting reads the seeded pre-state misses, and
 /// answered from `view_cache` when the same call was made on the same state before.
@@ -108,6 +122,82 @@ impl Views for EvmViews<'_> {
     /// The seeded pre-state may hold only the accounts and slots execution touched.
     fn partial(&self) -> bool {
         true
+    }
+}
+
+/// Read-only calls against zone state, each run as a simulated zone transaction from the zero
+/// address without fees: Tempo's overlay applies only inside a zone transaction. A call that
+/// returns nothing answers empty output, as a call to an account without code does.
+pub(super) struct ZoneViews<'a> {
+    evm: TempoEvm<'a>,
+    chain_id: u64,
+}
+
+impl<'a> ZoneViews<'a> {
+    /// Views of the zone state `db` holds, in the zone block environment `env`.
+    pub(super) fn new(
+        db: impl Database + 'a,
+        config: &ZoneEvmConfig<AnchorReader>,
+        mut env: TempoEvmEnv,
+    ) -> Self {
+        for feature in [
+            EvmFeatures::FEE_CHARGE,
+            EvmFeatures::BALANCE_CHECK,
+            EvmFeatures::BALANCE_TOP_UP,
+            EvmFeatures::NONCE_CHECK,
+            EvmFeatures::BLOCK_GAS_LIMIT_CHECK,
+        ] {
+            env.version.features.remove(feature);
+        }
+        let chain_id = env.version.chain_id;
+        Self {
+            evm: config.evm_with_env(db, env),
+            chain_id,
+        }
+    }
+}
+
+impl Views for ZoneViews<'_> {
+    type Error = ViewFailed;
+
+    fn call(&mut self, calls: &[Call]) -> Result<Vec<Option<Bytes>>, ViewFailed> {
+        calls
+            .iter()
+            .map(|(target, input)| {
+                let tx = TempoTransaction {
+                    chain_id: self.chain_id,
+                    fee_token: Some(PATH_USD_ADDRESS),
+                    gas_limit: ZONE_VIEW_GAS_LIMIT,
+                    calls: vec![tempo_primitives::transaction::Call {
+                        to: TxKind::Call(*target),
+                        value: U256::ZERO,
+                        input: input.clone(),
+                    }],
+                    ..Default::default()
+                };
+                let signature = TempoSignature::from(Signature::test_signature());
+                let envelope = TempoTxEnvelope::AA(tx.into_signed(signature));
+                let tx = Recovered::new_unchecked(envelope, Address::ZERO);
+                let failed = |reason| ViewFailed {
+                    selector: input
+                        .get(..4)
+                        .map(Bytes::copy_from_slice)
+                        .unwrap_or_default(),
+                    target: *target,
+                    reason,
+                };
+                match self
+                    .evm
+                    .call_tx(&Recovered::new_unchecked(tx.into(), Address::ZERO))
+                {
+                    Err(err) => Err(failed(err.to_string())),
+                    Ok(result) if !result.status => {
+                        Err(failed(format!("reverted with {}", result.output)))
+                    }
+                    Ok(result) => Ok(Some(result.output)),
+                }
+            })
+            .collect()
     }
 }
 

@@ -22,7 +22,6 @@ zone-chainspec.workspace = true
 zone-evm.workspace = true
 zone-l1.workspace = true
 zone-primitives.workspace = true
-zone-precompiles = { workspace = true, features = ["std"] }
 
 # reth
 reth-basic-payload-builder.workspace = true

@@ -81,7 +81,7 @@ impl Reader<'_> {
 
 /// `read`'s value, counting it under `view`: a read nothing answered is not armed, one that
 /// failed otherwise breaks `view`.
-fn observed<T>(
+pub(super) fn observed<T>(
     report: &mut Report,
     view: &'static str,
     subject: impl Display,

@@ -17,8 +17,7 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_evm::{
-    BlockExecutionError, BlockExecutor, BlockValidationError, ConfigureEvm,
-    InternalBlockExecutionError, NextBlockEnvAttributes,
+    BlockExecutionError, BlockExecutor, ConfigureEvm, NextBlockEnvAttributes,
     database::StateProviderDatabase,
     execute::{
         BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv, map_handler_error,
@@ -36,7 +35,7 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction as _, TransactionPool,
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
-use std::{error::Error, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tempo_evm::{TempoNextBlockEnvAttributes, TempoTxEnv};
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload};
 use tempo_primitives::{
@@ -48,9 +47,11 @@ use tempo_transaction_pool::{
 };
 use tracing::{error, info, warn};
 use zone_chainspec::ZoneChainSpec;
-use zone_evm::{ZoneEvm, ZoneEvmConfig};
+use zone_evm::{
+    BLOCK_SIZE_SAFETY_MARGIN, BlockCandidates, FillOutcome, Skipped, ZoneEvm, ZoneEvmConfig,
+    build_advance_tempo_tx_from_parts, fill_block,
+};
 use zone_l1::{PreparedL1Block, TempoStateExt};
-use zone_precompiles::L1StateError;
 use zone_primitives::constants::MAX_RLP_BLOCK_SIZE;
 
 use crate::{
@@ -59,20 +60,6 @@ use crate::{
 
 /// Default empty-batch cadence: every 120 zone blocks (~60 sec at Tempo's 500 ms block time).
 pub const DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS: u64 = 120;
-
-/// Safety margin reserved out of [`MAX_RLP_BLOCK_SIZE`] for everything in the block other than
-/// pool transactions: the header, RLP list framing, `advanceTempo`, `finalizeWithdrawalBatch`
-/// and the outer RLP string header.
-///
-/// Note: `finalizeWithdrawalBatch` is not bounded(~200 bytes per withdrawal).
-/// So a large enough backlog can exceed this margin. OK because the cap is a soft target: block
-/// size is not consensus-validated, so an overshoot creates a
-/// warning, not a failed build. The p2p transport message cap `MAX_MESSAGE_SIZE` must stay comfortably above
-/// [`MAX_RLP_BLOCK_SIZE`] so such blocks still replicate.
-const BLOCK_SIZE_SAFETY_MARGIN: usize = 1024 * 1024;
-
-/// Diagnostic retained when upstream Tempo precompile storage stringifies an [`L1StateError`].
-const L1_STORAGE_UNAVAILABLE_ERROR_PREFIX: &str = "Tempo L1 storage unavailable";
 
 /// Factory for constructing the zone payload builder.
 #[derive(Debug, Clone)]
@@ -346,7 +333,7 @@ where
                         pool.remove_transactions(unlisted);
                     });
             }
-            if outcome? == PoolExecutionOutcome::Cancelled {
+            if outcome? == FillOutcome::Cancelled {
                 return Ok(BuildOutcome::Cancelled);
             }
 
@@ -530,13 +517,6 @@ fn validate_l1_continuity(
     Ok(())
 }
 
-/// Execute the best pool transactions until the iterator is exhausted or the build is cancelled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PoolExecutionOutcome {
-    Complete,
-    Cancelled,
-}
-
 /// Execute the best pool transactions, skipping any whose RLP size would push the packed pool
 /// transaction bytes past `pool_tx_size_budget`.
 ///
@@ -544,13 +524,13 @@ enum PoolExecutionOutcome {
 /// executing them, and their hashes are pushed to `unlisted`. This catches list changes after
 /// pool admission.
 fn execute_pool_transactions<T, F>(
-    mut execute_tx: F,
+    execute_tx: F,
     best_txs: &mut T,
     cancel: &CancelOnDrop,
     pool_tx_size_budget: usize,
     transfer_allowlist: Option<&dyn TransferAllowlist>,
     unlisted: &mut Vec<TxHash>,
-) -> Result<PoolExecutionOutcome, PayloadBuilderError>
+) -> Result<FillOutcome, PayloadBuilderError>
 where
     T: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     F: FnMut(
@@ -558,95 +538,96 @@ where
         &mut T,
     ) -> Result<(), BlockExecutionError>,
 {
-    let mut packed_tx_bytes = 0usize;
-    while let Some(pool_tx) = best_txs.next() {
-        if cancel.is_cancelled() {
-            return Ok(PoolExecutionOutcome::Cancelled);
-        }
+    let mut candidates = PoolCandidates {
+        execute_tx,
+        best_txs,
+        cancel,
+        transfer_allowlist,
+        unlisted,
+    };
+    fill_block(&mut candidates, pool_tx_size_budget).map_err(PayloadBuilderError::evm)
+}
 
-        if let Some(allowlist) = transfer_allowlist
-            && let Err(error) = validate_transfer_calls(allowlist, &pool_tx.transaction)
-        {
-            best_txs.mark_invalid(&pool_tx, error);
-            unlisted.push(*pool_tx.hash());
-            continue;
-        }
+/// The best pool transactions, as [`fill_block`] executes them. A skipped transaction is marked
+/// invalid in `best_txs`, except one whose nonce is only too low.
+struct PoolCandidates<'a, T, F> {
+    execute_tx: F,
+    best_txs: &'a mut T,
+    cancel: &'a CancelOnDrop,
+    transfer_allowlist: Option<&'a dyn TransferAllowlist>,
+    unlisted: &'a mut Vec<TxHash>,
+}
 
-        let packed_bytes_with_tx =
-            packed_tx_bytes.saturating_add(pool_tx.transaction.encoded_length());
-        if packed_bytes_with_tx > pool_tx_size_budget {
-            best_txs.mark_invalid(
-                &pool_tx,
-                InvalidPoolTransactionError::OversizedData {
-                    size: packed_bytes_with_tx,
-                    limit: pool_tx_size_budget,
-                },
-            );
-            continue;
-        }
+impl<T, F> BlockCandidates for PoolCandidates<'_, T, F>
+where
+    T: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    F: FnMut(
+        WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>>,
+        &mut T,
+    ) -> Result<(), BlockExecutionError>,
+{
+    type Tx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+    type ScreenError = InvalidPoolTransactionError;
 
-        let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
-        match execute_tx(tx_with_env, best_txs) {
-            Ok(_) => packed_tx_bytes = packed_bytes_with_tx,
-            Err(BlockExecutionError::Validation(
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                    transaction_gas_limit,
-                    block_available_gas,
-                },
-            )) => {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
-                        transaction_gas_limit,
-                        block_available_gas,
-                    ),
-                );
+    fn next(&mut self) -> Option<Self::Tx> {
+        self.best_txs.next()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    fn screen(&self, tx: &Self::Tx) -> Result<(), InvalidPoolTransactionError> {
+        match self.transfer_allowlist {
+            Some(allowlist) => validate_transfer_calls(allowlist, &tx.transaction),
+            None => Ok(()),
+        }
+    }
+
+    fn encoded_length(&self, tx: &Self::Tx) -> usize {
+        tx.transaction.encoded_length()
+    }
+
+    fn execute(&mut self, tx: &Self::Tx) -> Result<(), BlockExecutionError> {
+        (self.execute_tx)(tx.transaction.clone().into_with_tx_env(), self.best_txs)
+    }
+
+    fn skip(&mut self, tx: &Self::Tx, why: Skipped<InvalidPoolTransactionError>) {
+        let error = match why {
+            Skipped::Screened(error) => {
+                self.unlisted.push(*tx.hash());
+                error
             }
-            Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                error, ..
-            })) => {
-                if !error.is_nonce_too_low() {
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        InvalidPoolTransactionError::Consensus(
-                            reth_primitives_traits::transaction::error::InvalidTransactionError::TxTypeNotSupported,
-                        ),
-                    );
-                }
+            Skipped::Oversized { size, limit } => {
+                InvalidPoolTransactionError::OversizedData { size, limit }
             }
-            Err(BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
-                ref error,
-                ..
-            })) if is_l1_storage_unavailable(error) => {
+            Skipped::ExceedsGasLimit {
+                transaction_gas_limit,
+                block_available_gas,
+            } => InvalidPoolTransactionError::ExceedsGasLimit(
+                transaction_gas_limit,
+                block_available_gas,
+            ),
+            Skipped::Invalid {
+                nonce_too_low: false,
+            } => InvalidPoolTransactionError::Consensus(
+                reth_primitives_traits::transaction::error::InvalidTransactionError::TxTypeNotSupported,
+            ),
+            Skipped::Invalid {
+                nonce_too_low: true,
+            } => return,
+            Skipped::L1Unavailable(error) => {
                 warn!(
                     target: "zone::payload",
                     %error,
-                    tx_hash = %pool_tx.hash(),
+                    tx_hash = %tx.hash(),
                     "skipping pool tx due to transient RPC error"
                 );
+                return;
             }
-            Err(err) => return Err(PayloadBuilderError::evm(err)),
-        }
+        };
+        self.best_txs.mark_invalid(tx, error);
     }
-
-    Ok(PoolExecutionOutcome::Complete)
-}
-
-fn is_l1_storage_unavailable(error: &(dyn Error + 'static)) -> bool {
-    let mut current = Some(error);
-    while let Some(error) = current {
-        if error
-            .downcast_ref::<L1StateError>()
-            .is_some_and(L1StateError::is_unavailable)
-            || error
-                .to_string()
-                .contains(L1_STORAGE_UNAVAILABLE_ERROR_PREFIX)
-        {
-            return true;
-        }
-        current = error.source();
-    }
-    false
 }
 
 /// Finalize a batch after processing deposits, with pending withdrawals, or at a batch boundary.
@@ -853,37 +834,6 @@ pub(crate) fn build_advance_tempo_tx_owned(
     )
 }
 
-fn build_advance_tempo_tx_from_parts(
-    header: &TempoHeader,
-    deposits: Vec<abi::QueuedDeposit>,
-    decryptions: Vec<abi::DecryptionData>,
-    enabled_tokens: Vec<abi::EnabledToken>,
-    chain_id: u64,
-) -> Recovered<TempoTxEnvelope> {
-    let calldata = abi::IZoneInbox::advanceTempoCall {
-        header: alloy_rlp::encode(header).into(),
-        deposits,
-        decryptions,
-        enabledTokens: enabled_tokens,
-    }
-    .abi_encode();
-
-    let tx = TxLegacy {
-        chain_id: Some(chain_id),
-        nonce: 0,
-        gas_price: 0,
-        gas_limit: 0,
-        to: ZONE_INBOX_ADDRESS.into(),
-        value: U256::ZERO,
-        input: calldata.into(),
-    };
-
-    Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
-        TEMPO_SYSTEM_TX_SENDER,
-    )
-}
-
 /// Build a checkpoint-only `advanceTempoHeaders(headers)` system transaction.
 ///
 /// The executor requires this transaction to be the complete body of its Zone block. Portal
@@ -944,26 +894,6 @@ mod tests {
         abi::{self, DepositType, IZoneInbox},
     };
     use zone_l1::PreparedL1Block;
-
-    #[test]
-    fn stringified_l1_unavailability_is_recognized() {
-        for error in [
-            zone_precompiles::L1StateError::StorageUnavailable {
-                account: Address::ZERO,
-                slot: B256::ZERO,
-                block_number: 1,
-                reason: "RPC unavailable".into(),
-            },
-            zone_precompiles::L1StateError::AccountUnavailable {
-                account: Address::ZERO,
-                block_number: 1,
-                reason: "RPC unavailable".into(),
-            },
-        ] {
-            let stringified = std::io::Error::other(error.to_string());
-            assert!(super::is_l1_storage_unavailable(&stringified), "{error}");
-        }
-    }
 
     #[test]
     fn withdrawal_batch_boundary_conditions() {
@@ -1121,7 +1051,7 @@ mod tests {
         )
         .expect("pool execution should not error");
 
-        assert_eq!(outcome, super::PoolExecutionOutcome::Complete);
+        assert_eq!(outcome, super::FillOutcome::Complete);
 
         // Only the transactions that fit were executed; the rest were rejected for size.
         assert_eq!(executed, expected_fit);
@@ -1194,7 +1124,7 @@ mod tests {
         )
         .expect("pool execution should not error");
 
-        assert_eq!(outcome, super::PoolExecutionOutcome::Complete);
+        assert_eq!(outcome, super::FillOutcome::Complete);
         assert_eq!(executed, 2);
         assert_eq!(best_txs.oversized_marked, 0);
         assert_eq!(unlisted, vec![left_out]);

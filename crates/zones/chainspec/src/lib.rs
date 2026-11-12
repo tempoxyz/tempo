@@ -23,6 +23,9 @@ use zone_primitives::constants::{ZoneChainIdError, decode_l1_chain_id, decode_zo
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
 
+/// Bundled zone dev genesis artifact.
+pub const GENESIS_TEMPLATE_JSON: &str = include_str!("../assets/zone-dev-genesis.json");
+
 /// Chain specification for a Tempo Zone.
 ///
 /// Zones use the underlying Tempo and Ethereum hardfork schedule, inheriting missing

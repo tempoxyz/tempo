@@ -9,6 +9,7 @@ mod chain;
 mod execute;
 mod invariants;
 mod state;
+mod zone;
 
 use bincode::Options as _;
 use core::ffi::c_int;
@@ -78,6 +79,7 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
             HarnessInputKind::Transaction,
             HarnessInputKind::State,
             HarnessInputKind::Blockchain,
+            HarnessInputKind::Zone,
         ]
         .try_into()
         .expect("the harness supports inputs"),

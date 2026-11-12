@@ -365,7 +365,7 @@ mod tests {
     /// Initialize a fresh Zone in `directory` from its `dump.bin`.
     async fn init(directory: &Path, extra: &[String]) -> eyre::Result<()> {
         let mut genesis: serde_json::Value =
-            serde_json::from_str(include_str!("../assets/zone-dev-genesis.json"))?;
+            serde_json::from_str(crate::genesis::GENESIS_TEMPLATE_JSON)?;
         genesis["config"]["chainId"] = json!(zone_primitives::constants::zone_chain_id(1337, 11)?);
         fs::write(directory.join("genesis.json"), genesis.to_string())?;
         let path = |name: &str| directory.join(name).to_str().unwrap().to_owned();
