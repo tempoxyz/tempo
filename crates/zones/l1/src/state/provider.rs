@@ -43,6 +43,13 @@ const NON_CANONICAL_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// dead connection.
 const MAX_OUTSTANDING_NON_CANONICAL_FETCHES: usize = 256;
 
+/// Longest a fetch counted by [`MAX_OUTSTANDING_NON_CANONICAL_FETCHES`] stays outstanding. The
+/// HTTP transport sets no request timeout, so without it a stalled request would hold its permit
+/// forever. It is longer than the WebSocket keepalive takes to fail a silent connection's requests,
+/// so it only ends WebSocket fetches that keepalive missed. Tests shorten it to keep them fast.
+const NON_CANONICAL_FETCH_HOLD_LIMIT: Duration =
+    Duration::from_secs(if cfg!(test) { 8 } else { 60 });
+
 /// Configuration for the [`L1StateProvider`].
 #[derive(Debug, Clone)]
 pub struct L1StateProviderConfig {
@@ -201,7 +208,7 @@ impl L1StateProvider {
     /// [`ExecutionOrigin::Canonical`]) it makes one attempt limited to 5s and returns an error if
     /// that fails, since retrying would only hold an RPC permit, a prewarming thread or a
     /// submission. It also fails without a request while 256 such fetches, including timed-out
-    /// ones, are still awaiting L1.
+    /// ones for up to 60s, are still awaiting L1.
     ///
     /// # Panics
     ///
@@ -247,7 +254,8 @@ impl L1StateProvider {
         if origin != ExecutionOrigin::Canonical {
             let result = tokio::task::block_in_place(|| {
                 self.runtime_handle.block_on(async {
-                    // The transport keeps the request after a timeout, so the fetch holds the permit.
+                    // The transport keeps the request after a timeout, so the fetch holds the permit
+                    // until L1 answers or the hold limit drops the request.
                     let permit = self
                         .non_canonical_fetches
                         .clone()
@@ -260,10 +268,12 @@ impl L1StateProvider {
                     let fetch = fetch(self.clone());
                     let fetch = tokio::spawn(async move {
                         let _permit = permit;
-                        fetch.await
+                        tokio::time::timeout(NON_CANONICAL_FETCH_HOLD_LIMIT, fetch).await
                     });
                     match tokio::time::timeout(NON_CANONICAL_FETCH_TIMEOUT, fetch).await {
-                        Ok(joined) => joined.wrap_err("L1 fetch task failed")?,
+                        Ok(joined) => joined
+                            .wrap_err("L1 fetch task failed")?
+                            .wrap_err("L1 fetch exceeded its hold limit")?,
                         Err(_) => Err(eyre::eyre!(
                             "L1 fetch timed out after {NON_CANONICAL_FETCH_TIMEOUT:?}"
                         )),
@@ -482,21 +492,37 @@ mod tests {
         assert!(message.contains("block=7"), "{message}");
     }
 
-    /// Reads `slot 0` at block 7 with `origin` from a provider that otherwise retries
-    /// indefinitely.
-    async fn non_canonical_read(l1_rpc_url: &str, origin: ExecutionOrigin) -> Result<B256> {
+    /// Returns the URL of an HTTP endpoint that accepts connections but never responds, and the
+    /// task serving it.
+    async fn silent_http_endpoint() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let accept = tokio::spawn(async move {
+            let mut connections = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                connections.push(stream);
+            }
+        });
+        (url, accept)
+    }
+
+    /// Returns a provider for `l1_rpc_url` that otherwise retries indefinitely.
+    async fn http_reader(l1_rpc_url: &str) -> L1StateProvider {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(l1_rpc_url)
             .await
             .expect("HTTP transport construction is lazy")
             .erased();
-        let reader = L1StateProvider::new_raw(
+        L1StateProvider::new_raw(
             L1StateProviderConfig::default(),
             L1StateCache::default(),
             provider,
             tokio::runtime::Handle::current(),
-        );
+        )
+    }
 
+    /// Reads `slot 0` at block 7 with `origin` from `reader`.
+    async fn read_with_origin(reader: L1StateProvider, origin: ExecutionOrigin) -> Result<B256> {
         tokio::task::spawn_blocking(move || {
             let _guard = tx_context::set_current_transaction(B256::ZERO, Address::ZERO, origin);
             reader.get_storage(Address::ZERO, B256::ZERO, 7)
@@ -511,7 +537,7 @@ mod tests {
             // A canonical read of a dead endpoint would retry past this timeout.
             let message = tokio::time::timeout(
                 NON_CANONICAL_FETCH_TIMEOUT,
-                non_canonical_read("http://127.0.0.1:1", origin),
+                read_with_origin(http_reader("http://127.0.0.1:1").await, origin),
             )
             .await
             .expect("non-canonical read must not retry")
@@ -527,20 +553,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn non_canonical_fetch_times_out_on_silent_endpoint() {
-        // Accepts connections but never responds.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let _accept = tokio::spawn(async move {
-            let mut connections = Vec::new();
-            while let Ok((stream, _)) = listener.accept().await {
-                connections.push(stream);
-            }
-        });
+        let (url, _accept) = silent_http_endpoint().await;
 
         for origin in [ExecutionOrigin::Simulation, ExecutionOrigin::Prewarming] {
             let message = tokio::time::timeout(
                 NON_CANONICAL_FETCH_TIMEOUT * 2,
-                non_canonical_read(&url, origin),
+                read_with_origin(http_reader(&url).await, origin),
             )
             .await
             .expect("non-canonical read must not wait past its fetch timeout")
@@ -548,6 +566,34 @@ mod tests {
             .to_string();
             assert!(message.contains("timed out"), "{origin:?}: {message}");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stalled_http_fetch_releases_its_permit_after_hold_limit() {
+        let (url, _accept) = silent_http_endpoint().await;
+        let reader = http_reader(&url).await;
+
+        let message = read_with_origin(reader.clone(), ExecutionOrigin::Simulation)
+            .await
+            .expect_err("silent endpoint must fail a simulation read")
+            .to_string();
+        assert!(message.contains("timed out"), "{message}");
+        assert_eq!(
+            reader.non_canonical_fetches.available_permits(),
+            MAX_OUTSTANDING_NON_CANONICAL_FETCHES - 1,
+            "the timed-out fetch must keep its permit while its request is outstanding"
+        );
+
+        // The fetch started before the caller's timeout, so its hold limit ends within this wait.
+        let _all = tokio::time::timeout(
+            NON_CANONICAL_FETCH_HOLD_LIMIT,
+            reader
+                .non_canonical_fetches
+                .acquire_many(MAX_OUTSTANDING_NON_CANONICAL_FETCHES as u32),
+        )
+        .await
+        .expect("a stalled HTTP fetch must release its permit after the hold limit")
+        .expect("semaphore is never closed");
     }
 
     #[tokio::test(flavor = "multi_thread")]
