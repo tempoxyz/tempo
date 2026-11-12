@@ -67,7 +67,7 @@ jobs:
         id: source
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          BUILD_TAG: ${{ (github.event_name == 'merge_group' || github.event_name == 'pull_request_target') && format('network-e2e-{0}-{1}', github.run_id, github.run_attempt) || '' }}
+          BUILD_TAG: ${{ (github.event_name == 'merge_group' || github.event_name == 'pull_request_target') && format('ci-{0}-{1}', github.run_id, github.run_attempt) || '' }}
           PR_NUMBER: ${{ inputs.pr_number }}
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
         with:
@@ -298,7 +298,7 @@ jobs:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
           # Network E2E images also carry the corpus commands, for the merge queue's corpus replay.
-          # They push only their network-e2e-<run>-<attempt> tag, so sha-<short> stays a stock build.
+          # They push only their ci-<run>-<attempt> tag, so sha-<short> stays a stock build.
           EXTRA_RUST_FEATURES: ${{ steps.source.outputs.image_tag != '' && ',corpus' || '' }}
 
       - name: Record published PR images

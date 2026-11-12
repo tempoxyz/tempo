@@ -150,7 +150,7 @@ jobs:
         run: |
           set -euo pipefail
           # Never dispatch with an empty, mutable, or independently reconstructed tag.
-          [[ "$IMAGE_TAG" =~ ^network-e2e-[0-9]{1,20}-[0-9]{1,5}$ ]]
+          [[ "$IMAGE_TAG" =~ ^ci-[0-9]{1,20}-[0-9]{1,5}$ ]]
           trap 'rm -f "$RUNNER_TEMP/network-e2e.key" "$RUNNER_TEMP/network-e2e.crt"' EXIT
           umask 077
           printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/network-e2e.key"
@@ -175,7 +175,7 @@ jobs:
           IMAGE_TAG: ${{ needs.build.outputs.tempo_image_tag }}
         run: |
           set -euo pipefail
-          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_TAG" =~ ^network-e2e-[0-9]{1,20}-[0-9]{1,5}$ ]]
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_TAG" =~ ^ci-[0-9]{1,20}-[0-9]{1,5}$ ]]
           trap 'rm -f "$RUNNER_TEMP/corpus-replay.key" "$RUNNER_TEMP/corpus-replay.crt"' EXIT
           umask 077
           printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/corpus-replay.key"
