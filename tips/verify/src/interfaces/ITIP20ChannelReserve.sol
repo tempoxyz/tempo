@@ -96,6 +96,8 @@ interface ITIP20ChannelReserve {
 
     function domainSeparator() external view returns (bytes32);
 
+    function getSignerSnapshot(bytes32 channelId) external view returns (bytes32 commitment);
+
     event ChannelOpened(
         bytes32 indexed channelId,
         address indexed payer,

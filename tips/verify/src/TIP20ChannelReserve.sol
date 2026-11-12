@@ -12,6 +12,9 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// TIP-403 to the logical payer-payee path, bypasses TIP-403 only for descriptor-bound refunds,
 /// and reverts TIP-1028-rejected channel movements instead of creating guarded receipts.
 /// Funding checks the payee's current TIP-1028 policy, but does not lock it against later changes.
+/// TIP-1166's signer snapshots are native-only too: account configuration commitments are not
+/// readable from Solidity, so this reference never saves one, `getSignerSnapshot` always returns
+/// zero, and vouchers and top-ups follow the rules for a channel without a snapshot.
 contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
     error TransferFailed();
@@ -36,6 +39,8 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
     bytes32 internal constant _VERSION_HASH = keccak256("1");
 
     mapping(bytes32 => uint256) internal channelStates;
+    // TIP-1166 signer snapshots. Never written: see the contract's notes.
+    mapping(bytes32 => bytes32) internal signerSnapshots;
     bytes32 internal _expiringNonceHashContext;
 
     // Reference-contract-only approximation of the precompile's transient per-transaction guard.
@@ -288,6 +293,10 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             expiringNonceHash: descriptor.expiringNonceHash
         });
         channel.state = _decodeChannelState(channelStates[_channelId(descriptor)]);
+    }
+
+    function getSignerSnapshot(bytes32 channelId) external view returns (bytes32) {
+        return signerSnapshots[channelId];
     }
 
     function getChannelState(bytes32 channelId) external view returns (ChannelState memory) {
