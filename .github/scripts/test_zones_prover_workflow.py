@@ -163,6 +163,15 @@ class MembershipTests(unittest.TestCase):
                                     context={"actor": actor}, members=["member"], env={"TRIGGERING_ACTOR": trigger})
                 self.assertEqual(result["failures"], failures)
 
+    def test_cold_accounts_defaults_to_t14_from_both_entrypoints(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/zones-prover-benchmark.yml").read_text())
+        # PyYAML reads the bare `on` key as True.
+        for trigger in ("workflow_dispatch", "workflow_call"):
+            with self.subTest(trigger=trigger):
+                self.assertNotIn("default", workflow[True][trigger]["inputs"]["tempo-hardfork"])
+        self.assertEqual(workflow["jobs"]["bench-zones"]["env"]["BENCH_TEMPO_HARDFORK"],
+                         "${{ inputs['tempo-hardfork'] || (inputs.preset == 'cold-accounts' && 't14') || 't13' }}")
+
     def test_membership_is_checked_before_feature_code_or_aws(self):
         steps = yaml.safe_load((ROOT / ".github/workflows/zones-prover-benchmark.yml").read_text())["jobs"]["bench-zones"]["steps"]
         names = [step.get("name") for step in steps]

@@ -22,9 +22,9 @@ on:
         type: boolean
         default: true
       tempo-hardfork:
-        description: Tempo L1 hardfork for both phases (for example, t14).
+        description: Tempo L1 hardfork for both phases; empty uses t14 for cold-accounts, else t13.
         type: string
-        default: t13
+        required: false
       region:
         description: Existing AWS benchmark region.
         type: choice
