@@ -5,3 +5,8 @@ zone-xtask = "run --package tempo-xtask --bin tempo-zone-xtask --"
 x = "run --package tempo-xtask --bin tempo-xtask --"
 xtask = "run --package tempo-xtask --bin tempo-xtask --"
 docs = "doc --workspace --all-features --no-deps"
+
+# Bench-only: align every function to 64 bytes. The bench harness passes its
+# flags through `CARGO_BUILD_RUSTFLAGS`, which these replace.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native", "-C", "force-frame-pointers=yes", "-C", "llvm-args=-align-all-functions=6"]
