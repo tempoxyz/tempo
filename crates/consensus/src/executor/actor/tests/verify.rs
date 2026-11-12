@@ -4,9 +4,12 @@
 use std::time::Duration;
 
 use alloy_rpc_types_engine::PayloadStatusEnum;
+use commonware_consensus::types::Round;
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use futures::future::Either;
+
+use crate::consensus::Digest;
 
 use super::harness::{
     FakeExecution, GENESIS, Harness, HarnessOptions, built_payload, make_block, round,
@@ -454,88 +457,75 @@ fn new_payload_engine_error_is_fatal() {
     });
 }
 
+/// Holds the engine slot on block 1 until verifications of two height-2
+/// candidates, at `first` and `second`, are both queued, then releases it.
+/// Asserts both get a verdict and returns the two candidates' digests and the
+/// payloads in the order they were probed.
+async fn verify_two_queued(
+    context: &deterministic::Context,
+    first: Round,
+    second: Round,
+) -> (Digest, Digest, Vec<Digest>) {
+    let mut h = Harness::start_at_genesis(context);
+
+    let b1 = make_block(1, 1, GENESIS);
+    let b2a = make_block(2, 2, b1.digest());
+    let b2b = make_block(3, 2, b1.digest());
+    let (d1, d2a, d2b) = (b1.digest(), b2a.digest(), b2b.digest());
+
+    // Keep the engine slot occupied so both requests queue before
+    // either verification starts.
+    let release = h
+        .execution
+        .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+    h.deliver_tip(round(1), 1, d1);
+    let finalized = h.deliver_finalized(b1);
+    h.wait_until(|| h.execution.new_payloads() == vec![d1])
+        .await;
+
+    let mut a = Box::pin(h.verify(first, b2a));
+    let mut b = Box::pin(h.verify(second, b2b));
+    assert!(futures::poll!(&mut a).is_pending());
+    assert!(futures::poll!(&mut b).is_pending());
+    h.run_for(Duration::from_millis(50)).await;
+    assert!(futures::poll!(&mut a).is_pending());
+    assert!(futures::poll!(&mut b).is_pending());
+    assert_eq!(h.execution.new_payloads(), vec![d1]);
+
+    release.send(()).unwrap();
+    finalized
+        .await
+        .expect("finalized block should be acknowledged");
+    assert!(a.await.unwrap().is_some());
+    assert!(b.await.unwrap().is_some());
+    (d2a, d2b, h.execution.new_payloads())
+}
+
 #[test_traced]
 fn queued_verifications_from_different_rounds_both_complete() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
-
-        let b1 = make_block(1, 1, GENESIS);
-        let b2a = make_block(2, 2, b1.digest());
-        let b2b = make_block(3, 2, b1.digest());
-        let (d1, d2a, d2b) = (b1.digest(), b2a.digest(), b2b.digest());
-
-        // Keep the engine slot occupied so both requests queue before
-        // either verification starts.
-        let release = h
-            .execution
-            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
-        h.deliver_tip(round(1), 1, d1);
-        let finalized = h.deliver_finalized(b1);
-        h.wait_until(|| h.execution.new_payloads() == vec![d1])
-            .await;
-
-        let mut older = Box::pin(h.verify(round(2), b2a));
-        let mut newer = Box::pin(h.verify(round(3), b2b));
-        assert!(futures::poll!(&mut older).is_pending());
-        assert!(futures::poll!(&mut newer).is_pending());
-        h.run_for(Duration::from_millis(50)).await;
-        assert!(futures::poll!(&mut older).is_pending());
-        assert!(futures::poll!(&mut newer).is_pending());
-        assert_eq!(h.execution.new_payloads(), vec![d1]);
-
-        release.send(()).unwrap();
-        finalized
-            .await
-            .expect("finalized block should be acknowledged");
-        assert!(newer.await.unwrap().is_some());
-        assert!(older.await.unwrap().is_some());
+        let (older, newer, probed) = verify_two_queued(&context, round(2), round(3)).await;
         assert_eq!(
-            h.execution.new_payloads(),
-            vec![d1, d2b, d2a],
+            probed,
+            vec![make_block(1, 1, GENESIS).digest(), newer, older],
             "the newest round probes first, then the older one",
         );
     });
 }
+
 #[test_traced]
 fn equivocating_candidates_for_the_same_round_both_complete() {
     deterministic::Runner::default().start(|context| async move {
-        let mut h = Harness::start_at_genesis(&context);
-
-        let b1 = make_block(1, 1, GENESIS);
-        let b2a = make_block(2, 2, b1.digest());
-        let b2b = make_block(3, 2, b1.digest());
-        let (d1, d2a, d2b) = (b1.digest(), b2a.digest(), b2b.digest());
-
-        // Keep the engine slot occupied so both requests queue before
-        // either verification starts.
-        let release = h
-            .execution
-            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
-        h.deliver_tip(round(1), 1, d1);
-        let finalized = h.deliver_finalized(b1);
-        h.wait_until(|| h.execution.new_payloads() == vec![d1])
-            .await;
-
         // Two candidates for one round: the second must not cancel the first.
-        let mut first = Box::pin(h.verify(round(2), b2a));
-        let mut second = Box::pin(h.verify(round(2), b2b));
-        assert!(futures::poll!(&mut first).is_pending());
-        assert!(futures::poll!(&mut second).is_pending());
-        h.run_for(Duration::from_millis(50)).await;
-        assert!(futures::poll!(&mut first).is_pending());
-        assert!(futures::poll!(&mut second).is_pending());
-
-        release.send(()).unwrap();
-        finalized
-            .await
-            .expect("finalized block should be acknowledged");
-        assert!(first.await.unwrap().is_some());
-        assert!(second.await.unwrap().is_some());
-        let mut probed = h.execution.new_payloads();
-        probed.sort();
-        let mut expected = vec![d1, d2a, d2b];
-        expected.sort();
-        assert_eq!(probed, expected);
+        let (d2a, d2b, probed) = verify_two_queued(&context, round(2), round(2)).await;
+        // Within a round the queue orders by digest and probes from the
+        // back, so the larger digest goes first.
+        let (larger, smaller) = if d2a > d2b { (d2a, d2b) } else { (d2b, d2a) };
+        assert_eq!(
+            probed,
+            vec![make_block(1, 1, GENESIS).digest(), larger, smaller],
+            "the larger digest probes first within a round",
+        );
     });
 }
 
