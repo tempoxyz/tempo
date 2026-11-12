@@ -5,7 +5,10 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use core::fmt;
+use core::{
+    fmt,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use alloy_primitives::{Address, B256, U256, map::HashSet};
 use evm2::{
@@ -82,6 +85,12 @@ pub struct L1State<P> {
     initial_anchor: Arc<Mutex<Option<U256>>>,
     /// Tempo block number selected for the current transaction attempt.
     anchor: Arc<Mutex<Option<u64>>>,
+    /// Whether this attempt has charged a metered read of the local `TempoState` checkpoint.
+    ///
+    /// From T14, unmetered host loads select the anchor on cache misses, so the checkpoint charge
+    /// cannot depend on whether an anchor is selected. Like `access_set`, it is not rolled back
+    /// when a subcall reverts.
+    checkpoint_charged: Arc<AtomicBool>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
     /// Used for cold/warm gas accounting. Unlike REVM's journal, this access set is not rolled back
@@ -100,6 +109,7 @@ impl<P> L1State<P> {
         Self {
             initial_anchor: Arc::new(Mutex::new(None)),
             anchor: Arc::new(Mutex::new(None)),
+            checkpoint_charged: Arc::new(AtomicBool::new(false)),
             access_set: Arc::new(Mutex::new(HashSet::default())),
             provider,
             portal_address,
@@ -117,6 +127,7 @@ impl<P> L1State<P> {
     pub fn reset_transaction_state(&self) {
         *self.initial_anchor.lock() = None;
         *self.anchor.lock() = None;
+        self.checkpoint_charged.store(false, Ordering::Relaxed);
         self.access_set.lock().clear();
     }
 
@@ -162,6 +173,8 @@ impl<P> L1State<P> {
         }
 
         *anchor = Some(to);
+        // `finalizeTempo` charged the checkpoint read before validating advancement.
+        self.checkpoint_charged.store(true, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -348,9 +361,21 @@ struct L1Storage<'a, P> {
 
 impl<P: L1StorageReader> StorageOps for L1Storage<'_, P> {
     fn load(&self, slot: U256) -> tempo_precompiles::Result<U256> {
-        let anchor = match self.l1.get_anchor() {
-            Some(anchor) => anchor,
-            None => TempoState::new().tempo_block_number.read()?,
+        let selected = self.l1.get_anchor();
+        let anchor = match selected {
+            Some(anchor)
+                if self.l1.checkpoint_charged.load(Ordering::Relaxed)
+                    || !StorageCtx::default().spec().is_t14() =>
+            {
+                anchor
+            }
+            // From T14, charge the checkpoint once per attempt even if a host cache miss already
+            // selected the anchor, so gas does not depend on the account cache.
+            _ => {
+                let checkpoint = TempoState::new().tempo_block_number.read()?;
+                self.l1.checkpoint_charged.store(true, Ordering::Relaxed);
+                selected.unwrap_or(checkpoint)
+            }
         };
         self.l1
             .read_l1_storage(self.account, slot.into(), anchor)
