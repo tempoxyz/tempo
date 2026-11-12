@@ -83,6 +83,7 @@ alloy-transport.workspace = true
 evm2.workspace = true
 
 # misc
+async-trait.workspace = true
 minicbor.workspace = true
 minicbor-serde.workspace = true
 clap = { workspace = true, optional = true }

@@ -7,7 +7,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use crate::types::ZoneExecutionWitness;
 
 /// In-process Zone debug API contract.
-#[jsonrpsee::core::async_trait]
+#[async_trait::async_trait]
 pub trait ZoneDebugApi: Send + Sync {
     /// Replays a Zone block and returns its Zone and Tempo L1 state witnesses.
     /// Fails if the node's L1 provider cannot supply the required historical proofs.
@@ -23,7 +23,6 @@ pub trait ZoneDebugApiRpc {
     async fn zone_execution_witness(&self, block: BlockId) -> RpcResult<ZoneExecutionWitness>;
 }
 
-#[jsonrpsee::core::async_trait]
 impl<T> ZoneDebugApiRpcServer for T
 where
     T: ZoneDebugApi + 'static,

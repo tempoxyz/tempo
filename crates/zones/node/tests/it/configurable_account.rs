@@ -2,7 +2,7 @@
 
 use alloy::{
     network::ReceiptResponse as _,
-    primitives::{Address, B256, Bytes, U256, keccak256},
+    primitives::{Address, B256, U256, keccak256},
 };
 use alloy_eips::eip2718::Encodable2718;
 use alloy_provider::{DynProvider, PendingTransactionBuilder, Provider};
@@ -10,6 +10,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use eyre::OptionExt;
+use jsonrpsee::types::error::INVALID_PARAMS_CODE;
 use std::fmt::Display;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
@@ -438,29 +439,35 @@ async fn test_migrated_account_rejects_its_original_key() -> eyre::Result<()> {
         assert_eq!(info.code, CONFIGURABLE_ACCOUNT_CODE);
         assert_eq!(info.extension, commitment.clone().into());
     }
-    // Named parameters, which reth's generated handlers accept, get the same answers.
-    let named_code: Bytes = provider
-        .raw_request(
-            "eth_getCode".into(),
+    // Named parameters get an invalid params error, as from reth's generated handlers.
+    for (method, params) in [
+        (
+            "eth_getCode",
             serde_json::json!({ "address": dev_address, "blockNumber": "latest" }),
-        )
-        .await?;
-    assert_eq!(named_code, CONFIGURABLE_ACCOUNT_CODE);
-    let named_info: alloy::rpc::types::eth::AccountInfo = provider
-        .raw_request(
-            "eth_getAccountInfo".into(),
+        ),
+        (
+            "eth_getAccountInfo",
             serde_json::json!({ "address": dev_address, "block": "latest" }),
-        )
-        .await?;
-    assert_eq!(named_info.code, CONFIGURABLE_ACCOUNT_CODE);
-    assert_eq!(named_info.extension, commitment.clone().into());
-    let named_account: alloy::consensus::TrieAccount = provider
-        .raw_request(
-            "eth_getAccount".into(),
+        ),
+        (
+            "eth_getAccount",
             serde_json::json!({ "address": dev_address, "block": "latest" }),
-        )
-        .await?;
-    assert_eq!(named_account.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
+        ),
+        (
+            "eth_getBalance",
+            serde_json::json!({ "address": dev_address, "block": "latest" }),
+        ),
+    ] {
+        let err = provider
+            .raw_request::<_, serde_json::Value>(method.into(), params)
+            .await
+            .expect_err("named params must be rejected");
+        assert_eq!(
+            err.as_error_resp().expect("expected a JSON-RPC error").code,
+            i64::from(INVALID_PARAMS_CODE),
+            "{method}"
+        );
+    }
     // So does eth_getAccount, with the marker's code hash, though the zone holds no account.
     for account in [
         provider.get_account(dev_address).latest().await?,

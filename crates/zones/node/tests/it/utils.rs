@@ -2771,7 +2771,7 @@ impl L1TestNode {
                 if refuse_state_proofs {
                     let mut module = jsonrpsee::RpcModule::new(());
                     for method in ["eth_getProof", "eth_getMultiProof"] {
-                        module.register_method(method, |_, _, _| {
+                        module.register_method(method, |_, _| {
                             Err::<(), _>(jsonrpsee::types::ErrorObjectOwned::owned(
                                 -32000,
                                 "state proofs unavailable",
