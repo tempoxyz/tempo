@@ -1,0 +1,39 @@
+version: 1
+
+# Zone-only load: one private TIP-20 transfer per journey, with no L1 portal
+# traffic in the measured window. Setup seeds each account's Zone balance.
+chains:
+  zone:
+    network: tempo
+    rpc_url: "${ZONE_REDACTED_RPC_URL}"
+    query_rpc_url: "${ZONE_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${ZONE_WS_RPC_URL}"
+      poll_interval: 50ms
+    request_auth:
+      sender_header:
+        name: X-Authorization-Token
+        map: "${ZONES_BENCH_ZONE_AUTH_MAP}"
+        reload_interval: 1s
+    chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+    workload: ./zone-flow.yml
+
+scenario:
+  name: neobank-zone-transfers
+  execution: dag
+  timeout: 2m
+
+  bindings:
+    account:
+      account: { pool: users, select: lease }
+
+  steps:
+    - id: transfer
+      submit:
+        chain: zone
+        template: zone_transfer
+        with:
+          from: { var: account.ref }
+        await: receipt
+      save: transfer

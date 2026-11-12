@@ -121,7 +121,7 @@ if [[ -z "${ZONES_BENCH_RECIPIENT_GENERATOR:-}" ]]; then
 fi
 ZONES_BENCH_POSITION_RECIPIENT='{ var: account.address }'
 case "$ZONES_BENCH_RECIPIENT_MODE" in
-    existing) ZONES_BENCH_PRIVATE_TRANSFER_RECIPIENT='{ var: recipient.address }' ;;
+    existing) ZONES_BENCH_PRIVATE_TRANSFER_RECIPIENT='{ address_pool: { pool: recipients, select: random } }' ;;
     random) ZONES_BENCH_PRIVATE_TRANSFER_RECIPIENT=random ;;
     *) die "ZONES_BENCH_RECIPIENT_MODE must be existing or random" ;;
 esac
@@ -158,6 +158,12 @@ case "$ZONES_BENCH_NEOBANK_PRESET" in
         ;;
     swapped-redemption)
         scenario_file=swapped-redemption-scenario.yml
+        base_token_label=dlusd
+        expected_base_token="$ZONES_BENCH_DLUSD"
+        leases_per_journey=1
+        ;;
+    zone-transfers)
+        scenario_file=zone-transfers-scenario.yml
         base_token_label=dlusd
         expected_base_token="$ZONES_BENCH_DLUSD"
         leases_per_journey=1
@@ -285,6 +291,19 @@ if [[ "$ZONES_BENCH_NEOBANK_PRESET" == "private-withdrawal" ||
     done
     bigint_true "$swapped_redemption_expected_remaining >= 0" ||
         die "invalid swapped-redemption sizing result"
+fi
+
+# Zone-only transfers never deposit during measurement, so the admission seed
+# funds every journey an account runs: the transfer amount plus its Zone fee.
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" == "zone-transfers" ]]; then
+    journeys_per_account="$(bigint_eval \
+        "($ZONES_BENCH_COUNT + $ZONES_BENCH_ACCOUNTS - 1) / $ZONES_BENCH_ACCOUNTS")"
+    transfer_seed_amount="$(bigint_eval "$journeys_per_account * $ZONES_BENCH_DEPOSIT_AMOUNT")"
+    bigint_true "$transfer_seed_amount <= $(bigint_eval '2^128 - 1')" ||
+        die "zone-transfers admission seed amount overflow"
+    if bigint_true "$ZONES_BENCH_ADMISSION_SEED_AMOUNT < $transfer_seed_amount"; then
+        ZONES_BENCH_ADMISSION_SEED_AMOUNT="$transfer_seed_amount"
+    fi
 fi
 
 ZONES_BENCH_REWARD_ONRAMP_PER_ACCOUNT="$reward_onramp_per_account"
@@ -559,9 +578,11 @@ jq -e --argjson expected "$ZONES_BENCH_ACCOUNTS" '
     die "auth map did not derive the expected unique benchmark account pool"
 stage_end auth_token_map
 
-# Approvals are untimed. Deposit-only submits no user Zone transaction.
+# Approvals are untimed. Deposit-only submits no user Zone transaction, and
+# zone-transfers never withdraws through the outbox.
 # The fixed scenario approves both enabled assets for each leased account.
-if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" ]]; then
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" &&
+      "$ZONES_BENCH_NEOBANK_PRESET" != "zone-transfers" ]]; then
     run_setup_scenario \
         zone_approvals "$zone_approval_scenario" "$ZONES_BENCH_ACCOUNTS" \
         "$ZONES_BENCH_OUTPUT/zone-approvals-report.json" \
@@ -573,7 +594,8 @@ fi
 # Zone account. This keeps the EarnVault and engine nonempty, so the benchmark runs
 # steady-state deposit and redemption paths instead of empty-pool transitions.
 earn_warmup_amount="$ZONES_BENCH_WITHDRAWAL_AMOUNT"
-if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" ]]; then
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" &&
+      "$ZONES_BENCH_NEOBANK_PRESET" != "zone-transfers" ]]; then
     readonly earn_warmup_callback_gas_limit=10000000
     earn_warmup_recipient_hash="$(cast keccak "zones-benchmark-earn-warmup:$ZONES_BENCH_SEED")"
     earn_warmup_recipient="0x${earn_warmup_recipient_hash: -40}"

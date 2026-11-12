@@ -12,6 +12,12 @@ accounts:
     mnemonic: "${ZONES_BENCH_MNEMONIC}"
     range: [${ZONES_BENCH_SEQUENCER_ACCOUNT_INDEX}, ${ZONES_BENCH_SEQUENCER_ACCOUNT_END}]
 
+# Existing benchmark users as transfer recipients, without making them signers.
+address_pools:
+  recipients:
+    mnemonic: "${ZONES_BENCH_MNEMONIC}"
+    range: [${ZONES_BENCH_RECIPIENT_ACCOUNT_START}, ${ZONES_BENCH_RECIPIENT_ACCOUNT_END}]
+
 artifacts:
   TIP20: abis/tip20.json
   ZoneOutbox: abis/zone-outbox.json
@@ -50,6 +56,21 @@ templates:
       args:
         - "${ZONES_BENCH_OUTBOX}"
         - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+
+  # Recipient is an existing user, or a fresh address with recipient-mode=random.
+  zone_transfer:
+    type: tempo
+    gas_limit: ${ZONES_BENCH_ACTIVITY_GAS_LIMIT}
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "${ZONES_BENCH_TOKEN}"
+      abi: TIP20
+      function: "transfer(address,uint256)"
+      args:
+        - ${ZONES_BENCH_PRIVATE_TRANSFER_RECIPIENT}
+        - ${ZONES_BENCH_ACTIVITY_AMOUNT}
 
   gateway_deposit:
     type: tempo

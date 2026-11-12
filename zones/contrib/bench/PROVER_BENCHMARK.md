@@ -26,6 +26,12 @@ many of them in one block. The summary reports the mean Zone block build time fr
 `tempo_zone_payload_build_duration_seconds`, for example with
 `derek bench zones prover=false tempo-hardfork=t14 tps=50 accounts=500 recipient-mode=random l1-latency-ms=40`.
 
+`preset=zone-transfers` makes each journey one private TIP-20 transfer on the Zone, with no
+L1 deposit or withdrawal in the measured window, so `tps` is limited by the Zone rather than
+the portal's deposit queue. Setup seeds each account with enough of the Zone token for all
+of its transfers, for example
+`derek bench zones prover=false preset=zone-transfers tempo-hardfork=t14 tps=500 accounts=5000 recipient-mode=random l1-latency-ms=40`.
+
 For `preset=full-journey`, the controller reports p50/p95 for withdrawal submit → L1
 funds (split into submit → Zone inclusion and Zone → L1 processing), deposit submit →
 Zone credit (split into submit → L1 enqueue and L1 enqueue → Zone credit), and the full

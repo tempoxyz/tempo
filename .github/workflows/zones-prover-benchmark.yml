@@ -31,10 +31,10 @@ on:
         default: us-east-1
         options: [us-east-1, us-west-2, eu-central-1, ap-southeast-1, ap-northeast-1]
       preset:
-        description: Neobank scenario containing a withdrawal.
+        description: Neobank scenario (zone-transfers is Zone-only private transfers).
         type: choice
         default: full-journey
-        options: [full-journey, full-journey-pathusd-fees, private-withdrawal, swapped-lifecycle, swapped-redemption]
+        options: [full-journey, full-journey-pathusd-fees, private-withdrawal, swapped-lifecycle, swapped-redemption, zone-transfers]
       accounts:
         type: string
         default: "20"
@@ -282,7 +282,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 68f9d1b72c257a8dab474e44e15817289f2bdf0d # tempo-multi-region-benchmark main (#496)
+          ref: a42035459dc40ed8c3f23dd766f3d212887e0b66 # tempo-multi-region-benchmark #497
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false

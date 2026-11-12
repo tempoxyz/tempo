@@ -588,7 +588,7 @@ provision_up() {
     local run_key="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
     local neobank_preset="${ZONES_BENCH_NEOBANK_PRESET:-full-journey}"
     case "$neobank_preset" in
-        encrypted-deposit|private-withdrawal|full-journey|full-journey-pathusd-fees|slippage-bounce|swapped-lifecycle|swapped-redemption) ;;
+        encrypted-deposit|private-withdrawal|full-journey|full-journey-pathusd-fees|slippage-bounce|swapped-lifecycle|swapped-redemption|zone-transfers) ;;
         *) die "unsupported neobank preset for provisioning: $neobank_preset" ;;
     esac
 
