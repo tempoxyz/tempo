@@ -39,9 +39,9 @@ fn pre_t3_tip1011_rejection_reason(
 ) -> Option<&'static str> {
     let key_authorization = key_authorization?;
 
-    if key_authorization.authorization.has_periodic_limits() {
+    if key_authorization.authorization().has_periodic_limits() {
         Some("periodic token limits are not active before T3")
-    } else if key_authorization.authorization.has_call_scopes() {
+    } else if key_authorization.authorization().has_call_scopes() {
         Some("call scopes are not active before T3")
     } else {
         None
@@ -605,24 +605,23 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                 key_type,
                 num_limits,
             } => {
-                let mut auth = create_signed_key_authorization(
+                let authorization = create_signed_key_authorization(
                     &signer,
                     *key_type,
                     *num_limits,
                     env.chain_id(),
                     AllowedCallsMode::None,
                     recipient,
-                );
-                auth.authorization = auth
-                    .authorization
-                    .with_witness(B256::with_last_byte((i + 1) as u8));
-                auth.signature = PrimitiveSignature::Secp256k1(
-                    signer
-                        .sign_hash_sync(&auth.authorization.signature_hash())
-                        .expect("signing should succeed"),
                 )
-                .into();
-                request.key_authorization = Some(auth);
+                .authorization()
+                .clone()
+                .with_witness(B256::with_last_byte((i + 1) as u8));
+                let signature = PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&authorization.signature_hash())
+                        .expect("signing should succeed"),
+                );
+                request.key_authorization = Some(authorization.into_signed(signature));
             }
         }
 

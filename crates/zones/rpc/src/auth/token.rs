@@ -36,8 +36,29 @@ pub struct AuthContext {
     pub caller: Address,
     /// Token expiry timestamp (unix seconds).
     pub expires_at: u64,
-    /// Keychain key used for authentication, if this is a keychain token.
-    pub keychain_key_id: Option<Address>,
+    /// How the token's signature authorizes [`Self::caller`].
+    pub signer: AuthSigner,
+}
+
+/// How an authorization token's signature authorizes its caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSigner {
+    /// The caller's own root key.
+    Root,
+    /// An access key in the caller's keychain.
+    Keychain {
+        /// The access key's ID.
+        key_id: Address,
+        /// Commitment of the configuration the key's owners signed with, when the key is a
+        /// configurable account. `None` for a primitive key, which must not become a retired root.
+        config_commitment: Option<B256>,
+    },
+    /// An owner quorum of the caller's configurable account (TIP-1154). It authorizes the caller
+    /// while the account's Tempo commitment is unset or equals `config_commitment`.
+    ConfigurableAccount {
+        /// Commitment of the configuration the owners signed with.
+        config_commitment: B256,
+    },
 }
 
 /// Parsed authorization token fields (before signature verification).

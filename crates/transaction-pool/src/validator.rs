@@ -662,6 +662,10 @@ where
                         .tx()
                         .tempo_authorization_list
                         .iter()
+                        // Execution skips these from T0 (`apply_authorization_list`).
+                        .filter(|authorization| {
+                            !(spec.is_t0() && authorization.signature().is_keychain())
+                        })
                         .filter_map(|authorization| authorization.recover_authority().ok())
                         .collect::<Vec<_>>();
 

@@ -26,8 +26,13 @@ use crate::{
 ///   serializing to JSON.
 pub trait ZoneRpcApi: Send + Sync + 'static {
     /// `AccountKeychain.getKey(account, keyId)` — returns the current keychain
-    /// authorization for a recovered access key.
+    /// authorization for a recovered access key. Fails when Tempo state cannot be read in time.
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo>;
+
+    /// Returns the TIP-1108 commitment that zone execution reads for `account` at the current
+    /// anchor, zero when it has none, or `None` while the zone has not activated configurable
+    /// accounts (T14). Fails when Tempo state cannot be read in time.
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>>;
 
     /// `eth_blockNumber` — returns the latest block number.
     fn block_number(&self) -> BoxFut<'_>;
@@ -726,9 +731,9 @@ fn normalize_block_number(number: BlockNumberOrTag) -> BlockNumberOrTag {
     }
 }
 
-/// Applies [`normalize_block_number`] to a block id. Without it `pending` resolves to a block
-/// the engine has executed but not yet made canonical.
-fn normalize_block_id(block: BlockId) -> BlockId {
+/// Treats `pending` as `latest` in a block id, since zones have no real pending block. Without it
+/// `pending` resolves to a block the engine has executed but not yet made canonical.
+pub fn normalize_block_id(block: BlockId) -> BlockId {
     match block {
         BlockId::Number(number) => BlockId::Number(normalize_block_number(number)),
         hash @ BlockId::Hash(_) => hash,
@@ -756,6 +761,10 @@ mod tests {
 
     impl ZoneRpcApi for MockZoneRpcApi {
         fn get_keychain_key(&self, _account: Address, _key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
+            Box::pin(async { Err(eyre::eyre!("not implemented")) })
+        }
+
+        fn get_config_commitment(&self, _account: Address) -> BoxEyreFut<'_, Option<B256>> {
             Box::pin(async { Err(eyre::eyre!("not implemented")) })
         }
 
@@ -837,7 +846,7 @@ mod tests {
         AuthContext {
             caller: Address::repeat_byte(0xaa),
             expires_at: 1_700_000_000,
-            keychain_key_id: None,
+            signer: crate::auth::AuthSigner::Root,
         }
     }
 

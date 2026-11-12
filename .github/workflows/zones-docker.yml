@@ -1594,7 +1594,7 @@ jobs:
         run: bash .github/scripts/move-image-tags.sh
 
       - name: Publish Zones CI event
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pre-release/zones-v')
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
