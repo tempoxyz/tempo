@@ -1,9 +1,11 @@
 //! Configurable accounts across a real Tempo L1 and a zone: Tempo owns every configuration change,
 //! and the zone applies it once its anchor includes the Tempo block (TIP-1154).
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use alloy::{
+    eips::BlockId,
+    network::ReceiptResponse as _,
     primitives::{Address, B256, Bytes, U256, keccak256},
     sol_types::{SolCall, SolError, SolStruct, sol},
 };
@@ -11,6 +13,7 @@ use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use eyre::OptionExt;
+use futures::future::try_join_all;
 use reqwest::StatusCode;
 use tempo_alloy::{TempoNetwork, provider::keychain::revoke_key};
 use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
@@ -19,7 +22,9 @@ use tempo_contracts::{
         AccountKeychainError, IAccountKeychain, ISignatureVerifier, ITIP20,
         SIGNATURE_VERIFIER_ADDRESS,
     },
-    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS},
+    zones::{
+        IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS,
+    },
 };
 use tempo_evm::{
     TempoInvalidTransaction,
@@ -31,16 +36,19 @@ use tempo_primitives::{
     transaction::{Call, KeyAuthorization, TempoSignature, TempoTransaction},
 };
 use test_case::test_case;
-use zone_node::rpc::auth::build_token_fields;
+use zone_chainspec::ZoneChainSpec;
+use zone_node::{genesis::genesis_template, rpc::auth::build_token_fields};
+use zone_spf::{SpfConfig, prove_zone_batch};
 
 use crate::{
     configurable_account::{
         Account, Authority, Chain, Change, ORIGINAL_OWNERS, ROOT_KEY, ZONE_FUNDING, approve_outbox,
     },
+    hardfork_settlement_e2e::batch_witness,
     utils::{
-        DEFAULT_POLL, RedactedRpcL1TestCtx, WITHDRAWAL_TX_GAS, ZoneAccount,
-        build_token_with_signature, now_secs, poll_until, signer_at, spawn_sequencer,
-        start_zone_with_redacted_rpc_l1,
+        DEFAULT_POLL, L1TestNode, RedactedRpcL1TestCtx, WITHDRAWAL_TX_GAS, ZoneAccount,
+        ZoneTestNode, build_token_with_signature, now_secs, poll_until, signer_at, spawn_sequencer,
+        start_real_p2p_cluster, start_zone_with_redacted_rpc_l1,
     },
 };
 
@@ -94,31 +102,13 @@ impl Env {
     async fn start() -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
         let rpc = start_zone_with_redacted_rpc_l1().await?;
-        let tempo = Chain::connect(
-            ProviderBuilder::new_with_network::<TempoNetwork>()
-                .connect_http(rpc.l1().http_url().clone())
-                .erased(),
-            TEMPO_T1_BASE_FEE,
-        )
-        .await?;
+        let tempo = tempo_chain(rpc.l1()).await?;
         let zone_chain = Chain::connect(rpc.zone.provider(), TEMPO_T0_BASE_FEE).await?;
         Ok(Self {
             rpc,
             tempo,
             zone_chain,
         })
-    }
-
-    /// Deposits pathUSD to `account` on the zone from the L1 user account.
-    async fn fund_on_zone(&self, account: Address) -> eyre::Result<()> {
-        let l1 = self.rpc.l1();
-        let mut depositor =
-            ZoneAccount::from_l1_and_zone(l1, &self.rpc.zone, self.rpc.portal_address());
-        l1.fund_user(depositor.address(), ZONE_FUNDING).await?;
-        depositor
-            .deposit_to(account, ZONE_FUNDING, L1_TIMEOUT, &self.rpc.zone)
-            .await?;
-        Ok(())
     }
 
     /// Whether the private RPC authenticates a token that `authority` signed: `true` for a call it
@@ -257,6 +247,32 @@ async fn role_transaction(
     })
 }
 
+/// A provider of the Tempo L1 and the fee fields of its transactions.
+async fn tempo_chain(l1: &L1TestNode) -> eyre::Result<Chain> {
+    Chain::connect(
+        ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_http(l1.http_url().clone())
+            .erased(),
+        TEMPO_T1_BASE_FEE,
+    )
+    .await
+}
+
+/// Deposits pathUSD to `account` on `zone` through `portal` from a funded L1 account.
+async fn fund_on_zone(
+    l1: &L1TestNode,
+    zone: &ZoneTestNode,
+    portal: Address,
+    account: Address,
+) -> eyre::Result<()> {
+    let mut depositor = ZoneAccount::from_l1_and_zone(l1, zone, portal);
+    l1.fund_user(depositor.address(), ZONE_FUNDING).await?;
+    depositor
+        .deposit_to(account, ZONE_FUNDING, L1_TIMEOUT, zone)
+        .await?;
+    Ok(())
+}
+
 /// A Tempo change reaches the zone once its anchor includes it.
 ///
 /// Before the change the old authority sends, grants an access key, authenticates to the private
@@ -311,8 +327,8 @@ async fn test_tempo_change_reaches_the_zone(change: Change) -> eyre::Result<()> 
     };
 
     l1.fund_user(account, TEMPO_FUNDING).await?;
-    env.fund_on_zone(account).await?;
-    env.fund_on_zone(bystander.address()).await?;
+    fund_on_zone(l1, zone, portal, account).await?;
+    fund_on_zone(l1, zone, portal, bystander.address()).await?;
     // The test zone is closed, so the portal must admit the account's withdrawal.
     let allowed = l1
         .set_allowed_account_on_portal(portal, account, true)
@@ -509,5 +525,204 @@ async fn test_tempo_change_reaches_the_zone(change: Change) -> eyre::Result<()> 
         Duration::from_secs(60),
     )
     .await?;
+    Ok(())
+}
+
+/// A batch with a transaction of an account that Tempo changed proves from the witness the zone
+/// collects against the Tempo L1, to the zone's own blocks. Without the account's Tempo proof at
+/// the transaction's anchor, proving fails on that account.
+#[test_case(Change::OwnerRotation ; "owner rotation")]
+#[test_case(Change::Migration ; "migration")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_batch_with_a_changed_account_proves(change: Change) -> eyre::Result<()> {
+    let env = Env::start().await?;
+    let l1 = env.rpc.l1();
+    let zone = &env.rpc.zone;
+    let portal = env.rpc.portal_address();
+    let provider = zone.provider();
+    let root = signer_at(ROOT_KEY);
+    let original = Account::new(ORIGINAL_OWNERS, 2, 1);
+    let (changed, call) = change.apply(&root, &original);
+    let account = changed.address;
+    l1.fund_user(account, TEMPO_FUNDING).await?;
+    fund_on_zone(l1, zone, portal, account).await?;
+    let tx = env.tempo.transaction(account, 0, vec![call]).await?;
+    let signature = change.authority(&root, &original).sign(&tx)?;
+    let block = env.tempo.execute(tx, signature).await?;
+    zone.wait_for_tempo_block_number(block, L1_TIMEOUT).await?;
+    assert_eq!(
+        env.zone_chain.commitment(account).await?,
+        changed.commitment()
+    );
+
+    let tx = env
+        .zone_chain
+        .transaction(account, 0, vec![approve_outbox()])
+        .await?;
+    let signature = Authority::Owners(&changed).sign(&tx)?;
+    let from = env.zone_chain.execute(tx, signature).await?;
+    let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &provider);
+    let finalized = outbox
+        .lastBatch()
+        .block(BlockId::number(from - 1))
+        .call()
+        .await?
+        .withdrawalBatchIndex;
+    // A batch ends at the first block that finalizes withdrawals.
+    let to = poll_until(
+        L1_TIMEOUT,
+        DEFAULT_POLL,
+        "a zone block finalizes withdrawals",
+        || async {
+            for number in from..=provider.get_block_number().await? {
+                let batch = outbox
+                    .lastBatch()
+                    .block(BlockId::number(number))
+                    .call()
+                    .await?;
+                if batch.withdrawalBatchIndex != finalized {
+                    return Ok(Some(number));
+                }
+            }
+            Ok(None)
+        },
+    )
+    .await?;
+    let mut genesis = genesis_template()?;
+    genesis.config.chain_id = env.zone_chain.chain_id;
+    let config = SpfConfig::new(Arc::new(ZoneChainSpec::from_genesis(genesis)?));
+    let witness = batch_witness(l1, zone, portal, from, to).await?;
+
+    let output = prove_zone_batch(&config, witness.clone())?;
+    let parent = provider
+        .get_block_by_number((from - 1).into())
+        .await?
+        .ok_or_eyre("the batch's parent block is missing")?;
+    let head = provider
+        .get_block_by_number(to.into())
+        .await?
+        .ok_or_eyre("the batch's last block is missing")?;
+    assert_eq!(output.next_zone_height, to);
+    assert_eq!(output.block_transition.prevBlockHash, parent.header.hash);
+    assert_eq!(output.block_transition.nextBlockHash, head.header.hash);
+
+    // The leaf of the account's Tempo proof, at the anchor its transaction executes on.
+    let anchor = TempoState::new(TEMPO_STATE_ADDRESS, &provider)
+        .tempoBlockNumber()
+        .block(BlockId::number(from))
+        .call()
+        .await?;
+    let proof = env
+        .tempo
+        .provider
+        .get_proof(account, Vec::new())
+        .number(anchor)
+        .await?;
+    let leaf = proof
+        .account_proof
+        .last()
+        .ok_or_eyre("the account proof is empty")?;
+    let mut omitted = witness;
+    omitted
+        .tempo_state_witness
+        .node_pool
+        .retain(|node| node != leaf);
+    let error = prove_zone_batch(&config, omitted)
+        .expect_err("proving reads the account's Tempo commitment");
+    assert_eq!(
+        error,
+        zone_spf::Error::MissingTempoStorage {
+            account,
+            slot: None,
+            block_number: anchor,
+        }
+    );
+    Ok(())
+}
+
+/// Followers execute the leader's blocks against their own reads of Tempo. The blocks with an
+/// account's transactions from before a Tempo owner rotation reaches the zone, which pays the
+/// derivation gas of an unregistered account, and after it have the same hash and gas on every
+/// node, and every node reports Tempo's commitment and refuses the retired owners.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_followers_replay_a_tempo_change() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let cluster = start_real_p2p_cluster(4).await?;
+    let l1 = &cluster.l1;
+    let tempo = tempo_chain(l1).await?;
+    let chains = try_join_all(
+        cluster
+            .nodes
+            .iter()
+            .map(|node| Chain::connect(node.provider(), TEMPO_T0_BASE_FEE)),
+    )
+    .await?;
+    let (leader, followers) = chains.split_first().ok_or_eyre("the cluster is empty")?;
+    let root = signer_at(ROOT_KEY);
+    let original = Account::new(ORIGINAL_OWNERS, 2, 1);
+    let (changed, call) = Change::OwnerRotation.apply(&root, &original);
+    let account = changed.address;
+    l1.fund_user(account, TEMPO_FUNDING).await?;
+    fund_on_zone(l1, &cluster.nodes[0], cluster.portal_address, account).await?;
+
+    let mut receipts = Vec::new();
+    let tx = leader
+        .transaction(account, 0, vec![approve_outbox()])
+        .await?;
+    let signature = Authority::Owners(&original).sign(&tx)?;
+    receipts.push(leader.send(tx, signature).await?.get_receipt().await?);
+    for chain in &chains {
+        assert_eq!(chain.commitment(account).await?, B256::ZERO);
+    }
+
+    let tx = tempo.transaction(account, 0, vec![call]).await?;
+    let signature = Authority::Owners(&original).sign(&tx)?;
+    let block = tempo.execute(tx, signature).await?;
+    for node in &cluster.nodes {
+        node.wait_for_tempo_block_number(block, L1_TIMEOUT).await?;
+    }
+    for chain in &chains {
+        assert_eq!(chain.commitment(account).await?, changed.commitment());
+    }
+    let mismatch = ConfigurableAccountError::ConfigurationCommitmentMismatch {
+        expected: changed.commitment(),
+        actual: original.commitment(),
+    };
+    for chain in followers {
+        let tx = chain
+            .transaction(account, 0, vec![approve_outbox()])
+            .await?;
+        let signature = Authority::Owners(&original).sign(&tx)?;
+        chain
+            .reject(
+                tx,
+                signature,
+                TempoInvalidTransaction::ConfigurableAccount(mismatch.clone()),
+            )
+            .await?;
+    }
+    let tx = leader
+        .transaction(account, 0, vec![approve_outbox()])
+        .await?;
+    let signature = Authority::Owners(&changed).sign(&tx)?;
+    receipts.push(leader.send(tx, signature).await?.get_receipt().await?);
+
+    for receipt in &receipts {
+        assert!(receipt.status(), "{receipt:?}");
+        let height = receipt
+            .block_number()
+            .ok_or_eyre("receipt without a block number")?;
+        cluster.wait_all_at(height, L1_TIMEOUT).await?;
+        cluster.assert_same_block(height).await?;
+        for chain in followers {
+            let replayed = chain
+                .provider
+                .get_transaction_receipt(receipt.transaction_hash())
+                .await?
+                .ok_or_eyre("a follower is missing the transaction")?;
+            assert_eq!(replayed.block_hash(), receipt.block_hash());
+            assert_eq!(replayed.gas_used(), receipt.gas_used());
+        }
+    }
     Ok(())
 }
