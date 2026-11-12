@@ -531,6 +531,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_ended_subscription_ends_event_stream() {
+        let mut module = jsonrpsee::RpcModule::new(());
+        module
+            .register_subscription(
+                "consensus_subscribe",
+                "consensus_event",
+                "consensus_unsubscribe",
+                |_, pending, _| async move {
+                    let _sink = pending.accept().await?;
+                    // Let the client finish setting up the subscription before closing it.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Err("consensus feed closed".into())
+                },
+            )
+            .unwrap();
+        let server = jsonrpsee::server::Server::builder()
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let _handle = server.start(module);
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = connector.connect(0).await;
+        let mut events = UpstreamClient::subscribe_events(&client.unwrap())
+            .await
+            .unwrap();
+        // The close notification drops the connection, which must end the stream instead of
+        // alloy reconnecting and resubscribing behind the actor's back.
+        let next = tokio::time::timeout(Duration::from_secs(10), events.next())
+            .await
+            .expect("event stream must end once the server closes the subscription");
+        assert!(next.is_none(), "expected the stream to end, got {next:?}");
+    }
+
+    #[tokio::test]
     async fn websocket_connector_never_reconnects() {
         let err = NoReconnect(WsConnect::new("ws://127.0.0.1:1"))
             .try_reconnect()
