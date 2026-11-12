@@ -433,7 +433,7 @@ fn guarded<T>(
 }
 
 /// Errors emitted while validating or reading witness tries, through
-/// [`StatelessSparseTrie`] or [`WitnessPathReader`].
+/// `StatelessSparseTrie` or `WitnessPathReader`.
 #[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatelessSparseTrieError {
     /// `node_pool` is not deduplicated by node hash.
