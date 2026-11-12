@@ -143,7 +143,10 @@ pub(crate) mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
-    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
+    use tempo_contracts::{
+        precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount},
+        zones::IZoneOutbox,
+    };
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
     };
@@ -160,7 +163,7 @@ pub(crate) mod tests {
         ADVANCE_TEMPO_SELECTOR, ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader,
         zone_fee_manager,
     };
-    use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
+    use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, zone_chain_id};
 
     /// A dev Zone EVM config that reads Tempo through `l1`.
     pub(crate) fn config(l1: MockL1Reader) -> ZoneEvmConfig<MockL1Reader> {
@@ -431,6 +434,72 @@ pub(crate) mod tests {
             assert_eq!(l1.get_anchor(), None);
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn l1_read_gas_is_independent_of_discarded_attempt() {
+        let sender = Address::repeat_byte(0x01);
+        let tx = transaction(
+            sender,
+            TxLegacy {
+                nonce: 1,
+                gas_limit: 1_000_000,
+                to: TxKind::Call(ZONE_OUTBOX_ADDRESS),
+                input: IZoneOutbox::pendingWithdrawalsCountCall {}
+                    .abi_encode()
+                    .into(),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+
+        for (spec, expected_gas) in [
+            (TempoHardfork::T13, 27_394),
+            (TempoHardfork::T14, 37_894),
+            (TempoHardfork::T15, 37_894),
+        ] {
+            let l1 = MockL1Reader::default();
+            l1.seed_active_sequencer(Address::ZERO, 0, sender);
+            let make_evm = || {
+                BlockExecutorFactory::evm_with_env(
+                    &config(l1.clone()),
+                    sender_db(sender),
+                    fee_free_env(spec),
+                )
+            };
+            let mut builder = make_evm();
+            let mut replay = make_evm();
+
+            // Discarding leaves the account cache populated but resets the selected L1 anchor.
+            let discarded = builder.transact(&tx).unwrap().discard();
+            let commitment_reads = l1.commitment_requests();
+            let built = builder.transact(&tx).unwrap().discard();
+            assert_eq!(l1.commitment_requests(), commitment_reads);
+            let replayed = replay.transact(&tx).unwrap().discard();
+
+            for result in [&discarded, &built, &replayed] {
+                assert!(result.status, "{spec:?}: {result:?}");
+                assert_eq!(
+                    IZoneOutbox::pendingWithdrawalsCountCall::abi_decode_returns(&result.output)
+                        .unwrap(),
+                    U256::ZERO,
+                );
+            }
+            assert_eq!(discarded.tx_gas_used(), expected_gas, "{spec:?}");
+            assert_eq!(replayed.tx_gas_used(), expected_gas, "{spec:?}");
+            assert_eq!(built.tx_gas_used(), replayed.tx_gas_used(), "{spec:?}");
+            for evm in [&mut builder, &mut replay] {
+                assert_eq!(
+                    evm.state_mut()
+                        .account_info_untracked(&sender)
+                        .unwrap()
+                        .unwrap()
+                        .nonce,
+                    1,
+                    "discarded attempts must not change the sender nonce at {spec:?}",
+                );
+            }
+        }
     }
 
     #[test]

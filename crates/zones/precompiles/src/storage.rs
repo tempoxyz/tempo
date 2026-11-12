@@ -78,7 +78,7 @@ pub trait L1StorageReader: Clone + Send + Sync + 'static {
 #[derive(Clone)]
 pub struct L1State<P> {
     /// Committed Zone checkpoint captured from the EVM overlay at transaction entry.
-    /// This is a fallback for database reads, not a selected L1 view.
+    /// This is a fallback for L1 reads, not a selected L1 view.
     initial_anchor: Arc<Mutex<Option<U256>>>,
     /// Tempo block number selected for the current transaction attempt.
     anchor: Arc<Mutex<Option<u64>>>,
@@ -338,7 +338,8 @@ impl From<L1StateError> for PrecompileError {
 ///
 /// This lets typed L1-backed precompile storage handlers read, meter, and decode slots without
 /// inserting fetched values into the EVM journal. Reads use the transaction's selected anchor,
-/// falling back to the checkpoint stored in [`TempoState`] on the first read.
+/// falling back to the transaction-entry checkpoint from T14. Earlier forks and standalone
+/// callers without a snapshot retain the metered checkpoint read from [`TempoState`].
 struct L1Storage<'a, P> {
     /// Execution-local provider and anchor coordination shared by all L1 reads.
     l1: &'a L1State<P>,
@@ -350,7 +351,15 @@ impl<P: L1StorageReader> StorageOps for L1Storage<'_, P> {
     fn load(&self, slot: U256) -> tempo_precompiles::Result<U256> {
         let anchor = match self.l1.get_anchor() {
             Some(anchor) => anchor,
-            None => TempoState::new().tempo_block_number.read()?,
+            // From T14, account-cache misses can select the anchor without charging this slot.
+            // Use the entry snapshot so cache hits pay the same gas, preserving earlier forks.
+            None => match self.l1.initial_anchor() {
+                Some(anchor) if StorageCtx::default().spec().is_t14() => u64::try_from(anchor)
+                    .map_err(|_| {
+                        TempoPrecompileError::Fatal("Tempo L1 checkpoint exceeds u64".into())
+                    })?,
+                _ => TempoState::new().tempo_block_number.read()?,
+            },
         };
         self.l1
             .read_l1_storage(self.account, slot.into(), anchor)
@@ -367,10 +376,100 @@ impl<P: L1StorageReader> StorageOps for L1Storage<'_, P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{MockL1Reader, test_context, test_storage_provider};
+    use crate::test_utils::{
+        MockL1Reader, test_context, test_context_with_hardfork, test_storage_provider,
+    };
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     fn read(l1: &L1State<MockL1Reader>, anchor: u64) -> Result<B256, L1StateError> {
         l1.read_l1_storage_unmetered(Address::ZERO, B256::ZERO, anchor)
+    }
+
+    #[test]
+    fn snapshot_checkpoint_preserves_fork_gas_and_l1_warmth() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14, TempoHardfork::T15] {
+            for snapshot in [false, true] {
+                for selected in [false, true] {
+                    let mut ctx = test_context_with_hardfork(spec);
+                    let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+                    let reader = MockL1Reader::default();
+                    let l1 = L1State::new(reader.clone(), Address::ZERO);
+                    let slot = Slot::<U256>::new(U256::ZERO, Address::ZERO);
+                    reader.insert(Address::ZERO, U256::ZERO, 0, U256::from(42));
+                    reader.insert(Address::ZERO, U256::ZERO, 10, U256::from(43));
+                    if snapshot {
+                        l1.begin_transaction(U256::from(10));
+                    }
+                    if selected {
+                        l1.advance_anchor(9, 10)?;
+                    }
+                    let unmetered_checkpoint = selected || (snapshot && spec.is_t14());
+                    let expected_anchor = if unmetered_checkpoint { 10 } else { 0 };
+                    let expected_value = U256::from(if unmetered_checkpoint { 43 } else { 42 });
+                    let gas_before = storage.gas_used();
+                    StorageCtx::enter(&mut storage, || -> tempo_precompiles::Result<()> {
+                        assert_eq!(l1.read_l1(&slot)?, expected_value);
+                        assert_eq!(l1.read_l1(&slot)?, expected_value);
+                        Ok(())
+                    })?;
+                    let checkpoint_gas = if unmetered_checkpoint {
+                        0
+                    } else {
+                        COLD_SLOAD_COST
+                    };
+                    assert_eq!(
+                        storage.gas_used() - gas_before,
+                        checkpoint_gas + COLD_SLOAD_COST + WARM_STORAGE_READ_COST,
+                        "{spec:?}, snapshot={snapshot}, selected={selected}",
+                    );
+                    assert_eq!(l1.get_anchor(), Some(expected_anchor));
+                    assert_eq!(
+                        reader.storage_requests(),
+                        [(Address::ZERO, B256::ZERO, expected_anchor); 2],
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selected_child_takes_precedence_over_entry_snapshot() -> eyre::Result<()> {
+        let mut ctx = test_context_with_hardfork(TempoHardfork::T14);
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+        let reader = MockL1Reader::default();
+        let l1 = L1State::new(reader.clone(), Address::ZERO);
+        let slot = Slot::<U256>::new(U256::ZERO, Address::ZERO);
+        reader.insert(Address::ZERO, U256::ZERO, 10, U256::from(42));
+        reader.insert(Address::ZERO, U256::ZERO, 11, U256::from(43));
+        l1.begin_transaction(U256::from(10));
+        assert_eq!(l1.get_anchor(), None);
+        l1.advance_anchor(10, 11)?;
+        assert_eq!(
+            StorageCtx::enter(&mut storage, || l1.read_l1(&slot))?,
+            U256::from(43)
+        );
+        assert_eq!(reader.storage_requests(), [(Address::ZERO, B256::ZERO, 11)]);
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_overflow_fails_before_l1_fetch() {
+        let mut ctx = test_context_with_hardfork(TempoHardfork::T14);
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+        let reader = MockL1Reader::default();
+        let l1 = L1State::new(reader.clone(), Address::ZERO);
+        let slot = Slot::<U256>::new(U256::ZERO, Address::ZERO);
+        l1.begin_transaction(U256::from(u64::MAX) + U256::ONE);
+        let gas_before = storage.gas_used();
+        let result = StorageCtx::enter(&mut storage, || l1.read_l1(&slot));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::Fatal(message)) if message == "Tempo L1 checkpoint exceeds u64",
+        ));
+        assert_eq!(l1.get_anchor(), None);
+        assert_eq!(storage.gas_used(), gas_before);
+        assert!(reader.storage_requests().is_empty());
     }
 
     #[test]
