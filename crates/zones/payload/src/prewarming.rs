@@ -1,12 +1,12 @@
 //! Builder-local L1 cache prewarming.
 //!
-//! Deposits and pool transactions are executed in independent throwaway Zone builders. Execution
-//! output is discarded; only L1 reads populate the cache shared with canonical execution.
+//! Each queued deposit and pool transaction is executed in an independent throwaway Zone builder.
+//! Execution output is discarded; only L1 reads populate the cache shared with canonical execution.
 
 use crate::builder::build_advance_tempo_tx_owned;
 use alloy_primitives::{Address, B256, map::HashSet};
 use futures::{
-    FutureExt as _, Stream, StreamExt as _,
+    FutureExt as _, StreamExt as _,
     channel::mpsc,
     future::{AbortHandle, Abortable, ready},
 };
@@ -16,7 +16,7 @@ use reth_evm::{
 use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_tasks::TaskExecutor;
-use reth_transaction_pool::ValidPoolTransaction;
+use reth_transaction_pool::{NewSubpoolTransactionStream, ValidPoolTransaction};
 use std::{error::Error, future::Future, sync::Arc};
 use tempo_contracts::zones::DepositType;
 use tempo_evm::{TempoNextBlockEnvAttributes, TempoTxEnv};
@@ -80,14 +80,14 @@ where
     pub(crate) fn start(self: &Arc<Self>, prepared: &PreparedL1Block) -> Prewarming {
         let handle = Prewarming::default();
         let mut decryptions = prepared.decryptions.iter();
+
+        // The pool bounds concurrency; cancelled queued jobs skip EVM initialization.
         for deposit in &prepared.queued_deposits {
             let decryptions = (deposit.depositType == DepositType::Deposit)
-                .then(|| decryptions.next())
+                .then(|| decryptions.next().cloned())
                 .flatten()
-                .cloned()
                 .into_iter()
                 .collect();
-            // Queue-hash validation may fail, but earlier reads have already warmed the cache.
             let partial = PreparedL1Block {
                 header: prepared.header.clone(),
                 enabled_tokens: prepared.enabled_tokens.clone(),
@@ -109,10 +109,7 @@ where
     pub(crate) fn start_pool(
         self: &Arc<Self>,
         transactions: impl IntoIterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-        mut arrivals: impl Stream<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
-        + Send
-        + Unpin
-        + 'static,
+        mut arrivals: NewSubpoolTransactionStream<TempoPooledTransaction>,
     ) -> Prewarming {
         let (abort, follow) = AbortHandle::new_pair();
         for transaction in transactions {
@@ -121,8 +118,8 @@ where
         let (context, follower_abort) = (self.clone(), abort.clone());
         let follow = Abortable::new(
             async move {
-                while let Some(transaction) = arrivals.next().await {
-                    context.spawn(&follower_abort, Simulation::Pool(transaction));
+                while let Some(event) = arrivals.next().await {
+                    context.spawn(&follower_abort, Simulation::Pool(event.transaction));
                 }
             },
             follow,
@@ -159,6 +156,8 @@ where
         worker.apply_pre_execution_changes()?;
         match simulation {
             Simulation::Deposit(partial) => {
+                // Queue-hash validation may fail, but preceding reads have already warmed the
+                // shared cache.
                 worker.executor_mut().execute_transaction_without_commit(
                     build_advance_tempo_tx_owned(*partial, self.chain_id),
                 )?;
