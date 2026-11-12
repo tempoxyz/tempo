@@ -227,7 +227,8 @@ pub(crate) fn block_quota() -> Quota {
 }
 
 pub(crate) fn backfill_request_quota() -> Quota {
-    Quota::per_second(NZU32!(1))
+    // A burst of 2 keeps 1 s follower retries that land just under the period from being refused.
+    Quota::per_second(NZU32!(1)).allow_burst(NZU32!(2))
 }
 
 pub(crate) fn backfill_response_quota() -> Quota {

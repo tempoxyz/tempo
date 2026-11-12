@@ -159,12 +159,20 @@ pub(crate) mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
-    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
+    use tempo_contracts::{
+        precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount},
+        zones::IZoneOutbox,
+    };
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
         tempo_execution_config,
     };
-    use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, storage::StorageCtx};
+    use tempo_precompiles::{
+        DEFAULT_FEE_TOKEN, TIP403_REGISTRY_ADDRESS,
+        storage::{StorageCtx, StorageKey},
+        tip20::slots::{BALANCES, TRANSFER_POLICY_ID, TRANSFER_POLICY_ID_OFFSET},
+        tip403_registry::ALLOW_ALL_POLICY_ID,
+    };
     use tempo_primitives::{
         TempoEvmKind, TempoTxEnvelope,
         transaction::{
@@ -177,7 +185,7 @@ pub(crate) mod tests {
         ADVANCE_TEMPO_SELECTOR, ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader,
         tx_context::ExecutionOrigin, zone_fee_manager,
     };
-    use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
+    use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, zone_chain_id};
 
     /// A dev Zone EVM config that reads Tempo through `l1`.
     pub(crate) fn config(l1: MockL1Reader) -> ZoneEvmConfig<MockL1Reader> {
@@ -448,6 +456,74 @@ pub(crate) mod tests {
             assert_eq!(l1.get_anchor(), None);
         }
         assert_eq!(preparations.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn l1_read_gas_is_independent_of_discarded_attempt() {
+        let sender = Address::repeat_byte(0x01);
+        let tx = transaction(
+            sender,
+            TxLegacy {
+                nonce: 1,
+                gas_price: 20_000_000_000_000,
+                gas_limit: 1_000_000,
+                to: TxKind::Call(ZONE_OUTBOX_ADDRESS),
+                input: IZoneOutbox::pendingWithdrawalsCountCall {}
+                    .abi_encode()
+                    .into(),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        let precompile = AccountInfo::default().with_code(evm2::bytecode::Bytecode::new_raw(
+            alloy_primitives::Bytes::from_static(&[0xef]),
+        ));
+
+        // Gas of [discarded, retry, fresh replay]. T13 fee txs keep their cache-dependent gas.
+        for (hardfork, is_fee, expected) in [
+            (TempoHardfork::T13, false, [27_394; 3]),
+            (TempoHardfork::T13, true, [25_294, 27_394, 25_294]),
+            (TempoHardfork::T14, false, [39_994; 3]),
+            (TempoHardfork::T14, true, [39_994; 3]),
+            (TempoHardfork::T15, false, [39_994; 3]),
+            (TempoHardfork::T15, true, [39_994; 3]),
+        ] {
+            let l1 = MockL1Reader::default();
+            l1.seed_active_sequencer(Address::ZERO, 0, sender);
+            let make_evm = || {
+                let mut db = sender_db(sender);
+                db.insert_account_info(&DEFAULT_FEE_TOKEN, precompile.clone());
+                db.insert_account_info(&TIP403_REGISTRY_ADDRESS, precompile.clone());
+                db.insert_account_storage(
+                    &DEFAULT_FEE_TOKEN,
+                    &TRANSFER_POLICY_ID,
+                    &(U256::from(ALLOW_ALL_POLICY_ID) << (TRANSFER_POLICY_ID_OFFSET * 8)),
+                );
+                db.insert_account_storage(
+                    &DEFAULT_FEE_TOKEN,
+                    &sender.mapping_slot(BALANCES),
+                    &U256::from(u64::MAX),
+                );
+                let mut env = fee_free_env(hardfork);
+                env.version
+                    .features
+                    .remove(evm2::EvmFeatures::BALANCE_CHECK);
+                if is_fee {
+                    env.version.features.insert(evm2::EvmFeatures::FEE_CHARGE);
+                }
+                BlockExecutorFactory::evm_with_env(&config(l1.clone()), db, env)
+            };
+            let (mut builder, mut replay) = (make_evm(), make_evm());
+
+            // Discarding keeps the host cache warm but resets the selected L1 anchor.
+            let results = [
+                builder.transact(&tx).unwrap().discard(),
+                builder.transact(&tx).unwrap().discard(),
+                replay.transact(&tx).unwrap().discard(),
+            ];
+            assert!(results.iter().all(|result| result.status));
+            assert_eq!(results.map(|result| result.tx_gas_used()), expected);
+        }
     }
 
     #[test]

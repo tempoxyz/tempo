@@ -12,6 +12,7 @@ use crate::{
     setup_validators,
 };
 use alloy::consensus::BlockHeader as _;
+use alloy_provider::{Provider as _, RootProvider};
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_macros::test_traced;
@@ -21,9 +22,9 @@ use commonware_runtime::{
     deterministic::{self, Context, Runner},
 };
 use futures::{channel::oneshot, future::join_all};
-use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
+use tempo_alloy::TempoNetwork;
 use tempo_consensus::{
     feed::FeedStateHandle,
     follow::{self, upstream::in_process},
@@ -88,10 +89,9 @@ async fn follower_rpc_survives_execution_node_handle_drop() {
     });
 
     let http_addr = addr_rx.await.unwrap();
-    let client = HttpClientBuilder::default()
-        .build(format!("http://{http_addr}"))
-        .unwrap();
-    let _: String = client.request("eth_chainId", rpc_params![]).await.unwrap();
+    let client =
+        RootProvider::<TempoNetwork>::new_http(format!("http://{http_addr}").parse().unwrap());
+    client.get_chain_id().await.unwrap();
 
     done_tx.send(()).unwrap();
     executor_handle.join().unwrap();
