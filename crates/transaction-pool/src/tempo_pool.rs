@@ -34,7 +34,7 @@ use reth_transaction_pool::{
     validate::TransactionValidatorError,
 };
 use reth_trie_common::bundle_state::BundleAccount;
-use std::{sync::Arc, time::Instant};
+use std::{mem, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
@@ -55,10 +55,6 @@ use tokio::sync::mpsc;
 /// maintenance and a zone's authority revalidation), so a rejection takes advances from at least
 /// three canonical updates during one admission.
 const ADMISSION_ATTEMPTS: usize = 10;
-
-/// Most transactions an admission inserts under one read of the admission epoch, which an advance
-/// of the epoch waits for.
-const ADMISSION_GROUP_SIZE: usize = 256;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -863,7 +859,7 @@ where
         self.admission_metrics
             .batch_size
             .record(transactions.len() as f64);
-        let has_2d = transactions.iter().any(|(_, tx)| tx.is_aa_2d());
+        let validator = self.protocol_pool.validator();
         let origins = transactions
             .iter()
             .map(|(origin, _)| *origin)
@@ -878,20 +874,23 @@ where
                 ))
             })
             .collect::<Vec<_>>();
-        let validator = self.protocol_pool.validator();
 
-        // Where in `results` each transaction of `pending` goes.
-        let mut slots = (0..transactions.len()).collect::<Vec<_>>();
-        let mut pending = transactions;
+        // The transactions to validate, each with the index of its result.
+        let mut pending = transactions
+            .into_iter()
+            .enumerate()
+            .map(|(index, (origin, transaction))| (index, origin, transaction))
+            .collect::<Vec<_>>();
         for attempt in 1..=ADMISSION_ATTEMPTS {
             let (sender, mut validated) = mpsc::unbounded_channel();
             let start = Instant::now();
             let job = {
                 let validator = Arc::clone(&validator.validator);
+                let pending = mem::take(&mut pending);
                 Box::pin(async move {
-                    validator.validate_each(pending, |epoch, outcome| {
+                    validator.validate_each(pending, |index, epoch, outcome| {
                         // Fails only if this admission was dropped.
-                        let _ = sender.send((epoch, outcome));
+                        let _ = sender.send((index, epoch, outcome));
                     })
                 })
             };
@@ -899,54 +898,28 @@ where
                 break;
             }
 
-            let mut validated_slots = slots.into_iter();
-            // Refilled with the transactions to validate again.
-            (slots, pending) = (Vec::new(), Vec::new());
-            let mut group = Vec::new();
-            // Insert what is validated while the rest validates, so an epoch has to last through
-            // one transaction's validation, not the batch's.
-            while validated.recv_many(&mut group, ADMISSION_GROUP_SIZE).await > 0 {
+            // Insert each transaction as soon as it is validated, so an epoch has to last
+            // through one validation, not the batch's.
+            while let Some((index, validated_in, outcome)) = validated.recv().await {
                 // An advance takes the write lock before the pool is repaired, so either this
                 // sees the advance or the repair sees what is inserted under this guard.
                 let epoch = validator.validator().admission_epoch.read();
-                let (mut current_slots, mut current) = (Vec::new(), Vec::new());
-                for ((validated_in, outcome), slot) in group.drain(..).zip(validated_slots.by_ref())
-                {
-                    match outcome {
-                        TransactionValidationOutcome::Valid { transaction, .. }
-                            if validated_in != *epoch =>
-                        {
-                            let transaction = transaction.transaction();
-                            // Stands if this was the last attempt.
-                            results[slot] = Err(PoolError::other(
-                                *transaction.hash(),
-                                TempoPoolTransactionError::StateChangedDuringValidation,
-                            ));
-                            slots.push(slot);
-                            pending.push((origins[slot], transaction.with_discarded_caches()));
-                        }
-                        // Only valid transactions insert: the rest is forwarded whatever the
-                        // epoch.
-                        outcome => {
-                            current_slots.push(slot);
-                            current.push((origins[slot], outcome));
-                        }
+                results[index] = match outcome {
+                    TransactionValidationOutcome::Valid { transaction, .. }
+                        if validated_in != *epoch =>
+                    {
+                        let transaction = transaction.transaction();
+                        pending.push((index, origins[index], transaction.with_discarded_caches()));
+                        // Stands if this was the last attempt.
+                        Err(PoolError::other(
+                            *transaction.hash(),
+                            TempoPoolTransactionError::StateChangedDuringValidation,
+                        ))
                     }
-                }
-                // Fully delegate to protocol pool for non-2D transactions
-                let added = if has_2d {
-                    current
-                        .into_iter()
-                        .map(|(origin, outcome)| self.add_validated_transaction(origin, outcome))
-                        .collect()
-                } else {
-                    self.protocol_pool
-                        .inner()
-                        .add_transactions_with_origins(current)
+                    // Only a valid transaction inserts: the rest is forwarded whatever the
+                    // epoch.
+                    outcome => self.add_validated_transaction(origins[index], outcome),
                 };
-                for (slot, added) in current_slots.into_iter().zip(added) {
-                    results[slot] = added;
-                }
             }
             self.admission_metrics
                 .validation_duration_seconds
@@ -2665,9 +2638,9 @@ mod tests {
                     mine_sender_nonce(&provider, &pooled);
                     pool.advance_admission_epoch();
                 }
-                (TransactionOrigin::External, pooled.clone())
+                ((), TransactionOrigin::External, pooled.clone())
             }),
-            |epoch, outcome| outcomes.push((epoch, outcome)),
+            |(), epoch, outcome| outcomes.push((epoch, outcome)),
         );
 
         // The first two validated against the state opened before the advance and the third

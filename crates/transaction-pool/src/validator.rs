@@ -359,7 +359,7 @@ where
     }
 
     /// Validates `transactions` in order against the tip's state, passing each outcome to
-    /// `on_outcome` before validating the next.
+    /// `on_outcome` before validating the next, with the tag its transaction came with.
     ///
     /// State is opened once, and again only after the admission epoch advances. The epoch passed
     /// with an outcome is the one read before opening the state it was validated against. A
@@ -368,10 +368,10 @@ where
     /// Transactions validated against one state share an EVM and the validator's tip-scoped
     /// [`StateCache`], so repeated state reads are served from memory across transactions and
     /// across concurrent validation calls.
-    pub(crate) fn validate_each(
+    pub(crate) fn validate_each<TTag>(
         &self,
-        transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
-        mut on_outcome: impl FnMut(u64, TransactionValidationOutcome<TempoPooledTransaction>),
+        transactions: impl IntoIterator<Item = (TTag, TransactionOrigin, TempoPooledTransaction)>,
+        mut on_outcome: impl FnMut(TTag, u64, TransactionValidationOutcome<TempoPooledTransaction>),
     ) {
         let start = Instant::now();
         let mut transactions = transactions.into_iter().peekable();
@@ -382,8 +382,9 @@ where
             let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
                 Ok(provider_and_cache) => provider_and_cache,
                 Err(err) => {
-                    for (_, transaction) in transactions {
+                    for (tag, _, transaction) in transactions {
                         on_outcome(
+                            tag,
                             admission_epoch,
                             TransactionValidationOutcome::Error(
                                 *transaction.hash(),
@@ -412,8 +413,9 @@ where
             evm.ext_mut().skip_valid_after_check = true;
             evm.ext_mut().skip_liquidity_check = true;
 
-            for (origin, transaction) in transactions.by_ref() {
+            for (tag, origin, transaction) in transactions.by_ref() {
                 on_outcome(
+                    tag,
                     admission_epoch,
                     self.validate_one_with_evm(origin, transaction, &mut evm),
                 );
@@ -821,9 +823,10 @@ where
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
         let mut outcomes = Vec::with_capacity(1);
-        self.validate_each(core::iter::once((origin, transaction)), |_, outcome| {
-            outcomes.push(outcome)
-        });
+        self.validate_each(
+            core::iter::once(((), origin, transaction)),
+            |(), _, outcome| outcomes.push(outcome),
+        );
         outcomes
             .pop()
             .expect("validate_each passes one outcome per transaction")
@@ -835,7 +838,12 @@ where
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let mut outcomes = Vec::new();
-        self.validate_each(transactions, |_, outcome| outcomes.push(outcome));
+        self.validate_each(
+            transactions
+                .into_iter()
+                .map(|(origin, tx)| ((), origin, tx)),
+            |(), _, outcome| outcomes.push(outcome),
+        );
         outcomes
     }
 
@@ -846,8 +854,8 @@ where
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let mut outcomes = Vec::new();
         self.validate_each(
-            transactions.into_iter().map(|tx| (origin, tx)),
-            |_, outcome| outcomes.push(outcome),
+            transactions.into_iter().map(|tx| ((), origin, tx)),
+            |(), _, outcome| outcomes.push(outcome),
         );
         outcomes
     }
