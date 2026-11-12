@@ -265,7 +265,8 @@ impl StorageCtx {
 
     /// Returns whether [`StorageCtx::call`] can run a callee. It cannot where the precompile was
     /// not dispatched with its call frame, such as from a zone's precompile provider or a
-    /// transaction hook, and then fails with a fatal error that aborts the block.
+    /// transaction hook, and then fails with [`TempoPrecompileError::NestedCallUnavailable`],
+    /// which reverts the precompile call.
     pub fn can_call(&self) -> bool {
         Self::with_storage(|s| s.can_call())
     }
@@ -276,8 +277,8 @@ impl StorageCtx {
     /// the caller included, runs in its own storage context over the same state, so the caller
     /// must write its state before the call and read it again afterwards.
     ///
-    /// A [`CheckpointGuard`] that reverts after the call undoes the callee's state but not the
-    /// refund and state gas merged from it.
+    /// A [`CheckpointGuard`] that reverts after the call undoes the callee's state and settles
+    /// the gas merged from it as if the callee had reverted.
     pub fn call(
         &mut self,
         target: Address,

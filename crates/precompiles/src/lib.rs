@@ -177,7 +177,8 @@ pub struct TempoPrecompiles<T: EvmTypesHost> {
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Nested calls from precompiles ([`StorageCtx::call`]) that are running, counted across
-    /// the call frames of this provider.
+    /// the call frames of this provider and limited to
+    /// [`MAX_NESTED_CALLS`](storage::evm::MAX_NESTED_CALLS).
     nested_calls: Rc<Cell<u16>>,
 }
 
@@ -205,12 +206,8 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
 
     /// Dispatches to the Tempo precompile at `address`. Takes no `self`, so that the precompile
     /// cannot reach the provider while a nested call re-enters it. That alone does not make the
-    /// re-entry sound: see [`PrecompileProvider::execute`] on this type.
+    /// re-entry sound: see [`Self::execute_in_frame`].
     fn call_tempo(address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
-        #[cfg(test)]
-        if address == tests::NESTED_CALLER_ADDRESS {
-            return tests::nested_caller(calldata, caller);
-        }
         if address.is_tip20() {
             TIP20Token::from_address(address)
                 .expect("TIP-20 prefix already checked")
@@ -255,6 +252,49 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
     }
 }
 
+impl<T> TempoPrecompiles<T>
+where
+    T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
+{
+    /// Runs `precompile` on the input of `message`, in a storage context over the call frame of
+    /// `message`.
+    ///
+    /// # Re-entrancy
+    ///
+    /// A precompile's nested call ([`StorageCtx::call`]) can reach a Tempo precompile again.
+    /// evm2 then derives a second `&mut` to this provider from its own pointer and calls
+    /// [`PrecompileProvider::execute`] on it while the outer call is still in this method. The
+    /// Tempo path therefore runs through `&self`: it cannot write to the provider or borrow a
+    /// field mutably, and everything `precompile` needs is copied or cloned out of `self` before
+    /// it runs.
+    fn execute_in_frame(
+        &self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+        precompile: impl FnOnce(&[u8]) -> PrecompileResult,
+    ) -> PrecompileResult {
+        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
+        let input = evm.message_input(message).to_vec();
+        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
+            .with_actions(self.actions.clone())
+            .with_non_creditable_slots(self.non_creditable_slots.clone())
+            .with_frame(Frame {
+                address: message.call_target,
+                depth: message.depth,
+                nested_calls: self.nested_calls.clone(),
+            });
+        let result = StorageCtx::enter(&mut storage, || precompile(&input));
+        // A halt already takes all gas, and a fatal error must stay one.
+        if storage.gas_overdrawn() && matches!(result, Ok(_) | Err(PrecompileError::Revert(_))) {
+            return error::TempoPrecompileError::OutOfGas.into_precompile_result();
+        }
+        result
+    }
+}
+
 impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
@@ -283,16 +323,6 @@ where
         self.base.contains(address) || address.is_precompile(self.spec)
     }
 
-    /// Runs the precompile that `message` calls.
-    ///
-    /// # Re-entrancy
-    ///
-    /// A precompile's nested call ([`StorageCtx::call`]) can reach a Tempo precompile again.
-    /// evm2 then derives a second `&mut` to this provider from its own pointer and calls
-    /// `execute` on it while this call's `self` is still live, which Rust's aliasing rules do not
-    /// allow. It holds up only as long as this method never writes through `self` and holds no
-    /// borrow of a field across [`StorageCtx::enter`]: everything the precompile needs is copied
-    /// or cloned out of `self` before, and `self` is not used after.
     fn execute(
         &mut self,
         evm: &mut Evm<'_, T>,
@@ -315,19 +345,9 @@ where
             )));
         }
 
-        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
-        let input = evm.message_input(message).to_vec();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
-            .with_actions(self.actions.clone())
-            .with_non_creditable_slots(self.non_creditable_slots.clone())
-            .with_frame(Frame {
-                address: message.call_target,
-                depth: message.depth,
-                nested_calls: self.nested_calls.clone(),
-            });
-        Some(StorageCtx::enter(&mut storage, || {
-            Self::call_tempo(message.call_target, &input, message.caller)
+        // A nested call re-enters this method, so the Tempo path only reads the provider.
+        Some(self.execute_in_frame(evm, message, gas, |input| {
+            Self::call_tempo(message.call_target, input, message.caller)
         }))
     }
 }
@@ -353,7 +373,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        error::EncodePrecompileResult,
+        error::{EncodePrecompileResult, TempoPrecompileError},
         storage::{
             CallOutcome, PrecompileStorageProvider, StorageCtx, evm::MAX_NESTED_CALLS,
             hashmap::HashMapStorageProvider,
@@ -370,24 +390,38 @@ mod tests {
             AccountInfo, InMemoryDB,
             precompile::{NoPrecompiles, PrecompileOutput, PrecompileProvider},
         },
-        interpreter::{Host, Interpreter, MessageResult},
+        interpreter::{Host, InstrStop, Interpreter, MessageResult},
         registry::TxRegistry,
+        version::GasId,
     };
-    use std::thread;
+    use std::{
+        panic::{self, AssertUnwindSafe},
+        thread,
+    };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
-    /// TIP-20 prefixed address that `call_tempo` routes to [`nested_caller`] in tests.
-    pub(super) const NESTED_CALLER_ADDRESS: Address =
-        address!("0x20c000000000000000000000ffffffffffffffff");
+    /// TIP-20 prefixed address at which [`WithNestedCaller`] runs [`nested_caller`].
+    const NESTED_CALLER_ADDRESS: Address = address!("0x20c000000000000000000000ffffffffffffffff");
     /// Contract that forwards its calldata to [`NESTED_CALLER_ADDRESS`], see [`forwarder_code`].
     const FORWARDER: Address = Address::repeat_byte(0xf0);
+    /// Contract that changes its storage when called, with code the tests pick.
+    const STATE_CHANGER: Address = Address::repeat_byte(0xc5);
     /// [`nested_caller`] calldata that makes no nested call, and makes the forwarder revert.
     const LEAF: u8 = 1;
     /// [`nested_caller`] calldata that calls the caller back with [`LEAF`].
     const CALL_BACK: u8 = 2;
     /// [`nested_caller`] calldata that calls the caller back with the same calldata.
     const RECURSE: u8 = 3;
+    /// [`nested_caller`] calldata that calls the caller back, then fails.
+    const FAIL_AFTER_CALL: u8 = 4;
+    /// [`nested_caller`] calldata that calls the caller back and writes a slot, then rolls both
+    /// back with a checkpoint.
+    const ROLL_BACK_CALL: u8 = 5;
+    /// [`nested_caller`] calldata that fails with a fatal error.
+    const FATAL: u8 = 6;
+    /// [`nested_caller`] calldata that panics.
+    const PANIC: u8 = 7;
 
     struct TestTypes;
 
@@ -634,21 +668,72 @@ mod tests {
 
     /// Test precompile that counts its calls in slot 0, then calls its caller back as the first
     /// calldata byte says. Returns the count as read after that call, then the callee's output.
-    pub(super) fn nested_caller(calldata: &[u8], caller: Address) -> PrecompileResult {
+    fn nested_caller(calldata: &[u8], caller: Address) -> PrecompileResult {
         fn run(mut storage: StorageCtx, calldata: &[u8], caller: Address) -> Result<Bytes> {
+            let mode = calldata.first().copied();
             let count = storage.sload(NESTED_CALLER_ADDRESS, U256::ZERO)?;
             storage.sstore(NESTED_CALLER_ADDRESS, U256::ZERO, count + U256::ONE)?;
-            let input = match calldata.first() {
-                Some(&CALL_BACK) => Bytes::from_static(&[LEAF]),
-                Some(&RECURSE) => Bytes::copy_from_slice(calldata),
+            let input = match mode {
+                Some(CALL_BACK) => Bytes::from_static(&[LEAF]),
+                Some(RECURSE) => Bytes::copy_from_slice(calldata),
+                Some(FAIL_AFTER_CALL | ROLL_BACK_CALL) => Bytes::new(),
+                Some(FATAL) => return Err(TempoPrecompileError::Fatal("fatal mode".to_string())),
+                Some(PANIC) => panic!("panic mode"),
                 _ => return Ok(Bytes::new()),
             };
-            let (CallOutcome::Success(output) | CallOutcome::Failure(output)) =
-                storage.call(caller, input, u64::MAX, false)?;
+            let checkpoint = (mode == Some(ROLL_BACK_CALL)).then(|| storage.checkpoint());
+            let outcome = storage.call(caller, input, u64::MAX, false)?;
+            if mode == Some(FAIL_AFTER_CALL) {
+                // The callee's changes and gas are this frame's until it fails.
+                assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
+                assert_eq!(storage.sload(caller, U256::ONE)?, U256::ONE);
+                assert!(storage.gas_refunded() > 0);
+                return Err(TempoPrecompileError::under_overflow());
+            }
+            if let Some(checkpoint) = checkpoint {
+                storage.sstore(NESTED_CALLER_ADDRESS, U256::ONE, U256::ONE)?;
+                drop(checkpoint);
+            }
+            let (CallOutcome::Success(output) | CallOutcome::Failure(output)) = outcome;
             let count = storage.sload(NESTED_CALLER_ADDRESS, U256::ZERO)?;
             Ok([count.to_be_bytes_vec(), output.to_vec()].concat().into())
         }
         run(StorageCtx, calldata, caller).encode_precompile_result(|output| output)
+    }
+
+    /// [`TempoPrecompiles`] that also run [`nested_caller`] at [`NESTED_CALLER_ADDRESS`], in the
+    /// call frame that the production dispatcher sets up.
+    struct WithNestedCaller(TempoPrecompiles<TestTypes>);
+
+    impl PrecompileProvider<TestTypes> for WithNestedCaller {
+        fn precompile_ids(&self) -> Vec<(Address, PrecompileId)> {
+            self.0.precompile_ids()
+        }
+
+        fn contains(&self, address: &Address) -> bool {
+            self.0.contains(address)
+        }
+
+        fn move_precompiles(
+            &mut self,
+            moves: &[(Address, Address)],
+        ) -> std::result::Result<(), MovePrecompileError> {
+            self.0.move_precompiles(moves)
+        }
+
+        fn execute(
+            &mut self,
+            evm: &mut Evm<'_, TestTypes>,
+            message: &Message<TestTypes>,
+            gas: &mut GasTracker,
+        ) -> Option<PrecompileResult> {
+            if message.call_target != NESTED_CALLER_ADDRESS {
+                return self.0.execute(evm, message, gas);
+            }
+            Some(self.0.execute_in_frame(evm, message, gas, |input| {
+                nested_caller(input, message.caller)
+            }))
+        }
     }
 
     /// Bytecode of [`FORWARDER`]: calls [`NESTED_CALLER_ADDRESS`] with its own calldata, then
@@ -676,6 +761,16 @@ mod tests {
         callee: Address,
     }
 
+    impl RecordedCall {
+        fn new(depth: u16, caller: Address, callee: Address) -> Self {
+            Self {
+                depth,
+                caller,
+                callee,
+            }
+        }
+    }
+
     /// Records every call message.
     #[derive(Default)]
     struct CallRecorder(Rc<RefCell<Vec<RecordedCall>>>);
@@ -686,13 +781,58 @@ mod tests {
             _interp: &mut Interpreter<'_, '_, TestTypes>,
             message: &mut Message<TestTypes>,
         ) -> Option<MessageResult<TestTypes>> {
-            self.0.borrow_mut().push(RecordedCall {
-                depth: message.depth,
-                caller: message.caller,
-                callee: message.destination,
-            });
+            self.0.borrow_mut().push(RecordedCall::new(
+                message.depth,
+                message.caller,
+                message.destination,
+            ));
             None
         }
+    }
+
+    /// EVM whose precompiles are [`WithNestedCaller`], with the code of [`FORWARDER`] and, if any,
+    /// of [`STATE_CHANGER`].
+    fn nested_call_evm(
+        spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
+        state_changer_code: Option<Bytes>,
+    ) -> Evm<'static, TestTypes> {
+        let mut evm = test_evm_with_amsterdam(spec, false, amsterdam_eip8037_enabled);
+        evm.set_precompiles(WithNestedCaller(test_tempo_precompiles(spec)));
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        storage.set_code(FORWARDER, forwarder_code()).unwrap();
+        if let Some(code) = state_changer_code {
+            storage.set_code(STATE_CHANGER, code).unwrap();
+        }
+        drop(storage);
+        evm
+    }
+
+    /// A top-level call from `caller` to `destination`, which runs `code`, with `mode` as calldata.
+    fn mode_message(
+        caller: Address,
+        destination: Address,
+        code: Bytes,
+        mode: u8,
+        gas_limit: u64,
+    ) -> Message<TestTypes> {
+        Message::<TestTypes> {
+            gas_limit,
+            caller,
+            destination,
+            call_target: destination,
+            code_address: destination,
+            code: Bytecode::new_raw(code),
+            input: Bytes::from(vec![mode]).into(),
+            ..Default::default()
+        }
+    }
+
+    /// Reads the count of [`nested_caller`].
+    fn nested_caller_count(evm: &mut Evm<'_, TestTypes>, spec: TempoHardfork) -> U256 {
+        EvmPrecompileStorageProvider::new_max_gas(evm, spec)
+            .sload(NESTED_CALLER_ADDRESS, U256::ZERO)
+            .unwrap()
     }
 
     /// Calls [`FORWARDER`] with `mode` as a top-level message, under `recorder` if any. Returns
@@ -703,29 +843,13 @@ mod tests {
         recorder: Option<CallRecorder>,
     ) -> (MessageResult<TestTypes>, U256) {
         let spec = TempoHardfork::T2;
-        let mut evm = test_evm(spec, false);
-        evm.set_precompiles(test_tempo_precompiles(spec));
+        let mut evm = nested_call_evm(spec, false, None);
         if let Some(recorder) = recorder {
             evm.set_inspector(recorder);
         }
-        let code = forwarder_code();
-        EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec)
-            .set_code(FORWARDER, code.clone())
-            .unwrap();
-
-        let mut message = Message::<TestTypes> {
-            gas_limit,
-            destination: FORWARDER,
-            call_target: FORWARDER,
-            code_address: FORWARDER,
-            code: Bytecode::new_raw(code),
-            input: Bytes::from(vec![mode]).into(),
-            ..Default::default()
-        };
+        let mut message = mode_message(Address::ZERO, FORWARDER, forwarder_code(), mode, gas_limit);
         let result = evm.execute_message(&mut message).unwrap();
-        let count = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec)
-            .sload(NESTED_CALLER_ADDRESS, U256::ZERO)
-            .unwrap();
+        let count = nested_caller_count(&mut evm, spec);
         (result, count)
     }
 
@@ -739,18 +863,13 @@ mod tests {
         assert!(result.is_success());
 
         // The callee saw the precompile as its caller, one level below the precompile's frame.
-        let call = |depth, caller, callee| RecordedCall {
-            depth,
-            caller,
-            callee,
-        };
         assert_eq!(
             calls.take(),
             [
-                call(0, Address::ZERO, FORWARDER),
-                call(1, FORWARDER, NESTED_CALLER_ADDRESS),
-                call(2, NESTED_CALLER_ADDRESS, FORWARDER),
-                call(3, FORWARDER, NESTED_CALLER_ADDRESS),
+                RecordedCall::new(0, Address::ZERO, FORWARDER),
+                RecordedCall::new(1, FORWARDER, NESTED_CALLER_ADDRESS),
+                RecordedCall::new(2, NESTED_CALLER_ADDRESS, FORWARDER),
+                RecordedCall::new(3, FORWARDER, NESTED_CALLER_ADDRESS),
             ]
         );
         // The inner precompile call's write was rolled back with the contract that made it, as
@@ -761,6 +880,40 @@ mod tests {
         ];
         assert_eq!(result.output, Bytes::from(expected.concat()));
         assert_eq!(count, U256::ONE);
+    }
+
+    /// A precompile that a top-level message calls makes its nested call from depth 0, also with
+    /// an inspector installed.
+    #[test]
+    fn test_top_level_precompile_makes_nested_call_under_inspector() {
+        let spec = TempoHardfork::T2;
+        let mut evm = nested_call_evm(spec, false, None);
+        let calls = Rc::default();
+        evm.set_inspector(CallRecorder(Rc::clone(&calls)));
+
+        let mut message = mode_message(
+            FORWARDER,
+            NESTED_CALLER_ADDRESS,
+            Bytes::new(),
+            CALL_BACK,
+            1_000_000,
+        );
+        let result = evm.execute_message(&mut message).unwrap();
+        assert!(result.is_success());
+        assert_eq!(
+            calls.take(),
+            [
+                RecordedCall::new(0, FORWARDER, NESTED_CALLER_ADDRESS),
+                RecordedCall::new(1, NESTED_CALLER_ADDRESS, FORWARDER),
+                RecordedCall::new(2, FORWARDER, NESTED_CALLER_ADDRESS),
+            ]
+        );
+        let expected = [
+            U256::ONE.to_be_bytes::<32>(),
+            NESTED_CALLER_ADDRESS.into_word().0,
+        ];
+        assert_eq!(result.output, Bytes::from(expected.concat()));
+        assert_eq!(nested_caller_count(&mut evm, spec), U256::ONE);
     }
 
     /// A contract and a precompile that call each other until gas runs out stop nesting at
@@ -778,9 +931,120 @@ mod tests {
                 .join()
                 .unwrap();
             assert!(result.is_success());
-            // The precompile runs once more than it nests calls: its last call is refused.
-            assert_eq!(count, U256::from(MAX_NESTED_CALLS + 1));
+            // The precompile runs once more than it nests calls. That run is refused its call
+            // and reverts without data, so each run before it returns the count it left.
+            assert_eq!(count, U256::from(MAX_NESTED_CALLS));
+            let returned = count.to_be_bytes::<32>().repeat(MAX_NESTED_CALLS.into());
+            assert_eq!(result.output, Bytes::from(returned));
         }
+    }
+
+    /// A precompile call that fails after its nested callee succeeded takes the callee's state,
+    /// logs and gas down with it.
+    #[test]
+    fn test_precompile_failure_rolls_back_successful_nested_callee() {
+        let spec = TempoHardfork::T4;
+        // sstore(1, 1); sstore(0, 0); log0(0, 0); stop
+        let code = bytes!("60016001555f5f555f5fa000");
+        let mut evm = nested_call_evm(spec, true, Some(code));
+        EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec)
+            .sstore(STATE_CHANGER, U256::ZERO, U256::from(7))
+            .unwrap();
+        // The slot that the callee clears predates the transaction, so clearing it is refunded.
+        evm.state_mut().commit_transaction();
+        evm.state_mut().clear_transaction_state();
+
+        let reservoir = 1_000_000;
+        let mut message = Message::<TestTypes> {
+            reservoir,
+            ..mode_message(
+                STATE_CHANGER,
+                NESTED_CALLER_ADDRESS,
+                Bytes::new(),
+                FAIL_AFTER_CALL,
+                10_000_000,
+            )
+        };
+        let result = evm.execute_message(&mut message).unwrap();
+        assert_eq!(result.stop, InstrStop::Revert);
+        assert_eq!(result.gas.refunded(), 0);
+        assert_eq!(result.gas.state_gas_spent(), 0);
+        assert_eq!(result.gas.reservoir(), reservoir);
+        assert!(evm.logs().is_empty());
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        assert_eq!(
+            storage.sload(STATE_CHANGER, U256::ZERO).unwrap(),
+            U256::from(7)
+        );
+        assert_eq!(storage.sload(STATE_CHANGER, U256::ONE).unwrap(), U256::ZERO);
+        assert_eq!(
+            storage.sload(NESTED_CALLER_ADDRESS, U256::ZERO).unwrap(),
+            U256::ZERO
+        );
+    }
+
+    /// A precompile that rolls back a callee's state gas refill after spending it pays the refill
+    /// back from its gas, and runs out of gas if it cannot.
+    #[test]
+    fn test_precompile_pays_back_rolled_back_refill_or_runs_out_of_gas() {
+        let spec = TempoHardfork::T4;
+        for (gas_limit, out_of_gas) in [(10_000_000, false), (100_000, true)] {
+            // sstore(1, 0); stop
+            let mut evm = nested_call_evm(spec, true, Some(bytes!("5f60015500")));
+            let state_gas = evm.version().gas_params.get(GasId::SstoreSetState);
+            // An earlier frame of the transaction creates the slot that the callee clears.
+            EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec)
+                .sstore(STATE_CHANGER, U256::ONE, U256::ONE)
+                .unwrap();
+
+            // The reservoir covers the precompile's count, and the callee's refill its other slot.
+            let mut message = Message::<TestTypes> {
+                reservoir: state_gas,
+                ..mode_message(
+                    STATE_CHANGER,
+                    NESTED_CALLER_ADDRESS,
+                    Bytes::new(),
+                    ROLL_BACK_CALL,
+                    gas_limit,
+                )
+            };
+            let result = evm.execute_message(&mut message).unwrap();
+            if out_of_gas {
+                assert_eq!(result.stop, InstrStop::PrecompileOOG);
+                assert_eq!(result.gas.remaining(), 0);
+            } else {
+                // The checkpoint keeps the state gas of the precompile's rolled back slot, which
+                // now comes out of its gas.
+                assert!(result.is_success());
+                assert_eq!(result.gas.state_gas_spent(), 2 * state_gas as i64);
+                assert_eq!(result.gas.state_gas_spilled(), state_gas);
+            }
+            assert_eq!(nested_caller_count(&mut evm, spec), U256::from(!out_of_gas));
+        }
+    }
+
+    /// The count of running nested calls is restored when the callee does not return a result.
+    #[test]
+    fn test_nested_call_count_is_restored_when_callee_errors_or_panics() {
+        let spec = TempoHardfork::T2;
+        let mut evm = nested_call_evm(spec, false, None);
+        // A fatal error keeps the gas forwarded to the callee, so leave enough for both calls.
+        let mut gas = GasTracker::new(u64::MAX);
+        let nested_calls = Rc::new(Cell::new(3));
+        let mut storage = EvmPrecompileStorageProvider::new(&mut evm, &mut gas, spec, false)
+            .with_frame(Frame {
+                address: TIP20_FACTORY_ADDRESS,
+                depth: 0,
+                nested_calls: Rc::clone(&nested_calls),
+            });
+        let mut call =
+            |mode| storage.call(NESTED_CALLER_ADDRESS, vec![mode].into(), u64::MAX, false);
+
+        assert!(matches!(call(FATAL), Err(TempoPrecompileError::Fatal(_))));
+        assert_eq!(nested_calls.get(), 3);
+
+        assert!(panic::catch_unwind(AssertUnwindSafe(|| call(PANIC))).is_err());
+        assert_eq!(nested_calls.get(), 3);
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly

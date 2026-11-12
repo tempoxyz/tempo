@@ -133,23 +133,25 @@ impl StorageActions {
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
+    ///
+    /// Keeps the [unreplayable](Self::mark_unreplayable) mark: take actions that are to be
+    /// replayed with [`Self::take_replay`].
     pub fn take(&self) -> Option<Vec<StorageAction>> {
         self.replace(Vec::new())
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
+    ///
+    /// Keeps the [unreplayable](Self::mark_unreplayable) mark.
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         match self {
             Self::Disabled => None,
-            Self::Enabled(state) => {
-                let mut state = state.borrow_mut();
-                state.unreplayable = false;
-                Some(mem::replace(&mut state.actions, actions))
-            }
+            Self::Enabled(state) => Some(mem::replace(&mut state.borrow_mut().actions, actions)),
         }
     }
 
-    /// Marks the recorded actions as unable to rebuild the transaction's state.
+    /// Marks the recorded actions as unable to rebuild the transaction's state, until
+    /// [`Self::take_replay`], [`Self::clear`] or [`Self::enable`] resets the buffer.
     ///
     /// Call this when execution runs code whose storage accesses are not recorded, such as a
     /// nested call from a precompile into contract bytecode.
@@ -382,5 +384,29 @@ mod tests {
         assert_eq!(actions.take_replay(), Some(vec![action]));
 
         assert_eq!(StorageActions::disabled().take_replay(), None);
+    }
+
+    #[test]
+    fn test_unreplayable_mark_is_reset_with_the_buffer_only() {
+        let mut actions = StorageActions::enabled();
+        let action = StorageAction::Sload(Address::ZERO, U256::ONE, U256::ONE);
+
+        // Taking or replacing the actions by other means keeps the mark.
+        actions.record(action);
+        actions.mark_unreplayable();
+        assert_eq!(actions.take(), Some(vec![action]));
+        assert_eq!(actions.replace(vec![action]), Some(vec![]));
+        assert_eq!(actions.take_replay(), None);
+
+        // Clearing the buffer and enabling it again reset the mark.
+        actions.mark_unreplayable();
+        actions.clear();
+        actions.record(action);
+        assert_eq!(actions.take_replay(), Some(vec![action]));
+
+        actions.mark_unreplayable();
+        actions.enable();
+        actions.record(action);
+        assert_eq!(actions.take_replay(), Some(vec![action]));
     }
 }

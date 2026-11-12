@@ -26,9 +26,14 @@ use tempo_primitives::{
     TempoBlockEnv, TempoBlockExt, TempoEvmKind, account::encode_config_commitment,
 };
 
-/// Limit on the nested calls ([`PrecompileStorageProvider::call`]) that run at once in an EVM,
-/// each made from within the callee of the one before. A call past it fails as `CALL` does
-/// past the EVM's call depth limit.
+/// Limit on the nested calls ([`PrecompileStorageProvider::call`]) that run at once, each made
+/// from within the callee of the one before. They are counted per precompile provider
+/// ([`TempoPrecompiles`](crate::TempoPrecompiles)), across all of its call frames. A call past the
+/// limit fails the precompile call that makes it with
+/// [`TempoPrecompileError::NestedCallLimitReached`].
+///
+/// The limit is consensus-critical once a precompile makes nested calls, because it decides
+/// whether a call runs: it may only change behind a hardfork.
 ///
 /// A nested call recurses on the native stack through the precompile and the EVM, and needs
 /// several times the stack of a plain EVM frame: 7 to 9 KiB in optimized builds and 22 to
@@ -55,6 +60,12 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     /// The precompile call frame this provider serves, which nested calls start from. `None`
     /// outside a precompile call.
     frame: Option<Frame>,
+    /// Gas merged from the successful nested callees whose state a checkpoint can still roll
+    /// back, oldest first.
+    merged_call_gas: Vec<MergedCallGas>,
+    /// Set when a checkpoint revert took back a state gas refill of a nested callee that this
+    /// frame had already spent. The precompile call then fails with out of gas.
+    gas_overdrawn: bool,
 }
 
 impl<'evm, 'gas, 'db, T> EvmPrecompileStorageProvider<'evm, 'gas, 'db, T>
@@ -104,6 +115,8 @@ where
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
             frame: None,
+            merged_call_gas: Vec::new(),
+            gas_overdrawn: false,
         }
     }
 
@@ -133,6 +146,13 @@ where
     pub fn with_non_creditable_slots(mut self, slots: Rc<RefCell<NonCreditableSlots>>) -> Self {
         self.non_creditable_slots = Some(slots);
         self
+    }
+
+    /// Returns whether the frame spent gas that a checkpoint revert later took back, see
+    /// [`PrecompileStorageProvider::checkpoint_revert`]. The precompile call must then fail with
+    /// out of gas, whatever the precompile returned.
+    pub(crate) fn gas_overdrawn(&self) -> bool {
+        self.gas_overdrawn
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
@@ -685,10 +705,14 @@ where
             nested_calls,
         }) = self.frame.clone()
         else {
-            return Err(TempoPrecompileError::Fatal(
-                "nested call outside a precompile call frame".to_string(),
-            ));
+            return Err(TempoPrecompileError::NestedCallUnavailable);
         };
+        // A refused call fails the precompile call. Reported as a failed callee, it would let
+        // whoever nests the calls pick the path the precompile takes.
+        let running = nested_calls.get();
+        if running >= MAX_NESTED_CALLS {
+            return Err(TempoPrecompileError::NestedCallLimitReached);
+        }
         let depth = depth
             .checked_add(1)
             .ok_or_else(|| TempoPrecompileError::Fatal("call depth overflow".to_string()))?;
@@ -705,13 +729,6 @@ where
         {
             code = self.with_loaded_account(delegate, |_, code| code)?;
             code_address = delegate;
-        }
-
-        // Like a `CALL` past the EVM's depth limit, the callee does not run and no gas is
-        // forwarded.
-        let running = nested_calls.get();
-        if running >= MAX_NESTED_CALLS {
-            return Ok(CallOutcome::Failure(Bytes::new()));
         }
 
         // EIP-150: forward at most all but one 64th of the remaining gas.
@@ -743,11 +760,16 @@ where
             ext: Default::default(),
             _non_exhaustive: (),
         };
+        let journal_len = self.evm.state_mut().checkpoint().journal_len();
         // The EVM runs the callee in the transaction's environment, rolls its state back if it
         // fails and settles its gas, so only the gas it has left is merged back.
         nested_calls.set(running + 1);
+        let running_call = RunningNestedCall {
+            nested_calls,
+            previous: running,
+        };
         let result = self.evm.execute_message(&mut message);
-        nested_calls.set(running);
+        drop(running_call);
         let result = result.map_err(|error| match error {
             ExecutionError::Database(error) => TempoPrecompileError::Database(error),
             ExecutionError::Fatal(error) => TempoPrecompileError::Fatal(error.to_string()),
@@ -760,6 +782,14 @@ where
         self.gas_tracker.merge_child_gas(result.gas, result.stop);
 
         Ok(if result.is_success() {
+            let (state_gas_spent, refunded) = (result.gas.state_gas_spent(), result.gas.refunded());
+            if state_gas_spent != 0 || refunded != 0 {
+                self.merged_call_gas.push(MergedCallGas {
+                    journal_len,
+                    state_gas_spent,
+                    refunded,
+                });
+            }
             CallOutcome::Success(result.output)
         } else {
             CallOutcome::Failure(result.output)
@@ -774,11 +804,35 @@ where
     #[inline]
     fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {}
 
-    #[inline]
     fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+        let journal_len = checkpoint.journal_len();
         self.evm
             .state_mut()
             .rollback(checkpoint, self.version.features);
+
+        // Settle the gas of the nested callees this rolled back as if they had reverted, which
+        // leaves the tracker as their reverts would have. Without nested calls nothing changes.
+        let (mut state_gas_spent, mut refunded) = (0i64, 0i64);
+        while let Some(call) = self
+            .merged_call_gas
+            .pop_if(|call| call.journal_len >= journal_len)
+        {
+            state_gas_spent = state_gas_spent.saturating_add(call.state_gas_spent);
+            refunded = refunded.saturating_add(call.refunded);
+        }
+        self.gas_tracker.record_refund(refunded.saturating_neg());
+        if state_gas_spent > 0 {
+            self.gas_tracker
+                .refill_reservoir(state_gas_spent.unsigned_abs());
+        } else if state_gas_spent < 0
+            && self
+                .gas_tracker
+                .try_spend_state(state_gas_spent.unsigned_abs())
+                .is_err()
+        {
+            // The callees refilled state gas that the frame went on to spend and cannot pay back.
+            self.gas_overdrawn = true;
+        }
     }
 
     #[inline]
@@ -965,8 +1019,34 @@ pub(crate) struct Frame {
     /// The precompile's call depth. A callee runs one level deeper.
     pub(crate) depth: u16,
     /// Count of the nested calls that are running, for [`MAX_NESTED_CALLS`]. Every call frame
-    /// of an EVM shares it.
+    /// of a precompile provider shares it.
     pub(crate) nested_calls: Rc<Cell<u16>>,
+}
+
+/// Counts a nested call as running until dropped, so that the count is restored when the callee
+/// unwinds too: an EVM can be used again after a panic was caught.
+struct RunningNestedCall {
+    nested_calls: Rc<Cell<u16>>,
+    /// The count before the call.
+    previous: u16,
+}
+
+impl Drop for RunningNestedCall {
+    fn drop(&mut self) {
+        self.nested_calls.set(self.previous);
+    }
+}
+
+/// Gas that a successful nested callee reported and that was merged into the frame, kept to take
+/// it back when a checkpoint rolls the callee's state back.
+struct MergedCallGas {
+    /// Length of the state journal when the call started. A rollback to a checkpoint that is not
+    /// past it undoes the callee.
+    journal_len: usize,
+    /// The callee's net EIP-8037 state gas, negative when it cleared more state than it created.
+    state_gas_spent: i64,
+    /// The callee's refund.
+    refunded: i64,
 }
 
 enum GasTrackerStorage<'a> {
@@ -1037,6 +1117,7 @@ mod tests {
     use evm2::{
         BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId, Version,
         bytecode::Bytecode,
+        constants::CALL_DEPTH_LIMIT,
         evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
         interpreter::{GasTracker, gas},
         registry::TxRegistry,
@@ -2237,10 +2318,10 @@ mod tests {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
         assert!(!provider.can_call());
-        assert!(matches!(
+        assert_eq!(
             provider.call(CALLEE, Bytes::new(), u64::MAX, false),
-            Err(TempoPrecompileError::Fatal(_))
-        ));
+            Err(TempoPrecompileError::NestedCallUnavailable)
+        );
         assert_eq!(provider.gas_used(), 0);
 
         assert!(provider.with_frame(frame()).can_call());
@@ -2322,23 +2403,22 @@ mod tests {
     }
 
     #[test]
-    fn test_call_fails_past_max_nested_calls() -> eyre::Result<()> {
+    fn test_call_past_max_nested_calls_is_an_error() -> eyre::Result<()> {
         // sstore(0, 1); stop
         let mut evm = evm_with_callee(bytes!("60015f5500"));
-        let gas_params = evm.gas_params();
         let nested_calls = Rc::new(Cell::new(MAX_NESTED_CALLS));
         let mut provider = evm.provider_with_gas_limit(1_000_000, 0).with_frame(Frame {
             nested_calls: nested_calls.clone(),
             ..frame()
         });
 
-        // The callee does not run and is forwarded no gas: only its access is charged.
-        let outcome = provider.call(CALLEE, Bytes::new(), u64::MAX, false)?;
-        assert_eq!(outcome, CallOutcome::Failure(Bytes::new()));
+        // The call is refused before anything is charged, and not as a failed callee.
         assert_eq!(
-            provider.gas_used(),
-            gas_params.get(GasId::WarmStorageReadCost) + gas_params.cold_account_additional_cost()
+            provider.call(CALLEE, Bytes::new(), u64::MAX, false),
+            Err(TempoPrecompileError::NestedCallLimitReached)
         );
+        assert_eq!(provider.gas_used(), 0);
+        assert_eq!(nested_calls.get(), MAX_NESTED_CALLS);
         assert_eq!(provider.sload(CALLEE, U256::ZERO)?, U256::ZERO);
 
         // With one call less running it does, and no longer counts once it returned.
@@ -2347,6 +2427,33 @@ mod tests {
         assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
         assert_eq!(provider.sload(CALLEE, U256::ZERO)?, U256::ONE);
         assert_eq!(nested_calls.get(), MAX_NESTED_CALLS - 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_call_past_evm_call_depth_limit_fails_callee_and_returns_gas() -> eyre::Result<()> {
+        for (depth, runs) in [(CALL_DEPTH_LIMIT - 1, true), (CALL_DEPTH_LIMIT, false)] {
+            // sstore(0, 1); stop
+            let mut evm = evm_with_callee(bytes!("60015f5500"));
+            let gas_params = evm.gas_params();
+            let access_cost = gas_params.get(GasId::WarmStorageReadCost)
+                + gas_params.cold_account_additional_cost();
+            let mut provider = evm
+                .provider_with_gas_limit(1_000_000, 0)
+                .with_frame(Frame { depth, ..frame() });
+
+            // Past the limit the EVM refuses the callee as it does for `CALL`, and hands the
+            // forwarded gas back.
+            let outcome = provider.call(CALLEE, Bytes::new(), u64::MAX, false)?;
+            if runs {
+                assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
+                assert!(provider.gas_used() > access_cost);
+            } else {
+                assert_eq!(outcome, CallOutcome::Failure(Bytes::new()));
+                assert_eq!(provider.gas_used(), access_cost);
+            }
+            assert_eq!(provider.sload(CALLEE, U256::ZERO)?, U256::from(runs));
+        }
         Ok(())
     }
 
@@ -2449,6 +2556,91 @@ mod tests {
         assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
         assert_eq!(provider.reservoir(), state_gas);
         assert_eq!(provider.state_gas_used(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_checkpoint_revert_takes_back_gas_merged_from_callee() -> eyre::Result<()> {
+        // sstore(1, 1); sstore(0, 0); stop
+        let code = Bytecode::new_raw(bytes!("60016001555f5f5500"));
+        let mut gas_used = Vec::new();
+        // The reservoir covers the new slot's state gas, or the callee's gas pays for all of it.
+        for reservoir in [500_000, 0] {
+            let mut database = InMemoryDB::default();
+            database.insert_account_info(&CALLEE, AccountInfo::default().with_code(code.clone()));
+            database.insert_account_storage(&CALLEE, &U256::ZERO, &U256::from(7));
+            let mut evm = TestEvm::with_database(TempoHardfork::T4, true, database);
+            let mut provider = evm
+                .provider_with_gas_limit(10_000_000, reservoir)
+                .with_frame(frame());
+
+            let checkpoint = provider.checkpoint();
+            let outcome = provider.call(CALLEE, Bytes::new(), 1_000_000, false)?;
+            assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
+            let (refunded, state_gas) = (provider.gas_refunded(), provider.state_gas_used());
+            assert!(refunded > 0 && state_gas > 0);
+
+            // A checkpoint taken after the call does not cover the callee.
+            let later = provider.checkpoint();
+            provider.checkpoint_revert(later);
+            assert_eq!(provider.gas_refunded(), refunded);
+            assert_eq!(provider.state_gas_used(), state_gas);
+
+            // The one taken before it undoes the callee's writes, and with them the refund they
+            // earned and the state gas they cost, wherever that was drawn from.
+            provider.checkpoint_revert(checkpoint);
+            assert_eq!(provider.sload(CALLEE, U256::ZERO)?, U256::from(7));
+            assert_eq!(provider.sload(CALLEE, U256::ONE)?, U256::ZERO);
+            assert_eq!(provider.gas_refunded(), 0);
+            assert_eq!(provider.state_gas_used(), 0);
+            assert_eq!(provider.state_gas_spilled(), 0);
+            assert_eq!(provider.reservoir(), reservoir);
+            assert!(!provider.gas_overdrawn());
+            gas_used.push(provider.gas_used());
+        }
+        assert_eq!(gas_used[0], gas_used[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_checkpoint_revert_charges_state_gas_refill_of_callee_again() -> eyre::Result<()> {
+        // The frame can pay the refill back from its gas, or cannot.
+        for (gas_limit, overdrawn) in [(10_000_000, false), (100_000, true)] {
+            let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+            let state_gas = evm.gas_params().get(GasId::SstoreSetState);
+
+            // An earlier frame of the transaction deploys the callee and creates its slot.
+            let mut provider = evm.provider_max_gas();
+            // sstore(1, 0); stop
+            provider.set_code(CALLEE, bytes!("5f60015500"))?;
+            provider.sstore(CALLEE, U256::ONE, U256::ONE)?;
+            drop(provider);
+
+            // The callee clears the slot, and the frame spends the refill on a slot of its own.
+            let mut provider = evm
+                .provider_with_gas_limit(gas_limit, 0)
+                .with_frame(frame());
+            let checkpoint = provider.checkpoint();
+            let outcome = provider.call(CALLEE, Bytes::new(), u64::MAX, false)?;
+            assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
+            assert_eq!(provider.reservoir(), state_gas);
+            provider.sstore(CALLING_PRECOMPILE, U256::ZERO, U256::ONE)?;
+            assert_eq!(provider.reservoir(), 0);
+            let gas_used = provider.gas_used();
+
+            // The cleared slot is back, so the state gas of the frame's own slot, which a
+            // checkpoint revert keeps, comes out of the frame's gas.
+            provider.checkpoint_revert(checkpoint);
+            assert_eq!(provider.gas_overdrawn(), overdrawn);
+            if overdrawn {
+                assert_eq!(provider.gas_used(), gas_used);
+            } else {
+                assert_eq!(provider.gas_used(), gas_used + state_gas);
+                assert_eq!(provider.state_gas_used(), state_gas);
+                assert_eq!(provider.state_gas_spilled(), state_gas);
+                assert_eq!(provider.sload(CALLEE, U256::ONE)?, U256::ONE);
+            }
+        }
         Ok(())
     }
 

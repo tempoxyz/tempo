@@ -296,14 +296,12 @@ mod tests {
     #[test]
     fn zone_precompile_cannot_make_nested_calls() {
         let execute = |_: &[u8], _| {
-            // The Zone installs no call frame, so a nested call is a fatal error.
             let mut storage = StorageCtx::default();
             assert!(!storage.can_call());
-            assert!(matches!(
-                storage.call(Address::ZERO, Bytes::new(), 0, false),
-                Err(TempoPrecompileError::Fatal(_))
-            ));
-            Ok(storage.success_output(Bytes::new()))
+            match storage.call(Address::ZERO, Bytes::new(), 0, false) {
+                Ok(_) => Ok(storage.success_output(Bytes::new())),
+                Err(error) => storage.error_result(error),
+            }
         };
 
         let mut ctx = test_context();
@@ -316,7 +314,11 @@ mod tests {
             NoCallRules,
             execute,
         );
-        output.unwrap();
+        // The Zone installs no call frame, so a nested call reverts the precompile call.
+        assert!(matches!(
+            output,
+            Err(PrecompileError::Revert(data)) if data.is_empty()
+        ));
     }
 
     #[test]

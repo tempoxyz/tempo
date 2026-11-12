@@ -1202,6 +1202,46 @@ mod tests {
     }
 
     #[test]
+    fn unreplayable_actions_yield_no_replay_for_their_transaction_only() {
+        let mut context = prewarming_context(TaskExecutor::test(), true);
+        context.evm_env.block.basefee = U256::ZERO;
+
+        let pool = WorkerStatefulPool::new(Arc::new(WorkerPool::new(1, "prewarm-replay-test")));
+        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+
+        pool.install_fn(|| {
+            // Model a transaction whose precompile makes a nested call, which marks the actions.
+            // No precompile makes one yet.
+            pool.get_or_init(
+                || context.evm_for_ctx(),
+                |evm| {
+                    let evm = evm.as_mut().expect("prewarm EVM");
+                    evm.ext().actions.mark_unreplayable();
+                },
+            );
+
+            let sender = Address::random();
+            let unreplayable = BestTransactionsPrewarming::prewarm_transaction(
+                &pool,
+                context.clone(),
+                test_payment_tx(sender, 500_000),
+                None,
+            );
+            assert!(unreplayable.replay.is_none());
+
+            // The worker's next transaction is replayed from its own actions again.
+            let replayable = BestTransactionsPrewarming::prewarm_transaction(
+                &pool,
+                context,
+                test_payment_tx(sender, 500_000),
+                None,
+            );
+            let replay = replayable.replay.expect("prewarm replay");
+            assert!(!replay.actions.is_empty());
+        });
+    }
+
+    #[test]
     fn mark_invalid_skips_buffered_transactions_on_invalidated_lanes() {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
