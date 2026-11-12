@@ -10,7 +10,6 @@
 //! the nodes on each read's path.
 
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256, map::B256Map};
-use alloy_rlp::Decodable;
 use reth_trie_common::{
     DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, Nibbles, TrieAccount, TrieNode,
 };
@@ -230,7 +229,9 @@ impl StatelessSparseTrie {
 /// the same however many other nodes the pool holds.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WitnessPathReader<'a> {
+    /// Root every read starts from.
     state_root: B256,
+    /// Witness nodes keyed by keccak hash, from [`index_witness_nodes`].
     nodes: &'a B256Map<Bytes>,
 }
 
@@ -317,7 +318,8 @@ impl<'a> WitnessPathReader<'a> {
                     if !branch.state_mask.is_bit_set(nibble) {
                         return Ok(PathEnd::Absent);
                     }
-                    // Children are stored in nibble order for the set bits of the mask.
+                    // Children are stored in nibble order for the set bits of the mask. Decoding
+                    // builds the mask from the present children, so the stack always matches it.
                     let index = (branch.state_mask.get() & ((1 << nibble) - 1)).count_ones();
                     branch
                         .stack
@@ -331,7 +333,7 @@ impl<'a> WitnessPathReader<'a> {
                     Some(node) => node,
                     None => return Ok(PathEnd::Blinded),
                 },
-                None => TrieNode::decode(&mut child.as_ref())
+                None => alloy_rlp::decode_exact(child.as_ref())
                     .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?,
             };
         }
@@ -341,7 +343,7 @@ impl<'a> WitnessPathReader<'a> {
         self.nodes
             .get(hash)
             .map(|bytes| {
-                TrieNode::decode(&mut bytes.as_ref())
+                alloy_rlp::decode_exact(bytes)
                     .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)
             })
             .transpose()
@@ -442,7 +444,9 @@ pub enum StatelessSparseTrieError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_trie_common::{HashBuilder, proof::ProofRetainer};
+    use reth_trie_common::{
+        BranchNode, ExtensionNode, HashBuilder, LeafNode, RlpNode, TrieMask, proof::ProofRetainer,
+    };
     use std::collections::BTreeMap;
 
     /// Builds the trie over `leaves` and returns its root with the proof nodes for `targets`.
@@ -558,14 +562,62 @@ mod tests {
         );
     }
 
+    /// Indexes `nodes` by hash and returns the first node's hash as the root.
+    fn pool(nodes: &[TrieNode]) -> (B256, B256Map<Bytes>) {
+        let nodes = nodes
+            .iter()
+            .map(|node| Bytes::from(alloy_rlp::encode(node)))
+            .collect::<Vec<_>>();
+        (keccak256(&nodes[0]), index_witness_nodes(&nodes).unwrap())
+    }
+
     #[test]
     fn path_reader_rejects_invalid_node_encoding() {
-        let invalid = Bytes::from_static(&[0xc2, 0x80]);
-        let root = keccak256(&invalid);
-        let nodes = B256Map::from_iter([(root, invalid)]);
+        let mut leaf = alloy_rlp::encode(TrieNode::Leaf(LeafNode::new(
+            Nibbles::unpack(keccak256(Address::ZERO)),
+            vec![0x80],
+        )));
+        leaf.push(0x80);
+        for invalid in [vec![0xc2, 0x80], leaf] {
+            let invalid = Bytes::from(invalid);
+            let root = keccak256(&invalid);
+            let nodes = B256Map::from_iter([(root, invalid)]);
+            assert_eq!(
+                WitnessPathReader::new(root, &nodes).account(Address::ZERO),
+                Err(StatelessSparseTrieError::InvalidNodeEncoding)
+            );
+        }
+    }
+
+    #[test]
+    fn path_reader_rejects_leaf_not_ending_at_full_depth() {
+        let (root, nodes) = pool(&[TrieNode::Leaf(LeafNode::new(
+            Nibbles::from_nibbles([1, 2, 3]),
+            vec![0x80],
+        ))]);
         assert_eq!(
             WitnessPathReader::new(root, &nodes).account(Address::ZERO),
-            Err(StatelessSparseTrieError::InvalidNodeEncoding)
+            Err(StatelessSparseTrieError::InvalidSparseTrie)
+        );
+    }
+
+    #[test]
+    fn path_reader_rejects_branch_past_full_depth() {
+        let branch = TrieNode::Branch(BranchNode::new(
+            vec![
+                RlpNode::word_rlp(&B256::ZERO),
+                RlpNode::word_rlp(&B256::ZERO),
+            ],
+            TrieMask::new(0b11),
+        ));
+        let extension = TrieNode::Extension(ExtensionNode::new(
+            Nibbles::unpack(keccak256(Address::ZERO)),
+            RlpNode::from_rlp(&alloy_rlp::encode(&branch)),
+        ));
+        let (root, nodes) = pool(&[extension, branch]);
+        assert_eq!(
+            WitnessPathReader::new(root, &nodes).account(Address::ZERO),
+            Err(StatelessSparseTrieError::InvalidSparseTrie)
         );
     }
 
