@@ -15,7 +15,9 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::{
     TempoTxEnvelope,
-    account::CONFIGURABLE_ACCOUNT_CODE,
+    account::{
+        CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, encode_config_commitment,
+    },
     transaction::{
         Call, ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         PrimitiveSignature, TempoSignature, TempoTransaction, configurable_account_digest,
@@ -121,7 +123,7 @@ async fn test_derived_account_sends_with_its_owner_quorum() -> eyre::Result<()> 
     Ok(())
 }
 
-/// Once Tempo migrates an EOA, the zone reports the account marker code and rejects its original key.
+/// Once Tempo migrates an EOA, the zone reports the account marker code and commitment and rejects its original key.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_migrated_account_rejects_its_original_key() -> eyre::Result<()> {
     let (zone, _fixture, provider, dev_address) = funded_zone().await?;
@@ -135,6 +137,14 @@ async fn test_migrated_account_rejects_its_original_key() -> eyre::Result<()> {
             .await?
             .is_empty()
     );
+    let info = provider.get_account_info(dev_address).latest().await?;
+    assert!(info.code.is_empty());
+    assert!(info.extension.is_empty());
+    // Its pathUSD balance lives in token storage, so the zone holds no account for it.
+    let account: Option<alloy::consensus::TrieAccount> = provider
+        .raw_request("eth_getAccount".into(), (dev_address, "latest"))
+        .await?;
+    assert_eq!(account, None);
     let outbox_code = provider.get_code_at(ZONE_OUTBOX_ADDRESS).await?;
     {
         let mut cache = zone.l1_state_cache().lock();
@@ -155,6 +165,52 @@ async fn test_migrated_account_rejects_its_original_key() -> eyre::Result<()> {
         provider.get_code_at(ZONE_OUTBOX_ADDRESS).await?,
         outbox_code
     );
+    // eth_getAccountInfo agrees with eth_getCode and carries the commitment, as on Tempo.
+    let commitment = encode_config_commitment(B256::repeat_byte(0x11));
+    for info in [
+        provider.get_account_info(dev_address).latest().await?,
+        provider.get_account_info(dev_address).pending().await?,
+    ] {
+        assert_eq!(info.code, CONFIGURABLE_ACCOUNT_CODE);
+        assert_eq!(info.extension, commitment.clone().into());
+    }
+    // Named parameters, which reth's generated handlers accept, get the same answers.
+    let named_code: Bytes = provider
+        .raw_request(
+            "eth_getCode".into(),
+            serde_json::json!({ "address": dev_address, "blockNumber": "latest" }),
+        )
+        .await?;
+    assert_eq!(named_code, CONFIGURABLE_ACCOUNT_CODE);
+    let named_info: alloy::rpc::types::eth::AccountInfo = provider
+        .raw_request(
+            "eth_getAccountInfo".into(),
+            serde_json::json!({ "address": dev_address, "block": "latest" }),
+        )
+        .await?;
+    assert_eq!(named_info.code, CONFIGURABLE_ACCOUNT_CODE);
+    assert_eq!(named_info.extension, commitment.clone().into());
+    let named_account: alloy::consensus::TrieAccount = provider
+        .raw_request(
+            "eth_getAccount".into(),
+            serde_json::json!({ "address": dev_address, "block": "latest" }),
+        )
+        .await?;
+    assert_eq!(named_account.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
+    // So does eth_getAccount, with the marker's code hash, though the zone holds no account.
+    for account in [
+        provider.get_account(dev_address).latest().await?,
+        provider.get_account(dev_address).pending().await?,
+    ] {
+        assert_eq!(account.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
+        assert_eq!(account.extension, commitment.clone().into());
+    }
+    let outbox_info = provider
+        .get_account_info(ZONE_OUTBOX_ADDRESS)
+        .latest()
+        .await?;
+    assert_eq!(outbox_info.code, outbox_code);
+    assert!(outbox_info.extension.is_empty());
 
     let chain_id = provider.get_chain_id().await?;
     let nonce = provider.get_transaction_count(dev_address).await?;

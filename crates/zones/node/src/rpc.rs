@@ -16,7 +16,7 @@ use std::{
 use alloy_consensus::{BlockHeader, Sealable as _, Transaction as _, transaction::TxHashRef};
 use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
 use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
-use alloy_primitives::{Address, B256, Bloom, Bytes, U64, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, KECCAK256_EMPTY, U64, U256, keccak256};
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
@@ -28,7 +28,12 @@ use alloy_sol_types::SolCall;
 use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
 use futures::{StreamExt, TryStreamExt};
-use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
+use jsonrpsee::{
+    RpcModule,
+    core::RpcResult,
+    proc_macros::rpc,
+    types::{ErrorObjectOwned, Params},
+};
 use reth_chainspec::Hardforks;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
 use reth_execution_types::BundleSource;
@@ -65,7 +70,10 @@ use tempo_contracts::precompiles::{
 };
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
 use tempo_primitives::{
-    TempoHeader, TempoPrimitives, TempoTxEnvelope, account::CONFIGURABLE_ACCOUNT_CODE,
+    TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    account::{
+        CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, encode_config_commitment,
+    },
 };
 use tokio::{
     sync::Mutex,
@@ -271,9 +279,11 @@ where
     Ok(module)
 }
 
-/// Operator `eth_getCode`, which returns what zone execution sees (TIP-1154): the account marker
-/// code for an account without zone code whose Tempo commitment at the block's anchor is nonzero,
-/// so off-chain verifiers that check code before `ecrecover` reject a retired original key.
+/// Operator `eth_getCode`, `eth_getAccountInfo` and `eth_getAccount`, which return what zone
+/// execution sees (TIP-1154): for an account without zone code whose Tempo commitment at the
+/// block's anchor is nonzero, the account marker code (or its hash) and, where the response has
+/// one, the commitment extension, so off-chain verifiers that check code before `ecrecover`
+/// reject a retired original key.
 pub(crate) fn operator_get_code_module<E>(
     eth_api: E,
     l1_state: L1StateProvider,
@@ -283,45 +293,21 @@ where
     E::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
     let mut module = RpcModule::new(());
+    let (code_eth_api, code_l1_state) = (eth_api.clone(), l1_state.clone());
     module.register_async_method("eth_getCode", move |params, _, _| {
-        let eth_api = eth_api.clone();
-        let l1_state = l1_state.clone();
+        let eth_api = code_eth_api.clone();
+        let l1_state = code_l1_state.clone();
         async move {
-            let mut params = params.sequence();
-            let address: Address = params.next()?;
+            let (address, block_id) = address_and_block_number(&params)?;
             // The header and anchor lookups below have no pending block to fall back from.
-            let block_id = zone_rpc::handlers::normalize_block_id(
-                params.optional_next::<BlockId>()?.unwrap_or_default(),
-            );
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id.unwrap_or_default());
             let code = EthState::get_code(&eth_api, address, Some(block_id))
                 .await
                 .map_err(Into::into)?;
             if !code.is_empty() {
                 return Ok(code);
             }
-            let commitment = async {
-                let provider = eth_api.provider();
-                let header = provider
-                    .header_by_id(block_id)?
-                    .ok_or_eyre("zone block not found")?;
-                let spec = provider.chain_spec().tempo_hardfork_at(header.timestamp());
-                // The same accounts zone execution reads a Tempo commitment for.
-                if !spec.is_t14()
-                    || !is_valid_native_account(address, spec)
-                    || is_zone_precompile(address, spec)
-                {
-                    return eyre::Ok(B256::ZERO);
-                }
-                let anchor = provider.state_by_block_id(block_id)?.tempo_block_number()?;
-                Ok(tokio::time::timeout(
-                    L1_COMMITMENT_READ_TIMEOUT,
-                    l1_state.read_l1_commitment_async(address, anchor),
-                )
-                .await
-                .wrap_err("timed out reading the Tempo commitment")??)
-            }
-            .await
-            .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
             Ok::<_, ErrorObjectOwned>(if commitment.is_zero() {
                 code
             } else {
@@ -329,7 +315,131 @@ where
             })
         }
     })?;
+    let (info_eth_api, info_l1_state) = (eth_api.clone(), l1_state.clone());
+    module.register_async_method("eth_getAccountInfo", move |params, _, _| {
+        let eth_api = info_eth_api.clone();
+        let l1_state = info_l1_state.clone();
+        async move {
+            let (address, block_id) = address_and_block(&params)?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id);
+            let mut info = EthState::get_account_info(&eth_api, address, block_id)
+                .await
+                .map_err(Into::into)?;
+            if !info.code.is_empty() {
+                return Ok(info);
+            }
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
+            if !commitment.is_zero() {
+                info.code = CONFIGURABLE_ACCOUNT_CODE;
+                info.extension = encode_config_commitment(commitment).into();
+            }
+            Ok::<_, ErrorObjectOwned>(info)
+        }
+    })?;
+    module.register_async_method("eth_getAccount", move |params, _, _| {
+        let eth_api = eth_api.clone();
+        let l1_state = l1_state.clone();
+        async move {
+            let (address, block_id) = address_and_block(&params)?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id);
+            let account = EthState::get_account(&eth_api, address, block_id)
+                .await
+                .map_err(Into::into)?;
+            if account
+                .as_ref()
+                .is_some_and(|account| account.code_hash != KECCAK256_EMPTY)
+            {
+                return Ok(account);
+            }
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
+            if commitment.is_zero() {
+                return Ok(account);
+            }
+            // Zone execution sees the account even when the zone holds none for it.
+            let mut account = account.unwrap_or_default();
+            account.code_hash = CONFIGURABLE_ACCOUNT_CODE_HASH;
+            account.extension = encode_config_commitment(commitment).into();
+            Ok::<_, ErrorObjectOwned>(Some(account))
+        }
+    })?;
     Ok(module)
+}
+
+/// `eth_getCode`'s address and optional block, positional or named, as reth's generated handler
+/// accepts them.
+fn address_and_block_number(
+    params: &Params<'_>,
+) -> Result<(Address, Option<BlockId>), ErrorObjectOwned> {
+    #[derive(serde::Deserialize)]
+    struct Named {
+        address: Address,
+        #[serde(default, alias = "blockNumber")]
+        block_number: Option<BlockId>,
+    }
+    if params.is_object() {
+        let Named {
+            address,
+            block_number,
+        } = params.parse()?;
+        return Ok((address, block_number));
+    }
+    let mut params = params.sequence();
+    Ok((params.next()?, params.optional_next()?))
+}
+
+/// `eth_getAccount`'s and `eth_getAccountInfo`'s address and block, positional or named, as reth's
+/// generated handlers accept them.
+fn address_and_block(params: &Params<'_>) -> Result<(Address, BlockId), ErrorObjectOwned> {
+    #[derive(serde::Deserialize)]
+    struct Named {
+        address: Address,
+        block: BlockId,
+    }
+    if params.is_object() {
+        let Named { address, block } = params.parse()?;
+        return Ok((address, block));
+    }
+    let mut params = params.sequence();
+    Ok((params.next()?, params.next()?))
+}
+
+/// The Tempo commitment zone execution reads for a codeless `address` at `block_id`, or zero for
+/// accounts it reads none for.
+async fn operator_commitment<E>(
+    eth_api: &E,
+    l1_state: &L1StateProvider,
+    address: Address,
+    block_id: BlockId,
+) -> Result<B256, ErrorObjectOwned>
+where
+    E: FullEthApi,
+    E::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
+{
+    async {
+        let provider = eth_api.provider();
+        let header = provider
+            .header_by_id(block_id)?
+            .ok_or_eyre("zone block not found")?;
+        let spec = provider.chain_spec().tempo_hardfork_at(header.timestamp());
+        // The same accounts zone execution reads a Tempo commitment for.
+        if !spec.is_t14()
+            || !is_valid_native_account(address, spec)
+            || is_zone_precompile(address, spec)
+        {
+            return eyre::Ok(B256::ZERO);
+        }
+        let anchor = provider.state_by_block_id(block_id)?.tempo_block_number()?;
+        Ok(tokio::time::timeout(
+            L1_COMMITMENT_READ_TIMEOUT,
+            l1_state.read_l1_commitment_async(address, anchor),
+        )
+        .await
+        .wrap_err("timed out reading the Tempo commitment")??)
+    }
+    .await
+    .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))
 }
 
 /// Operator Web3 API backed by the globally initialized Zone version metadata.
