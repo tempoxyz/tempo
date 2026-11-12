@@ -47,6 +47,11 @@ crate::sol! {
         /// reverts `UnknownCard`, `CardInactive`, `TokenNotAllowed` or `CardLimitExceeded` from
         /// `ICards` unless the card may hold `amount` of `token` now, and records the card's line.
         function holdCard(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee, address issuer, bytes32 card) external;
+        /// `holdStandIn` through the caller's card `card` issued by `issuer` (TIP-1169): reverts
+        /// `UnknownCard`, `CardInactive` or `TokenNotAllowed` from `ICards` unless the card may hold
+        /// `token` now, then records the approval as `holdStandIn` does and the card's line. The card's
+        /// limit does not bound it: the offline cap does, as for any stand-in approval.
+        function holdCardStandIn(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee, address issuer, bytes32 card) external;
         /// `charge` for an approval the payee made in stand-in: the shortfall may become debt up to
         /// the larger of the debt cap and the offline cap.
         function chargeStandIn(address token, bytes32 id, uint128 amount, address payee) external;

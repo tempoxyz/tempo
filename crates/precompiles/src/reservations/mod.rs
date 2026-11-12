@@ -103,9 +103,10 @@ struct Authorization {
     /// Amount `key_id`'s limit counted in that period and not yet given back. Spend the root key
     /// adds is never counted, so it is never given back.
     counted: U96,
-    /// Whether `holdStandIn` placed the hold, so its captures may owe up to the offline cap.
+    /// Whether `holdStandIn` or `holdCardStandIn` placed the hold, so its captures may owe up to
+    /// the offline cap.
     stand_in: bool,
-    /// Card line (TIP-1169) of a hold `holdCard` or `holdCardWithLine` placed, whose committed
+    /// Card line (TIP-1169) of a hold `holdCard`, `holdCardWithLine` or `holdCardStandIn` placed, whose committed
     /// amount this authorization's follows; zero for other authorizations. Packed beside `counted`,
     /// which a card mandate key with a spending limit writes on every hold anyway.
     card_line: u64,
@@ -304,8 +305,9 @@ impl Reservations {
     }
 
     /// Places `hold`, `holdStandIn`, which reserves only what is available, `holdCard`, which
-    /// first checks the card, `holdWithLine`, which puts part of the hold on a credit line, or
-    /// `holdCardWithLine`, which does both.
+    /// first checks the card, `holdWithLine`, which puts part of the hold on a credit line,
+    /// `holdCardWithLine`, which does both, or `holdCardStandIn`, which checks the card but not
+    /// its limit and then reserves as `holdStandIn`.
     fn hold(
         &mut self,
         owner: Address,
@@ -325,9 +327,17 @@ impl Reservations {
         }
         let card = match placement {
             // The card counts the whole amount, line part included, against its limit.
-            Placement::Card { issuer, card } | Placement::CardLine { issuer, card, .. } => Some((
+            Placement::Card { issuer, card } | Placement::CardLine { issuer, card, .. } => {
+                let cards = Cards::new();
+                let line = cards.line_for_hold(owner, issuer, card, call.token)?;
+                cards.ensure_within_limit(line, call.amount)?;
+                Some((card, line))
+            }
+            // The issuer approved offline within the offline limit, which bounds stand-in approvals
+            // instead of the card's limit; the card's status still refuses one it froze or closed.
+            Placement::CardStandIn { issuer, card } => Some((
                 card,
-                Cards::new().line_for_hold(owner, issuer, card, call.token, call.amount)?,
+                Cards::new().line_for_hold(owner, issuer, card, call.token)?,
             )),
             Placement::Plain | Placement::StandIn | Placement::Line { .. } => None,
         };
@@ -337,7 +347,9 @@ impl Reservations {
         // `held` is what the hold commits, `reserved` the part of it taken from the owner's balance.
         let (held, reserved) = match placement {
             // A stand-in approval already happened offline, so the chain records it whatever is left.
-            Placement::StandIn => (call.amount.min(free), call.amount.min(free)),
+            Placement::StandIn | Placement::CardStandIn { .. } => {
+                (call.amount.min(free), call.amount.min(free))
+            }
             Placement::Plain | Placement::Card { .. } if call.amount > free => {
                 return Err(ReservationsError::insufficient_available().into());
             }
@@ -371,7 +383,10 @@ impl Reservations {
             expires_at: call.expiresAt,
             burn_epoch: self.shortfalls[owner][call.token].epoch.read()?,
             key_id: spend.map_or(Address::ZERO, |spend| spend.key_id),
-            stand_in: placement == Placement::StandIn,
+            stand_in: matches!(
+                placement,
+                Placement::StandIn | Placement::CardStandIn { .. }
+            ),
             card_line: card.map_or(0, |(_, line)| line),
             line: matches!(
                 placement,
@@ -397,12 +412,9 @@ impl Reservations {
         }
         match placement {
             Placement::Plain | Placement::Card { .. } => Ok(()),
-            Placement::StandIn => self.emit_event(ReservationsEvent::stand_in_hold_placed(
-                owner,
-                call.id,
-                call.token,
-                call.amount,
-            )),
+            Placement::StandIn | Placement::CardStandIn { .. } => self.emit_event(
+                ReservationsEvent::stand_in_hold_placed(owner, call.id, call.token, call.amount),
+            ),
             Placement::Line { part, line, lender }
             | Placement::CardLine {
                 part, line, lender, ..
@@ -1591,6 +1603,8 @@ enum Placement {
     StandIn,
     /// `holdCard`: `hold` through the caller's card `card` issued by `issuer`, its `ICards` payee.
     Card { issuer: Address, card: B256 },
+    /// `holdCardStandIn`: `holdStandIn` through the caller's card `card` issued by `issuer`.
+    CardStandIn { issuer: Address, card: B256 },
     /// `holdWithLine`: reserves the amount less `part`, which goes on `lender`'s line `line`.
     Line {
         part: u128,
@@ -3916,6 +3930,169 @@ mod tests {
     }
 
     #[test]
+    fn test_card_stand_in_hold_checks_the_card_but_not_its_limit() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(300)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Frozen,
+                U96::from(100),
+            )?;
+            let foreign = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                Address::random(),
+                foreign,
+                ICards::Status::Active,
+                U96::MAX,
+            )?;
+            for (card, error) in [
+                (card, CardsError::card_inactive()),
+                (B256::random(), CardsError::unknown_card()),
+                (foreign, CardsError::unknown_card()),
+            ] {
+                assert_eq!(
+                    hold_card_stand_in(&mut f, B256::random(), 10, card).unwrap_err(),
+                    error.into()
+                );
+            }
+            update_card(
+                &mut cards,
+                &f,
+                card,
+                ICards::Status::Active,
+                U96::from(100),
+                NOW,
+            )?;
+            assert_eq!(
+                hold_card_stand_in(&mut f, B256::random(), 10, card).unwrap_err(),
+                CardsError::card_inactive().into()
+            );
+            update_card(
+                &mut cards,
+                &f,
+                card,
+                ICards::Status::Active,
+                U96::from(100),
+                0,
+            )?;
+            cards.set_program_tokens(
+                f.payee,
+                ICards::setProgramTokensCall {
+                    tokens: vec![Address::random()],
+                },
+            )?;
+            assert_eq!(
+                hold_card_stand_in(&mut f, B256::random(), 10, card).unwrap_err(),
+                CardsError::token_not_allowed().into()
+            );
+            cards.set_program_tokens(f.payee, ICards::setProgramTokensCall { tokens: vec![] })?;
+
+            // Approved offline past the card's limit, it reserves what is available and the card
+            // commits what the authorization does.
+            let id = B256::random();
+            f.reservations.clear_emitted_events();
+            hold_card_stand_in(&mut f, id, 400, card)?;
+            assert_eq!(f.reserved()?, 300);
+            assert_eq!(cards.get_card(f.payee, card)?.committed, U96::from(300));
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::hold_placed(
+                    f.owner,
+                    id,
+                    f.token.address(),
+                    f.payee,
+                    300,
+                    EXPIRY,
+                ),
+                ReservationsEvent::card_hold_placed(f.owner, id, card, 1),
+                ReservationsEvent::stand_in_hold_placed(f.owner, id, f.token.address(), 400),
+            ]);
+            // Online holds still meet the limit, which the stand-in hold now fills.
+            f.mint(f.owner, 10)?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 1, card).unwrap_err(),
+                CardsError::card_limit_exceeded().into()
+            );
+
+            // Its capture owes up to the offline cap after the card froze, and the card follows it.
+            cards.set_card_status(
+                f.owner,
+                ICards::setCardStatusCall {
+                    payee: f.payee,
+                    card,
+                    status: ICards::Status::Frozen,
+                },
+            )?;
+            f.set_offline_cap(f.payee, 100)?;
+            f.capture(id, 400)?;
+            assert_eq!(f.debt()?.amount, 90);
+            assert_eq!(cards.get_card(f.payee, card)?.committed, U96::from(400));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_card_scoped_key_records_stand_ins_only_through_cards() -> eyre::Result<()> {
+        at_t15(|| {
+            let f = Fixture::new(1_000)?;
+            let key = Address::random();
+            let keychain = authorize_key_for(
+                f.owner,
+                key,
+                f.token.address(),
+                500,
+                &[
+                    IReservations::holdCardCall::SELECTOR,
+                    IReservations::holdCardStandInCall::SELECTOR,
+                    IReservations::chargeStandInCall::SELECTOR,
+                ],
+            )?;
+            let validate = |input: Vec<u8>| {
+                keychain.validate_call_scope_for_transaction(
+                    f.owner,
+                    key,
+                    &TxKind::Call(RESERVATIONS_ADDRESS),
+                    &input,
+                )
+            };
+            validate(
+                IReservations::holdCardStandInCall {
+                    token: f.token.address(),
+                    id: B256::random(),
+                    amount: 1,
+                    expiresAt: EXPIRY,
+                    payee: f.payee,
+                    issuer: f.payee,
+                    card: B256::random(),
+                }
+                .abi_encode(),
+            )?;
+            assert_eq!(
+                validate(
+                    IReservations::holdStandInCall {
+                        token: f.token.address(),
+                        id: B256::random(),
+                        amount: 1,
+                        expiresAt: EXPIRY,
+                        payee: f.payee,
+                    }
+                    .abi_encode()
+                )
+                .unwrap_err(),
+                AccountKeychainError::call_not_allowed().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_card_hold_may_pay_another_payee() -> eyre::Result<()> {
         at_t15(|| {
             let mut f = Fixture::new(1_000)?;
@@ -4397,6 +4574,24 @@ mod tests {
                 payee: f.payee,
             },
             Placement::Card {
+                issuer: f.payee,
+                card,
+            },
+        )
+    }
+
+    /// Records a stand-in approval of `amount` through the owner's `card` under the fixture's payee.
+    fn hold_card_stand_in(f: &mut Fixture, id: B256, amount: u128, card: B256) -> Result<()> {
+        f.reservations.hold(
+            f.owner,
+            IReservations::holdCall {
+                token: f.token.address(),
+                id,
+                amount,
+                expiresAt: EXPIRY,
+                payee: f.payee,
+            },
+            Placement::CardStandIn {
                 issuer: f.payee,
                 card,
             },

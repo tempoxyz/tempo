@@ -1,5 +1,6 @@
 //! Card records precompile: cards an issuer's settlement account (the payee) issues on an owner's
-//! account, which card-scoped holds (`IReservations.holdCard`, `holdCardWithLine`) check.
+//! account, which card-scoped holds (`IReservations.holdCard`, `holdCardWithLine`,
+//! `holdCardStandIn`) check.
 //!
 //! A card is keyed by (payee, card id). Each issued card starts a line holding its owner, status,
 //! limit, expiry, program type, holder reference and network token hash; replacing a card maps a
@@ -77,16 +78,16 @@ impl Cards {
         self.__initialize()
     }
 
-    /// Checks that `owner`'s card `card` under `payee` (its issuer) may hold `amount` of `token`
-    /// now, and returns its line. Called by `IReservations.holdCard` and `holdCardWithLine` before
-    /// they place the hold.
+    /// Checks that `owner`'s card `card` under `payee` (its issuer) may hold `token` now, and
+    /// returns its line. Called by `IReservations.holdCard`, `holdCardWithLine` and
+    /// `holdCardStandIn` before they place the hold; all but `holdCardStandIn` then check the limit
+    /// with [`Self::ensure_within_limit`].
     pub(crate) fn line_for_hold(
         &self,
         owner: Address,
         payee: Address,
         card: B256,
         token: Address,
-        amount: u128,
     ) -> Result<u64> {
         let line = self.credentials[payee][card].read()?;
         if line == 0 || self.lines[line].owner.read()? != owner {
@@ -100,7 +101,6 @@ impl Cards {
         if !self.program_allows(payee, token)? {
             return Err(CardsError::token_not_allowed().into());
         }
-        self.ensure_within_limit(line, amount)?;
         Ok(line)
     }
 
@@ -369,7 +369,8 @@ impl Cards {
         Ok(())
     }
 
-    fn ensure_within_limit(&self, line: u64, amount: u128) -> Result<()> {
+    /// Checks that `line` may commit `amount` more within its limit (`CardLimitExceeded`).
+    pub(crate) fn ensure_within_limit(&self, line: u64, amount: u128) -> Result<()> {
         let limit = self.lines[line].limit.read()?;
         if limit == U96::MAX {
             return Ok(());
