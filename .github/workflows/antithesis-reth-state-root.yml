@@ -109,26 +109,32 @@ jobs:
           smoke="$RUNNER_TEMP/reth-state-root-smoke"
           mkdir -p "$smoke"
           container="reth-state-root-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-          # A finite server round still needs driver requests to build and retire its blocks.
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true; cat "$smoke/server.stdout" "$smoke/runtime.log" 2>/dev/null || true' EXIT
+          # Persist and prune during the smoke round so later updates need blinded proofs.
+          # Isolate server stderr: merging concurrent stdout can corrupt diagnostic lines.
           # Variables in the single-quoted script expand in the container, not on the runner.
           # shellcheck disable=SC2016
           timeout --signal=TERM --kill-after=15s 300s docker run --rm --init \
             --name "$container" --network none \
             --mount "type=bind,src=$smoke,dst=/smoke" \
             -e ANTITHESIS_SDK_LOCAL_OUTPUT=/smoke/guidance.jsonl \
-            -e SMOKE_CONFIG='{"rounds":1,"blocks":8,"updates":64,"accounts":64,"datadir":"/tmp/state","timeout_secs":30}' \
+            -e SMOKE_CONFIG='{"rounds":1,"blocks":16,"updates":64,"accounts":256,"persistence_threshold":0,"num_state_masking_blocks":0,"memory_block_buffer_target":0,"datadir":"/tmp/state","timeout_secs":30}' \
             --entrypoint /bin/bash "$image" -ceu '
-              reth-state-root-antithesis serve "$SMOKE_CONFIG" &
+              reth-state-root-antithesis serve "$SMOKE_CONFIG" > /smoke/server.stdout 2> /smoke/runtime.log &
               server=$!
               trap "kill $server 2>/dev/null || true" EXIT
               # Keep command-process catalogue events out of the server-only SDK output.
-              env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands first_genesis
-              for _ in {1..8}; do
-                env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands parallel_driver_blocks
+              for _ in {1..4}; do
+                env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands first_genesis
+              done
+              # Flush is an acknowledgement barrier; later root tasks prune old arena nodes.
+              env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands eventually_persisted
+              # Twelve remaining blocks plus one request to retire the completed round.
+              for _ in {1..13}; do
+                env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands first_genesis
               done
               wait "$server"
-            ' 2>&1 | tee "$smoke/runtime.log"
+            ' 2>&1 | tee "$smoke/commands.log"
           python3 -B contrib/antithesis/reth-state-root/validate_sparse_smoke.py \
             "$smoke/guidance.jsonl" "$smoke/runtime.log"
 
