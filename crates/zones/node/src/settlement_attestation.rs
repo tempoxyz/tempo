@@ -124,6 +124,12 @@ pub(crate) async fn validate_registered_sequencer_set(
         "ZonePortal sequencer set changed during startup validation ({sequencer_set_version} -> {validated_version})"
     );
 
+    eyre::ensure!(
+        registered.len() == quorum.len(),
+        "ZonePortal returned {} sequencer membership answers for {} manifest quorum nodes",
+        registered.len(),
+        quorum.len()
+    );
     for ((node, address), is_registered) in quorum.iter().zip(registered) {
         let name = node.name();
         eyre::ensure!(

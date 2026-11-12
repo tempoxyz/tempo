@@ -48,7 +48,7 @@ use tempo_validator_config::ValidatorConfig;
 
 #[cfg(feature = "corpus")]
 use crate::corpus;
-use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
+use crate::{init_state, p2p_proxy::P2pProxyArgs, payload_bench, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -86,6 +86,9 @@ pub enum TempoSubcommand {
 
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
+
+    /// Benchmark the payload builder alone on an existing database and a real transaction pool.
+    PayloadBench(Box<payload_bench::PayloadBench>),
 
     /// Historical execution corpus: capture an archive range once, replay it without a DB.
     #[cfg(feature = "corpus")]
@@ -147,6 +150,11 @@ impl ExtendedCommand for TempoSubcommand {
                 Ok(())
             }
             Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
+            Self::PayloadBench(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())

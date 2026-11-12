@@ -1,16 +1,12 @@
-//! Random writes and `eth_getMultiProof` targets, biased towards shared hashed-key prefixes.
+//! Random writes, biased towards shared hashed-key prefixes.
 //!
 //! Uniform keys rarely share more than a few leading nibbles, so the tries stay shallow. Collision
-//! groups from `antithesis-trie-shapes`, shared with reth-state-root, build deep branches and
-//! extensions and later grow, collapse and rewrite them; grinding neighbours of existing keys
-//! requests exclusion proofs that diverge inside them.
+//! groups from `antithesis-trie-shapes` build deep branches and extensions and later grow, collapse
+//! and rewrite them; new keys drawn near existing ones deepen the tries inside them.
 
 use crate::model::{collide, collide_next, random_address, random_slot, Model, Update};
-use alloy_primitives::{Address, B256, U256};
-use antithesis_trie_shapes::{
-    harness::{AccountSample, ProofTarget},
-    near_address, near_slot, Collider,
-};
+use alloy_primitives::{Address, U256};
+use antithesis_trie_shapes::{near_address, near_slot, Collider};
 use rand_09::Rng;
 
 /// Generates one block's writes. New random accounts stop at `accounts`; collision groups add
@@ -65,52 +61,6 @@ pub(crate) fn writes(
         });
     }
     generated
-}
-
-/// Generates one request's targets from a sample of the tip state: existing, deleted and absent
-/// keys, absent neighbours of existing keys, repeated addresses, and every slot of a storage
-/// collider group. At older blocks, keys of the tip state may not exist yet.
-pub(crate) fn targets(
-    rng: &mut impl Rng,
-    accounts: &[AccountSample],
-    collider: &Collider,
-) -> Vec<ProofTarget> {
-    let addresses = accounts.iter().map(|account| account.address).collect::<Vec<_>>();
-    let groups = collider.storage_groups().collect::<Vec<_>>();
-    let mut targets = Vec::<ProofTarget>::new();
-    for _ in 0..rng.random_range(1..=8) {
-        // Random slots almost never land on a leaf embedded in its parent; group members do.
-        if !groups.is_empty() && rng.random_ratio(1, 8) {
-            let (address, slots) = groups[rng.random_range(0..groups.len())];
-            targets.push(ProofTarget { address, slots: slots.to_vec() });
-            continue;
-        }
-        let roll = rng.random_range(0..8);
-        let address = if roll == 0 && !targets.is_empty() {
-            targets[rng.random_range(0..targets.len())].address
-        } else if roll < 5 && !addresses.is_empty() {
-            addresses[rng.random_range(0..addresses.len())]
-        } else {
-            new_address(rng, &addresses)
-        };
-        // Touched slots include deleted ones, whose exclusion proofs end at collapsed nodes.
-        let slots = accounts
-            .iter()
-            .find(|account| account.address == address)
-            .map(|account| account.slots.clone())
-            .unwrap_or_default();
-        let requested = (0..rng.random_range(0..=6))
-            .map(|_| {
-                B256::from(if !slots.is_empty() && rng.random_bool(0.5) {
-                    slots[rng.random_range(0..slots.len())]
-                } else {
-                    new_slot(rng, &slots)
-                })
-            })
-            .collect();
-        targets.push(ProofTarget { address, slots: requested });
-    }
-    targets
 }
 
 /// Draws a fresh address, half the time one whose hash shares a prefix with an existing one.
