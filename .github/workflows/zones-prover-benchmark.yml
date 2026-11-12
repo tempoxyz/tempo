@@ -306,7 +306,7 @@ jobs:
       # Both phases run the baseline's harness scripts, so the baseline must know the preset.
       - name: Check baseline supports the preset
         run: |
-          grep -qE "^[[:space:]]+([a-z-]+[|])*$BENCH_PRESET[|)]" "$BASELINE_ZONES_ROOT/zones/contrib/bench/run-neobank-private-flow.sh" ||
+          grep -qE "^[[:space:]]+([a-z-]+[|])*${BENCH_PRESET}[|)]" "$BASELINE_ZONES_ROOT/zones/contrib/bench/run-neobank-private-flow.sh" ||
             { echo "::error::baseline does not support preset $BENCH_PRESET; use a newer baseline such as main"; exit 1; }
       - name: Check out Tempo with native Nitro verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
