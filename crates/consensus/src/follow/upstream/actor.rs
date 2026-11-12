@@ -348,8 +348,13 @@ impl Connector for WebSocketConnector {
     fn connect(&self, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<Self::Client>)> {
         let url = self.url.clone();
         async move {
-            let connect =
-                NoReconnect(WsConnect::new(url.as_str()).with_keepalive_interval(PING_INTERVAL));
+            let connect = NoReconnect(
+                WsConnect::new(url.as_str())
+                    .with_keepalive_interval(PING_INTERVAL)
+                    // alloy already stops at the first non-retryable reconnect error; this keeps
+                    // it from waiting between attempts if that ever changes.
+                    .with_max_retries(0),
+            );
             let client = tokio::time::timeout(CONNECT_TIMEOUT, RpcClient::connect_pubsub(connect))
                 .await
                 .map_err(|_| eyre::eyre!("timed out connecting to upstream node"))
