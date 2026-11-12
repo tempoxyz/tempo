@@ -1054,6 +1054,69 @@ where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
     Api::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
+    fn keychain_key_at(
+        &self,
+        account: Address,
+        key_id: Address,
+        head: (B256, u64),
+    ) -> BoxEyreFut<'_, KeyInfo> {
+        Box::pin(async move {
+            // The call loads `account`, whose Tempo commitment zone execution reads. Reading it
+            // through the bounded path first keeps the call from waiting on Tempo.
+            self.config_commitment_at(account, head).await?;
+            let request = TempoTransactionRequest {
+                inner: TransactionRequest {
+                    from: Some(account),
+                    to: Some(ACCOUNT_KEYCHAIN_ADDRESS.into()),
+                    input: getKeyCall {
+                        account,
+                        keyId: key_id,
+                    }
+                    .abi_encode()
+                    .into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            let output = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                EthCall::call(
+                    &self.eth.api,
+                    request,
+                    Some(head.0.into()),
+                    EvmOverrides::default(),
+                ),
+            )
+            .await
+            .wrap_err("timed out calling AccountKeychain.getKey")?
+            .wrap_err("AccountKeychain.getKey eth_call failed")?;
+
+            IAccountKeychain::getKeyCall::abi_decode_returns(output.as_ref()).map_err(Into::into)
+        })
+    }
+
+    fn config_commitment_at(
+        &self,
+        account: Address,
+        (hash, timestamp): (B256, u64),
+    ) -> BoxEyreFut<'_, Option<B256>> {
+        Box::pin(async move {
+            let provider = self.eth.api.provider();
+            if !provider.chain_spec().tempo_hardfork_at(timestamp).is_t14() {
+                return Ok(None);
+            }
+            let anchor = provider.state_by_block_hash(hash)?.tempo_block_number()?;
+            let commitment = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                self.l1_state.read_l1_commitment_async(account, anchor),
+            )
+            .await
+            .wrap_err("timed out reading the Tempo commitment")??;
+            Ok(Some(commitment))
+        })
+    }
+
     /// Hash and timestamp of the latest zone block.
     fn zone_head(&self) -> eyre::Result<(B256, u64)> {
         let header = self
@@ -1063,68 +1126,6 @@ where
             .latest_header()?
             .ok_or_eyre("zone has no latest header")?;
         Ok((header.hash(), header.timestamp()))
-    }
-
-    /// `AccountKeychain.getKey(account, key_id)` at the zone block `head`.
-    async fn keychain_key_at(
-        &self,
-        account: Address,
-        key_id: Address,
-        head: (B256, u64),
-    ) -> eyre::Result<KeyInfo> {
-        // The call loads `account`, whose Tempo commitment zone execution reads. Reading it
-        // through the bounded path first keeps the call from waiting on Tempo.
-        self.config_commitment_at(account, head).await?;
-        let request = TempoTransactionRequest {
-            inner: TransactionRequest {
-                from: Some(account),
-                to: Some(ACCOUNT_KEYCHAIN_ADDRESS.into()),
-                input: getKeyCall {
-                    account,
-                    keyId: key_id,
-                }
-                .abi_encode()
-                .into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let output = tokio::time::timeout(
-            L1_COMMITMENT_READ_TIMEOUT,
-            EthCall::call(
-                &self.eth.api,
-                request,
-                Some(BlockId::from(head.0)),
-                EvmOverrides::default(),
-            ),
-        )
-        .await
-        .wrap_err("timed out calling AccountKeychain.getKey")?
-        .wrap_err("AccountKeychain.getKey eth_call failed")?;
-
-        IAccountKeychain::getKeyCall::abi_decode_returns(output.as_ref()).map_err(Into::into)
-    }
-
-    /// The Tempo commitment of `account` at the anchor of the zone block `head`, or `None`
-    /// before T14.
-    async fn config_commitment_at(
-        &self,
-        account: Address,
-        (hash, timestamp): (B256, u64),
-    ) -> eyre::Result<Option<B256>> {
-        let provider = self.eth.api.provider();
-        if !provider.chain_spec().tempo_hardfork_at(timestamp).is_t14() {
-            return Ok(None);
-        }
-        let anchor = provider.state_by_block_hash(hash)?.tempo_block_number()?;
-        let commitment = tokio::time::timeout(
-            L1_COMMITMENT_READ_TIMEOUT,
-            self.l1_state.read_l1_commitment_async(account, anchor),
-        )
-        .await
-        .wrap_err("timed out reading the Tempo commitment")??;
-        Ok(Some(commitment))
     }
 }
 
