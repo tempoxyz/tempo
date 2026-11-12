@@ -50,6 +50,12 @@ jobs:
     environment: ${{ startsWith(github.ref, 'refs/tags/tempo/v') && 'release' || '' }}
     outputs:
       tempo_image_tag: ${{ steps.source.outputs.image_tag || steps.meta-tempo.outputs.version }}
+      image_refs: ${{ steps.sign-images.outputs.image_refs }}
+      deferred_tags: ${{ steps.held-tags.outputs.deferred_tags }}
+      hold: ${{ steps.hold-tags.outputs.hold }}
+      sha: ${{ steps.source.outputs.sha }}
+      short_sha: ${{ steps.source.outputs.short_sha }}
+      branch: ${{ steps.source.outputs.branch }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     # Compilation runs on the Depot builders; this runner only waits on bake.
     runs-on: depot-ubuntu-latest-4
@@ -278,6 +284,38 @@ jobs:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
+      # Runs that attest publish under the per-commit sha- tags only; tag-images moves
+      # the tags deployments follow (edge, latest, nightly, stable, semver) once the
+      # digests are attested. Other runs publish every tag at once, unattested.
+      - name: Hold mutable tags until attested
+        id: hold-tags
+        shell: bash
+        env:
+          HOLD: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/rc/') || startsWith(github.ref, 'refs/tags/tempo/v')) && startsWith(github.workflow_ref, 'tempoxyz/tempo/.github/workflows/docker.yml@') }}
+          TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
+          TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
+          TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
+          TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+          TEMPO_FUZZ_TAGS: ${{ steps.meta-tempo-fuzz.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # Bake gives this last file's tags precedence over the metadata files.
+          override="$RUNNER_TEMP/held-tags.bake.json"
+          echo '{}' > "$override"
+          if [[ "$HOLD" == true ]]; then
+            for target in tempo tempo-devnet tempo-localnet tempo-xtask tempo-fuzz; do
+              tags_var="${target^^}_TAGS"
+              tags_var="${tags_var//-/_}"
+              jq --arg target "$target" --arg tags "${!tags_var}" '
+                .target[$target].tags = ($tags | split("\n") | map(select(test(":sha-[0-9a-f]+(-fuzz)?$"))))
+                | if (.target[$target].tags | length) == 0 then error("no sha- tag for " + $target) else . end' \
+                "$override" > "$override.tmp"
+              mv "$override.tmp" "$override"
+            done
+          fi
+          echo "bake-file=$override" >> "$GITHUB_OUTPUT"
+          echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker images
         id: build-and-push
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -289,6 +327,7 @@ jobs:
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
             ${{ steps.meta-tempo-fuzz.outputs.bake-file }}
+            ${{ steps.hold-tags.outputs.bake-file }}
           targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
@@ -406,79 +445,36 @@ jobs:
             exit 1
           fi
 
-      # Network E2E dispatches its own suite; the generic event starts three others.
-      - name: Publish event (sha tag)
-        id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+          printf 'image_refs=%s\n' "$(printf '%s\n' "${refs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
+      - name: Collect held tags
+        id: held-tags
+        if: steps.hold-tags.outputs.hold == 'true'
         shell: bash
         env:
-          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
-          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
-          RUNNER_TEMP: ${{ runner.temp }}
-          GH_REPO: ${{ github.repository }}
-          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
-          COMMIT_SHA: ${{ steps.source.outputs.sha }}
-          BRANCH_NAME: ${{ steps.source.outputs.branch }}
+          TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
+          TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
+          TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
+          TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+          TEMPO_FUZZ_TAGS: ${{ steps.meta-tempo-fuzz.outputs.tags }}
+          BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
         run: |
           set -euo pipefail
-
-          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
-          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
-
-          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
-          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
-            --key "${RUNNER_TEMP}/key" \
-            --cert "${RUNNER_TEMP}/cert" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"repository\": \"${GH_REPO}\",
-              \"event\": \"registry_package\",
-              \"data\": {
-                \"tag\": \"sha-${SHORT_SHA}\",
-                \"sha\": \"${COMMIT_SHA}\",
-                \"branch\": \"${BRANCH_NAME}\"
-              }
-            }"
-
-      - name: Publish event (nightly tag)
-        id: publish-nightly-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
-        shell: bash
-        env:
-          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
-          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
-          RUNNER_TEMP: ${{ runner.temp }}
-          GH_REPO: ${{ github.repository }}
-          COMMIT_SHA: ${{ steps.source.outputs.sha }}
-          BRANCH_NAME: ${{ steps.source.outputs.branch }}
-        run: |
-          set -euo pipefail
-
-          DAY_OF_WEEK="$(date -u +%u)"
-          if [ "$DAY_OF_WEEK" = "5" ]; then
-            INVARIANT_TIMEOUT="172800"
-          else
-            INVARIANT_TIMEOUT="18000"
-          fi
-
-          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
-          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
-
-          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
-          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
-            --key "${RUNNER_TEMP}/key" \
-            --cert "${RUNNER_TEMP}/cert" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"repository\": \"${GH_REPO}\",
-              \"event\": \"registry_package\",
-              \"data\": {
-                \"tag\": \"nightly\",
-                \"sha\": \"${COMMIT_SHA}\",
-                \"branch\": \"${BRANCH_NAME}\",
-                \"invariant_timeout\": \"${INVARIANT_TIMEOUT}\"
-              }
-            }"
+          deferred='[]'
+          for target in tempo tempo-devnet tempo-localnet tempo-xtask tempo-fuzz; do
+            tags_var="${target^^}_TAGS"
+            tags_var="${tags_var//-/_}"
+            digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA")"
+            if [ "$target" = tempo-fuzz ] && [ -z "$digest" ]; then
+              continue
+            fi
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            deferred="$(jq -c --arg tags "${!tags_var}" --arg digest "$digest" '
+              . + ($tags | split("\n") | map(select(length > 0 and (test(":sha-[0-9a-f]+(-fuzz)?$") | not)))
+                | group_by(sub(":[^:/]*$"; ""))
+                | map({ref: ((.[0] | sub(":[^:/]*$"; "")) + "@" + $digest), tags: .}))' <<< "$deferred")"
+          done
+          echo "deferred_tags=$deferred" >> "$GITHUB_OUTPUT"
 
       - name: Summarize Docker build
         if: ${{ always() }}
@@ -493,8 +489,6 @@ jobs:
           BRANCH_NAME: ${{ steps.source.outputs.branch }}
           BUILD_OUTCOME: ${{ steps.build-and-push.outcome }}
           SIGN_OUTCOME: ${{ steps.sign-images.outcome }}
-          SHA_EVENT_OUTCOME: ${{ steps.publish-sha-event.outcome }}
-          NIGHTLY_EVENT_OUTCOME: ${{ steps.publish-nightly-event.outcome }}
           BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -560,12 +554,152 @@ jobs:
           summarize_image "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "$TEMPO_LOCALNET_TAGS" "tempo-localnet"
           summarize_image "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS" "tempo-xtask"
 
-          {
-            echo
-            echo "## Publish events"
-            echo
-            echo "| Event | Tag | Outcome |"
-            echo "| --- | --- | --- |"
-            echo "| registry_package | \`sha-${SHORT_SHA}\` | \`${SHA_EVENT_OUTCOME:-skipped}\` |"
-            echo "| registry_package | \`nightly\` | \`${NIGHTLY_EVENT_OUTCOME:-skipped}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
+  # Kyverno admits tempoxyz images only with registry-attached build provenance;
+  # the cosign signatures stay for consumers that verify with cosign. PR-head
+  # builds would attest unreviewed code as the dispatching ref, so they are skipped;
+  # attest-images.yml itself refuses any run that isn't a trusted main, rc/* or release-tag run.
+  attest:
+    name: Attest images
+    needs: build-and-push
+    # rc/* pushes are attested too (rc/* branches are ruleset-protected); the prod
+    # Kyverno policy admits only main and tag provenance, so rc images stay out of prod.
+    # Other callers (Network E2E, reth bump), /docker PR builds and merge-group builds
+    # publish unattested images.
+    # Gated on build-and-push's hold flag, which carries the trusted-run condition, so
+    # held tags always get an attest job and attest never runs without held tags.
+    if: needs.build-and-push.outputs.hold == 'true'
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/attest-images.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    secrets:
+      DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+    with:
+      image_refs: ${{ needs.build-and-push.outputs.image_refs }}
+
+  # The mutable tags build-and-push held back reach the digests only once they are
+  # attested, so nothing that follows a tag can pull an image Kyverno would refuse.
+  # If attestation fails, the tags stay where they were.
+  tag-images:
+    name: Move held image tags
+    needs: [build-and-push, attest]
+    if: needs.attest.result == 'success' && needs.build-and-push.outputs.deferred_tags != '' && needs.build-and-push.outputs.deferred_tags != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Move held tags to the attested digests
+        env:
+          DEFERRED_TAGS: ${{ needs.build-and-push.outputs.deferred_tags }}
+        run: bash .github/scripts/move-image-tags.sh
+
+  # Events start deployments, so they wait for the attestations Kyverno admits
+  # images by and for the tags that follow them; skipped attestations (merge-group
+  # and PR-head builds) don't block them.
+  publish-events:
+    name: Publish build events
+    needs: [build-and-push, attest, tag-images]
+    if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') && (needs.tag-images.result == 'success' || needs.tag-images.result == 'skipped') && github.repository == 'tempoxyz/tempo' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      # Network E2E dispatches its own suite; the generic event starts three others.
+      - name: Publish event (sha tag)
+        id: publish-sha-event
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
+        shell: bash
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GH_REPO: ${{ github.repository }}
+          SHORT_SHA: ${{ needs.build-and-push.outputs.short_sha }}
+          COMMIT_SHA: ${{ needs.build-and-push.outputs.sha }}
+          BRANCH_NAME: ${{ needs.build-and-push.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key "${RUNNER_TEMP}/key" \
+            --cert "${RUNNER_TEMP}/cert" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repository\": \"${GH_REPO}\",
+              \"event\": \"registry_package\",
+              \"data\": {
+                \"tag\": \"sha-${SHORT_SHA}\",
+                \"sha\": \"${COMMIT_SHA}\",
+                \"branch\": \"${BRANCH_NAME}\"
+              }
+            }"
+
+      - name: Publish event (nightly tag)
+        id: publish-nightly-event
+        if: ${{ github.repository == 'tempoxyz/tempo' && ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') }}
+        shell: bash
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ needs.build-and-push.outputs.sha }}
+          BRANCH_NAME: ${{ needs.build-and-push.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          DAY_OF_WEEK="$(date -u +%u)"
+          if [ "$DAY_OF_WEEK" = "5" ]; then
+            INVARIANT_TIMEOUT="172800"
+          else
+            INVARIANT_TIMEOUT="18000"
+          fi
+
+          echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
+          echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+
+          # EVENTS_ARGS may contain additional curl arguments, not just a URL.
+          curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
+            --key "${RUNNER_TEMP}/key" \
+            --cert "${RUNNER_TEMP}/cert" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repository\": \"${GH_REPO}\",
+              \"event\": \"registry_package\",
+              \"data\": {
+                \"tag\": \"nightly\",
+                \"sha\": \"${COMMIT_SHA}\",
+                \"branch\": \"${BRANCH_NAME}\",
+                \"invariant_timeout\": \"${INVARIANT_TIMEOUT}\"
+              }
+            }"
