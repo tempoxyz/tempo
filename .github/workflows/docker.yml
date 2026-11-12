@@ -565,6 +565,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # secure-runner
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -600,7 +601,8 @@ jobs:
     needs: [build-and-push, attest, tag-images]
     if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') && (needs.tag-images.result == 'success' || needs.tag-images.result == 'skipped') && github.repository == 'tempoxyz/tempo' }}
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      id-token: write # secure-runner
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
