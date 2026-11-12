@@ -32,17 +32,19 @@ def verify(binary):
     linked = "REL (Relocatable file)" not in subprocess.check_output(["readelf", "-h", str(binary)], text=True)
     for block in blocks:
         header = block.splitlines()[0] if block else ''
-        for name in expected:
-            if f'::coverage_{name}>' in header or f'::coverage_{name}::h' in header:
-                assert '__sanitizer_cov_trace_pc_guard' in block, f'Uninstrumented arm: {name}'
-                instrumented.add(name)
-                if linked:
-                    entry = block.split('__sanitizer_cov_trace_pc_guard', 1)[0]
-                    guards = re.findall(r'lea\s+[^\n#]*,%rdi\s*#\s*([0-9a-f]+)', entry)
-                    assert guards, f'Missing entry guard address: {name}'
-                    guard = int(guards[-1], 16)
-                    assert guard not in entry_guards, f'Shared entry guard: {name}'
-                    entry_guards.add(guard)
+        match = re.search(r'::coverage_(\w+?)(?:::h[0-9a-f]+)?>:', header)
+        if not match or match[1] not in expected:
+            continue
+        name = match[1]
+        assert '__sanitizer_cov_trace_pc_guard' in block, f'Uninstrumented arm: {name}'
+        instrumented.add(name)
+        if linked:
+            entry = block.split('__sanitizer_cov_trace_pc_guard', 1)[0]
+            guards = re.findall(r'lea\s+[^\n#]*,%rdi\s*#\s*([0-9a-f]+)', entry)
+            assert guards, f'Missing entry guard address: {name}'
+            guard = int(guards[-1], 16)
+            assert guard not in entry_guards, f'Shared entry guard: {name}'
+            entry_guards.add(guard)
     assert instrumented == expected, f'Missing disassembly: {expected - instrumented}'
     if linked:
         # Every function entry must also be present in the runtime PC table, with

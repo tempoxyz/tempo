@@ -44,6 +44,9 @@ RUN --mount=type=cache,id=antithesis-reth-state-root-cargo-registry,target=/usr/
     && sccache --show-stats \
     && mkdir /out \
     && cp target/x86_64-unknown-linux-gnu/antithesis/reth-state-root-antithesis /out/ \
+    && bytes=$(stat -c %s /out/reth-state-root-antithesis) \
+    && echo "Instrumented workload executable: $bytes bytes (limit 1073741824)" \
+    && test "$bytes" -le 1073741824 \
     && python3 -B contrib/antithesis/reth-state-root/verify_sparse_symbols.py /out/reth-state-root-antithesis \
     && nm /out/reth-state-root-antithesis | grep ' T antithesis_load_libvoidstar$' \
     && readelf -SW /out/reth-state-root-antithesis | grep __sancov_guards \

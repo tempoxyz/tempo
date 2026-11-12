@@ -103,6 +103,9 @@ jobs:
           [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           image="$REGISTRY/tempo-reth-state-root-antithesis@$DIGEST"
           docker pull "$image"
+          bytes=$(docker run --rm --network none --entrypoint stat "$image" -c %s /usr/local/bin/reth-state-root-antithesis)
+          echo "Instrumented workload executable: $bytes bytes (limit 1073741824)"
+          test "$bytes" -le 1073741824
           smoke="$RUNNER_TEMP/reth-state-root-smoke"
           mkdir -p "$smoke"
           container="reth-state-root-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

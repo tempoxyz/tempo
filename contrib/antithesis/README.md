@@ -32,10 +32,10 @@ locally with `ANTITHESIS_TRIE_SOCKET=/tmp/trie.sock` set for both the server and
 
 The zones workload drivers live in `xtask/zones-antithesis`, also built uninstrumented; see [`zones/README.md`](zones/README.md).
 
-## Sparse branch coverage buckets
+## Sparse branch and proof-target coverage buckets
 
 The reth workload image patches the **pinned** Reth arena at dirty-branch RLP
-encoding. This is a standalone alternative to JSON tuple guidance: there is no
+encoding and at blinded proof-target emission. This is a standalone alternative to JSON tuple guidance: there is no
 per-observation SDK JSON emission. The hook and source-hash guards are Docker-only;
 normal Tempo/Reth builds and trie behavior are unchanged. The callback is included
 in the workload binary but ordinary builds never call it.
@@ -51,8 +51,10 @@ All masks refer to the 16 child nibble positions.
 ### Finite coverage design
 
 `generate_sparse_buckets.py` emits macro invocations and explicit dispatch arms.
-There are **543 valid bucket functions plus one invalid-observation function = 544**.
-Every valid observation calls **26 functions**, not a Cartesian product of exact
+The original encoder bank retains **543 valid functions plus one invalid control = 544**.
+Two proof-target banks add **44,352** functions, with two proof controls, for
+**44,898 distinct functions** total.
+Every valid encoder observation calls **26 functions**, not a Cartesian product of exact
 masks. Numeric suffixes in generated names are the zero-based bucket indices below.
 
 - Count: 0, 1, 2–4, 5–8, 9–16 (popcount).
@@ -76,23 +78,54 @@ masks. Numeric suffixes in generated names are the zero-based bucket indices bel
 The nine count/shape pairs are empty/empty, one/singleton, each of 2–4 and 5–8
 with contiguous or scattered, and 9–16 with contiguous, scattered or full. Subset
 count pairs/triples are non-increasing bucket indices. Disjoint relationship count
-pairs omit only (9–16, 9–16), whose minimum combined count exceeds 16. No positional
-or exact-mask Cartesian products are generated. Empty/singleton branch buckets may
+pairs omit only (9–16, 9–16), whose minimum combined count exceeds 16. No exact-mask Cartesian products are generated. Empty/singleton branch buckets may
 not occur at this encoding site, but the helpers are reachable and tested; not every
 mathematically feasible bucket is promised to be attainable in a real workload.
 
 Each macro generates a named `#[inline(never)]` function accessing its own atomic
 slot and passing its address and identity through `black_box`. Docker verifies all
-544 optimized symbols have distinct addresses, each has a unique entry guard, and
+44,898 optimized symbols have distinct addresses, each has a unique entry guard, and
 each function entry appears in the runtime PC table. These are real coverage locations,
 **not** SDK assertions or an official
 `sometimes_each!` API; whether the extra locations improve search remains empirical.
 The 26 relaxed atomic updates per branch add overhead, which comparisons must include.
 
+### Proof-target banks
+
+Only the workload-only arena patch calls `antithesis_sparse_proof_target`, where a
+proof request originates: blinded traversal in both upper and lower tries, a leaf
+removal requiring its blinded sibling, and a subtrie collapse requiring its blinded
+sibling. Deferred proof drains do not duplicate observations. The tuple is the emitted
+blinded child nibble, logical parent depth (including compressed short keys), and
+that parent's local occupied/revealed/leaf masks, read before mutation. No model keys,
+emission reason, exact-mask banks, or JSON guidance are added. Subtrie leaf roots
+are classified through the same local arena handles as the encoder hook.
+
+- **Local:** 7 depth buckets × 16 target nibbles × 4⁴ = **28,672** functions.
+  The ordered positions are target−2, target−1, target+1, target+2. Their classes are
+  absent (0), blinded (1), revealed nonleaf (2), revealed leaf (3), encoded little-endian
+  in base four. Out-of-range positions are absent, never wrapped; target nibble stays
+  a dimension so boundary padding is unambiguous. The finite bank includes padded
+  combinations that cannot occur at boundaries.
+- **Sandwich:** 7 depth buckets × 1,120 ordered triples × 2 revealed-child leaf
+  states = **15,680** functions. For each emitted target i, reveal j and other blinded
+  occupied child k, j must be strictly between i and k in either direction. Every
+  qualifying triple hits its own function; multiple triples can hit per request.
+  In particular target 5 / revealed a / blinded c differs from target c / revealed a /
+  blinded 5, and leaf/nonleaf at a is independent.
+- A parentless blinded root has one separate bounded control; malformed masks,
+  depths, target nibbles or non-blinded targets hit one invalid-proof control.
+
+Stable IDs 0–543 retain the encoder bank, 544–29,215 are local, 29,216–44,895
+are sandwich, and 44,896–44,897 are parentless/invalid-proof controls. The generated
+source is finite and about 4.6 MB, with shared arithmetic dispatch and a constant
+triple-rank table rather than a huge exact-mask match. All functions use the same
+noinline/unique atomic slot/black-box anti-folding instrumentation as before.
+
 ### Bounded diagnostics and checks
 
 Each function emits its first hit only, with its ID and raw runtime tuple: at most
-544 `sparse_bucket_v1` lines per process. `sparse_observations_v1` reports the cumulative
+544 `sparse_bucket_v1` lines and 44,354 `sparse_proof_bucket_v1` lines per process. `sparse_observations_v1` reports the cumulative
 valid branch observation count at powers of two (at most 64 lines); the latest value
 is a lower bound, not an exact final count. Restarts reset both bounds. No masks are
 used as dynamic SDK guidance. Existing workload SDK assertions remain unchanged.
@@ -100,9 +133,15 @@ used as dynamic SDK guidance. Existing workload SDK assertions remain unchanged.
 Run `python3 -B contrib/antithesis/reth-state-root/test_sparse_buckets.py` for
 standalone optimized Rust tests (no Reth build): all 65,536 masks, all 4^8 subset
 assignments in each half, sixteen-position relationship/depth fixtures, all generated
-arms and unique counters/function pointers, actual bounded diagnostic output, and
-per-function sancov verification. Run `test_patch_sparse_trie.py` for fail-closed
-patch guards; regenerate with `generate_sparse_buckets.py` after changing the design.
+arms and unique counters/function pointers, all 28,672 local mappings with boundary
+padding, all 15,680 sandwich mappings, actual bounded diagnostic output, runtime
+entry-guard callback hits in both sandwich directions, and
+per-function sancov verification. Image smoke requires actual proof-hook/local-bank
+evidence; sandwich evidence is validated when present but is not mandatory in a
+short randomized run. Deterministic callback tests cover sandwich directions and
+leaf states. Run `test_patch_sparse_trie.py` for fail-closed
+patch guards, a hash-checked compressed copy of the actual pinned arena source,
+ABI/mask helper execution and instrumentation-only byte-for-byte preservation; regenerate with `generate_sparse_buckets.py` after changing the design.
 Use `generate_sparse_buckets.py --metadata` for the JSON ID/name manifest, arm count
 and family count when reclassifying comparison data. CI selects Rust 1.96 to match
 the Docker compiler for standalone checks.

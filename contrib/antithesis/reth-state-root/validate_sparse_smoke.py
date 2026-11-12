@@ -3,7 +3,12 @@
 import json
 import re
 import sys
-from generate_sparse_buckets import arms, families
+from generate_sparse_buckets import arms, families, triples
+
+TRIPLE_RANK = {triple: rank for rank, triple in enumerate(triples())}
+LOCAL_START = 544
+SANDWICH_START = LOCAL_START + 28672
+NO_PARENT = SANDWICH_START + 15680
 
 
 def expected_ids(depth, root, state, revealed, leaf):
@@ -30,6 +35,28 @@ def expected_ids(depth, root, state, revealed, leaf):
     return result
 
 
+def expected_proof_ids(depth, parent, target, state, revealed, leaf):
+    if not parent:
+        assert (depth, target, state, revealed, leaf) == (0, 0, 0, 0, 0), 'invalid parentless target'
+        return {NO_PARENT}
+    assert 0 <= target < 16, 'invalid target nibble'
+    expected_ids(depth, depth == 0, state, revealed, leaf)
+    assert state & (1 << target) and not revealed & (1 << target), 'target must be blinded'
+    depth = next(i for i, maximum in enumerate((0, 1, 4, 8, 16, 32, 63)) if depth <= maximum)
+    pattern = 0
+    for slot, position in enumerate((target - 2, target - 1, target + 1, target + 2)):
+        kind = 0
+        if 0 <= position < 16 and state & (1 << position):
+            kind = 1 if not revealed & (1 << position) else 3 if leaf & (1 << position) else 2
+        pattern += kind * 4 ** slot
+    result = {LOCAL_START + (depth * 16 + target) * 256 + pattern}
+    for j in range(16):
+        for k in range(16):
+            if revealed & (1 << j) and state & ~revealed & (1 << k) and (target, j, k) in TRIPLE_RANK:
+                result.add(SANDWICH_START + (depth * 1120 + TRIPLE_RANK[target, j, k]) * 2 + bool(leaf & (1 << j)))
+    return result
+
+
 def validate(events, diagnostics):
     setup = completed = False
     for line in events:
@@ -48,7 +75,14 @@ def validate(events, diagnostics):
     observations = []
     pattern = re.compile(r'sparse_bucket_v1 id=(\d+) depth=(\d+) root=([01]) state=(\d+) revealed=(\d+) leaf=(\d+)')
     for line in diagnostics:
-        if 'sparse_bucket_v1' in line:
+        if 'sparse_proof_bucket_v1' in line:
+            match = re.fullmatch(r'sparse_proof_bucket_v1 id=(\d+) depth=(\d+) target=(\d+) parent=([01]) state=(\d+) revealed=(\d+) leaf=(\d+)\s*', line)
+            assert match, line
+            index, depth, target, parent, state, revealed, leaf = map(int, match.groups())
+            assert index not in seen, f'repeated first hit: {index}'
+            assert index in expected_proof_ids(depth, bool(parent), target, state, revealed, leaf), line
+            seen.add(index)
+        elif 'sparse_bucket_v1' in line:
             match = pattern.fullmatch(line.strip())
             assert match, line
             index, depth, root, state, revealed, leaf = map(int, match.groups())
@@ -67,6 +101,9 @@ def validate(events, diagnostics):
     for name, _, keys in families():
         assert seen.intersection(range(offset, offset + len(keys))), f'Missing runtime coverage family: {name}'
         offset += len(keys)
+    assert seen.intersection(range(LOCAL_START, SANDWICH_START)), 'Missing runtime coverage family: local'
+    # Random short smoke runs need a real proof hook hit, not a particular sandwich.
+    # Exact sandwich directions/leaf states are covered deterministically by callback tests.
     assert observations and len(set(observations)) == len(observations) <= 64, 'Missing/bad observation counter'
     print(f'Verified {len(seen)} first-hit buckets; at least {max(observations)} runtime branches observed')
 
