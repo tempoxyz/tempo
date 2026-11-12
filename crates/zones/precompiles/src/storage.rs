@@ -5,10 +5,7 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use core::{
-    fmt,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::fmt;
 
 use alloy_primitives::{Address, B256, U256, map::HashSet};
 use evm2::{
@@ -83,14 +80,13 @@ pub struct L1State<P> {
     /// Committed Zone checkpoint captured from the EVM overlay at transaction entry.
     /// This is a fallback for database reads, not a selected L1 view.
     initial_anchor: Arc<Mutex<Option<U256>>>,
-    /// Tempo block number selected for the current transaction attempt.
-    anchor: Arc<Mutex<Option<u64>>>,
-    /// Whether this attempt has charged a metered read of the local `TempoState` checkpoint.
+    /// Tempo block number selected for the current transaction attempt, and whether the attempt
+    /// has charged a metered read of the local `TempoState` checkpoint.
     ///
     /// From T14, unmetered host loads select the anchor on cache misses, so the checkpoint charge
-    /// cannot depend on whether an anchor is selected. Like `access_set`, it is not rolled back
-    /// when a subcall reverts.
-    checkpoint_charged: Arc<AtomicBool>,
+    /// cannot depend on whether an anchor is selected. Like `access_set`, the charge is not
+    /// rolled back when a subcall reverts.
+    anchor: Arc<Mutex<Option<(u64, bool)>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
     /// Used for cold/warm gas accounting. Unlike REVM's journal, this access set is not rolled back
@@ -109,7 +105,6 @@ impl<P> L1State<P> {
         Self {
             initial_anchor: Arc::new(Mutex::new(None)),
             anchor: Arc::new(Mutex::new(None)),
-            checkpoint_charged: Arc::new(AtomicBool::new(false)),
             access_set: Arc::new(Mutex::new(HashSet::default())),
             provider,
             portal_address,
@@ -127,7 +122,6 @@ impl<P> L1State<P> {
     pub fn reset_transaction_state(&self) {
         *self.initial_anchor.lock() = None;
         *self.anchor.lock() = None;
-        self.checkpoint_charged.store(false, Ordering::Relaxed);
         self.access_set.lock().clear();
     }
 
@@ -138,7 +132,7 @@ impl<P> L1State<P> {
 
     /// Returns the anchor selected for the current transaction, if any.
     pub fn get_anchor(&self) -> Option<u64> {
-        *self.anchor.lock()
+        self.anchor.lock().map(|(anchor, _)| anchor)
     }
 
     /// Returns the configured ZonePortal address.
@@ -146,16 +140,23 @@ impl<P> L1State<P> {
         self.portal_address
     }
 
-    fn set_anchor(&self, new: u64) -> Result<(), L1StateError> {
+    /// Selects `new` as the anchor, or validates it against the selected one. `charged` records that
+    /// the caller charged the checkpoint read; it is never cleared for the attempt.
+    fn set_anchor(&self, new: u64, charged: bool) -> Result<(), L1StateError> {
         let mut anchor = self.anchor.lock();
-        match *anchor {
-            None => {
-                *anchor = Some(new);
-                Ok(())
+        match &mut *anchor {
+            None => *anchor = Some((new, charged)),
+            Some((current, checkpoint_charged)) if *current == new => {
+                *checkpoint_charged |= charged
             }
-            Some(current) if current == new => Ok(()),
-            Some(current) => Err(L1StateError::AnchorConflict { current, new }),
+            Some((current, _)) => {
+                return Err(L1StateError::AnchorConflict {
+                    current: *current,
+                    new,
+                });
+            }
         }
+        Ok(())
     }
 
     /// Selects the final anchor after `TempoState.finalizeTempo` validates a contiguous range.
@@ -168,13 +169,12 @@ impl<P> L1State<P> {
         }
 
         let mut anchor = self.anchor.lock();
-        if let Some(current) = *anchor {
+        if let Some((current, _)) = *anchor {
             return Err(L1StateError::AnchorConflict { current, new: to });
         }
 
-        *anchor = Some(to);
         // `finalizeTempo` charged the checkpoint read before validating advancement.
-        self.checkpoint_charged.store(true, Ordering::Relaxed);
+        *anchor = Some((to, true));
         Ok(())
     }
 }
@@ -191,7 +191,7 @@ impl<P: L1StorageReader> L1State<P> {
         slot: B256,
         block_number: u64,
     ) -> Result<B256, L1StateError> {
-        self.set_anchor(block_number)?;
+        self.set_anchor(block_number, false)?;
         self.provider.read_l1_storage(account, slot, block_number)
     }
 
@@ -204,7 +204,7 @@ impl<P: L1StorageReader> L1State<P> {
         account: Address,
         block_number: u64,
     ) -> Result<B256, L1StateError> {
-        self.set_anchor(block_number)?;
+        self.set_anchor(block_number, false)?;
         self.provider.read_l1_commitment(account, block_number)
     }
 
@@ -361,20 +361,20 @@ struct L1Storage<'a, P> {
 
 impl<P: L1StorageReader> StorageOps for L1Storage<'_, P> {
     fn load(&self, slot: U256) -> tempo_precompiles::Result<U256> {
-        let selected = self.l1.get_anchor();
+        let is_t14 = StorageCtx::default().spec().is_t14();
+        let selected = *self.l1.anchor.lock();
         let anchor = match selected {
-            Some(anchor)
-                if self.l1.checkpoint_charged.load(Ordering::Relaxed)
-                    || !StorageCtx::default().spec().is_t14() =>
-            {
-                anchor
-            }
+            Some((anchor, charged)) if charged || !is_t14 => anchor,
+            None if !is_t14 => TempoState::new().tempo_block_number.read()?,
             // From T14, charge the checkpoint once per attempt even if a host cache miss already
             // selected the anchor, so gas does not depend on the account cache.
             _ => {
                 let checkpoint = TempoState::new().tempo_block_number.read()?;
-                self.l1.checkpoint_charged.store(true, Ordering::Relaxed);
-                selected.unwrap_or(checkpoint)
+                let anchor = selected.map_or(checkpoint, |(anchor, _)| anchor);
+                self.l1
+                    .set_anchor(anchor, true)
+                    .map_err(|err| TempoPrecompileError::Fatal(err.to_string()))?;
+                anchor
             }
         };
         self.l1
