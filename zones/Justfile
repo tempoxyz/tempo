@@ -39,7 +39,7 @@ regen-zone-dev-genesis:
         --with-createx \
         --with-safe-deployer \
         --with-create2-factory
-    mv {{zone_dev_genesis_tmp}}/genesis.json crates/zones/chainspec/assets/zone-dev-genesis.json
+    mv {{zone_dev_genesis_tmp}}/genesis.json crates/zones/node/assets/zone-dev-genesis.json
     rm -rf {{zone_dev_genesis_tmp}}
 
 [group('localnet')]

@@ -69,7 +69,7 @@ pub(crate) enum Check {
 
 impl Display for Check {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let check = match self {
+        f.write_str(match self {
             Self::Null => "null input",
             Self::HarnessInput => "harness input does not decode",
             Self::OutcomeEncoding => "outcome does not encode",
@@ -80,10 +80,9 @@ impl Display for Check {
             Self::Header => "header does not resolve",
             Self::SenderCount => "sender count differs from the transaction count",
             Self::IncompletePreState => "pre-state could not answer a read",
-            Self::Zone(why) => return write!(f, "zone input: {why}"),
+            Self::Zone(why) => why,
             Self::Unclassified => "no reason recorded",
-        };
-        f.write_str(check)
+        })
     }
 }
 

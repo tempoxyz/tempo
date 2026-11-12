@@ -2,9 +2,9 @@
 //! holds for it at the zone's anchor.
 //!
 //! A zone reads Tempo state at a fixed anchor and never stores a commitment, so its checks compare
-//! two chains. A check never reads two [`Views`]: a producer observes [`Zone`] through the zone's
-//! views, then [`Tempo`] through Tempo's views at the anchor the zone reported, and joins them into
-//! a [`Mirror`]. Without Tempo only the zone's own checks are armed.
+//! two chains. A producer observes [`Zone`] through the zone's views, then [`Tempo`] through
+//! Tempo's views at the anchor the zone reported, and joins them into a [`Mirror`]. Without Tempo
+//! only the zone's own checks are armed.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,10 +14,7 @@ use std::{
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_sol_types::SolCall;
 use tempo_contracts::{
-    precompiles::{
-        IConfigurableAccountShim::onERC721ReceivedCall,
-        ISignatureVerifier::{verifyConfigurableAccountCall, verifyKeychainAdminCall},
-    },
+    precompiles::IConfigurableAccountShim::onERC721ReceivedCall,
     zones::{
         TEMPO_STATE_ADDRESS,
         TempoState::{tempoBlockHashCall, tempoBlockNumberCall},
@@ -27,10 +24,8 @@ use tempo_contracts::{
 
 use crate::{
     Observe, ObserveError, Step, Tx, Views,
-    configurable_account::{
-        ConfigurableAccountConfig, Leaf, read_commitments, spec as account_spec,
-    },
-    view, view_many,
+    configurable_account::{Leaf, read_commitments, spec as account_spec},
+    view,
 };
 
 mod checks;
@@ -60,53 +55,11 @@ pub struct Zone {
     anchor: Anchor,
     /// Each account's commitment as zone execution reads it; unanswered reads are left out.
     of: BTreeMap<Address, B256>,
-    /// Whether a call to each probed account answers as the account marker; unanswered probes are
+    /// Whether a call to each eligible account answers as the account marker; unanswered calls are
     /// left out.
     marked: BTreeMap<Address, bool>,
     /// The observed accounts that hold zone code, so never read Tempo.
     coded: BTreeSet<Address>,
-    /// The signature verifier's answer to each probe it answered.
-    verified: Vec<Verified>,
-}
-
-/// A signature the producer asks the zone's signature verifier about, signed over `hash`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Probe {
-    /// The account the signature claims to act for.
-    pub account: Address,
-    pub hash: B256,
-    /// The encoded Tempo signature.
-    pub signature: Bytes,
-    pub kind: ProbeKind,
-}
-
-/// What a probe's signature is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProbeKind {
-    /// An owner quorum carrying this configuration, asked through `verifyConfigurableAccount`.
-    Quorum(ConfigurableAccountConfig),
-    /// A keychain signature by the account's own root key, asked through `verifyKeychainAdmin`,
-    /// which also guards TIP-20 `permit`'s retirement check.
-    RootKey,
-}
-
-/// The verifier's answer to one probe.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Verified {
-    pub account: Address,
-    pub kind: ProbeKind,
-    pub accepted: bool,
-}
-
-impl fmt::Display for Verified {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            ProbeKind::Quorum(config) => {
-                write!(f, "version {} quorum of {}", config.version, self.account)
-            }
-            ProbeKind::RootKey => write!(f, "root key of {}", self.account),
-        }
-    }
 }
 
 impl Zone {
@@ -116,16 +69,14 @@ impl Zone {
     }
 }
 
-/// The predeploys, the accounts to read and the signatures to verify; `coded` are those of
-/// `accounts` whose code in zone state is not empty.
+/// The predeploys and the accounts to read; `coded` are those of `accounts` whose code in zone
+/// state is not empty.
 #[derive(Debug, Clone, Copy)]
 pub struct ZoneAt<'a> {
     pub tempo_state: Address,
     pub precompile: Address,
-    pub verifier: Address,
     pub accounts: &'a [Address],
     pub coded: &'a [Address],
-    pub probes: &'a [Probe],
 }
 
 impl Observe for Zone {
@@ -135,25 +86,12 @@ impl Observe for Zone {
     /// to it answers as the account marker's ERC-721 receiver hook (an account without code
     /// answers with empty output). Views must run as zone transactions, where the overlay applies.
     fn observe<V: Views>(views: &mut V, at: ZoneAt<'_>) -> Result<Self, ObserveError<V::Error>> {
-        let ZoneAt {
-            tempo_state,
-            precompile,
-            verifier,
-            accounts,
-            coded,
-            probes,
-        } = at;
         let anchor = Anchor {
-            number: view(views, tempo_state, tempoBlockNumberCall {})?,
-            hash: view(views, tempo_state, tempoBlockHashCall {})?,
+            number: view(views, at.tempo_state, tempoBlockNumberCall {})?,
+            hash: view(views, at.tempo_state, tempoBlockHashCall {})?,
         };
-        let of = read_commitments(views, precompile, accounts)?;
-        let coded: BTreeSet<Address> = coded.iter().copied().collect();
-        let probed: Vec<Address> = accounts
-            .iter()
-            .copied()
-            .filter(|account| !coded.contains(account) && reserved(*account).is_none())
-            .collect();
+        let of = read_commitments(views, at.precompile, at.accounts)?;
+        let coded: BTreeSet<Address> = at.coded.iter().copied().collect();
         let input: Bytes = onERC721ReceivedCall {
             operator: Address::ZERO,
             from: Address::ZERO,
@@ -162,92 +100,43 @@ impl Observe for Zone {
         }
         .abi_encode()
         .into();
+        let calls: Vec<(Address, Bytes)> = at
+            .accounts
+            .iter()
+            .filter(|&&account| !coded.contains(&account) && reserved(account).is_none())
+            .map(|&account| (account, input.clone()))
+            .collect();
         let magic = onERC721ReceivedCall::abi_encode_returns(&FixedBytes::from(
             onERC721ReceivedCall::SELECTOR,
         ));
-        let calls: Vec<(Address, Bytes)> = probed
-            .iter()
-            .map(|&account| (account, input.clone()))
-            .collect();
-        let outputs = views.call(&calls).map_err(ObserveError::Views)?;
         let mut marked = BTreeMap::new();
-        for (&account, output) in probed.iter().zip(outputs) {
+        for ((account, _), output) in calls
+            .iter()
+            .zip(views.call(&calls).map_err(ObserveError::Views)?)
+        {
             match output {
                 None => {}
-                Some(output) if output.is_empty() => {
-                    marked.insert(account, false);
-                }
-                Some(output) if output[..] == magic[..] => {
-                    marked.insert(account, true);
+                Some(output) if output.is_empty() || output[..] == magic[..] => {
+                    marked.insert(*account, !output.is_empty());
                 }
                 Some(output) => {
                     return Err(ObserveError::Malformed {
                         call: onERC721ReceivedCall::SIGNATURE,
-                        to: account,
+                        to: *account,
                         output: Some(output),
                     });
                 }
             }
         }
         Ok(Self {
-            tempo_state,
-            precompile,
+            tempo_state: at.tempo_state,
+            precompile: at.precompile,
             anchor,
             of,
             marked,
             coded,
-            verified: verify(views, verifier, probes)?,
         })
     }
-}
-
-/// Asks the verifier about each probe, leaving out unanswered ones (a malformed or invalid
-/// signature reverts).
-fn verify<V: Views>(
-    views: &mut V,
-    verifier: Address,
-    probes: &[Probe],
-) -> Result<Vec<Verified>, ObserveError<V::Error>> {
-    let (quorums, roots): (Vec<_>, Vec<_>) = probes
-        .iter()
-        .partition(|probe| matches!(probe.kind, ProbeKind::Quorum(_)));
-    let quorum_calls: Vec<_> = quorums
-        .iter()
-        .map(|probe| {
-            let call = verifyConfigurableAccountCall {
-                account: probe.account,
-                hash: probe.hash,
-                signature: probe.signature.clone(),
-            };
-            (verifier, call)
-        })
-        .collect();
-    let root_calls: Vec<_> = roots
-        .iter()
-        .map(|probe| {
-            let call = verifyKeychainAdminCall {
-                account: probe.account,
-                hash: probe.hash,
-                signature: probe.signature.clone(),
-            };
-            (verifier, call)
-        })
-        .collect();
-    let answers = view_many(views, &quorum_calls)?
-        .into_iter()
-        .chain(view_many(views, &root_calls)?);
-    Ok(quorums
-        .into_iter()
-        .chain(roots)
-        .zip(answers)
-        .filter_map(|(probe, accepted)| {
-            Some(Verified {
-                account: probe.account,
-                kind: probe.kind.clone(),
-                accepted: accepted?,
-            })
-        })
-        .collect())
 }
 
 /// Tempo's commitments of the observed accounts at one block.
@@ -255,30 +144,13 @@ fn verify<V: Views>(
 pub struct Tempo {
     /// The block the views answered at, as the producer states it.
     block: u64,
-    /// Tempo's canonical hash of that block, when the producer knows it.
-    hash: Option<B256>,
     of: BTreeMap<Address, B256>,
 }
 
-impl Tempo {
-    /// Tempo at a block before T14, where no account has a commitment.
-    pub fn unregistered(block: u64, hash: Option<B256>, accounts: &[Address]) -> Self {
-        Self {
-            block,
-            hash,
-            of: accounts
-                .iter()
-                .map(|&account| (account, B256::ZERO))
-                .collect(),
-        }
-    }
-}
-
-/// The Tempo block the views answer at, its canonical hash when known, and the accounts to read.
+/// The Tempo block the views answer at, and the accounts to read.
 #[derive(Debug, Clone, Copy)]
 pub struct TempoAt<'a> {
     pub block: u64,
-    pub hash: Option<B256>,
     pub precompile: Address,
     pub accounts: &'a [Address],
 }
@@ -290,7 +162,6 @@ impl Observe for Tempo {
     fn observe<V: Views>(views: &mut V, at: TempoAt<'_>) -> Result<Self, ObserveError<V::Error>> {
         Ok(Self {
             block: at.block,
-            hash: at.hash,
             of: read_commitments(views, at.precompile, at.accounts)?,
         })
     }
@@ -335,11 +206,6 @@ impl Mirror {
         }
     }
 
-    /// The Tempo block the zone reads Tempo at.
-    pub const fn anchor(&self) -> Anchor {
-        self.zone.anchor
-    }
-
     /// Why `account` reads nothing from Tempo on this zone, `None` when it is eligible.
     fn ineligible(&self, account: Address) -> Option<&'static str> {
         reserved(account).or_else(|| {
@@ -350,14 +216,9 @@ impl Mirror {
         })
     }
 
-    /// Tempo's commitment of `account` at the anchor; `None` when unread, or when Tempo's block at
-    /// the anchor's number is not the anchor (judged by ANCHOR-CANONICAL).
+    /// Tempo's commitment of `account` at the anchor; `None` when unread.
     fn tempo(&self, account: Address) -> Option<B256> {
-        let tempo = self.tempo.as_ref()?;
-        if tempo.hash.is_some_and(|hash| hash != self.zone.anchor.hash) {
-            return None;
-        }
-        tempo.of.get(&account).copied()
+        self.tempo.as_ref()?.of.get(&account).copied()
     }
 }
 

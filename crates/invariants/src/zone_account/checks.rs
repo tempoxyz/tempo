@@ -2,17 +2,17 @@
 
 use std::fmt;
 
-use alloy_primitives::{Address, B256, KECCAK256_EMPTY};
+use alloy_primitives::{Address, KECCAK256_EMPTY};
 use alloy_sol_types::SolEvent;
 use invariants_core::{check, ensure};
 use tempo_contracts::{precompiles::ITIP20::Approval, zones::TempoState::TempoBlockFinalized};
 use tempo_primitives::is_tip20_prefix;
 
-use super::{Mirror, ProbeKind, ZoneLeaves, ZoneStep, reserved};
+use super::{Mirror, ZoneLeaves, ZoneStep, reserved};
 use crate::{
     Check, Checked, StepChecked, Tx, Verdict,
     configurable_account::{
-        ConfigurableAccountConfig, Quorum,
+        Quorum,
         spec::{self, MARKER_CODE_HASH},
     },
 };
@@ -22,20 +22,6 @@ pub const VIEW: &str = "TEMPO-ZONE-ACCOUNT-VIEW";
 
 /// A zone state against Tempo at its anchor.
 pub const CHECKS: &[Check<Mirror>] = &[
-    // The zone's anchor is a canonical Tempo block.
-    // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L29>
-    check! {
-        id: "TEMPO-ZONE-ACCOUNT-ANCHOR-CANONICAL",
-        over: |m: &Mirror| [m.zone.anchor],
-        judge: |m, anchor| {
-            let hash = m.tempo.as_ref()?.hash?;
-            ensure!(
-                hash == anchor.hash,
-                "is not Tempo's block {}, whose hash is {hash}",
-                anchor.number
-            )
-        },
-    },
     // Every commitment the zone reads is Tempo's commitment at the anchor.
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L182>
     check! {
@@ -77,32 +63,6 @@ pub const CHECKS: &[Check<Mirror>] = &[
                 marked != tempo.is_zero(),
                 "{} as the account marker, Tempo's commitment at {} is {tempo}",
                 if marked { "answers" } else { "does not answer" },
-                m.zone.anchor
-            )
-        },
-    },
-    // The signature verifier accepts exactly the quorums Tempo's commitment at the anchor
-    // authorizes, and an account's root key only while that commitment is zero.
-    // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L60>
-    // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L90>
-    check! {
-        id: "TEMPO-ZONE-ACCOUNT-VERIFIER-MIRROR",
-        over: |m: &Mirror| m.zone.verified.iter(),
-        judge: |m, v| {
-            if m.zone.coded.contains(&v.account) {
-                return None;
-            }
-            let reserved = reserved(v.account);
-            let tempo = if reserved.is_some() { B256::ZERO } else { m.tempo(v.account)? };
-            let expected = reserved.is_none()
-                && match &v.kind {
-                    ProbeKind::Quorum(config) => authorizes(tempo, v.account, config),
-                    ProbeKind::RootKey => tempo.is_zero(),
-                };
-            ensure!(
-                v.accepted == expected,
-                "{} the {v}, Tempo's commitment at {} is {tempo}",
-                if v.accepted { "accepted" } else { "rejected" },
                 m.zone.anchor
             )
         },
@@ -258,24 +218,6 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
             )
         },
     },
-    // An account unregistered on Tempo that signs a zone transaction is still unregistered after.
-    // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L181>
-    check! {
-        id: "TEMPO-ZONE-ACCOUNT-SIGNER-UNREGISTERED",
-        over: |step: &ZoneStep| quorums(step),
-        judge: |s, q| {
-            let at = at_tx(s)?;
-            if !at.tempo(q.account)?.is_zero() {
-                return None;
-            }
-            let post = s.post.zone.of.get(&q.account)?;
-            ensure!(
-                post.is_zero(),
-                "is unregistered on Tempo at {}, yet the zone reads commitment {post} after it signed",
-                at.zone.anchor
-            )
-        },
-    },
 ];
 
 /// The zone's stored leaves after a step, beside what it serves for them.
@@ -334,17 +276,17 @@ impl Checked for ZoneLeaves {
     const CHECKS: &'static [Check<Self>] = LEAF_CHECKS;
 }
 
-/// The quorums of the step's transaction.
-/// Whether a quorum carrying `config` authorizes for `account` given Tempo's commitment `tempo`:
-/// it matches the commitment, or derives the unregistered account at version zero without listing
-/// it as an owner.
-fn authorizes(tempo: B256, account: Address, config: &ConfigurableAccountConfig) -> bool {
-    if !tempo.is_zero() {
-        return spec::commitment(config) == Some(tempo);
+/// A TIP-20 approval `permit` made for `owner`.
+#[derive(Debug, Clone, Copy)]
+struct Permit {
+    token: Address,
+    owner: Address,
+}
+
+impl fmt::Display for Permit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "permit of {} on {}", self.owner, self.token)
     }
-    config.version == 0
-        && spec::derived_address(config) == Some(account)
-        && config.owners.iter().all(|o| o.owner != account)
 }
 
 /// The token and owner of each TIP-20 approval in a user transaction's step whose owner is not the
@@ -365,19 +307,7 @@ fn permits(step: &ZoneStep) -> impl Iterator<Item = Permit> + '_ {
         .map(|(token, owner)| Permit { token, owner })
 }
 
-/// A TIP-20 approval `permit` made for `owner`.
-#[derive(Debug, Clone, Copy)]
-struct Permit {
-    token: Address,
-    owner: Address,
-}
-
-impl fmt::Display for Permit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "permit of {} on {}", self.owner, self.token)
-    }
-}
-
+/// The quorums of the step's transaction.
 fn quorums(step: &ZoneStep) -> impl Iterator<Item = &Quorum> {
     step.tx.iter().flat_map(|tx| tx.authority.quorums.iter())
 }

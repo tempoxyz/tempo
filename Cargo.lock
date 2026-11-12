@@ -17818,6 +17818,7 @@ dependencies = [
  "zone-chainspec",
  "zone-evm",
  "zone-l1",
+ "zone-precompiles",
  "zone-primitives",
 ]
 

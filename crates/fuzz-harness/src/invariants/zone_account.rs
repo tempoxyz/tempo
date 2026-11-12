@@ -1,20 +1,17 @@
 //! Zone configurable account checks (TIP-1154): what the zone shows of the watched accounts
 //! beside what Tempo holds for them at the zone's anchor.
 
-use std::iter;
+use std::{collections::BTreeMap, iter};
 
 use alloy_primitives::{Address, KECCAK256_EMPTY, Log, U256};
 use evm2::evm::{Database as _, DynDatabase as _};
 use invariants_core::{Observe as _, Report};
 use reth_evm::ConfigureEvm as _;
-use tempo_contracts::{
-    precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, SIGNATURE_VERIFIER_ADDRESS},
-    zones::TEMPO_STATE_ADDRESS,
-};
+use tempo_contracts::{precompiles::CONFIGURABLE_ACCOUNT_ADDRESS, zones::TEMPO_STATE_ADDRESS};
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_invariants::{
     Tx, all,
-    zone_account::{Mirror, Tempo, TempoAt, VIEW, Zone, ZoneLeaf, ZoneLeaves, ZoneStep},
+    zone_account::{Mirror, Tempo, TempoAt, VIEW, Zone, ZoneAt, ZoneLeaf, ZoneLeaves, ZoneStep},
 };
 use zone_evm::{L1OverlayDB, ZoneEvmConfig};
 use zone_precompiles::L1StorageReader as _;
@@ -134,15 +131,11 @@ impl ZoneContext<'_> {
             })
             .collect();
         let mut views = ZoneViews::new(self.db.view(), self.config, self.env.clone());
-        let at = tempo_invariants::zone_account::ZoneAt {
+        let at = ZoneAt {
             tempo_state: TEMPO_STATE_ADDRESS,
             precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
-            verifier: SIGNATURE_VERIFIER_ADDRESS,
             accounts: self.watched,
             coded: &coded,
-            // Not probed: a probe needs a signature over a hash the harness picks, and the input
-            // carries only signatures over its transactions.
-            probes: &[],
         };
         observed(report, VIEW, "the zone", Zone::observe(&mut views, at))
     }
@@ -150,14 +143,8 @@ impl ZoneContext<'_> {
     /// Tempo's commitments of the watched accounts at block `number`, counting the read under
     /// [`VIEW`]; `None` when the harness holds no such block or the read failed.
     fn tempo(&self, number: u64, report: &mut Report) -> Option<Tempo> {
+        // The zone block copies its anchor's timestamp, so Tempo is at T14 whenever the zone is.
         let anchor = self.reader.get(number)?;
-        if !anchor.spec().is_t14() {
-            return Some(Tempo::unregistered(
-                number,
-                Some(anchor.hash()),
-                self.watched,
-            ));
-        }
         let db = anchor.db();
         let env = self
             .tempo_config
@@ -174,7 +161,6 @@ impl ZoneContext<'_> {
         );
         let at = TempoAt {
             block: number,
-            hash: Some(anchor.hash()),
             precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
             accounts: self.watched,
         };
@@ -186,29 +172,30 @@ impl ZoneContext<'_> {
     /// load inside a zone transaction at `anchor`, and Tempo's commitment at `anchor`.
     fn leaves(&self, accounts: &[Address], anchor: u64) -> ZoneLeaves {
         let spec = self.env.spec;
-        let of = accounts
-            .iter()
-            .filter_map(|&address| {
-                let stored = leaf(account_at(self.db, None, address)?, spec)?;
-                let view = evm2::evm::Db::new(self.db.view());
-                let mut overlay = L1OverlayDB::new(view, self.reader.clone(), Address::ZERO, spec);
-                overlay.l1_state().begin_transaction(U256::from(anchor));
-                let served = match overlay.get_account(&address) {
-                    Ok(info) => Some(info.map_or(KECCAK256_EMPTY, |info| info.code_hash)),
-                    Err(_) => None,
-                };
-                // An unread commitment leaves the checks on Tempo's side unarmed.
-                let tempo = self.reader.read_l1_commitment(address, anchor).ok();
-                Some((
-                    address,
-                    ZoneLeaf {
-                        stored,
-                        served,
-                        tempo,
-                    },
-                ))
-            })
-            .collect();
+        let view = evm2::evm::Db::new(self.db.view());
+        let mut overlay = L1OverlayDB::new(view, self.reader.clone(), Address::ZERO, spec);
+        overlay.l1_state().begin_transaction(U256::from(anchor));
+        let mut of = BTreeMap::new();
+        for &address in accounts {
+            let Some(stored) = account_at(self.db, None, address).and_then(|info| leaf(info, spec))
+            else {
+                continue;
+            };
+            let served = overlay
+                .get_account(&address)
+                .ok()
+                .map(|info| info.map_or(KECCAK256_EMPTY, |info| info.code_hash));
+            // An unread commitment leaves the checks on Tempo's side unarmed.
+            let tempo = self.reader.read_l1_commitment(address, anchor).ok();
+            of.insert(
+                address,
+                ZoneLeaf {
+                    stored,
+                    served,
+                    tempo,
+                },
+            );
+        }
         ZoneLeaves {
             active: spec.is_t14(),
             of,

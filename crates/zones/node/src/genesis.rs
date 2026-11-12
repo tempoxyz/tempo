@@ -11,7 +11,8 @@ use tempo_primitives::TempoHeader;
 use zone_precompiles::{ZONE_FEE_MANAGER_ADDRESS, tempo_state, zone_fee_manager};
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
-pub use zone_chainspec::GENESIS_TEMPLATE_JSON;
+/// Bundled zone dev genesis artifact.
+pub const GENESIS_TEMPLATE_JSON: &str = include_str!("../assets/zone-dev-genesis.json");
 
 /// Parses the bundled zone genesis template.
 pub fn genesis_template() -> eyre::Result<Genesis> {

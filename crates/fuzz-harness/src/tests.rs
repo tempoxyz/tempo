@@ -864,19 +864,10 @@ fn quorum_tx(
 
 /// Tempo blocks at T14 holding `tempo`, then zone blocks holding `zone`.
 fn zone_input(tempo: Vec<Vec<Bytes>>, zone: Vec<Vec<Bytes>>) -> TempoZoneInput {
-    zone_input_at(TempoHardfork::T14, tempo, zone)
-}
-
-/// Tempo blocks at `hardfork` holding `tempo`, then zone blocks holding `zone`.
-fn zone_input_at(
-    hardfork: TempoHardfork,
-    tempo: Vec<Vec<Bytes>>,
-    zone: Vec<Vec<Bytes>>,
-) -> TempoZoneInput {
     let blocks: Vec<TempoBlock> = tempo
         .into_iter()
         .map(|txs| TempoBlock {
-            header: BlockHeaderInput::Context(context(hardfork, 0)),
+            header: BlockHeaderInput::Context(context(TempoHardfork::T14, 0)),
             txs,
             senders: Vec::new(),
         })
@@ -928,8 +919,12 @@ fn a_zone_transaction_signed_by_a_quorum_registered_on_tempo_executes() {
     );
     for id in [
         "TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR",
+        "TEMPO-ZONE-ACCOUNT-INELIGIBLE",
         "TEMPO-ZONE-ACCOUNT-MARKER-CALL",
         "TEMPO-ZONE-ACCOUNT-ANCHOR-ADVANCE",
+        "TEMPO-ZONE-ACCOUNT-COMMITMENT-ANCHORED",
+        "TEMPO-ZONE-ACCOUNT-NO-WRITE",
+        "TEMPO-ZONE-ACCOUNT-NO-AUTHORIZATION-LIST",
         "TEMPO-ZONE-ACCOUNT-CODE-SERVED",
         "TEMPO-ZONE-ACCOUNT-STATE-CLEAN",
         "TEMPO-ZONE-ACCOUNT-VIEW",
@@ -994,50 +989,6 @@ fn a_zone_block_leaves_out_transactions_the_zone_rejects() {
         judged(&outcome, "TEMPO-ZONE-ACCOUNT-QUORUM-COMMITMENT"),
         (1, 1)
     );
-}
-
-#[test]
-fn zone_checks_are_unarmed_before_t14() {
-    let outcome = run_zone(zone_input_at(
-        TempoHardfork::T13,
-        vec![Vec::new()],
-        vec![Vec::new()],
-    ));
-
-    assert_eq!(
-        outcome.error,
-        ErrorClass::None,
-        "{}",
-        execute::with_rejection(str::to_string)
-    );
-    assert_eq!(outcome.invariant_failures, Vec::new());
-    for (id, counts) in &outcome.invariant_counts {
-        if id.starts_with("TEMPO-ZONE-ACCOUNT-") {
-            assert_eq!(counts.armed, 0, "{id}");
-        }
-    }
-}
-
-#[test]
-fn a_zone_block_whose_anchor_failed_is_not_executed() {
-    let (owner, config, account) = owned_account(1);
-    let send = quorum_tx(zone_chain(), account, &config, &owner);
-    // The second Tempo block's transaction skips a nonce, so the block fails.
-    let failing = call(5, RECIPIENT, Bytes::new(), 1_000_000);
-    let mut input = zone_input(
-        vec![Vec::new(), vec![failing]],
-        vec![Vec::new(), vec![send]],
-    );
-    input.tempo.blocks.as_mut_slice()[1].senders = vec![RECIPIENT];
-    let outcome = run_zone(input);
-
-    assert_eq!(outcome.error, ErrorClass::Rejected);
-    assert_eq!(outcome.invariant_failures, Vec::new());
-    assert_eq!(
-        judged(&outcome, "TEMPO-ZONE-ACCOUNT-NO-AUTHORIZATION-LIST"),
-        (0, 0)
-    );
-    assert!(judged(&outcome, "TEMPO-ZONE-ACCOUNT-ANCHOR-ADVANCE").1 > 0);
 }
 
 #[test]

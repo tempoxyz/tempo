@@ -288,25 +288,15 @@ pub struct InvariantFailure {
     pub scope: InvariantScope,
 }
 
+/// Where an invariant failed. `ZoneBlock` is after a zone block's pre-execution changes and its
+/// opening `advanceTempo`; `ZoneTransaction` is after transaction `tx_index` of [`ZoneBlock::txs`].
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum InvariantScope {
-    Transaction {
-        block_index: u64,
-        tx_index: u64,
-    },
-    Block {
-        block_index: u64,
-    },
+    Transaction { block_index: u64, tx_index: u64 },
+    Block { block_index: u64 },
     Execution,
-    /// After zone block `block_index`'s pre-execution changes and its opening `advanceTempo`.
-    ZoneBlock {
-        block_index: u64,
-    },
-    /// After transaction `tx_index` of [`ZoneBlock::txs`] in zone block `block_index`.
-    ZoneTransaction {
-        block_index: u64,
-        tx_index: u64,
-    },
+    ZoneBlock { block_index: u64 },
+    ZoneTransaction { block_index: u64, tx_index: u64 },
 }
 
 /// The outcome of a [`TempoHarnessInput`], in the variant of the same name.

@@ -90,7 +90,7 @@ Other tests continue creating their zones through real factory transactions.
 
 The zone's `TempoState` genesis must be anchored to the L1's current state.
 `start_from_l1()` fetches the L1's latest header and patches the bundled genesis
-template (`crates/zones/chainspec/assets/zone-dev-genesis.json`, via `zone_node::genesis`):
+template (`crates/node/assets/zone-dev-genesis.json`, via `zone_node::genesis`):
 
 1. **Slot 0** (`tempoBlockHash`): Set to `keccak256(rlp(l1_header))`
 2. **Slot 7** (packed `uint64` fields): Low 64 bits set to `l1_header.number`
