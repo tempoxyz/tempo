@@ -82,9 +82,6 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
-    /// Admission epoch the validator read before it opened the state it validated this
-    /// transaction against. `None` until the transaction is validated.
-    admission_epoch: Option<u64>,
 }
 
 impl TempoPooledTransaction {
@@ -141,7 +138,6 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
-            admission_epoch: None,
         }
     }
 
@@ -442,20 +438,7 @@ impl TempoPooledTransaction {
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             key_authorization_signer_subject: OnceLock::new(),
-            admission_epoch: None,
         }
-    }
-
-    /// Records the admission epoch read before opening the state this transaction is about to be
-    /// validated against.
-    pub(crate) const fn set_admission_epoch(&mut self, epoch: u64) {
-        self.admission_epoch = Some(epoch);
-    }
-
-    /// Returns the admission epoch this transaction was last validated in, or `None` if it was
-    /// not validated since its caches were discarded.
-    pub(crate) const fn admission_epoch(&self) -> Option<u64> {
-        self.admission_epoch
     }
 
     /// Returns the fee token cached during transaction validation, if available.

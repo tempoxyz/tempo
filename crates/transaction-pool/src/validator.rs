@@ -118,9 +118,9 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
     metrics: ValidationMetrics,
-    /// Advanced before the pool is repaired for a canonical update. Validation stamps each
-    /// transaction with the value it read before opening that transaction's state, and admission
-    /// inserts, under the read lock, only transactions stamped with the current value.
+    /// Advanced before the pool is repaired for a canonical update. Validation reports each
+    /// outcome with the value it read before opening the state it validated against, and
+    /// admission inserts, under the read lock, only outcomes reported with the current value.
     pub(crate) admission_epoch: RwLock<u64>,
 }
 
@@ -358,34 +358,38 @@ where
         Ok(())
     }
 
-    /// Validates each transaction against the tip's state and passes its outcome to `on_outcome`
-    /// before validating the next, in the order of `transactions`.
+    /// Validates `transactions` in order against the tip's state, passing each outcome to
+    /// `on_outcome` before validating the next.
     ///
-    /// Stamps each transaction with the admission epoch read before its state was opened, and
-    /// opens the tip's state again once the epoch advances, so the transactions that follow are
-    /// validated against the state the pool was repaired for. A failure to open state passes an
-    /// error outcome for every transaction left.
+    /// State is opened once, and again only after the admission epoch advances. The epoch passed
+    /// with an outcome is the one read before opening the state it was validated against. A
+    /// failure to open state passes an error outcome for every transaction left.
     ///
     /// Transactions validated against one state share an EVM and the validator's tip-scoped
-    /// [`StateCache`], so repeated state reads are served from memory across transactions and across
-    /// concurrent validation calls.
+    /// [`StateCache`], so repeated state reads are served from memory across transactions and
+    /// across concurrent validation calls.
     pub(crate) fn validate_each(
         &self,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
-        mut on_outcome: impl FnMut(TransactionValidationOutcome<TempoPooledTransaction>),
+        mut on_outcome: impl FnMut(u64, TransactionValidationOutcome<TempoPooledTransaction>),
     ) {
         let start = Instant::now();
         let mut transactions = transactions.into_iter().peekable();
+        // Runs once per admission epoch: the state opened here serves the transactions that
+        // follow until the epoch advances.
         while transactions.peek().is_some() {
             let admission_epoch = *self.admission_epoch.read();
             let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
                 Ok(provider_and_cache) => provider_and_cache,
                 Err(err) => {
                     for (_, transaction) in transactions {
-                        on_outcome(TransactionValidationOutcome::Error(
-                            *transaction.hash(),
-                            Box::new(err.clone()),
-                        ));
+                        on_outcome(
+                            admission_epoch,
+                            TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(err.clone()),
+                            ),
+                        );
                     }
                     break;
                 }
@@ -403,14 +407,16 @@ where
                 .with_nonce_check_disabled();
             evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
 
-            // Reuse the configured EVM and its loaded reads until the epoch advances.
+            // Reuse the configured EVM and its loaded reads for every transaction of this epoch.
             let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
             evm.ext_mut().skip_valid_after_check = true;
             evm.ext_mut().skip_liquidity_check = true;
 
-            for (origin, mut transaction) in transactions.by_ref() {
-                transaction.set_admission_epoch(admission_epoch);
-                on_outcome(self.validate_one_with_evm(origin, transaction, &mut evm));
+            for (origin, transaction) in transactions.by_ref() {
+                on_outcome(
+                    admission_epoch,
+                    self.validate_one_with_evm(origin, transaction, &mut evm),
+                );
                 if *self.admission_epoch.read() != admission_epoch {
                     break;
                 }
@@ -815,7 +821,7 @@ where
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
         let mut outcomes = Vec::with_capacity(1);
-        self.validate_each(core::iter::once((origin, transaction)), |outcome| {
+        self.validate_each(core::iter::once((origin, transaction)), |_, outcome| {
             outcomes.push(outcome)
         });
         outcomes
@@ -829,7 +835,7 @@ where
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let mut outcomes = Vec::new();
-        self.validate_each(transactions, |outcome| outcomes.push(outcome));
+        self.validate_each(transactions, |_, outcome| outcomes.push(outcome));
         outcomes
     }
 
@@ -839,9 +845,10 @@ where
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let mut outcomes = Vec::new();
-        self.validate_each(transactions.into_iter().map(|tx| (origin, tx)), |outcome| {
-            outcomes.push(outcome)
-        });
+        self.validate_each(
+            transactions.into_iter().map(|tx| (origin, tx)),
+            |_, outcome| outcomes.push(outcome),
+        );
         outcomes
     }
 

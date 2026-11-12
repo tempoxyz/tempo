@@ -122,9 +122,6 @@ pub(crate) struct AdmissionMetrics {
     /// validation tasks to inserting its last outcome. Includes the wait for a free task, which
     /// [`ValidationMetrics::batch_duration_seconds`] leaves out.
     pub(crate) validation_duration_seconds: Histogram,
-
-    /// Validated transactions an admission hands to the pool together.
-    pub(crate) insert_group_size: Histogram,
 }
 
 /// Transaction validator metrics.

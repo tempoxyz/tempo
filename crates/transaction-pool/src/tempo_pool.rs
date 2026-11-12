@@ -56,10 +56,8 @@ use tokio::sync::mpsc;
 /// three canonical updates during one admission.
 const ADMISSION_ATTEMPTS: usize = 10;
 
-/// Most validated transactions an admission inserts under one read of the admission epoch.
-///
-/// An advance of the epoch, and with it the pool's repair for a canonical update, waits for the
-/// inserts under way, so this bounds how long one admission delays it.
+/// Most transactions an admission inserts under one read of the admission epoch, which an advance
+/// of the epoch waits for.
 const ADMISSION_GROUP_SIZE: usize = 256;
 
 /// Transaction pool operations for Tempo nonce lanes.
@@ -866,89 +864,75 @@ where
             .batch_size
             .record(transactions.len() as f64);
         let has_2d = transactions.iter().any(|(_, tx)| tx.is_aa_2d());
-        let (origins, hashes): (Vec<_>, Vec<_>) = transactions
+        let origins = transactions
             .iter()
-            .map(|(origin, tx)| (*origin, *tx.hash()))
-            .unzip();
+            .map(|(origin, _)| *origin)
+            .collect::<Vec<_>>();
+        // Kept for a transaction the validation tasks shut down before validating.
+        let mut results = transactions
+            .iter()
+            .map(|(_, tx)| {
+                Err(PoolError::other(
+                    *tx.hash(),
+                    TransactionValidatorError::ValidationServiceUnreachable,
+                ))
+            })
+            .collect::<Vec<_>>();
         let validator = self.protocol_pool.validator();
 
-        let mut results = Vec::new();
-        results.resize_with(transactions.len(), || None);
-        // The slot in `results` of each transaction in `pending`.
+        // Where in `results` each transaction of `pending` goes.
         let mut slots = (0..transactions.len()).collect::<Vec<_>>();
         let mut pending = transactions;
         for attempt in 1..=ADMISSION_ATTEMPTS {
-            // Holds at most the outcomes of `pending`.
-            let (sender, mut outcomes) = mpsc::unbounded_channel();
-            let validation_start = Instant::now();
+            let (sender, mut validated) = mpsc::unbounded_channel();
+            let start = Instant::now();
             let job = {
                 let validator = Arc::clone(&validator.validator);
                 Box::pin(async move {
-                    validator.validate_each(pending, |outcome| {
-                        // Fails only once this admission was dropped: nothing waits for the
-                        // outcome.
-                        let _ = sender.send(outcome);
+                    validator.validate_each(pending, |epoch, outcome| {
+                        // Fails only if this admission was dropped.
+                        let _ = sender.send((epoch, outcome));
                     })
                 })
             };
             if validator.to_validation_task.send(job).await.is_err() {
-                // The validation tasks are gone. The slots left get an error below.
                 break;
             }
 
-            let mut validated = slots.into_iter();
-            let (mut stale_slots, mut stale) = (Vec::new(), Vec::new());
+            let mut validated_slots = slots.into_iter();
+            // Refilled with the transactions to validate again.
+            (slots, pending) = (Vec::new(), Vec::new());
             let mut group = Vec::new();
-            // Insert what is validated while the rest still validates, so a transaction needs
-            // the epoch to hold through its own validation only, not the whole batch's.
-            while outcomes.recv_many(&mut group, ADMISSION_GROUP_SIZE).await > 0 {
-                // The epoch advances under the write lock before the pool is repaired for a
-                // canonical update, so either this sees the advance or that repair sees what is
-                // inserted under this guard.
+            // Insert what is validated while the rest validates, so an epoch has to last through
+            // one transaction's validation, not the batch's.
+            while validated.recv_many(&mut group, ADMISSION_GROUP_SIZE).await > 0 {
+                // An advance takes the write lock before the pool is repaired, so either this
+                // sees the advance or the repair sees what is inserted under this guard.
                 let epoch = validator.validator().admission_epoch.read();
                 let (mut current_slots, mut current) = (Vec::new(), Vec::new());
-                for outcome in group.drain(..) {
-                    let slot = validated
-                        .next()
-                        .expect("validation passes one outcome per transaction, in order");
+                for ((validated_in, outcome), slot) in group.drain(..).zip(validated_slots.by_ref())
+                {
                     match outcome {
-                        // Validation stamps the epoch it read before it opened state, so an
-                        // advance while a transaction waited for a validation task does not
-                        // send it back. Only valid outcomes insert; the rest are forwarded
-                        // whatever the epoch.
                         TransactionValidationOutcome::Valid { transaction, .. }
-                            if transaction.transaction().admission_epoch() != Some(*epoch) =>
+                            if validated_in != *epoch =>
                         {
-                            if attempt == ADMISSION_ATTEMPTS {
-                                // No attempt validated it against the state the pool is
-                                // repaired for.
-                                self.admission_metrics.rejected.increment(1);
-                                results[slot] = Some(Err(PoolError::other(
-                                    hashes[slot],
-                                    TempoPoolTransactionError::StateChangedDuringValidation,
-                                )));
-                            } else {
-                                // A canonical update landed while it validated, and the pool
-                                // may have been repaired for it already: validate it again.
-                                stale_slots.push(slot);
-                                stale.push((
-                                    origins[slot],
-                                    transaction.transaction().with_discarded_caches(),
-                                ));
-                            }
+                            let transaction = transaction.transaction();
+                            // Stands if this was the last attempt.
+                            results[slot] = Err(PoolError::other(
+                                *transaction.hash(),
+                                TempoPoolTransactionError::StateChangedDuringValidation,
+                            ));
+                            slots.push(slot);
+                            pending.push((origins[slot], transaction.with_discarded_caches()));
                         }
+                        // Only valid transactions insert: the rest is forwarded whatever the
+                        // epoch.
                         outcome => {
                             current_slots.push(slot);
                             current.push((origins[slot], outcome));
                         }
                     }
                 }
-                if current.is_empty() {
-                    continue;
-                }
-                self.admission_metrics
-                    .insert_group_size
-                    .record(current.len() as f64);
                 // Fully delegate to protocol pool for non-2D transactions
                 let added = if has_2d {
                     current
@@ -961,39 +945,24 @@ where
                         .add_transactions_with_origins(current)
                 };
                 for (slot, added) in current_slots.into_iter().zip(added) {
-                    results[slot] = Some(added);
+                    results[slot] = added;
                 }
             }
             self.admission_metrics
                 .validation_duration_seconds
-                .record(validation_start.elapsed());
+                .record(start.elapsed());
 
-            if stale.is_empty() {
+            if pending.is_empty() {
                 break;
             }
-            self.admission_metrics
-                .revalidated
-                .increment(stale.len() as u64);
-            slots = stale_slots;
-            pending = stale;
+            let stale = pending.len() as u64;
+            if attempt < ADMISSION_ATTEMPTS {
+                self.admission_metrics.revalidated.increment(stale);
+            } else {
+                self.admission_metrics.rejected.increment(stale);
+            }
         }
-
         results
-            .into_iter()
-            .enumerate()
-            .map(|(slot, result)| {
-                result.unwrap_or_else(|| {
-                    // Forwarded for event listener updates.
-                    self.add_validated_transaction(
-                        origins[slot],
-                        TransactionValidationOutcome::Error(
-                            hashes[slot],
-                            Box::new(TransactionValidatorError::ValidationServiceUnreachable),
-                        ),
-                    )
-                })
-            })
-            .collect()
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -2698,20 +2667,18 @@ mod tests {
                 }
                 (TransactionOrigin::External, pooled.clone())
             }),
-            |outcome| outcomes.push(outcome),
+            |epoch, outcome| outcomes.push((epoch, outcome)),
         );
 
-        // The first two validated against the state opened before the advance, which their
-        // stamp says, and the third against the state opened after it.
+        // The first two validated against the state opened before the advance and the third
+        // against the state opened after it.
         let [first, second, third] =
             <[_; 3]>::try_from(outcomes).expect("one outcome per transaction");
-        for outcome in [first, second] {
-            let TransactionValidationOutcome::Valid { transaction, .. } = outcome else {
-                panic!("unexpected outcome {outcome:?}");
-            };
-            assert_eq!(transaction.transaction().admission_epoch(), Some(0));
+        for (epoch, outcome) in [first, second] {
+            assert_eq!(epoch, 0);
+            assert!(outcome.is_valid(), "unexpected outcome {outcome:?}");
         }
-        let TransactionValidationOutcome::Invalid(_, err) = third else {
+        let (1, TransactionValidationOutcome::Invalid(_, err)) = third else {
             panic!("unexpected outcome {third:?}");
         };
         assert!(matches!(
