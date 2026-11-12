@@ -30,8 +30,10 @@ many of them in one block. The summary reports the mean Zone block build time fr
 instance is one sponsored Zone transaction with 32 zero-value calls to fresh random
 addresses, so from T14 it makes 32 cold commitment reads with no L1 deposit or withdrawal
 and the ZonePortal deposit limit never applies. Setup still seeds each account once for
-pool admission. Compare the mean Zone block build time between phases, for example with
-`derek bench zones prover=false preset=cold-accounts tempo-hardfork=t14 tps=20 accounts=500 l1-latency-ms=40`.
+pool admission. It defaults to `tempo-hardfork=t14`, and both phases run the baseline's harness,
+so the baseline must include the preset. Compare the mean Zone block build time between phases,
+for example with `derek bench zones prover=false preset=cold-accounts tps=5 accounts=500 l1-latency-ms=40`
+(at 20 TPS main cannot drain the load within the step timeout).
 
 For `preset=full-journey`, the controller reports p50/p95 for withdrawal submit → L1
 funds (split into submit → Zone inclusion and Zone → L1 processing), deposit submit →
