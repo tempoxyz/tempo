@@ -7,7 +7,7 @@ use alloy_primitives::Sealable as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Runner as _,
+    Clock as _, Runner as _,
     deterministic::{Config, Runner},
 };
 use commonware_utils::NZU64;
@@ -21,36 +21,63 @@ use crate::{Setup, metrics::wait_for_metrics, setup_validators};
 fn validators_agree_on_boundary_outcomes_across_t15() {
     let _ = tempo_eyre::install();
     const EPOCH_LENGTH: u64 = 20;
-    // Epoch 0's boundary is before T15 and the later ones after it, in both
-    // verification modes.
-    const START: u64 = 1;
-    const ACTIVATION: u64 = START + 4;
-    const LAST_EPOCH: u64 = 5;
 
+    // T15 starts inactive and is scheduled once epoch 0's boundary is
+    // finalized, so the switch lands in epoch 1 however long node startup
+    // takes on the runner.
     let setup = Setup::new(crate::VERIFICATION_MODE)
         .how_many_signers(4)
         .epoch_length(EPOCH_LENGTH)
-        .t15_time(ACTIVATION);
+        .t15_time(u64::MAX);
     let cfg = Config::default()
         .with_seed(setup.seed)
-        .with_start_time(UNIX_EPOCH + Duration::from_secs(START))
         // A boundary that validators reject stalls the chain; fail instead of hanging.
         .with_timeout(Some(Duration::from_secs(120)));
 
     Runner::from(cfg).start(|mut context| async move {
-        let (mut validators, _execution_runtime) = setup_validators(&mut context, setup).await;
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(validators.iter_mut().map(|node| node.start(&context))).await;
 
         wait_for_metrics(&context, |metrics| {
             metrics.assert_no_dkg_failures();
-            metrics.consensus_at_epoch(LAST_EPOCH) == validators.len()
+            metrics.consensus_at_epoch(1) == validators.len()
+        })
+        .await;
+        // Halt the chain before any execution node shuts down, so epoch 1's
+        // boundary is still to come. One at a time: `stop_consensus` drains the
+        // aborted engine's tasks so its storage can be reopened, which concurrent
+        // stops don't guarantee.
+        for node in &mut validators {
+            node.stop_consensus().await;
+        }
+        for node in &mut validators {
+            node.stop_execution().await;
+        }
+
+        // Proposers never stamp a block ahead of the shared simulated clock by
+        // more than a few milliseconds, so every block produced so far keeps the
+        // rules it was executed with, and epoch 1's boundary, produced after the
+        // restart, is the first one under T15.
+        let activation = context
+            .current()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 1;
+        execution_runtime.set_t15_time(activation).unwrap();
+        join_all(validators.iter_mut().map(|node| node.start(&context))).await;
+
+        // Every validator has finalized epoch 2's boundary, so all of them have
+        // executed the two before it.
+        wait_for_metrics(&context, |metrics| {
+            metrics.assert_no_dkg_failures();
+            metrics.consensus_at_epoch(3) == validators.len()
         })
         .await;
 
         let epoch_strategy = FixedEpocher::new(NZU64!(EPOCH_LENGTH));
         let players: Vec<_> = validators.iter().map(|node| node.public_key()).collect();
-        let (mut before, mut after) = (0, 0);
-        for epoch in 0..LAST_EPOCH - 1 {
+        for epoch in 0..2 {
             let boundary = epoch_strategy.last(Epoch::new(epoch)).unwrap();
             let blocks: Vec<_> = validators
                 .iter()
@@ -68,12 +95,12 @@ fn validators_agree_on_boundary_outcomes_across_t15() {
                 "validators disagree on the boundary block of epoch {epoch}"
             );
             let timestamp = blocks[0].header.inner.timestamp;
-            tracing::info!(epoch, timestamp, "boundary block");
-            if timestamp < ACTIVATION {
-                before += 1;
-            } else {
-                after += 1;
-            }
+            tracing::info!(epoch, timestamp, activation, "boundary block");
+            assert_eq!(
+                timestamp >= activation,
+                epoch == 1,
+                "epoch {epoch}'s boundary at {timestamp} is on the wrong side of T15 at {activation}"
+            );
 
             let outcome = read_outcome_from_validator(&validators[0], boundary).unwrap();
             assert_eq!(outcome.epoch, epoch + 1);
@@ -83,7 +110,5 @@ fn validators_agree_on_boundary_outcomes_across_t15() {
                 assert!(outcome.next_players.position(player).is_some());
             }
         }
-        assert!(before > 0, "no boundary before T15");
-        assert!(after > 0, "no boundary after T15");
     });
 }
