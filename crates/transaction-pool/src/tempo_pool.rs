@@ -1415,33 +1415,39 @@ where
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
-        // Reth reloads the pooled senders after it missed blocks, at a block the tip may have
-        // passed by now. Their lanes move to the tip's nonces instead, through the same path as a
-        // block's state changes, so that a reload never moves a lane behind an applied block.
-        let Ok(tip_state) = self.client().latest() else {
-            return;
-        };
         let reloaded: AddressMap<u64> = accounts
             .iter()
             .map(|account| (account.address, account.nonce))
             .collect();
-        let state = accounts
-            .into_iter()
-            .filter_map(|account| {
-                let info = AccountInfo {
-                    nonce: tip_state.account_nonce(&account.address).ok()??,
-                    ..Default::default()
-                };
-                let account_state = BundleAccount::new(
-                    None,
-                    Some(info),
-                    Default::default(),
-                    AccountStatus::Changed,
-                );
-                Some((account.address, account_state))
-            })
-            .collect();
-        let mut removed = self.notify_aa_pool_on_state_updates(&state);
+        // Reth reloads the pooled senders after it missed blocks, at a block the tip may have
+        // passed by now. Their lanes move to the tip's nonces instead, read under the pool's lock
+        // so that a reload never moves a lane behind a block the maintenance task applied.
+        let (promoted, mut removed, discarded) = {
+            let mut pool = self.aa_2d_pool.write();
+            let Ok(tip_state) = self.client().latest() else {
+                return;
+            };
+            let state = accounts
+                .into_iter()
+                .filter_map(|account| {
+                    let info = AccountInfo {
+                        nonce: tip_state.account_nonce(&account.address).ok()??,
+                        ..Default::default()
+                    };
+                    let account_state = BundleAccount::new(
+                        None,
+                        Some(info),
+                        Default::default(),
+                        AccountStatus::Changed,
+                    );
+                    Some((account.address, account_state))
+                })
+                .collect();
+            pool.on_state_updates(&state)
+        };
+        self.reth_pool
+            .inner()
+            .notify_on_transaction_updates(promoted, discarded);
         // No canonical update reports a transaction below the reloaded nonce as mined. One at or
         // above it was included in a block whose canonical update is still to come.
         removed.retain(|tx| {
