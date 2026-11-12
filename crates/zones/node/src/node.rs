@@ -879,6 +879,13 @@ where
             .inner
             .launch_add_ons_with(ctx, move |container| {
                 if let Some(module) = allowlist_rpc {
+                    eyre::ensure!(
+                        container
+                            .modules
+                            .module_config()
+                            .contains_any(&reth_rpc_builder::RethRpcModule::Admin),
+                        "the deposit allowlist methods need the admin RPC module: add admin to --http.api"
+                    );
                     container.modules.merge_if_module_configured(
                         reth_rpc_builder::RethRpcModule::Admin,
                         module,
