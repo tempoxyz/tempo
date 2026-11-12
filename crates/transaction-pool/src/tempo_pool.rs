@@ -15,7 +15,6 @@ use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, AddressSet, Entry, HashMap},
 };
-use evm2::evm::AccountInfo;
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
@@ -33,7 +32,7 @@ use reth_transaction_pool::{
     pool::AddedTransaction,
     validate::TransactionValidatorError,
 };
-use reth_trie_common::bundle_state::{AccountStatus, BundleAccount};
+use reth_trie_common::bundle_state::BundleAccount;
 use std::{mem, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoStateAccess};
@@ -1120,23 +1119,7 @@ where
         &self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut pool = self.aa_2d_pool.write();
-        // Pruned transactions count as mined: their lanes move past them, which keeps the
-        // successors executable.
-        let mut lanes: HashMap<AASequenceId, u64> = HashMap::default();
-        for tx in hashes.iter().filter_map(|hash| pool.get(hash)) {
-            let id = tx.transaction.lane_transaction_id();
-            let next_nonce = lanes.entry(id.seq_id).or_default();
-            *next_nonce = (*next_nonce).max(id.nonce.saturating_add(1));
-        }
-        let (promoted, mut pruned) = pool.on_nonce_changes(lanes);
-        // Expiring nonce transactions have no lane.
-        pruned.extend(pool.remove_transactions(hashes.iter()));
-        drop(pool);
-        self.reth_pool
-            .inner()
-            .notify_on_transaction_updates(promoted, Vec::new());
-        pruned
+        self.aa_2d_pool.write().remove_transactions(hashes.iter())
     }
 
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
@@ -1414,50 +1397,9 @@ where
         self.aa_2d_pool.write().set_base_fee(pending_basefee);
     }
 
-    fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
-        // Moves sender nonces as a canonical update does.
-        self.advance_admission_epoch();
-        let reloaded: AddressMap<u64> = accounts
-            .iter()
-            .map(|account| (account.address, account.nonce))
-            .collect();
-        // Reth reloads the pooled senders after it missed blocks, at a block the tip may have
-        // passed by now. Their lanes move to the tip's nonces instead, read under the pool's lock
-        // so that a reload never moves a lane behind a block the maintenance task applied.
-        let (promoted, mut removed, discarded) = {
-            let mut pool = self.aa_2d_pool.write();
-            let Ok(tip_state) = self.client().latest() else {
-                return;
-            };
-            let state = accounts
-                .into_iter()
-                .filter_map(|account| {
-                    let info = AccountInfo {
-                        nonce: tip_state.account_nonce(&account.address).ok()??,
-                        ..Default::default()
-                    };
-                    let account_state = BundleAccount::new(
-                        None,
-                        Some(info),
-                        Default::default(),
-                        AccountStatus::Changed,
-                    );
-                    Some((account.address, account_state))
-                })
-                .collect();
-            pool.on_state_updates(&state)
-        };
-        self.reth_pool
-            .inner()
-            .notify_on_transaction_updates(promoted, discarded);
-        // No canonical update reports a transaction below the reloaded nonce as mined. One at or
-        // above it was included in a block whose canonical update is still to come.
-        removed.retain(|tx| {
-            reloaded
-                .get(tx.sender_ref())
-                .is_some_and(|nonce| tx.nonce() < *nonce)
-        });
-        self.notify_discarded(&removed);
+    fn update_accounts(&self, _accounts: Vec<ChangedAccount>) {
+        // Reth reloads the senders of its pool after it missed blocks. It holds none: the
+        // maintenance task moves the nonce lanes from each block's state changes.
     }
 
     fn delete_blob(&self, tx: B256) {
@@ -1608,6 +1550,7 @@ mod tests {
     use alloy_primitives::{Signature, TxKind, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use evm2::evm::AccountInfo;
     use futures::{FutureExt, StreamExt};
     use reth_primitives_traits::{
         InMemorySize, Recovered, SealedBlock, transaction::error::InvalidTransactionError,
@@ -1621,6 +1564,7 @@ mod tests {
         error::InvalidPoolTransactionError,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
+    use reth_trie_common::bundle_state::AccountStatus;
     use tempo_chainspec::{
         TempoChainSpec,
         hardfork::TempoHardfork,
@@ -2200,8 +2144,7 @@ mod tests {
 
     #[test]
     fn state_updates_move_protocol_nonce_lanes() {
-        let provider = create_provider_with_tip();
-        let pool = create_test_pool(provider.clone());
+        let pool = create_test_pool(create_provider_with_tip());
         let sender = Address::random();
         // Nonces 0 and 1 are below the account's new nonce, and nonce 3 waits behind a gap that
         // the block closes.
@@ -2235,49 +2178,14 @@ mod tests {
             Some(TransactionEvent::Pending)
         );
 
-        // A drifted pool reloads the account. The lane moves to the tip's nonce, not to the one
-        // Reth read at an earlier block. What was below Reth's nonce is discarded, and the rest is
-        // left to the canonical update of the block that included it.
-        let (unprocessed, result) = add_aa_2d(&pool, TxBuilder::aa(sender).nonce(4).build());
-        assert!(result.is_ok());
-        let mut unprocessed_events = pool.transaction_event_listener(unprocessed).unwrap();
-        provider.add_account(sender, ExtendedAccount::new(5, U256::ZERO));
+        // Reth's account reload after a drift leaves the lanes to the maintenance task.
         pool.update_accounts(vec![ChangedAccount {
             address: sender,
             nonce: 4,
             balance: U256::ZERO,
         }]);
-        assert_eq!(pool.pool_size().total, 0);
-        assert_eq!(
-            events.next().now_or_never().flatten(),
-            Some(TransactionEvent::Discarded)
-        );
-        assert_eq!(unprocessed_events.next().now_or_never(), None);
-    }
-
-    #[test]
-    fn prune_transactions_keeps_successors_executable() {
-        let pool = create_test_pool(create_provider_with_tip());
-        let sender = Address::random();
-        let [pruned, successor] = [0, 1].map(|nonce| {
-            let (hash, result) = add_aa_2d(&pool, TxBuilder::aa(sender).nonce(nonce).build());
-            assert!(result.is_ok());
-            hash
-        });
-        let (expiring, result) = add_aa_2d(
-            &pool,
-            TxBuilder::aa(Address::random())
-                .nonce_key(U256::MAX)
-                .build(),
-        );
-        assert!(result.is_ok());
-
-        let removed = pool.prune_transactions(vec![pruned, expiring]);
-
-        assert_eq!(removed.len(), 2);
-        assert_eq!(pool.pool_size().total, 1);
-        let best = pool.best_transactions().collect::<Vec<_>>();
-        assert_eq!(tx_hashes(&best), [successor]);
+        assert_eq!(tx_hashes(&pool.pending_transactions()), [promoted]);
+        assert_eq!(events.next().now_or_never(), None);
     }
 
     #[test]

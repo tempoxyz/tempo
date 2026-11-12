@@ -1146,6 +1146,7 @@ impl AA2dPool {
     /// This takes changed [`AASequenceId`]s with their current on-chain nonce.
     ///
     /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
+    #[cfg(test)]
     pub(crate) fn on_nonce_changes(
         &mut self,
         on_chain_ids: HashMap<AASequenceId, u64>,
