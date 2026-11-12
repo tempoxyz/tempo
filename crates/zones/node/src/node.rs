@@ -19,7 +19,8 @@ use crate::{
     rpc::{
         NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
         ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_get_code_module,
-        operator_zone_rpc_module, rpc_connection_config, start_redacted_rpc,
+        operator_set_leader_module, operator_zone_rpc_module, rpc_connection_config,
+        start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
     shadow_prover::RpcFollowerShadowProver,
@@ -878,7 +879,17 @@ where
             .inner
             .launch_add_ons_with(ctx, move |container| {
                 if let Some(module) = allowlist_rpc {
-                    container.modules.merge_http(module)?;
+                    eyre::ensure!(
+                        container
+                            .modules
+                            .module_config()
+                            .contains_http(&reth_rpc_builder::RethRpcModule::Admin),
+                        "the deposit allowlist methods need the admin RPC module: add admin to --http.api"
+                    );
+                    container.modules.merge_if_module_configured(
+                        reth_rpc_builder::RethRpcModule::Admin,
+                        module,
+                    )?;
                 }
                 container.modules.add_or_replace_if_module_configured(
                     reth_rpc_builder::RethRpcModule::Web3,
@@ -897,6 +908,10 @@ where
                     reth_rpc_builder::RethRpcModule::Debug,
                     NodeZoneDebugApi::new(container.registry.eth_api().clone(), debug_l1_provider)
                         .into_rpc(),
+                )?;
+                container.modules.merge_if_module_configured(
+                    reth_rpc_builder::RethRpcModule::Admin,
+                    operator_set_leader_module(portal_address, operator_rpc_slot.clone())?,
                 )?;
                 container.modules.merge_http(operator_zone_rpc_module(
                     genesis_zone_id,

@@ -391,12 +391,13 @@ Limits:
 
 | Node | Flags |
 |------|-------|
-| Sequencer | `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>` |
-| RPC follower (relay writes) | `--deposits.allowlist.admin <ADDRESS>` |
+| Sequencer | `--deposits.allowlist --deposits.allowlist.admin <ADDRESS> --http.api <...>,admin` |
+| RPC follower (relay writes) | `--deposits.allowlist.admin <ADDRESS> --http.api <...>,admin` |
 
 Without `--deposits.allowlist`, a sequencer credits every deposit, admits every transfer, and
 ignores the file.
-The methods are served over HTTP JSON-RPC:
+The methods are served over HTTP JSON-RPC when `--http.api` includes `admin`; the node refuses to
+start without it:
 
 | Method | Description |
 |--------|-------------|
