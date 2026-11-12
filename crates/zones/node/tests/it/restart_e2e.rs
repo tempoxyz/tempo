@@ -421,23 +421,19 @@ async fn test_batch_only_restart_no_withdrawals() -> eyre::Result<()> {
 
     // The zone produces blocks as L1 blocks arrive (every 250ms in dev mode), so the restarted
     // monitor has new blocks to batch.
-    let batches_after = crate::utils::poll_until(
+    crate::utils::poll_until(
         L1_TIMEOUT,
         std::time::Duration::from_millis(200),
-        "new BatchSubmitted after restart",
+        "new batches should be submitted after restart",
         || {
             let l1 = &l1;
             async move {
                 let count = batch_submitted_count(l1, portal_address).await?;
-                Ok((count > batches_before).then_some(count))
+                Ok((count > batches_before).then_some(()))
             }
         },
     )
     .await?;
-    assert!(
-        batches_after > batches_before,
-        "new batches should be submitted after restart (before={batches_before}, after={batches_after})"
-    );
 
     // Portal block hash should have advanced
     let hash_after = portal_block_hash(&l1, portal_address).await?;

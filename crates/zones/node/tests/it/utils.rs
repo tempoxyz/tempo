@@ -3798,24 +3798,30 @@ pub(crate) async fn assert_same_block(
     nodes: &[ZoneTestNode],
     height: u64,
 ) -> eyre::Result<TempoHeaderResponse> {
-    let mut reference: Option<TempoHeaderResponse> = None;
-    for (index, node) in nodes.iter().enumerate() {
-        let block = node
-            .provider()
+    let blocks = try_join_all(nodes.iter().map(|node| async move {
+        node.provider
             .get_block_by_number(BlockNumberOrTag::Number(height))
-            .await?
-            .ok_or_else(|| eyre::eyre!("node {index} is missing block {height}"))?;
-        match &reference {
-            None => reference = Some(block.header),
-            Some(reference) => eyre::ensure!(
-                block.header.hash == reference.hash,
-                "node {index} diverges at height {height}: {} != {}",
-                block.header.hash,
-                reference.hash,
-            ),
-        }
+            .await
+    }))
+    .await?;
+    let mut headers = blocks.into_iter().enumerate().map(|(index, block)| {
+        block
+            .map(|block| block.header)
+            .ok_or_else(|| eyre::eyre!("node {index} is missing block {height}"))
+    });
+    let reference = headers
+        .next()
+        .ok_or_else(|| eyre::eyre!("cluster is empty"))??;
+    for (index, header) in (1..).zip(headers) {
+        let header = header?;
+        eyre::ensure!(
+            header.hash == reference.hash,
+            "node {index} diverges at height {height}: {} != {}",
+            header.hash,
+            reference.hash,
+        );
     }
-    reference.ok_or_else(|| eyre::eyre!("cluster is empty"))
+    Ok(reference)
 }
 
 /// Start a three-member P2P quorum against a real Tempo L1 and a Portal registered with the
@@ -4303,55 +4309,60 @@ async fn start_real_p2p_cluster_inner(
         None => vec![None; active_nodes],
     };
 
-    let nodes = try_join_all(configs.into_iter().take(active_nodes).enumerate().map(
-        |(index, config)| {
-            let additional_decryption_keys = if index == 0 {
-                Vec::new()
-            } else {
-                vec![SecretKey::from(attestation_signers[0].credential())]
-            };
-            ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
-                l1_rpc_urls[index].clone(),
-                portal_address,
-                chain_id,
-                Some(genesis.clone()),
-                attestation_signers[index].clone(),
-                withdrawal_batch_interval_blocks,
-                Some(config),
-                additional_decryption_keys,
-                prover_config.clone(),
-                deposit_allowlists[index].clone(),
-                None,
-            )
-        },
-    ))
-    .await?;
-    let allowlist = match rpc_config {
-        Some(config) => Some(DepositAllowlistParts {
-            rpc_node:
+    // The RPC-only node joins the quorum over P2P, so it launches alongside the members.
+    let (nodes, rpc_node) = tokio::try_join!(
+        try_join_all(configs.into_iter().take(active_nodes).enumerate().map(
+            |(index, config)| {
+                let additional_decryption_keys = if index == 0 {
+                    Vec::new()
+                } else {
+                    vec![SecretKey::from(attestation_signers[0].credential())]
+                };
                 ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
-                    l1.ws_url().to_string(),
+                    l1_rpc_urls[index].clone(),
                     portal_address,
                     chain_id,
                     Some(genesis.clone()),
-                    PrivateKeySigner::random(),
+                    attestation_signers[index].clone(),
                     withdrawal_batch_interval_blocks,
                     Some(config),
-                    // The harness always installs a decryption key; match the other followers.
-                    vec![SecretKey::from(attestation_signers[0].credential())],
+                    additional_decryption_keys,
+                    prover_config.clone(),
+                    deposit_allowlists[index].clone(),
                     None,
-                    None,
-                    deposit_allowlist
-                        .as_ref()
-                        .is_some_and(|setup| setup.rpc_relays_writes)
-                        .then_some(allowlist_admin),
                 )
-                .await?,
-            zone_chain_id: allowlist_admin.zone_chain_id,
-            datadir: allowlist_datadir,
-        }),
-        None => None,
-    };
+            },
+        )),
+        async {
+            let Some(config) = rpc_config else {
+                return Ok(None);
+            };
+            ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+                l1.ws_url().to_string(),
+                portal_address,
+                chain_id,
+                Some(genesis.clone()),
+                PrivateKeySigner::random(),
+                withdrawal_batch_interval_blocks,
+                Some(config),
+                // The harness always installs a decryption key; match the other followers.
+                vec![SecretKey::from(attestation_signers[0].credential())],
+                None,
+                None,
+                deposit_allowlist
+                    .as_ref()
+                    .is_some_and(|setup| setup.rpc_relays_writes)
+                    .then_some(allowlist_admin),
+            )
+            .await
+            .map(Some)
+        },
+    )?;
+    let allowlist = rpc_node.map(|rpc_node| DepositAllowlistParts {
+        rpc_node,
+        zone_chain_id: allowlist_admin.zone_chain_id,
+        datadir: allowlist_datadir,
+    });
 
     Ok(RealP2pClusterParts {
         cluster: RealP2pCluster {
