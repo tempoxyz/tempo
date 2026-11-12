@@ -341,6 +341,7 @@ alloy-signer-ledger = "2.5.0"
 alloy-signer-local = "2.5.0"
 alloy-signer-trezor = "2.5.0"
 alloy-transport = "2.5.0"
+alloy-pubsub = "2.5.0"
 
 commonware-actor = "2026.10.0"
 commonware-broadcast = "2026.10.0"

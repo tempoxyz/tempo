@@ -6,8 +6,10 @@ use std::{
 };
 
 use alloy_provider::{Provider as _, RootProvider};
+use alloy_pubsub::{ConnectionHandle, PubSubConnect};
 use alloy_rpc_client::{RpcClient, WsConnect};
 use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
+use alloy_transport::{TransportErrorKind, TransportResult};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _, ensure};
@@ -40,6 +42,10 @@ const RECONNECT_JITTER: Duration = Duration::from_secs(1);
 /// How often websocket pings are sent while the connection to the upstream node is idle. A ping
 /// that is not answered before the next one is due closes the connection, triggering a reconnect.
 const PING_INTERVAL: Duration = Duration::from_secs(5);
+/// How long connecting to the upstream node, including the websocket handshake, may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the upstream node may take to answer `consensus_subscribe`.
+const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Manages the connection to the upstream node.
 ///
@@ -342,15 +348,13 @@ impl Connector for WebSocketConnector {
     fn connect(&self, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<Self::Client>)> {
         let url = self.url.clone();
         async move {
-            let connect = WsConnect::new(url.as_str())
-                .with_keepalive_interval(PING_INTERVAL)
-                // This actor reconnects with its own backoff. alloy still makes one reconnect
-                // attempt (and resubscribes) before it gives up on a dropped connection.
-                .with_max_retries(0);
-            let client = RpcClient::connect_pubsub(connect)
+            let connect =
+                NoReconnect(WsConnect::new(url.as_str()).with_keepalive_interval(PING_INTERVAL));
+            let client = tokio::time::timeout(CONNECT_TIMEOUT, RpcClient::connect_pubsub(connect))
                 .await
-                .map(RootProvider::new)
-                .map_err(Report::new);
+                .map_err(|_| eyre::eyre!("timed out connecting to upstream node"))
+                .and_then(|client| client.map_err(Report::new))
+                .map(RootProvider::new);
             (attempts, client)
         }
         .boxed()
@@ -378,7 +382,12 @@ impl UpstreamClient for RootProvider<TempoNetwork> {
     fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<EventStream>> {
         let client = self.clone();
         async move {
-            let subscription = TempoConsensusApiClient::subscribe_events(&client).await?;
+            let subscription = tokio::time::timeout(
+                SUBSCRIBE_TIMEOUT,
+                TempoConsensusApiClient::subscribe_events(&client).into_future(),
+            )
+            .await
+            .map_err(|_| eyre::eyre!("timed out subscribing to consensus events"))??;
             Ok(subscription
                 .into_result_stream()
                 .map(|event| event.map_err(Report::new))
@@ -398,6 +407,29 @@ impl UpstreamClient for RootProvider<TempoNetwork> {
     fn get_block(&self, digest: Digest) -> BoxFuture<'static, eyre::Result<Option<Block>>> {
         let client = self.clone();
         async move { get_block(client, digest).await }.boxed()
+    }
+}
+
+/// A websocket connector whose dropped connections alloy never reconnects.
+///
+/// alloy would otherwise reconnect and resubscribe on its own, and a rejected resubscription
+/// leaves the event stream pending while the client still looks connected. Ending the client
+/// instead ends its event stream, so the actor reconnects and resubscribes with its backoff.
+struct NoReconnect(WsConnect);
+
+impl PubSubConnect for NoReconnect {
+    fn is_local(&self) -> bool {
+        self.0.is_local()
+    }
+
+    fn connect(&self) -> impl Future<Output = TransportResult<ConnectionHandle>> + Send {
+        self.0.connect()
+    }
+
+    async fn try_reconnect(&self) -> TransportResult<ConnectionHandle> {
+        Err(TransportErrorKind::non_retryable_str(
+            "upstream connection dropped; the follower reconnects itself",
+        ))
     }
 }
 
@@ -496,6 +528,38 @@ mod tests {
         })
         .await
         .expect("client must report the upstream connection as closed");
+    }
+
+    #[tokio::test]
+    async fn websocket_connector_never_reconnects() {
+        let err = NoReconnect(WsConnect::new("ws://127.0.0.1:1"))
+            .try_reconnect()
+            .await
+            .expect_err("alloy must not reconnect on its own");
+        assert!(matches!(
+            err,
+            alloy_transport::RpcError::Transport(TransportErrorKind::NonRetryable(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn websocket_connect_times_out_without_handshake() {
+        // Accepts TCP but never answers the websocket upgrade.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _accept = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = tokio::time::timeout(CONNECT_TIMEOUT * 2, connector.connect(0))
+            .await
+            .expect("connect must give up on its own");
+        let err = client.expect_err("a stalled handshake must fail");
+        assert_eq!(err.to_string(), "timed out connecting to upstream node");
     }
 
     #[test]
