@@ -38,6 +38,8 @@ pub(super) enum Record {
     IntentOutcome { tx: B256, outcome: Outcome },
     /// A leadership request recorded before it is issued.
     HandoffRequest(crate::handoff::Request),
+    /// Definitive relay response proving this request did not submit a transaction.
+    HandoffNotSubmitted { id: u64 },
     /// A receipt or event tying a leadership update to its request.
     HandoffUpdate(crate::handoff::Update),
     /// A new account was derived at this mnemonic index. Written before the account is used.

@@ -15,7 +15,8 @@ use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZonePortal};
 use zone_rpc::types::SetLeaderResponse;
 
 use super::{
-    ADMIN_INDEX, Account, BRIDGE_WAIT, Context, RECEIPT_TIMEOUT, Record, SEQUENCER_INDICES,
+    ADMIN_INDEX, Account, BRIDGE_WAIT, Context, Record, SEQUENCER_INDICES,
+    intents::{Chain, Effect},
     poll_until, random_below, random_choice, random_index,
 };
 
@@ -113,22 +114,19 @@ impl Context {
             from_l1_block: snapshot.header.number,
             l1_tx: None,
         };
-        self.ledger
-            .append(&Record::HandoffRequest(request.clone()))?;
         // The rpc-only node refuses relays; even that attempt retains its durable intent.
         let (tx, applied) = if relayed {
+            self.ledger
+                .append(&Record::HandoffRequest(request.clone()))?;
             let node = random_index(self.zones.len());
             // zone-rpc exposes the typed response, but no alloy client extension for this RPC.
-            let response: SetLeaderResponse = self.zones[node]
-                .raw_request("zone_setLeader".into(), [target])
-                .await?;
-            let Some(tx) = response.tx_hash else {
+            let response = self.zones[node]
+                .raw_request::<_, SetLeaderResponse>("zone_setLeader".into(), [target])
+                .await;
+            let Some(tx) = request.record_relay_response(&self.ledger, response)? else {
                 println!("rotate-leader: {target} already leads");
                 return Ok(());
             };
-            request.l1_tx = Some(tx);
-            self.ledger
-                .append(&Record::HandoffRequest(request.clone()))?;
             // The relay waits for a receipt, but a successful same-target no-op emits no event.
             // Query logs because the Ethereum provider cannot decode Tempo relay receipts.
             let logs = self
@@ -143,18 +141,21 @@ impl Context {
                 .wrap_err("failed reading relayed handoff event")?;
             (tx, handoff_applied(&logs, self.portal, tx))
         } else {
-            let pending = ZonePortal::new(self.portal, self.wallet(&admin, &self.l1_url))
-                .setLeader(target, epoch)
-                .send()
+            let transaction = portal.setLeader(target, epoch).into_transaction_request();
+            let intent = self
+                .prepare_intent(
+                    &admin,
+                    Chain::L1,
+                    0,
+                    transaction,
+                    Effect::Leadership { target },
+                )
                 .await?;
-            // Persist the hash before waiting for the receipt, not after confirmation.
-            request.l1_tx = Some(*pending.tx_hash());
+            // An interruption before this link still leaves a drainable Leadership intent.
+            request.l1_tx = Some(intent.tx);
             self.ledger
                 .append(&Record::HandoffRequest(request.clone()))?;
-            let receipt = pending
-                .with_timeout(Some(RECEIPT_TIMEOUT))
-                .get_receipt()
-                .await?;
+            let receipt = self.send_intent(&intent).await?;
             let tx = receipt.transaction_hash;
             (tx, handoff_applied(receipt.inner.logs(), self.portal, tx))
         };
@@ -231,6 +232,52 @@ impl Context {
             update.epoch
         );
         Ok(())
+    }
+
+    /// True only when every prior handoff is provably unable to change future leadership.
+    /// Caller holds the exclusive episode lock; unknown relay submissions remain unresolved.
+    pub(super) async fn handoffs_drained(&self) -> eyre::Result<bool> {
+        let Some(hashes) = handoff_hashes(&self.ledger.records()?)? else {
+            return Ok(false);
+        };
+        if hashes.is_empty() {
+            return Ok(true);
+        }
+        let finalized = self
+            .l1
+            .get_block_by_number(BlockNumberOrTag::Finalized)
+            .await?
+            .ok_or_eyre("no finalized L1 block for handoff drain")?;
+        for tx in hashes {
+            let Some(receipt) = self.l1.get_transaction_receipt(tx).await? else {
+                return Ok(false);
+            };
+            eyre::ensure!(
+                receipt.transaction_hash == tx,
+                "handoff receipt hash differs from request"
+            );
+            let (Some(number), Some(hash)) = (receipt.block_number, receipt.block_hash) else {
+                return Ok(false);
+            };
+            if number > finalized.header.number {
+                return Ok(false);
+            }
+            let Some(block) = self.l1.get_block_by_number(number.into()).await? else {
+                return Ok(false);
+            };
+            if block.header.number != number || block.header.hash != hash {
+                return Ok(false);
+            }
+            // Both successful no-ops and reverts are terminal, but only in the canonical chain.
+        }
+        let canonical = self
+            .l1
+            .get_block_by_number(finalized.header.number.into())
+            .await?;
+        Ok(canonical.is_some_and(|block| {
+            block.header.number == finalized.header.number
+                && block.header.hash == finalized.header.hash
+        }))
     }
 
     /// Recovers successful sends, including ones with no returned transaction hash, by event
@@ -382,6 +429,97 @@ impl Context {
     }
 }
 
+impl Request {
+    fn record_relay_response(
+        &mut self,
+        ledger: &crate::ledger::Ledger,
+        response: Result<SetLeaderResponse, alloy::transports::TransportError>,
+    ) -> eyre::Result<Option<B256>> {
+        if response
+            .as_ref()
+            .is_err_and(relay_refused_before_submission)
+        {
+            ledger.append(&Record::HandoffNotSubmitted { id: self.id })?;
+        }
+        let response = response?;
+        eyre::ensure!(
+            response.requested_leader == self.target,
+            "relay response target differs from request"
+        );
+        if let Some(tx) = response.tx_hash {
+            self.l1_tx = Some(tx);
+            ledger.append(&Record::HandoffRequest(self.clone()))?;
+        } else {
+            eyre::ensure!(
+                response.status == "alreadyActive",
+                "relay returned no transaction without a definitive no-op"
+            );
+            ledger.append(&Record::HandoffNotSubmitted { id: self.id })?;
+        }
+        Ok(response.tx_hash)
+    }
+}
+
+// None means at least one submission is unknowable, never that the ledger is malformed.
+fn handoff_hashes(records: &[Record]) -> eyre::Result<Option<BTreeSet<B256>>> {
+    let mut requests: BTreeMap<u64, &Request> = BTreeMap::new();
+    let mut not_submitted = BTreeSet::new();
+    let mut hashes = BTreeSet::new();
+    for record in records {
+        match record {
+            Record::HandoffRequest(request) => {
+                if let Some(prior) = requests.insert(request.id, request) {
+                    eyre::ensure!(
+                        Request {
+                            l1_tx: request.l1_tx,
+                            ..prior.clone()
+                        } == *request
+                            && (prior.l1_tx.is_none() || prior.l1_tx == request.l1_tx)
+                            && (!not_submitted.contains(&request.id) || request.l1_tx.is_none()),
+                        "conflicting handoff request history"
+                    );
+                }
+                if let Some(tx) = request.l1_tx {
+                    hashes.insert(tx);
+                }
+            }
+            Record::HandoffNotSubmitted { id } => {
+                let request = requests
+                    .get(id)
+                    .ok_or_eyre("handoff completion without request")?;
+                eyre::ensure!(
+                    request.relayed && request.l1_tx.is_none(),
+                    "invalid no-submission handoff completion"
+                );
+                not_submitted.insert(*id);
+            }
+            // Mined outcomes are not finalized, and an orphan may have been replayed elsewhere.
+            Record::Intent(intent) if matches!(intent.effect, Effect::Leadership { .. }) => {
+                eyre::ensure!(intent.chain == Chain::L1, "leadership intent is not on L1");
+                hashes.insert(intent.tx);
+            }
+            _ => {}
+        }
+    }
+    Ok(requests
+        .values()
+        .all(|r| r.l1_tx.is_some() || not_submitted.contains(&r.id))
+        .then_some(hashes))
+}
+
+// These exact invalid-params responses precede signing in zone::rpc::set_leader. Internal
+// errors (including confirmation timeout/revert), transport errors and lost replies do not.
+fn relay_refused_before_submission(error: &alloy::transports::TransportError) -> bool {
+    error.as_error_resp().is_some_and(|response| {
+        response.code == -32602 && matches!(response.message.as_ref(),
+            "zone_setLeader requires multi-sequencer mode"
+            | "zone_setLeader requires a nonzero portal"
+            | "zone_setLeader requires a node holding an individual secp256k1 key; this node is rpc-only"
+            | "target is not a manifest member"
+            | "target is not a registered portal sequencer")
+    })
+}
+
 fn handoff_applied(logs: &[Log], portal: Address, tx: B256) -> bool {
     logs.iter().any(|log| {
         !log.removed
@@ -451,6 +589,303 @@ fn competing_requests(requests: &[Request]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::{
+        primitives::Bloom, providers::ProviderBuilder, rpc::types::Block,
+        transports::mock::Asserter,
+    };
+
+    fn relay_request() -> Request {
+        Request {
+            relayed: true,
+            l1_tx: None,
+            ..request(1, 2, 2)
+        }
+    }
+
+    fn rpc_error(code: i64, message: &str) -> alloy::transports::TransportError {
+        alloy::transports::TransportError::ErrorResp(
+            serde_json::from_value(json!({"code": code, "message": message})).unwrap(),
+        )
+    }
+
+    #[test]
+    fn relay_completion_requires_a_definitive_no_submission_response() {
+        for message in [
+            "zone_setLeader requires multi-sequencer mode",
+            "zone_setLeader requires a nonzero portal",
+            "zone_setLeader requires a node holding an individual secp256k1 key; this node is rpc-only",
+            "target is not a manifest member",
+            "target is not a registered portal sequencer",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let ledger = crate::ledger::Ledger::open(dir.path()).unwrap();
+            let mut request = relay_request();
+            ledger
+                .append(&Record::HandoffRequest(request.clone()))
+                .unwrap();
+            let error = request
+                .record_relay_response(&ledger, Err(rpc_error(-32602, message)))
+                .unwrap_err();
+            assert!(error.to_string().contains(message));
+            assert_eq!(
+                handoff_hashes(&ledger.records().unwrap()).unwrap(),
+                Some(BTreeSet::new())
+            );
+        }
+        for (status, target, terminal) in [
+            ("alreadyActive", Address::repeat_byte(2), true),
+            ("submitted", Address::repeat_byte(2), false),
+            ("alreadyActive", Address::repeat_byte(3), false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let ledger = crate::ledger::Ledger::open(dir.path()).unwrap();
+            let mut request = relay_request();
+            ledger
+                .append(&Record::HandoffRequest(request.clone()))
+                .unwrap();
+            let result = request.record_relay_response(
+                &ledger,
+                Ok(SetLeaderResponse {
+                    status: status.into(),
+                    tx_hash: None,
+                    requested_leader: target,
+                    relayer: Address::repeat_byte(4),
+                }),
+            );
+            if terminal {
+                assert_eq!(result.unwrap(), None);
+            } else {
+                let expected = if target == request.target {
+                    "relay returned no transaction without a definitive no-op"
+                } else {
+                    "relay response target differs from request"
+                };
+                assert_eq!(result.unwrap_err().to_string(), expected);
+            }
+            assert_eq!(
+                handoff_hashes(&ledger.records().unwrap())
+                    .unwrap()
+                    .is_some(),
+                terminal
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = crate::ledger::Ledger::open(dir.path()).unwrap();
+        let mut request = relay_request();
+        ledger
+            .append(&Record::HandoffRequest(request.clone()))
+            .unwrap();
+        let tx = B256::repeat_byte(9);
+        assert_eq!(
+            request
+                .record_relay_response(
+                    &ledger,
+                    Ok(SetLeaderResponse {
+                        status: "submitted".into(),
+                        tx_hash: Some(tx),
+                        requested_leader: request.target,
+                        relayer: Address::repeat_byte(4),
+                    })
+                )
+                .unwrap(),
+            Some(tx)
+        );
+        assert_eq!(
+            handoff_hashes(&ledger.records().unwrap()).unwrap(),
+            Some(BTreeSet::from([tx]))
+        );
+        for (code, message) in [
+            (-32603, "setLeader confirmation timed out after 30 seconds"),
+            (-32603, "setLeader transaction reverted on L1"),
+            (-32602, "unrecognized refusal"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let ledger = crate::ledger::Ledger::open(dir.path()).unwrap();
+            let mut request = relay_request();
+            ledger
+                .append(&Record::HandoffRequest(request.clone()))
+                .unwrap();
+            assert!(
+                request
+                    .record_relay_response(&ledger, Err(rpc_error(code, message)))
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message)
+            );
+            // Even a same-target finalized event cannot identify this unknown submission.
+            ledger
+                .append(&Record::HandoffUpdate(update(3, 20, 1, 2)))
+                .unwrap();
+            assert_eq!(handoff_hashes(&ledger.records().unwrap()).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn conflicting_handoff_history_is_not_an_inconclusive_submission() {
+        let original = relay_request();
+        let known = Request {
+            l1_tx: Some(B256::repeat_byte(3)),
+            ..original
+        };
+        for (records, expected) in [
+            (
+                vec![Record::HandoffNotSubmitted { id: 1 }],
+                "handoff completion without request",
+            ),
+            (
+                vec![
+                    Record::HandoffRequest(request(1, 2, 2)),
+                    Record::HandoffNotSubmitted { id: 1 },
+                ],
+                "invalid no-submission handoff completion",
+            ),
+            (
+                vec![
+                    Record::HandoffRequest(known.clone()),
+                    Record::HandoffNotSubmitted { id: 1 },
+                ],
+                "invalid no-submission handoff completion",
+            ),
+            (
+                vec![
+                    Record::HandoffRequest(known.clone()),
+                    Record::HandoffRequest(original.clone()),
+                ],
+                "conflicting handoff request history",
+            ),
+            (
+                vec![
+                    Record::HandoffRequest(original.clone()),
+                    Record::HandoffRequest(Request {
+                        target: Address::ZERO,
+                        ..original.clone()
+                    }),
+                ],
+                "conflicting handoff request history",
+            ),
+            (
+                vec![
+                    Record::HandoffRequest(original.clone()),
+                    Record::HandoffNotSubmitted { id: 1 },
+                    Record::HandoffRequest(known.clone()),
+                ],
+                "conflicting handoff request history",
+            ),
+            (
+                vec![
+                    Record::HandoffRequest(known.clone()),
+                    Record::HandoffRequest(Request {
+                        l1_tx: Some(B256::repeat_byte(4)),
+                        ..known
+                    }),
+                ],
+                "conflicting handoff request history",
+            ),
+        ] {
+            assert_eq!(handoff_hashes(&records).unwrap_err().to_string(), expected);
+        }
+        assert_eq!(
+            handoff_hashes(&[
+                Record::HandoffRequest(original.clone()),
+                Record::HandoffNotSubmitted { id: 1 },
+                Record::HandoffRequest(original),
+                Record::HandoffNotSubmitted { id: 1 },
+            ])
+            .unwrap(),
+            Some(BTreeSet::new())
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_requires_exact_canonical_finalized_receipts_even_for_reverts() {
+        let dir = tempfile::tempdir().unwrap();
+        let l1 = Asserter::new();
+        let ctx = Context {
+            ledger: crate::ledger::Ledger::open(dir.path()).unwrap(),
+            l1: ProviderBuilder::new()
+                .connect_mocked_client(l1.clone())
+                .erased(),
+            zones: vec![],
+            zone_urls: vec![],
+            http: Default::default(),
+            l1_url: "http://localhost:1".parse().unwrap(),
+            portal: Address::repeat_byte(9),
+        };
+        let request = request(1, 2, 2);
+        ctx.ledger
+            .append(&Record::HandoffRequest(request.clone()))
+            .unwrap();
+        let mut finalized = Block::<B256>::default();
+        finalized.header.number = 10;
+        finalized.header.hash = B256::repeat_byte(10);
+        let receipt = json!({"type":"0x0", "status":"0x1", "cumulativeGasUsed":"0x1", "logs":[], "logsBloom":Bloom::ZERO,
+            "transactionHash":request.l1_tx.unwrap(), "transactionIndex":"0x0", "blockHash":finalized.header.hash,
+            "blockNumber":"0xa", "gasUsed":"0x1", "effectiveGasPrice":"0x1",
+            "from":Address::ZERO, "to":ctx.portal, "contractAddress":null});
+        // Not mined, RPC error, mined above finality, noncanonical block, missing block/hash,
+        // wrong receipt identity and a changed pinned finalized snapshot must all block readiness.
+        l1.push_success(&finalized);
+        l1.push_success(&serde_json::Value::Null);
+        assert!(!ctx.handoffs_drained().await.unwrap());
+        l1.push_success(&finalized);
+        l1.push_failure_msg("receipt RPC unavailable");
+        assert!(
+            ctx.handoffs_drained()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("receipt RPC unavailable")
+        );
+        let mut unfinalized = receipt.clone();
+        unfinalized["blockNumber"] = json!("0xb");
+        l1.push_success(&finalized);
+        l1.push_success(&unfinalized);
+        assert!(!ctx.handoffs_drained().await.unwrap());
+        let mut fork = finalized.clone();
+        fork.header.hash = B256::repeat_byte(11);
+        l1.push_success(&finalized);
+        l1.push_success(&receipt);
+        l1.push_success(&fork);
+        assert!(!ctx.handoffs_drained().await.unwrap());
+        let mut wrong_number = finalized.clone();
+        wrong_number.header.number = 9;
+        l1.push_success(&finalized);
+        l1.push_success(&receipt);
+        l1.push_success(&wrong_number);
+        assert!(!ctx.handoffs_drained().await.unwrap());
+        l1.push_success(&finalized);
+        l1.push_success(&receipt);
+        l1.push_success(&None::<Block<B256>>);
+        assert!(!ctx.handoffs_drained().await.unwrap());
+        let mut missing = receipt.clone();
+        missing["blockHash"] = serde_json::Value::Null;
+        l1.push_success(&finalized);
+        l1.push_success(&missing);
+        assert!(!ctx.handoffs_drained().await.unwrap());
+        let mut wrong = receipt.clone();
+        wrong["transactionHash"] = json!(B256::repeat_byte(3));
+        l1.push_success(&finalized);
+        l1.push_success(&wrong);
+        assert_eq!(
+            ctx.handoffs_drained().await.unwrap_err().to_string(),
+            "handoff receipt hash differs from request"
+        );
+        l1.push_success(&finalized);
+        l1.push_success(&receipt);
+        l1.push_success(&finalized);
+        l1.push_success(&fork);
+        assert!(!ctx.handoffs_drained().await.unwrap());
+        for status in ["0x1", "0x0"] {
+            let mut receipt = receipt.clone();
+            receipt["status"] = json!(status);
+            l1.push_success(&finalized);
+            l1.push_success(&receipt);
+            l1.push_success(&finalized);
+            l1.push_success(&finalized);
+            assert!(ctx.handoffs_drained().await.unwrap());
+        }
+        assert!(l1.read_q().is_empty());
+    }
 
     fn update(epoch: u64, activation: u64, previous: u8, new: u8) -> Update {
         Update {

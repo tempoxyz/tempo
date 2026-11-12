@@ -5,7 +5,7 @@ use alloy::{
     providers::Provider as _,
     rpc::types::{BlockId, BlockNumberOrTag, TransactionReceipt},
 };
-use antithesis_sdk::{assert_always, assert_reachable};
+use antithesis_sdk::{assert_always, assert_reachable, assert_sometimes};
 use eyre::{OptionExt as _, WrapErr as _};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -61,7 +61,8 @@ pub(super) enum Case {
 }
 
 impl Context {
-    /// Serializes a bounded outage episode; no RPC error or missing evidence counts as a skip.
+    /// Serializes a bounded outage episode. Unprovable handoff quiescence skips before any kill;
+    /// once an episode starts, missing evidence or RPC errors can never count as success.
     pub(super) async fn single_sequencer_outage(
         &self,
         dir: &Path,
@@ -74,11 +75,8 @@ impl Context {
                 Case::Leader
             }
         });
-        phase!(
-            case,
-            "Single-sequencer outage episode finishes within the quiet window",
-            EPISODE_TIMEOUT,
-            async {
+        let mut executed = false;
+        let result = timeout(EPISODE_TIMEOUT, async {
                 let _lock = self.ledger.episode_lock(true).await?;
                 self.release_outages(dir).await?;
                 eyre::ensure!(
@@ -89,6 +87,20 @@ impl Context {
                 let members = SEQUENCER_INDICES
                     .map(|index| Ok(Account::at(index)?.address()))
                     .collect::<eyre::Result<Vec<_>>>()?;
+                let drained = recover_until(Instant::now() + PHASE_TIMEOUT, async || {
+                    // Validate every handoff even while unrelated payments remain pending.
+                    // Replaying an orphan cannot pass this poll's earlier receipt barrier.
+                    let handoffs_ready = self.handoffs_drained().await?;
+                    if !handoffs_ready {
+                        self.reconcile_intents().await?;
+                    }
+                    Ok(handoffs_ready.then_some(()))
+                }).await;
+                if drained.as_ref().is_err_and(|error| error.downcast_ref::<tokio::time::error::Elapsed>().is_some()) {
+                    println!("single-sequencer-outage: {}", json!({"case": case, "result": "SKIPPED", "reason": "handoff quiescence could not be proven before the deadline"}));
+                    return Ok(());
+                }
+                drained?;
                 let (baseline, membership) = phase!(
                     case,
                     "Outage preconditions become ready",
@@ -166,6 +178,7 @@ impl Context {
                 };
                 let mut expected = membership.clone();
                 let mut held = Hold::new(self, dir, victim)?;
+                executed = true;
                 let outage = match case {
                     Case::Backup => {
                         let max_tip = self.maximum_zone_tip().await?;
@@ -317,8 +330,25 @@ impl Context {
                     json!({"case": case, "victim": victim, "active_leader": active, "other_backup": other, "settled": fresh, "canary": second})
                 );
                 Ok(())
-            }
-        )
+        }).await.wrap_err("Single-sequencer outage episode finishes within the quiet window: timed out")
+            .and_then(|result| result);
+        match case {
+            Case::Backup => assert_sometimes!(
+                executed,
+                "Backup outage: Handoffs drain and the controlled episode executes",
+                &json!({"executed": executed})
+            ),
+            Case::Leader => assert_sometimes!(
+                executed,
+                "Leader outage: Handoffs drain and the controlled episode executes",
+                &json!({"executed": executed})
+            ),
+        }
+        // A skipped precondition is not an availability-success observation.
+        if executed || result.is_err() {
+            phase!(@assert case, "Single-sequencer outage episode finishes within the quiet window", result);
+        }
+        result
     }
 
     /// Releases persistent holds after cancellation. Caller owns the exclusive episode lock.
@@ -754,6 +784,12 @@ mod tests {
             "Leader recovery after restart and explicit admin handoff settles and the restarted victim freshly attests",
         ] {
             expected.insert(message.to_owned(), "Reachable");
+        }
+        for case in ["Backup", "Leader"] {
+            expected.insert(
+                format!("{case} outage: Handoffs drain and the controlled episode executes"),
+                "Sometimes",
+            );
         }
         // Cleanup is the only property shared between the two episodes and terminal checks.
         expected.insert(
@@ -1218,15 +1254,32 @@ mod tests {
     async fn leader_episode(
         observation: LeaderObservation,
         pending: Option<(PendingActivation, usize)>,
+        delayed_handoff: bool,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Ledger::open(dir.path()).unwrap();
         ledger.new_account().unwrap();
         let l1 = Asserter::new();
         let zones: [_; 4] = std::array::from_fn(|_| Asserter::new());
-        let members: Vec<_> = SEQUENCER_INDICES
+        let mut members: Vec<_> = SEQUENCER_INDICES
             .map(|index| Account::at(index).unwrap().address())
             .collect();
+        let victim = usize::from(delayed_handoff);
+        let prior_tx = B256::repeat_byte(42);
+        if delayed_handoff {
+            ledger
+                .append(&Record::HandoffRequest(handoff::Request {
+                    id: 100,
+                    previous_leader: members[0],
+                    expected_epoch: 1,
+                    target: members[1],
+                    relayed: true,
+                    from_l1_block: 8,
+                    l1_tx: Some(prior_tx),
+                }))
+                .unwrap();
+            members.rotate_left(1);
+        }
         let mut block = Block::<B256>::default();
         block.header.number = 10;
         block.header.hash = B256::repeat_byte(1);
@@ -1236,7 +1289,12 @@ mod tests {
         } else {
             1
         };
-        queue_outage_preconditions(&l1, &zones, &members, &block, epoch, pending);
+        if delayed_handoff {
+            l1.push_success(&block);
+            l1.push_success(&serde_json::Value::Null);
+        } else {
+            queue_outage_preconditions(&l1, &zones, &members, &block, epoch, pending);
+        }
         if pending.is_none() {
             if matches!(observation, LeaderObservation::HandoffError) {
                 // Malformed ABI-independent RPC result fails before signing, without being retried.
@@ -1325,6 +1383,7 @@ mod tests {
             let mut handoff_seen = false;
             let mut canary_seen = false;
             let mut pending_observed = pending.is_none();
+            let mut drained = !delayed_handoff;
             loop {
                 for (node, prior) in replied.iter_mut().enumerate() {
                     let path = dir.path().join(format!("zone-{node}.request"));
@@ -1340,9 +1399,16 @@ mod tests {
                     *prior = id;
                     let killed = request["action"] == "kill";
                     assert!(
+                        !killed || drained,
+                        "KILL before the previous handoff finalizes"
+                    );
+                    assert!(
                         !killed || pending_observed,
                         "KILL before all four tips activate"
                     );
+                    if killed {
+                        assert_eq!(node, victim, "victim was selected from stale membership");
+                    }
                     let restarted = id == 5;
                     if restarted {
                         assert!(
@@ -1377,7 +1443,30 @@ mod tests {
                         tokio::time::advance(Duration::from_secs(31)).await;
                     }
                 }
-                if !pending_observed
+                if !drained && l1.read_q().is_empty() {
+                    tokio::time::sleep(POLL / 2).await;
+                    for node in 0..3 {
+                        let request: serde_json::Value = serde_json::from_slice(
+                            &fs::read(dir.path().join(format!("zone-{node}.request"))).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            request["action"], "start",
+                            "KILL while handoff receipt is still missing"
+                        );
+                    }
+                    l1.push_success(&block);
+                    l1.push_success(&json!({"type":"0x0", "status":"0x1", "cumulativeGasUsed":"0x1", "logs":[], "logsBloom":Bloom::ZERO,
+                        "transactionHash":prior_tx, "transactionIndex":"0x0", "blockHash":block.header.hash,
+                        "blockNumber":"0xa", "gasUsed":"0x1", "effectiveGasPrice":"0x1",
+                        "from":members[2], "to":ctx.portal, "contractAddress":null}));
+                    l1.push_success(&block);
+                    l1.push_success(&block);
+                    queue_outage_preconditions(&l1, &zones, &members, &block, epoch, pending);
+                    drained = true;
+                }
+                if drained
+                    && !pending_observed
                     && pending.is_some_and(|(_, node)| zones[node].read_q().is_empty())
                 {
                     // Give the episode time to act on the last RPC before making every tip ready.
@@ -1462,7 +1551,7 @@ mod tests {
                             l1.push_success(&finalized);
                         } else {
                             canary_seen = true;
-                            let restored = read_status(dir.path(), 0).unwrap();
+                            let restored = read_status(dir.path(), victim).unwrap();
                             assert_eq!(restored.id, 5);
                             assert_eq!(restored.state, State::Running);
                             assert_eq!(restored.generation, 4);
@@ -1483,7 +1572,7 @@ mod tests {
         .await
         .unwrap();
         let error = format!("{:#}", result.unwrap_err());
-        let restored = read_status(dir.path(), 0).unwrap();
+        let restored = read_status(dir.path(), victim).unwrap();
         assert_eq!(
             restored.id, 5,
             "failure returned without waiting for START acknowledgement: {error}"
@@ -1548,22 +1637,22 @@ mod tests {
 
     #[tokio::test]
     async fn leader_canary_waits_for_restart_and_fresh_rpc_ready_tips() {
-        leader_episode(LeaderObservation::FreshTip, None).await;
+        leader_episode(LeaderObservation::FreshTip, None, false).await;
     }
 
     #[tokio::test]
     async fn leader_handoff_error_cannot_skip_confirmed_restore() {
-        leader_episode(LeaderObservation::HandoffError, None).await;
+        leader_episode(LeaderObservation::HandoffError, None, false).await;
     }
 
     #[tokio::test]
     async fn leader_handoff_timeout_cannot_skip_confirmed_restore() {
-        leader_episode(LeaderObservation::HandoffTimeout, None).await;
+        leader_episode(LeaderObservation::HandoffTimeout, None, false).await;
     }
 
     #[tokio::test]
     async fn leader_stale_restart_cannot_start_canary() {
-        leader_episode(LeaderObservation::StaleRestart, None).await;
+        leader_episode(LeaderObservation::StaleRestart, None, false).await;
     }
 
     #[tokio::test]
@@ -1572,6 +1661,7 @@ mod tests {
             leader_episode(
                 LeaderObservation::HandoffError,
                 Some((PendingActivation::BeforeActivation, node)),
+                false,
             )
             .await;
         }
@@ -1583,6 +1673,7 @@ mod tests {
             leader_episode(
                 LeaderObservation::HandoffError,
                 Some((PendingActivation::WrongProducer, node)),
+                false,
             )
             .await;
         }
@@ -1593,6 +1684,7 @@ mod tests {
         leader_episode(
             LeaderObservation::HandoffError,
             Some((PendingActivation::RepeatedLeader, 3)),
+            false,
         )
         .await;
     }
@@ -1602,6 +1694,7 @@ mod tests {
         leader_episode(
             LeaderObservation::HandoffError,
             Some((PendingActivation::MissingBlock, 3)),
+            false,
         )
         .await;
     }
@@ -1611,6 +1704,7 @@ mod tests {
         leader_episode(
             LeaderObservation::HandoffError,
             Some((PendingActivation::MembershipChanged, 3)),
+            false,
         )
         .await;
     }
@@ -1620,6 +1714,83 @@ mod tests {
         leader_episode(
             LeaderObservation::HandoffError,
             Some((PendingActivation::RpcError, 3)),
+            false,
+        )
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unknowable_relay_skips_boundedly_without_killing_or_signing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(dir.path()).unwrap();
+        ledger
+            .append(&Record::HandoffRequest(handoff::Request {
+                id: 100,
+                previous_leader: Address::repeat_byte(1),
+                expected_epoch: 1,
+                target: Address::repeat_byte(2),
+                relayed: true,
+                from_l1_block: 1,
+                l1_tx: None,
+            }))
+            .unwrap();
+        // Release acknowledgements are not an outage or an availability observation.
+        for node in 0..3 {
+            fs::write(
+                dir.path().join(format!("zone-{node}.status")),
+                serde_json::to_vec(&json!({"id": node + 1, "state": "running", "generation": 3}))
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        let l1 = Asserter::new();
+        l1.push_success(&"no RPC should be needed for an unknowable relay");
+        let ctx = Context {
+            ledger,
+            l1: ProviderBuilder::new()
+                .connect_mocked_client(l1.clone())
+                .erased(),
+            l1_url: "http://localhost:1".parse().unwrap(),
+            zone_urls: vec![],
+            zones: (0..4)
+                .map(|_| {
+                    ProviderBuilder::new()
+                        .connect_mocked_client(Asserter::new())
+                        .erased()
+                })
+                .collect(),
+            http: Default::default(),
+            portal: Address::repeat_byte(9),
+        };
+        let start = Instant::now();
+        ctx.single_sequencer_outage(dir.path(), Some(Case::Backup))
+            .await
+            .unwrap();
+        assert_eq!(Instant::now() - start, PHASE_TIMEOUT);
+        for node in 0..3 {
+            let request: serde_json::Value = serde_json::from_slice(
+                &fs::read(dir.path().join(format!("zone-{node}.request"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(request["action"], "start");
+            assert_eq!(request["id"], node + 1);
+        }
+        assert_eq!(l1.read_q().len(), 1);
+        assert!(
+            ctx.ledger
+                .records()
+                .unwrap()
+                .iter()
+                .all(|r| !matches!(r, Record::Intent(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_handoff_drains_then_activates_before_selecting_a_fresh_victim() {
+        leader_episode(
+            LeaderObservation::HandoffError,
+            Some((PendingActivation::BeforeActivation, 3)),
+            true,
         )
         .await;
     }

@@ -42,7 +42,7 @@ pub(crate) enum Effect {
     Withdrawal { to: Address, amount: u128 },
     /// An allowance needed before a deposit or withdrawal.
     Approval { spender: Address },
-    /// Explicit admin leadership change used by a controlled outage.
+    /// Explicit admin leadership change, including rotations and controlled outages.
     Leadership { target: Address },
     /// Funding a fresh L1 depositor.
     Funding { to: Address, amount: u128 },
@@ -379,6 +379,80 @@ mod tests {
         let mut body = vec![0; length.unwrap()];
         reader.read_exact(&mut body).await.unwrap();
         (reader.into_inner(), serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn cancelled_leadership_send_and_orphan_intent_block_outage_until_finality() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            for linked in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url: alloy::transports::http::reqwest::Url = format!("http://{}", listener.local_addr().unwrap()).parse().unwrap();
+                let dir = tempfile::tempdir().unwrap();
+                let http = alloy::transports::http::reqwest::Client::default();
+                let ctx = Context {
+                    ledger: Ledger::open(dir.path()).unwrap(),
+                    l1: ProviderBuilder::new().connect_reqwest(http.clone(), url.clone()).erased(),
+                    l1_url: url, zone_urls: vec![], zones: vec![], http,
+                    portal: Address::repeat_byte(9),
+                };
+                let account = Account::at(crate::ADMIN_INDEX).unwrap();
+                let target = Address::repeat_byte(2);
+                let mut tx = ZonePortal::new(ctx.portal, &ctx.l1).setLeader(target, 1)
+                    .gas(500_000).gas_price(1).nonce(0).into_transaction_request();
+                tx.chain_id = Some(123);
+                let shared = ctx.ledger.episode_lock(false).await.unwrap();
+                let lease = ctx.ledger.try_lease(&account).unwrap().unwrap();
+                let intent = ctx.prepare_intent(&account, Chain::L1, 0, tx,
+                    Effect::Leadership { target }).await.unwrap();
+                if linked {
+                    ctx.ledger.append(&Record::HandoffRequest(crate::handoff::Request {
+                        id: 100, previous_leader: account.address(), expected_epoch: 1, target,
+                        relayed: false, from_l1_block: 1, l1_tx: Some(intent.tx),
+                    })).unwrap();
+                }
+                let sent = if linked {
+                    let (_, received) = tokio::join!(
+                        async {
+                            assert!(tokio::time::timeout(Duration::from_millis(100), ctx.send_intent(&intent)).await.is_err());
+                        },
+                        async {
+                            let (stream, body) = request(&listener).await;
+                            assert_eq!(body["method"], "eth_sendRawTransaction");
+                            assert_eq!(body["params"][0], json!(intent.raw));
+                            // Keep the accepted connection alive beyond cancellation, losing its reply.
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                            drop(stream);
+                            true
+                        }
+                    );
+                    received
+                } else { false };
+                assert_eq!(sent, linked);
+                drop(lease); drop(shared);
+                // Process cancellation releases locks, but not the transaction's uncertainty.
+                let _exclusive = ctx.ledger.episode_lock(true).await.unwrap();
+                assert!(ctx.ledger.try_lease(&account).unwrap().is_none());
+                assert_eq!(pending(&ctx.ledger.records().unwrap()).unwrap(), vec![intent.clone()]);
+                let l1 = alloy::transports::mock::Asserter::new();
+                let ctx = Context { l1: ProviderBuilder::new().connect_mocked_client(l1.clone()).erased(), ..ctx };
+                let mut block = alloy::rpc::types::Block::<B256>::default();
+                block.header.number = 10; block.header.hash = B256::repeat_byte(10);
+                l1.push_success(&block); l1.push_success(&Value::Null);
+                assert!(!ctx.handoffs_drained().await.unwrap());
+                let receipt: TransactionReceipt = serde_json::from_value(json!({"type":"0x0", "status":"0x0", "cumulativeGasUsed":"0x1", "logs":[], "logsBloom":Bloom::ZERO,
+                    "transactionHash":intent.tx, "transactionIndex":"0x0", "blockHash":block.header.hash,
+                    "blockNumber":"0xa", "gasUsed":"0x1", "effectiveGasPrice":"0x1",
+                    "from":account.address(), "to":ctx.portal, "contractAddress":null})).unwrap();
+                ctx.ledger.resolve_intent(&intent, &receipt).unwrap();
+                assert!(pending(&ctx.ledger.records().unwrap()).unwrap().is_empty());
+                let mut old_finalized = block.clone(); old_finalized.header.number = 9;
+                l1.push_success(&old_finalized); l1.push_success(&receipt);
+                assert!(!ctx.handoffs_drained().await.unwrap(), "mined IntentOutcome is not finalized");
+                l1.push_success(&block); l1.push_success(&receipt); l1.push_success(&block); l1.push_success(&block);
+                assert!(ctx.handoffs_drained().await.unwrap());
+                assert!(l1.read_q().is_empty());
+            }
+        }).await.unwrap();
     }
 
     #[tokio::test]

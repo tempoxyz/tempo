@@ -63,13 +63,14 @@ images it is given, so they must be in the image rather than copied in when a co
 Half of all recipients are accounts nobody has used before, so the L1 and zone state tries keep
 growing during a run. Account keys are hashes of their index, counting from 1000, and are
 recorded in an append-only ledger in `/state`, which also holds a lock file per account so
-only one command sends from an account at a time. Drivers durably journal signed transaction
-bytes before broadcasting, then record their exact
+only one command sends from an account at a time. Payment and direct admin-handoff drivers
+durably journal signed transaction bytes before broadcasting, then record their exact
 receipt outcome and confirmed deposit, withdrawal or transfer obligations. A killed driver or
 ambiguous RPC error leaves a pending intent: reconciliation rebroadcasts the identical bytes and
 never replaces the nonce or creates a second payment. Unknown intents cannot be omitted from
-`eventually_settled`, which checks a reconciled obligation snapshot rather than requiring
-parallel drivers to stop writing. Leadership requests and observed updates also survive driver cancellation;
+`eventually_settled`. The terminal checks and serial recovery probe require quiescent payment
+writers, which their Antithesis scheduling supplies; direct local invocations must also stop
+parallel payment drivers. Leadership requests and observed updates survive driver cancellation;
 consistency and recovery check their history and activation boundaries.
 
 ### Mid-run recovery
@@ -136,7 +137,14 @@ supervisor exits on an unexpected child failure rather than hiding crashes in a 
 An abandoned intentional hold expires after 180 seconds; an early expiry cannot pass an outage
 assertion. Terminal checks release outstanding holds after a cancelled driver.
 
-Before choosing a victim, every zone node must have imported a block from the finalized
+Before choosing a victim, the probe drains previously submitted handoffs to canonical,
+finalized receipts, including reverted transactions and signed admin intents whose driver died
+before recording a handoff request. A relay with a lost reply and no transaction ID cannot be
+proved quiescent: the episode is reported as inconclusive before any kill, without reporting
+availability or recovery success. This may reduce outage coverage on that timeline; an
+unrelated same-target event is not evidence that the ambiguous request completed.
+
+Every zone node must also have imported a block from the finalized
 portal leader at or beyond that term's activation anchor. L1 finality alone is not proof of
 activation: the outgoing leader can still be producing pre-activation blocks. The workload
 rechecks portal membership after observing the zone tips.
