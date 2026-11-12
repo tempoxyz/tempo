@@ -489,11 +489,17 @@ jobs:
 
   # Kyverno admits tempoxyz images only with registry-attached build provenance;
   # the cosign signatures stay for consumers that verify with cosign. PR-head
-  # builds would attest unreviewed code as the dispatching ref, so they are skipped.
+  # builds would attest unreviewed code as the dispatching ref, so they are skipped;
+  # attest-images.yml itself refuses any run that isn't a trusted main or release-tag run.
   attest:
     name: Attest images
     needs: build-and-push
-    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == ''
+    # Other callers (Network E2E, reth bump) and other refs (rc/*) publish unattested images.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      inputs.pr_number == '' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/tempo/v')) &&
+      startsWith(github.workflow_ref, 'tempoxyz/tempo/.github/workflows/docker.yml@')
     permissions:
       packages: write
       id-token: write

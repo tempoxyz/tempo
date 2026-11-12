@@ -20,6 +20,7 @@ jobs:
   attest:
     name: Attest ${{ matrix.ref }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       packages: write
       id-token: write
@@ -31,6 +32,23 @@ jobs:
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Require a trusted run to attest
+        env:
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          # Reusable workflows sign as themselves whoever calls them, so attest only
+          # for this repository's own trusted runs on main or a release tag.
+          fail() { echo "Refusing to attest: $1" >&2; exit 1; }
+          [[ "$REPO" == tempoxyz/tempo ]] || fail "repository $REPO"
+          [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
+          [[ "$REF" == refs/heads/main || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
+          [[ "$WORKFLOW_REF" =~ ^tempoxyz/tempo/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ ]] || fail "workflow $WORKFLOW_REF"
+          [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
 
       - name: Split the image reference
         id: subject
