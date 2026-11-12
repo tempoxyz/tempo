@@ -2627,6 +2627,22 @@ mod allowlist_admin {
             uint64 nonce;
             uint64 deadline;
         }
+
+        struct AllowlistGroup {
+            string id;
+            address[] members;
+            bool transfers;
+        }
+
+        struct AllowlistRouter {
+            address router;
+            string[] groups;
+        }
+
+        struct AllowlistPolicy {
+            AllowlistGroup[] groups;
+            AllowlistRouter[] routers;
+        }
     }
 }
 
@@ -2767,13 +2783,23 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
     }
     assert_eq!(get_deposit_allowlist(rpc).await?, vec![second]);
 
-    // Every sequencer reports the same version: the last applied nonce and the hash of the list.
+    // Every sequencer reports the same version: the last applied nonce and the EIP-712 struct hash
+    // of the canonical policy, here only the default group.
     let statuses: Vec<serde_json::Value> = rpc
         .provider()
         .raw_request("zoneAdmin_getDepositAllowlistStatus".into(), ())
         .await?;
     assert_eq!(statuses.len(), 3, "{statuses:?}");
-    let list_hash = alloy::primitives::keccak256(second.as_slice()).to_string();
+    let list_hash = allowlist_admin::AllowlistPolicy {
+        groups: vec![allowlist_admin::AllowlistGroup {
+            id: "default".to_owned(),
+            members: vec![second],
+            transfers: true,
+        }],
+        routers: vec![],
+    }
+    .eip712_hash_struct()
+    .to_string();
     for status in &statuses {
         assert!(status["sequencer"].is_string(), "{status}");
         assert_eq!(status["initialized"], true, "{status}");

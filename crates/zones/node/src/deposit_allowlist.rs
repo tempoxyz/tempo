@@ -702,8 +702,9 @@ impl DepositAllowlist {
             .map_err(|err| DepositAllowlistError::Internal(err.to_string()))?
     }
 
-    /// Replace the decryption data of every deposit the list does not admit (see
-    /// [`Policy::admits_deposit`]). An uninitialized list admits every deposit.
+    /// Replace the decryption data of every deposit the list does not admit: one whose recipient
+    /// shares no group with its L1 sender and no group the sender serves as a router. An
+    /// uninitialized list admits every deposit.
     ///
     /// `senders` holds the L1 sender of each user deposit in queue order; `prepare_many` emits
     /// exactly one entry in `recipients` and `decryptions` per user deposit in the same order.
