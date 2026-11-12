@@ -14,7 +14,7 @@ use crate::{
     signature_gas::{calldata_tokens, tempo_signature_verification_gas},
     transaction_error::ConfigurableAccountError,
 };
-use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, map::AddressSet};
 use evm2::{
     Evm, EvmFeatures, TxResult,
     env::TxEnv,
@@ -23,7 +23,7 @@ use evm2::{
         prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
         validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
         validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
-        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
     interpreter::{
@@ -212,10 +212,10 @@ fn calculate_key_authorization_gas(
 ) -> (u64, u64) {
     // The base 21k includes one ecrecover, for the transaction's own signature. The key
     // authorization's signature is verified on top of that, so it pays the full verification gas.
-    let sig_gas = key_auth.signature.verification_gas();
+    let sig_gas = key_auth.signature().verification_gas().unwrap_or(u64::MAX);
 
     let num_limits = key_auth
-        .authorization
+        .authorization()
         .limits
         .as_ref()
         .map(|limits| limits.len() as u64)
@@ -242,7 +242,7 @@ fn calculate_key_authorization_gas(
         let mut num_sstores = 1 + limit_slots;
 
         if spec.is_t3() {
-            num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
+            num_sstores += call_scope_storage_slots(key_auth.authorization(), spec);
         }
 
         let mut sstore_cost = gas_params.get(GasId::SstoreSetWithoutLoadCost);
@@ -263,7 +263,7 @@ fn calculate_key_authorization_gas(
 
         // T4+: include extra gas for call scopes configuration
         if spec.is_t4() {
-            regular_gas += call_scope_extra_gas(&key_auth.authorization);
+            regular_gas += call_scope_extra_gas(key_auth.authorization());
         }
 
         // TIP-1016: each storage-creating SSTORE also incurs state gas.
@@ -286,8 +286,11 @@ fn calculate_key_authorization_gas(
 /// This includes:
 /// - Base 21k stipend (once for the transaction)
 /// - Signature verification gas (P256: 5k, WebAuthn: 5k + webauthn_data)
-/// - Per-call account access cost (`COLD_ACCOUNT_ACCESS_COST * (calls.len() - 1)`); the 21k
-///   stipend above already covers the first call's target access
+/// - Per-call account access cost for calls after the first; the 21k stipend above already covers
+///   the first call's target access:
+///   - Pre-T14: `COLD_ACCOUNT_ACCESS_COST` per call
+///   - T14+: `COLD_ACCOUNT_ACCESS_COST` per distinct target outside the warm set, and
+///     `WARM_STORAGE_READ_COST` for every other call
 /// - Per-call input data gas (calldata tokens * 4 gas)
 /// - Per-call CREATE costs (if applicable):
 ///   - Additional 32k base (CREATE constant)
@@ -314,12 +317,28 @@ fn intrinsic_gas(
     // 2. Signature verification gas
     regular = regular.saturating_add(tempo_signature_verification_gas(signed.signature()));
 
-    // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
+    // 3. Per-call overhead: account access for calls after the first. The 21k base stipend
     // already covers the first call's target access.
-    let cold_account =
-        params.get(GasId::WarmStorageReadCost) + params.get(GasId::ColdAccountAdditionalCost);
-    regular = regular
-        .saturating_add(cold_account.saturating_mul(tx.calls.len().saturating_sub(1) as u64));
+    let warm_account = params.get(GasId::WarmStorageReadCost);
+    let cold_account = warm_account + params.get(GasId::ColdAccountAdditionalCost);
+    if spec.is_t14() {
+        // From T14 the handler warms the transaction's accounts before this runs, so only a
+        // target outside that warm set pays the cold access, once per batch.
+        let warm = host.state().prewarm_set();
+        let mut targeted = AddressSet::default();
+        let first = tx.calls.first().and_then(|call| call.to.to());
+        for to in tx.calls.iter().skip(1).filter_map(|call| call.to.to()) {
+            let access = if Some(to) == first || warm.is_warm(to) || !targeted.insert(*to) {
+                warm_account
+            } else {
+                cold_account
+            };
+            regular = regular.saturating_add(access);
+        }
+    } else {
+        regular = regular
+            .saturating_add(cold_account.saturating_mul(tx.calls.len().saturating_sub(1) as u64));
+    }
 
     // 4. Authorization list costs (EIP-7702)
     // TIP-1016: Track state gas portion of per-auth cost (225k on T4, 0 pre-T4).
@@ -453,23 +472,36 @@ fn validate_time_window(
     Ok(())
 }
 
-fn access_key_id(aa: &TempoAaTx) -> Result<Option<Address>, TempoInvalidTransaction> {
+fn access_key_id(
+    aa: &TempoAaTx,
+    context: ExecutionContext,
+) -> Result<Option<Address>, TempoInvalidTransaction> {
     let signed = aa.inner();
     let Some(signature) = signed.signature().as_keychain() else {
         return Ok(None);
     };
-    let key_id = if let Some(key_id) = aa.override_key_id() {
-        key_id
-    } else {
-        signature
-            .key_id(&signed.signature_hash())
-            .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-    };
-    Ok(Some(key_id))
+    // The key override is a gas-estimation input: honor it only when simulating.
+    if matches!(context, ExecutionContext::Simulation)
+        && let Some(key_id) = aa.override_key_id()
+    {
+        return Ok(Some(key_id));
+    }
+    // A simulated configurable delegate carries placeholder owner approvals: name the delegate
+    // instead of recovering it from them.
+    if matches!(context, ExecutionContext::Simulation)
+        && let Some(delegate) = signature.signature.as_configurable_account()
+    {
+        return Ok(Some(delegate.account()));
+    }
+    signature
+        .key_id(&signed.signature_hash())
+        .map(Some)
+        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)
 }
 
 fn validate_key_authorization(
     aa: &TempoAaTx,
+    context: ExecutionContext,
     chain_id: u64,
     spec: TempoHardfork,
 ) -> Result<(), TempoInvalidTransaction> {
@@ -482,7 +514,7 @@ fn validate_key_authorization(
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
 
-    let access_key = access_key_id(aa)?;
+    let access_key = access_key_id(aa, context)?;
     let same_tx_auth_use = access_key == Some(key_auth.key_id);
     if access_key.is_some() && !same_tx_auth_use && !spec.is_t6() {
         return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys);
@@ -530,7 +562,7 @@ fn validate_key_authorization(
     }
 
     let signer = key_auth
-        .recover_signer()
+        .authorizing_account()
         .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
     if !spec.is_t6() && signer != aa.signer() {
         return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
@@ -538,9 +570,7 @@ fn validate_key_authorization(
             actual: signer,
         });
     }
-    key_auth
-        .validate_chain_id(chain_id, spec.is_t1c())
-        .map_err(TempoInvalidTransaction::from)?;
+    key_auth.validate_chain_id(chain_id, spec.is_t1c())?;
 
     if key_auth.has_witness() && !spec.is_t5() {
         return Err(TempoInvalidTransaction::KeychainValidationFailed {
@@ -582,7 +612,8 @@ fn validate_key_authorization(
                         .into(),
                 });
             }
-            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type()
+            if key_auth.signature().signature_type()
+                != keychain_signature.signature.signature_type()
             {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
@@ -622,6 +653,7 @@ fn keychain_error(error: TempoPrecompileError) -> HandlerError {
 fn prepare_keychain(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
+    context: ExecutionContext,
     fee: TempoFeeContext,
 ) -> HandlerResult<KeychainState> {
     let signed = aa.inner();
@@ -642,7 +674,8 @@ fn prepare_keychain(
     }
 
     // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
-    let access_key = access_key_id(aa)?.expect("keychain signature must have an access key");
+    let access_key =
+        access_key_id(aa, context)?.expect("keychain signature must have an access key");
     let key_authorization = tx.key_authorization.as_ref();
 
     // Classify whether this keychain-signed tx is using the same access key that the
@@ -740,10 +773,10 @@ fn prepare_keychain(
         && let Some(key_authorization) = key_authorization
     {
         let signer = key_authorization
-            .recover_signer()
+            .authorizing_account()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
-            let signature_type: u8 = key_authorization.signature.signature_type().into();
+            let signature_type: u8 = key_authorization.signature().signature_type().into();
             let signer_is_admin = state.loaded_key.as_ref().is_some_and(|loaded| {
                 loaded.key_id == signer
                     && loaded.key.signature_type as u8 == signature_type
@@ -1267,7 +1300,7 @@ fn execute_batch(
     let mut state_gas = 0i64;
     let mut spilled_state_gas = 0u64;
     let mut final_result = None;
-    let tx_env = TxEnv::<TempoEvmTypes> {
+    *host.tx_env_mut() = TxEnv::<TempoEvmTypes> {
         origin: caller,
         gas_price,
         chain_id: U256::from(host.version().chain_id),
@@ -1298,7 +1331,7 @@ fn execute_batch(
                 call.value,
                 &mut gas,
             )?;
-            execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir)?
+            execute_initial_frame(host, frame, &mut gas, remaining, reservoir)?
         };
         // Check if call succeeded
         if !result.is_success() {
@@ -1383,7 +1416,12 @@ fn prepare_aa(
             .validate_version(spec.is_t1c())
             .map_err(TempoInvalidTransaction::from)?;
     }
-    validate_key_authorization(request.tx.inner(), request.host.version().chain_id, spec)?;
+    validate_key_authorization(
+        request.tx.inner(),
+        request.envelope.execution_context(),
+        request.host.version().chain_id,
+        spec,
+    )?;
     // Access-key CREATE is a cheap structural rejection that does not depend on any
     // per-call scope walk or state mutation. Rejecting it here keeps validation work
     // constant and avoids entering CREATE execution paths that require special protocol-
@@ -1447,7 +1485,8 @@ fn prepare_aa(
     )?;
 
     // From T14, configurable-account state checks load more accounts, so transaction warmth
-    // goes first.
+    // goes first, and the beneficiary after them and intrinsic gas so their gas ignores the fee
+    // recipient.
     if spec.is_t14() {
         warm_aa_accounts(request.host, caller, tx);
     }
@@ -1457,6 +1496,9 @@ fn prepare_aa(
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
+    if spec.is_t14() {
+        warm_beneficiary(request.host);
+    }
     intrinsic = intrinsic.saturating_add(configurable_gas);
     initial_state_gas = initial_state_gas.saturating_add(configurable_state_gas);
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
@@ -1509,6 +1551,7 @@ fn prepare_aa(
 
     if !spec.is_t14() {
         warm_aa_accounts(request.host, caller, tx);
+        warm_beneficiary(request.host);
     }
 
     // Collect fees for the transaction.
@@ -1521,7 +1564,12 @@ fn prepare_aa(
     // For Keychain signatures, validate the acting access key before fee collection when it
     // already exists. Same-tx auth+use is the exception: that key is registered only after fees
     // are collected, so fee-limit validation uses the inline authorization payload instead.
-    let keychain = prepare_keychain(request.host, request.tx.inner(), fee_context)?;
+    let keychain = prepare_keychain(
+        request.host,
+        request.tx.inner(),
+        request.envelope.execution_context(),
+        fee_context,
+    )?;
     if request.host.feature(EvmFeatures::FEE_CHARGE) {
         TempoHandlerHooks::collect_fee(
             request.host,
@@ -1586,11 +1634,23 @@ fn prepare_aa(
     })
 }
 
-/// Warms the AA transaction's caller, base accounts and access list.
+/// Warms the AA transaction's caller, base accounts and access list: evm2's `warm_base_accounts`
+/// without the beneficiary, which [`warm_beneficiary`] warms.
 fn warm_aa_accounts(host: &mut Evm<'_, TempoEvmTypes>, caller: Address, tx: &TempoTransaction) {
     host.state_mut().prewarm(&caller);
-    warm_base_accounts(host, tx.calls[0].to);
+    if let TxKind::Call(to) = tx.calls[0].to {
+        host.state_mut().prewarm(&to);
+    }
+    host.warm_precompiles();
     warm_access_list(host, &tx.access_list);
+}
+
+/// Warms the block beneficiary (EIP-3651).
+fn warm_beneficiary(host: &mut Evm<'_, TempoEvmTypes>) {
+    if host.feature(EvmFeatures::EIP3651) {
+        let beneficiary = host.block().beneficiary;
+        host.state_mut().prewarm(&beneficiary);
+    }
 }
 
 fn execute_aa(
@@ -1631,7 +1691,11 @@ fn execute_aa(
         };
     reservoir += state_refund;
     configurable_account::register_commitments(request.host, request.tx.inner())?;
-    let mut result = execute_batch(
+    // The calls run one level below the transaction, as under revm's batch checkpoint, so
+    // tracers nest them under one root and see them as internal calls.
+    let initial_call_depth = request.host.initial_call_depth();
+    request.host.set_initial_call_depth(initial_call_depth + 1);
+    let result = execute_batch(
         request.host,
         caller,
         access_key,
@@ -1641,7 +1705,9 @@ fn execute_aa(
         reservoir,
         &tx.calls,
         tx.nonce_key.is_zero(),
-    )?;
+    );
+    request.host.set_initial_call_depth(initial_call_depth);
+    let mut result = result?;
     result
         .gas
         .record_refund(i64::try_from(regular_refund).unwrap_or(i64::MAX));

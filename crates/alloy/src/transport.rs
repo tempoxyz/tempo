@@ -15,6 +15,10 @@
 //!
 //! Sign-and-relay can forward original request headers to the sponsor; sign-only never forwards
 //! them to sponsor signing and preserves them only for the final default-transport broadcast.
+//!
+//! The preflight is stateless and does not authenticate the sender: keychain access keys and
+//! configurable-account commitments are only checked against chain state by the node. Sponsors
+//! must verify the claimed account themselves before identity-dependent work.
 
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_eips::Decodable2718;
@@ -24,7 +28,8 @@ use alloy_json_rpc::{
 use alloy_primitives::hex;
 use alloy_rpc_client::BuiltInConnectionString;
 use alloy_transport::{
-    Authorization, BoxTransport, TransportConnect, TransportError, TransportErrorKind, TransportFut,
+    Authorization, BoxTransport, Transport, TransportConnect, TransportError, TransportErrorKind,
+    TransportFut,
 };
 use http::HeaderValue;
 use std::str::FromStr;
@@ -124,12 +129,13 @@ where
     async fn get_transport(&self) -> Result<BoxTransport, TransportError> {
         let default = self.default.get_transport().await?;
         let relay = self.relay.get_transport().await?;
-        Ok(BoxTransport::new(RelayTransport::with_config(
+        Ok(RelayTransport::with_config(
             default,
             relay,
             self.mode,
             self.forward_sponsor_request_headers,
-        )))
+        )
+        .boxed())
     }
 }
 
@@ -559,7 +565,7 @@ mod tests {
             true
         }
         async fn get_transport(&self) -> Result<BoxTransport, TransportError> {
-            Ok(BoxTransport::new(self.0.clone()))
+            Ok(self.0.clone().boxed())
         }
     }
 
@@ -633,8 +639,7 @@ mod tests {
             );
         }
         let envelope = TempoTxEnvelope::AA(tx.into_signed(user_sig.into()));
-        let mut encoded = Vec::new();
-        envelope.encode_2718(&mut encoded);
+        let encoded = envelope.encoded_2718();
         hex::encode_prefixed(encoded)
     }
 
@@ -821,7 +826,7 @@ mod tests {
         let inner = RecordingTransport::default();
         inner.push_success(&alloy_primitives::B256::ZERO);
         let mut rpc = AuthHeaderTransport::new(
-            BoxTransport::new(inner.clone()),
+            inner.clone().boxed(),
             Authorization::bearer("sponsor-token"),
         )
         .unwrap();

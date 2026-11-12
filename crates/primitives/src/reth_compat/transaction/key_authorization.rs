@@ -1,11 +1,11 @@
 use crate::transaction::key_authorization::SignedKeyAuthorization;
+use alloy_rlp::Encodable;
 
 impl reth_codecs::Compact for SignedKeyAuthorization {
     fn to_compact<B>(&self, buf: &mut B) -> usize
     where
         B: alloy_rlp::BufMut + AsMut<[u8]>,
     {
-        use alloy_rlp::Encodable;
         self.encode(buf);
         self.length()
     }

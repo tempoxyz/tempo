@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
-use alloy_rlp::{BufMut, decode_exact};
+use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError, Header, decode_exact};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
@@ -708,6 +708,18 @@ impl AccountSignature {
     pub const fn is_configurable_account(&self) -> bool {
         matches!(self, Self::ConfigurableAccount(_))
     }
+
+    /// Full gas to verify the approval: [`PrimitiveSignature::verification_gas`] or
+    /// [`ConfigurableAccountSignature::verification_gas`].
+    ///
+    /// This does not subtract the ecrecover baseline already covered by ordinary intrinsic gas.
+    /// Returns `None` if the cost overflows `u64`.
+    pub fn verification_gas(&self) -> Option<u64> {
+        match self {
+            Self::Primitive(signature) => Some(signature.verification_gas()),
+            Self::ConfigurableAccount(signature) => signature.verification_gas(),
+        }
+    }
 }
 
 impl From<Signature> for AccountSignature {
@@ -725,6 +737,32 @@ impl From<PrimitiveSignature> for AccountSignature {
 impl From<ConfigurableAccountSignature> for AccountSignature {
     fn from(signature: ConfigurableAccountSignature) -> Self {
         Self::ConfigurableAccount(signature)
+    }
+}
+
+impl Encodable for AccountSignature {
+    fn encode(&self, out: &mut dyn BufMut) {
+        Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .encode(out);
+        self.encode_bytes_into(out);
+    }
+
+    fn length(&self) -> usize {
+        Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .length_with_payload()
+    }
+}
+
+impl Decodable for AccountSignature {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let bytes = Header::decode_bytes(buf, false)?;
+        Self::from_bytes(bytes).map_err(|error| RlpError::Custom(error.as_str()))
     }
 }
 
@@ -1274,6 +1312,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
     use alloy_primitives::{b256, hex};
     use alloy_rlp::{Decodable, Encodable};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -1283,6 +1322,10 @@ mod tests {
     };
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
 
     /// Generate P256 keypair, return (signing_key, pub_key_x, pub_key_y)
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256) {
@@ -1381,8 +1424,7 @@ mod tests {
         let field_bytes = fields.concat();
         let mut cases = Vec::new();
         for parity in [false, true] {
-            let signature =
-                Signature::new(U256::from_be_bytes(r.0), U256::from_be_bytes(s.0), parity);
+            let signature = Signature::new(r.into(), s.into(), parity);
             let mut expected = field_bytes[..64].to_vec();
             expected.push(27 + u8::from(parity));
             cases.push((PrimitiveSignature::Secp256k1(signature), expected));
@@ -1784,8 +1826,6 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_from_bytes_secp256k1() {
-        use super::SECP256K1_SIGNATURE_LENGTH;
-
         // Secp256k1 signatures are detected by length (65 bytes), no type identifier
         let sig_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let result = TempoSignature::from_bytes(&sig_bytes);
@@ -1800,8 +1840,6 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_from_bytes_p256() {
-        use super::{P256_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256};
-
         let mut sig_bytes = vec![SIGNATURE_TYPE_P256];
         sig_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let result = TempoSignature::from_bytes(&sig_bytes);
@@ -1816,8 +1854,6 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_from_bytes_webauthn() {
-        use super::SIGNATURE_TYPE_WEBAUTHN;
-
         let mut sig_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig_bytes.extend_from_slice(&[0u8; 200]); // 200 bytes of WebAuthn data
         let result = TempoSignature::from_bytes(&sig_bytes);
@@ -1875,11 +1911,6 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_roundtrip() {
-        use super::{
-            P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256,
-            SIGNATURE_TYPE_WEBAUTHN,
-        };
-
         // Test secp256k1 (no type identifier, detected by 65-byte length)
         let sig1_bytes = vec![1u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
@@ -2139,8 +2170,6 @@ mod tests {
 
     #[test]
     fn test_recover_signer_keychain_v1() {
-        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
-
         let (signing_key, access_key_address) = generate_secp256k1_keypair();
         let user_address = Address::repeat_byte(0xDD);
 
@@ -2177,8 +2206,6 @@ mod tests {
 
     #[test]
     fn test_recover_signer_keychain_v2() {
-        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
-
         let (signing_key, access_key_address) = generate_secp256k1_keypair();
         let user_address = Address::repeat_byte(0xDD);
 
@@ -2220,8 +2247,6 @@ mod tests {
 
     #[test]
     fn test_keychain_v2_binds_user_address() {
-        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
-
         let (signing_key, _access_key_address) = generate_secp256k1_keypair();
         let user_a = Address::repeat_byte(0xAA);
         let user_b = Address::repeat_byte(0xBB);
@@ -2364,11 +2389,6 @@ mod tests {
 
     #[test]
     fn test_keychain_signature_hash_differs_for_different_sigs() {
-        use std::{
-            collections::hash_map::DefaultHasher,
-            hash::{Hash, Hasher},
-        };
-
         let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let a = KeychainSignature::new(Address::repeat_byte(0x01), sig.clone());
         let b = KeychainSignature::new(Address::repeat_byte(0x02), sig.clone());
@@ -2484,8 +2504,6 @@ mod tests {
 
     #[test]
     fn test_keychain_rlp_roundtrip_preserves_version() {
-        use alloy_rlp::Decodable;
-
         let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let user = Address::repeat_byte(0xCC);
 
@@ -2499,8 +2517,7 @@ mod tests {
                 false,
             ),
         ] {
-            let mut buf = Vec::new();
-            alloy_rlp::Encodable::encode(&sig, &mut buf);
+            let buf = alloy_rlp::encode(&sig);
             let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
             assert_eq!(sig, decoded);
             assert_eq!(decoded.is_legacy_keychain(), expect_legacy);

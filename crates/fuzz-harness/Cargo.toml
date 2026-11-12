@@ -19,11 +19,12 @@ path = "src/lib.rs"
 [dependencies]
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 bincode.workspace = true
 evm2.workspace = true
+invariants-core.workspace = true
 reth-primitives-traits.workspace = true
 reth-chainspec.workspace = true
 reth-consensus.workspace = true
@@ -31,16 +32,17 @@ reth-evm.workspace = true
 reth-execution-types.workspace = true
 reth-trie-common.workspace = true
 tempo-fuzz-types.workspace = true
+tempo-invariants.workspace = true
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
 tempo-evm.workspace = true
+tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 
 [dev-dependencies]
 commonware-codec.workspace = true
 criterion.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
-tempo-precompiles.workspace = true
 
 [[bench]]
 name = "execute"

@@ -26,8 +26,9 @@ tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm = { workspace = true, features = ["genesis"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-state-bloat.workspace = true
+tempo-nitro-attestation.workspace = true
 
-alloy = { workspace = true, features = ["contract", "genesis", "getrandom", "provider-ws", "providers", "rand", "reqwest", "reqwest-rustls-tls", "rpc-types", "signer-local", "signer-mnemonic", "signers", "sol-types"] }
+alloy = { workspace = true, features = ["contract", "genesis", "getrandom", "provider-debug-api", "provider-ws", "providers", "rand", "reqwest", "reqwest-rustls-tls", "rpc-types", "signer-local", "signer-mnemonic", "signers", "sol-types"] }
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-json-abi.workspace = true
@@ -74,7 +75,16 @@ toml.workspace = true
 zeroize.workspace = true
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+antithesis-instrumentation = { workspace = true, optional = true }
+
+[features]
+# Link Antithesis's coverage runtime shim, for binaries built with its sancov flags (see
+# contrib/antithesis/zones/Dockerfile). Linux only.
+antithesis-coverage = ["dep:antithesis-instrumentation"]
+
 [dev-dependencies]
+base64.workspace = true
 zone-chainspec.workspace = true
 tempfile.workspace = true
 

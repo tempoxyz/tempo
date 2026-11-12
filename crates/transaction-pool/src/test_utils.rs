@@ -7,8 +7,9 @@ use crate::transaction::TempoPooledTransaction;
 use alloy_consensus::{Transaction, TxEip1559};
 use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
+use alloy_signer::SignerSync;
 use core::num::NonZeroU64;
-use reth_primitives_traits::Recovered;
+use reth_primitives_traits::{Recovered, SignerRecoverable};
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
@@ -19,7 +20,7 @@ use tempo_primitives::{
     transaction::{
         SignedKeyAuthorization, TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
-        tt_signature::{KeychainVersion, PrimitiveSignature, TempoSignature},
+        tt_signature::{KeychainSignature, KeychainVersion, PrimitiveSignature, TempoSignature},
     },
 };
 
@@ -241,9 +242,6 @@ impl TxBuilder {
         access_key_signer: &alloy_signer_local::PrivateKeySigner,
         version: KeychainVersion,
     ) -> TempoPooledTransaction {
-        use alloy_signer::SignerSync;
-        use tempo_primitives::transaction::tt_signature::KeychainSignature;
-
         let calls = self.calls.unwrap_or_else(|| {
             vec![Call {
                 to: self.kind,
@@ -306,10 +304,7 @@ impl TxBuilder {
 
         let signed_tx = tx.into_signed(keychain_sig);
         let envelope: TempoTxEnvelope = signed_tx.into();
-        let recovered = {
-            use reth_primitives_traits::SignerRecoverable;
-            envelope.try_into_recovered().unwrap()
-        };
+        let recovered = envelope.try_into_recovered().unwrap();
         TempoPooledTransaction::new(recovered)
     }
 
@@ -335,6 +330,27 @@ impl TxBuilder {
         let recovered = Recovered::new_unchecked(envelope, self.sender);
         TempoPooledTransaction::new(recovered)
     }
+}
+
+/// Re-signs an AA transaction's fee payment as sponsored by `fee_payer`.
+pub(crate) fn sponsor(
+    tx: TempoPooledTransaction,
+    fee_payer: &alloy_signer_local::PrivateKeySigner,
+) -> TempoPooledTransaction {
+    let sender = tx.inner().signer();
+    let TempoTxEnvelope::AA(mut signed) = tx.inner().clone().into_inner() else {
+        panic!("expected AA transaction");
+    };
+    let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+    signed.tx_mut().fee_payer_signature = Some(
+        fee_payer
+            .sign_hash_sync(&fee_payer_hash)
+            .expect("fee payer signing should succeed"),
+    );
+    TempoPooledTransaction::new(Recovered::new_unchecked(
+        TempoTxEnvelope::AA(signed),
+        sender,
+    ))
 }
 
 /// Helper to wrap a transaction in ValidPoolTransaction.

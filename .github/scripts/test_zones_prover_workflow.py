@@ -94,18 +94,32 @@ def run_with_results(name, files, **payload):
 class BenchCommandTests(unittest.TestCase):
     def test_zones_command_defaults_to_prover_on_full_journey(self):
         for body, prover, preset in (("derek bench zones", "true", "full-journey"),
-                                     ("derek bench zones prover=false preset=private-withdrawal", "false", "private-withdrawal")):
+                                     ("derek bench zones prover=false preset=private-withdrawal", "false", "private-withdrawal"),
+                                     ("derek bench zones prover=false preset=cold-accounts", "false", "cold-accounts")):
             with self.subTest(body=body):
                 result = parse(body)
                 self.assertEqual(result["failures"], [])
                 self.assertEqual({key: result["outputs"][key] for key in ("mode", "prover", "preset", "pr-head-sha")},
                                  {"mode": "zones", "prover": prover, "preset": preset, "pr-head-sha": SHA})
 
+    def test_zones_command_forwards_only_given_workload_overrides(self):
+        for body, workload in (
+                ("derek bench zones", {}),
+                ("derek bench zones tempo-hardfork=t14 tps=50 accounts=200 recipient-mode=random l1-latency-ms=40",
+                 {"tempo-hardfork": "t14", "tps": "50", "accounts": "200", "recipient-mode": "random", "l1-latency-ms": "40"})):
+            with self.subTest(body=body):
+                result = parse(body)
+                self.assertEqual(result["failures"], [])
+                self.assertEqual(json.loads(result["outputs"]["zones-workload"]), workload)
+
     def test_rejects_prover_and_unsupported_arguments(self):
         for body, message in (
                 ("derek bench prover=false", "`prover` is only supported with `derek bench zones`."),
                 ("derek bench zones duration=10", "`duration` is not supported with `derek bench zones`."),
-                ("derek bench zones preset=default", "`preset=default` is not a Zone preset.")):
+                ("derek bench zones preset=default", "`preset=default` is not a Zone preset."),
+                ("derek bench zones recipient-mode=fresh", "`recipient-mode` must be `existing` or `random`."),
+                ("derek bench zones tempo-hardfork=latest", "`tempo-hardfork` must be a Tempo hardfork such as `t14`."),
+                ("derek bench l1-latency-ms=40", "`l1-latency-ms` is only supported with `derek bench zones`.")):
             with self.subTest(body=body):
                 result = parse(body)
                 self.assertEqual(len(result["failures"]), 1)
@@ -148,6 +162,15 @@ class MembershipTests(unittest.TestCase):
                 result = run_script("zones-prover-benchmark.yml", "bench-zones", "Check org membership",
                                     context={"actor": actor}, members=["member"], env={"TRIGGERING_ACTOR": trigger})
                 self.assertEqual(result["failures"], failures)
+
+    def test_cold_accounts_defaults_to_t14_from_both_entrypoints(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/zones-prover-benchmark.yml").read_text())
+        # PyYAML reads the bare `on` key as True.
+        for trigger in ("workflow_dispatch", "workflow_call"):
+            with self.subTest(trigger=trigger):
+                self.assertNotIn("default", workflow[True][trigger]["inputs"]["tempo-hardfork"])
+        self.assertEqual(workflow["jobs"]["bench-zones"]["env"]["BENCH_TEMPO_HARDFORK"],
+                         "${{ inputs['tempo-hardfork'] || (inputs.preset == 'cold-accounts' && 't14') || 't13' }}")
 
     def test_membership_is_checked_before_feature_code_or_aws(self):
         steps = yaml.safe_load((ROOT / ".github/workflows/zones-prover-benchmark.yml").read_text())["jobs"]["bench-zones"]["steps"]

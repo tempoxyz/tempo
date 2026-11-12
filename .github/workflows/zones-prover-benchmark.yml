@@ -22,37 +22,48 @@ on:
         type: boolean
         default: true
       tempo-hardfork:
-        description: Tempo L1 hardfork for both phases (for example, t14).
+        description: Tempo L1 hardfork for both phases; empty uses t14 for cold-accounts, else t13.
         type: string
-        default: t13
+        required: false
       region:
         description: Existing AWS benchmark region.
         type: choice
         default: us-east-1
         options: [us-east-1, us-west-2, eu-central-1, ap-southeast-1, ap-northeast-1]
       preset:
-        description: Neobank scenario containing a withdrawal.
+        description: Neobank scenario; cold-accounts loads fresh accounts on the Zone with no withdrawal.
         type: choice
         default: full-journey
-        options: [full-journey, full-journey-pathusd-fees, private-withdrawal, swapped-lifecycle, swapped-redemption]
+        options: [full-journey, full-journey-pathusd-fees, private-withdrawal, swapped-lifecycle, swapped-redemption, cold-accounts]
       accounts:
         type: string
         default: "20"
       count:
+        description: Journeys per phase (default tps x 20, a 20 s window).
         type: string
-        default: "100"
+        default: ""
       tps:
         type: string
         default: "5"
       max-concurrent:
+        description: Journeys in flight (default min(accounts, tps x 30), 30 s journeys at the target rate).
         type: string
-        default: "4"
+        default: ""
       state-bloat-mib:
         description: Tempo L1 bloat. Start with 0 for the Nitro smoke test.
         type: string
         default: "0"
       zone-state-bloat-mib:
         description: Zone PathUSD dump MiB (0-16). Use full-journey-pathusd-fees; start with 1 and L1 bloat 0.
+        type: string
+        default: "0"
+      recipient-mode:
+        description: Private transfer recipients. random sends to fresh addresses.
+        type: choice
+        default: existing
+        options: [existing, random]
+      l1-latency-ms:
+        description: Milliseconds added to each L1 RPC round trip on the benchmark host (0-1000).
         type: string
         default: "0"
       slack:
@@ -88,6 +99,29 @@ on:
         type: string
         required: false
         default: full-journey
+      # Workload overrides. Empty values keep the defaults in the job env.
+      tempo-hardfork:
+        type: string
+        required: false
+      tps:
+        type: string
+        required: false
+      accounts:
+        type: string
+        required: false
+      recipient-mode:
+        type: string
+        required: false
+      l1-latency-ms:
+        type: string
+        required: false
+      state-bloat-mib:
+        description: Tempo L1 bloat in MiB (0-5000).
+        type: string
+        required: false
+      max-concurrent:
+        type: string
+        required: false
       run-type:
         description: manual or nightly; separates the exported metric series.
         type: string
@@ -148,14 +182,17 @@ jobs:
       BENCH_RUN_KIND: ${{ inputs.run-type || 'manual' }}
       BENCH_PROVER: ${{ (inputs.prover == false || inputs.prover == 'false') && 'false' || 'true' }}
       BENCH_REGION: ${{ inputs.region || 'us-east-1' }}
-      BENCH_TEMPO_HARDFORK: ${{ inputs['tempo-hardfork'] || 't13' }}
+      # cold-accounts only makes commitment reads from T14.
+      BENCH_TEMPO_HARDFORK: ${{ inputs['tempo-hardfork'] || (inputs.preset == 'cold-accounts' && 't14') || 't13' }}
       BENCH_PRESET: ${{ inputs.preset || 'full-journey' }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '20' }}
-      BENCH_COUNT: ${{ inputs.count || '100' }}
+      BENCH_COUNT: ${{ inputs.count }}
       BENCH_TPS: ${{ inputs.tps || '5' }}
-      BENCH_MAX_CONCURRENT: ${{ inputs.max-concurrent || '4' }}
+      BENCH_MAX_CONCURRENT: ${{ inputs.max-concurrent }}
       BENCH_L1_BLOAT_MIB: ${{ inputs.state-bloat-mib || '0' }}
       BENCH_ZONE_BLOAT_MIB: ${{ inputs.zone-state-bloat-mib || '0' }}
+      BENCH_RECIPIENT_MODE: ${{ inputs.recipient-mode || 'existing' }}
+      BENCH_L1_LATENCY_MS: ${{ inputs.l1-latency-ms || '0' }}
       BENCH_BATCH_INTERVAL_BLOCKS: "20"
       BENCH_RESULTS_PATH: ${{ github.workspace }}/zones-prover-${{ github.run_id }}-${{ github.run_attempt }}
       BENCH_WORK_DIR: ${{ github.workspace }}/zones-prover-${{ github.run_id }}-${{ github.run_attempt }}/results
@@ -210,7 +247,8 @@ jobs:
             core.exportVariable('BENCH_BASELINE_NAME', baselineName);
             core.exportVariable('BENCH_FEATURE_NAME', featureName);
             core.exportVariable('BENCH_JOB_URL', `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`);
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`zones\`, prover: \`${process.env.BENCH_PROVER}\`, preset: \`${process.env.BENCH_PRESET}\`, baseline: \`${baselineName}\`, feature: \`${featureName}\``);
+            const workload = `tempo-hardfork: \`${process.env.BENCH_TEMPO_HARDFORK}\`, tps: \`${process.env.BENCH_TPS}\`, accounts: \`${process.env.BENCH_ACCOUNTS}\`, count: \`${process.env.BENCH_COUNT || Number(process.env.BENCH_TPS) * 20}\`, max-concurrent: \`${process.env.BENCH_MAX_CONCURRENT || Math.min(Number(process.env.BENCH_ACCOUNTS), Number(process.env.BENCH_TPS) * 30, 200)}\`, recipient-mode: \`${process.env.BENCH_RECIPIENT_MODE}\`, l1-latency-ms: \`${process.env.BENCH_L1_LATENCY_MS}\``;
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`zones\`, prover: \`${process.env.BENCH_PROVER}\`, preset: \`${process.env.BENCH_PRESET}\`, ${workload}, baseline: \`${baselineName}\`, feature: \`${featureName}\``);
       - name: Update status (running)
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -245,7 +283,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 90d2b0ffee23077e8c3fdc2864735de348299688 # tempo-multi-region-benchmark main (#483)
+          ref: afb8fb34e832f123465bf062a19f3eb4977b57b6 # tempo-multi-region-benchmark main (#500)
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
@@ -265,6 +303,11 @@ jobs:
           path: feature-zones
           submodules: recursive
           persist-credentials: false
+      # Both phases run the baseline's harness scripts, so the baseline must know the preset.
+      - name: Check baseline supports the preset
+        run: |
+          grep -qE "^[[:space:]]+([a-z-]+[|])*${BENCH_PRESET}[|)]" "$BASELINE_ZONES_ROOT/zones/contrib/bench/run-neobank-private-flow.sh" ||
+            { echo "::error::baseline does not support preset $BENCH_PRESET; use a newer baseline such as main"; exit 1; }
       - name: Check out Tempo with native Nitro verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -276,7 +319,7 @@ jobs:
       - name: Check out Earn fixtures
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: tempoxyz/earn
+          repository: tempoxyz/contracts
           ref: main
           path: earn
           persist-credentials: false

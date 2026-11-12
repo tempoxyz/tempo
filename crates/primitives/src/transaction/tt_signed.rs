@@ -1,4 +1,5 @@
 use super::{
+    configurable_account::ConfigurableAccountSignature,
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
     unique_tx_identifier_from_signable,
@@ -111,6 +112,46 @@ impl AASigned {
             .get_or_init(|| self.tx.signature_hash().into())
     }
 
+    /// Whether configurable account approvals sign this transaction: the outer signature, directly
+    /// or inside a keychain envelope, or the inline key authorization.
+    pub fn has_configurable_approvals(&self) -> bool {
+        self.configurable_account_signatures().next().is_some()
+    }
+
+    /// Returns the configurable account signatures approving this transaction: the outer
+    /// signature, directly or inside a keychain envelope, then the inline key authorization's.
+    pub fn configurable_account_signatures(
+        &self,
+    ) -> impl Iterator<Item = &ConfigurableAccountSignature> {
+        let outer = match &self.signature {
+            TempoSignature::Keychain(keychain) => keychain.signature.as_configurable_account(),
+            signature => signature.as_configurable_account(),
+        };
+        let grant = self
+            .tx
+            .key_authorization
+            .as_ref()
+            .and_then(|auth| auth.signature().as_configurable_account());
+        outer.into_iter().chain(grant)
+    }
+
+    /// Recovers the sender and verifies any configurable account owner quorum signing an inline key
+    /// authorization, so execution only checks commitments against state.
+    fn recover_sender(
+        &self,
+        sig_hash: &B256,
+    ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        let signer = self.signature.recover_signer(sig_hash)?;
+        if let Some(auth) = &self.tx.key_authorization
+            && let Some(signature) = auth.signature().as_configurable_account()
+        {
+            signature
+                .verify_approvals(auth.signature_hash())
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+        }
+        Ok(signer)
+    }
+
     /// Recover the signer and compute the expiring nonce hash in one pass when applicable.
     ///
     /// Non-expiring transactions delegate to the regular recovery path. Expiring nonce transactions
@@ -135,7 +176,7 @@ impl AASigned {
         let signature_hash = *self
             .signature_hash
             .get_or_init(|| hasher.clone().finalize().into());
-        let signer = self.signature.recover_signer(&signature_hash)?;
+        let signer = self.recover_sender(&signature_hash)?;
 
         if let Some((cached_sender, cached_hash)) = self.expiring_nonce_hash.get()
             && *cached_sender == signer
@@ -279,6 +320,8 @@ impl Typed2718 for AASigned {
     }
 }
 
+// Every method forwards to the inner `TempoTransaction`, so a transaction reports
+// the same values whether or not it is signed.
 impl Transaction for AASigned {
     #[inline]
     fn chain_id(&self) -> Option<u64> {
@@ -312,7 +355,7 @@ impl Transaction for AASigned {
 
     #[inline]
     fn max_fee_per_blob_gas(&self) -> Option<u128> {
-        None
+        self.tx.max_fee_per_blob_gas()
     }
 
     #[inline]
@@ -320,63 +363,49 @@ impl Transaction for AASigned {
         self.tx.priority_fee_or_price()
     }
 
+    #[inline]
     fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
         self.tx.effective_gas_price(base_fee)
     }
 
     #[inline]
     fn is_dynamic_fee(&self) -> bool {
-        true
+        self.tx.is_dynamic_fee()
     }
 
     #[inline]
     fn kind(&self) -> TxKind {
-        // Return first call's `to` or Create if empty
-        self.tx
-            .calls
-            .first()
-            .map(|c| c.to)
-            .unwrap_or(TxKind::Create)
+        self.tx.kind()
     }
 
     #[inline]
     fn is_create(&self) -> bool {
-        self.kind().is_create()
+        self.tx.is_create()
     }
 
     #[inline]
     fn value(&self) -> U256 {
-        // Return sum of all call values
-        self.tx
-            .calls
-            .iter()
-            .fold(U256::ZERO, |acc, call| acc + call.value)
+        self.tx.value()
     }
 
     #[inline]
     fn input(&self) -> &Bytes {
-        // Return first call's input or empty
-        static EMPTY_BYTES: Bytes = Bytes::new();
-        self.tx
-            .calls
-            .first()
-            .map(|c| &c.input)
-            .unwrap_or(&EMPTY_BYTES)
+        self.tx.input()
     }
 
     #[inline]
     fn access_list(&self) -> Option<&AccessList> {
-        Some(&self.tx.access_list)
+        self.tx.access_list()
     }
 
     #[inline]
     fn blob_versioned_hashes(&self) -> Option<&[B256]> {
-        None
+        self.tx.blob_versioned_hashes()
     }
 
     #[inline]
     fn authorization_list(&self) -> Option<&[SignedAuthorization]> {
-        None
+        self.tx.authorization_list()
     }
 }
 
@@ -401,14 +430,14 @@ impl alloy_consensus::transaction::SignerRecoverable for AASigned {
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
         let sig_hash = self.signature_hash();
-        self.signature.recover_signer(&sig_hash)
+        self.recover_sender(&sig_hash)
     }
 
     fn recover_signer_unchecked(
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
-        // For Tempo transactions, verified and unverified recovery are the same
-        // since signature verification happens during recover_signer
+        // Both paths identify the sender. Configurable account commitments and keychain grants
+        // require separate stateful validation.
         self.recover_signer()
     }
 }
@@ -689,9 +718,27 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_rlp_encode_decode_roundtrip() {
-        use alloy_eips::eip2718::Encodable2718;
+    fn test_value_saturates_like_unsigned_tx() {
+        let call = |value| Call {
+            to: TxKind::Call(Address::repeat_byte(0x42)),
+            value,
+            input: Bytes::new(),
+        };
+        let tx = TempoTransaction {
+            calls: vec![call(U256::MAX), call(U256::from(2))],
+            ..make_tx()
+        };
+        let signed = AASigned::new_unhashed(
+            tx.clone(),
+            TempoSignature::from(Signature::test_signature()),
+        );
 
+        assert_eq!(tx.value(), U256::MAX);
+        assert_eq!(signed.value(), tx.value());
+    }
+
+    #[test]
+    fn test_rlp_encode_decode_roundtrip() {
         let tx = make_tx();
         let signed = tx.into_signed(Signature::test_signature().into());
 

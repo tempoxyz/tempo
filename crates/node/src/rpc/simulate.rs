@@ -119,7 +119,6 @@ fn extract_tip20_targets(
     addrs
 }
 
-#[async_trait::async_trait]
 impl<EthApi> TempoSimulateApiServer for TempoSimulate<EthApi>
 where
     EthApi: EthCall<NetworkTypes = TempoNetwork>,
@@ -158,7 +157,7 @@ where
                 .flat_map(|call| &call.logs)
                 .filter(|log| {
                     log.address().is_tip20()
-                        && log.topics().first() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
+                        && log.topic0() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
                 })
                 .map(|log| log.address()),
         );

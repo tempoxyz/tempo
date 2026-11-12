@@ -20,7 +20,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
-use alloy_primitives::{Address, B256, Bloom, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -47,10 +47,11 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
+    num::NonZeroU64,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -211,8 +212,8 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(args, |attributes| {
-            self.pool.best_transactions_with_attributes(attributes)
+        self.build_payload(args, |attributes, timestamp| {
+            self.pool.best_transactions_for_block(attributes, timestamp)
         })
     }
 
@@ -236,7 +237,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
-            |_| core::iter::empty(),
+            |_, _| core::iter::empty(),
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -260,7 +261,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        best_txs: impl FnOnce(BestTransactionsAttributes, u64) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
@@ -345,6 +346,38 @@ where
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
+        // When consensus passes only the DKG ceremony output for a boundary block, as it does from
+        // T15, the builder fills in the rest of the outcome from the parent state. Other
+        // attributes, such as those of earlier boundaries or the dev-mode miner's, keep their
+        // extra data as they are.
+        let block_number = parent_header.number() + 1;
+        let epoch_length = chain_spec
+            .info
+            .epoch_length()
+            .unwrap_or(NonZeroU64::MIN)
+            .get();
+        let ceremony_output = attributes
+            .dkg_ceremony_output()
+            .filter(|_| block_number.saturating_add(1).is_multiple_of(epoch_length));
+        let extra_data = if let Some(output) = ceremony_output {
+            let output = output.clone();
+            let current_epoch = block_number / epoch_length;
+            let next_epoch = current_epoch + 1;
+            let outcome = db
+                .dkg_ceremony_config(hardfork, block_number)
+                .map_err(PayloadBuilderError::other)?
+                .ok_or_else(|| {
+                    PayloadBuilderError::Other(
+                        "ValidatorConfigV2 is not initialized as of the boundary block's parent"
+                            .into(),
+                    )
+                })?
+                .boundary_outcome(next_epoch, output);
+            Bytes::from(commonware_codec::Encode::encode(&outcome))
+        } else {
+            attributes.extra_data().clone()
+        };
+
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
@@ -354,7 +387,7 @@ where
             .map(|w| w.length())
             .unwrap_or(0)
             + NON_TRANSACTION_SIZE_ESTIMATE
-            + attributes.extra_data().length();
+            + extra_data.length();
         let mut payment_transactions = 0u64;
         let mut reverted_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
@@ -370,7 +403,7 @@ where
                 gas_limit: block_gas_limit,
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 withdrawals: attributes.withdrawals.clone().map(Into::into),
-                extra_data: attributes.extra_data().clone(),
+                extra_data,
                 slot_number: attributes.slot_number,
             },
             general_gas_limit,
@@ -422,10 +455,13 @@ where
         }
 
         let pool_fetch_start = Instant::now();
-        let raw_best_txs = best_txs(BestTransactionsAttributes::new(
-            executor.evm().block().basefee.to(),
-            Some(executor.evm().block().blob_basefee.to()),
-        ));
+        let raw_best_txs = best_txs(
+            BestTransactionsAttributes::new(
+                executor.evm().block().basefee.to(),
+                Some(executor.evm().block().blob_basefee.to()),
+            ),
+            executor.evm().block().timestamp.to(),
+        );
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
@@ -541,8 +577,10 @@ where
                 continue;
             }
 
-            let is_payment = if hardfork.is_t5() {
-                tx.transaction.is_payment()
+            let is_payment = if hardfork.is_t15() {
+                tx.transaction.is_payment_v3()
+            } else if hardfork.is_t5() {
+                tx.transaction.is_payment_v2()
             } else {
                 tx.transaction.inner().is_payment_v1()
             };
@@ -550,6 +588,11 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Payload builder defers a non-payment transaction at the general gas limit",
+                    &serde_json::json!({ "general_gas_used": non_payment_gas_used, "general_gas_limit": general_gas_limit })
+                );
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::Other(Box::new(
@@ -638,11 +681,20 @@ where
                             // This exact transaction is already included, typically in the parent
                             // block before pool maintenance evicted it. Skip it without marking it
                             // invalid.
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "Payload builder skips an expiring nonce transaction already included"
+                            );
                             trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
                             self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
                         } else {
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
+                            #[cfg(feature = "fuzz")]
+                            antithesis_sdk::assert_reachable!(
+                                "Payload builder evicts a pool transaction that fails execution",
+                                &serde_json::json!({ "error": error.to_string() })
+                            );
                             trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                             best_txs.mark_invalid(
                                 &pool_tx,
@@ -768,35 +820,36 @@ where
                     "skipping payload state-root computation"
                 );
                 None
-            } else if let Some(mut handle) = state_root_handle {
-                let state_root_wait_start = Instant::now();
-                let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
-                        let elapsed = state_root_wait_start.elapsed();
-                        self.metrics
-                            .sparse_trie_state_root_wait_duration_seconds
-                            .record(elapsed);
-                        debug!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
-                        );
-                        Some((outcome, elapsed))
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            %err,
-                            "sparse trie failed, falling back to sync state root"
-                        );
-                        None
-                    }
-                }
             } else {
-                None
+                state_root_handle.and_then(|mut handle| {
+                    let state_root_wait_start = Instant::now();
+                    let _span =
+                        debug_span!(target: "payload_builder", "await_state_root").entered();
+                    match handle.state_root() {
+                        Ok(outcome) => {
+                            let elapsed = state_root_wait_start.elapsed();
+                            self.metrics
+                                .sparse_trie_state_root_wait_duration_seconds
+                                .record(elapsed);
+                            debug!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                state_root = ?outcome.state_root,
+                                "received state root from sparse trie"
+                            );
+                            Some((outcome, elapsed))
+                        }
+                        Err(err) => {
+                            warn!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                %err,
+                                "sparse trie failed, falling back to sync state root"
+                            );
+                            None
+                        }
+                    }
+                })
             }
             .unzip();
 
@@ -927,14 +980,18 @@ where
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if payload_build_budget.is_some() {
+            let finished_at = Instant::now();
             self.estimator.on_build_finished(
-                Instant::now(),
+                finished_at,
                 FinishedBuild::new(
                     validation_work_at_tx_cutoff,
                     validation_work_duration,
                     normal_transaction_fill_idle_elapsed,
                 ),
             );
+            self.metrics
+                .build_time_multiplier_last
+                .set(self.estimator.build_time_multiplier(finished_at));
         }
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -984,6 +1041,60 @@ where
             ?builder_finish_elapsed,
             "Built payload"
         );
+
+        #[cfg(feature = "fuzz")]
+        {
+            let consensus = tempo_evm::consensus::TempoConsensus::new(chain_spec);
+            let sealed_block = block.sealed_block();
+            antithesis_sdk::assert_always_less_than_or_equal_to!(
+                block.gas_used(),
+                block.gas_limit(),
+                "Payload builder keeps block gas used within the gas limit"
+            );
+            antithesis_sdk::assert_always!(
+                execution_result.receipts.len() == total_transactions,
+                "Payload builder produces one receipt per included transaction",
+                &serde_json::json!({ "receipts": execution_result.receipts.len(), "transactions": total_transactions })
+            );
+            let header = reth_consensus::HeaderValidator::validate_header(
+                &consensus,
+                sealed_block.sealed_header(),
+            );
+            antithesis_sdk::assert_always!(
+                header.is_ok(),
+                "Payload builder block header passes consensus header validation",
+                &serde_json::json!({ "block_number": block.number(), "error": header.err().map(|err| err.to_string()) })
+            );
+            let against_parent = reth_consensus::HeaderValidator::validate_header_against_parent(
+                &consensus,
+                sealed_block.sealed_header(),
+                &parent_header,
+            );
+            antithesis_sdk::assert_always!(
+                against_parent.is_ok(),
+                "Payload builder block header is a valid child of its parent",
+                &serde_json::json!({ "block_number": block.number(), "error": against_parent.err().map(|err| err.to_string()) })
+            );
+            let pre_execution =
+                reth_consensus::Consensus::validate_block_pre_execution(&consensus, sealed_block);
+            antithesis_sdk::assert_always!(
+                pre_execution.is_ok(),
+                "Payload builder block body passes consensus pre-execution validation",
+                &serde_json::json!({ "block_number": block.number(), "error": pre_execution.err().map(|err| err.to_string()) })
+            );
+            let post_execution = reth_consensus::FullConsensus::<tempo_primitives::TempoPrimitives>::validate_block_post_execution(
+                &consensus,
+                &block,
+                execution_result,
+                None,
+                None,
+            );
+            antithesis_sdk::assert_always!(
+                post_execution.is_ok(),
+                "Payload builder execution outputs pass consensus post-execution validation",
+                &serde_json::json!({ "block_number": block.number(), "error": post_execution.err().map(|err| err.to_string()) })
+            );
+        }
 
         let block = Arc::new(block);
         let execution_block_encoder = ExecutionBlockEncoder::new(
@@ -1124,7 +1235,6 @@ pub(crate) struct RootsTaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Bytes;
 
     #[test]
     fn test_extra_data_flow_in_attributes() {

@@ -640,6 +640,10 @@ fn signature_bytes_dispatch_on_length_then_type_byte() {
         SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
     ] {
         assert_eq!(TempoSignature::from_bytes(&[first]), Err(too_short));
+        assert_eq!(
+            decode_exact::<AccountSignature>(alloy_rlp::encode(Bytes::from(vec![first]))),
+            Err(RlpError::Custom(too_short))
+        );
         let lone_inner = [
             &[SIGNATURE_TYPE_KEYCHAIN_V2][..],
             indexed_owner(3).as_slice(),
@@ -885,6 +889,18 @@ fn configurable_account_quorum_reports_the_first_broken_rule() {
             case: "an approval after quorum, before its entry is checked",
             threshold: 1,
             approvals: vec![light, (Address::ZERO, 0)],
+            expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
+        },
+        QuorumCase {
+            case: "a lighter approval the quorum does not need",
+            threshold: 3,
+            approvals: vec![light, heavy],
+            expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
+        },
+        QuorumCase {
+            case: "a middle approval the quorum does not need",
+            threshold: 4,
+            approvals: vec![(first, 2), (second, 1), (third, 2)],
             expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
         },
         QuorumCase {
@@ -1303,6 +1319,7 @@ fn bounded_access_key_envelope_roundtrips_and_rejects_v1() {
         TempoSignature::from_bytes(&[&encoded[..21], &encoded].concat()),
         Err("keychain signatures are not account signatures")
     );
+    assert!(decode_exact::<AccountSignature>(alloy_rlp::encode(&encoded)).is_err());
     #[cfg(feature = "serde")]
     {
         use serde_json::{from_value, to_value};

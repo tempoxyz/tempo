@@ -1,0 +1,1319 @@
+//! Pinned corpus publication and read-only checkpoint access.
+
+use crate::{
+    code,
+    types::{Case, Input},
+};
+use alloy_consensus::BlockHeader;
+use alloy_primitives::B256;
+use bytes::Bytes;
+use eyre::{OptionExt, WrapErr};
+use futures::TryStreamExt;
+use object_store::{
+    ClientConfigKey, ObjectStore, ObjectStoreExt, PutMode, RetryConfig, UpdateVersion,
+    aws::{AmazonS3Builder, AmazonS3ConfigKey},
+    path::Path,
+};
+use serde::{Deserialize, Serialize};
+use slatedb::{
+    Db, DbIterator, DbReader, DbReaderMode,
+    admin::Admin,
+    config::{
+        CheckpointOptions, CheckpointScope, DbReaderOptions, FlushOptions, FlushType, ScanOptions,
+    },
+};
+use std::{sync::Arc, time::Duration};
+use tempo_primitives::Block;
+use tracing::warn;
+use url::Url;
+
+/// Maximum serialized size of one block record (block plus its transactions) or one
+/// metadata entry. Capture rejects larger records; readers reject larger entries.
+pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+/// wincode configuration of every stored record: the default encoding, with sequences
+/// allowed up to a whole record ([`MAX_RECORD_BYTES`]) instead of wincode's 4 MiB. The limit
+/// only bounds preallocation, so the encoded bytes are unchanged.
+pub(crate) const WINCODE: wincode::config::Configuration<true, MAX_RECORD_BYTES> =
+    wincode::config::Configuration::default().with_preallocation_size_limit::<MAX_RECORD_BYTES>();
+const MAX_CATALOG_BYTES: usize = 1024 * 1024;
+pub const PAGE_RECORDS: usize = 1000;
+/// Cuts every object-store request attempt so a stuck request fails instead of stalling
+/// capture or replay. SlateDB uploads SSTs in 10 MiB multipart parts, so no request body
+/// comes close to this limit at normal bandwidth.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// The object_store client retries each request at most twice within 20 s, but never a
+/// conditional write after a timeout. SlateDB's wrapper retries on top of that and is the
+/// one layer that recognises a conditional write that landed before its response was lost.
+pub const SLATEDB_RETRIES: Option<u32> = Some(3);
+/// How long a replaced checkpoint stays readable after a newer one is published.
+const RETIRED_CHECKPOINT_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// Lifetime of a replay's lease checkpoint. [Store::renew_lease] extends it every third of
+/// it, so a lease a crashed replay leaves behind expires on its own.
+const LEASE_LIFETIME: Duration = Duration::from_secs(10 * 60);
+/// Bounds each lease operation: SlateDB's `Admin` retries object-store failures without limit
+/// and has no setting for [SLATEDB_RETRIES]. Well under a third of [LEASE_LIFETIME], so a renewal
+/// that times out still fails before the lease expires.
+const LEASE_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
+pub const CONTEXT_KEY: &[u8] = b"corpus-context";
+pub const CURSOR_KEY: &[u8] = b"corpus-cursor";
+
+/// What every block of a corpus is pinned to. The corpus ends at its published [Cursor], so
+/// fills append blocks without changing the context, except for `forks`, which an extending
+/// fill replaces with its own schedule once it agrees up to the published tip.
+///
+/// Older corpora also stored their pinned `end`, `tip` and `end_tx` here; deserializing ignores
+/// them, and the first extending fill rewrites the stored context without them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Context {
+    pub chain_id: u64,
+    pub genesis: String,
+    pub forks: String,
+    pub start: u64,
+    pub parent: String,
+    pub first_tx: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Record {
+    pub number: u64,
+    pub parent: [u8; 32],
+    pub hash: [u8; 32],
+    /// Total serialized block and transaction bytes reserved together before fetching.
+    pub bytes: usize,
+    pub block_bytes: usize,
+    pub transactions: u64,
+    pub gas: u64,
+    pub first_tx: u64,
+    pub cases: Vec<CaseRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CaseRecord {
+    pub index: u64,
+    pub bytes: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Catalog {
+    pub context: Context,
+    pub checkpoint: Option<String>,
+    pub cursor: Cursor,
+    /// Only the unpublished bounded page lives in memory, never in root JSON.
+    #[serde(skip)]
+    pub records: Vec<Record>,
+    /// Whether the last fill published every block up to its pinned end. A fill clears it
+    /// before opening its writer, so `false` means a fill is running or was interrupted.
+    pub complete: bool,
+    /// Changed by conditional PUT before opening a writer. A superseded writer
+    /// never rereads/retries its publication token after a failed CAS.
+    pub generation: u64,
+    /// Set by `corpus gc` through a conditional PUT before it deletes anything and cleared
+    /// when it finishes. A fill refuses to claim a corpus while it is set, and one that read
+    /// the catalog before gc claimed it fails its own claim's CAS.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collecting: bool,
+}
+
+impl Catalog {
+    pub fn validate(&self) -> eyre::Result<()> {
+        let c = &self.context;
+        eyre::ensure!(c.start > 0, "unsupported corpus context/range");
+        eyre::ensure!(
+            self.cursor.next >= c.start && self.cursor.tx >= c.first_tx,
+            "invalid published cursor"
+        );
+        if self.cursor.next == c.start {
+            eyre::ensure!(self.cursor == Cursor::initial(c)?, "invalid initial cursor");
+        }
+        let mut cursor = self.cursor.clone();
+        for record in &self.records {
+            cursor.advance(record)?;
+        }
+        eyre::ensure!(
+            (self.cursor.next == c.start && self.records.is_empty()) || self.checkpoint.is_some(),
+            "missing pinned checkpoint"
+        );
+        Ok(())
+    }
+
+    /// Advance the durable root only after the page and its metadata are verified.
+    pub fn seal(&mut self) -> eyre::Result<()> {
+        for record in &self.records {
+            self.cursor.advance(record)?;
+        }
+        self.records.clear();
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Store {
+    pub objects: Arc<dyn ObjectStore>,
+    pub path: Path,
+    /// A `file://` corpus, whose store has no conditional update.
+    local: bool,
+}
+
+/// Bounds every request to at most three attempts of at most `request` each, without
+/// replacing other client options read from the environment.
+fn bounded(builder: AmazonS3Builder, request: Duration) -> AmazonS3Builder {
+    let millis = |d: Duration| format!("{}ms", d.as_millis());
+    builder
+        .with_config(
+            AmazonS3ConfigKey::Client(ClientConfigKey::Timeout),
+            millis(request),
+        )
+        .with_config(
+            AmazonS3ConfigKey::Client(ClientConfigKey::ConnectTimeout),
+            millis(CONNECT_TIMEOUT.min(request)),
+        )
+        .with_retry(RetryConfig {
+            max_retries: 2,
+            retry_timeout: Duration::from_secs(20),
+            ..Default::default()
+        })
+}
+
+impl Store {
+    pub async fn open(location: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
+        let url = Url::parse(location)?;
+        eyre::ensure!(
+            url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none(),
+            "credentials/query/fragment not allowed in corpus URL"
+        );
+        match url.scheme() {
+            "file" => {
+                eyre::ensure!(endpoint.is_none(), "local corpus cannot use an S3 endpoint");
+                let directory = url
+                    .to_file_path()
+                    .map_err(|_| eyre::eyre!("invalid local corpus path"))?;
+                Ok(Self {
+                    objects: Arc::new(object_store::local::LocalFileSystem::new_with_prefix(
+                        directory,
+                    )?),
+                    path: Path::from("corpus"),
+                    local: true,
+                })
+            }
+            "s3" => {
+                let bucket = url.host_str().ok_or_eyre("missing S3 bucket")?;
+                let prefix = url.path().trim_matches('/');
+                eyre::ensure!(!prefix.is_empty(), "a non-root corpus prefix is required");
+                // object_store resolves credentials and region itself (env vars, web identity,
+                // ECS, IMDS) with its own HTTP client. The AWS SDK chain needs an SDK HTTP client
+                // this crate does not compile in, and panics in debug builds without one.
+                let mut builder = bounded(
+                    AmazonS3Builder::from_env().with_bucket_name(bucket),
+                    REQUEST_TIMEOUT,
+                );
+                if let Some(endpoint) = endpoint {
+                    let endpoint_url = Url::parse(endpoint)?;
+                    eyre::ensure!(
+                        endpoint_url.username().is_empty()
+                            && endpoint_url.password().is_none()
+                            && endpoint_url.query().is_none(),
+                        "credentials are not allowed in S3 endpoint"
+                    );
+                    builder = builder
+                        .with_endpoint(endpoint)
+                        .with_allow_http(endpoint_url.scheme() == "http");
+                }
+                Ok(Self {
+                    objects: Arc::new(builder.build()?),
+                    path: Path::from(prefix).join("corpus"),
+                    local: false,
+                })
+            }
+            _ => eyre::bail!("corpus must use s3://bucket/prefix or file:///directory"),
+        }
+    }
+
+    /// Location of the corpus' SlateDB data.
+    pub(crate) fn data(&self) -> Path {
+        self.path.clone().join("data")
+    }
+
+    pub(crate) fn catalog_path(&self) -> Path {
+        self.path.clone().join("catalog.json")
+    }
+
+    pub async fn catalog(&self) -> eyre::Result<Option<(Catalog, UpdateVersion)>> {
+        let result = match self.objects.get(&self.catalog_path()).await {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => {
+                eyre::ensure!(
+                    self.objects
+                        .list(Some(&self.path))
+                        .try_next()
+                        .await?
+                        .is_none(),
+                    "nonempty corpus prefix has no catalog; refusing to overwrite unknown data"
+                );
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        eyre::ensure!(
+            result.meta.size <= MAX_CATALOG_BYTES as u64,
+            "catalog exceeds size limit"
+        );
+        let version = UpdateVersion {
+            e_tag: result.meta.e_tag.clone(),
+            version: result.meta.version.clone(),
+        };
+        let catalog: Catalog = serde_json::from_slice(&result.bytes().await?)?;
+        catalog.validate()?;
+        Ok(Some((catalog, version)))
+    }
+
+    pub async fn publish(
+        &self,
+        catalog: &Catalog,
+        prior: Option<UpdateVersion>,
+    ) -> eyre::Result<UpdateVersion> {
+        catalog.validate()?;
+        eyre::ensure!(catalog.records.is_empty(), "unsealed metadata page");
+        let bytes = Bytes::from(serde_json::to_vec(catalog)?);
+        eyre::ensure!(
+            bytes.len() <= MAX_CATALOG_BYTES,
+            "catalog exceeds size limit"
+        );
+        let path = self.catalog_path();
+        let mode = prior.clone().map_or(PutMode::Create, PutMode::Update);
+        let result = match (
+            self.objects
+                .put_opts(&path, bytes.clone().into(), mode.into())
+                .await,
+            prior,
+        ) {
+            (Ok(result), _) => result,
+            // `LocalFileSystem` has no conditional update. A local corpus has a single
+            // writer on one machine (SlateDB still fences its data), so check the catalog
+            // is unchanged and overwrite it.
+            // An S3 store without conditional writes must not fall back: two writers could both
+            // pass the check below and the later one would overwrite a newer catalog.
+            (Err(object_store::Error::NotImplemented { .. }), Some(prior)) if self.local => {
+                let current = self.objects.head(&path).await?;
+                eyre::ensure!(
+                    current.e_tag == prior.e_tag,
+                    "corpus catalog changed since it was read; another writer published"
+                );
+                self.objects
+                    .put_opts(&path, bytes.into(), PutMode::Overwrite.into())
+                    .await?
+            }
+            (Err(error), _) => return Err(error.into()),
+        };
+        Ok(UpdateVersion {
+            e_tag: result.e_tag,
+            version: result.version,
+        })
+    }
+
+    pub async fn reader(&self, catalog: &Catalog) -> eyre::Result<DbReader> {
+        let checkpoint = catalog
+            .checkpoint
+            .as_ref()
+            .ok_or_eyre("corpus has no published checkpoint")?
+            .parse()?;
+        let reader = DbReader::open(
+            self.data(),
+            self.objects.clone(),
+            DbReaderMode::Checkpoint(checkpoint),
+            DbReaderOptions {
+                object_store_max_retries: SLATEDB_RETRIES,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let checked = async {
+            let context = reader
+                .get(CONTEXT_KEY)
+                .await?
+                .ok_or_eyre("checkpoint has no corpus context")?;
+            eyre::ensure!(
+                serde_json::from_slice::<Context>(&context)? == catalog.context,
+                "checkpoint/catalog context mismatch"
+            );
+            let cursor = reader
+                .get(CURSOR_KEY)
+                .await?
+                .ok_or_eyre("checkpoint has no publication cursor")?;
+            eyre::ensure!(
+                serde_json::from_slice::<Cursor>(&cursor)? == catalog.cursor,
+                "checkpoint/catalog cursor mismatch"
+            );
+            eyre::Ok(())
+        }
+        .await;
+        if let Err(error) = checked {
+            reader.close().await?;
+            return Err(error);
+        }
+        Ok(reader)
+    }
+
+    /// Gives a superseded checkpoint a grace lifetime instead of keeping it forever, so
+    /// readers still pinned to it can finish before garbage collection reclaims its files.
+    pub async fn retire_checkpoint(&self, id: &str) -> eyre::Result<()> {
+        Admin::builder(self.data(), self.objects.clone())
+            .build()
+            .refresh_checkpoint(id.parse()?, Some(RETIRED_CHECKPOINT_LIFETIME))
+            .await?;
+        Ok(())
+    }
+
+    /// Creates a checkpoint of the catalog's published one that only the caller holds, so a
+    /// fill retiring the published checkpoint cannot expire the snapshot a long replay reads.
+    /// Expires after `LEASE_LIFETIME` unless renewed with [Self::renew_lease].
+    pub async fn lease(&self, catalog: &Catalog) -> eyre::Result<String> {
+        let published = catalog
+            .checkpoint
+            .as_ref()
+            .ok_or_eyre("corpus has no published checkpoint")?
+            .parse()?;
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        let created = tokio::time::timeout(
+            LEASE_OPERATION_TIMEOUT,
+            admin.create_detached_checkpoint(&CheckpointOptions {
+                lifetime: Some(LEASE_LIFETIME),
+                source: Some(published),
+                name: None,
+            }),
+        )
+        .await
+        .wrap_err("creating the replay lease timed out")??;
+        Ok(created.id.to_string())
+    }
+
+    /// Extends `lease` every third of `LEASE_LIFETIME`, retrying a failed renewal while the lease
+    /// still has time left. Returns only once the lease may expire before the next attempt, so
+    /// the caller must stop reading through it then.
+    pub async fn renew_lease(self, lease: String) -> eyre::Result<()> {
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        let id = lease.parse()?;
+        let mut renewed = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(LEASE_LIFETIME / 3).await;
+            let error = match tokio::time::timeout(
+                LEASE_OPERATION_TIMEOUT,
+                admin.refresh_checkpoint(id, Some(LEASE_LIFETIME)),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    renewed = tokio::time::Instant::now();
+                    continue;
+                }
+                Ok(Err(error)) => eyre::Report::from(error),
+                Err(elapsed) => eyre::Report::from(elapsed),
+            };
+            if renewed.elapsed() + LEASE_LIFETIME / 3 + LEASE_OPERATION_TIMEOUT >= LEASE_LIFETIME {
+                return Err(error.wrap_err("replay lease expires before it can be renewed"));
+            }
+            warn!(%error, "Replay lease renewal failed; retrying");
+        }
+    }
+
+    /// Leases `catalog`'s published checkpoint ([Self::lease]), points `catalog` at the lease and
+    /// renews it on `runtime` in the background. Calls `expiring` once renewal gives up, so the
+    /// caller stops reading through it. Release it with [Lease::release].
+    ///
+    /// Leasing writes to the corpus. A reader that cannot, such as one with read-only or
+    /// anonymous access, reads the published checkpoint directly instead: a fill extending the
+    /// corpus meanwhile may then retire that checkpoint once its grace lifetime ends.
+    pub fn lease_published(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        catalog: &mut Catalog,
+        expiring: impl FnOnce() + Send + 'static,
+    ) -> eyre::Result<Lease> {
+        let id = match runtime.block_on(self.lease(catalog)) {
+            Ok(id) => id,
+            Err(error) => {
+                warn!(
+                    %error,
+                    "Cannot lease the published checkpoint; reading it without a lease"
+                );
+                return Ok(Lease(None));
+            }
+        };
+        catalog.checkpoint = Some(id.clone());
+        let renew = self.clone().renew_lease(id.clone());
+        let renewal = runtime.spawn(async move {
+            let renewed = renew.await;
+            expiring();
+            renewed
+        });
+        Ok(Lease(Some((id, renewal))))
+    }
+
+    /// Deletes a lease from [Self::lease].
+    pub async fn release_lease(&self, lease: &str) -> eyre::Result<()> {
+        let admin = Admin::builder(self.data(), self.objects.clone()).build();
+        tokio::time::timeout(
+            LEASE_OPERATION_TIMEOUT,
+            admin.delete_checkpoint(lease.parse()?),
+        )
+        .await
+        .wrap_err("releasing the replay lease timed out")??;
+        Ok(())
+    }
+
+    pub async fn checkpoint(&self, db: &Db) -> eyre::Result<String> {
+        db.flush_with_options(FlushOptions {
+            flush_type: FlushType::MemTable,
+        })
+        .await?;
+        Ok(db
+            .create_checkpoint(CheckpointScope::All, &CheckpointOptions::default())
+            .await?
+            .id
+            .to_string())
+    }
+}
+
+/// A reader's lease on a published checkpoint, renewed in the background
+/// ([Store::lease_published]). A lease that is never released expires on its own.
+pub struct Lease(Option<(String, tokio::task::JoinHandle<eyre::Result<()>>)>);
+
+impl Lease {
+    /// Whether renewal gave up, so the lease may expire and reads through it must stop.
+    pub fn expiring(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|(_, renewal)| renewal.is_finished())
+    }
+
+    /// Stops renewing and deletes the lease. Fails with the renewal's error if it gave up.
+    pub fn release(self, runtime: &tokio::runtime::Runtime, store: &Store) -> eyre::Result<()> {
+        let Some((id, renewal)) = self.0 else {
+            return Ok(());
+        };
+        let renewed = if renewal.is_finished() {
+            runtime.block_on(renewal)?
+        } else {
+            renewal.abort();
+            Ok(())
+        };
+        let released = runtime.block_on(store.release_lease(&id));
+        renewed.and(released)
+    }
+}
+
+pub fn key(start: u64) -> [u8; 9] {
+    prefixed_key(b'b', start)
+}
+
+pub fn transaction_key(ordinal: u64) -> [u8; 9] {
+    prefixed_key(b't', ordinal)
+}
+
+pub fn metadata_key(block: u64) -> [u8; 9] {
+    prefixed_key(b'm', block)
+}
+
+/// Big-endian, so keys sort by number.
+fn prefixed_key(prefix: u8, number: u64) -> [u8; 9] {
+    let mut key = [prefix; 9];
+    key[1..].copy_from_slice(&number.to_be_bytes());
+    key
+}
+
+pub fn code_key(hash: &[u8; 32]) -> [u8; 33] {
+    let mut key = [b'c'; 33];
+    key[1..].copy_from_slice(hash);
+    key
+}
+
+/// Loads every code hash the input reads that is not cached yet from the corpus' shared
+/// code entries, verifying each against its hash.
+pub async fn resolve_code(reader: &DbReader, input: &Input) -> eyre::Result<()> {
+    for hash in input.code.iter().filter(|hash| !code::has_code(hash)) {
+        let bytes = reader
+            .get(code_key(hash))
+            .await?
+            .ok_or_else(|| eyre::eyre!("missing corpus code {}", B256::from(*hash)))?;
+        eyre::ensure!(bytes.len() <= MAX_RECORD_BYTES, "corpus code too large");
+        code::insert_code(hash, &bytes)?;
+    }
+    Ok(())
+}
+
+/// The published record of `block` and its decoded input, with its code resolved.
+///
+/// Checks the block alone, not its links to neighbouring blocks. A block runs on its own recorded
+/// pre-state, and a complete corpus had its whole range checked when it was published.
+pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, Arc<Input>)> {
+    let (record, bytes) = published_payload(reader, block).await?;
+    let input = decode(&bytes, &record)?;
+    resolve_code(reader, &input).await?;
+    Ok((record, input))
+}
+
+/// The published record of `block` and its undecoded block payload, checked as [published] checks.
+pub async fn published_payload(reader: &DbReader, block: u64) -> eyre::Result<(Record, Bytes)> {
+    // Both keys are known up front, so the two reads wait on the store together.
+    let (record, bytes) = tokio::try_join!(metadata(reader, block), async {
+        Ok(reader.get(key(block)).await?)
+    })?;
+    // Seeded from the record itself, so only its own sizes and coverage are checked.
+    Cursor {
+        next: record.number,
+        tx: record.first_tx,
+        parent: record.parent,
+    }
+    .advance(&record)?;
+    let bytes = bytes.ok_or_else(|| eyre::eyre!("missing block record at {block}"))?;
+    Ok((record, bytes))
+}
+
+pub fn decode(bytes: &[u8], record: &Record) -> eyre::Result<Arc<Input>> {
+    eyre::ensure!(
+        bytes.len() == record.block_bytes,
+        "corpus record size mismatch"
+    );
+    let input: Input = wincode::config::deserialize_exact(bytes, WINCODE)?;
+    eyre::ensure!(
+        input.number == record.number
+            && input.parent == record.parent
+            && input.block.hash == record.hash,
+        "corpus record/context mismatch"
+    );
+    Ok(Arc::new(input))
+}
+
+pub fn decode_case(bytes: &[u8], expected: &CaseRecord, ordinal: u64) -> eyre::Result<Case> {
+    eyre::ensure!(
+        bytes.len() == expected.bytes,
+        "transaction record size mismatch"
+    );
+    let case: Case = wincode::config::deserialize_exact(bytes, WINCODE)?;
+    eyre::ensure!(
+        case.ordinal == ordinal && case.index == expected.index,
+        "transaction ordinal/index/key mismatch"
+    );
+    Ok(case)
+}
+
+/// Streams the block and transaction payloads of a contiguous record range with one
+/// block scan and one transaction scan, checking each entry's key, order and size
+/// against its record. Pass every record of the range to [`Self::next`] in order, then
+/// call [`Self::finish`]. Contiguity and descriptor counts are enforced when metadata is
+/// read ([`Cursor::advance`]).
+pub struct PayloadScan {
+    blocks: DbIterator,
+    /// `None` when the range has no transactions.
+    transactions: Option<DbIterator>,
+}
+
+impl PayloadScan {
+    /// Opens both scans over `records`, which must be non-empty.
+    pub async fn open(reader: &DbReader, records: &[Record]) -> eyre::Result<Self> {
+        let (Some(first), Some(last)) = (records.first(), records.last()) else {
+            eyre::bail!("empty payload range")
+        };
+        let tx_end = last
+            .first_tx
+            .checked_add(last.transactions)
+            .ok_or_eyre("transaction ordinal overflow")?;
+        let options = scan_options();
+        let blocks = reader
+            .scan_with_options(key(first.number)..key(last.number + 1), &options)
+            .await?;
+        let transactions = if first.first_tx == tx_end {
+            None
+        } else {
+            Some(
+                reader
+                    .scan_with_options(
+                        transaction_key(first.first_tx)..transaction_key(tx_end),
+                        &options,
+                    )
+                    .await?,
+            )
+        };
+        Ok(Self {
+            blocks,
+            transactions,
+        })
+    }
+
+    /// Returns `record`'s block payload and its transaction payloads in index order.
+    pub async fn next(&mut self, record: &Record) -> eyre::Result<(Bytes, Vec<Bytes>)> {
+        let block = self
+            .blocks
+            .next()
+            .await?
+            .ok_or_else(|| eyre::eyre!("missing block record at {}", record.number))?;
+        eyre::ensure!(
+            block.key.as_ref() == key(record.number) && block.value.len() == record.block_bytes,
+            "block scan gap/order/size mismatch"
+        );
+        let mut cases = Vec::with_capacity(record.cases.len());
+        for (index, expected) in record.cases.iter().enumerate() {
+            let entry = match self.transactions.as_mut() {
+                Some(scan) => scan.next().await?,
+                None => None,
+            }
+            .ok_or_eyre("missing transaction record")?;
+            eyre::ensure!(
+                entry.key.as_ref() == transaction_key(record.first_tx + index as u64)
+                    && entry.value.len() == expected.bytes,
+                "transaction scan gap/order/size mismatch"
+            );
+            cases.push(entry.value);
+        }
+        Ok((block.value, cases))
+    }
+
+    /// Fails if either scan holds entries beyond the opened range.
+    pub async fn finish(mut self) -> eyre::Result<()> {
+        eyre::ensure!(self.blocks.next().await?.is_none(), "extra block record");
+        if let Some(mut scan) = self.transactions {
+            eyre::ensure!(scan.next().await?.is_none(), "extra transaction record");
+        }
+        Ok(())
+    }
+}
+
+/// Runs `f` on the payloads of every published record from `from` up to `to`, reading
+/// metadata in pages and each page's payloads through one [`PayloadScan`]. Fails unless the metadata ends exactly at `to`.
+pub async fn for_each_published(
+    reader: &DbReader,
+    from: Cursor,
+    to: &Cursor,
+    resolve: bool,
+    mut f: impl FnMut(&Record, Bytes, Vec<Bytes>) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    let mut pages = MetadataPages::open(reader, from, to.next).await?;
+    while pages.cursor.next < to.next {
+        let records = pages.next_page().await?;
+        let mut payloads = PayloadScan::open(reader, &records).await?;
+        for record in &records {
+            let (block, cases) = payloads.next(record).await?;
+            if resolve {
+                let input = decode(&block, record)?;
+                resolve_code(reader, &input).await?;
+            }
+            f(record, block, cases)?;
+        }
+        payloads.finish().await?;
+    }
+    eyre::ensure!(pages.cursor == *to, "published metadata boundary mismatch");
+    Ok(())
+}
+
+/// Durable boundary after the last completely captured block.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cursor {
+    pub next: u64,
+    pub tx: u64,
+    pub parent: [u8; 32],
+}
+
+impl Cursor {
+    pub fn initial(context: &Context) -> eyre::Result<Self> {
+        Ok(Self {
+            next: context.start,
+            tx: context.first_tx,
+            parent: context.parent.parse::<B256>()?.0,
+        })
+    }
+
+    pub fn advance(&mut self, record: &Record) -> eyre::Result<()> {
+        eyre::ensure!(record.number == self.next, "catalog block gap/duplicate");
+        eyre::ensure!(
+            record.parent == self.parent && record.bytes > 0 && record.bytes <= MAX_RECORD_BYTES,
+            "catalog hash chain or record size mismatch"
+        );
+        let bytes =
+            record
+                .cases
+                .iter()
+                .enumerate()
+                .try_fold(record.block_bytes, |sum, (i, case)| {
+                    eyre::ensure!(
+                        case.index == i as u64 && case.bytes > 0 && case.bytes <= MAX_RECORD_BYTES,
+                        "transaction index/size mismatch"
+                    );
+                    sum.checked_add(case.bytes)
+                        .ok_or_eyre("record size overflow")
+                })?;
+        eyre::ensure!(
+            record.block_bytes > 0
+                && bytes == record.bytes
+                && record.first_tx == self.tx
+                && record.transactions == record.cases.len() as u64,
+            "transaction coverage/size mismatch"
+        );
+        self.tx = self
+            .tx
+            .checked_add(record.transactions)
+            .ok_or_eyre("ordinal overflow")?;
+        self.next = record.number.checked_add(1).ok_or_eyre("block overflow")?;
+        self.parent = record.hash;
+        Ok(())
+    }
+}
+
+/// Whether two [`display_hardforks`] listings activate the same forks at the same times, up to
+/// and including `timestamp`. Forks activating later cannot affect a corpus whose last block is
+/// at `timestamp`, so a binary that schedules a later fork still reads and resumes the corpus.
+///
+/// [`display_hardforks`]: reth_chainspec::EthChainSpec::display_hardforks
+pub fn forks_agree(stored: &str, current: &str, timestamp: u64) -> bool {
+    let active = |listing: &str| {
+        let mut forks = listing
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- "))
+            .filter_map(|fork| {
+                // A fork line without a timestamp activation is always compared.
+                let Some((name, at)) = fork
+                    .rsplit_once('@')
+                    .and_then(|(name, at)| Some((name.trim(), at.trim().parse::<u64>().ok()?)))
+                else {
+                    return Some((fork.trim().to_owned(), 0));
+                };
+                (at <= timestamp).then(|| (name.to_owned(), at))
+            })
+            .collect::<Vec<_>>();
+        forks.sort();
+        forks
+    };
+    active(stored) == active(current)
+}
+
+/// Timestamp of the last block before `cursor`, read from its published record.
+pub async fn tip_timestamp(reader: &DbReader, cursor: &Cursor) -> eyre::Result<u64> {
+    let number = cursor
+        .next
+        .checked_sub(1)
+        .ok_or_eyre("empty corpus range")?;
+    let record = metadata(reader, number).await?;
+    let bytes = reader
+        .get(key(number))
+        .await?
+        .ok_or_else(|| eyre::eyre!("missing block record at {number}"))?;
+    let block: Block = alloy_rlp::decode_exact(&decode(&bytes, &record)?.block.rlp)?;
+    Ok(block.header.timestamp())
+}
+
+pub async fn metadata(reader: &DbReader, block: u64) -> eyre::Result<Record> {
+    let bytes = reader
+        .get(metadata_key(block))
+        .await?
+        .ok_or_else(|| eyre::eyre!("missing block metadata at {block}"))?;
+    eyre::ensure!(bytes.len() <= MAX_RECORD_BYTES, "metadata record too large");
+    let record: Record = serde_json::from_slice(&bytes)?;
+    eyre::ensure!(record.number == block, "metadata key/range mismatch");
+    Ok(record)
+}
+
+/// The published records and undecoded block payloads of `blocks`, which must be sorted and unique,
+/// read as replay reads, with one metadata scan and one block scan over their range. Blocks in the
+/// range but not listed are read and skipped.
+pub async fn scan_blocks(reader: &DbReader, blocks: &[u64]) -> eyre::Result<Vec<(Record, Bytes)>> {
+    let (Some(&first), Some(&last)) = (blocks.first(), blocks.last()) else {
+        return Ok(Vec::new());
+    };
+    let record = metadata(reader, first).await?;
+    // Seeded from the first record itself, as [published] checks a lone block.
+    let cursor = Cursor {
+        next: first,
+        tx: record.first_tx,
+        parent: record.parent,
+    };
+    let end = last.checked_add(1).ok_or_eyre("block range overflow")?;
+    let mut pages = MetadataPages::open(reader, cursor, end).await?;
+    let mut scan = reader
+        .scan_with_options(key(first)..key(end), &scan_options())
+        .await?;
+    let mut wanted = blocks.iter().peekable();
+    let mut payloads = Vec::with_capacity(blocks.len());
+    while pages.cursor.next <= last {
+        for record in pages.next_page().await? {
+            let block = scan
+                .next()
+                .await?
+                .ok_or_else(|| eyre::eyre!("missing block record at {}", record.number))?;
+            eyre::ensure!(
+                block.key.as_ref() == key(record.number) && block.value.len() == record.block_bytes,
+                "block scan gap/order/size mismatch"
+            );
+            if wanted.next_if_eq(&&record.number).is_some() {
+                payloads.push((record, block.value));
+            }
+        }
+    }
+    eyre::ensure!(
+        wanted.peek().is_none(),
+        "block list is not sorted and unique"
+    );
+    Ok(payloads)
+}
+
+/// One metadata scan over a whole range, read in bounded pages. Reopening a scan
+/// per page re-seeks the overlapping SSTs and serializes a fetch per page.
+pub struct MetadataPages {
+    scan: DbIterator,
+    pub cursor: Cursor,
+    end: u64,
+}
+
+impl MetadataPages {
+    pub async fn open(reader: &DbReader, cursor: Cursor, end: u64) -> eyre::Result<Self> {
+        let scan = reader
+            .scan_with_options(
+                metadata_key(cursor.next)..metadata_key(end),
+                &scan_options(),
+            )
+            .await?;
+        Ok(Self { scan, cursor, end })
+    }
+
+    pub async fn next_page(&mut self) -> eyre::Result<Vec<Record>> {
+        let (cursor, end) = (&mut self.cursor, self.end);
+        let mut records = Vec::new();
+        let mut bytes = 0;
+        while cursor.next < end && records.len() < PAGE_RECORDS && bytes < 8 * 1024 * 1024 {
+            let entry = self
+                .scan
+                .next()
+                .await?
+                .ok_or_else(|| eyre::eyre!("metadata gap at {}", cursor.next))?;
+            eyre::ensure!(
+                entry.key.as_ref() == metadata_key(cursor.next)
+                    && entry.value.len() <= MAX_RECORD_BYTES,
+                "metadata scan key/size mismatch"
+            );
+            bytes += entry.value.len();
+            let record = serde_json::from_slice(&entry.value)?;
+            cursor.advance(&record)?;
+            records.push(record);
+        }
+        if cursor.next == end {
+            eyre::ensure!(self.scan.next().await?.is_none(), "extra metadata record");
+        }
+        Ok(records)
+    }
+}
+
+/// Per-scan read-ahead is SlateDB memory outside the replay byte reservation.
+fn scan_options() -> ScanOptions {
+    ScanOptions::default().with_read_ahead_bytes(1024 * 1024)
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use object_store::memory::InMemory;
+    use proptest::prelude::*;
+
+    pub(crate) fn in_memory(path: &str) -> Store {
+        Store {
+            objects: Arc::new(InMemory::new()),
+            path: Path::from(path),
+            local: false,
+        }
+    }
+
+    #[test]
+    fn forks_agree_ignores_forks_after_tip() {
+        let stored = "Post-merge hard forks (timestamp based):
+- Genesis @0
+- T0 @0
+- T1 @100";
+        // A newly scheduled fork after the tip does not matter.
+        let scheduled = format!(
+            "{stored}
+- T2 @300"
+        );
+        assert!(forks_agree(stored, &scheduled, 200));
+        // It does once the corpus reaches it.
+        assert!(!forks_agree(stored, &scheduled, 300));
+        // A moved activation inside the range does.
+        let moved = stored.replace("T1 @100", "T1 @150");
+        assert!(!forks_agree(stored, &moved, 200));
+        // Moving a fork that activates after the tip does not.
+        assert!(forks_agree(stored, &moved, 99));
+    }
+
+    /// Opens the corpus database and writes the catalog's context and cursor.
+    pub(crate) async fn open_db(store: &Store, catalog: &Catalog) -> eyre::Result<Db> {
+        let db = Db::open(store.data(), store.objects.clone()).await?;
+        db.put(CONTEXT_KEY, serde_json::to_vec(&catalog.context)?)
+            .await?;
+        db.put(CURSOR_KEY, serde_json::to_vec(&catalog.cursor)?)
+            .await?;
+        Ok(db)
+    }
+
+    /// Publishes an empty catalog twice and checks the first version no longer publishes.
+    async fn ensure_fenced(store: &Store) -> eyre::Result<(Catalog, UpdateVersion)> {
+        let mut catalog = catalog(1, 1, 1);
+        catalog.records.clear();
+        catalog.complete = false;
+        catalog.checkpoint = None;
+        let first = store.publish(&catalog, None).await?;
+        catalog.generation += 1;
+        let second = store.publish(&catalog, Some(first.clone())).await?;
+        assert!(store.publish(&catalog, Some(first)).await.is_err());
+        Ok((catalog, second))
+    }
+
+    pub(crate) fn catalog(start: u64, count: usize, transactions: u64) -> Catalog {
+        let records: Vec<_> = (0..count)
+            .map(|i| Record {
+                number: start + i as u64,
+                parent: [i as u8; 32],
+                hash: [(i as u8).wrapping_add(1); 32],
+                bytes: 1 + transactions as usize,
+                block_bytes: 1,
+                transactions,
+                gas: 0,
+                first_tx: i as u64 * transactions,
+                cases: (0..transactions)
+                    .map(|index| CaseRecord { index, bytes: 1 })
+                    .collect(),
+            })
+            .collect();
+        Catalog {
+            cursor: Cursor {
+                next: start,
+                tx: 0,
+                parent: [0; 32],
+            },
+            context: Context {
+                chain_id: 1,
+                genesis: B256::ZERO.to_string(),
+                forks: "test".to_owned(),
+                start,
+                parent: B256::ZERO.to_string(),
+                first_tx: 0,
+            },
+            records,
+            checkpoint: Some("00000000-0000-0000-0000-000000000000".to_owned()),
+            complete: true,
+            generation: 1,
+            collecting: false,
+        }
+    }
+
+    #[test]
+    fn legacy_context_with_pinned_end_still_reads() -> eyre::Result<()> {
+        let mut catalog = catalog(1, 2, 1);
+        catalog.seal()?;
+        let mut legacy = serde_json::to_value(&catalog)?;
+        let context = legacy["context"]
+            .as_object_mut()
+            .ok_or_eyre("context is an object")?;
+        context.insert("end".to_owned(), 3.into());
+        context.insert("tip".to_owned(), B256::ZERO.to_string().into());
+        context.insert("end_tx".to_owned(), 2.into());
+        let decoded: Catalog = serde_json::from_value(legacy)?;
+        decoded.validate()?;
+        assert_eq!(decoded.context, catalog.context);
+        Ok(())
+    }
+
+    proptest! {
+        #[test]
+        fn coverage_rejects_block_and_ordinal_gaps(start in 1u64..1_000_000, count in 2usize..64, size in 0u64..100) {
+            let expected = catalog(start, count, size);
+            prop_assert!(expected.validate().is_ok());
+            let mut sealed = expected.clone();
+            sealed.seal().unwrap();
+            let encoded = serde_json::to_vec(&sealed).unwrap();
+            let roundtrip: Catalog = serde_json::from_slice(&encoded).unwrap();
+            prop_assert!(roundtrip.validate().is_ok());
+            prop_assert!(roundtrip.records.is_empty());
+            let mut missing = expected.clone();
+            // Not the last record: a shorter prefix is a valid corpus.
+            missing.records.remove((count - 1) / 2);
+            prop_assert!(missing.validate().is_err());
+            let mut extra = expected.clone();
+            extra.records.push(extra.records.last().unwrap().clone());
+            prop_assert!(extra.validate().is_err());
+            let mut ordinal_gap = expected.clone();
+            ordinal_gap.records[1].first_tx += 1;
+            prop_assert!(ordinal_gap.validate().is_err());
+            let mut missing_case = expected.clone();
+            missing_case.records[0].transactions += 1;
+            prop_assert!(missing_case.validate().is_err());
+            let mut reordered = expected;
+            reordered.records.swap(0, 1);
+            prop_assert!(reordered.validate().is_err());
+        }
+
+        #[test]
+        fn keys_sort_by_global_ordinal_not_decimal_text(a in any::<u64>(), b in any::<u64>()) {
+            prop_assert_eq!(transaction_key(a).cmp(&transaction_key(b)), a.cmp(&b));
+            prop_assert_ne!(transaction_key(a), key(a));
+        }
+    }
+
+    #[tokio::test]
+    async fn publication_is_fenced_and_readers_remain_pinned() -> eyre::Result<()> {
+        let store = in_memory("test");
+        let (mut catalog, second) = ensure_fenced(&store).await?;
+        let db = open_db(&store, &catalog).await?;
+        db.put(key(1), b"first").await?;
+        catalog.checkpoint = Some(store.checkpoint(&db).await?);
+        store.publish(&catalog, Some(second)).await?;
+        db.put(key(1), b"second").await?;
+        db.flush().await?;
+        db.close().await?;
+        let objects_before: Vec<_> = store.objects.list(None).try_collect().await?;
+        let reader = store.reader(&catalog).await?;
+        assert_eq!(
+            reader.get(key(1)).await?,
+            Some(Bytes::from_static(b"first"))
+        );
+        reader.close().await?;
+        let objects_after: Vec<_> = store.objects.list(None).try_collect().await?;
+        assert_eq!(objects_before, objects_after);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stuck_endpoint_fails_within_bounds() -> eyre::Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        // Accept connections and never answer, like a hung object-store request.
+        let held = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                open.push(socket);
+            }
+        });
+        let objects = bounded(
+            AmazonS3Builder::new()
+                .with_bucket_name("corpus")
+                .with_region("us-east-1")
+                .with_access_key_id("key")
+                .with_secret_access_key("secret")
+                .with_endpoint(format!("http://{address}"))
+                .with_allow_http(true),
+            Duration::from_millis(200),
+        )
+        .build()?;
+        let started = std::time::Instant::now();
+        let error = objects.get(&Path::from("catalog.json")).await.unwrap_err();
+        assert!(
+            matches!(error, object_store::Error::Generic { .. }),
+            "{error:?}"
+        );
+        // Three 200 ms attempts plus backoff.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        held.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn published_payloads_match_records_and_reject_corruption() -> eyre::Result<()> {
+        let objects = Arc::new(InMemory::new());
+        let db = Db::open("payloads", objects.clone()).await?;
+        let mut cursor = Cursor {
+            next: 1,
+            tx: 0,
+            parent: [0; 32],
+        };
+        let mut cursors = vec![cursor.clone()];
+        for (start, count) in [(1u64, 2u64), (2, 0), (3, 1)] {
+            let cases: Vec<_> = (cursor.tx..cursor.tx + count)
+                .map(|tx| format!("t{tx}"))
+                .collect();
+            let block = format!("b{start}");
+            let record = Record {
+                number: start,
+                parent: [0; 32],
+                hash: [0; 32],
+                bytes: block.len() + cases.iter().map(String::len).sum::<usize>(),
+                block_bytes: block.len(),
+                transactions: count,
+                gas: 0,
+                first_tx: cursor.tx,
+                cases: cases
+                    .iter()
+                    .zip(0..)
+                    .map(|(case, index)| CaseRecord {
+                        index,
+                        bytes: case.len(),
+                    })
+                    .collect(),
+            };
+            for (tx, case) in (cursor.tx..).zip(&cases) {
+                db.put(transaction_key(tx), case).await?;
+            }
+            db.put(key(start), &block).await?;
+            db.put(metadata_key(start), serde_json::to_vec(&record)?)
+                .await?;
+            cursor.advance(&record)?;
+            cursors.push(cursor.clone());
+        }
+        let run = async |from: &Cursor, to: &Cursor| {
+            let id = db
+                .create_checkpoint(CheckpointScope::All, &CheckpointOptions::default())
+                .await?
+                .id;
+            let mode = DbReaderMode::Checkpoint(id);
+            let reader = DbReader::open(
+                "payloads",
+                objects.clone(),
+                mode,
+                DbReaderOptions::default(),
+            )
+            .await?;
+            let mut seen = Vec::new();
+            let result =
+                for_each_published(&reader, from.clone(), to, false, |record, block, cases| {
+                    seen.push((record.number, block, cases));
+                    Ok(())
+                })
+                .await;
+            reader.close().await?;
+            result.map(|()| seen)
+        };
+        let (first, second, end) = (&cursors[0], &cursors[1], &cursors[3]);
+        let expected: Vec<(u64, Bytes, Vec<Bytes>)> = vec![
+            (1, "b1".into(), vec!["t0".into(), "t1".into()]),
+            (2, "b2".into(), vec![]),
+            (3, "b3".into(), vec!["t2".into()]),
+        ];
+        assert_eq!(run(first, end).await?, expected);
+        let wrong_end = Cursor {
+            parent: [1; 32],
+            ..end.clone()
+        };
+        let error = run(first, &wrong_end).await.unwrap_err();
+        assert_eq!(error.to_string(), "published metadata boundary mismatch");
+        // Each corruption accumulates on the previous ones.
+        for (key, value, from, message) in [
+            (
+                transaction_key(1),
+                Some(&b"tampered"[..]),
+                first,
+                "transaction scan gap/order/size mismatch",
+            ),
+            (
+                transaction_key(1),
+                None,
+                first,
+                "transaction scan gap/order/size mismatch",
+            ),
+            (
+                key(2),
+                Some(b"block2"),
+                second,
+                "block scan gap/order/size mismatch",
+            ),
+            (key(2), None, second, "block scan gap/order/size mismatch"),
+        ] {
+            match value {
+                Some(value) => db.put(key, value).await?,
+                None => db.delete(key).await?,
+            };
+            assert_eq!(run(from, end).await.unwrap_err().to_string(), message);
+        }
+        db.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bounded_metadata_resume_pinning_and_boundary_corruption() -> eyre::Result<()> {
+        let store = in_memory("paged");
+        let mut catalog = catalog(17, 2003, 2);
+        let records = std::mem::take(&mut catalog.records);
+        catalog.complete = false;
+        catalog.checkpoint = None;
+        let version = store.publish(&catalog, None).await?;
+        let db = open_db(&store, &catalog).await?;
+        for record in &records[..1000] {
+            db.put(metadata_key(record.number), serde_json::to_vec(record)?)
+                .await?;
+            catalog.cursor.advance(record)?;
+        }
+        db.put(CURSOR_KEY, serde_json::to_vec(&catalog.cursor)?)
+            .await?;
+        catalog.checkpoint = Some(store.checkpoint(&db).await?);
+        let version = store.publish(&catalog, Some(version)).await?;
+        let partial = catalog.clone();
+        let (mut resumed, _) = store.catalog().await?.unwrap();
+        assert_eq!(resumed.cursor.next, 1017);
+        assert!(resumed.records.is_empty());
+        for record in &records[1000..] {
+            db.put(metadata_key(record.number), serde_json::to_vec(record)?)
+                .await?;
+            resumed.cursor.advance(record)?;
+        }
+        db.put(CURSOR_KEY, serde_json::to_vec(&resumed.cursor)?)
+            .await?;
+        resumed.complete = true;
+        resumed.checkpoint = Some(store.checkpoint(&db).await?);
+        store.publish(&resumed, Some(version)).await?;
+        assert!(serde_json::to_vec(&resumed)?.len() < 2048);
+        let old = store.reader(&partial).await?;
+        assert!(old.get(metadata_key(1017)).await?.is_none());
+        old.close().await?;
+        let reader = store.reader(&resumed).await?;
+        let mut pages = MetadataPages::open(
+            &reader,
+            Cursor::initial(&resumed.context)?,
+            resumed.cursor.next,
+        )
+        .await?;
+        for expected in [1000, 1000, 3] {
+            assert_eq!(pages.next_page().await?.len(), expected);
+        }
+        assert_eq!(pages.cursor, resumed.cursor);
+        drop(pages);
+        reader.close().await?;
+        // Neither a deletion at the page boundary nor restoring it with a wrong parent may be
+        // hidden by paging/resume.
+        let mut record = records[1000].clone();
+        record.parent[0] ^= 1;
+        for (corrupt, message) in [
+            (None, "metadata scan key/size mismatch"),
+            (
+                Some(serde_json::to_vec(&record)?),
+                "catalog hash chain or record size mismatch",
+            ),
+        ] {
+            match corrupt {
+                Some(value) => db.put(metadata_key(record.number), value).await?,
+                None => db.delete(metadata_key(record.number)).await?,
+            };
+            resumed.checkpoint = Some(store.checkpoint(&db).await?);
+            let reader = store.reader(&resumed).await?;
+            let mut pages =
+                MetadataPages::open(&reader, partial.cursor.clone(), resumed.cursor.next).await?;
+            assert_eq!(pages.next_page().await.unwrap_err().to_string(), message);
+            drop(pages);
+            reader.close().await?;
+        }
+        db.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn local_corpus_republishes_catalog() -> eyre::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let url = Url::from_directory_path(dir.path()).expect("absolute temp dir");
+        let store = Store::open(url.as_str(), None).await?;
+        let (mut catalog, second) = ensure_fenced(&store).await?;
+        catalog.generation += 1;
+        store.publish(&catalog, Some(second)).await?;
+        let (published, _) = store.catalog().await?.expect("published catalog");
+        assert_eq!(published.generation, catalog.generation);
+        Ok(())
+    }
+}
