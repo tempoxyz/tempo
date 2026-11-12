@@ -5,7 +5,7 @@
 //! proving guest.
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{B256, U256, keccak256, map::B256Map};
 use evm2::evm::{CacheDB, Db};
 use reth_chainspec::EthChainSpec as _;
 use reth_evm::{DynDatabase as _, execute::BlockAssemblerInput};
@@ -87,8 +87,11 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
     // The initial Tempo header supplies the root for Tempo-side reads. The
     // Zone's own TempoState must already contain the same number and hash;
     // otherwise the witness would describe a different L1 checkpoint.
-    let mut tempo_database =
-        TempoWitnessDatabase::from_tempo_state_witness(witness.tempo_state_witness)?;
+    let mut decoded_tempo_nodes = B256Map::default();
+    let mut tempo_database = TempoWitnessDatabase::from_tempo_state_witness(
+        witness.tempo_state_witness,
+        &mut decoded_tempo_nodes,
+    )?;
     let (witnessed_tempo_number, witnessed_tempo_hash) = tempo_database.checkpoint();
     let zone_tempo_hash = B256::from(read_zone_storage(
         &mut zone_state,
@@ -158,7 +161,8 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             .headers_rlp()
             .last()
             .expect("validated nonempty Tempo headers");
-        tempo_database = tempo_database.with_imported_checkpoint(final_imported_header)?;
+        tempo_database = tempo_database
+            .with_imported_checkpoint(final_imported_header, &mut decoded_tempo_nodes)?;
         let executed_block = execution::evm::execute_zone_block(
             &mut zone_state,
             config.evm_config(tempo_database.clone()),
@@ -1170,8 +1174,11 @@ mod tests {
     fn resolves_tempo_state_from_its_initial_header() {
         let account = Address::repeat_byte(0x33);
         let slot = B256::repeat_byte(0x07);
-        let database =
-            TempoWitnessDatabase::from_tempo_state_witness(empty_tempo_witness(9)).unwrap();
+        let database = TempoWitnessDatabase::from_tempo_state_witness(
+            empty_tempo_witness(9),
+            &mut B256Map::default(),
+        )
+        .unwrap();
 
         assert_eq!(
             database.read_l1_storage(account, slot, 9).unwrap(),
@@ -1196,10 +1203,13 @@ mod tests {
                 },
                 ..Default::default()
             };
-            TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
-                initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
-                node_pool: Vec::new(),
-            })
+            TempoWitnessDatabase::from_tempo_state_witness(
+                TempoStateWitness {
+                    initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
+                    node_pool: Vec::new(),
+                },
+                &mut B256Map::default(),
+            )
             .unwrap()
         };
 
@@ -1271,10 +1281,13 @@ mod tests {
             },
             ..Default::default()
         };
-        let database = TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
-            initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
-            node_pool: zone_witness.node_pool,
-        })
+        let database = TempoWitnessDatabase::from_tempo_state_witness(
+            TempoStateWitness {
+                initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
+                node_pool: zone_witness.node_pool,
+            },
+            &mut B256Map::default(),
+        )
         .unwrap();
 
         assert_eq!(
@@ -1313,9 +1326,11 @@ mod tests {
         assert_eq!(attributes.shared_gas_limit, 0);
         assert_eq!(attributes.timestamp_millis_part, 321);
 
-        let tempo_database =
-            TempoWitnessDatabase::from_tempo_state_witness(witness.tempo_state_witness.clone())
-                .unwrap();
+        let tempo_database = TempoWitnessDatabase::from_tempo_state_witness(
+            witness.tempo_state_witness.clone(),
+            &mut B256Map::default(),
+        )
+        .unwrap();
         let env =
             next_block_evm_env(&config, tempo_database, &witness.parent_header, &block).unwrap();
         assert_eq!(env.version.chain_id, config.chain_spec().chain_id());

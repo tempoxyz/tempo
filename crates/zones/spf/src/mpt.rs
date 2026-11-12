@@ -7,7 +7,10 @@
 //! pre-state root before it can serve reads.
 
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256, map::B256Map};
-use reth_trie_common::{DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, TrieAccount};
+use alloy_rlp::Decodable;
+use reth_trie_common::{
+    DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, TrieAccount, TrieNode,
+};
 use reth_trie_sparse::{LeafUpdate, RevealableSparseTrie, SparseStateTrie, TrieNodeEpoch};
 
 /// Fully revealed, root-bound stateless trie.
@@ -19,9 +22,14 @@ pub(crate) struct StatelessSparseTrie {
 impl StatelessSparseTrie {
     /// Construct and validate a sparse trie rooted at `state_root` from witness
     /// nodes indexed by [`index_witness_nodes`].
+    ///
+    /// `decoded` caches decoded nodes by hash across calls over the same `nodes`:
+    /// each node is read from it first, and decoded from `nodes` and inserted on
+    /// a miss.
     pub(crate) fn new(
         state_root: B256,
         nodes: &B256Map<Bytes>,
+        decoded: &mut B256Map<TrieNode>,
     ) -> Result<Self, StatelessSparseTrieError> {
         let mut inner = SparseStateTrie::new();
         if state_root == EMPTY_ROOT_HASH {
@@ -33,8 +41,18 @@ impl StatelessSparseTrie {
         }
 
         guarded(|| {
-            let multiproof = DecodedMultiProofV2::from_witness(state_root, nodes)
-                .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?;
+            let multiproof = DecodedMultiProofV2::from_witness_with(state_root, |hash| {
+                if let Some(node) = decoded.get(hash) {
+                    return Ok(Some(node.clone()));
+                }
+                let Some(bytes) = nodes.get(hash) else {
+                    return Ok(None);
+                };
+                let node = TrieNode::decode(&mut bytes.as_ref())?;
+                decoded.insert(*hash, node.clone());
+                Ok(Some(node))
+            })
+            .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?;
             inner
                 .reveal_decoded_multiproof_v2(multiproof)
                 .map_err(|_| StatelessSparseTrieError::InvalidSparseTrie)?;
