@@ -13,16 +13,24 @@ name: Prover E2E
         options: [fast, full]
         default: fast
   merge_group:
+  # The full suite follows each successful scheduled (nightly) Zones image build on main.
+  workflow_run:
+    workflows: [Zones Docker Build]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
 
 # Merge/deploy the sensor and pinned workflow templates before this publisher.
-# The full suite runs nightly from the workflows prover-tests-full CronWorkflow,
-# not per main push; dispatch it here for an exact SHA.
+# The full suite runs on nightly Zones images, not per main push; newer nightlies
+# do not cancel earlier ancestry runs. Dispatch it here for an exact SHA.
 jobs:
   dispatch:
-    if: github.repository == 'tempoxyz/tempo'
+    if: >-
+      github.repository == 'tempoxyz/tempo' && (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -42,14 +50,18 @@ jobs:
         with:
           script: |
             const event = context.eventName;
-            if (!['workflow_dispatch', 'merge_group'].includes(event)) throw new Error('Unsupported trigger');
+            if (!['workflow_dispatch', 'merge_group', 'workflow_run'].includes(event)) throw new Error('Unsupported trigger');
+            const run = context.payload.workflow_run;
+            if (event === 'workflow_run' && (run.event !== 'schedule' || run.conclusion !== 'success' || run.head_branch !== 'main')) {
+              throw new Error('Full suite requires a successful nightly Zones image build on main');
+            }
             const sha = event === 'workflow_dispatch' ? process.env.INPUT_SHA
-              : context.payload.merge_group.head_sha;
+              : event === 'merge_group' ? context.payload.merge_group.head_sha : run.head_sha;
             const base = event === 'merge_group' ? context.payload.merge_group.base_sha : '';
             if (!/^[0-9a-f]{40}$/.test(sha) || (event === 'merge_group' && !/^[0-9a-f]{40}$/.test(base))) {
               throw new Error('Exact lowercase commit SHAs are required');
             }
-            const suite = event === 'merge_group' ? 'fast' : (process.env.INPUT_SUITE || 'fast');
+            const suite = event === 'workflow_run' ? 'full' : event === 'merge_group' ? 'fast' : (process.env.INPUT_SUITE || 'fast');
             if (!['fast', 'full'].includes(suite)) throw new Error('Unknown suite');
             const {data: commit} = await github.rest.repos.getCommit({...context.repo, ref: sha});
             if (commit.sha !== sha) throw new Error('Candidate SHA mismatch');
