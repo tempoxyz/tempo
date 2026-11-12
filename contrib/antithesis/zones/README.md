@@ -136,6 +136,11 @@ supervisor exits on an unexpected child failure rather than hiding crashes in a 
 An abandoned intentional hold expires after 180 seconds; an early expiry cannot pass an outage
 assertion. Terminal checks release outstanding holds after a cancelled driver.
 
+Before choosing a victim, every zone node must have imported a block from the finalized
+portal leader at or beyond that term's activation anchor. L1 finality alone is not proof of
+activation: the outgoing leader can still be producing pre-activation blocks. The workload
+rechecks portal membership after observing the zone tips.
+
 The two cases have different progress requirements:
 
 - **Non-leader availability (`--case backup`):** the leader stays alive. A new canary must be

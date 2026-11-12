@@ -16,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tempo_contracts::zones::ZonePortal;
+use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZonePortal};
 use tokio::time::{Instant, timeout};
 
 use super::{
@@ -117,6 +117,30 @@ impl Context {
                                 .outage_membership(BlockId::hash(checkpoint.l1_hash))
                                 .await?;
                             membership.validate(&members)?;
+                            let activation = ZonePortal::new(self.portal, &self.l1)
+                                .leaderActivationTempoBlock()
+                                .block(BlockId::hash(checkpoint.l1_hash))
+                                .call()
+                                .await?;
+                            // Portal finality precedes zone activation. Even the same leader may
+                            // have produced an old-term tip before an intervening handoff.
+                            for zone in &self.zones {
+                                let Some(block) =
+                                    zone.get_block_by_number(BlockNumberOrTag::Latest).await?
+                                else {
+                                    return Ok(None);
+                                };
+                                let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
+                                    .tempoBlockNumber()
+                                    .block(BlockId::hash(block.header.hash))
+                                    .call()
+                                    .await?;
+                                if anchor < activation
+                                    || block.header.beneficiary != membership.leader
+                                {
+                                    return Ok(None);
+                                }
+                            }
                             // A previous driver's lost reply may leave a handoff awaiting finality.
                             // Wait it out before the kill; any change DURING the outage still fails.
                             if self.outage_membership(BlockId::latest()).await? != membership {
@@ -1100,7 +1124,101 @@ mod tests {
         StaleRestart,
     }
 
-    async fn leader_episode(observation: LeaderObservation) {
+    #[derive(Clone, Copy)]
+    enum PendingActivation {
+        BeforeActivation,
+        WrongProducer,
+        RepeatedLeader,
+        MissingBlock,
+        MembershipChanged,
+        RpcError,
+    }
+
+    fn queue_outage_membership(l1: &Asserter, members: &[Address], leader: Address, epoch: u64) {
+        l1.push_success(&Bytes::from(U256::from(3).abi_encode()));
+        l1.push_success(&Bytes::from(
+            (
+                U256::from(10),
+                members
+                    .iter()
+                    .map(|m| Bytes::from(m.abi_encode()))
+                    .collect::<Vec<_>>(),
+            )
+                .abi_encode_params(),
+        ));
+        for value in [U256::from(2), U256::from(1)] {
+            l1.push_success(&Bytes::from(value.abi_encode()));
+        }
+        l1.push_success(&Bytes::from(leader.abi_encode()));
+        l1.push_success(&Bytes::from(U256::from(epoch).abi_encode()));
+    }
+
+    fn queue_outage_preconditions(
+        l1: &Asserter,
+        zones: &[Asserter; 4],
+        members: &[Address],
+        block: &Block<B256>,
+        epoch: u64,
+        pending: Option<(PendingActivation, usize)>,
+    ) {
+        l1.push_success(block);
+        l1.push_success(&Bytes::from(U256::from(100).abi_encode()));
+        l1.push_success(&Bytes::from(B256::repeat_byte(2).abi_encode()));
+        queue_outage_membership(l1, members, members[0], epoch);
+        l1.push_success(&Bytes::from(U256::from(10).abi_encode()));
+        let mut zone_block = block.clone();
+        zone_block.header.number = 100;
+        zone_block.header.hash = B256::repeat_byte(2);
+        for zone in zones {
+            zone.push_success(&zone_block);
+        }
+        zone_block.header.number = 101;
+        zone_block.header.hash = B256::repeat_byte(3);
+        zone_block.header.beneficiary = members[0];
+        for (node, zone) in zones.iter().enumerate() {
+            let observation = pending.filter(|(_, index)| *index == node).map(|(p, _)| p);
+            match observation {
+                Some(PendingActivation::MissingBlock) => {
+                    zone.push_success(&None::<Block<B256>>);
+                    continue;
+                }
+                Some(PendingActivation::RpcError) => {
+                    zone.push_failure_msg("latest tip RPC temporarily unavailable");
+                    continue;
+                }
+                _ => {}
+            }
+            let mut tip = zone_block.clone();
+            if matches!(
+                observation,
+                Some(PendingActivation::WrongProducer | PendingActivation::BeforeActivation)
+            ) {
+                tip.header.beneficiary = members[1];
+            }
+            zone.push_success(&tip);
+            let anchor = if matches!(
+                observation,
+                Some(PendingActivation::BeforeActivation | PendingActivation::RepeatedLeader)
+            ) {
+                9
+            } else {
+                10
+            };
+            zone.push_success(&Bytes::from(U256::from(anchor).abi_encode()));
+        }
+        l1.push_success(block);
+        let latest_epoch = if matches!(pending, Some((PendingActivation::MembershipChanged, _))) {
+            epoch + 1
+        } else {
+            epoch
+        };
+        queue_outage_membership(l1, members, members[0], latest_epoch);
+    }
+
+    async fn leader_episode(
+        observation: LeaderObservation,
+        pending: Option<(PendingActivation, usize)>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Ledger::open(dir.path()).unwrap();
         ledger.new_account().unwrap();
@@ -1112,41 +1230,20 @@ mod tests {
         let mut block = Block::<B256>::default();
         block.header.number = 10;
         block.header.hash = B256::repeat_byte(1);
-        l1.push_success(&block);
-        l1.push_success(&Bytes::from(U256::from(100).abi_encode()));
-        l1.push_success(&Bytes::from(B256::repeat_byte(2).abi_encode()));
-        for latest in [false, true] {
-            if latest {
-                l1.push_success(&block);
-            }
-            l1.push_success(&Bytes::from(U256::from(3).abi_encode()));
-            l1.push_success(&Bytes::from(
-                (
-                    U256::from(10),
-                    members
-                        .iter()
-                        .map(|m| Bytes::from(m.abi_encode()))
-                        .collect::<Vec<_>>(),
-                )
-                    .abi_encode_params(),
-            ));
-            for value in [U256::from(2), U256::from(1)] {
-                l1.push_success(&Bytes::from(value.abi_encode()));
-            }
-            l1.push_success(&Bytes::from(members[0].abi_encode()));
-            l1.push_success(&Bytes::from(U256::from(1).abi_encode()));
-        }
-        let mut zone_block = block.clone();
-        zone_block.header.number = 100;
-        zone_block.header.hash = B256::repeat_byte(2);
-        for zone in &zones {
-            zone.push_success(&zone_block);
-        }
-        if matches!(observation, LeaderObservation::HandoffError) {
-            // Malformed ABI-independent RPC result fails before signing, without being retried.
-            l1.push_success(&"invalid block number");
+        // Epoch 3 can have the same address as epoch 1 after A -> B -> A.
+        let epoch = if matches!(pending, Some((PendingActivation::RepeatedLeader, _))) {
+            3
         } else {
-            l1.push_success(&"0xa");
+            1
+        };
+        queue_outage_preconditions(&l1, &zones, &members, &block, epoch, pending);
+        if pending.is_none() {
+            if matches!(observation, LeaderObservation::HandoffError) {
+                // Malformed ABI-independent RPC result fails before signing, without being retried.
+                l1.push_success(&"invalid block number");
+            } else {
+                l1.push_success(&"0xa");
+            }
         }
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap())
@@ -1227,6 +1324,7 @@ mod tests {
             let mut replied = [0; 3];
             let mut handoff_seen = false;
             let mut canary_seen = false;
+            let mut pending_observed = pending.is_none();
             loop {
                 for (node, prior) in replied.iter_mut().enumerate() {
                     let path = dir.path().join(format!("zone-{node}.request"));
@@ -1241,6 +1339,10 @@ mod tests {
                     }
                     *prior = id;
                     let killed = request["action"] == "kill";
+                    assert!(
+                        !killed || pending_observed,
+                        "KILL before all four tips activate"
+                    );
                     let restarted = id == 5;
                     if restarted {
                         assert!(
@@ -1274,6 +1376,51 @@ mod tests {
                         tokio::time::pause();
                         tokio::time::advance(Duration::from_secs(31)).await;
                     }
+                }
+                if !pending_observed
+                    && pending.is_some_and(|(_, node)| zones[node].read_q().is_empty())
+                {
+                    // Give the episode time to act on the last RPC before making every tip ready.
+                    tokio::time::sleep(POLL / 2).await;
+                    for node in 0..3 {
+                        let request: serde_json::Value = serde_json::from_slice(
+                            &fs::read(dir.path().join(format!("zone-{node}.request"))).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            request["action"], "start",
+                            "KILL before all four tips activate"
+                        );
+                    }
+                    assert!(
+                        ctx.ledger
+                            .records()
+                            .unwrap()
+                            .iter()
+                            .all(|r| !matches!(r, Record::Intent(_)))
+                    );
+                    let changed =
+                        matches!(pending, Some((PendingActivation::MembershipChanged, _)));
+                    assert_eq!(
+                        l1.read_q().len(),
+                        if changed { 0 } else { 7 },
+                        "latest membership must follow the tip checks"
+                    );
+                    // Unread later tips and membership belong to this rejected snapshot, not the retry.
+                    l1.write_q().clear();
+                    for zone in &zones {
+                        zone.write_q().clear();
+                    }
+                    pending_observed = true;
+                    queue_outage_preconditions(
+                        &l1,
+                        &zones,
+                        &members,
+                        &block,
+                        epoch + u64::from(changed),
+                        None,
+                    );
+                    l1.push_success(&"invalid block number");
                 }
                 for record in ctx.ledger.records().unwrap() {
                     if let Record::Intent(intent) = record {
@@ -1342,6 +1489,10 @@ mod tests {
             "failure returned without waiting for START acknowledgement: {error}"
         );
         assert_eq!(restored.state, State::Running);
+        assert!(
+            l1.read_q().is_empty(),
+            "precondition membership was not rechecked"
+        );
         let records = ctx.ledger.records().unwrap();
         match observation {
             LeaderObservation::FreshTip => {
@@ -1397,22 +1548,80 @@ mod tests {
 
     #[tokio::test]
     async fn leader_canary_waits_for_restart_and_fresh_rpc_ready_tips() {
-        leader_episode(LeaderObservation::FreshTip).await;
+        leader_episode(LeaderObservation::FreshTip, None).await;
     }
 
     #[tokio::test]
     async fn leader_handoff_error_cannot_skip_confirmed_restore() {
-        leader_episode(LeaderObservation::HandoffError).await;
+        leader_episode(LeaderObservation::HandoffError, None).await;
     }
 
     #[tokio::test]
     async fn leader_handoff_timeout_cannot_skip_confirmed_restore() {
-        leader_episode(LeaderObservation::HandoffTimeout).await;
+        leader_episode(LeaderObservation::HandoffTimeout, None).await;
     }
 
     #[tokio::test]
     async fn leader_stale_restart_cannot_start_canary() {
-        leader_episode(LeaderObservation::StaleRestart).await;
+        leader_episode(LeaderObservation::StaleRestart, None).await;
+    }
+
+    #[tokio::test]
+    async fn outage_waits_for_every_zone_to_reach_activation() {
+        for node in 0..4 {
+            leader_episode(
+                LeaderObservation::HandoffError,
+                Some((PendingActivation::BeforeActivation, node)),
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn outage_waits_for_every_zone_to_have_current_producer() {
+        for node in 0..4 {
+            leader_episode(
+                LeaderObservation::HandoffError,
+                Some((PendingActivation::WrongProducer, node)),
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn outage_rejects_same_leader_tip_from_an_earlier_term() {
+        leader_episode(
+            LeaderObservation::HandoffError,
+            Some((PendingActivation::RepeatedLeader, 3)),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn outage_waits_for_missing_latest_zone_block() {
+        leader_episode(
+            LeaderObservation::HandoffError,
+            Some((PendingActivation::MissingBlock, 3)),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn outage_rechecks_membership_after_observing_zone_tips() {
+        leader_episode(
+            LeaderObservation::HandoffError,
+            Some((PendingActivation::MembershipChanged, 3)),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn outage_retries_latest_zone_rpc_error_before_killing() {
+        leader_episode(
+            LeaderObservation::HandoffError,
+            Some((PendingActivation::RpcError, 3)),
+        )
+        .await;
     }
 
     #[test]
