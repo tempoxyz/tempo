@@ -7201,6 +7201,23 @@ mod tests {
             assert_eq!(f.balance(facility)?, U256::from(90));
             let payout = cards.payout_of(owner, token, facility)?;
             assert_eq!((payout.to, payout.amount), (state, 90));
+            // Another authority cannot escheat into the same record, which names the first.
+            let other = Address::random();
+            cards.set_authority(
+                admin,
+                ICards::setAuthorityCall {
+                    authority: other,
+                    role: ICards::Role::Escheat,
+                    listed: true,
+                    payout: Address::random(),
+                    dormancy: DORMANCY,
+                    escheatAfter: ESCHEAT_AFTER,
+                },
+            )?;
+            assert_eq!(
+                escheat(&mut cards, other, facility).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
             assert_eq!(escheat(&mut cards, authority, Address::ZERO)?, 0);
             assert_eq!(f.account_status(&cards)?, ICards::AccountStatus::Dormant);
             assert_eq!(f.balance(state)?, U256::ZERO);

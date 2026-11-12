@@ -786,9 +786,13 @@ impl Cards {
             return self.pay_out(call.owner, call.token, entry.payout);
         }
         // Paid into a facility that redeems it for the payout address, such as Earn shares into
-        // a savings facility, which reads the record to pay the cash on.
-        let paid = self.pay_out(call.owner, call.token, call.via)?;
+        // a savings facility, which reads the record to pay the cash on. The record keeps one
+        // recipient, so the facility never pays an earlier escheat's value to another authority.
         let mut payout = self.payouts[call.owner][call.token][call.via].read()?;
+        if !payout.amount.is_zero() && payout.to != entry.payout {
+            return Err(CardsError::unauthorized().into());
+        }
+        let paid = self.pay_out(call.owner, call.token, call.via)?;
         let amount = payout
             .amount
             .to::<u128>()
