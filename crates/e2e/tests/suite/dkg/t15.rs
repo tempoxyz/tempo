@@ -24,9 +24,11 @@ fn validators_agree_on_boundary_outcomes_across_t15() {
 
     // T15 starts inactive and is scheduled once epoch 0's boundary is
     // finalized, so the switch lands in epoch 1 however long node startup
-    // takes on the runner.
+    // takes on the runner. Three validators tolerate no fault, so every block
+    // needs all of them and none can fall behind while the others finish
+    // epoch 1.
     let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(4)
+        .how_many_signers(3)
         .epoch_length(EPOCH_LENGTH)
         .t15_time(u64::MAX);
     let cfg = Config::default()
@@ -43,10 +45,10 @@ fn validators_agree_on_boundary_outcomes_across_t15() {
             metrics.consensus_at_epoch(1) == validators.len()
         })
         .await;
-        // Halt the chain before any execution node shuts down, so epoch 1's
-        // boundary is still to come. One at a time: `stop_consensus` drains the
-        // aborted engine's tasks so its storage can be reopened, which concurrent
-        // stops don't guarantee.
+        // Stopping any validator halts the chain, so epoch 1's boundary is still
+        // to come. One at a time: `stop_consensus` drains the aborted engine's
+        // tasks so its storage can be reopened, which concurrent stops don't
+        // guarantee.
         for node in &mut validators {
             node.stop_consensus().await;
         }
@@ -54,10 +56,9 @@ fn validators_agree_on_boundary_outcomes_across_t15() {
             node.stop_execution().await;
         }
 
-        // Proposers never stamp a block ahead of the shared simulated clock by
-        // more than a few milliseconds, so every block produced so far keeps the
-        // rules it was executed with, and epoch 1's boundary, produced after the
-        // restart, is the first one under T15.
+        // Every block so far is stamped before `activation`. Restart only once
+        // the clock has reached it, so every block produced afterwards,
+        // including epoch 1's boundary, is under T15.
         let activation = context
             .current()
             .duration_since(UNIX_EPOCH)
@@ -65,6 +66,9 @@ fn validators_agree_on_boundary_outcomes_across_t15() {
             .as_secs()
             + 1;
         execution_runtime.set_t15_time(activation).unwrap();
+        context
+            .sleep_until(UNIX_EPOCH + Duration::from_secs(activation))
+            .await;
         join_all(validators.iter_mut().map(|node| node.start(&context))).await;
 
         // Every validator has finalized epoch 2's boundary, so all of them have
