@@ -81,11 +81,7 @@ pub struct L1State<P> {
     /// This is a fallback for database reads, not a selected L1 view.
     initial_anchor: Arc<Mutex<Option<U256>>>,
     /// Tempo block number selected for the current transaction attempt, and whether the attempt
-    /// has charged a metered read of the local `TempoState` checkpoint.
-    ///
-    /// From T14, unmetered host loads select the anchor on cache misses, so the checkpoint charge
-    /// cannot depend on whether an anchor is selected. Like `access_set`, the charge is not
-    /// rolled back when a subcall reverts.
+    /// charged the `TempoState` checkpoint read (from T14, host loads select it unmetered).
     anchor: Arc<Mutex<Option<(u64, bool)>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
@@ -140,23 +136,16 @@ impl<P> L1State<P> {
         self.portal_address
     }
 
-    /// Selects `new` as the anchor, or validates it against the selected one. `charged` records that
-    /// the caller charged the checkpoint read; it is never cleared for the attempt.
-    fn set_anchor(&self, new: u64, charged: bool) -> Result<(), L1StateError> {
+    fn set_anchor(&self, new: u64) -> Result<(), L1StateError> {
         let mut anchor = self.anchor.lock();
-        match &mut *anchor {
-            None => *anchor = Some((new, charged)),
-            Some((current, checkpoint_charged)) if *current == new => {
-                *checkpoint_charged |= charged
+        match *anchor {
+            None => {
+                *anchor = Some((new, false));
+                Ok(())
             }
-            Some((current, _)) => {
-                return Err(L1StateError::AnchorConflict {
-                    current: *current,
-                    new,
-                });
-            }
+            Some((current, _)) if current == new => Ok(()),
+            Some((current, _)) => Err(L1StateError::AnchorConflict { current, new }),
         }
-        Ok(())
     }
 
     /// Selects the final anchor after `TempoState.finalizeTempo` validates a contiguous range.
@@ -173,7 +162,7 @@ impl<P> L1State<P> {
             return Err(L1StateError::AnchorConflict { current, new: to });
         }
 
-        // `finalizeTempo` charged the checkpoint read before validating advancement.
+        // `finalizeTempo` already charged the checkpoint read.
         *anchor = Some((to, true));
         Ok(())
     }
@@ -191,7 +180,7 @@ impl<P: L1StorageReader> L1State<P> {
         slot: B256,
         block_number: u64,
     ) -> Result<B256, L1StateError> {
-        self.set_anchor(block_number, false)?;
+        self.set_anchor(block_number)?;
         self.provider.read_l1_storage(account, slot, block_number)
     }
 
@@ -204,7 +193,7 @@ impl<P: L1StorageReader> L1State<P> {
         account: Address,
         block_number: u64,
     ) -> Result<B256, L1StateError> {
-        self.set_anchor(block_number, false)?;
+        self.set_anchor(block_number)?;
         self.provider.read_l1_commitment(account, block_number)
     }
 
@@ -365,15 +354,13 @@ impl<P: L1StorageReader> StorageOps for L1Storage<'_, P> {
         let selected = *self.l1.anchor.lock();
         let anchor = match selected {
             Some((anchor, charged)) if charged || !is_t14 => anchor,
-            None if !is_t14 => TempoState::new().tempo_block_number.read()?,
-            // From T14, charge the checkpoint once per attempt even if a host cache miss already
-            // selected the anchor, so gas does not depend on the account cache.
+            // From T14, charge the checkpoint once per attempt even if a host load selected it.
             _ => {
                 let checkpoint = TempoState::new().tempo_block_number.read()?;
                 let anchor = selected.map_or(checkpoint, |(anchor, _)| anchor);
-                self.l1
-                    .set_anchor(anchor, true)
-                    .map_err(|err| TempoPrecompileError::Fatal(err.to_string()))?;
+                if is_t14 {
+                    *self.l1.anchor.lock() = Some((anchor, true));
+                }
                 anchor
             }
         };
