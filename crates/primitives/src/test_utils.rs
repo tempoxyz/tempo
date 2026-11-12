@@ -57,15 +57,8 @@ pub fn actors_vec(n: usize) -> Vec<Address> {
 /// Returns `N` random amounts, each at least 1, sorted largest first, whose total stays below
 /// `u128::MAX` (the TIP-20 supply cap).
 pub fn amounts<const N: usize>() -> [U256; N] {
-    amounts_vec(N).try_into().unwrap()
-}
-
-/// Returns `n` random amounts with the same guarantees as [`amounts`].
-pub fn amounts_vec(n: usize) -> Vec<U256> {
-    let mut amounts: Vec<_> = with_rng(|rng| {
-        (0..n)
-            .map(|_| U256::from(rng.random_range(1..u128::MAX / n.max(1) as u128)))
-            .collect()
+    let mut amounts = with_rng(|rng| {
+        core::array::from_fn(|_| U256::from(rng.random_range(1..u128::MAX / N as u128)))
     });
     amounts.sort_unstable_by(|a, b| b.cmp(a));
     amounts

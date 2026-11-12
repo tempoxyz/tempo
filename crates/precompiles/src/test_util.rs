@@ -338,11 +338,16 @@ impl TIP20Setup {
             token.grant_role_internal(account, role)?;
         }
 
-        let admin = self.admin.or_else(|| get_tip20_admin(token.address()));
-        let admin = || admin.expect("unable to get token admin");
+        // Resolved at most once, and only when a mint or the transfer policy needs it.
+        let (mut admin, token_address) = (self.admin, token.address());
+        let mut admin = || {
+            *admin.get_or_insert_with(|| {
+                get_tip20_admin(token_address).expect("unable to get token admin")
+            })
+        };
 
         // Apply mints
-        if !self.mints.is_empty() && !token.has_role_internal(admin(), tip20::ISSUER_ROLE)? {
+        if !self.mints.is_empty() {
             token.grant_role_internal(admin(), tip20::ISSUER_ROLE)?;
         }
         for (to, amount) in self.mints {
@@ -355,11 +360,10 @@ impl TIP20Setup {
         }
 
         if let Some(policy) = self.transfer_policy {
-            let new_policy_id = policy.apply()?;
             token.change_transfer_policy_id(
                 admin(),
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: new_policy_id,
+                    newPolicyId: policy.apply()?,
                 },
             )?;
         }
@@ -434,11 +438,6 @@ impl TIP403Setup {
             recipientPolicyId: recipient,
             mintRecipientPolicyId: mint_recipient,
         })
-    }
-
-    /// Add an account to the whitelist or blacklist. Panics on a compound policy.
-    pub fn with_member(self, account: Address) -> Self {
-        self.with_members([account])
     }
 
     /// Add accounts to the whitelist or blacklist. Panics on a compound policy.
