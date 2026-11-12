@@ -892,6 +892,18 @@ fn configurable_account_quorum_reports_the_first_broken_rule() {
             expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
         },
         QuorumCase {
+            case: "a lighter approval the quorum does not need",
+            threshold: 3,
+            approvals: vec![light, heavy],
+            expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
+        },
+        QuorumCase {
+            case: "a middle approval the quorum does not need",
+            threshold: 4,
+            approvals: vec![(first, 2), (second, 1), (third, 2)],
+            expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
+        },
+        QuorumCase {
             case: "weight below the threshold",
             threshold: 4,
             approvals: vec![heavy],

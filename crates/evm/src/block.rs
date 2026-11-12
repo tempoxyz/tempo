@@ -32,7 +32,7 @@ use tempo_contracts::precompiles::{
     ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
-    t13_zone_factory_state, t15_zone_factory_state,
+    t13_zone_factory_state, t14_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
@@ -407,10 +407,12 @@ impl<'a> TempoBlockExecutor<'a> {
     }
 
     /// Installs the shared Zone runtime set for `fork`, as returned by [`zone_runtime_fork`].
-    /// T15 adds the zone transfer opt-in to the portal.
+    /// T14 pause-gates refund claims, and T15 adds the zone transfer opt-in to the portal.
     fn upgrade_zone_runtimes(&mut self, fork: TempoHardfork) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = if fork.is_t15() {
             t15_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else if fork.is_t14() {
+            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         };
@@ -447,6 +449,60 @@ impl<'a> TempoBlockExecutor<'a> {
         }
         if !state.is_empty() {
             self.inner.commit_pending_state(&state);
+        }
+        Ok(())
+    }
+
+    /// From T15, checks the DKG outcome of a boundary block against the parent state.
+    ///
+    /// Consensus supplies only the ceremony output, and the payload builder fills in the
+    /// outcome's epoch, next players and full-DKG flag from ValidatorConfigV2 in the parent state.
+    /// This check makes those fields part of block validity. It reads the backing database, which
+    /// holds the parent state, keeping these reads out of the block's state and access list.
+    fn check_boundary_outcome(&mut self) -> Result<(), BlockExecutionError> {
+        let spec = self.evm().config_spec_id();
+        if !spec.is_t15() {
+            return Ok(());
+        }
+        let epoch_length = self.evm().block().ext.epoch_length.get();
+        let block_number = self.evm().block().number.saturating_to::<u64>();
+        if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
+            return Ok(());
+        }
+        let mut parent_state: &mut dyn evm2::evm::DynDatabase = self.evm_mut().database_mut();
+        let config = crate::TempoStateAccess::<((), ())>::dkg_ceremony_config(
+            &mut parent_state,
+            spec,
+            block_number,
+        )
+        .map_err(BlockExecutionError::other)?;
+        // Before ValidatorConfigV2 was initialized, the players came from ValidatorConfig V1.
+        let Some(config) = config else {
+            return Ok(());
+        };
+        // Trailing bytes are not rejected yet, matching the committee system call.
+        let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
+            &mut commonware_codec::Copying(self.extra_data.as_ref()),
+        )
+        .map_err(|err| {
+            BlockValidationError::msg(format!(
+                "failed decoding boundary block extra data as DKG outcome: {err}"
+            ))
+        })?;
+        let current_epoch = block_number / epoch_length;
+        let next_epoch = current_epoch + 1;
+        let expected = config.boundary_outcome(next_epoch, proposed.output.clone());
+        if proposed != expected {
+            return Err(BlockValidationError::msg(format!(
+                "boundary block DKG outcome does not match the parent state:                 epoch {} (expected {}), next players {:?} (expected {:?}),                 full DKG {} (expected {})",
+                proposed.epoch,
+                expected.epoch,
+                proposed.next_players(),
+                expected.next_players(),
+                proposed.is_next_full_dkg,
+                expected.is_next_full_dkg,
+            ))
+            .into());
         }
         Ok(())
     }
@@ -752,6 +808,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             }
         }
 
+        self.check_boundary_outcome()?;
+
         if self.evm().config_spec_id().is_t13() {
             if self.prague_active && !self.evm().block().number.is_zero() {
                 let parent_hash = self.inner.context().parent_hash;
@@ -798,7 +856,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // Chains starting at a runtime-upgrade fork supply its runtime code in genesis. Preserve
         // those allocations (including locally compiled contracts on test chains). Chains that
         // activate the fork later follow the normal runtime upgrade path. Only the newest live
-        // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
+        // runtime set is installed, so older runtimes are never reinstalled over newer ones.
         let runtime_fork = zone_runtime_fork(self.evm().config_spec_id());
         let genesis_spec = self
             .chain_spec
@@ -1041,6 +1099,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 fn zone_runtime_fork(spec: TempoHardfork) -> Option<TempoHardfork> {
     if spec.is_t15() {
         Some(TempoHardfork::T15)
+    } else if spec.is_t14() {
+        Some(TempoHardfork::T14)
     } else if spec.is_t13() {
         Some(TempoHardfork::T13)
     } else {
@@ -1079,6 +1139,7 @@ mod tests {
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use commonware_utils::ordered;
     use evm2::{
         evm::{
             AccountInfo,
@@ -1101,8 +1162,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
-            ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME,
+            ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -1466,6 +1527,186 @@ mod tests {
         assert_eq!(
             executor.finish().err().unwrap().to_string(),
             "incentive gas limit exceeded"
+        );
+    }
+
+    type Accounts = HashMap<Address, HashMap<U256, U256>>;
+
+    /// Returns the storage of a ValidatorConfigV2 initialized at height 0 with `validator` as its
+    /// only active validator, and the next network identity rotation at `rotation_epoch`.
+    fn validator_config_v2_accounts(
+        validator: &PrivateKey,
+        fee_recipient: Address,
+        rotation_epoch: Option<u64>,
+    ) -> Accounts {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let owner = Address::repeat_byte(0xAA);
+            let validator_address = Address::repeat_byte(0x11);
+            let (ingress, egress) = ("192.168.1.1:8000", "192.168.1.1");
+            let mut hasher = Keccak256::new();
+            hasher.update(1u64.to_be_bytes());
+            hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+            hasher.update(validator_address.as_slice());
+            hasher.update([ingress.len() as u8]);
+            hasher.update(ingress.as_bytes());
+            hasher.update([egress.len() as u8]);
+            hasher.update(egress.as_bytes());
+            hasher.update(fee_recipient.as_slice());
+            let signature = validator.sign(VALIDATOR_NS_ADD, hasher.finalize().as_slice());
+
+            let mut config = ValidatorConfigV2::new();
+            config.initialize(owner)?;
+            config.add_validator(
+                owner,
+                IValidatorConfigV2::addValidatorCall {
+                    validatorAddress: validator_address,
+                    publicKey: B256::from_slice(&validator.public_key()),
+                    ingress: ingress.to_string(),
+                    egress: egress.to_string(),
+                    feeRecipient: fee_recipient,
+                    signature: signature.encode().to_vec().into(),
+                },
+            )?;
+            if let Some(epoch) = rotation_epoch {
+                config.set_network_identity_rotation_epoch(
+                    owner,
+                    IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch },
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let mut accounts = Accounts::new();
+        for (address, slot, value) in storage.into_storage() {
+            accounts.entry(address).or_default().insert(slot, value);
+        }
+        accounts
+    }
+
+    fn db_with_accounts(accounts: &Accounts) -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        for (address, storage) in accounts {
+            db.insert_account_info(address, AccountInfo::default());
+            for (slot, value) in storage {
+                db.insert_account_storage(address, slot, value);
+            }
+        }
+        db
+    }
+
+    #[test]
+    fn test_t15_checks_boundary_dkg_outcome_against_parent_state() {
+        let chainspec = system_calls_chainspec();
+        let validator = PrivateKey::from_seed(1);
+        let players = ordered::Set::from_iter_dedup([validator.public_key()]);
+        // With an epoch length of 5, block 4 is the boundary before epoch 1.
+        let correct = OnchainDkgOutcome {
+            epoch: 1,
+            next_players: players,
+            is_next_full_dkg: false,
+            ..OnchainDkgOutcome::dealt(1, 3)
+        };
+        let config = |rotation_epoch| {
+            db_with_accounts(&validator_config_v2_accounts(
+                &validator,
+                Address::ZERO,
+                rotation_epoch,
+            ))
+        };
+        let run = |db: InMemoryDB, fork, block_number, extra_data: Bytes| {
+            TestExecutorBuilder::default()
+                .with_block_number(block_number)
+                .with_epoch_length(5)
+                .with_extra_data(extra_data)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(fork)
+                .build(db, &chainspec)
+                .apply_pre_execution_changes()
+                .map_err(|e| e.to_string())
+        };
+        let full_dkg = OnchainDkgOutcome {
+            is_next_full_dkg: true,
+            ..correct.clone()
+        };
+        let wrong_players = OnchainDkgOutcome {
+            next_players: OnchainDkgOutcome::dealt(1, 3).next_players,
+            ..correct.clone()
+        };
+
+        // From T15, the outcome must match the parent state.
+        assert_eq!(
+            run(config(None), TempoHardfork::T15, 4, correct.encode().into()),
+            Ok(())
+        );
+        assert_eq!(
+            run(
+                config(Some(1)),
+                TempoHardfork::T15,
+                4,
+                full_dkg.encode().into()
+            ),
+            Ok(())
+        );
+        for (rotation_epoch, wrong) in [
+            (Some(1), correct.clone()),
+            (None, full_dkg),
+            (
+                None,
+                OnchainDkgOutcome {
+                    epoch: 2,
+                    ..correct.clone()
+                },
+            ),
+            (None, wrong_players.clone()),
+        ] {
+            let err = run(
+                config(rotation_epoch),
+                TempoHardfork::T15,
+                4,
+                wrong.encode().into(),
+            )
+            .unwrap_err();
+            assert!(
+                err.starts_with("boundary block DKG outcome does not match the parent state"),
+                "{err}"
+            );
+        }
+
+        // Before T15, consensus checks the outcome, and execution does not.
+        assert_eq!(
+            run(
+                config(None),
+                TempoHardfork::T14,
+                4,
+                wrong_players.encode().into()
+            ),
+            Ok(())
+        );
+
+        // Trailing bytes are not rejected yet, matching the committee system call.
+        let mut trailing = correct.encode().to_vec();
+        trailing.push(0);
+        assert_eq!(
+            run(config(None), TempoHardfork::T15, 4, trailing.into()),
+            Ok(())
+        );
+
+        // Before ValidatorConfigV2 is initialized, the players came from ValidatorConfig V1.
+        assert_eq!(
+            run(
+                InMemoryDB::default(),
+                TempoHardfork::T15,
+                4,
+                wrong_players.encode().into()
+            ),
+            Ok(())
+        );
+
+        // Blocks other than the boundary carry no outcome.
+        assert_eq!(
+            run(config(None), TempoHardfork::T15, 3, Bytes::new()),
+            Ok(())
         );
     }
 
@@ -2930,9 +3171,10 @@ mod tests {
     }
 
     #[test]
-    fn zone_runtime_upgrade_activates_at_t13() {
-        for (activation, timestamp, expected_runtimes) in [
+    fn zone_runtime_upgrade_activates_at_boundaries() {
+        for (t13_activation, t14_activation, timestamp, expected_runtimes) in [
             (
+                u64::MAX,
                 u64::MAX,
                 10,
                 [
@@ -2943,6 +3185,7 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 9,
                 [
                     ZONE_PORTAL_RUNTIME,
@@ -2952,6 +3195,7 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 10,
                 [
                     T13_ZONE_PORTAL_RUNTIME,
@@ -2961,7 +3205,38 @@ mod tests {
             ),
             (
                 10,
+                u64::MAX,
                 11,
+                [
+                    T13_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                10,
+                10,
+                10,
+                [
+                    T14_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                5,
+                10,
+                10,
+                [
+                    T14_ZONE_PORTAL_RUNTIME,
+                    T13_ZONE_VERIFIER_RUNTIME,
+                    T13_ZONE_MESSENGER_RUNTIME,
+                ],
+            ),
+            (
+                5,
+                10,
+                9,
                 [
                     T13_ZONE_PORTAL_RUNTIME,
                     T13_ZONE_VERIFIER_RUNTIME,
@@ -2973,18 +3248,20 @@ mod tests {
             genesis
                 .config
                 .extra_fields
-                .insert_value("t13Time".into(), activation)
-                .unwrap();
-            for fork in ["t14Time", "t15Time"] {
+                .insert("t15Time".into(), serde_json::Value::Null);
+            for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
                 genesis
                     .config
                     .extra_fields
-                    .insert(fork.into(), serde_json::Value::Null);
+                    .insert_value(key.into(), activation)
+                    .unwrap();
             }
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
-                .with_spec(if timestamp >= activation {
+                .with_spec(if timestamp >= t14_activation {
+                    TempoHardfork::T14
+                } else if timestamp >= t13_activation {
                     TempoHardfork::T13
                 } else {
                     TempoHardfork::T12
@@ -3018,6 +3295,11 @@ mod tests {
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ];
+        let t14 = [
+            T14_ZONE_PORTAL_RUNTIME,
+            T13_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME,
+        ];
         let t15 = [
             T15_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
@@ -3033,8 +3315,9 @@ mod tests {
         // What `--t13-time 200` without `--hardfork` generates.
         let t15_before_t13 = [200u64, 0, 0];
         for (schedule, timestamp, spec, expected_runtimes) in [
-            (in_order, 14, TempoHardfork::T13, t13.clone()),
-            (in_order, 19, TempoHardfork::T14, t13),
+            (in_order, 14, TempoHardfork::T13, t13),
+            (in_order, 15, TempoHardfork::T14, t14.clone()),
+            (in_order, 19, TempoHardfork::T14, t14),
             (in_order, 20, TempoHardfork::T15, t15.clone()),
             (in_order, 21, TempoHardfork::T15, t15),
             // The spec is T15 from genesis, whose allocations supply the T15 runtimes, so the
@@ -3074,6 +3357,45 @@ mod tests {
                 assert_eq!(installed.original_bytes(), expected, "{timestamp}");
             }
         }
+    }
+
+    #[test]
+    fn zone_runtime_upgrade_is_idempotent_after_t14() {
+        let mut genesis = DEV.genesis().clone();
+        for key in ["t13Time", "t14Time"] {
+            genesis
+                .config
+                .extra_fields
+                .insert_value(key.into(), 10)
+                .unwrap();
+        }
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        let mut block = *executor.evm().block();
+        block.timestamp = U256::from(11);
+        executor.evm_mut().set_block(block);
+        executor.apply_pre_execution_changes().unwrap();
+
+        let hook_calls = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
+        executor.apply_pre_execution_changes().unwrap();
+        assert!(
+            hook_calls.lock().unwrap().iter().all(|state| {
+                [
+                    ZONE_PORTAL_IMPL_ADDRESS,
+                    ZONE_VERIFIER_ADDRESS,
+                    ZONE_MESSENGER_ADDRESS,
+                ]
+                .iter()
+                .all(|address| state.account(address).is_none())
+            }),
+            "installed T14 runtimes must not be rewritten on later blocks"
+        );
     }
 
     #[test]

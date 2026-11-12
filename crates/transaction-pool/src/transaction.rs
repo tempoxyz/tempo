@@ -36,7 +36,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, SignatureType, calc_gas_balance_spending,
+    },
 };
 use thiserror::Error;
 
@@ -114,7 +116,7 @@ impl TempoPooledTransaction {
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
-        let in_memory_size = transaction.size();
+        let in_memory_size = transaction.size() + cached_tx_env_size(&transaction);
         Self {
             inner: EthPooledTransaction {
                 transaction,
@@ -544,14 +546,44 @@ impl TempoPooledTransaction {
         );
     }
 
+    /// The `key_id` of this transaction's inline grant of a configurable-account delegate, or
+    /// `None` without such a grant.
+    ///
+    /// The grant is valid only while that account's code matches its configuration commitment.
+    /// Registration installs the account marker in the same write and the commitment never
+    /// returns to zero, so a change to its code alone requires revalidation.
+    pub(crate) fn configurable_grant_target(&self) -> Option<Address> {
+        let authorization = self.inner().as_aa()?.tx().key_authorization.as_ref()?;
+        (authorization.key_type == SignatureType::ConfigurableAccount)
+            .then_some(authorization.key_id)
+    }
+
     /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
-    /// an access key signs for it), the key authorization signer, a separate fee payer or the
-    /// access key.
+    /// an access key signs for it), the key authorization signer, a separate fee payer, the access
+    /// key, or the key ID a primitive inline key authorization grants (TIP-1111: a migrated key ID
+    /// only takes ConfigurableAccount grants, so its first commitment invalidates the grant).
     pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let [sender, authorities @ ..] = self.authorities();
+        let signed_by_access_key = self
+            .inner()
+            .as_aa()
+            .is_some_and(|tx| tx.signature().is_keychain());
+        sender
+            .filter(|_| !signed_by_access_key)
+            .into_iter()
+            .chain(authorities.into_iter().flatten())
+            .chain(self.primitive_granted_key())
+            .any(|authority| accounts.contains(&authority))
+    }
+
+    /// The accounts whose state changes can invalidate this transaction and that signed it or
+    /// chose to back it: the sender, the key authorization signer, a separate fee payer and the
+    /// access key, in that order. The same account can appear in more than one role.
+    pub(crate) fn authorities(&self) -> [Option<Address>; 4] {
+        let sender = Some(*self.sender_ref());
         let Some(tx) = self.inner().as_aa() else {
-            return accounts.contains(self.sender_ref());
+            return [sender, None, None, None];
         };
-        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
         // Recovery fails only for a transaction that validation already rejects.
         let grant_signer = tx
             .tx()
@@ -564,9 +596,20 @@ impl TempoPooledTransaction {
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
         [sender, grant_signer, fee_payer, access_key]
-            .into_iter()
-            .flatten()
-            .any(|authority| accounts.contains(&authority))
+    }
+
+    /// The key ID a primitive inline key authorization grants, or `None` without one.
+    ///
+    /// Its state can invalidate the grant (TIP-1111), but only the grantor signs the grant, so
+    /// it is not one of [`Self::authorities`] and doesn't count toward per-authority limits.
+    pub(crate) fn primitive_granted_key(&self) -> Option<Address> {
+        self.inner()
+            .as_aa()?
+            .tx()
+            .key_authorization
+            .as_ref()
+            .filter(|authorization| authorization.key_type != SignatureType::ConfigurableAccount)
+            .map(|authorization| authorization.key_id)
     }
 }
 
@@ -1219,11 +1262,29 @@ impl KeyAuthorizationTargetSubject {
     }
 }
 
+/// Returns an estimate of the memory held by the [`TempoTxEnv`] cached for `transaction`.
+///
+/// The env is a second copy of the transaction that shares only its calldata [`Bytes`] (AA call
+/// inputs) with the envelope, so it is counted as the envelope minus that calldata. This is
+/// derived from the envelope at construction because the env is filled lazily and the pools
+/// subtract the same size they added on insert.
+fn cached_tx_env_size(transaction: &TempoTxEnvelope) -> usize {
+    let shared_calldata = match transaction {
+        TempoTxEnvelope::AA(tx) => tx.tx().calls.iter().map(|call| call.input.len()).sum(),
+        TempoTxEnvelope::Legacy(_)
+        | TempoTxEnvelope::Eip2930(_)
+        | TempoTxEnvelope::Eip1559(_)
+        | TempoTxEnvelope::Eip7702(_) => transaction.input().len(),
+    };
+    transaction.size().saturating_sub(shared_calldata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
+    use alloy_eips::eip2930::AccessListItem;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -1233,10 +1294,79 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        KeyAuthorization, KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature, TempoTransaction, tempo_transaction::Call,
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
+
+    fn large_access_list() -> AccessList {
+        (0..64u8)
+            .map(|i| AccessListItem {
+                address: Address::with_last_byte(i),
+                storage_keys: (0..32u8).map(B256::with_last_byte).collect(),
+            })
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    fn configurable_account_signature(
+        owners: u8,
+        approvals: usize,
+    ) -> ConfigurableAccountSignature {
+        let config = ConfigurableAccountConfig {
+            salt: B256::with_last_byte(1),
+            version: 0,
+            threshold: 1,
+            owners: (1..=owners)
+                .map(|owner| ConfigurableAccountOwner {
+                    owner: Address::with_last_byte(owner),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        ConfigurableAccountSignature::try_new(
+            Address::with_last_byte(0xaa),
+            config,
+            vec![PrimitiveSignature::Secp256k1(Signature::test_signature()); approvals],
+        )
+        .unwrap()
+    }
+
+    /// Re-signs the body of a pooled AA transaction with `signature`.
+    fn resign_aa(
+        pooled: &TempoPooledTransaction,
+        signature: TempoSignature,
+    ) -> TempoPooledTransaction {
+        let body = pooled.inner().inner().as_aa().unwrap().tx().clone();
+        let envelope = TempoTxEnvelope::from(body.into_signed(signature));
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, pooled.sender()))
+    }
+
+    /// Heap counted on top of the envelope size.
+    fn cached_env_overhead(pooled: &TempoPooledTransaction) -> usize {
+        pooled.size() - pooled.inner().inner().size()
+    }
+
+    fn eip1559_pooled(access_list: AccessList, input: Bytes) -> TempoPooledTransaction {
+        let tx = TxEip1559 {
+            to: TxKind::Call(Address::with_last_byte(2)),
+            gas_limit: 21000,
+            access_list,
+            input,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        TempoPooledTransaction::new(Recovered::new_unchecked(
+            envelope,
+            Address::with_last_byte(1),
+        ))
+    }
 
     fn signed_aa_envelope(tx: TempoTransaction) -> (TempoTxEnvelope, Address) {
         let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
@@ -1277,6 +1407,95 @@ mod tests {
         assert!(fresh.cached_tx_env().is_some());
         assert_eq!(fresh.key_expiry(), None);
         assert_eq!(fresh.resolved_fee_token(), None);
+    }
+
+    #[test]
+    fn size_counts_cached_tx_env_access_list() {
+        let eip1559 = eip1559_pooled(large_access_list(), Bytes::new());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), 2 * envelope_size);
+
+        let aa = TxBuilder::aa(Address::random())
+            .access_list(large_access_list())
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert_eq!(aa.size(), 2 * envelope_size);
+    }
+
+    #[test]
+    fn size_counts_configurable_account_signature_heap() {
+        let minimal = TxBuilder::aa(Address::random()).build();
+        let overhead =
+            |signature: TempoSignature| cached_env_overhead(&resign_aa(&minimal, signature));
+        let small = configurable_account_signature(1, 1);
+        let large = configurable_account_signature(5, 3);
+        // Extra owners and approvals are owned vectors that the env copies.
+        let extra_heap =
+            4 * size_of::<ConfigurableAccountOwner>() + 2 * size_of::<PrimitiveSignature>();
+
+        let configurable = |signature: &ConfigurableAccountSignature| {
+            overhead(TempoSignature::ConfigurableAccount(signature.clone()))
+        };
+        assert!(configurable(&large) >= configurable(&small) + extra_heap);
+
+        let keychain = |signature: &ConfigurableAccountSignature| {
+            overhead(TempoSignature::Keychain(KeychainSignature::new(
+                Address::random(),
+                signature.clone(),
+            )))
+        };
+        assert!(keychain(&large) >= keychain(&small) + extra_heap);
+    }
+
+    #[test]
+    fn size_is_stable_across_tx_env_caching() {
+        let transactions = [
+            eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])),
+            TxBuilder::aa(Address::random())
+                .access_list(large_access_list())
+                .build(),
+        ];
+        for transaction in transactions {
+            let size = transaction.size();
+            assert!(transaction.cached_tx_env().is_none());
+            let _ = transaction.tx_env();
+            assert!(transaction.cached_tx_env().is_some());
+            assert_eq!(transaction.size(), size);
+            assert_eq!(transaction.with_discarded_caches().size(), size);
+        }
+    }
+
+    #[test]
+    fn size_does_not_double_count_shared_calldata() {
+        let input = Bytes::from(vec![7u8; 100_000]);
+        let eip1559 = eip1559_pooled(AccessList::default(), input.clone());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), 2 * envelope_size - input.len());
+        // The env holds the same buffer as the envelope, which is why it is not counted.
+        let env_input = &eip1559.tx_env().as_eip1559().unwrap().input;
+        assert_eq!(env_input.as_ptr(), eip1559.input().as_ptr());
+
+        let aa = TxBuilder::aa(Address::random())
+            .calls(vec![
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input: input.clone(),
+                },
+                Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input,
+                },
+            ])
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert_eq!(aa.size(), 2 * envelope_size - 2 * 100_000);
+        let calls = &aa.tx_env().as_aa().unwrap().inner().tx().calls;
+        let envelope_calls = &aa.inner().inner().as_aa().unwrap().tx().calls;
+        for (call, envelope_call) in calls.iter().zip(envelope_calls) {
+            assert_eq!(call.input.as_ptr(), envelope_call.input.as_ptr());
+        }
     }
 
     #[test]
@@ -1871,5 +2090,33 @@ mod tests {
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
         }
+    }
+
+    #[test]
+    fn primitive_granted_key_is_an_authority() {
+        let sender = Address::random();
+        let signer = PrivateKeySigner::random();
+        let key_id = Address::random();
+        let grant = |key_type| {
+            let authorization =
+                KeyAuthorization::unrestricted(42431, key_type, key_id).with_account(sender);
+            let signature = signer
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            TxBuilder::aa(sender)
+                .key_authorization(
+                    authorization.into_signed(PrimitiveSignature::Secp256k1(signature)),
+                )
+                .build()
+        };
+
+        let primitive = grant(SignatureType::Secp256k1);
+        assert!(primitive.has_authority_in(&AddressSet::from_iter([key_id])));
+        assert!(!primitive.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        // Only the grantor signs the grant, so its key ID isn't charged against pool limits.
+        assert!(!primitive.authorities().contains(&Some(key_id)));
+        // A configurable grant's validity doesn't depend on its key ID's commitment value.
+        let configurable = grant(SignatureType::ConfigurableAccount);
+        assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));
     }
 }

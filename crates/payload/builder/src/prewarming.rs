@@ -232,11 +232,18 @@ impl BestTransactionsPrewarming {
                     "Generated replay for transaction"
                 );
 
-                Some(Box::new(StorageActionReplay {
-                    result: result.result,
-                    actions,
-                    expiring_nonce,
-                }))
+                let spec = evm.config_spec_id();
+                match StorageActionReplay::new(result, actions, expiring_nonce, spec) {
+                    Ok(replay) => Some(Box::new(replay)),
+                    Err(err) => {
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            "Failed to generate replay for transaction"
+                        );
+                        None
+                    }
+                }
             },
         );
 

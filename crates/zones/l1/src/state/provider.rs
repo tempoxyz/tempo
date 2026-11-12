@@ -330,6 +330,25 @@ impl L1StateProvider {
         Ok(value)
     }
 
+    /// Read an account's TIP-1108 commitment asynchronously at a specific L1 block, cache first.
+    ///
+    /// Same semantics as [`L1StorageReader::read_l1_commitment`], but a cache miss makes one fetch
+    /// through the provider instead of retrying until it succeeds, so callers can bound the wait.
+    pub async fn read_l1_commitment_async(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> std::result::Result<B256, L1StateError> {
+        if let Some(commitment) = self.cache.lock().get_commitment(account, block_number) {
+            return Ok(commitment);
+        }
+        let extension = self
+            .fetch_account_extension(account, block_number)
+            .await
+            .map_err(|error| account_unavailable(account, block_number, format!("{error:#}")))?;
+        self.cache_commitment(account, block_number, &extension)
+    }
+
     /// Expose the shared cache handle for external use (e.g. the engine).
     pub fn cache(&self) -> &L1StateCache {
         &self.cache
@@ -345,6 +364,42 @@ impl L1StateProvider {
         let result = B256::from(value);
         debug!(%address, %slot, block_number, %result, "fetched L1 storage slot from RPC");
         Ok(result)
+    }
+
+    /// Fetch an account's raw extension, which holds its TIP-1108 commitment, from L1 at a
+    /// specific block via `eth_getAccountInfo`.
+    async fn fetch_account_extension(&self, account: Address, block_number: u64) -> Result<Bytes> {
+        let info = self
+            .provider
+            .get_account_info(account)
+            .number(block_number)
+            .await
+            .wrap_err_with(|| {
+                format!("eth_getAccountInfo failed for account={account} block={block_number}")
+            })?;
+        Ok(Bytes::copy_from_slice(&info.extension))
+    }
+
+    /// Decodes the commitment in `extension` and caches it. An invalid commitment is not cached.
+    fn cache_commitment(
+        &self,
+        account: Address,
+        block_number: u64,
+        extension: &[u8],
+    ) -> std::result::Result<B256, L1StateError> {
+        // A nonempty extension only exists once Tempo has activated T14.
+        let commitment =
+            decode_config_commitment(extension, TempoHardfork::T14).map_err(|error| {
+                account_unavailable(
+                    account,
+                    block_number,
+                    format!("invalid account commitment: {error}"),
+                )
+            })?;
+        self.cache
+            .lock()
+            .set_commitment(account, block_number, commitment);
+        Ok(commitment)
     }
 }
 
@@ -375,36 +430,21 @@ impl L1StorageReader for L1StateProvider {
         if let Some(commitment) = self.cache.lock().get_commitment(account, block_number) {
             return Ok(commitment);
         }
-        let unavailable = |reason: String| L1StateError::AccountUnavailable {
-            account,
-            block_number,
-            reason,
-        };
         let extension = self
             .fetch_blocking(
                 format_args!("account extension account={account} block={block_number}"),
-                move |this| async move {
-                    let info = this
-                        .provider
-                        .get_account_info(account)
-                        .number(block_number)
-                        .await
-                        .wrap_err_with(|| {
-                            format!(
-                                "eth_getAccountInfo failed for account={account} block={block_number}"
-                            )
-                        })?;
-                    Ok(Bytes::copy_from_slice(&info.extension))
-                },
+                move |this| async move { this.fetch_account_extension(account, block_number).await },
             )
-            .map_err(|error| unavailable(format!("{error:#}")))?;
-        // A nonempty extension only exists once Tempo has activated T14.
-        let commitment = decode_config_commitment(&extension, TempoHardfork::T14)
-            .map_err(|error| unavailable(format!("invalid account commitment: {error}")))?;
-        self.cache
-            .lock()
-            .set_commitment(account, block_number, commitment);
-        Ok(commitment)
+            .map_err(|error| account_unavailable(account, block_number, format!("{error:#}")))?;
+        self.cache_commitment(account, block_number, &extension)
+    }
+}
+
+const fn account_unavailable(account: Address, block_number: u64, reason: String) -> L1StateError {
+    L1StateError::AccountUnavailable {
+        account,
+        block_number,
+        reason,
     }
 }
 
@@ -619,6 +659,34 @@ mod tests {
             }
         ));
         assert!(missing.is_unavailable());
+    }
+
+    #[tokio::test]
+    async fn async_commitment_read_fetches_once_then_serves_the_cache() {
+        let asserter = alloy_provider::mock::Asserter::new();
+        let commitment = B256::repeat_byte(2);
+        asserter.push_success(&alloy_rpc_types_eth::AccountInfo {
+            extension: tempo_primitives::account::encode_config_commitment(commitment).into(),
+            ..Default::default()
+        });
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter)
+            .erased();
+        let reader = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            L1StateCache::default(),
+            provider,
+            tokio::runtime::Handle::current(),
+        );
+        let account = Address::repeat_byte(1);
+
+        // The mock answers one request, so the second read must come from the cache.
+        for _ in 0..2 {
+            assert_eq!(
+                reader.read_l1_commitment_async(account, 7).await,
+                Ok(commitment)
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
