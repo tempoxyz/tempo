@@ -673,6 +673,11 @@ where
                 executor.execute_transaction_without_commit(tx.transaction.executable())
             };
             let transaction_execution_elapsed = transaction_execution_start.elapsed();
+            // A replayed transaction was executed by a prewarm worker; replaying it here is
+            // much cheaper than that execution.
+            let transaction_cost = pool_tx
+                .replay_execution_elapsed
+                .unwrap_or(transaction_execution_elapsed);
             let execution_result = executed.and_then(|result| {
                 // The first pool transaction is always committed, so a single transaction that
                 // exhausts the budget on its own cannot keep every block empty.
@@ -769,14 +774,13 @@ where
             }
 
             if exceeded_build_budget {
-                discarded_transaction_elapsed = transaction_execution_start.elapsed();
-                let remove_from_pool =
-                    transaction_execution_elapsed >= SLOW_TRANSACTION_EXECUTION_THRESHOLD;
+                discarded_transaction_elapsed = transaction_execution_elapsed;
+                let remove_from_pool = transaction_cost >= SLOW_TRANSACTION_EXECUTION_THRESHOLD;
                 debug!(
                     target: "payload_builder",
                     tx_hash = ?tx.hash(),
                     elapsed = ?start.elapsed(),
-                    execution_elapsed = ?transaction_execution_elapsed,
+                    execution_elapsed = ?transaction_cost,
                     gas_used = cumulative_gas_used,
                     transactions = pool_transactions_included,
                     remove_from_pool,

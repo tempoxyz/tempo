@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
+    time::{Duration, Instant},
 };
 
 use alloy_consensus::transaction::Recovered;
@@ -191,6 +192,7 @@ impl BestTransactionsPrewarming {
                 tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
                 let tx_env = Recovered::new_unchecked(tx_env, tx.transaction.sender());
 
+                let execution_start = Instant::now();
                 let result = match evm.transact(&tx_env).map(|executed| executed.detach()) {
                     Ok(executed) => executed,
                     Err(err) => {
@@ -205,6 +207,7 @@ impl BestTransactionsPrewarming {
                         return None;
                     }
                 };
+                let execution_elapsed = execution_start.elapsed();
 
                 trace!(target: "payload_builder", "Prewarmed transaction");
 
@@ -234,7 +237,7 @@ impl BestTransactionsPrewarming {
 
                 let spec = evm.config_spec_id();
                 match StorageActionReplay::new(result, actions, expiring_nonce, spec) {
-                    Ok(replay) => Some(Box::new(replay)),
+                    Ok(replay) => Some((Box::new(replay), execution_elapsed)),
                     Err(err) => {
                         trace!(
                             target: "payload_builder",
@@ -247,7 +250,12 @@ impl BestTransactionsPrewarming {
             },
         );
 
-        PrewarmedTransaction { tx, replay }
+        let (replay, replay_execution_elapsed) = replay.unzip();
+        PrewarmedTransaction {
+            tx,
+            replay,
+            replay_execution_elapsed,
+        }
     }
 
     /// Returns the next already-received transaction that is not on an invalidated lane.
@@ -340,11 +348,20 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
+    /// How long the prewarm worker took to execute the transaction that `replay` records.
+    ///
+    /// Replaying the recorded actions takes far less, so this is the transaction's real
+    /// execution time. `None` when `replay` is.
+    pub(crate) replay_execution_elapsed: Option<Duration>,
 }
 
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self { tx, replay: None }
+        Self {
+            tx,
+            replay: None,
+            replay_execution_elapsed: None,
+        }
     }
 }
 
