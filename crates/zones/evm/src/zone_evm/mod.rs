@@ -462,9 +462,7 @@ pub(crate) mod tests {
             alloy_primitives::Bytes::from_static(&[0xef]),
         ));
 
-        // Gas of a discarded attempt, its retry and a fresh replay. Configurable accounts select
-        // the anchor from T14. Fee collection reads the TIP-403 binding (unmetered) at every fork,
-        // so T13 keeps its cache-dependent gas: fixing it would change historical blocks.
+        // Gas of [discarded, retry, fresh replay]. T13 fee txs keep their cache-dependent gas.
         for (hardfork, is_fee, expected) in [
             (TempoHardfork::T13, false, [27_394; 3]),
             (TempoHardfork::T13, true, [25_294, 27_394, 25_294]),
@@ -498,8 +496,7 @@ pub(crate) mod tests {
                 }
                 BlockExecutorFactory::evm_with_env(&config(l1.clone()), db, env)
             };
-            let mut builder = make_evm();
-            let mut replay = make_evm();
+            let (mut builder, mut replay) = (make_evm(), make_evm());
 
             // Discarding keeps the host cache warm but resets the selected L1 anchor.
             let results = [
@@ -507,15 +504,8 @@ pub(crate) mod tests {
                 builder.transact(&tx).unwrap().discard(),
                 replay.transact(&tx).unwrap().discard(),
             ];
-            assert!(
-                results.iter().all(|result| result.status),
-                "{hardfork:?}: {results:?}"
-            );
-            assert_eq!(
-                results.map(|result| result.tx_gas_used()),
-                expected,
-                "{hardfork:?} is_fee={is_fee}"
-            );
+            assert!(results.iter().all(|result| result.status));
+            assert_eq!(results.map(|result| result.tx_gas_used()), expected);
         }
     }
 
