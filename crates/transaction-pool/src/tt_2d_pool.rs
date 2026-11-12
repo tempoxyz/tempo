@@ -282,24 +282,28 @@ impl AA2dPool {
             ));
         }
 
-        // A sender at the per-authority limit still adds the on-chain nonce of a lane that holds
-        // transactions, which makes them executable, in place of the lane's highest nonce. Any
-        // other authority at the limit rejects it below.
-        let sender = transaction.sender();
+        // At the per-authority limit, the on-chain nonce of a lane that holds transactions is still
+        // added, which makes them executable, in place of the lane's highest nonce. That one must
+        // free a slot for each authority at the limit, or the transaction is rejected below.
         let evicted = if tx_id.nonce == on_chain_nonce
             && lane_count > 0
             && !self.by_id.contains_key(&tx_id)
-            && transaction
-                .transaction
-                .authorities()
-                .into_iter()
-                .flatten()
-                .all(|authority| {
-                    let at_capacity =
-                        self.txs_by_authority.get(&authority) >= self.config.max_txs_per_authority;
-                    at_capacity == (authority == sender)
-                }) {
+        {
             let highest = self.by_id.range(tx_id.seq_id.range()).next_back();
+            let highest = highest.filter(|(_, highest)| {
+                let freed = highest.inner.transaction.transaction.authorities();
+                let mut at_capacity = transaction
+                    .transaction
+                    .authorities()
+                    .into_iter()
+                    .flatten()
+                    .filter(|authority| {
+                        self.txs_by_authority.get(authority) >= self.config.max_txs_per_authority
+                    })
+                    .peekable();
+                at_capacity.peek().is_some()
+                    && at_capacity.all(|authority| freed.contains(&Some(authority)))
+            });
             let highest = highest.map(|(id, _)| *id);
             highest.and_then(|id| self.remove_transaction_by_id(&id))
         } else {
@@ -2069,8 +2073,9 @@ pub struct AA2dPoolConfig {
     /// signer, separate fee payer or access key.
     ///
     /// Bounds how many pooled transactions one account can invalidate with a single state
-    /// change (DoS protection). A sender at the limit still adds the on-chain nonce of a lane
-    /// that holds transactions, in place of the lane's highest nonce, to allow gap filling.
+    /// change (DoS protection). At the limit, the on-chain nonce of a lane that holds
+    /// transactions is still added in place of the lane's highest nonce, if that frees a slot
+    /// for each authority at the limit, to allow gap filling.
     pub max_txs_per_authority: usize,
     /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
@@ -6115,22 +6120,32 @@ mod tests {
     fn per_authority_limit_evicts_highest_nonce_for_on_chain_nonce() {
         let mut pool = authority_limit_pool(3);
         let sender = Address::random();
+        let access_key = PrivateKeySigner::random();
         let fee_payer = PrivateKeySigner::random();
         let build = |nonce_key, nonce| {
             TxBuilder::aa(sender)
                 .nonce_key(nonce_key)
                 .nonce(nonce)
-                .build()
+                .build_keychain(sender, &access_key)
         };
-        let mut hashes = Vec::new();
-        for nonce in 1..=3 {
-            let tx = sponsor(build(U256::ONE, nonce), &fee_payer);
-            hashes.push(*tx.hash());
+        // The sender and its access key are at the limit with one lane, whose highest nonce the
+        // fee payer does not sponsor. Another sender's transaction takes the fee payer's last slot.
+        let lane = [
+            sponsor(build(U256::ONE, 1), &fee_payer),
+            sponsor(build(U256::ONE, 2), &fee_payer),
+            build(U256::ONE, 3),
+        ];
+        let hashes = lane.each_ref().map(|tx| *tx.hash());
+        for tx in lane {
             add_expiring(&mut pool, tx).unwrap();
         }
+        let other = TxBuilder::aa(Address::random())
+            .nonce_key(U256::MAX)
+            .build();
+        add_expiring(&mut pool, sponsor(other, &fee_payer)).unwrap();
 
         // A future nonce and the on-chain nonce of an empty lane are rejected at the limit, and
-        // so is the on-chain nonce when another authority is at the limit too.
+        // so is the on-chain nonce when the lane's highest nonce leaves an authority at the limit.
         for tx in [
             build(U256::ONE, 4),
             build(U256::from(2), 0),
@@ -6143,7 +6158,7 @@ mod tests {
                 err.kind
             );
         }
-        assert_eq!(pool.pending_and_queued_txn_count(), (0, 3));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 3));
 
         let added = add_expiring(&mut pool, build(U256::ONE, 0)).unwrap();
         let added = added.as_pending().unwrap();
@@ -6152,9 +6167,10 @@ mod tests {
         };
         assert_eq!(hashes_of(&added.promoted), hashes[..2]);
         assert_eq!(hashes_of(&added.discarded), hashes[2..]);
-        assert_eq!(pool.pending_and_queued_txn_count(), (3, 0));
-        assert_eq!(pool.txs_by_authority.get(&sender), 3);
-        assert_eq!(pool.txs_by_authority.get(&fee_payer.address()), 2);
+        assert_eq!(pool.pending_and_queued_txn_count(), (4, 0));
+        for authority in [sender, access_key.address(), fee_payer.address()] {
+            assert_eq!(pool.txs_by_authority.get(&authority), 3);
+        }
         pool.assert_invariants();
     }
 
