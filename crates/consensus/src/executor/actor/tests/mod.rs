@@ -8,7 +8,10 @@ use commonware_runtime::{Runner as _, deterministic};
 use commonware_utils::Acknowledgement as _;
 use futures::{StreamExt as _, executor::block_on};
 
-use super::{ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, Verification, WalkOwner};
+use super::{
+    ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, Verification, VerificationKey,
+    WalkOwner,
+};
 use crate::consensus::Digest;
 
 mod harness;
@@ -33,7 +36,10 @@ fn execution_task_finishes_with_an_outcome() {
     let mut task = ExecutionTask::new(
         ExecutionTaskType::Verify,
         futures::future::ready(ExecutionTaskOutcome::Delivered {
-            owner: WalkOwner::Verification((round(1), make_block(1, 1, GENESIS).digest())),
+            owner: WalkOwner::Verification(VerificationKey {
+                round: round(1),
+                digest: make_block(1, 1, GENESIS).digest(),
+            }),
             digest: make_block(1, 1, GENESIS).digest(),
             status: Err(eyre::eyre!("delivery failed")),
         }),
@@ -201,7 +207,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
         actor
             .queued_verifications
             .keys()
-            .map(|(round, _)| round.view().get())
+            .map(|key| key.round.view().get())
             .collect()
     }
 
@@ -274,7 +280,10 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
             response,
         ));
         actor.handle_parent_lookup(
-            super::WalkOwner::Verification((round(2), candidate.digest())),
+            super::WalkOwner::Verification(VerificationKey {
+                round: round(2),
+                digest: candidate.digest(),
+            }),
             None,
         );
 
@@ -289,19 +298,30 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
             response,
         ));
         actor.handle_parent_lookup(
-            super::WalkOwner::Verification((round(2), candidate.digest())),
+            super::WalkOwner::Verification(VerificationKey {
+                round: round(2),
+                digest: candidate.digest(),
+            }),
             None,
         );
         assert!(old_verdict.await.is_err());
         assert!(actor.parent_fetches.next_completed().await.is_err());
-        let walk = &actor.queued_verifications[&(round(2), candidate.digest())].walk;
+        let walk = &actor.queued_verifications[&VerificationKey {
+            round: round(2),
+            digest: candidate.digest(),
+        }]
+            .walk;
         assert_eq!(walk.cursor.digest(), candidate.digest());
         assert!(matches!(walk.step, super::WalkStep::FetchParent { .. }));
 
         assert!(marshal.fulfill_subscription(parent.digest(), parent.clone()));
         let (owner, block) = actor.parent_fetches.next_completed().await.unwrap();
         actor.handle_parent_fetched(owner, block);
-        let walk = &actor.queued_verifications[&(round(2), candidate.digest())].walk;
+        let walk = &actor.queued_verifications[&VerificationKey {
+            round: round(2),
+            digest: candidate.digest(),
+        }]
+            .walk;
         assert_eq!(walk.cursor.digest(), parent.digest());
         assert!(matches!(walk.step, super::WalkStep::Probe));
     });

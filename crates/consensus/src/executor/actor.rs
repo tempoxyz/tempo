@@ -664,7 +664,7 @@ where
     /// Interprets an engine answer for the active verification. Cursors
     /// overtaken by finality reprobe the target; historical targets are
     /// dropped by [`Self::prune_finalized`] before another delivery.
-    #[instrument(skip_all, fields(round = %key.0, %digest), err(level = Level::WARN))]
+    #[instrument(skip_all, fields(round = %key.round, %digest), err(level = Level::WARN))]
     fn handle_verification_delivered(
         &mut self,
         key: VerificationKey,
@@ -1339,7 +1339,7 @@ where
     fn queue_verification(&mut self, verification: Verification) {
         let key = verification.key();
         if self.remove_verification(key).is_some() {
-            let (round, digest) = key;
+            let VerificationKey { round, digest } = key;
             debug!(%round, %digest, "verification replaced a pending one for the same candidate");
         }
         self.queued_verifications.insert(key, verification);
@@ -1441,13 +1441,14 @@ where
         }
 
         // Discard canceled requests before selecting a walk to probe.
-        self.queued_verifications.retain(|(round, _), queued| {
-            let is_cancelled = queued.is_canceled();
-            if is_cancelled {
-                debug!(%round, "dropping verification whose requester went away");
-            }
-            !is_cancelled
-        });
+        self.queued_verifications
+            .retain(|VerificationKey { round, .. }, queued| {
+                let is_cancelled = queued.is_canceled();
+                if is_cancelled {
+                    debug!(%round, "dropping verification whose requester went away");
+                }
+                !is_cancelled
+            });
         if let Some(active) = &self.active_verification
             && !matches!(
                 active.walk.step,
@@ -1466,7 +1467,7 @@ where
             self.queued_verifications.insert(active.key(), active);
         }
         if self.active_verification.is_none()
-            && let Some(key @ (round, _)) = self
+            && let Some(key @ VerificationKey { round, .. }) = self
                 .queued_verifications
                 .iter()
                 .rev()
@@ -1567,7 +1568,7 @@ where
     }
 
     /// A requester's cancellation or the active walk's local lookup woke the actor.
-    #[instrument(skip_all, fields(round = %key.0, digest = %key.1))]
+    #[instrument(skip_all, fields(round = %key.round, digest = %key.digest))]
     fn handle_verification_event(&mut self, key: VerificationKey, event: VerificationEvent) {
         match event {
             VerificationEvent::Canceled => {
@@ -1623,7 +1624,7 @@ where
             return;
         }
         match owner {
-            WalkOwner::Verification(key @ (round, _)) => {
+            WalkOwner::Verification(key @ VerificationKey { round, .. }) => {
                 warn!(%round, "marshal gave up on the verification's ancestor; failing the request");
                 self.remove_verification(key);
             }
@@ -1949,7 +1950,10 @@ impl Verification {
 
     /// Identifies the request: its round and candidate.
     fn key(&self) -> VerificationKey {
-        (self.round, self.walk.target.digest())
+        VerificationKey {
+            round: self.round,
+            digest: self.walk.target.digest(),
+        }
     }
 
     fn is_canceled(&self) -> bool {
@@ -2077,10 +2081,17 @@ impl WalkStep {
     }
 }
 
-/// A verification request's round and candidate digest. Keying by round alone
-/// would let a second candidate for the same round (an equivocating leader)
-/// cancel the first.
-type VerificationKey = (Round, Digest);
+/// Identifies a verification request by its round and candidate. Keying by
+/// round alone would let a second candidate for the same round (an
+/// equivocating leader) cancel the first.
+///
+/// Ordered by round first, so the newest round sorts last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct VerificationKey {
+    round: Round,
+    /// The candidate block's digest.
+    digest: Digest,
+}
 
 /// Which walk a delivery belongs to.
 #[derive(Clone, Copy, Debug)]
@@ -2093,7 +2104,9 @@ enum WalkOwner {
 impl std::fmt::Display for WalkOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Verification((round, digest)) => write!(f, "verification {round} {digest}"),
+            Self::Verification(VerificationKey { round, digest }) => {
+                write!(f, "verification {round} {digest}")
+            }
             Self::Convergence => f.write_str("convergence"),
         }
     }
