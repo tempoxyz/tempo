@@ -76,7 +76,7 @@ jobs:
               --head "$RETH_BUMP_BRANCH" \
               --base main \
               --state open \
-              --json number,headRefOid \
+              --json number,headRefOid,mergeable \
               --jq '.[0] // empty' 2>/dev/null || true)"
             if ! jq -e --arg sha "$EXPECTED_SHA" '.headRefOid == $sha' <<< "$PR_DATA" > /dev/null 2>&1; then
               echo "Waiting for an open PR at ${EXPECTED_SHA}"
@@ -85,9 +85,15 @@ jobs:
             fi
             PR_NUMBER="$(jq -r '.number' <<< "$PR_DATA")"
 
+            # GitHub does not start pull_request workflows for conflicting PRs.
+            if [ "$(jq -r '.mergeable' <<< "$PR_DATA")" = "CONFLICTING" ]; then
+              echo "::warning::PR #${PR_NUMBER} has merge conflicts; leaving reth-bump unchanged"
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
             STATUS="$(gh pr checks "$PR_NUMBER" \
               --repo "$GH_REPO" \
-              --required \
               --json bucket,link,name,state 2>/dev/null || true)"
             if ! jq -e 'type == "array"' <<< "$STATUS" > /dev/null 2>&1; then
               echo "Waiting for required CI checks to start"
