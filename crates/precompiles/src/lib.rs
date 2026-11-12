@@ -368,16 +368,18 @@ mod tests {
         sol_types::SolCall,
     };
     use evm2::{
-        BaseEvmConfigSelector, ExecutionConfig,
+        BaseEvmConfigSelector, ExecutionConfig, Inspector,
         bytecode::Bytecode,
         evm::{
             AccountInfo, InMemoryDB,
             precompile::{NoPrecompiles, PrecompileOutput, PrecompileProvider},
         },
+        interpreter::{Interpreter, MessageResult},
         precompiles::Precompile,
         registry::TxRegistry,
         version::GasId,
     };
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
@@ -595,7 +597,24 @@ mod tests {
         }
     }
 
-    /// Runs `precompile` as a call to the TIP-20 factory, in the frame the dispatcher sets up.
+    /// Checks that each callee runs one deeper than the factory's frame with the factory as its
+    /// caller, and records the nested calls running during it.
+    struct CallRecorder(Rc<RefCell<Vec<u16>>>, Rc<Cell<u16>>);
+
+    impl Inspector<TestTypes> for CallRecorder {
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
+            assert_eq!((message.depth, message.caller), (6, TIP20_FACTORY_ADDRESS));
+            self.0.borrow_mut().push(self.1.get());
+            None
+        }
+    }
+
+    /// Runs `precompile` as a call to the TIP-20 factory at depth 5, in the frame the dispatcher
+    /// sets up.
     fn execute_in_frame(
         evm: &mut Evm<'_, TestTypes>,
         precompiles: &TempoPrecompiles<TestTypes>,
@@ -604,6 +623,7 @@ mod tests {
     ) -> (PrecompileResult, GasTracker) {
         let message = Message::<TestTypes> {
             call_target: TIP20_FACTORY_ADDRESS,
+            depth: 5,
             ..Default::default()
         };
         let mut gas = GasTracker::new(gas_limit);
@@ -620,6 +640,9 @@ mod tests {
         let mut evm = test_evm(spec, true);
         evm.set_precompiles(test_tempo_precompiles(spec));
         let precompiles = test_tempo_precompiles(spec);
+        let calls = Rc::default();
+        let recorder = CallRecorder(Rc::clone(&calls), precompiles.nested_calls.clone());
+        evm.set_inspector(recorder);
         let calldata = ITIP20::balanceOfCall {
             account: Address::ZERO,
         }
@@ -646,31 +669,45 @@ mod tests {
             }
             assert_eq!(precompiles.nested_calls.get(), running);
         }
+        // Only the first callee ran, and counted as running.
+        assert_eq!(calls.take(), [MAX_NESTED_CALLS]);
     }
 
-    /// A callee's fatal error fails the precompile call fatally, and the callee no longer counts
-    /// as running.
+    /// A callee's fatal error fails the precompile call fatally, and a callee that fails fatally
+    /// or panics no longer counts as running.
     #[test]
     fn test_nested_call_propagates_fatal_callee_error() {
         let spec = TempoHardfork::T2;
-        let callee = Address::repeat_byte(0xfa);
+        let (callee, panicking) = (Address::repeat_byte(0xfa), Address::repeat_byte(0xfb));
         let mut fatal = BasePrecompiles::<TestTypes>::base(SpecId::OSAKA);
         fatal.as_map_mut().insert(Precompile::new(
             callee,
             PrecompileId::custom("fatal"),
             |_, _, _| Err("fatal".into()),
         ));
+        fatal.as_map_mut().insert(Precompile::new(
+            panicking,
+            PrecompileId::custom("panic"),
+            |_, _, _| panic!("callee panics"),
+        ));
         let mut evm = test_evm(spec, false);
         evm.set_precompiles(fatal);
 
         let precompiles = test_tempo_precompiles(spec);
-        let result = execute_in_frame(&mut evm, &precompiles, 1_000_000, |mut storage| {
-            storage
-                .call(callee, Bytes::new(), 500_000, false)
-                .map(|_| ())
-        })
-        .0;
-        assert!(matches!(result, Err(PrecompileError::Fatal(_))));
+        let mut call = |callee| {
+            catch_unwind(AssertUnwindSafe(|| {
+                execute_in_frame(&mut evm, &precompiles, 1_000_000, |mut storage| {
+                    storage
+                        .call(callee, Bytes::new(), 500_000, false)
+                        .map(|_| ())
+                })
+                .0
+            }))
+        };
+        assert!(matches!(call(callee), Ok(Err(PrecompileError::Fatal(_)))));
+        assert_eq!(precompiles.nested_calls.get(), 0);
+        let panic = call(panicking).unwrap_err();
+        assert_eq!(panic.downcast_ref(), Some(&"callee panics"));
         assert_eq!(precompiles.nested_calls.get(), 0);
     }
 
