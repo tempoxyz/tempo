@@ -500,7 +500,8 @@ where
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
-        // work would consume that window.
+        // work would consume that window. A transaction whose execution exhausts
+        // the budget is discarded and left in the pool for a later block.
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
@@ -630,6 +631,25 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
+            // Snapshot before `result_closure` borrows the counter mutably.
+            let gas_used_before_tx = cumulative_gas_used;
+            let mut exceeded_build_budget = false;
+            let mut exceeds_build_budget = |result: &TempoTxResult| {
+                let Some(plan) = build_plan.as_ref() else {
+                    return false;
+                };
+                let workload = ValidationLatencyWorkload::new(
+                    gas_used_before_tx + result.block_gas_used(),
+                    pool_transactions_included as usize + 1,
+                );
+                exceeded_build_budget = plan.exhausted(&plan.decision(
+                    start.elapsed(),
+                    normal_transaction_fill_idle_elapsed,
+                    workload,
+                ));
+                exceeded_build_budget
+            };
+
             let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
@@ -645,22 +665,24 @@ where
                 best_txs.on_new_result(result);
             };
 
-            let execution_result = if let Some(replay) = pool_tx.replay.take() {
+            let executed = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
-                executor.execute_transaction_with_actions(
+                executor.execute_transaction_with_actions_without_commit(
                     tx.transaction.executable(),
                     *replay,
-                    result_closure,
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
-                executor
-                    .execute_transaction_without_commit(tx.transaction.executable())
-                    .and_then(|result| {
-                        result_closure(&result);
-                        executor.commit_transaction(result).map(|_| ())
-                    })
+                executor.execute_transaction_without_commit(tx.transaction.executable())
             };
+            let execution_result = executed.and_then(|result| {
+                // Leave the transaction uncommitted and unmarked so it stays in the pool.
+                if exceeds_build_budget(&result) {
+                    return Ok(());
+                }
+                result_closure(&result);
+                executor.commit_transaction(result).map(|_| ())
+            });
 
             if let Err(err) = execution_result {
                 match err {
@@ -731,6 +753,19 @@ where
                     }
                     _ => return Err(PayloadBuilderError::evm(err)),
                 }
+            }
+
+            if exceeded_build_budget {
+                debug!(
+                    target: "payload_builder",
+                    tx_hash = ?tx.hash(),
+                    elapsed = ?start.elapsed(),
+                    gas_used = cumulative_gas_used,
+                    transactions = pool_transactions_included,
+                    "dropping transaction that exhausted the payload build budget, leaving it in the pool"
+                );
+                self.metrics.inc_pool_tx_skipped("build_budget");
+                break BlockBuildStopReason::BuildBudget;
             }
 
             trace!("Transaction executed");
