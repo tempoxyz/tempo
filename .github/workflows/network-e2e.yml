@@ -178,30 +178,38 @@ jobs:
           set -euo pipefail
           [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_TAG" =~ ^ci-[0-9]{1,20}-[0-9]{1,5}$ ]]
           # The Argo replays only update statuses this run owns, so create them first, as the
-          # Tempo Network E2E status is, and mark them errored if the event can't be sent.
+          # Tempo Network E2E status is. Unless the event is sent, the exit trap marks them
+          # errored, so a failure anywhere in this step never leaves them pending.
+          dispatched=false
           corpus_status() {
+            local chain
             for chain in mainnet moderato; do
               gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
                 -f state="$1" -f context="Workflows / $chain-corpus-replay-cmin" \
                 -f description="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT: $2" \
-                -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent
+                -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent \
+                || echo "::warning::Could not set the $chain corpus replay status to $1"
             done
           }
+          cleanup() {
+            rm -f "$RUNNER_TEMP/corpus-replay.key" "$RUNNER_TEMP/corpus-replay.crt"
+            if [[ "$dispatched" != true ]]; then
+              corpus_status error "Replay could not be submitted"
+            fi
+          }
+          trap cleanup EXIT
           corpus_status pending "Submitting replay"
-          trap 'rm -f "$RUNNER_TEMP/corpus-replay.key" "$RUNNER_TEMP/corpus-replay.crt"' EXIT
           umask 077
           printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/corpus-replay.key"
           printf '%s' "$EVENTS_CERT" > "$RUNNER_TEMP/corpus-replay.crt"
           payload=$(jq -n --arg sha "$SHA" --arg branch "$BRANCH" \
             --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --arg tag "$IMAGE_TAG" \
             '{repository:"tempoxyz/tempo", event:"tempo_corpus_replay", data:{sha:$sha, branch:$branch, run:$run, tag:$tag}}')
-          if ! curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
+          curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
             --retry 3 --retry-all-errors ${{ secrets.EVENTS_ARGS }} \
             --key "$RUNNER_TEMP/corpus-replay.key" --cert "$RUNNER_TEMP/corpus-replay.crt" \
-            -H 'Content-Type: application/json' --data "$payload"; then
-            corpus_status error "Replay could not be submitted"
-            exit 1
-          fi
+            -H 'Content-Type: application/json' --data "$payload"
+          dispatched=true
       - name: Report skipped tests or dispatch failure
         if: always()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
