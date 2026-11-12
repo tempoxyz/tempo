@@ -1762,7 +1762,9 @@ pub(crate) mod tests {
         error::TempoPrecompileError,
         receive_policy_guard::ReceivePolicyGuard,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
+        test_util::{
+            TIP20Setup, TIP403Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage,
+        },
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
     use alloy::{
@@ -1776,10 +1778,11 @@ pub(crate) mod tests {
         AccountKeychainError, AccountKeychainEvent, IAccountKeychain, IReceivePolicyGuard,
         ReceivePolicyGuardEvent, UnknownFunctionSelector, createTokenCall,
     };
+    use tempo_primitives::test_utils::actors;
 
     #[test]
     fn test_mint_authorizes_zone_credits_as_recipients_from_t13() -> eyre::Result<()> {
-        let addr = Address::random();
+        let [addr, admin] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
 
         for (kind, spec, role) in [
@@ -1791,26 +1794,16 @@ pub(crate) mod tests {
             (TempoEvmKind::Zone, TempoHardfork::T13, AuthRole::Recipient),
         ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec).with_kind(kind);
-            let admin = Address::random();
             StorageCtx::enter(&mut storage, || -> Result<()> {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
+                    .with_transfer_policy(TIP403Setup::compound(
+                        REJECT_ALL_POLICY_ID,
+                        ALLOW_ALL_POLICY_ID,
+                        REJECT_ALL_POLICY_ID,
+                    ))
+                    .clear_events()
                     .apply()?;
-                let policy_id = TIP403Registry::new().create_compound_policy(
-                    admin,
-                    ITIP403Registry::createCompoundPolicyCall {
-                        senderPolicyId: REJECT_ALL_POLICY_ID,
-                        recipientPolicyId: ALLOW_ALL_POLICY_ID,
-                        mintRecipientPolicyId: REJECT_ALL_POLICY_ID,
-                    },
-                )?;
-                token.change_transfer_policy_id(
-                    admin,
-                    ITIP20::changeTransferPolicyIdCall {
-                        newPolicyId: policy_id,
-                    },
-                )?;
-                token.clear_emitted_events();
 
                 let result = token.mint(admin, ITIP20::mintCall { to: addr, amount });
                 let (balance, events) = if role == AuthRole::Recipient {
@@ -1838,13 +1831,11 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_moves_balance() -> eyre::Result<()> {
         let (mut storage, admin) = setup_storage();
-        let from = Address::random();
-        let to = Address::random();
+        let [from, to] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(from, amount)
                 .clear_events()
                 .apply()?;
@@ -1889,14 +1880,11 @@ pub(crate) mod tests {
         fn test_transfer_blocked_by_receive_policy_guards_funds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
-            let admin = Address::random();
-            let sender = Address::random();
-            let receiver = Address::random();
+            let [admin, sender, receiver] = actors();
             let amount = U256::from(100u64);
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(sender, amount)
                     .clear_events()
                     .apply()?;
@@ -1955,12 +1943,8 @@ pub(crate) mod tests {
         #[test]
         #[rustfmt::skip]
         fn test_release_blocked_funds_receive_policy_paths() -> eyre::Result<()> {
-            let admin = Address::random();
-            let originator = Address::random();
-            let receiver = Address::random();
-            let third_party = Address::random();
-            let open_destination = Address::random();
-            let blocked_destination = Address::random();
+            let [admin, originator, receiver, third_party, open_destination, blocked_destination] =
+                actors();
             let amount = U256::from(10u64);
 
             for (mode, recovery_auth, destination, destination_policy_blocks, should_succeed) in [
@@ -2023,33 +2007,15 @@ pub(crate) mod tests {
 
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             StorageCtx::enter(&mut storage, || {
-                let mut registry = TIP403Registry::new();
-                let recipient_policy = registry.create_policy_with_accounts(
-                    admin,
-                    ITIP403Registry::createPolicyWithAccountsCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                        accounts: vec![receiver],
-                    },
-                )?;
-                let transfer_policy = registry.create_compound_policy(
-                    admin,
-                    ITIP403Registry::createCompoundPolicyCall {
-                        senderPolicyId: REJECT_ALL_POLICY_ID,
-                        recipientPolicyId: recipient_policy,
-                        mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
-                    },
-                )?;
-
+                let recipient_policy = TIP403Setup::whitelist(admin).with_member(receiver).apply()?;
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
+                    .with_transfer_policy(TIP403Setup::compound(
+                        REJECT_ALL_POLICY_ID,
+                        recipient_policy,
+                        ALLOW_ALL_POLICY_ID,
+                    ))
                     .apply()?;
-                token.change_transfer_policy_id(
-                    admin,
-                    ITIP20::changeTransferPolicyIdCall {
-                        newPolicyId: transfer_policy,
-                    },
-                )?;
                 token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
 
                 // A third-party claim back to the receiver is a resume. It requires the receiver
@@ -2077,14 +2043,11 @@ pub(crate) mod tests {
         fn test_transfer_blocked_by_token_filter_records_reason() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
-            let admin = Address::random();
-            let sender = Address::random();
-            let receiver = Address::random();
+            let [admin, sender, receiver] = actors();
             let amount = U256::from(40u64);
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(sender, amount)
                     .apply()?;
                 set_receive_policy(
@@ -2133,13 +2096,11 @@ pub(crate) mod tests {
         #[test]
         fn test_transfer_to_guard_address_rejects() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-            let admin = Address::random();
-            let sender = Address::random();
+            let [admin, sender] = actors();
             let amount = U256::from(10u64);
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(sender, amount)
                     .apply()?;
 
@@ -2165,14 +2126,11 @@ pub(crate) mod tests {
         fn test_pre_t6_receive_policy_does_not_guard() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
             storage.set_timestamp(U256::from(BLOCKED_AT));
-            let admin = Address::random();
-            let sender = Address::random();
-            let receiver = Address::random();
+            let [admin, sender, receiver] = actors();
             let amount = U256::from(25u64);
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(sender, amount)
                     .clear_events()
                     .apply()?;
@@ -2224,14 +2182,11 @@ pub(crate) mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6)
                 .with_kind(TempoEvmKind::Zone);
             storage.set_timestamp(U256::from(BLOCKED_AT));
-            let admin = Address::random();
-            let sender = Address::random();
-            let receiver = Address::random();
+            let [admin, sender, receiver] = actors();
             let amount = U256::from(40u64);
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(sender, amount)
                     .clear_events()
                     .apply()?;
@@ -2272,16 +2227,12 @@ pub(crate) mod tests {
         fn test_transfer_from_blocked_consumes_allowance() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
-            let admin = Address::random();
-            let owner = Address::random();
-            let spender = Address::random();
-            let receiver = Address::random();
+            let [admin, owner, spender, receiver] = actors();
             let amount = U256::from(30u64);
             let allowance = amount + U256::from(5u64);
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(owner, amount)
                     .with_approval(owner, spender, allowance)
                     .apply()?;
@@ -2317,15 +2268,12 @@ pub(crate) mod tests {
         fn test_transfer_with_memo_blocked_preserves_memo() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
-            let admin = Address::random();
-            let sender = Address::random();
-            let receiver = Address::random();
+            let [admin, sender, receiver] = actors();
             let amount = U256::from(55u64);
             let memo = B256::repeat_byte(0xab);
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(sender, amount)
                     .clear_events()
                     .apply()?;
@@ -2374,8 +2322,7 @@ pub(crate) mod tests {
         fn test_mint_blocked_credits_guard() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
-            let admin = Address::random();
-            let receiver = Address::random();
+            let [admin, receiver] = actors();
             let amount = U256::from(70u64);
 
             StorageCtx::enter(&mut storage, || {
@@ -2438,8 +2385,7 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_insufficient_balance_fails() -> eyre::Result<()> {
         let (mut storage, admin) = setup_storage();
-        let from = Address::random();
-        let to = Address::random();
+        let [from, to] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
@@ -2460,9 +2406,8 @@ pub(crate) mod tests {
     #[test]
     fn test_mint_with_memo() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
+        let [admin, to] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
-        let to = Address::random();
         let memo = FixedBytes::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -2493,7 +2438,6 @@ pub(crate) mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(admin, amount)
                 .clear_events()
                 .apply()?;
@@ -2512,16 +2456,12 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_from_with_memo_from_address() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let owner = Address::random();
-        let spender = Address::random();
-        let to = Address::random();
+        let [admin, owner, spender, to] = actors();
         let memo = FixedBytes::random();
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(owner, amount)
                 .with_approval(owner, spender, amount)
                 .clear_events()
@@ -2550,14 +2490,12 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_pre_tx() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
+        let [admin, user] = actors();
         let amount = U256::from(100);
         let fee_amount = amount / U256::from(2);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(user, amount)
                 .apply()?;
 
@@ -2573,8 +2511,7 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_pre_tx_insufficient_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
+        let [admin, user] = actors();
         let amount = U256::from(100);
         let fee_amount = amount / U256::from(2);
 
@@ -2596,13 +2533,11 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_pre_tx_fee_manager_overflow() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
+        let [admin, user] = actors();
         let fee_amount = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(user, fee_amount)
                 .apply()?;
             token.set_balance(TIP_FEE_MANAGER_ADDRESS, U256::MAX)?;
@@ -2620,14 +2555,12 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_pre_tx_paused() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
+        let [admin, user] = actors();
         let amount = U256::from(100);
         let fee_amount = amount / U256::from(2);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_role(admin, PAUSE_ROLE)
                 .with_mint(user, amount)
                 .apply()?;
@@ -2647,15 +2580,13 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_post_tx() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
+        let [admin, user] = actors();
         let initial_fee = U256::from(100);
         let refund_amount = U256::from(30);
         let gas_used = U256::from(10);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, initial_fee)
                 .apply()?;
 
@@ -2678,14 +2609,12 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_post_tx_insufficient_fee_manager_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
+        let [admin, user] = actors();
         let initial_fee = U256::from(10);
         let refund_amount = U256::from(30);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, initial_fee)
                 .apply()?;
 
@@ -2703,8 +2632,7 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_post_tx_recipient_overflow() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
+        let [admin, user] = actors();
         let refund_amount = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
@@ -2727,16 +2655,13 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_post_tx_refunds_spending_limit() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let admin = Address::random();
-        let user = Address::random();
-        let access_key = Address::random();
+        let [admin, user, access_key] = actors();
         let max_fee = U256::from(1000);
         let refund_amount = U256::from(300);
         let gas_used = U256::from(100);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, max_fee)
                 .apply()?;
 
@@ -2800,16 +2725,13 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_post_tx_pre_t1c() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
-        let admin = Address::random();
-        let user = Address::random();
-        let access_key = Address::random();
+        let [admin, user, access_key] = actors();
         let max_fee = U256::from(1000);
         let refund_amount = U256::from(300);
         let gas_used = U256::from(100);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, max_fee)
                 .apply()?;
 
@@ -2867,15 +2789,11 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_from_insufficient_allowance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let from = Address::random();
-        let spender = Address::random();
-        let to = Address::random();
+        let [admin, from, spender, to] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(from, amount)
                 .apply()?;
 
@@ -2893,14 +2811,11 @@ pub(crate) mod tests {
     #[test]
     fn test_system_transfer_from() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let from = Address::random();
-        let to = Address::random();
+        let [admin, from, to] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(from, amount)
                 .apply()?;
 
@@ -2918,13 +2833,11 @@ pub(crate) mod tests {
     #[test]
     fn test_system_transfer_from_t5_authorized() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        let admin = Address::random();
-        let from = Address::random();
+        let [admin, from] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(from, amount)
                 .apply()?;
 
@@ -2942,14 +2855,11 @@ pub(crate) mod tests {
     #[test]
     fn test_system_transfer_from_t5_unauthorized_reverts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        let admin = Address::random();
-        let unlisted = Address::random();
-        let from = Address::random();
+        let [admin, unlisted, from] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(from, amount)
                 .apply()?;
 
@@ -3018,8 +2928,7 @@ pub(crate) mod tests {
     #[test]
     fn test_update_quote_token_requires_admin() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let non_admin = Address::random();
+        let [admin, non_admin] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -3175,8 +3084,7 @@ pub(crate) mod tests {
     #[test]
     fn test_finalize_quote_token_update_requires_admin() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let non_admin = Address::random();
+        let [admin, non_admin] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -3289,8 +3197,7 @@ pub(crate) mod tests {
     #[test]
     fn test_set_logo_uri_non_admin_reverts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let non_admin = Address::random();
+        let [admin, non_admin] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
@@ -3598,7 +3505,6 @@ pub(crate) mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Token", "TKN", admin)
-                    .with_issuer(admin)
                     .with_role(admin, BURN_AT_ROLE)
                     .with_mint(admin, U256::from(10))
                     .clear_events()
@@ -3641,8 +3547,7 @@ pub(crate) mod tests {
     #[test]
     fn burn_at_requires_its_own_role_and_respects_pause() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
-        let admin = Address::random();
-        let burner = Address::random();
+        let [admin, burner] = actors();
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
@@ -3699,14 +3604,11 @@ pub(crate) mod tests {
 
     #[test]
     fn burn_at_ignores_policy_and_emits_caller_and_holder() -> eyre::Result<()> {
-        let admin = Address::random();
-        let holder = Address::random();
-        let burner = Address::random();
+        let [admin, holder, burner] = actors();
         for policy in [ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Token", "TKN", admin)
-                    .with_issuer(admin)
                     .with_role(burner, BURN_AT_ROLE)
                     .with_mint(holder, U256::from(100))
                     .apply()?;
@@ -3808,7 +3710,6 @@ pub(crate) mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut token = TIP20Setup::create("Token", "TKN", admin)
-                    .with_issuer(admin)
                     .with_role(admin, BURN_BLOCKED_ROLE)
                     .with_mint(portal, U256::from(10))
                     .apply()?;
@@ -3834,12 +3735,10 @@ pub(crate) mod tests {
 
     #[test]
     fn burn_at_preserves_settled_rewards() -> eyre::Result<()> {
-        let admin = Address::random();
-        let holder = Address::random();
+        let [admin, holder] = actors();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
-                .with_issuer(admin)
                 .with_role(admin, BURN_AT_ROLE)
                 .with_mint(holder, U256::from(100))
                 .apply()?;
@@ -3905,15 +3804,11 @@ pub(crate) mod tests {
 
     #[test]
     fn burn_at_charges_the_holder_access_key_and_resets_periodic_limits() -> eyre::Result<()> {
-        let admin = Address::random();
-        let holder = Address::random();
-        let bridge = Address::random();
-        let key = Address::random();
+        let [admin, holder, bridge, key] = actors();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         storage.set_timestamp(U256::from(1000));
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
-                .with_issuer(admin)
                 .with_role(bridge, BURN_AT_ROLE)
                 .with_mint(holder, U256::from(300))
                 .with_mint(bridge, U256::from(200))
@@ -3998,15 +3893,13 @@ pub(crate) mod tests {
 
     #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
-        let admin = Address::random();
-        let burner = Address::random();
+        let [admin, burner] = actors();
         let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(8);
         let burn_amount = amount / U256::from(2);
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
-                .with_issuer(admin)
                 .with_role(burner, BURN_BLOCKED_ROLE)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
@@ -4075,7 +3968,6 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
-                .with_issuer(admin)
                 .with_role(burner, BURN_BLOCKED_ROLE)
                 .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
                 .apply()?;
@@ -4162,13 +4054,11 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_invalid_recipient() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let bob = Address::random();
+        let [admin, bob] = actors();
         let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
-                .with_issuer(admin)
                 .with_mint(admin, amount)
                 .with_approval(admin, bob, amount)
                 .apply()?;
@@ -4272,9 +4162,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_migrate_transfer_policy_ids_to_registry() -> eyre::Result<()> {
-        let admin = Address::random();
-        let invalid_token = Address::random();
-        let spender = Address::random();
+        let [admin, invalid_token, spender] = actors();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
 
         StorageCtx::enter(&mut storage, || {
@@ -4421,46 +4309,19 @@ pub(crate) mod tests {
 
     #[test]
     fn test_is_transfer_authorized() -> eyre::Result<()> {
-        let admin = Address::random();
-        let sender = Address::random();
-        let recipient = Address::random();
+        let [admin, sender, recipient] = actors();
 
         for hardfork in [TempoHardfork::T0, TempoHardfork::T1] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
 
             StorageCtx::enter(&mut storage, || {
-                let token = TIP20Setup::path_usd(admin).apply()?;
-
-                // Initialize TIP403 registry and create a whitelist policy
+                let token = TIP20Setup::path_usd(admin)
+                    .with_transfer_policy(TIP403Setup::whitelist(admin).with_member(recipient))
+                    .apply()?;
+                let policy_id = token.transfer_policy_id()?;
                 let mut registry = TIP403Registry::new();
-                registry.initialize()?;
-
-                let policy_id = registry.create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    },
-                )?;
-
-                // Assign token to use this policy
-                let mut token = token;
-                token.change_transfer_policy_id(
-                    admin,
-                    ITIP20::changeTransferPolicyIdCall {
-                        newPolicyId: policy_id,
-                    },
-                )?;
 
                 // Sender not whitelisted, recipient whitelisted
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: recipient,
-                        allowed: true,
-                    },
-                )?;
                 assert!(!token.is_transfer_authorized(sender, recipient)?);
 
                 // Sender whitelisted, recipient not whitelisted
@@ -4647,8 +4508,7 @@ pub(crate) mod tests {
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let admin = Address::random();
-            let sender = Address::random();
+            let [admin, sender] = actors();
 
             StorageCtx::enter(&mut storage, || {
                 let mut registry = AddressRegistry::new();
@@ -4660,7 +4520,6 @@ pub(crate) mod tests {
                 };
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(sender, amount * U256::from(2))
                     .clear_events()
                     .apply()?;
@@ -4712,9 +4571,7 @@ pub(crate) mod tests {
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let admin = Address::random();
-            let owner = Address::random();
-            let spender = Address::random();
+            let [admin, owner, spender] = actors();
 
             StorageCtx::enter(&mut storage, || {
                 let mut registry = AddressRegistry::new();
@@ -4727,7 +4584,6 @@ pub(crate) mod tests {
 
                 let total = amount * U256::from(2);
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_mint(owner, total)
                     .with_approval(owner, spender, total)
                     .clear_events()
@@ -4774,16 +4630,13 @@ pub(crate) mod tests {
     #[rustfmt::skip]
     fn test_unregistered_virtual_reverts_on_t3() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        let admin = Address::random();
-        let sender = Address::random();
-        let spender = Address::random();
+        let [admin, sender, spender] = actors();
         let to = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
         let amount = U256::from(100);
         let memo = FixedBytes::ZERO;
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
                 .with_mint(sender, amount)
                 .with_approval(sender, spender, amount)
                 .apply()?;
@@ -4878,11 +4731,12 @@ pub(crate) mod tests {
 
         impl PermitFixture {
             fn new() -> Self {
+                let [admin, spender] = actors();
                 Self {
                     storage: setup_t2_storage(),
-                    admin: Address::random(),
+                    admin,
                     signer: PrivateKeySigner::random(),
-                    spender: Address::random(),
+                    spender,
                 }
             }
         }
@@ -4975,9 +4829,7 @@ pub(crate) mod tests {
         #[test]
         fn test_permit_invalid_signature() -> eyre::Result<()> {
             let mut storage = setup_t2_storage();
-            let admin = Address::random();
-            let owner = Address::random();
-            let spender = Address::random();
+            let [admin, owner, spender] = actors();
             let value = U256::from(1000);
             let deadline = U256::MAX;
 
@@ -5369,13 +5221,12 @@ pub(crate) mod tests {
 
     #[test]
     fn test_mint_rejects_when_paused_on_t3() -> eyre::Result<()> {
-        let to = Address::random();
+        let [to, admin] = actors();
         let amount = U256::from(1000);
         let memo = FixedBytes::random();
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let admin = Address::random();
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
@@ -5415,7 +5266,6 @@ pub(crate) mod tests {
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_role(admin, PAUSE_ROLE)
                     .with_mint(admin, amount * U256::from(2))
                     .apply()?;
@@ -5444,46 +5294,18 @@ pub(crate) mod tests {
     #[test]
     fn test_burn_blocked_rejects_when_paused_on_t3() -> eyre::Result<()> {
         let amount = U256::from(500);
-        let blocked = Address::random();
+        let [blocked, admin] = actors();
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let admin = Address::random();
 
             StorageCtx::enter(&mut storage, || {
-                // Create a blacklist policy and block the address
-                let mut registry = TIP403Registry::new();
-                registry.initialize()?;
-                let policy_id = registry.create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                    },
-                )?;
-                registry.modify_policy_blacklist(
-                    admin,
-                    ITIP403Registry::modifyPolicyBlacklistCall {
-                        policyId: policy_id,
-                        account: blocked,
-                        restricted: true,
-                    },
-                )?;
-
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
                     .with_role(admin, PAUSE_ROLE)
                     .with_role(admin, BURN_BLOCKED_ROLE)
                     .with_mint(blocked, amount)
+                    .with_transfer_policy(TIP403Setup::blacklist(admin).with_member(blocked))
                     .apply()?;
-
-                // Point the token's transfer policy at our blacklist
-                token.change_transfer_policy_id(
-                    admin,
-                    ITIP20::changeTransferPolicyIdCall {
-                        newPolicyId: policy_id,
-                    },
-                )?;
 
                 // Pause the token
                 token.pause(admin, ITIP20::pauseCall {})?;

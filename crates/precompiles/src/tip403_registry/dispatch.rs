@@ -90,6 +90,7 @@ mod tests {
     use tempo_contracts::precompiles::{
         ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
     };
+    use tempo_primitives::test_utils::actors;
 
     #[test]
     fn test_is_authorized_precompile() -> eyre::Result<()> {
@@ -158,10 +159,7 @@ mod tests {
     #[test]
     fn test_create_policy_with_accounts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let account1 = Address::random();
-        let account2 = Address::random();
-        let other_account = Address::random();
+        let [admin, account1, account2, other_account] = actors();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -215,9 +213,7 @@ mod tests {
     #[test]
     fn test_blacklist_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let blocked_account = Address::random();
-        let allowed_account = Address::random();
+        let [admin, blocked_account, allowed_account] = actors();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -296,9 +292,7 @@ mod tests {
     #[test]
     fn test_modify_policy_whitelist() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let account1 = Address::random();
-        let account2 = Address::random();
+        let [admin, account1, account2] = actors();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -383,8 +377,7 @@ mod tests {
     #[test]
     fn test_set_policy_admin() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let new_admin = Address::random();
+        let [admin, new_admin] = actors();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 

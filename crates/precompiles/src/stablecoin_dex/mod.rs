@@ -1908,10 +1908,11 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, TIP403Setup},
         tip20::PAUSE_ROLE,
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
+    use tempo_primitives::test_utils::{actors, actors_vec};
 
     use super::*;
     use crate::STABLECOIN_DEX_ADDRESS;
@@ -1925,14 +1926,12 @@ mod tests {
     ) -> Result<(Address, Address)> {
         // Configure pathUSD
         let quote = TIP20Setup::path_usd(admin)
-            .with_issuer(admin)
             .with_mint(user, U256::from(amount))
             .with_approval(user, exchange_address, U256::from(amount))
             .apply()?;
 
         // Configure base token (uses pathUSD as quote by default)
         let base = TIP20Setup::create("BASE", "BASE", admin)
-            .with_issuer(admin)
             .with_mint(user, U256::from(amount))
             .with_approval(user, exchange_address, U256::from(amount))
             .apply()?;
@@ -1947,8 +1946,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let user = Address::random();
+            let [admin, user] = actors();
             let (base, quote) = setup_test_tokens(admin, user, exchange.address, 0)?;
             let book_key = compute_book_key(base, quote);
 
@@ -1967,8 +1965,7 @@ mod tests {
     #[test]
     fn test_get_price_level_across_fork() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        let maker = Address::random();
-        let admin = Address::random();
+        let [maker, admin] = actors();
         let tick = 10;
         let amount = MIN_ORDER_AMOUNT;
 
@@ -2049,8 +2046,7 @@ mod tests {
                 0
             );
 
-            let maker_1 = Address::random();
-            let maker_2 = Address::random();
+            let [maker_1, maker_2] = actors();
             let overflow_amount = u128::MAX / 2 + 1;
             let escrow = base_to_quote(overflow_amount, MIN_TICK, RoundingDirection::Up).unwrap();
             let mut quote_token = TIP20Token::from_address(quote)?;
@@ -2216,9 +2212,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
 
             // Use an amount above MIN_ORDER_AMOUNT that causes rounding
             let base_amount = 100_000_003u128;
@@ -2232,7 +2226,6 @@ mod tests {
             let max_escrow = expected_quote_ceil * 2;
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(base_amount * 2))
                 .with_mint(bob, U256::from(base_amount * 2))
                 .with_approval(alice, exchange.address, U256::MAX)
@@ -2242,7 +2235,6 @@ mod tests {
             let quote_token = base.quote_token()?;
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(max_escrow))
                 .with_mint(bob, U256::from(max_escrow))
                 .with_approval(alice, exchange.address, U256::MAX)
@@ -2282,8 +2274,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
             // Use an amount above MIN_ORDER_AMOUNT that causes rounding (not evenly divisible)
             let base_amount = 100_000_003u128;
@@ -2292,14 +2283,11 @@ mod tests {
             let price = u128::from(orderbook::tick_to_price(tick));
             let escrow_ceil = (base_amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .apply()?;
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
             let base_token = base.address();
             let quote_token = base.quote_token()?;
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(escrow_ceil))
                 .with_approval(alice, exchange.address, U256::MAX)
                 .apply()?;
@@ -2337,8 +2325,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 0i16;
 
@@ -2368,19 +2355,14 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 0i16;
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .apply()?;
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
             let base_token = base.address();
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(amount))
                 .with_mint(bob, U256::from(amount))
                 .with_approval(alice, exchange.address, U256::MAX)
@@ -2413,15 +2395,11 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let taker = Address::random();
-            let admin = Address::random();
+            let [alice, bob, taker, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 0i16;
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(amount))
                 .with_mint(bob, U256::from(amount))
                 .with_approval(alice, exchange.address, U256::MAX)
@@ -2431,7 +2409,6 @@ mod tests {
             let quote_token = base.quote_token()?;
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(taker, U256::from(amount))
                 .with_approval(taker, exchange.address, U256::MAX)
                 .apply()?;
@@ -2462,19 +2439,14 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 0i16;
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .apply()?;
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
             let base_token = base.address();
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(amount))
                 .with_mint(bob, U256::from(amount))
                 .with_approval(alice, exchange.address, U256::MAX)
@@ -2508,8 +2480,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
@@ -2535,8 +2506,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let below_minimum = min_order_amount - 1;
             let tick = 100i16;
@@ -2571,8 +2541,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
@@ -2637,8 +2606,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 50i16; // Use positive tick to avoid conversion issues
 
@@ -2697,8 +2665,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let below_minimum = min_order_amount - 1;
             let tick = 100i16;
@@ -2742,8 +2709,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let user = Address::random();
+            let [admin, user] = actors();
 
             // Setup tokens
             let (base_token, quote_token) =
@@ -2791,8 +2757,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
             let flip_tick = 200i16; // Must be > tick for bid flip orders
@@ -2868,8 +2833,7 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
 
-                let alice = Address::random();
-                let admin = Address::random();
+                let [alice, admin] = actors();
                 let tick = 100i16;
 
                 let price = orderbook::tick_to_price(tick);
@@ -2917,8 +2881,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
@@ -2980,9 +2943,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
@@ -2995,7 +2956,6 @@ mod tests {
             // into the exchange (so the exchange has the inventory it needs to
             // pay out the second swap).
             let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
                 .with_mint(bob, U256::from(amount * 4))
                 .with_approval(bob, exchange.address, U256::MAX)
                 .apply()?;
@@ -3003,7 +2963,6 @@ mod tests {
             let quote_token = base.quote_token()?;
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(expected_escrow * 4))
                 .with_mint(bob, U256::from(expected_escrow * 4))
                 .with_approval(alice, exchange.address, U256::MAX)
@@ -3120,8 +3079,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
             let price = orderbook::tick_to_price(tick);
@@ -3176,8 +3134,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
             let (_base_token, quote_token) =
@@ -3205,8 +3162,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let amount_out = 500_000u128;
             let tick = 10;
@@ -3242,8 +3198,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let amount_in = 500_000u128;
             let tick = 10;
@@ -3280,8 +3235,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let amount_out = 500_000u128;
             let tick = 0;
@@ -3321,8 +3275,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
@@ -3358,9 +3311,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let amount_out = 500_000u128;
             let tick = 10;
@@ -3406,9 +3357,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let amount_in = 500_000u128;
             let tick = 10;
@@ -3455,9 +3404,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let amount = min_order_amount;
             let tick = 100i16;
@@ -3517,9 +3464,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
             // TIP-1030: flip_tick equal to tick is allowed on T5+.
@@ -3675,29 +3620,9 @@ mod tests {
             // Blacklist alice on the base token AFTER order placement so the
             // post-fill flip's TIP-403 check fails (PolicyForbids = business
             // logic error → silently swallowed by fill_order).
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-            let mut base = TIP20Token::from_address(base_token)?;
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            TIP20Setup::config(base_token)
+                .with_transfer_policy(TIP403Setup::blacklist(admin).with_member(alice))
+                .apply()?;
 
             exchange.set_balance(bob, base_token, amount)?;
             let events_before = exchange.emitted_events().len();
@@ -3748,8 +3673,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
             // Setup tokens
@@ -3779,8 +3703,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
             // Setup tokens
@@ -3856,8 +3779,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let user = Address::random();
+            let [admin, user] = actors();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
             let (token, _) = setup_test_tokens(admin, user, exchange.address, min_order_amount)?;
@@ -3881,8 +3803,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let user = Address::random();
+            let [admin, user] = actors();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
             // Setup: pathUSD <- Token (direct pair)
@@ -3912,8 +3833,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let user = Address::random();
+            let [admin, user] = actors();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
             // Setup: pathUSD <- Token
@@ -3974,25 +3894,21 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let min_order_amount_x10 = U256::from(MIN_ORDER_AMOUNT * 10);
 
             // Setup: pathUSD <- USDC
             //        pathUSD <- EURC
             let _path_usd = TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
             let usdc = TIP20Setup::create("USDC", "USDC", admin)
-                .with_issuer(admin)
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
             let eurc = TIP20Setup::create("EURC", "EURC", admin)
-                .with_issuer(admin)
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
@@ -4030,25 +3946,21 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let min_order_amount_x10 = U256::from(MIN_ORDER_AMOUNT * 10);
 
             // Setup: pathUSD <- USDC
             //        pathUSD <- EURC
             let _path_usd = TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
             let usdc = TIP20Setup::create("USDC", "USDC", admin)
-                .with_issuer(admin)
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
             let eurc = TIP20Setup::create("EURC", "EURC", admin)
-                .with_issuer(admin)
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
@@ -4080,23 +3992,19 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
-            let bob = Address::random();
+            let [admin, alice, bob] = actors();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
             let min_order_amount_x10 = U256::from(MIN_ORDER_AMOUNT * 10);
 
             // Setup: pathUSD <- USDC <- EURC
             let path_usd = TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 // Setup alice as a liquidity provider
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
 
             let usdc = TIP20Setup::create("USDC", "USDC", admin)
-                .with_issuer(admin)
                 // Setup alice as a liquidity provider
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
@@ -4106,7 +4014,6 @@ mod tests {
                 .apply()?;
 
             let eurc = TIP20Setup::create("EURC", "EURC", admin)
-                .with_issuer(admin)
                 // Setup alice as a liquidity provider
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
@@ -4172,23 +4079,19 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
-            let bob = Address::random();
+            let [admin, alice, bob] = actors();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
             let min_order_amount_x10 = U256::from(MIN_ORDER_AMOUNT * 10);
 
             // Setup: pathUSD <- USDC <- EURC
             let path_usd = TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 // Setup alice as a liquidity provider
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
 
             let usdc = TIP20Setup::create("USDC", "USDC", admin)
-                .with_issuer(admin)
                 // Setup alice as a liquidity provider
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
@@ -4198,7 +4101,6 @@ mod tests {
                 .apply()?;
 
             let eurc = TIP20Setup::create("EURC", "EURC", admin)
-                .with_issuer(admin)
                 // Setup alice as a liquidity provider
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
@@ -4315,9 +4217,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
@@ -4361,9 +4261,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 1_000_000_000u128)?;
@@ -4405,9 +4303,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, 1_000_000_000u128)?;
@@ -4448,9 +4344,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let maker = Address::random();
-            let taker = Address::random();
-            let admin = Address::random();
+            let [maker, taker, admin] = actors();
             let (base, quote) =
                 setup_test_tokens(admin, maker, exchange.address, 1_000_000_000u128)?;
             exchange.create_pair(base)?;
@@ -4509,10 +4403,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let carol = Address::random();
-            let admin = Address::random();
+            let [alice, bob, carol, admin] = actors();
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, AMOUNT)?;
@@ -4572,9 +4463,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
 
             // Use different ticks for bids (100, 90) and asks (50, 60)
@@ -4650,8 +4539,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
 
             let (bid_tick_1, bid_tick_2) = (100_i16, 90_i16); // (best, second best)
@@ -4735,8 +4623,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, AMOUNT)?;
@@ -4776,8 +4663,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, AMOUNT)?;
@@ -4850,8 +4736,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let user = Address::random();
+            let [admin, user] = actors();
 
             let (_, quote_token) =
                 setup_test_tokens(admin, user, exchange.address, MIN_ORDER_AMOUNT)?;
@@ -4879,8 +4764,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 100_i16;
             let price = orderbook::tick_to_price(tick);
@@ -4938,8 +4822,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
-            let admin = Address::random();
-            let user = Address::random();
+            let [admin, user] = actors();
 
             // Setup tokens
             let (base_token, quote_token) =
@@ -4987,8 +4870,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
 
             let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
             let base_address = base.address();
@@ -5017,8 +4899,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
@@ -5027,7 +4908,6 @@ mod tests {
                 (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -5069,8 +4949,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
             let flip_tick = 200i16;
@@ -5080,7 +4959,6 @@ mod tests {
                 (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -5138,8 +5016,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
@@ -5148,7 +5025,6 @@ mod tests {
                 (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -5191,21 +5067,14 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
             // Create a blacklist policy
             let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let policy_id = TIP403Setup::blacklist(admin).apply()?;
 
             // Setup quote token (pathUSD) with the blacklist policy
-            let mut quote = TIP20Setup::path_usd(admin).with_issuer(admin).apply()?;
+            let mut quote = TIP20Setup::path_usd(admin).apply()?;
 
             quote.change_transfer_policy_id(
                 admin,
@@ -5215,9 +5084,7 @@ mod tests {
             )?;
 
             // Setup base token with the blacklist policy
-            let mut base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .apply()?;
+            let mut base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
             let base_address = base.address();
 
             base.change_transfer_policy_id(
@@ -5274,29 +5141,15 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-
-            let mut base = TIP20Setup::create("USDC", "USDC", admin)
-                .with_issuer(admin)
+            let base = TIP20Setup::create("USDC", "USDC", admin)
                 .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
                 .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
+                .with_transfer_policy(TIP403Setup::blacklist(admin))
                 .apply()?;
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
+            let policy_id = base.transfer_policy_id()?;
+            let mut registry = TIP403Registry::new();
 
             exchange.create_pair(base.address())?;
             let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
@@ -5328,29 +5181,13 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-
-            let mut base = TIP20Setup::create("USDC", "USDC", admin)
-                .with_issuer(admin)
+            let base = TIP20Setup::create("USDC", "USDC", admin)
                 .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
                 .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
+                .with_transfer_policy(TIP403Setup::blacklist(admin))
                 .apply()?;
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
 
             exchange.create_pair(base.address())?;
             let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
@@ -5376,8 +5213,7 @@ mod tests {
         for spec in [TempoHardfork::T0, TempoHardfork::T1C, TempoHardfork::T2] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
 
             let (order_id, base_token, invalid_policy_id) =
                 StorageCtx::enter(&mut storage, || {
@@ -5385,7 +5221,6 @@ mod tests {
                     exchange.initialize()?;
 
                     let mut base = TIP20Setup::create("USDC", "USDC", admin)
-                        .with_issuer(admin)
                         .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
                         .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
                         .apply()?;
@@ -5450,17 +5285,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
-
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let [alice, admin] = actors();
 
             let (base_addr, quote_addr) =
                 setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
@@ -5468,22 +5293,9 @@ mod tests {
             exchange.create_pair(base_addr)?;
             let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
 
-            let mut quote = TIP20Token::from_address(quote_addr)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            TIP20Setup::config(quote_addr)
+                .with_transfer_policy(TIP403Setup::blacklist(admin).with_member(alice))
+                .apply()?;
 
             // Pre-T4: recipient check on payout token is not performed, order is not stale
             let result = exchange.cancel_stale_order(order_id);
@@ -5504,17 +5316,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
-
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let [alice, admin] = actors();
 
             let (base_addr, quote_addr) =
                 setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
@@ -5522,22 +5324,9 @@ mod tests {
             exchange.create_pair(base_addr)?;
             let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
 
-            let mut quote = TIP20Token::from_address(quote_addr)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            TIP20Setup::config(quote_addr)
+                .with_transfer_policy(TIP403Setup::blacklist(admin).with_member(alice))
+                .apply()?;
 
             // T4+: recipient check on payout token kicks in, order is stale
             exchange.cancel_stale_order(order_id)?;
@@ -5555,41 +5344,16 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
-
-            // Setup TIP403 registry and create blacklist policy
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let [alice, admin] = actors();
 
             // Set up base and quote tokens
             let (base_addr, _quote_addr) =
                 setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
 
-            // Get the base token and apply blacklist policy
-            let mut base = TIP20Token::from_address(base_addr)?;
-            base.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-
             // Blacklist alice in the base token
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            TIP20Setup::config(base_addr)
+                .with_transfer_policy(TIP403Setup::blacklist(admin).with_member(alice))
+                .apply()?;
 
             exchange.create_pair(base_addr)?;
 
@@ -5621,41 +5385,16 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
-
-            // Setup TIP403 registry and create blacklist policy
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let [alice, admin] = actors();
 
             // Set up base and quote tokens
             let (base_addr, quote_addr) =
                 setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
 
-            // Get the quote token and apply blacklist policy
-            let mut quote = TIP20Token::from_address(quote_addr)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-
             // Blacklist alice in the quote token
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            TIP20Setup::config(quote_addr)
+                .with_transfer_policy(TIP403Setup::blacklist(admin).with_member(alice))
+                .apply()?;
 
             exchange.create_pair(base_addr)?;
 
@@ -5687,42 +5426,26 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let (alice, admin) = (Address::random(), Address::random());
-            let mut registry = TIP403Registry::new();
+            let [alice, admin] = actors();
 
             // Create a sender policy that allows anyone (always-allow = policy 1)
             // Create a recipient whitelist that does NOT include alice
-            let recipient_policy = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )?;
+            let recipient_policy = TIP403Setup::whitelist(admin).apply()?;
             // Don't add alice to the recipient whitelist - she cannot receive
-
-            // Create compound policy: anyone can send, but only whitelisted can receive
-            let compound_id = registry.create_compound_policy(
-                admin,
-                ITIP403Registry::createCompoundPolicyCall {
-                    senderPolicyId: 1,                   // always-allow: anyone can send
-                    recipientPolicyId: recipient_policy, // whitelist: alice NOT included
-                    mintRecipientPolicyId: 1,            // always-allow: anyone can receive mints
-                },
-            )?;
 
             // Setup tokens
             let (base_addr, quote_addr) =
                 setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
 
-            // Apply compound policy to quote token (the non-escrow token for asks)
-            let mut quote = TIP20Token::from_address(quote_addr)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: compound_id,
-                },
-            )?;
+            // Apply compound policy to quote token (the non-escrow token for asks):
+            // anyone can send, but only whitelisted can receive
+            TIP20Setup::config(quote_addr)
+                .with_transfer_policy(TIP403Setup::compound(
+                    1,                // always-allow: anyone can send
+                    recipient_policy, // whitelist: alice NOT included
+                    1,                // always-allow: anyone can receive mints
+                ))
+                .apply()?;
 
             exchange.create_pair(base_addr)?;
 
@@ -5754,9 +5477,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let tick = 10;
 
             let (base_token, quote_token) =
@@ -5832,8 +5553,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let alice = Address::random();
+            let [admin, alice] = actors();
             let min_order_amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
@@ -5892,9 +5612,7 @@ mod tests {
         let mut exchange = StablecoinDEX::new();
         exchange.initialize()?;
 
-        let alice = Address::random();
-        let bob = Address::random();
-        let admin = Address::random();
+        let [alice, bob, admin] = actors();
         let amount = MIN_ORDER_AMOUNT;
         let tick = 100i16;
         let flip_tick = 200i16;
@@ -5945,31 +5663,9 @@ mod tests {
                 // Blacklist alice on the base token AFTER order placement.
                 // When the flip (ask) is placed during fill, ensure_transfer_authorized(alice, dex)
                 // on the base token will fail with PolicyForbids — a business logic error.
-                let mut registry = TIP403Registry::new();
-                let policy_id = registry.create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                    },
-                )?;
-
-                let mut base = TIP20Token::from_address(base_token)?;
-                base.change_transfer_policy_id(
-                    admin,
-                    ITIP20::changeTransferPolicyIdCall {
-                        newPolicyId: policy_id,
-                    },
-                )?;
-
-                registry.modify_policy_blacklist(
-                    admin,
-                    ITIP403Registry::modifyPolicyBlacklistCall {
-                        policyId: policy_id,
-                        account: alice,
-                        restricted: true,
-                    },
-                )?;
+                TIP20Setup::config(base_token)
+                    .with_transfer_policy(TIP403Setup::blacklist(admin).with_member(alice))
+                    .apply()?;
 
                 // Fund bob to fill the order
                 exchange.set_balance(bob, base_token, amount)?;
@@ -6068,9 +5764,7 @@ mod tests {
             // Verify initial next_order_id is 1
             assert_eq!(exchange.next_order_id()?, 1);
 
-            let alice = Address::random();
-            let bob = Address::random();
-            let admin = Address::random();
+            let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
@@ -6078,7 +5772,6 @@ mod tests {
             let quote_amount = (amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(amount * 4))
                 .with_mint(bob, U256::from(amount * 4))
                 .with_approval(alice, exchange.address, U256::MAX)
@@ -6088,7 +5781,6 @@ mod tests {
             let quote_token = base.quote_token()?;
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(quote_amount * 4))
                 .with_mint(bob, U256::from(quote_amount * 4))
                 .with_approval(alice, exchange.address, U256::MAX)
@@ -6184,8 +5876,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let alice = Address::random();
-            let admin = Address::random();
+            let [alice, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
@@ -6193,7 +5884,6 @@ mod tests {
             let quote_amount = (amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(amount * 2))
                 .with_approval(alice, exchange.address, U256::MAX)
                 .apply()?;
@@ -6201,7 +5891,6 @@ mod tests {
             let quote_token = base.quote_token()?;
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(alice, U256::from(quote_amount * 2))
                 .with_approval(alice, exchange.address, U256::MAX)
                 .apply()?;
@@ -6264,12 +5953,9 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let user = Address::random();
-            let admin = Address::random();
+            let [user, admin] = actors();
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
-                .apply()?;
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
             let token = base.address();
 
             // Set a balance of 100
@@ -6365,7 +6051,7 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
 
-                let (alice, bob, admin) = (Address::random(), Address::random(), Address::random());
+                let [alice, bob, admin] = actors();
                 let amount_in = 500_000u128;
                 let tick = 10;
 
@@ -6426,7 +6112,7 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
 
-                let (alice, admin) = (Address::random(), Address::random());
+                let [alice, admin] = actors();
                 let amount = MIN_ORDER_AMOUNT;
 
                 let (base_token, quote_token) =
@@ -6593,22 +6279,18 @@ mod tests {
                 let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
 
-                let admin = Address::random();
-                let alice = Address::random();
-                let bob = Address::random();
+                let [admin, alice, bob] = actors();
 
                 let amount = MIN_ORDER_AMOUNT * 10;
                 let amount_u256 = U256::from(amount);
 
                 // Setup: pathUSD <- USDC, pathUSD <- EURC
                 let path_usd = TIP20Setup::path_usd(admin)
-                    .with_issuer(admin)
                     .with_mint(alice, amount_u256)
                     .with_approval(alice, exchange.address, amount_u256)
                     .apply()?;
 
                 let usdc = TIP20Setup::create("USDC", "USDC", admin)
-                    .with_issuer(admin)
                     .with_mint(alice, amount_u256)
                     .with_approval(alice, exchange.address, amount_u256)
                     .with_mint(bob, amount_u256)
@@ -6616,7 +6298,6 @@ mod tests {
                     .apply()?;
 
                 let eurc = TIP20Setup::create("EURC", "EURC", admin)
-                    .with_issuer(admin)
                     .with_mint(alice, amount_u256)
                     .with_approval(alice, exchange.address, amount_u256)
                     .apply()?;
@@ -6692,11 +6373,11 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
-            let admin = Address::random();
-            let taker = Address::random();
-            let makers: Vec<(Address, u128, i16)> = book
-                .iter()
-                .map(|(size, tick)| (Address::random(), *size, *tick))
+            let [admin, taker] = actors();
+            let makers: Vec<(Address, u128, i16)> = actors_vec(book.len())
+                .into_iter()
+                .zip(book)
+                .map(|(maker, (size, tick))| (maker, *size, *tick))
                 .collect();
 
             let fund = U256::from(1_000_000_000_000_000_000u128);
@@ -6704,7 +6385,7 @@ mod tests {
 
             // Base token (uses pathUSD as its quote token).
             let base_setup = fund_and_approve(
-                TIP20Setup::create("BASE", "BASE", admin).with_issuer(admin),
+                TIP20Setup::create("BASE", "BASE", admin),
                 actors.clone(),
                 exchange.address,
                 fund,
@@ -6713,13 +6394,8 @@ mod tests {
             let base_token = base.address();
             let quote_token = base.quote_token()?;
 
-            fund_and_approve(
-                TIP20Setup::path_usd(admin).with_issuer(admin),
-                actors,
-                exchange.address,
-                fund,
-            )
-            .apply()?;
+            fund_and_approve(TIP20Setup::path_usd(admin), actors, exchange.address, fund)
+                .apply()?;
 
             exchange.create_pair(base_token)?;
             for (m, size, tick) in &makers {
@@ -6740,19 +6416,13 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let taker = Address::random();
-            let makers = [
-                Address::random(),
-                Address::random(),
-                Address::random(),
-                Address::random(),
-            ];
+            let [admin, taker] = actors();
+            let makers: [Address; 4] = actors();
             let fund = U256::from(1_000_000_000_000_000_000u128);
             let actors = makers.iter().copied().chain([taker]);
 
             let path_usd = fund_and_approve(
-                TIP20Setup::path_usd(admin).with_issuer(admin),
+                TIP20Setup::path_usd(admin),
                 actors.clone(),
                 exchange.address,
                 fund,
@@ -6760,7 +6430,7 @@ mod tests {
             .apply()?;
 
             let token_a = fund_and_approve(
-                TIP20Setup::create("TOKEN_A", "TOKEN_A", admin).with_issuer(admin),
+                TIP20Setup::create("TOKEN_A", "TOKEN_A", admin),
                 actors.clone(),
                 exchange.address,
                 fund,
@@ -6768,7 +6438,7 @@ mod tests {
             .apply()?;
 
             let token_b = fund_and_approve(
-                TIP20Setup::create("TOKEN_B", "TOKEN_B", admin).with_issuer(admin),
+                TIP20Setup::create("TOKEN_B", "TOKEN_B", admin),
                 actors,
                 exchange.address,
                 fund,
@@ -6859,10 +6529,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let maker_1 = Address::random();
-            let maker_2 = Address::random();
-            let taker = Address::random();
+            let [admin, maker_1, maker_2, taker] = actors();
             let tick = 10;
             let size_1 = 100_000_005;
             let size_2 = 100_000_007;
@@ -6870,7 +6537,6 @@ mod tests {
             let fund = U256::from(1_000_000_000_000_000_000u128);
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_issuer(admin)
                 .with_mint(taker, fund)
                 .with_approval(taker, exchange.address, U256::MAX)
                 .apply()?;
@@ -6878,7 +6544,6 @@ mod tests {
             let quote_token = base.quote_token()?;
 
             TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
                 .with_mint(maker_1, fund)
                 .with_mint(maker_2, fund)
                 .with_approval(maker_1, exchange.address, U256::MAX)
@@ -7202,10 +6867,7 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
 
-            let admin = Address::random();
-            let maker_flip = Address::random();
-            let maker_next = Address::random();
-            let taker = Address::random();
+            let [admin, maker_flip, maker_next, taker] = actors();
             let tick = 10;
             let flip_tick = 20;
             let amount = MIN_ORDER_AMOUNT;
@@ -7213,7 +6875,7 @@ mod tests {
             let actors = [maker_flip, maker_next, taker];
 
             let base = fund_and_approve(
-                TIP20Setup::create("BASE", "BASE", admin).with_issuer(admin),
+                TIP20Setup::create("BASE", "BASE", admin),
                 actors,
                 exchange.address,
                 fund,
@@ -7222,13 +6884,8 @@ mod tests {
             let base_token = base.address();
             let quote_token = base.quote_token()?;
 
-            fund_and_approve(
-                TIP20Setup::path_usd(admin).with_issuer(admin),
-                actors,
-                exchange.address,
-                fund,
-            )
-            .apply()?;
+            fund_and_approve(TIP20Setup::path_usd(admin), actors, exchange.address, fund)
+                .apply()?;
 
             let book_key = exchange.create_pair(base_token)?;
             let flip_order = exchange

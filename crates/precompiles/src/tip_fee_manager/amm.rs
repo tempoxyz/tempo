@@ -736,11 +736,11 @@ mod tests {
         TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, TIP403Setup},
         tip_fee_manager::TIPFeeAMMError,
         tip20::TIP20Error,
-        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
+    use tempo_primitives::test_utils::actors;
 
     /// Integer square root using the Babylonian method
     fn sqrt(x: U256) -> U256 {
@@ -773,30 +773,6 @@ mod tests {
         let liquidity = sqrt(user_amount * validator_amount);
         amm.total_supply[pool_id].write(liquidity)?;
         Ok(pool_id)
-    }
-
-    fn set_whitelist_policy(
-        token: &mut TIP20Token,
-        admin: Address,
-        accounts: Vec<Address>,
-    ) -> Result<u64> {
-        let mut registry = TIP403Registry::new();
-        registry.initialize()?;
-        let policy_id = registry.create_policy_with_accounts(
-            admin,
-            ITIP403Registry::createPolicyWithAccountsCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-                accounts,
-            },
-        )?;
-        token.change_transfer_policy_id(
-            admin,
-            ITIP20::changeTransferPolicyIdCall {
-                newPolicyId: policy_id,
-            },
-        )?;
-        Ok(policy_id)
     }
 
     #[test]
@@ -850,8 +826,7 @@ mod tests {
     #[test]
     fn test_rebalance_swap_insufficient_funds() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let to = Address::random();
+        let [admin, to] = actors();
         StorageCtx::enter(&mut storage, || {
             let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
@@ -926,12 +901,12 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_transfer_policy(TIP403Setup::whitelist(admin).with_member(admin))
+                .apply()?;
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, U256::from(10000))
                 .apply()?;
-            set_whitelist_policy(&mut user_token, admin, vec![admin])?;
 
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
@@ -953,16 +928,16 @@ mod tests {
     #[test]
     fn test_mint_requires_caller_sender_on_user_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        let admin = Address::random();
-        let caller = Address::random();
+        let [admin, caller] = actors();
         StorageCtx::enter(&mut storage, || {
-            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_transfer_policy(
+                    TIP403Setup::whitelist(admin).with_members([admin, TIP_FEE_MANAGER_ADDRESS]),
+                )
+                .apply()?;
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(caller, U256::from(10000))
                 .apply()?;
-
-            set_whitelist_policy(&mut user_token, admin, vec![admin, TIP_FEE_MANAGER_ADDRESS])?;
 
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
@@ -984,16 +959,16 @@ mod tests {
     #[test]
     fn test_mint_requires_to_recipient_on_user_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        let admin = Address::random();
-        let to = Address::random();
+        let [admin, to] = actors();
         StorageCtx::enter(&mut storage, || {
-            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_transfer_policy(
+                    TIP403Setup::whitelist(admin).with_members([admin, TIP_FEE_MANAGER_ADDRESS]),
+                )
+                .apply()?;
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, U256::from(10000))
                 .apply()?;
-
-            set_whitelist_policy(&mut user_token, admin, vec![admin, TIP_FEE_MANAGER_ADDRESS])?;
 
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
@@ -1015,25 +990,21 @@ mod tests {
     #[test]
     fn test_mint_requires_to_recipient_on_validator_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        let admin = Address::random();
-        let to = Address::random();
+        let [admin, to] = actors();
         StorageCtx::enter(&mut storage, || {
-            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
-            let mut validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
-                .with_mint(admin, U256::from(10000))
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([
+                    admin,
+                    TIP_FEE_MANAGER_ADDRESS,
+                    to,
+                ]))
                 .apply()?;
-
-            set_whitelist_policy(
-                &mut user_token,
-                admin,
-                vec![admin, TIP_FEE_MANAGER_ADDRESS, to],
-            )?;
-            set_whitelist_policy(
-                &mut validator_token,
-                admin,
-                vec![admin, TIP_FEE_MANAGER_ADDRESS],
-            )?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_mint(admin, U256::from(10000))
+                .with_transfer_policy(
+                    TIP403Setup::whitelist(admin).with_members([admin, TIP_FEE_MANAGER_ADDRESS]),
+                )
+                .apply()?;
 
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
@@ -1093,19 +1064,20 @@ mod tests {
     #[test]
     fn test_burn_requires_lp_sender_authorization_on_both_tokens() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        let admin = Address::random();
-        let lp = Address::random();
-        let to = Address::random();
+        let [admin, lp, to] = actors();
         StorageCtx::enter(&mut storage, || {
-            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
-            let mut validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
-
-            set_whitelist_policy(&mut user_token, admin, vec![TIP_FEE_MANAGER_ADDRESS, to])?;
-            set_whitelist_policy(
-                &mut validator_token,
-                admin,
-                vec![lp, TIP_FEE_MANAGER_ADDRESS, to],
-            )?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_transfer_policy(
+                    TIP403Setup::whitelist(admin).with_members([TIP_FEE_MANAGER_ADDRESS, to]),
+                )
+                .apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([
+                    lp,
+                    TIP_FEE_MANAGER_ADDRESS,
+                    to,
+                ]))
+                .apply()?;
 
             let mut amm = TipFeeManager::new();
             let pool_id = setup_pool_with_liquidity(
@@ -1136,23 +1108,20 @@ mod tests {
     #[test]
     fn test_burn_requires_lp_sender_authorization_on_validator_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        let admin = Address::random();
-        let lp = Address::random();
-        let to = Address::random();
+        let [admin, lp, to] = actors();
         StorageCtx::enter(&mut storage, || {
-            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
-            let mut validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
-
-            set_whitelist_policy(
-                &mut user_token,
-                admin,
-                vec![lp, TIP_FEE_MANAGER_ADDRESS, to],
-            )?;
-            set_whitelist_policy(
-                &mut validator_token,
-                admin,
-                vec![TIP_FEE_MANAGER_ADDRESS, to],
-            )?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([
+                    lp,
+                    TIP_FEE_MANAGER_ADDRESS,
+                    to,
+                ]))
+                .apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_transfer_policy(
+                    TIP403Setup::whitelist(admin).with_members([TIP_FEE_MANAGER_ADDRESS, to]),
+                )
+                .apply()?;
 
             let mut amm = TipFeeManager::new();
             let pool_id = setup_pool_with_liquidity(
@@ -1216,12 +1185,10 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(10000000_U256);
             let token1 = TIP20Setup::create("Token1", "TK1", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
             let token2 = TIP20Setup::create("Token2", "TK2", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1546,8 +1513,7 @@ mod tests {
     #[test]
     fn test_rebalance_swap() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let recipient = Address::random();
+        let [admin, recipient] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(10000000_U256);
@@ -1555,13 +1521,11 @@ mod tests {
             let amm_address = amm.address;
 
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .with_mint(amm_address, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1597,19 +1561,16 @@ mod tests {
     #[test]
     fn test_mint_subsequent_deposit() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let second_user = Address::random();
+        let [admin, second_user] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(100000000_U256);
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .with_mint(second_user, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .with_mint(second_user, mint_amount)
                 .apply()?
@@ -1661,18 +1622,15 @@ mod tests {
     #[test]
     fn test_burn() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let recipient = Address::random();
+        let [admin, recipient] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(100000000_U256);
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1724,18 +1682,15 @@ mod tests {
     #[test]
     fn test_burn_insufficient_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let other_user = Address::random();
+        let [admin, other_user] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(100000000_U256);
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1768,8 +1723,7 @@ mod tests {
     #[test]
     fn test_rebalance_swap_zero_amount_out() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let to = Address::random();
+        let [admin, to] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
@@ -1802,12 +1756,10 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(10000000_U256);
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1837,18 +1789,15 @@ mod tests {
     #[test]
     fn test_t1c_burn_respects_reservation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let admin = Address::random();
-        let recipient = Address::random();
+        let [admin, recipient] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(100000000_U256);
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1881,18 +1830,15 @@ mod tests {
     #[test]
     fn test_t1c_partial_burn_with_reservation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let admin = Address::random();
-        let recipient = Address::random();
+        let [admin, recipient] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(100000000_U256);
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1919,21 +1865,18 @@ mod tests {
     #[test]
     fn test_t1c_rebalance_swap_respects_reservation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let admin = Address::random();
-        let to = Address::random();
+        let [admin, to] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(100000000_U256);
             let mut amm = TipFeeManager::new();
             let amm_address = amm.address;
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .with_mint(amm_address, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1957,21 +1900,18 @@ mod tests {
     #[test]
     fn test_pre_t1c_rebalance_swap_skips_reservation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
-        let admin = Address::random();
-        let to = Address::random();
+        let [admin, to] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(100000000_U256);
             let mut amm = TipFeeManager::new();
             let amm_address = amm.address;
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .with_mint(amm_address, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
@@ -1990,18 +1930,15 @@ mod tests {
     #[test]
     fn test_pre_t1c_no_reservation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
-        let admin = Address::random();
-        let recipient = Address::random();
+        let [admin, recipient] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mint_amount = uint!(100000000_U256);
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
             let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .with_mint(admin, mint_amount)
                 .apply()?
                 .address();
