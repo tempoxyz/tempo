@@ -32,13 +32,23 @@ const PHASE_TIMEOUT: Duration = Duration::from_secs(180);
 const EPISODE_TIMEOUT: Duration = Duration::from_secs(1200);
 
 macro_rules! phase {
-    ($message:literal, $duration:expr, $work:expr) => {{
+    ($($case:ident,)? $message:literal, $duration:expr, $work:expr) => {{
         let result = timeout($duration, $work).await
             .wrap_err(concat!($message, ": timed out")).and_then(|result| result);
-        assert_always!(result.is_ok(), $message,
-            &json!({"error": result.as_ref().err().map(|error| format!("{error:#}"))}));
+        phase!(@assert $($case,)? $message, result);
         result.wrap_err($message)
     }};
+    // The SDK catalogs constant messages as property IDs; details do not separate cases.
+    (@assert $case:ident, $message:literal, $result:ident) => {
+        match $case {
+            Case::Backup => phase!(@assert concat!("Backup outage: ", $message), $result),
+            Case::Leader => phase!(@assert concat!("Leader outage: ", $message), $result),
+        }
+    };
+    (@assert $message:expr, $result:ident) => {
+        assert_always!($result.is_ok(), $message,
+            &json!({"error": $result.as_ref().err().map(|error| format!("{error:#}"))}))
+    };
 }
 
 /// The role of the process intentionally crashed in the first phase.
@@ -57,7 +67,15 @@ impl Context {
         dir: &Path,
         case: Option<Case>,
     ) -> eyre::Result<()> {
+        let case = case.unwrap_or_else(|| {
+            if random_index(2) == 0 {
+                Case::Backup
+            } else {
+                Case::Leader
+            }
+        });
         phase!(
+            case,
             "Single-sequencer outage episode finishes within the quiet window",
             EPISODE_TIMEOUT,
             async {
@@ -71,8 +89,11 @@ impl Context {
                 let members = SEQUENCER_INDICES
                     .map(|index| Ok(Account::at(index)?.address()))
                     .collect::<eyre::Result<Vec<_>>>()?;
-                let (baseline, membership) =
-                    phase!("Outage preconditions become ready", PHASE_TIMEOUT, async {
+                let (baseline, membership) = phase!(
+                    case,
+                    "Outage preconditions become ready",
+                    PHASE_TIMEOUT,
+                    async {
                         recover_until(Instant::now() + PHASE_TIMEOUT, async || {
                             if !self.reconcile_intents().await? {
                                 return Ok(None);
@@ -104,19 +125,13 @@ impl Context {
                             Ok(Some((checkpoint, membership)))
                         })
                         .await
-                    })?;
+                    }
+                )?;
                 let leader = members
                     .iter()
                     .position(|address| *address == membership.leader)
                     .ok_or_eyre("leader is not one of the controlled sequencers")?;
                 let backups: Vec<_> = (0..3).filter(|node| *node != leader).collect();
-                let case = case.unwrap_or_else(|| {
-                    if random_index(2) == 0 {
-                        Case::Backup
-                    } else {
-                        Case::Leader
-                    }
-                });
                 let victim = match case {
                     Case::Backup => backups[random_index(2)],
                     Case::Leader => leader,
@@ -129,6 +144,7 @@ impl Context {
                 let max_tip = self.maximum_zone_tip().await?;
                 let mut held = Hold::new(self, dir, victim)?;
                 let outage = phase!(
+                    case,
                     "Fresh settlement progresses while the first sequencer stays down",
                     HOLD_TIMEOUT,
                     async {
@@ -136,7 +152,7 @@ impl Context {
                         held.while_down(async {
                             if matches!(case, Case::Leader) {
                                 phase!(
-                                    "Explicit admin handoff from the crashed leader finalizes",
+                                    "Leader outage: Explicit admin handoff from the crashed leader finalizes",
                                     HOLD_TIMEOUT,
                                     self.outage_handoff(&membership, members[active])
                                 )?;
@@ -153,6 +169,7 @@ impl Context {
                     }
                 );
                 let restored = phase!(
+                    case,
                     "First crashed sequencer restarts",
                     PHASE_TIMEOUT,
                     held.restore()
@@ -160,6 +177,7 @@ impl Context {
                 let (settled, canary) = outage?;
                 restored?;
                 phase!(
+                    case,
                     "Restarted sequencer catches up to the exact finalized receipt and hash",
                     PHASE_TIMEOUT,
                     async {
@@ -172,10 +190,16 @@ impl Context {
                         .await
                     }
                 )?;
-                assert_reachable!(
-                    "A controlled sequencer restarts and catches up after outage settlement",
-                    &json!({"case": case, "victim": victim, "canary": canary})
-                );
+                match case {
+                    Case::Backup => assert_reachable!(
+                        "Backup outage: A controlled sequencer restarts and catches up after outage settlement",
+                        &json!({"case": case, "victim": victim, "canary": canary})
+                    ),
+                    Case::Leader => assert_reachable!(
+                        "Leader outage: A controlled sequencer restarts and catches up after outage settlement",
+                        &json!({"case": case, "victim": victim, "canary": canary})
+                    ),
+                }
 
                 // With unchanged 2-of-3 membership, leader + restarted victim are the ONLY two
                 // available signers. The canary is signed AFTER the other backup is reaped and its
@@ -187,6 +211,7 @@ impl Context {
                 let max_tip = self.maximum_zone_tip().await?;
                 let mut held = Hold::new(self, dir, other)?;
                 let attestation = phase!(
+                    case,
                     "Restarted victim participates in fresh settlement with the other backup down",
                     HOLD_TIMEOUT,
                     async {
@@ -198,6 +223,7 @@ impl Context {
                     }
                 );
                 let restored = phase!(
+                    case,
                     "Other backup restarts after the attestation proof",
                     PHASE_TIMEOUT,
                     held.restore()
@@ -205,6 +231,7 @@ impl Context {
                 let (fresh, second) = attestation?;
                 restored?;
                 phase!(
+                    case,
                     "All zone nodes converge after the single-sequencer outage episode",
                     PHASE_TIMEOUT,
                     async {
@@ -612,6 +639,61 @@ mod tests {
         transports::mock::Asserter,
     };
 
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn outage_cases_have_independent_sdk_catalog_properties() {
+        let class = module_path!().strip_suffix("::tests").unwrap();
+        let entries: Vec<_> = antithesis_sdk::assert::ANTITHESIS_CATALOG
+            .iter()
+            .filter(|entry| entry.class == class)
+            .collect();
+        let actual: BTreeMap<_, _> = entries
+            .iter()
+            .map(|entry| {
+                assert_eq!(entry.id, entry.message);
+                assert!(entry.must_hit);
+                (entry.id.to_owned(), entry.display_type)
+            })
+            .collect();
+        assert_eq!(actual.len(), entries.len(), "duplicate outage property IDs");
+        let mut expected = BTreeMap::new();
+        for case in ["Backup", "Leader"] {
+            for phase in [
+                "Single-sequencer outage episode finishes within the quiet window",
+                "Outage preconditions become ready",
+                "Fresh settlement progresses while the first sequencer stays down",
+                "First crashed sequencer restarts",
+                "Restarted sequencer catches up to the exact finalized receipt and hash",
+                "Restarted victim participates in fresh settlement with the other backup down",
+                "Other backup restarts after the attestation proof",
+                "All zone nodes converge after the single-sequencer outage episode",
+            ] {
+                expected.insert(format!("{case} outage: {phase}"), "Always");
+            }
+            expected.insert(
+                format!("{case} outage: A controlled sequencer restarts and catches up after outage settlement"),
+                "Reachable",
+            );
+        }
+        expected.insert(
+            "Leader outage: Explicit admin handoff from the crashed leader finalizes".to_owned(),
+            "Always",
+        );
+        for message in [
+            "Backup process outage settles and the restarted victim freshly attests",
+            "Leader process outage with explicit admin handoff settles and the restarted victim freshly attests",
+        ] {
+            expected.insert(message.to_owned(), "Reachable");
+        }
+        // Cleanup is the only property shared between the two episodes and terminal checks.
+        expected.insert(
+            "Intentional sequencer holds are released".to_owned(),
+            "Always",
+        );
+        assert_eq!(actual, expected);
+    }
+
     fn status(dir: &Path, id: u64, state: &str, generation: u64) {
         fs::write(
             dir.join("zone-0.status"),
@@ -847,22 +929,26 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn phase_timeout_and_errors_are_failures_not_skips() {
-        let result = phase!(
-            "Test outage phase",
-            Duration::from_secs(1),
-            std::future::pending::<eyre::Result<()>>()
-        );
-        assert_eq!(
-            format!("{:#}", result.unwrap_err()),
-            "Test outage phase: Test outage phase: timed out: deadline has elapsed"
-        );
-        let result: eyre::Result<()> = phase!("Test outage phase", Duration::from_secs(1), async {
-            eyre::bail!("broken proof")
-        });
-        assert_eq!(
-            format!("{:#}", result.unwrap_err()),
-            "Test outage phase: broken proof"
-        );
+        for case in [Case::Backup, Case::Leader] {
+            let result = phase!(
+                case,
+                "Test outage phase",
+                Duration::from_secs(1),
+                std::future::pending::<eyre::Result<()>>()
+            );
+            assert_eq!(
+                format!("{:#}", result.unwrap_err()),
+                "Test outage phase: Test outage phase: timed out: deadline has elapsed"
+            );
+            let result: eyre::Result<()> =
+                phase!(case, "Test outage phase", Duration::from_secs(1), async {
+                    eyre::bail!("broken proof")
+                });
+            assert_eq!(
+                format!("{:#}", result.unwrap_err()),
+                "Test outage phase: broken proof"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

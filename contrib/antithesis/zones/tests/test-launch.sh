@@ -18,7 +18,10 @@ grep -Fqx 'custom.include_for_node_termination=^zone-[0-2]$' "$ARGS_FILE"
 grep -qx 'antithesis.duration=30' "$ARGS_FILE"
 grep -qx 'custom.disable_network_faults=true' "$ARGS_FILE"
 grep -Fqx '^(l1|provision|workload|zone-rpc)$' "$ARGS_FILE"
-! grep -q 'fault.tolerance' "$ARGS_FILE"
+if grep -q 'fault.tolerance' "$ARGS_FILE"; then
+    echo 'unexpected fault_tolerance parameter' >&2
+    exit 1
+fi
 for args in 'latest 30 24' "$image 31 24" "$image 0 24" "$image 30 1001" "$image 30 24 --other"; do
     rm "$ARGS_FILE"
     # Inputs are fixture literals, deliberately split into argv (never evaluated as code).

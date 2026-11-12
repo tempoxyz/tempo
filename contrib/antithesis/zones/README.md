@@ -138,6 +138,8 @@ assertion. Terminal checks release outstanding holds after a cancelled driver.
 
 The two cases are a backup crash with the leader alive, and a leader crash followed by an
 **explicit admin handoff** to a surviving sequencer. Neither claims automatic leader election.
+Each case has independent episode, phase and reachability properties, so a leader-case failure
+cannot mark the backup-case properties as failed.
 For each case, progress must include a new canary transaction finalized on L1 while the victim
 is still held down. After restart, the victim must catch up through real RPC reads at the same
 finalized checkpoint and preserve the canary receipt.
