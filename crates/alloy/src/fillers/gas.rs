@@ -103,9 +103,11 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
         }
         if request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER)
             && request.gas_limit().is_none()
+            && (request.max_fee_per_gas().is_some() || request.max_priority_fee_per_gas().is_some())
         {
             // The sponsor pays the fees, so the estimate is unpriced: a priced one is capped by the
-            // sender's fee token balance. The inner filler then fills only the fees.
+            // sender's fee token balance. The inner filler then fills only the fees. Without fees
+            // the request is already unpriced and the inner filler estimates it concurrently.
             let mut unpriced = estimate_request.clone();
             unpriced.inner.max_fee_per_gas = None;
             unpriced.inner.max_priority_fee_per_gas = None;
