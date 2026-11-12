@@ -706,7 +706,8 @@ where
             } else {
                 MessageKind::Call
             },
-            depth: frame.depth.saturating_add(1),
+            // The EVM runs no frame past its call depth limit, so this cannot overflow.
+            depth: frame.depth + 1,
             gas_limit,
             reservoir: self.gas_tracker.reservoir(),
             destination: target,
