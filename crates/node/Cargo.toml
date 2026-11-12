@@ -61,8 +61,9 @@ alloy-rpc-types-admin.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
 alloy-primitives.workspace = true
+alloy-provider = { workspace = true, features = ["pubsub"] }
+alloy-rpc-client.workspace = true
 
-async-trait.workspace = true
 clap.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
@@ -87,6 +88,8 @@ tokio-stream = { workspace = true, features = ["sync"] }
 antithesis_sdk = { workspace = true, optional = true }
 
 [dev-dependencies]
+alloy-rpc-client = { workspace = true, features = ["ws-base"] }
+alloy-transport.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
 tempo-precompiles.workspace = true
