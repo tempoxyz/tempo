@@ -291,7 +291,7 @@ jobs:
         id: hold-tags
         shell: bash
         env:
-          HOLD: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/tempo/v')) && startsWith(github.workflow_ref, 'tempoxyz/tempo/.github/workflows/docker.yml@') }}
+          HOLD: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.pr_number == '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/rc/') || startsWith(github.ref, 'refs/tags/tempo/v')) && startsWith(github.workflow_ref, 'tempoxyz/tempo/.github/workflows/docker.yml@') }}
           TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
           TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
@@ -513,11 +513,14 @@ jobs:
   # Kyverno admits tempoxyz images only with registry-attached build provenance,
   # which is also how consumers verify them (gh attestation verify). PR-head
   # builds would attest unreviewed code as the dispatching ref, so they are skipped;
-  # attest-images.yml itself refuses any run that isn't a trusted main or release-tag run.
+  # attest-images.yml itself refuses any run that isn't a trusted main, rc/* or release-tag run.
   attest:
     name: Attest images
     needs: build-and-push
-    # Other callers (Network E2E, reth bump) and other refs (rc/*) publish unattested images.
+    # rc/* pushes are attested too (rc/* branches are ruleset-protected); the prod
+    # Kyverno policy admits only main and tag provenance, so rc images stay out of prod.
+    # Other callers (Network E2E, reth bump), /docker PR builds and merge-group builds
+    # publish unattested images.
     # Gated on build-and-push's hold flag, which carries the trusted-run condition, so
     # held tags always get an attest job and attest never runs without held tags.
     if: needs.build-and-push.outputs.hold == 'true'

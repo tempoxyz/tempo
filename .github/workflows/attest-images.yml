@@ -1,7 +1,7 @@
 name: Attest Images
 
 # Attaches GitHub build provenance to published images, one matrix job per
-# repository@digest, and pushes each attestation next to its image so Kyverno
+# repository@digest (each index and its platform manifests), and pushes each attestation next to its image so Kyverno
 # can verify it. Callers pass digests from push receipts, never mutable tags.
 on:
   workflow_call:
@@ -17,8 +17,67 @@ on:
 permissions: {}
 
 jobs:
+  # Multi-platform images are an index of per-platform manifests. Attesting each
+  # manifest as well as the index keeps a platform-pinned digest verifiable.
+  platforms:
+    name: Resolve platform manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      packages: read
+    outputs:
+      image_refs: ${{ steps.expand.outputs.image_refs }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Log in to Container Registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          username: ${{ vars.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Add each image's platform manifests
+        id: expand
+        env:
+          IMAGE_REFS: ${{ inputs.image_refs }}
+        run: |
+          set -euo pipefail
+          refs=()
+          while IFS= read -r ref; do
+            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/[a-z0-9-]+@sha256:[0-9a-f]{64}$ ]] || {
+              echo "Invalid image reference: $ref" >&2
+              exit 1
+            }
+            refs+=("$ref")
+            raw=""
+            for attempt in {1..5}; do
+              raw="$(docker buildx imagetools inspect --raw "$ref" < /dev/null)" && break
+              raw=""
+              echo "Retrying manifest read for $ref (attempt $attempt/5)" >&2
+              sleep "$((attempt * 5))"
+            done
+            [[ -n "$raw" ]] || { echo "Could not read the manifest of $ref" >&2; exit 1; }
+            # A single-platform manifest has no children. BuildKit's attestation
+            # manifests (platform unknown/unknown) are not images, so skip them.
+            while IFS= read -r digest; do
+              refs+=("${ref%@*}@$digest")
+            done < <(jq -r '(.manifests // [])[]
+              | select(.platform.os != "unknown" and .annotations["vnd.docker.reference.type"] != "attestation-manifest")
+              | .digest' <<< "$raw")
+          done < <(jq -r '.[]' <<< "$IMAGE_REFS")
+          printf 'image_refs=%s\n' "$(printf '%s\n' "${refs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')" >> "$GITHUB_OUTPUT"
+
   attest:
     name: Attest ${{ matrix.ref }}
+    needs: platforms
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -28,7 +87,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ref: ${{ fromJSON(inputs.image_refs) }}
+        ref: ${{ fromJSON(needs.platforms.outputs.image_refs) }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -42,11 +101,12 @@ jobs:
         run: |
           set -euo pipefail
           # Reusable workflows sign as themselves whoever calls them, so attest only
-          # for this repository's own trusted runs on main or a release tag.
+          # for this repository's own trusted runs on main, an rc/ branch (any name, as
+          # docker.yml's hold flag) or a release tag.
           fail() { echo "Refusing to attest: $1" >&2; exit 1; }
           [[ "$REPO" == tempoxyz/tempo ]] || fail "repository $REPO"
           [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
-          [[ "$REF" == refs/heads/main || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
+          [[ "$REF" == refs/heads/main || "$REF" == refs/heads/rc/* || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
           [[ "$WORKFLOW_REF" =~ ^tempoxyz/tempo/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ ]] || fail "workflow $WORKFLOW_REF"
           [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
 
