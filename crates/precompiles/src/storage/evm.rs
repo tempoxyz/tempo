@@ -812,6 +812,8 @@ where
 
         // Settle the gas of the nested callees this rolled back as if they had reverted, which
         // leaves the tracker as their reverts would have. Without nested calls nothing changes.
+        // A callee that left no journal entry also matches a checkpoint taken right after its
+        // call, which is benign: its gas is for state that was already rolled back.
         let (mut state_gas_spent, mut refunded) = (0i64, 0i64);
         while let Some(call) = self
             .merged_call_gas
@@ -1041,7 +1043,9 @@ impl Drop for RunningNestedCall {
 /// it back when a checkpoint rolls the callee's state back.
 struct MergedCallGas {
     /// Length of the state journal when the call started. A rollback to a checkpoint that is not
-    /// past it undoes the callee.
+    /// past it undoes the callee. A callee that left no journal entry also matches a checkpoint
+    /// taken right after its call, which is benign: its gas is for state that was already rolled
+    /// back.
     journal_len: usize,
     /// The callee's net EIP-8037 state gas, negative when it cleared more state than it created.
     state_gas_spent: i64,

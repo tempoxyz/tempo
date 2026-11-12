@@ -422,6 +422,8 @@ mod tests {
     const FATAL: u8 = 6;
     /// [`nested_caller`] calldata that panics.
     const PANIC: u8 = 7;
+    /// [`nested_caller`] calldata that does as [`ROLL_BACK_CALL`] does, then fails.
+    const FAIL_AFTER_ROLL_BACK: u8 = 8;
 
     struct TestTypes;
 
@@ -676,12 +678,13 @@ mod tests {
             let input = match mode {
                 Some(CALL_BACK) => Bytes::from_static(&[LEAF]),
                 Some(RECURSE) => Bytes::copy_from_slice(calldata),
-                Some(FAIL_AFTER_CALL | ROLL_BACK_CALL) => Bytes::new(),
+                Some(FAIL_AFTER_CALL | ROLL_BACK_CALL | FAIL_AFTER_ROLL_BACK) => Bytes::new(),
                 Some(FATAL) => return Err(TempoPrecompileError::Fatal("fatal mode".to_string())),
                 Some(PANIC) => panic!("panic mode"),
                 _ => return Ok(Bytes::new()),
             };
-            let checkpoint = (mode == Some(ROLL_BACK_CALL)).then(|| storage.checkpoint());
+            let checkpoint = matches!(mode, Some(ROLL_BACK_CALL | FAIL_AFTER_ROLL_BACK))
+                .then(|| storage.checkpoint());
             let outcome = storage.call(caller, input, u64::MAX, false)?;
             if mode == Some(FAIL_AFTER_CALL) {
                 // The callee's changes and gas are this frame's until it fails.
@@ -693,6 +696,9 @@ mod tests {
             if let Some(checkpoint) = checkpoint {
                 storage.sstore(NESTED_CALLER_ADDRESS, U256::ONE, U256::ONE)?;
                 drop(checkpoint);
+                if mode == Some(FAIL_AFTER_ROLL_BACK) {
+                    return Err(TempoPrecompileError::under_overflow());
+                }
             }
             let (CallOutcome::Success(output) | CallOutcome::Failure(output)) = outcome;
             let count = storage.sload(NESTED_CALLER_ADDRESS, U256::ZERO)?;
@@ -984,11 +990,15 @@ mod tests {
     }
 
     /// A precompile that rolls back a callee's state gas refill after spending it pays the refill
-    /// back from its gas, and runs out of gas if it cannot.
+    /// back from its gas, and runs out of gas if it cannot, even if it then reverts.
     #[test]
     fn test_precompile_pays_back_rolled_back_refill_or_runs_out_of_gas() {
         let spec = TempoHardfork::T4;
-        for (gas_limit, out_of_gas) in [(10_000_000, false), (100_000, true)] {
+        for (mode, gas_limit, out_of_gas) in [
+            (ROLL_BACK_CALL, 10_000_000, false),
+            (ROLL_BACK_CALL, 100_000, true),
+            (FAIL_AFTER_ROLL_BACK, 100_000, true),
+        ] {
             // sstore(1, 0); stop
             let mut evm = nested_call_evm(spec, true, Some(bytes!("5f60015500")));
             let state_gas = evm.version().gas_params.get(GasId::SstoreSetState);
@@ -1004,7 +1014,7 @@ mod tests {
                     STATE_CHANGER,
                     NESTED_CALLER_ADDRESS,
                     Bytes::new(),
-                    ROLL_BACK_CALL,
+                    mode,
                     gas_limit,
                 )
             };
