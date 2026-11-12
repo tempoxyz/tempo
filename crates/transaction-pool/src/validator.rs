@@ -118,6 +118,10 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
     metrics: ValidationMetrics,
+    /// Advanced before the pool is repaired for a canonical update. Validation stamps each
+    /// transaction with the value it read before opening state, and admission inserts, under the
+    /// read lock, only transactions stamped with the current value.
+    pub(crate) admission_epoch: RwLock<u64>,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -157,6 +161,7 @@ where
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
             metrics: ValidationMetrics::default(),
+            admission_epoch: RwLock::default(),
         }
     }
 
@@ -357,8 +362,11 @@ where
     ///
     /// All transactions share the validator's tip-scoped [`StateCache`], so repeated state reads
     /// are served from memory across transactions and across concurrent validation calls.
+    ///
+    /// `admission_epoch` is the admission epoch read before `state_provider` was opened.
     fn validate_batch<P: StateProvider>(
         &self,
+        admission_epoch: u64,
         state_provider: P,
         cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
@@ -383,7 +391,10 @@ where
 
         transactions
             .into_iter()
-            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
+            .map(|(origin, mut transaction)| {
+                transaction.set_admission_epoch(admission_epoch);
+                self.validate_one_with_evm(origin, transaction, &mut evm)
+            })
             .collect()
     }
 
@@ -783,6 +794,7 @@ where
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
         let start = Instant::now();
+        let admission_epoch = *self.admission_epoch.read();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -792,6 +804,7 @@ where
 
         let outcome = self
             .validate_batch(
+                admission_epoch,
                 state_provider,
                 cached_state,
                 core::iter::once((origin, transaction)),
@@ -808,6 +821,7 @@ where
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let start = Instant::now();
+        let admission_epoch = *self.admission_epoch.read();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -820,7 +834,8 @@ where
             }
         };
 
-        let outcomes = self.validate_batch(state_provider, cached_state, transactions);
+        let outcomes =
+            self.validate_batch(admission_epoch, state_provider, cached_state, transactions);
         self.metrics.batch_duration_seconds.record(start.elapsed());
         outcomes
     }
@@ -831,6 +846,7 @@ where
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let start = Instant::now();
+        let admission_epoch = *self.admission_epoch.read();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -844,6 +860,7 @@ where
         };
 
         let outcomes = self.validate_batch(
+            admission_epoch,
             state_provider,
             cached_state,
             transactions.into_iter().map(|tx| (origin, tx)),
