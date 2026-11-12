@@ -1508,7 +1508,9 @@ jobs:
             echo "image_sha_tag=$image_sha_tag"
           } >> "$GITHUB_OUTPUT"
 
+      # Selected-ref dispatches from other refs still publish, unattested.
       - name: Require a trusted run to attest
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
         env:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
@@ -1527,6 +1529,7 @@ jobs:
 
       # Attest before the CI event announces the image, so deployments admit it.
       - name: Attest the promoted ghcr.io tempo-zone image
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/tempo-zone
@@ -1534,6 +1537,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the promoted Docker Hub tempo-zone image
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: index.docker.io/tempoxyz/tempo-zone
@@ -1541,6 +1545,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest the promoted staging image
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.STAGING_REPOSITORY }}
