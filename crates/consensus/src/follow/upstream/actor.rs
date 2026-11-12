@@ -5,7 +5,7 @@ use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
-use jsonrpsee::{
+use jsonrpsee_client::{
     core::client::{ClientT as _, Subscription},
     rpc_params,
     ws_client::{PingConfig, WsClient, WsClientBuilder},

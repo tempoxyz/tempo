@@ -384,7 +384,10 @@ indicatif = "0.18"
 insta = { version = "1", features = ["yaml"] }
 itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
-jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
+jsonrpsee = { git = "https://github.com/paradigmxyz/reth", rev = "b05f9a86df7f45568f8c2fcc42512f702f548357", features = ["server", "macros"] }
+jsonrpsee-client = { package = "jsonrpsee", version = "0.26.1", features = ["client"] }
+jsonrpsee-core-client = { package = "jsonrpsee-core", version = "0.26.1", features = ["client"] }
+jsonrpsee-ws-client = "0.26.1"
 k256 = { version = "0.13.4", features = ["arithmetic", "ecdh"] }
 keccak-const = "0.2.0"
 metrics = "0.24.3"

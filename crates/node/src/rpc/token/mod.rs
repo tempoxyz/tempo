@@ -57,7 +57,6 @@ impl<EthApi> TempoToken<EthApi> {
     }
 }
 
-#[async_trait::async_trait]
 impl<EthApi: RpcNodeCore> TempoTokenApiServer for TempoToken<EthApi> {
     async fn role_history(
         &self,

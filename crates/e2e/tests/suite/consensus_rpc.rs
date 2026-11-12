@@ -12,7 +12,7 @@ use commonware_runtime::{
     deterministic::{self, Runner},
 };
 use futures::channel::oneshot;
-use jsonrpsee::{http_client::HttpClientBuilder, ws_client::WsClientBuilder};
+use jsonrpsee_client::{http_client::HttpClientBuilder, ws_client::WsClientBuilder};
 use tempo_node::rpc::consensus::{Event, Query, TempoConsensusApiClient};
 
 /// Test that subscribing to consensus events works and that finalization

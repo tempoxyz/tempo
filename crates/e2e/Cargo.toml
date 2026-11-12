@@ -76,7 +76,7 @@ serde_json.workspace = true
 [dev-dependencies]
 commonware-macros.workspace = true
 commonware-parallel.workspace = true
-jsonrpsee = { workspace = true, features = ["ws-client", "http-client"] }
+jsonrpsee-client = { workspace = true, features = ["ws-client", "http-client"] }
 tempo-alloy.workspace = true
 tempo-eyre.workspace = true
 tempo-primitives.workspace = true

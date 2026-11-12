@@ -21,7 +21,7 @@ use commonware_runtime::{
     deterministic::{self, Context, Runner},
 };
 use futures::{channel::oneshot, future::join_all};
-use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
+use jsonrpsee_client::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
 use tempo_consensus::{

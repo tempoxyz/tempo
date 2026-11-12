@@ -22,6 +22,10 @@ use jsonrpsee::{
         error::{INTERNAL_ERROR_CODE, SERVER_IS_BUSY_CODE, TOO_MANY_SUBSCRIPTIONS_CODE},
     },
 };
+use jsonrpsee_core_client::{
+    client::{ClientT, Error, Subscription, SubscriptionClientT},
+    params::ArrayParams,
+};
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
@@ -65,7 +69,7 @@ impl<T> From<types::Response<T>> for RpcResult<T> {
 }
 
 /// Consensus namespace RPC trait.
-#[rpc(server, client, namespace = "consensus")]
+#[rpc(server, namespace = "consensus")]
 pub trait TempoConsensusApi {
     /// Get finalization by height query.
     ///
@@ -83,6 +87,36 @@ pub trait TempoConsensusApi {
     #[subscription(name = "subscribe" => "event", unsubscribe = "unsubscribe", item = Event)]
     async fn subscribe_events(&self) -> jsonrpsee::core::SubscriptionResult;
 }
+
+/// Client interface for the consensus namespace.
+pub trait TempoConsensusApiClient: ClientT {
+    /// Get finalization by height query.
+    fn get_finalization(
+        &self,
+        query: Query,
+    ) -> impl Future<Output = Result<CertifiedBlock, Error>> + Send {
+        self.request("consensus_getFinalization", (query,))
+    }
+
+    /// Get the current consensus state snapshot.
+    fn get_latest(&self) -> impl Future<Output = Result<ConsensusState, Error>> + Send {
+        self.request("consensus_getLatest", ArrayParams::new())
+    }
+
+    /// Subscribe to finalized block events.
+    fn subscribe_events(&self) -> impl Future<Output = Result<Subscription<Event>, Error>> + Send
+    where
+        Self: SubscriptionClientT,
+    {
+        self.subscribe(
+            "consensus_subscribe",
+            ArrayParams::new(),
+            "consensus_unsubscribe",
+        )
+    }
+}
+
+impl<T: ClientT> TempoConsensusApiClient for T {}
 
 /// Default cap on concurrent `consensus_subscribe` subscriptions across all connections.
 ///
@@ -212,7 +246,6 @@ impl<I: Clone> TempoConsensusRpc<I> {
     }
 }
 
-#[async_trait::async_trait]
 impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
         self.consensus_feed.get_finalization(query).await.into()

@@ -1,14 +1,34 @@
 use super::*;
 use alloy_primitives::B256;
 use jsonrpsee::{
-    core::EmptyServerParams,
+    Methods,
     server::{Server, ServerConfig},
-    ws_client::WsClientBuilder,
+    types::{
+        Response,
+        response::{SubscriptionResponse, Success},
+    },
 };
+use jsonrpsee_ws_client::WsClientBuilder;
 use reth_primitives_traits::SealedBlock;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
+
+async fn subscribe(
+    module: &Methods,
+) -> Result<tokio::sync::mpsc::Receiver<String>, jsonrpsee::types::ErrorObjectOwned> {
+    let (response, receiver) = module
+        .raw_json_request(
+            r#"{"jsonrpc":"2.0","id":1,"method":"consensus_subscribe","params":[]}"#,
+            256,
+        )
+        .await
+        .unwrap();
+    Success::<serde_json::Value>::try_from(
+        serde_json::from_str::<Response<'_, serde_json::Value>>(&response).unwrap(),
+    )?;
+    Ok(receiver)
+}
 
 /// A feed with no publisher of its own, modelling a node whose finalization has stalled.
 /// Tests that need events send them on `events_tx` directly.
@@ -65,10 +85,7 @@ async fn subscription_task_exits_on_disconnect_without_events() {
     )
     .into_rpc();
 
-    let subscription = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
+    let subscription = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
     drop(subscription);
@@ -125,10 +142,7 @@ async fn subscription_notification_carries_event() {
     )
     .into_rpc();
 
-    let mut subscription = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
+    let mut subscription = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
     let block = CertifiedBlock {
@@ -145,7 +159,11 @@ async fn subscription_notification_carries_event() {
         }))
         .unwrap();
 
-    let (received, _) = subscription.next::<Event>().await.unwrap().unwrap();
+    let notification = subscription.recv().await.unwrap();
+    let received = serde_json::from_str::<SubscriptionResponse<'_, Event>>(&notification)
+        .unwrap()
+        .params
+        .result;
     let Event::Finalized {
         block: received_block,
         seen,
@@ -184,29 +202,19 @@ async fn subscribe_is_rejected_as_busy_once_limit_is_reached() {
     )
     .into_rpc();
 
-    let first = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
+    let first = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
-    let err = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
+    let err = subscribe(&module)
         .await
         .expect_err("second subscription must be rejected");
-    let jsonrpsee::core::server::MethodsError::JsonRpc(err) = err else {
-        panic!("expected a JSON-RPC error, got {err:?}");
-    };
     assert_eq!(err.code(), SERVER_IS_BUSY_CODE);
     assert_eq!(events_tx.receiver_count(), 1);
 
     // Dropping the live subscription frees its permit.
     drop(first);
     wait_for_live_subscriptions(&events_tx, 0).await;
-    let _again = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
+    let _again = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 }
 
@@ -222,10 +230,7 @@ async fn subscriber_that_stops_reading_is_dropped() {
     .into_rpc();
 
     // Never read from the subscription, so its notifications pile up in the buffer.
-    let _subscription = module
-        .subscribe("consensus_subscribe", EmptyServerParams::new(), 256)
-        .await
-        .unwrap();
+    let _subscription = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
     for _ in 0..=MAX_PENDING_NOTIFICATIONS + 1 {
@@ -306,7 +311,7 @@ async fn subscriptions_are_capped_per_connection() {
     }
     wait_for_live_subscriptions(&events_tx, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get()).await;
 
-    let jsonrpsee::core::client::Error::Call(err) = first
+    let jsonrpsee_core_client::client::Error::Call(err) = first
         .subscribe_events()
         .await
         .expect_err("subscription over the per-connection cap must be rejected")
@@ -345,12 +350,7 @@ async fn handler_without_connection_cap_allows_more_per_connection() {
     // In-process subscriptions all share one connection ID.
     let mut held = Vec::new();
     for _ in 0..=DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() {
-        held.push(
-            module
-                .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-                .await
-                .unwrap(),
-        );
+        held.push(subscribe(&module).await.unwrap());
     }
     wait_for_live_subscriptions(
         &events_tx,
