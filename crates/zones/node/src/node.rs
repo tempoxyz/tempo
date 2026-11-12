@@ -887,12 +887,14 @@ where
                 container
                     .modules
                     .merge_configured(operator_zone_api.into_rpc())?;
-                container
-                    .modules
-                    .replace_configured(operator_get_code_module(
+                // Only on transports that serve the eth namespace, like the methods they replace.
+                container.modules.add_or_replace_if_module_configured(
+                    reth_rpc_builder::RethRpcModule::Eth,
+                    operator_get_code_module(
                         container.registry.eth_api().clone(),
                         get_code_l1_state,
-                    )?)?;
+                    )?,
+                )?;
                 container.modules.merge_configured(
                     NodeZoneDebugApi::new(container.registry.eth_api().clone(), debug_l1_provider)
                         .into_rpc(),

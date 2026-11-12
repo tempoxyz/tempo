@@ -259,6 +259,16 @@ where
         });
     }
 
+    /// Returns whether T15 is active at `timestamp`, in seconds. From T15,
+    /// dealer logs with trailing bytes are invalid.
+    fn is_t15(&self, timestamp: u64) -> bool {
+        self.config
+            .execution_node
+            .chain_spec()
+            .tempo_hardfork_at(timestamp)
+            .is_t15()
+    }
+
     #[instrument(skip_all, err)]
     async fn is_state_v1_activated(&self, state: &State) -> eyre::Result<bool> {
         let chain_spec = self.config.execution_node.chain_spec();
@@ -538,7 +548,8 @@ where
                             Some(block) => {
                                 if let Some(pending) = outcome_requests.get_mut(&digest) {
                                     pending.fetch = None;
-                                    storage.cache_notarized_block(&round, block.inner());
+                                    let strict = self.is_t15(block.inner().header().timestamp());
+                                    storage.cache_notarized_block(&round, block.inner(), strict);
                                 }
                             }
                             None => {
@@ -669,7 +680,11 @@ where
         let height = Height::new(header.number());
         if !header.extra_data().is_empty() {
             'handle_log: {
-                let (dealer, log) = match read_dealer_log(header.extra_data().as_ref(), round) {
+                let (dealer, log) = match read_dealer_log(
+                    header.extra_data().as_ref(),
+                    round,
+                    self.is_t15(header.timestamp()),
+                ) {
                     Err(reason) => {
                         warn!(
                             %reason,
@@ -704,6 +719,7 @@ where
         round: &Round,
         VerifyDealerLog {
             epoch,
+            timestamp,
             bytes,
             response,
         }: VerifyDealerLog,
@@ -714,23 +730,15 @@ where
             warn!(%epoch, current_epoch = %state.epoch, "cannot verify dealer log for another epoch");
             return;
         }
-        let res = SignedDealerLog::<MinSig, PublicKey>::read_cfg(
-            &mut commonware_codec::Copying(&bytes[..]),
-            &NZU32!(round.players().len() as u32),
-        )
-        .wrap_err("failed reading dealer log from header")
-        .and_then(|log| {
-            log.check(round.info())
-                .map(|(dealer, _)| dealer)
-                .ok_or_eyre("dealer log signature is invalid")
-        })
-        .inspect(|_| {
-            self.metrics.dealings_read.metric().inc();
-        })
-        .inspect_err(|reason| {
-            warn!(%reason, "invalid DKG dealer log");
-            self.metrics.bad_dealings.metric().inc();
-        });
+        let res = read_dealer_log(&bytes, round, self.is_t15(timestamp))
+            .map(|(dealer, _)| dealer)
+            .inspect(|_| {
+                self.metrics.dealings_read.metric().inc();
+            })
+            .inspect_err(|reason| {
+                warn!(%reason, "invalid DKG dealer log");
+                self.metrics.bad_dealings.metric().inc();
+            });
         let _ = response.send(res.ok());
     }
 
@@ -1556,7 +1564,11 @@ where
                 .wrap_err("failed reading finalized header")?;
 
             if !header.extra_data().is_empty()
-                && let Ok((dealer, log)) = read_dealer_log(header.extra_data().as_ref(), &round)
+                && let Ok((dealer, log)) = read_dealer_log(
+                    header.extra_data().as_ref(),
+                    &round,
+                    self.is_t15(header.timestamp()),
+                )
                 && selected_dealers.position(&dealer).is_some()
             {
                 dealer_logs.entry(dealer).or_insert(log);
@@ -1831,14 +1843,22 @@ enum Outcome {
     NeedsAncestor(Height, Digest, commonware_consensus::types::Round),
 }
 
+/// Reads the signed dealer log in a block's `extra_data` and checks it against `round`.
+///
+/// With `strict` (from T15), the log must take up all of `bytes`. Before, trailing
+/// bytes are ignored.
 fn read_dealer_log(
     bytes: &[u8],
     round: &Round,
+    strict: bool,
 ) -> eyre::Result<(PublicKey, DealerLog<MinSig, PublicKey>)> {
-    let signed_log = SignedDealerLog::<MinSig, PublicKey>::read_cfg(
-        &mut commonware_codec::Copying(bytes),
-        &NZU32!(round.players().len() as u32),
-    )
+    let max_players = NZU32!(round.players().len() as u32);
+    let mut buf = commonware_codec::Copying(bytes);
+    let signed_log = if strict {
+        SignedDealerLog::<MinSig, PublicKey>::decode_cfg(buf, &max_players)
+    } else {
+        SignedDealerLog::<MinSig, PublicKey>::read_cfg(&mut buf, &max_players)
+    }
     .wrap_err("could not decode as signed dealer log")?;
 
     let (dealer, log) = signed_log

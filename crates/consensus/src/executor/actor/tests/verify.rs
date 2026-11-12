@@ -497,6 +497,49 @@ fn queued_verifications_from_different_rounds_both_complete() {
     });
 }
 #[test_traced]
+fn equivocating_candidates_for_the_same_round_both_complete() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let b2a = make_block(2, 2, b1.digest());
+        let b2b = make_block(3, 2, b1.digest());
+        let (d1, d2a, d2b) = (b1.digest(), b2a.digest(), b2b.digest());
+
+        // Keep the engine slot occupied so both requests queue before
+        // either verification starts.
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        h.deliver_tip(round(1), 1, d1);
+        let finalized = h.deliver_finalized(b1);
+        h.wait_until(|| h.execution.new_payloads() == vec![d1])
+            .await;
+
+        // Two candidates for one round: the second must not cancel the first.
+        let mut first = Box::pin(h.verify(round(2), b2a));
+        let mut second = Box::pin(h.verify(round(2), b2b));
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        h.run_for(Duration::from_millis(50)).await;
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+
+        release.send(()).unwrap();
+        finalized
+            .await
+            .expect("finalized block should be acknowledged");
+        assert!(first.await.unwrap().is_some());
+        assert!(second.await.unwrap().is_some());
+        let mut probed = h.execution.new_payloads();
+        probed.sort();
+        let mut expected = vec![d1, d2a, d2b];
+        expected.sort();
+        assert_eq!(probed, expected);
+    });
+}
+
+#[test_traced]
 fn a_later_build_waits_for_canceled_verification_delivery() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);

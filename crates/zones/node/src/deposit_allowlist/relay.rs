@@ -225,7 +225,6 @@ impl AllowlistRelay {
     }
 }
 
-#[jsonrpsee::core::async_trait]
 impl DepositAllowlistApiServer for AllowlistRelay {
     async fn set_deposit_allowed(
         &self,

@@ -520,6 +520,10 @@ where
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
+        // The 2D nonce update below repairs the pool for this update. An admission that validated
+        // against the previous state would insert after it with the nonce it read then.
+        pool.advance_admission_epoch();
+
         let (new, orphaned) = match event {
             CanonStateNotification::Reorg { old, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
@@ -567,6 +571,10 @@ where
         metrics
             .amm_cache_update_duration_seconds
             .record(amm_start.elapsed());
+
+        // Validation reads the caches refreshed above. An admission that validated while they
+        // were stale validates again instead of inserting too late for the scans below.
+        pool.advance_admission_epoch();
 
         // 3. Collect all block-level invalidation events
         let updates = TempoPoolUpdates::from_chain(tip);

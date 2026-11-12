@@ -1,6 +1,7 @@
 use crate::{
     AddressFilter,
     amm::AmmLiquidityCache,
+    metrics::ValidationMetrics,
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
@@ -29,6 +30,7 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
+    time::Instant,
 };
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
@@ -115,6 +117,12 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Cached here so hot paths can resolve the active hardfork with a single atomic load
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
+    metrics: ValidationMetrics,
+    /// Advanced after what validation reads is refreshed for a canonical update and before the
+    /// pool is repaired for it. Validation reports each outcome with the value it read before
+    /// opening the state it validated against, and admission inserts, under the read lock, only
+    /// outcomes reported with the current value.
+    pub(crate) admission_epoch: RwLock<u64>,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -153,6 +161,8 @@ where
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+            metrics: ValidationMetrics::default(),
+            admission_epoch: RwLock::default(),
         }
     }
 
@@ -349,38 +359,74 @@ where
         Ok(())
     }
 
-    /// Validates a batch of transactions against the same state snapshot.
+    /// Validates `transactions` in order against the tip's state, passing each outcome to
+    /// `on_outcome` before validating the next, with the tag its transaction came with.
     ///
-    /// All transactions share the validator's tip-scoped [`StateCache`], so repeated state reads
-    /// are served from memory across transactions and across concurrent validation calls.
-    fn validate_batch<P: StateProvider>(
+    /// State is opened once, and again only after the admission epoch advances. The epoch passed
+    /// with an outcome is the one read before opening the state it was validated against. A
+    /// failure to open state passes an error outcome for every transaction left.
+    ///
+    /// Transactions validated against one state share an EVM and the validator's tip-scoped
+    /// [`StateCache`], so repeated state reads are served from memory across transactions and
+    /// across concurrent validation calls.
+    pub(crate) fn validate_each<TTag>(
         &self,
-        state_provider: P,
-        cached_state: Arc<StateCache>,
-        transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
-    ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let db = StateCacheDb::new(
-            &cached_state,
-            StateProviderDatabase::new(
-                (&state_provider as &dyn StateProvider).into_evm_state_provider(),
-            ),
-        );
-        let mut evm_env = self
-            .cached_evm_env
-            .read()
-            .clone()
-            .with_nonce_check_disabled();
-        evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
+        transactions: impl IntoIterator<Item = (TTag, TransactionOrigin, TempoPooledTransaction)>,
+        mut on_outcome: impl FnMut(TTag, u64, TransactionValidationOutcome<TempoPooledTransaction>),
+    ) {
+        let start = Instant::now();
+        let mut transactions = transactions.into_iter().peekable();
+        // Runs once per admission epoch: the state opened here serves the transactions that
+        // follow until the epoch advances.
+        while transactions.peek().is_some() {
+            // Not `read`, which would park behind an advance that waits on an admission's insert.
+            let admission_epoch = *self.admission_epoch.read_recursive();
+            let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    for (tag, _, transaction) in transactions {
+                        on_outcome(
+                            tag,
+                            admission_epoch,
+                            TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(err.clone()),
+                            ),
+                        );
+                    }
+                    break;
+                }
+            };
+            let db = StateCacheDb::new(
+                &cached_state,
+                StateProviderDatabase::new(
+                    (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+                ),
+            );
+            let mut evm_env = self
+                .cached_evm_env
+                .read()
+                .clone()
+                .with_nonce_check_disabled();
+            evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
 
-        // Reuse the configured EVM and its loaded reads for the whole batch.
-        let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
-        evm.ext_mut().skip_valid_after_check = true;
-        evm.ext_mut().skip_liquidity_check = true;
+            // Reuse the configured EVM and its loaded reads for every transaction of this epoch.
+            let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
+            evm.ext_mut().skip_valid_after_check = true;
+            evm.ext_mut().skip_liquidity_check = true;
 
-        transactions
-            .into_iter()
-            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
-            .collect()
+            for (tag, origin, transaction) in transactions.by_ref() {
+                on_outcome(
+                    tag,
+                    admission_epoch,
+                    self.validate_one_with_evm(origin, transaction, &mut evm),
+                );
+                if *self.admission_epoch.read_recursive() != admission_epoch {
+                    break;
+                }
+            }
+        }
+        self.metrics.batch_duration_seconds.record(start.elapsed());
     }
 
     /// Returns the current tip's state provider and matching read cache.
@@ -778,20 +824,14 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
-
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            core::iter::once((origin, transaction)),
-        )
-        .pop()
-        .expect("validate_batch returns one outcome per transaction")
+        let mut outcomes = Vec::with_capacity(1);
+        self.validate_each(
+            core::iter::once(((), origin, transaction)),
+            |(), _, outcome| outcomes.push(outcome),
+        );
+        outcomes
+            .pop()
+            .expect("validate_each passes one outcome per transaction")
     }
 
     async fn validate_transactions(
@@ -799,19 +839,14 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|(_, tx)| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        self.validate_batch(state_provider, cached_state, transactions)
+        let mut outcomes = Vec::new();
+        self.validate_each(
+            transactions
+                .into_iter()
+                .map(|(origin, tx)| ((), origin, tx)),
+            |(), _, outcome| outcomes.push(outcome),
+        );
+        outcomes
     }
 
     async fn validate_transactions_with_origin(
@@ -819,23 +854,12 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            transactions.into_iter().map(|tx| (origin, tx)),
-        )
+        let mut outcomes = Vec::new();
+        self.validate_each(
+            transactions.into_iter().map(|tx| ((), origin, tx)),
+            |(), _, outcome| outcomes.push(outcome),
+        );
+        outcomes
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
@@ -853,6 +877,10 @@ where
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
+
+        // Reth calls this before it updates its pool for the new tip, so the advance comes after
+        // everything refreshed above and before that repair.
+        *self.admission_epoch.write() += 1;
     }
 }
 

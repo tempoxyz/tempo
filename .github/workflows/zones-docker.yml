@@ -333,6 +333,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      attestations: write
     outputs:
       image: ${{ steps.toolchain.outputs.image }}
     steps:
@@ -370,6 +371,7 @@ jobs:
         id: toolchain
         env:
           TOOLCHAIN_REPOSITORY: ghcr.io/tempoxyz/tempo-zone-eif-toolchain
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Hash only the toolchain Dockerfile and resolved Bake dependency graph.
@@ -381,17 +383,92 @@ jobs:
           image_ref="$TOOLCHAIN_REPOSITORY:inputs-$recipe_sha"
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+          # On main and tags, reuse a cached digest only if a main run of this workflow
+          # (protected branch, not any pushed tag) attested it for this recipe_sha;
+          # otherwise rebuild it from the trusted recipe, so these runs never attest a
+          # foreign digest.
+          if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
+            [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]] &&
+            ! gh attestation verify "oci://$TOOLCHAIN_REPOSITORY@$digest" \
+              --repo tempoxyz/tempo \
+              --signer-workflow tempoxyz/tempo/.github/workflows/zones-docker.yml \
+              --source-ref refs/heads/main \
+              --predicate-type https://tempo.xyz/attestations/eif-toolchain-recipe/v1 \
+              --format json 2> /dev/null |
+              jq -e --arg r "$recipe_sha" \
+                'any(.[]; .verificationResult.statement.predicate.recipe_sha == $r)' \
+                > /dev/null; then
+            echo "Cached $image_ref has no trusted attestation; rebuilding it" >&2
+            digest=""
+          fi
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            # Only main writes the shared recipe tag. Other runs push a run-scoped tag,
+            # so a tag or PR rebuild never replaces the digest main attested.
+            push_ref="$image_ref"
+            if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+              push_ref="$image_ref-run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            fi
             metadata="$RUNNER_TEMP/eif-toolchain.json"
             depot bake --project 0c6tg19qsp --push \
               -f zones/docker/docker-bake.hcl --metadata-file "$metadata" \
-              --set "tempo-zone-prover-eif-builder.tags=$image_ref" \
+              --set "tempo-zone-prover-eif-builder.tags=$push_ref" \
               tempo-zone-prover-eif-builder
             digest="$(jq -er '.["tempo-zone-prover-eif-builder"]["containerimage.digest"]' "$metadata")"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
           fi
           echo "image=$TOOLCHAIN_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+          echo "recipe_sha=$recipe_sha" >> "$GITHUB_OUTPUT"
           echo "EIF toolchain: \`$TOOLCHAIN_REPOSITORY@$digest\` (main recipe $(git rev-parse HEAD), inputs-$recipe_sha)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Require a trusted run to attest
+        id: trusted-run
+        if: steps.toolchain.outputs.pushed == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
+        env:
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          # Reusable workflows sign as themselves whoever calls them, so attest only
+          # for this repository's own trusted runs on main or a release tag.
+          fail() { echo "Refusing to attest: $1" >&2; exit 1; }
+          [[ "$REPO" == tempoxyz/tempo ]] || fail "repository $REPO"
+          [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
+          [[ "$REF" == refs/heads/main || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
+          [[ "$WORKFLOW_REF" =~ ^tempoxyz/tempo/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ ]] || fail "workflow $WORKFLOW_REF"
+          [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
+          echo "trusted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Split the published toolchain reference
+        id: toolchain-subject
+        if: steps.trusted-run.outputs.trusted == 'true'
+        env:
+          IMAGE: ${{ steps.toolchain.outputs.image }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE" =~ ^ghcr.io/tempoxyz/tempo-zone-eif-toolchain@sha256:[0-9a-f]{64}$ ]]
+          echo "digest=${IMAGE#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the toolchain image
+        if: steps.trusted-run.outputs.trusted == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/tempoxyz/tempo-zone-eif-toolchain
+          subject-digest: ${{ steps.toolchain-subject.outputs.digest }}
+          push-to-registry: true
+
+      # Reuse on main and tags trusts a cached toolchain only with this recipe attestation.
+      - name: Attest the toolchain recipe
+        if: steps.trusted-run.outputs.trusted == 'true'
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ghcr.io/tempoxyz/tempo-zone-eif-toolchain
+          subject-digest: ${{ steps.toolchain-subject.outputs.digest }}
+          push-to-registry: true
+          predicate-type: https://tempo.xyz/attestations/eif-toolchain-recipe/v1
+          predicate: '{"recipe_sha":"${{ steps.toolchain.outputs.recipe_sha }}"}'
 
   reproducible-eif-verify:
     name: Verify reproducible prover EIF
@@ -854,7 +931,9 @@ jobs:
       packages: write
       id-token: write
     outputs:
-      prover_image_refs: ${{ steps.publish.outputs.prover_image_refs }}
+      image_refs: ${{ steps.publish.outputs.image_refs }}
+      deferred_tags: ${{ steps.publish.outputs.deferred_tags }}
+      hold: ${{ steps.publish.outputs.hold }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -944,28 +1023,36 @@ jobs:
           PROVER_TAGS: ${{ steps.meta-tempo-zone-prover.outputs.tags }}
           UTILS_TAGS: ${{ steps.meta-tempo-zone-prover-utils.outputs.tags }}
           BUILDER_REF: ${{ needs.build-and-push.outputs.builder_ref }}
+          # Runs that attest push only the per-commit sha- tags here; tag-companion-images
+          # moves the rest once the digests are attested.
+          HOLD: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) }}
         run: |
           set -euo pipefail
-          : > "$RUNNER_TEMP/prover-image-refs.txt"
+          : > "$RUNNER_TEMP/image-refs.txt"
+          : > "$RUNNER_TEMP/held-tags.txt"
+          # Bind attestations to this push receipt, never a mutable tag lookup.
+          push_and_record() {
+            local tag="$1" digest
+            docker push "$tag" | tee "$RUNNER_TEMP/push.log"
+            digest="$(sed -nE 's/^.*: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$RUNNER_TEMP/push.log")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "Invalid push digest for $tag: $digest" >&2
+              exit 1
+            }
+            printf '%s@%s\n' "${tag%:*}" "$digest" >> "$RUNNER_TEMP/image-refs.txt"
+          }
           publish() {
-            local image="$1" metadata="$2" tag digest
+            local image="$1" metadata="$2" tag
             docker load --input "$RUNNER_TEMP/candidate-images/$image.tar"
             while IFS= read -r tag; do
               [[ -z "$tag" ]] && continue
               [[ "$tag" == "$REGISTRY/$image:"* || "$tag" == "docker.io/tempoxyz/$image:"* ]]
               docker tag "$image:candidate" "$tag"
-              if [[ "$image" == tempo-zone-prover ]]; then
-                # Bind signing to this push receipt, never a mutable tag lookup.
-                docker push "$tag" | tee "$RUNNER_TEMP/prover-push.log"
-                digest="$(sed -nE 's/^.*: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' "$RUNNER_TEMP/prover-push.log")"
-                [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-                  echo "Invalid prover push digest for $tag: $digest" >&2
-                  exit 1
-                }
-                printf '%s@%s\n' "${tag%:*}" "$digest" >> "$RUNNER_TEMP/prover-image-refs.txt"
-              else
-                docker push "$tag"
+              if [[ "$HOLD" == true && ! "$tag" =~ :sha-[0-9a-f]{7}$ ]]; then
+                echo "$tag" >> "$RUNNER_TEMP/held-tags.txt"
+                continue
               fi
+              push_and_record "$tag"
             done <<< "$metadata"
           }
           publish tempo-zone-xtask "$XTASK_TAGS"
@@ -975,20 +1062,55 @@ jobs:
             [[ "$BUILDER_REF" =~ ^ghcr.io/tempoxyz/tempo-zone-prover-eif-builder:inputs-[0-9a-f]{64}$ ]]
             docker load --input "$RUNNER_TEMP/candidate-images/eif-builder.tar"
             docker tag tempo-zone-prover-eif-builder:local "$BUILDER_REF"
-            docker push "$BUILDER_REF"
+            push_and_record "$BUILDER_REF"
           fi
-          printf 'prover_image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/prover-image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+          printf 'image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+          # Each held tag moves to the digest its repository's sha- tag was pushed as.
+          deferred="$(jq -Rsc --rawfile refs "$RUNNER_TEMP/image-refs.txt" '
+            ($refs | split("\n") | map(select(length > 0) | {key: sub("@.*$"; ""), value: .}) | from_entries) as $by_repo
+            | split("\n") | map(select(length > 0)) | group_by(sub(":[^:/]*$"; ""))
+            | map((.[0] | sub(":[^:/]*$"; "")) as $repo
+                | {ref: ($by_repo[$repo] // error("no pushed digest for " + $repo)), tags: .})' \
+            "$RUNNER_TEMP/held-tags.txt")"
+          printf 'deferred_tags=%s\n' "$deferred" >> "$GITHUB_OUTPUT"
+          echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
 
-  sign-prover-images:
-    name: Sign published prover images
+  attest-companion-images:
+    name: Attest published companion images
     needs: publish-companion-images
-    runs-on: ubuntu-latest
+    # Companion images from other refs and events stay unattested; attest-images.yml
+    # refuses any run that isn't a trusted main or release-tag run. Gated on the publish
+    # job's hold flag so held tags always get an attest job.
+    if: needs.publish-companion-images.outputs.hold == 'true'
     permissions:
       packages: write
       id-token: write
+      attestations: write
+    uses: ./.github/workflows/attest-images.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    secrets:
+      DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+    with:
+      image_refs: ${{ needs.publish-companion-images.outputs.image_refs }}
+
+  # The mutable companion tags reach their digests only once they are attested.
+  # If attestation fails, the tags stay where they were.
+  tag-companion-images:
+    name: Move held companion image tags
+    needs: [publish-companion-images, attest-companion-images]
+    if: needs.attest-companion-images.result == 'success' && needs.publish-companion-images.outputs.deferred_tags != '' && needs.publish-companion-images.outputs.deferred_tags != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # secure-runner
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
       - name: Log in to Container Registry
         uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -1000,39 +1122,10 @@ jobs:
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
-      - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
-      - name: Sign published prover image digests
-        shell: bash
+      - name: Move held tags to the attested digests
         env:
-          PROVER_IMAGE_REFS: ${{ needs.publish-companion-images.outputs.prover_image_refs }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$PROVER_IMAGE_REFS" | jq -er '.[]' > "$RUNNER_TEMP/prover-image-refs.txt"
-          [[ -s "$RUNNER_TEMP/prover-image-refs.txt" ]] || {
-            echo "No published prover image digests to sign" >&2
-            exit 1
-          }
-
-          # Keyless signatures identify the publishing workflow, not human/VK
-          # approval or L1-approved PCRs. Tags already exist if signing fails.
-          while IFS= read -r ref; do
-            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-prover@sha256:[0-9a-f]{64}$ ]] || {
-              echo "Invalid prover image reference: $ref" >&2
-              exit 1
-            }
-            for attempt in 1 2 3; do
-              if cosign sign --yes "$ref"; then
-                break
-              fi
-              if [[ "$attempt" -eq 3 ]]; then
-                echo "Failed to sign $ref after $attempt attempts" >&2
-                exit 1
-              fi
-              sleep "$((attempt * 15))"
-            done
-          done < "$RUNNER_TEMP/prover-image-refs.txt"
+          DEFERRED_TAGS: ${{ needs.publish-companion-images.outputs.deferred_tags }}
+        run: bash .github/scripts/move-image-tags.sh
 
   production-reproducible-clean-rebuild:
     name: Rebuild production tempo-zone image without cache
@@ -1271,8 +1364,10 @@ jobs:
     # Pinned with production-reproducible-verify: .Id must mean the same here.
     runs-on: ubuntu-24.04
     permissions:
+      contents: read
       id-token: write
       packages: write
+      attestations: write
     outputs:
       image_digest: ${{ steps.promote.outputs.image_digest }}
       binary_sha256: ${{ steps.promote.outputs.binary_sha256 }}
@@ -1313,6 +1408,27 @@ jobs:
             type=edge,branch=main
             type=sha,prefix=sha-
 
+      # Selected-ref dispatches from other refs still publish, unattested.
+      - name: Require a trusted run to attest
+        id: trusted-run
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
+        env:
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          # Reusable workflows sign as themselves whoever calls them, so attest only
+          # for this repository's own trusted runs on main or a release tag.
+          fail() { echo "Refusing to attest: $1" >&2; exit 1; }
+          [[ "$REPO" == tempoxyz/tempo ]] || fail "repository $REPO"
+          [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
+          [[ "$REF" == refs/heads/main || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
+          [[ "$WORKFLOW_REF" =~ ^tempoxyz/tempo/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ ]] || fail "workflow $WORKFLOW_REF"
+          [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
+          echo "trusted=true" >> "$GITHUB_OUTPUT"
+
       - name: Promote the verified manifest and recheck its binary
         id: promote
         shell: bash
@@ -1325,6 +1441,8 @@ jobs:
           VERIFIED_IMAGE_ID: ${{ needs.production-reproducible-verify.outputs.image_id }}
           METADATA_TAGS: ${{ steps.meta-tempo-zone.outputs.tags }}
           BINARY_PATH: /usr/local/bin/tempo-zone
+          # Runs that attest promote only the sha- tags here and move the rest after.
+          HOLD: ${{ steps.trusted-run.outputs.trusted == 'true' }}
         run: |
           set -Eeuo pipefail
 
@@ -1370,6 +1488,24 @@ jobs:
             echo "No Docker SHA tag was generated" >&2
             exit 1
           }
+
+          held=()
+          if [[ "$HOLD" == true ]]; then
+            kept=()
+            tag_args=()
+            for tag in "${tags[@]}"; do
+              if [[ "$tag" =~ :sha-[0-9a-f]{7}$ ]]; then
+                kept+=("$tag")
+                tag_args+=(--tag "$tag")
+              else
+                held+=("$tag")
+              fi
+            done
+            tags=("${kept[@]}")
+          fi
+          deferred_tags="$( ( (( ${#held[@]} == 0 )) || printf '%s\n' "${held[@]}" ) | jq -Rsc --arg digest "$STAGING_DIGEST" '
+            split("\n") | map(select(length > 0)) | group_by(sub(":[^:/]*$"; ""))
+            | map({ref: ((.[0] | sub(":[^:/]*$"; "")) + "@" + $digest), tags: .})')"
 
           source_image="$STAGING_REPOSITORY@$STAGING_DIGEST"
           docker buildx imagetools create --prefer-index=false \
@@ -1417,7 +1553,46 @@ jobs:
             echo "image_digest=$STAGING_DIGEST"
             echo "binary_sha256=$promoted_sha256"
             echo "image_sha_tag=$image_sha_tag"
+            echo "deferred_tags=$deferred_tags"
           } >> "$GITHUB_OUTPUT"
+
+      # Attest before the CI event announces the image, so deployments admit it.
+      - name: Attest the promoted ghcr.io tempo-zone image
+        if: steps.trusted-run.outputs.trusted == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/tempo-zone
+          subject-digest: ${{ steps.promote.outputs.image_digest }}
+          push-to-registry: true
+
+      - name: Attest the promoted Docker Hub tempo-zone image
+        if: steps.trusted-run.outputs.trusted == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/tempoxyz/tempo-zone
+          subject-digest: ${{ steps.promote.outputs.image_digest }}
+          push-to-registry: true
+
+      - name: Attest the promoted staging image
+        if: steps.trusted-run.outputs.trusted == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.STAGING_REPOSITORY }}
+          subject-digest: ${{ steps.promote.outputs.image_digest }}
+          push-to-registry: true
+
+      # The tags deployments follow reach the digest only now that it is attested.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.promote.outputs.deferred_tags != '' && steps.promote.outputs.deferred_tags != '[]'
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Move held tempo-zone tags to the attested digest
+        if: steps.promote.outputs.deferred_tags != '' && steps.promote.outputs.deferred_tags != '[]'
+        env:
+          DEFERRED_TAGS: ${{ steps.promote.outputs.deferred_tags }}
+        run: bash .github/scripts/move-image-tags.sh
 
       - name: Publish Zones CI event
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pre-release/zones-v')

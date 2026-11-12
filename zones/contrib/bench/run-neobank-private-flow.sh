@@ -156,6 +156,12 @@ case "$ZONES_BENCH_NEOBANK_PRESET" in
         expected_base_token="$ZONES_BENCH_DLUSD"
         leases_per_journey=1
         ;;
+    cold-accounts)
+        scenario_file=cold-accounts-scenario.yml
+        base_token_label=dlusd
+        expected_base_token="$ZONES_BENCH_DLUSD"
+        leases_per_journey=1
+        ;;
     swapped-redemption)
         scenario_file=swapped-redemption-scenario.yml
         base_token_label=dlusd
@@ -559,9 +565,11 @@ jq -e --argjson expected "$ZONES_BENCH_ACCOUNTS" '
     die "auth map did not derive the expected unique benchmark account pool"
 stage_end auth_token_map
 
-# Approvals are untimed. Deposit-only submits no user Zone transaction.
-# The fixed scenario approves both enabled assets for each leased account.
-if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" ]]; then
+# Approvals are untimed. Deposit-only submits no user Zone transaction, and
+# cold-accounts calls no Zone contract. The fixed scenario approves both enabled
+# assets for each leased account.
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" &&
+      "$ZONES_BENCH_NEOBANK_PRESET" != "cold-accounts" ]]; then
     run_setup_scenario \
         zone_approvals "$zone_approval_scenario" "$ZONES_BENCH_ACCOUNTS" \
         "$ZONES_BENCH_OUTPUT/zone-approvals-report.json" \
@@ -573,7 +581,8 @@ fi
 # Zone account. This keeps the EarnVault and engine nonempty, so the benchmark runs
 # steady-state deposit and redemption paths instead of empty-pool transitions.
 earn_warmup_amount="$ZONES_BENCH_WITHDRAWAL_AMOUNT"
-if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" ]]; then
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" &&
+      "$ZONES_BENCH_NEOBANK_PRESET" != "cold-accounts" ]]; then
     readonly earn_warmup_callback_gas_limit=10000000
     earn_warmup_recipient_hash="$(cast keccak "zones-benchmark-earn-warmup:$ZONES_BENCH_SEED")"
     earn_warmup_recipient="0x${earn_warmup_recipient_hash: -40}"
