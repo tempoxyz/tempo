@@ -11,7 +11,7 @@ use alloy_primitives::{
 use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use reth_evm::Database;
 use reth_primitives_traits::Account;
-use reth_trie_common::{HashedPostState, KeccakKeyHasher, bundle_state::BundleState};
+use reth_trie_common::{HashedPostState, KeccakKeyHasher, TrieNode, bundle_state::BundleState};
 use tempo_contracts::TempoHardfork;
 use tempo_primitives::{TempoHeader, account::decode_config_commitment};
 use zone_precompiles::{L1StateError, L1StorageReader};
@@ -69,7 +69,7 @@ impl WitnessDatabase {
             node_pool,
             bytecodes,
         } = witness;
-        let state = StatelessSparseTrie::new(state_root, &index_witness_nodes(&node_pool)?)?;
+        let state = StatelessSparseTrie::new(state_root, &index_witness_nodes(&node_pool)?, None)?;
         let mut code_by_hash = B256Map::default();
         for code in bytecodes {
             let bytecode = Bytecode::new_raw(code);
@@ -188,10 +188,16 @@ pub(crate) struct MissingTempoStorageRead {
 
 impl TempoWitnessDatabase {
     /// Construct the reader for the initial Tempo checkpoint.
-    pub fn from_tempo_state_witness(witness: TempoStateWitness) -> Result<Self, Error> {
+    ///
+    /// `decoded` caches decoded witness nodes by hash; pass the same map to every
+    /// later checkpoint imported from this witness.
+    pub fn from_tempo_state_witness(
+        witness: TempoStateWitness,
+        decoded: &mut B256Map<TrieNode>,
+    ) -> Result<Self, Error> {
         let nodes = Arc::new(index_witness_nodes(&witness.node_pool)?);
         let (state, tempo_block_hash, tempo_block_number) =
-            checkpoint_state(&witness.initial_tempo_header_rlp, &nodes)?;
+            checkpoint_state(&witness.initial_tempo_header_rlp, &nodes, decoded)?;
 
         Ok(Self {
             state,
@@ -208,9 +214,10 @@ impl TempoWitnessDatabase {
     pub(crate) fn with_imported_checkpoint(
         self,
         header_rlp: &alloy_primitives::Bytes,
+        decoded: &mut B256Map<TrieNode>,
     ) -> Result<Self, Error> {
         let (state, tempo_block_hash, tempo_block_number) =
-            checkpoint_state(header_rlp, &self.nodes)?;
+            checkpoint_state(header_rlp, &self.nodes, decoded)?;
 
         Ok(Self {
             state,
@@ -267,12 +274,13 @@ impl TempoWitnessDatabase {
 fn checkpoint_state(
     header_rlp: &[u8],
     nodes: &B256Map<Bytes>,
+    decoded: &mut B256Map<TrieNode>,
 ) -> Result<(Option<Arc<StatelessSparseTrie>>, B256, u64), Error> {
     let header: TempoHeader = alloy_rlp::decode_exact(header_rlp)
         .map_err(|_| WitnessDatabaseError::InvalidTempoHeader)?;
 
     let state_root = header.state_root();
-    let state = match StatelessSparseTrie::new(state_root, nodes) {
+    let state = match StatelessSparseTrie::new(state_root, nodes, Some(decoded)) {
         Ok(state) => Some(Arc::new(state)),
         Err(StatelessSparseTrieError::MissingStateRootNode { .. }) => None,
         Err(error) => return Err(error.into()),
@@ -373,7 +381,8 @@ mod tests {
         header.inner.state_root = EMPTY_ROOT_HASH;
         header.inner.number = 42;
         let encoded = alloy_rlp::encode(header);
-        let (state, hash, number) = checkpoint_state(&encoded, &B256Map::default()).unwrap();
+        let (state, hash, number) =
+            checkpoint_state(&encoded, &B256Map::default(), &mut B256Map::default()).unwrap();
         assert!(state.is_some());
         assert_eq!(hash, keccak256(&encoded));
         assert_eq!(number, 42);
@@ -384,7 +393,7 @@ mod tests {
         invalid.push([encoded.as_slice(), &[0x80]].concat());
         for bytes in invalid {
             assert_eq!(
-                checkpoint_state(&bytes, &B256Map::default()).unwrap_err(),
+                checkpoint_state(&bytes, &B256Map::default(), &mut B256Map::default()).unwrap_err(),
                 WitnessDatabaseError::InvalidTempoHeader.into()
             );
         }
@@ -395,10 +404,13 @@ mod tests {
         let mut header = TempoHeader::default();
         header.inner.state_root = EMPTY_ROOT_HASH;
         header.inner.number = 9;
-        let database = TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
-            initial_tempo_header_rlp: alloy_rlp::encode(header).into(),
-            node_pool: Vec::new(),
-        })
+        let database = TempoWitnessDatabase::from_tempo_state_witness(
+            TempoStateWitness {
+                initial_tempo_header_rlp: alloy_rlp::encode(header).into(),
+                node_pool: Vec::new(),
+            },
+            &mut B256Map::default(),
+        )
         .unwrap();
         let account = Address::repeat_byte(0x33);
 
