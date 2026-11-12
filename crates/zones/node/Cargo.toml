@@ -175,6 +175,7 @@ cli = [
 # Historical execution corpus commands (`tempo-zone corpus fill/replay/gc`).
 corpus = ["cli", "dep:tempo-corpus", "dep:reth-cli", "dep:reth-cli-util"]
 jemalloc = [
+  "reth-cli-util?/jemalloc",
   "reth-ethereum?/jemalloc",
   "reth-node-core/jemalloc",
   "tempo-node/jemalloc",
