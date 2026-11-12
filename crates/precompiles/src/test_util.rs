@@ -160,7 +160,6 @@ pub struct TIP20Setup {
     roles: Vec<(Address, B256)>,
     mints: Vec<(Address, U256)>,
     approvals: Vec<(Address, Address, U256)>,
-    supply_cap: Option<U256>,
     transfer_policy: Option<TIP403Setup>,
     clear_events: bool,
 }
@@ -260,12 +259,6 @@ impl TIP20Setup {
         self
     }
 
-    /// Set the supply cap, before any mints.
-    pub fn with_supply_cap(mut self, cap: U256) -> Self {
-        self.supply_cap = Some(cap);
-        self
-    }
-
     /// Create `policy` and make it the token's transfer policy, after mints and approvals.
     pub fn with_transfer_policy(mut self, policy: TIP403Setup) -> Self {
         self.transfer_policy = Some(policy);
@@ -347,10 +340,6 @@ impl TIP20Setup {
 
         let admin = self.admin.or_else(|| get_tip20_admin(token.address()));
         let admin = || admin.expect("unable to get token admin");
-
-        if let Some(cap) = self.supply_cap {
-            token.set_supply_cap(admin(), ITIP20::setSupplyCapCall { newSupplyCap: cap })?;
-        }
 
         // Apply mints
         if !self.mints.is_empty() && !token.has_role_internal(admin(), tip20::ISSUER_ROLE)? {

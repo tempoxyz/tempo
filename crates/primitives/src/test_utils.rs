@@ -2,6 +2,7 @@
 //!
 //! Each test thread draws from its own RNG, seeded from `TEMPO_TEST_SEED` when set and randomly
 //! otherwise. A panic on a thread that used it prints the seed, so the failure can be replayed.
+//! The seed covers only values drawn through these fixtures, not `Address::random()` and the like.
 
 use alloc::vec::Vec;
 use alloy_primitives::{Address, U256};
@@ -63,7 +64,7 @@ pub fn amounts<const N: usize>() -> [U256; N] {
 pub fn amounts_vec(n: usize) -> Vec<U256> {
     let mut amounts: Vec<_> = with_rng(|rng| {
         (0..n)
-            .map(|_| U256::from(rng.random_range(1..u128::MAX / n as u128)))
+            .map(|_| U256::from(rng.random_range(1..u128::MAX / n.max(1) as u128)))
             .collect()
     });
     amounts.sort_unstable_by(|a, b| b.cmp(a));
