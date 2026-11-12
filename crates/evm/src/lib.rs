@@ -25,8 +25,8 @@ mod transaction;
 pub mod transaction_error;
 
 pub use action_replay::{
-    ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
-    StorageActionReplayState,
+    AccountRead, ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError,
+    StorageActionReplayOutcome, StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};

@@ -341,6 +341,7 @@ alloy-signer-ledger = "2.5.0"
 alloy-signer-local = "2.5.0"
 alloy-signer-trezor = "2.5.0"
 alloy-transport = "2.5.0"
+alloy-pubsub = "2.5.0"
 
 commonware-actor = "2026.10.0"
 commonware-broadcast = "2026.10.0"
@@ -384,7 +385,7 @@ indicatif = "0.18"
 insta = { version = "1", features = ["yaml"] }
 itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
-jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
+jsonrpsee = { git = "https://github.com/paradigmxyz/reth", rev = "4f58052785aed2f716faa2126ed57c3790cc0233", features = ["server", "macros"] }
 k256 = { version = "0.13.4", features = ["arithmetic", "ecdh"] }
 keccak-const = "0.2.0"
 metrics = "0.24.3"
