@@ -36,7 +36,6 @@ axum = { workspace = true, features = ["ws"] }
 jsonrpsee.workspace = true
 
 # misc
-async-trait.workspace = true
 eyre.workspace = true
 futures.workspace = true
 metrics.workspace = true
