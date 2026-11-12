@@ -468,10 +468,15 @@ where
                 let fork_schedule =
                     TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
 
-                modules.merge_configured(token.into_rpc())?;
-                modules.merge_configured(eth_ext.into_rpc())?;
+                modules.merge_if_module_configured(
+                    RethRpcModule::Other("token".to_string()),
+                    token.into_rpc(),
+                )?;
+                modules.merge_if_module_configured(RethRpcModule::Eth, eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
-                modules.merge_configured(fork_schedule.into_rpc())?;
+                // Follows `eth` like `eth_config`, which it complements: SDK hardfork detection
+                // expects it wherever `eth` is served.
+                modules.merge_if_module_configured(RethRpcModule::Eth, fork_schedule.into_rpc())?;
                 modules.merge_if_module_configured(
                     RethRpcModule::Other("operator".to_string()),
                     operator.into_rpc(),

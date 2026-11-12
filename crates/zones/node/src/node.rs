@@ -893,7 +893,8 @@ where
                         container.registry.eth_api().clone(),
                         get_code_l1_state,
                     )?)?;
-                container.modules.merge_configured(
+                container.modules.merge_if_module_configured(
+                    reth_rpc_builder::RethRpcModule::Debug,
                     NodeZoneDebugApi::new(container.registry.eth_api().clone(), debug_l1_provider)
                         .into_rpc(),
                 )?;

@@ -16,7 +16,8 @@ cargo run --release -p tempo-zone-prover-utils -- generate-input \
 ```
 
 All Zone reads use the unrestricted Zone RPC, including full blocks, historical state, and
-`debug_zoneExecutionWitness`. No private Zone RPC endpoint or authentication key is needed.
+`debug_zoneExecutionWitness`, so the Zone RPC must serve the `debug` module. No private Zone RPC
+endpoint or authentication key is needed.
 The L1 RPC is still required to discover the portal and read settlement state.
 
 Hashes are resolved through the unrestricted Zone RPC. Missing blocks and hashes that do not
