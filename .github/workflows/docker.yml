@@ -299,7 +299,7 @@ jobs:
           TEMPO_FUZZ_TAGS: ${{ steps.meta-tempo-fuzz.outputs.tags }}
           # Reusable callers (reth bump, Network E2E) see the caller's ref and event, so
           # metadata can turn on edge/latest for them, but they never attest.
-          OTHER_CALLER: ${{ !startsWith(github.workflow_ref, 'tempoxyz/tempo/.github/workflows/docker.yml@') }}
+          OTHER_CALLER: ${{ !startsWith(github.workflow_ref, format('{0}/.github/workflows/docker.yml@', github.repository)) }}
         run: |
           set -euo pipefail
           # Bake gives this last file's tags precedence over the metadata files.
@@ -316,13 +316,14 @@ jobs:
               mv "$override.tmp" "$override"
             done
           elif [[ "$OTHER_CALLER" == true ]]; then
-            # Drop the tags deployments follow, so only an attested docker.yml run moves them.
+            # Keep only per-build tags, so only an attested docker.yml run moves the tags
+            # deployments follow (edge, latest, nightly, stable, semver, prereleases).
             for target in tempo tempo-devnet tempo-localnet tempo-xtask tempo-fuzz; do
               tags_var="${target^^}_TAGS"
               tags_var="${tags_var//-/_}"
               [[ -n "${!tags_var}" ]] || continue
               jq --arg target "$target" --arg tags "${!tags_var}" '
-                .target[$target].tags = ($tags | split("\n") | map(select(length > 0 and (test(":(edge|latest|nightly|stable|[0-9]+(\\.[0-9]+){0,2})$") | not))))
+                .target[$target].tags = ($tags | split("\n") | map(select(test(":(sha-[0-9a-f]+|ci-[0-9]+-[0-9]+|pr-[0-9]+)(-fuzz)?$"))))
                 | if (.target[$target].tags | length) == 0 then error("no tags left for " + $target) else . end' \
                 "$override" > "$override.tmp"
               mv "$override.tmp" "$override"
