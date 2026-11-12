@@ -1383,14 +1383,16 @@ mod tests {
 
     struct StubDebugApi(ZoneExecutionWitness);
 
-    #[async_trait::async_trait]
     impl ZoneDebugApi for StubDebugApi {
-        async fn zone_execution_witness(
+        fn zone_execution_witness(
             &self,
             block: alloy_eips::BlockId,
-        ) -> jsonrpsee::core::RpcResult<ZoneExecutionWitness> {
-            assert_eq!(block, alloy_eips::BlockId::from(self.0.block_hash));
-            Ok(self.0.clone())
+        ) -> futures::future::BoxFuture<'_, jsonrpsee::core::RpcResult<ZoneExecutionWitness>>
+        {
+            Box::pin(async move {
+                assert_eq!(block, alloy_eips::BlockId::from(self.0.block_hash));
+                Ok(self.0.clone())
+            })
         }
     }
 

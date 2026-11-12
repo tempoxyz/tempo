@@ -83,7 +83,6 @@ alloy-transport.workspace = true
 evm2.workspace = true
 
 # misc
-async-trait.workspace = true
 minicbor.workspace = true
 minicbor-serde.workspace = true
 clap = { workspace = true, optional = true }
@@ -130,6 +129,7 @@ sha2 = { workspace = true, default-features = true }
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
+test-case.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
 zone-spf.workspace = true

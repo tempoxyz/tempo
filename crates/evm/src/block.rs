@@ -7,7 +7,7 @@ use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::ReadExt;
+use commonware_codec::{DecodeExt as _, ReadExt};
 use evm2::{
     EvmTypes, TxResult, TxResultWithState, TxStateChanges,
     bytecode::Bytecode,
@@ -480,9 +480,9 @@ impl<'a> TempoBlockExecutor<'a> {
         let Some(config) = config else {
             return Ok(());
         };
-        // Trailing bytes are not rejected yet, matching the committee system call.
-        let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-            &mut commonware_codec::Copying(self.extra_data.as_ref()),
+        // Unlike the committee system call, this rejects trailing bytes.
+        let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+            commonware_codec::Copying(self.extra_data.as_ref()),
         )
         .map_err(|err| {
             BlockValidationError::msg(format!(
@@ -1684,11 +1684,17 @@ mod tests {
             Ok(())
         );
 
-        // Trailing bytes are not rejected yet, matching the committee system call.
+        // From T15, the outcome must take up all of the extra data.
         let mut trailing = correct.encode().to_vec();
         trailing.push(0);
         assert_eq!(
-            run(config(None), TempoHardfork::T15, 4, trailing.into()),
+            run(config(None), TempoHardfork::T15, 4, trailing.clone().into()),
+            Err("failed decoding boundary block extra data as DKG outcome: \
+                Extra Data: 1 bytes remained in buffer after decoding"
+                .to_string())
+        );
+        assert_eq!(
+            run(config(None), TempoHardfork::T14, 4, trailing.into()),
             Ok(())
         );
 
