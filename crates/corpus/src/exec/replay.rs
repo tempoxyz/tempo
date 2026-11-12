@@ -3,9 +3,11 @@
 use crate::{
     exec::{
         block::{decode_block, execute_block, standalone_cases, verify_changesets},
+        chain::Chain,
         db::View,
     },
-    store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
+    fuzz,
+    store::{self, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
     types::{Case, Input, Phases},
 };
 use alloy_primitives::B256;
@@ -15,18 +17,19 @@ use eyre::OptionExt;
 use parking_lot::Mutex;
 use reth_chainspec::EthChainSpec;
 use reth_cli_util::cancellation::CancellationToken;
+use reth_consensus::FullConsensus;
 use reth_primitives_traits::RecoveredBlock;
 use slatedb::DbReader;
 use std::{
     ops::Range,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
-use tempo_primitives::Block;
+use tempo_primitives::{Block, TempoPrimitives};
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinSet,
@@ -39,6 +42,21 @@ use tracing::info;
 /// state, SlateDB scan/cache buffers and SDK allocations are excluded.
 const REPLAY_BUDGET: usize = 2 * MAX_RECORD_BYTES;
 
+/// What a `corpus replay` command selects to replay.
+#[derive(Debug)]
+pub struct Request {
+    /// First block; `None` starts at the corpus start.
+    pub from: Option<u64>,
+    /// Exclusive end; `None` ends after the published blocks.
+    pub to: Option<u64>,
+    /// Replays only the transactions with ordinals in `[from, to)`, each independently.
+    pub transactions: Option<(u64, u64)>,
+    /// Replays only the blocks this block list file names, such as a fuzz corpus minimizer's.
+    pub blocks: Option<PathBuf>,
+    /// Execution worker threads.
+    pub workers: usize,
+}
+
 struct Ready {
     record: Record,
     bytes: Bytes,
@@ -49,15 +67,64 @@ struct Ready {
     _reservation: OwnedSemaphorePermit,
 }
 
+/// Replays what `request` selects of the published corpus `catalog` describes, after checking it
+/// was captured from `chain`. Only a range replay stops on `cancellation`.
+///
+/// Blocking: run it on a blocking thread.
+pub fn run_request<C: Chain, K: FullConsensus<TempoPrimitives>>(
+    store: Store,
+    catalog: Catalog,
+    chain: C,
+    consensus: K,
+    request: Request,
+    cancellation: CancellationToken,
+) -> eyre::Result<()> {
+    let context = &catalog.context;
+    ensure_context(context, &chain)?;
+    let published = &catalog.cursor;
+    let from = request.from.unwrap_or(context.start);
+    let end = request.to.unwrap_or(published.next).min(published.next);
+    if let Some((from, to)) = request.transactions {
+        eyre::ensure!(
+            from >= context.first_tx && from < to && to <= published.tx,
+            "transaction ordinal range outside the corpus"
+        );
+    } else {
+        eyre::ensure!(
+            from >= context.start && from < end,
+            "corpus block range mismatch"
+        );
+    }
+    if let Some(path) = &request.blocks {
+        let blocks = fuzz::read_blocks(path, &catalog)?;
+        eyre::ensure!(
+            !blocks.is_empty(),
+            "{} lists no block of the corpus",
+            path.display()
+        );
+        return run_blocks(store, catalog, &blocks, chain, consensus, request.workers);
+    }
+    run(
+        store,
+        catalog,
+        from..end,
+        chain,
+        consensus,
+        request.workers,
+        request.transactions,
+        cancellation,
+    )
+}
+
 /// Replays a published corpus range with `workers` execution threads. With `standalone`,
 /// only transactions with ordinals in that range are replayed, each independently.
 #[allow(clippy::too_many_arguments)]
-pub fn run(
+pub fn run<C: Chain, K: FullConsensus<TempoPrimitives>>(
     store: Store,
     mut catalog: Catalog,
     mut range: Range<u64>,
-    config: TempoEvmConfig,
-    consensus: TempoConsensus,
+    chain: C,
+    consensus: K,
     workers: usize,
     standalone: Option<(u64, u64)>,
     cancellation: CancellationToken,
@@ -75,16 +142,7 @@ pub fn run(
         // Stop reading before the lease may expire.
         move || cancellation.cancel()
     })?;
-    let reader = Arc::new(runtime.block_on(store.reader(&catalog))?);
-    let tip_timestamp = runtime.block_on(store::tip_timestamp(&reader, &catalog.cursor))?;
-    eyre::ensure!(
-        store::forks_agree(
-            &catalog.context.forks,
-            &config.chain_spec().display_hardforks().to_string(),
-            tip_timestamp,
-        ),
-        "corpus fork schedule mismatch"
-    );
+    let reader = Arc::new(runtime.block_on(open(&store, &catalog, &chain))?);
     if let Some((from, to)) = standalone {
         range = runtime.block_on(transaction_range(&reader, &catalog, from, to))?;
     }
@@ -159,8 +217,8 @@ pub fn run(
                     (0, 0, 0)
                 })
         });
-        let (config, consensus, cancellation, runtime, reader) =
-            (&config, &consensus, &cancellation, &runtime, &*reader);
+        let (chain, consensus, cancellation, runtime, reader) =
+            (&chain, &consensus, &cancellation, &runtime, &*reader);
         let (done_blocks, done_transactions, done_gas) =
             (&done_blocks, &done_transactions, &done_gas);
         let mut threads = Vec::new();
@@ -190,7 +248,7 @@ pub fn run(
                                 decode_record(&input, &ready.cases, &ready.record)?;
                             let (mut transactions, mut gas) = (0, 0);
                             standalone_cases(
-                                config,
+                                &chain.replaying(&input.l1)?,
                                 &block,
                                 View::new(input.clone()),
                                 phases,
@@ -206,7 +264,7 @@ pub fn run(
                             )?;
                             (transactions, gas)
                         } else {
-                            verify(config, consensus, &input, &ready.cases, &ready.record)?;
+                            verify(chain, consensus, &input, &ready.cases, &ready.record)?;
                             (ready.record.transactions, ready.record.gas)
                         };
                         records += 1;
@@ -277,14 +335,14 @@ pub fn run(
     }
 }
 
-/// Opens the corpus and checks it was captured under `config`'s fork schedule.
-async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre::Result<DbReader> {
+/// Opens the corpus and checks it was captured under `chain`'s fork schedule.
+async fn open(store: &Store, catalog: &Catalog, chain: &impl Chain) -> eyre::Result<DbReader> {
     let reader = store.reader(catalog).await?;
     let tip_timestamp = store::tip_timestamp(&reader, &catalog.cursor).await?;
     eyre::ensure!(
         store::forks_agree(
             &catalog.context.forks,
-            &config.chain_spec().display_hardforks().to_string(),
+            &chain.chain_spec().display_hardforks().to_string(),
             tip_timestamp,
         ),
         "corpus fork schedule mismatch"
@@ -294,12 +352,12 @@ async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre
 
 /// Replays the listed `blocks` of a published corpus on `workers` threads, as [`run`] does a
 /// range.
-pub fn run_blocks(
+pub fn run_blocks<C: Chain, K: FullConsensus<TempoPrimitives>>(
     store: Store,
     mut catalog: Catalog,
     blocks: &[u64],
-    config: TempoEvmConfig,
-    consensus: TempoConsensus,
+    chain: C,
+    consensus: K,
     workers: usize,
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
@@ -308,7 +366,7 @@ pub fn run_blocks(
         .build()?;
     // A lease of our own, as in [run]; workers stop once it may expire.
     let lease = store.lease_published(&runtime, &mut catalog, || {})?;
-    let reader = runtime.block_on(open(&store, &catalog, &config))?;
+    let reader = runtime.block_on(open(&store, &catalog, &chain))?;
     let started = Instant::now();
     let next = AtomicUsize::new(0);
     let replay =
@@ -331,7 +389,7 @@ pub fn run_blocks(
                         eyre::Ok((record, input, cases))
                     });
                 if let Err(error) = replayed.and_then(|(record, input, cases)| {
-                    verify(&config, &consensus, &input, &cases, &record)
+                    verify(&chain, &consensus, &input, &cases, &record)
                 }) {
                     // Stop the other workers too.
                     next.store(blocks.len(), Ordering::Relaxed);
@@ -597,6 +655,18 @@ async fn read_catalog(
     Ok(totals)
 }
 
+/// Checks the corpus was captured from `chain`: its chain ID, genesis and, for a zone, portal.
+fn ensure_context(context: &Context, chain: &impl Chain) -> eyre::Result<()> {
+    let spec = chain.chain_spec();
+    eyre::ensure!(
+        context.chain_id == spec.chain_id()
+            && context.genesis == spec.genesis_hash().to_string()
+            && context.portal == chain.portal(),
+        "corpus chain context mismatch"
+    );
+    Ok(())
+}
+
 /// Parses a `usize` tuning override from the environment; unset or invalid means `None`.
 fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.parse().ok()
@@ -630,16 +700,20 @@ fn decode_record<'a>(
 
 /// Verifies one published block: executes it from its record alone and checks every
 /// transaction against its stored record, consensus rules and the historical changesets.
-pub fn verify(
-    config: &TempoEvmConfig,
-    consensus: &TempoConsensus,
+pub fn verify<C, K>(
+    chain: &C,
+    consensus: &K,
     input: &Arc<Input>,
     cases: &[Bytes],
     record: &Record,
-) -> eyre::Result<()> {
+) -> eyre::Result<()>
+where
+    C: Chain,
+    K: FullConsensus<TempoPrimitives> + ?Sized,
+{
     let (expected, block, phases) = decode_record(input, cases, record)?;
     let executed = execute_block(
-        config,
+        &chain.replaying(&input.l1)?,
         consensus,
         View::new(input.clone()),
         &block,
@@ -652,4 +726,39 @@ pub fn verify(
         "transaction/gas totals mismatch"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Address;
+    use tempo_chainspec::spec::DEV;
+    use tempo_evm::TempoEvmConfig;
+
+    #[test]
+    fn context_pins_the_chain_and_its_kind() {
+        let chain = TempoEvmConfig::new(DEV.clone());
+        let mut context = Context {
+            chain_id: DEV.chain_id(),
+            genesis: DEV.genesis_hash().to_string(),
+            forks: String::new(),
+            start: 1,
+            parent: B256::ZERO.to_string(),
+            first_tx: 0,
+            portal: None,
+        };
+        ensure_context(&context, &chain).unwrap();
+        // A zone corpus does not replay as Tempo L1, even under the same chain ID and genesis.
+        context.portal = Some(Address::repeat_byte(1));
+        assert_eq!(
+            ensure_context(&context, &chain).unwrap_err().to_string(),
+            "corpus chain context mismatch"
+        );
+        context.portal = None;
+        context.chain_id += 1;
+        assert_eq!(
+            ensure_context(&context, &chain).unwrap_err().to_string(),
+            "corpus chain context mismatch"
+        );
+    }
 }
