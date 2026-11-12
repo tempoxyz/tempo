@@ -47,7 +47,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -78,6 +78,10 @@ use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+
+/// Execution time at or above which a transaction discarded for exhausting the build budget is
+/// removed from the pool instead of being left there for a later block.
+const SLOW_TRANSACTION_EXECUTION_THRESHOLD: Duration = Duration::from_millis(200);
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -501,10 +505,14 @@ where
         // Execution time of a transaction discarded for exhausting the build budget.
         // Validators never replay it, so it is excluded from replayable work.
         let mut discarded_transaction_elapsed = Duration::ZERO;
+        // A discarded transaction slow enough to be removed from the pool once the fill ends.
+        let mut slow_discarded_transaction = None;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window. A transaction, other than the first, whose
-        // execution exhausts the budget is discarded and left in the pool for a later block.
+        // execution exhausts the budget is discarded and left in the pool for a later block,
+        // unless its execution took at least SLOW_TRANSACTION_EXECUTION_THRESHOLD, in which
+        // case it is removed from the pool.
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
@@ -664,6 +672,7 @@ where
                 executor.invalidate_expiring_nonce_cache();
                 executor.execute_transaction_without_commit(tx.transaction.executable())
             };
+            let transaction_execution_elapsed = transaction_execution_start.elapsed();
             let execution_result = executed.and_then(|result| {
                 // The first pool transaction is always committed, so a single transaction that
                 // exhausts the budget on its own cannot keep every block empty.
@@ -761,15 +770,24 @@ where
 
             if exceeded_build_budget {
                 discarded_transaction_elapsed = transaction_execution_start.elapsed();
+                let remove_from_pool =
+                    transaction_execution_elapsed >= SLOW_TRANSACTION_EXECUTION_THRESHOLD;
                 debug!(
                     target: "payload_builder",
                     tx_hash = ?tx.hash(),
                     elapsed = ?start.elapsed(),
+                    execution_elapsed = ?transaction_execution_elapsed,
                     gas_used = cumulative_gas_used,
                     transactions = pool_transactions_included,
-                    "dropping transaction that exhausted the payload build budget, leaving it in the pool"
+                    remove_from_pool,
+                    "dropping transaction that exhausted the payload build budget"
                 );
-                self.metrics.inc_pool_tx_skipped("build_budget");
+                if remove_from_pool {
+                    slow_discarded_transaction = Some(*tx.hash());
+                    self.metrics.inc_pool_tx_skipped("build_budget_slow");
+                } else {
+                    self.metrics.inc_pool_tx_skipped("build_budget");
+                }
                 break BlockBuildStopReason::BuildBudget;
             }
 
@@ -785,6 +803,11 @@ where
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
+
+        // Its descendants cannot execute without it, so they go too.
+        if let Some(tx_hash) = slow_discarded_transaction {
+            self.pool.remove_transactions_and_descendants(vec![tx_hash]);
+        }
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff = elapsed_at_tx_cutoff
