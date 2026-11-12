@@ -81,7 +81,7 @@ pub struct L1State<P> {
     /// This is a fallback for database reads, not a selected L1 view.
     initial_anchor: Arc<Mutex<Option<U256>>>,
     /// Tempo block number selected for the current transaction attempt, and whether the attempt
-    /// charged the `TempoState` checkpoint read (from T14, host loads select it unmetered).
+    /// charged the `TempoState` checkpoint read (unmetered host loads can also select the anchor).
     anchor: Arc<Mutex<Option<(u64, bool)>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
