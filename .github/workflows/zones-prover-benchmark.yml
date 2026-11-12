@@ -46,7 +46,7 @@ on:
         type: string
         default: "5"
       max-concurrent:
-        description: Journeys in flight (default min(accounts, tps x 30), 30 s journeys at the target rate).
+        description: Journeys in flight (default min(accounts, tps x 30, 200), 30 s journeys at the target rate under the portal deposit limit).
         type: string
         default: ""
       state-bloat-mib:
@@ -246,7 +246,7 @@ jobs:
             core.exportVariable('BENCH_BASELINE_NAME', baselineName);
             core.exportVariable('BENCH_FEATURE_NAME', featureName);
             core.exportVariable('BENCH_JOB_URL', `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`);
-            const workload = `tempo-hardfork: \`${process.env.BENCH_TEMPO_HARDFORK}\`, tps: \`${process.env.BENCH_TPS}\`, accounts: \`${process.env.BENCH_ACCOUNTS}\`, count: \`${process.env.BENCH_COUNT || Number(process.env.BENCH_TPS) * 20}\`, max-concurrent: \`${process.env.BENCH_MAX_CONCURRENT || Math.min(Number(process.env.BENCH_ACCOUNTS), Number(process.env.BENCH_TPS) * 30)}\`, recipient-mode: \`${process.env.BENCH_RECIPIENT_MODE}\`, l1-latency-ms: \`${process.env.BENCH_L1_LATENCY_MS}\``;
+            const workload = `tempo-hardfork: \`${process.env.BENCH_TEMPO_HARDFORK}\`, tps: \`${process.env.BENCH_TPS}\`, accounts: \`${process.env.BENCH_ACCOUNTS}\`, count: \`${process.env.BENCH_COUNT || Number(process.env.BENCH_TPS) * 20}\`, max-concurrent: \`${process.env.BENCH_MAX_CONCURRENT || Math.min(Number(process.env.BENCH_ACCOUNTS), Number(process.env.BENCH_TPS) * 30, 200)}\`, recipient-mode: \`${process.env.BENCH_RECIPIENT_MODE}\`, l1-latency-ms: \`${process.env.BENCH_L1_LATENCY_MS}\``;
             core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`zones\`, prover: \`${process.env.BENCH_PROVER}\`, preset: \`${process.env.BENCH_PRESET}\`, ${workload}, baseline: \`${baselineName}\`, feature: \`${featureName}\``);
       - name: Update status (running)
         if: env.BENCH_COMMENT_ID
@@ -282,7 +282,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 68f9d1b72c257a8dab474e44e15817289f2bdf0d # tempo-multi-region-benchmark main (#496)
+          ref: 0440a3f3556d02236cc39927db6f9753cd192e01 # tempo-multi-region-benchmark main (#498)
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
