@@ -5,11 +5,12 @@
 //! subscriber naturally receives blocks and deposits — no synthetic injection.
 
 use crate::utils::{
-    L1TestNode, PolicySeed, RouterCallbackArgs, RouterDepositArgs, STABLECOIN_DEX_ADDRESS,
-    WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode, deposit_allowlist_admin,
-    fetch_submit_batch_call, poll_until, seed_raw_tip403_policy, seed_raw_tip403_token_policy,
-    spawn_sequencer, spawn_sequencer_with_config, start_real_p2p_cluster,
-    start_real_p2p_cluster_with_active_nodes, start_real_p2p_cluster_with_deposit_allowlist,
+    DEFAULT_POLL, L1_TIMEOUT, L1TestNode, PolicySeed, RouterCallbackArgs, RouterDepositArgs,
+    STABLECOIN_DEX_ADDRESS, WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode,
+    assert_same_block, deposit_allowlist_admin, fetch_submit_batch_call, poll_until,
+    seed_raw_tip403_policy, seed_raw_tip403_token_policy, spawn_sequencer,
+    spawn_sequencer_with_config, start_real_p2p_cluster, start_real_p2p_cluster_with_active_nodes,
+    start_real_p2p_cluster_with_deposit_allowlist, wait_all_at,
 };
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
@@ -36,9 +37,6 @@ use zone_node::{
 };
 use zone_precompiles::ecies;
 
-/// Longer timeout for real L1 tests — the L1 dev node produces blocks every
-/// 250ms and the L1Subscriber needs to connect, backfill, and subscribe.
-const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ROUTER_SWAP_TICK: i16 = 0;
 const ROUTER_SWAP_AMOUNT: u128 = 100_000_000;
 const ROUTER_DEX_LIQUIDITY: u128 = 300_000_000;
@@ -158,12 +156,13 @@ async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
 
     // Verify L1 is producing blocks
     let l1_block_0 = l1.provider().get_block_number().await?;
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let l1_block_1 = l1.provider().get_block_number().await?;
-    assert!(
-        l1_block_1 > l1_block_0,
-        "L1 should be producing blocks in dev mode"
-    );
+    poll_until(
+        L1_TIMEOUT,
+        DEFAULT_POLL,
+        "L1 should be producing blocks in dev mode",
+        || async { Ok((l1.provider().get_block_number().await? > l1_block_0).then_some(())) },
+    )
+    .await?;
 
     // Match the normal provision flow by anchoring immediately before the portal deployment.
     // Startup must leave the registry empty at this anchor and let subscriber backfill process
@@ -262,8 +261,8 @@ async fn test_three_node_quorum_settles_real_batch_boundary() -> eyre::Result<()
         portal.withdrawalBatchIndex().call().await? >= 1,
         "real batch boundary did not advance the withdrawal batch index"
     );
-    cluster.wait_all_at(submitted_height, L1_TIMEOUT).await?;
-    cluster.assert_same_block(submitted_height).await?;
+    wait_all_at(&cluster.nodes, submitted_height, L1_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, submitted_height).await?;
 
     Ok(())
 }
@@ -333,8 +332,8 @@ async fn test_two_online_sequencers_submit_two_signature_certificate() -> eyre::
         submitted_height > 0,
         "batch submission did not advance the settled zone height"
     );
-    cluster.wait_all_at(submitted_height, L1_TIMEOUT).await?;
-    cluster.assert_same_block(submitted_height).await?;
+    wait_all_at(&cluster.nodes, submitted_height, L1_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, submitted_height).await?;
 
     Ok(())
 }
