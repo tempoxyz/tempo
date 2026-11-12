@@ -126,10 +126,7 @@ impl<P: Provider> TempoTxSender<P> {
         to: Address,
         call: C,
     ) -> eyre::Result<Receipt> {
-        TempoCalls::new()
-            .push(to, call)
-            .send_with_receipt(self)
-            .await
+        TempoCalls::new().push(to, call).send(self).await
     }
 
     pub(crate) async fn fund_tip20(
@@ -190,15 +187,10 @@ impl TempoCalls {
         self,
         sender: &mut TempoTxSender<P>,
     ) -> eyre::Result<Receipt> {
-        self.send_with_receipt(sender).await
-    }
-
-    pub(crate) async fn send_with_receipt<P: Provider>(
-        self,
-        sender: &mut TempoTxSender<P>,
-    ) -> eyre::Result<Receipt> {
-        let call_count = self.calls.len();
-        eyre::ensure!(call_count > 0, "cannot send TempoCalls with zero calls");
+        eyre::ensure!(
+            !self.calls.is_empty(),
+            "cannot send TempoCalls with zero calls"
+        );
 
         let tx = TempoTransaction {
             chain_id: sender.chain_id,

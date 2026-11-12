@@ -3005,17 +3005,20 @@ fn retired_root_channel_close_without_capture_stays_allowed() {
     let (channel, signature) = voucher_setup(&mut f, &payer, &payer);
     retire(&mut f, payer.address());
     let before = channel_snapshot(&mut f, &channel);
-    let call = Call::new(
-        TIP20_CHANNEL_RESERVE_ADDRESS,
-        ITIP20ChannelReserve::closeCall {
-            descriptor: channel.descriptor.clone(),
-            cumulativeAmount: U96::from(60),
-            captureAmount: U96::ZERO,
-            signature,
-        }
-        .abi_encode(),
+    let result = send(
+        &mut f,
+        payee,
+        vec![Call::new(
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            ITIP20ChannelReserve::closeCall {
+                descriptor: channel.descriptor.clone(),
+                cumulativeAmount: U96::from(60),
+                captureAmount: U96::ZERO,
+                signature,
+            }
+            .abi_encode(),
+        )],
     );
-    let result = send(&mut f, payee, vec![call]);
     assert!(result.status, "{result:?}");
     let after = channel_snapshot(&mut f, &channel);
     assert_eq!(after.payee_balance, before.payee_balance, "payee");

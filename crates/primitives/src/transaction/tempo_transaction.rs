@@ -1420,15 +1420,13 @@ mod tests {
 
     #[test]
     fn test_encode_for_fee_payer_service_uses_signature_placeholder_and_skips_fee_token() {
-        let call = Call::new(Address::random(), vec![1, 2, 3, 4]);
-
         let tx = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), vec![1, 2, 3, 4])],
             access_list: Default::default(),
             nonce_key: U256::ZERO,
             nonce: 1,

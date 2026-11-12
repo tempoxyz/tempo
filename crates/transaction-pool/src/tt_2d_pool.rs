@@ -7327,14 +7327,13 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let fee_token = Address::random();
-        let calls = vec![Call::new(Address::random(), Bytes::new())];
 
         let tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
             gas_limit: 1_000_000,
-            calls,
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::MAX,
             nonce: 0,
             fee_token: Some(fee_token),

@@ -22,28 +22,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recipient2 = address!("0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
     let token_address: Address = address!("0x20c0000000000000000000000000000000000001");
 
-    let calls = vec![
-        Call::new(
-            token_address,
-            ITIP20::transferCall {
-                to: recipient1,
-                amount: U256::from(100_000_000),
-            }
-            .abi_encode(),
-        ),
-        Call::new(
-            token_address,
-            ITIP20::transferCall {
-                to: recipient2,
-                amount: U256::from(50_000_000),
-            }
-            .abi_encode(),
-        ),
-    ];
-
     let pending = provider
         .send_transaction(TempoTransactionRequest {
-            calls,
+            calls: vec![
+                Call::new(
+                    token_address,
+                    ITIP20::transferCall {
+                        to: recipient1,
+                        amount: U256::from(100_000_000),
+                    }
+                    .abi_encode(),
+                ),
+                Call::new(
+                    token_address,
+                    ITIP20::transferCall {
+                        to: recipient2,
+                        amount: U256::from(50_000_000),
+                    }
+                    .abi_encode(),
+                ),
+            ],
             ..Default::default()
         })
         .await?;

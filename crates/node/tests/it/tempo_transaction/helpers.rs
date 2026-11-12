@@ -142,29 +142,31 @@ mod legacy_compat {
     where
         T: DeserializeOwned + std::fmt::Debug + Send + Sync + Unpin + 'static,
     {
-        let request_value = serde_json::to_value(request).map_err(RpcError::local_usage)?;
-
-        match provider
-            .raw_request::<_, T>(method.into(), [request_value.clone()])
+        // Serialize per attempt so the common, non-retried path doesn't deep-clone the JSON.
+        let err = match provider
+            .raw_request::<_, T>(
+                method.into(),
+                [serde_json::to_value(request).map_err(RpcError::local_usage)?],
+            )
             .await
         {
-            Ok(response) => Ok(response),
-            Err(err) => {
-                let err_str = err.to_string().to_lowercase();
-                if !(err_str.contains("invalid params")
-                    && err_str.contains("expected an array of length 4")
-                    && err_str.contains("invalid type: string"))
-                {
-                    return Err(err);
-                }
-                provider
-                    .raw_request::<_, T>(
-                        method.into(),
-                        [request_value_with_selector_arrays(request_value)],
-                    )
-                    .await
-            }
+            Ok(response) => return Ok(response),
+            Err(err) => err,
+        };
+        let err_str = err.to_string().to_lowercase();
+        if !(err_str.contains("invalid params")
+            && err_str.contains("expected an array of length 4")
+            && err_str.contains("invalid type: string"))
+        {
+            return Err(err);
         }
+        let request_value = serde_json::to_value(request).map_err(RpcError::local_usage)?;
+        provider
+            .raw_request::<_, T>(
+                method.into(),
+                [request_value_with_selector_arrays(request_value)],
+            )
+            .await
     }
 }
 

@@ -660,12 +660,9 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
     let to = Address::random();
 
-    // Single call for AA
-    let call = Call::new(to, calldata.clone());
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(to, calldata.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -845,11 +842,9 @@ fn test_aa_gas_p256_signature() {
     let spec = SpecId::CANCUN;
     let calldata = Bytes::from(vec![1, 2]);
 
-    let call = Call::new(Address::random(), calldata.clone());
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), calldata.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -891,11 +886,9 @@ fn test_aa_gas_create_call() {
     let spec = SpecId::CANCUN; // Post-Shanghai
     let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
 
-    let call = Call::new(TxKind::Create, initcode.clone());
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(TxKind::Create, initcode.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -964,11 +957,9 @@ fn test_aa_gas_access_list() {
     let spec = SpecId::CANCUN;
     let calldata = Bytes::from(vec![]);
 
-    let call = Call::new(Address::random(), calldata.clone());
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), calldata.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -1051,11 +1042,9 @@ fn test_aa_gas_floor_gas_prague() {
     let spec = SpecId::PRAGUE;
     let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
 
-    let call = Call::new(Address::random(), calldata.clone());
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), calldata.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -3991,11 +3980,9 @@ fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
 fn test_state_gas_aa_create_tx_zero_initial_state_gas() {
     let initcode = Bytes::from(vec![0x60, 0x80]);
 
-    let call = Call::new(TxKind::Create, initcode);
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(TxKind::Create, initcode)],
             key_authorization: None,
             ..Default::default()
         },
@@ -4019,11 +4006,9 @@ fn test_state_gas_aa_create_tx_zero_initial_state_gas() {
 fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
     let calldata = Bytes::from(vec![1, 2, 3]);
 
-    let call = Call::new(Address::random(), calldata);
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), calldata)],
             key_authorization: None,
             ..Default::default()
         },
@@ -4114,14 +4099,12 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
     let calldata = Bytes::from(vec![1, 2, 3]);
     let initcode = Bytes::from(vec![0x60, 0x80]);
 
-    let calls = vec![
-        Call::new(Address::random(), calldata),
-        Call::new(TxKind::Create, initcode),
-    ];
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls,
+            calls: vec![
+                Call::new(Address::random(), calldata),
+                Call::new(TxKind::Create, initcode),
+            ],
             key_authorization: None,
             ..Default::default()
         },
@@ -4230,7 +4213,6 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
 /// TIP-1016: An AA nonce-zero caller adds account state gas on T4.
 #[test]
 fn test_state_gas_aa_nonce_zero_new_account() {
-    let calls = vec![Call::new(Address::random(), vec![1, 2, 3])];
     let evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
     let (_, state, _) = intrinsic_with_amsterdam(
         TempoHardfork::T4,
@@ -4238,7 +4220,7 @@ fn test_state_gas_aa_nonce_zero_new_account() {
         TempoTransaction {
             nonce: 0,
             nonce_key: U256::ONE,
-            calls,
+            calls: vec![Call::new(Address::random(), vec![1, 2, 3])],
             ..Default::default()
         },
         secp256k1_signature(),
