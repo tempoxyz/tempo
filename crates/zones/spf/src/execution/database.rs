@@ -5,14 +5,14 @@ use std::sync::{Arc, Mutex};
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
 use alloy_primitives::{
-    Address, B256, Bytes, U256, keccak256,
+    Address, B256, U256, keccak256,
     map::{AddressMap, B256Map, U256Map},
 };
 use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use reth_evm::Database;
 use reth_primitives_traits::Account;
 use reth_trie_common::{
-    EMPTY_ROOT_HASH, HashedPostState, KeccakKeyHasher, bundle_state::BundleState,
+    EMPTY_ROOT_HASH, HashedPostState, KeccakKeyHasher, TrieNode, bundle_state::BundleState,
 };
 use tempo_contracts::TempoHardfork;
 use tempo_primitives::{TempoHeader, account::decode_config_commitment};
@@ -20,7 +20,7 @@ use zone_precompiles::{L1StateError, L1StorageReader};
 
 use crate::{
     Error, StatelessSparseTrieError, TempoStateWitness, ZoneStateWitness,
-    mpt::{StatelessSparseTrie, WitnessPathReader, index_witness_nodes},
+    mpt::{StatelessSparseTrie, WitnessPathReader, decode_witness_nodes, index_witness_nodes},
 };
 
 /// Errors emitted while resolving an execution read against a witness.
@@ -177,7 +177,7 @@ pub struct TempoWitnessDatabase {
     tempo_block_number: u64,
     /// The batch-wide Tempo node pool, indexed by hash once and shared by
     /// every checkpoint reader.
-    nodes: Arc<B256Map<Bytes>>,
+    nodes: Arc<B256Map<TrieNode>>,
     missing_read: Arc<Mutex<Option<MissingTempoStorageRead>>>,
 }
 
@@ -192,7 +192,9 @@ pub(crate) struct MissingTempoStorageRead {
 impl TempoWitnessDatabase {
     /// Construct the reader for the initial Tempo checkpoint.
     pub fn from_tempo_state_witness(witness: TempoStateWitness) -> Result<Self, Error> {
-        let nodes = Arc::new(index_witness_nodes(&witness.node_pool)?);
+        let nodes = Arc::new(decode_witness_nodes(&index_witness_nodes(
+            &witness.node_pool,
+        )?)?);
         let (state_root, tempo_block_hash, tempo_block_number) =
             checkpoint_state(&witness.initial_tempo_header_rlp, &nodes)?;
 
@@ -269,7 +271,7 @@ impl TempoWitnessDatabase {
 
 fn checkpoint_state(
     header_rlp: &[u8],
-    nodes: &B256Map<Bytes>,
+    nodes: &B256Map<TrieNode>,
 ) -> Result<(Option<B256>, B256, u64), Error> {
     let header: TempoHeader = alloy_rlp::decode_exact(header_rlp)
         .map_err(|_| WitnessDatabaseError::InvalidTempoHeader)?;
