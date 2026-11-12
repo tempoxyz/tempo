@@ -83,6 +83,7 @@ use tempo_primitives::{
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool, TempoTransactionPoolExt,
     amm::AmmLiquidityCache,
+    delayed_pool::DelayedPoolConfig,
     ordering::TempoTipOrdering,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     validator::{DEFAULT_MAX_TEMPO_AUTHORIZATIONS, TempoTransactionValidator},
@@ -2129,7 +2130,11 @@ where
             pool_config.clone(),
         );
 
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool)
+            .with_delayed_pool_config(DelayedPoolConfig {
+                max_txs_per_authority: pool_config.max_account_slots,
+                ..Default::default()
+            });
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 

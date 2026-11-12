@@ -49,7 +49,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
     validate::EthTransactionValidatorBuilder,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
@@ -60,6 +60,7 @@ use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxTyp
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
     amm::AmmLiquidityCache,
+    delayed_pool::{DEFAULT_DELAYED_MAX_COUNT, DelayedPoolConfig},
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::DEFAULT_MAX_TXS_PER_LANE,
@@ -97,6 +98,11 @@ pub struct TempoNodeArgs {
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
     #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
     pub max_txs_per_lane: usize,
+
+    /// Maximum number of transactions in the delayed sub-pool, which holds transactions that are
+    /// not valid yet outside the pending and queued transactions and their limits.
+    #[arg(long = "txpool.delayed-max-count", default_value_t = DEFAULT_DELAYED_MAX_COUNT)]
+    pub delayed_max_count: NonZeroUsize,
 
     /// Comma-separated addresses or a file containing comma/newline-separated addresses checked
     /// against each transaction's sender, fee payer, direct call targets, authorization delegates
@@ -165,6 +171,7 @@ impl Default for TempoNodeArgs {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            delayed_max_count: DEFAULT_DELAYED_MAX_COUNT,
             txpool_filter: None,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
@@ -184,6 +191,7 @@ impl TempoNodeArgs {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
             max_txs_per_lane: self.max_txs_per_lane,
+            delayed_max_count: self.delayed_max_count,
             address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
         }
@@ -774,6 +782,8 @@ pub struct TempoPoolBuilder {
     pub max_tempo_authorizations: usize,
     /// Maximum pending and queued transactions per regular 2D nonce lane.
     pub max_txs_per_lane: usize,
+    /// Maximum number of transactions in the delayed sub-pool.
+    pub delayed_max_count: NonZeroUsize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
     /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
@@ -831,12 +841,18 @@ impl TempoPoolBuilder {
             max_txs_per_lane: self.max_txs_per_lane,
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
+        let delayed_pool_config = DelayedPoolConfig {
+            max_count: self.delayed_max_count,
+            max_txs_per_authority: pool_config.max_account_slots,
+            ..Default::default()
+        };
         let amm_liquidity_cache = AmmLiquidityCache::new(&client)?;
 
         let Self {
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             max_txs_per_lane: _,
+            delayed_max_count: _,
             disable_fee_amm_check,
             address_filter,
             additional_stateless_validation,
@@ -862,7 +878,8 @@ impl TempoPoolBuilder {
         );
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
-        Ok(TempoTransactionPool::new(protocol_pool, aa_2d_pool))
+        Ok(TempoTransactionPool::new(protocol_pool, aa_2d_pool)
+            .with_delayed_pool_config(delayed_pool_config))
     }
 
     /// Sets the maximum number of transactions per regular 2D nonce lane.
@@ -970,6 +987,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
             .field("max_txs_per_lane", &self.max_txs_per_lane)
+            .field("delayed_max_count", &self.delayed_max_count)
             .field("disable_fee_amm_check", &self.disable_fee_amm_check)
             .field("address_filter", &self.address_filter)
             .field(
@@ -990,6 +1008,7 @@ impl Default for TempoPoolBuilder {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            delayed_max_count: DEFAULT_DELAYED_MAX_COUNT,
             disable_fee_amm_check: false,
             address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
@@ -1206,6 +1225,25 @@ mod tests {
                 .max_txs_per_lane,
             32
         );
+    }
+
+    #[test]
+    fn delayed_max_count_cli_reaches_pool_builder() {
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        let defaults = Args::try_parse_from(["tempo"]).unwrap();
+        assert_eq!(
+            defaults.node.pool_builder().delayed_max_count,
+            DEFAULT_DELAYED_MAX_COUNT
+        );
+
+        let args = Args::try_parse_from(["tempo", "--txpool.delayed-max-count", "10"]).unwrap();
+        assert_eq!(args.node.pool_builder().delayed_max_count.get(), 10);
+
+        assert!(Args::try_parse_from(["tempo", "--txpool.delayed-max-count", "0"]).is_err());
     }
 
     #[test]

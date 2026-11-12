@@ -102,3 +102,18 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Number of transactions re-validated due to quote token updates.
     pub quote_token_revalidated: Counter,
 }
+
+/// Delayed sub-pool metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.delayed")]
+pub struct DelayedPoolMetrics {
+    /// Number of delayed transactions.
+    pub transactions: Gauge,
+
+    /// Total size of delayed transactions in bytes.
+    pub size_bytes: Gauge,
+
+    /// Number of delayed transactions taken out to be revalidated and added to the live
+    /// sub-pools.
+    pub released_transactions: Counter,
+}

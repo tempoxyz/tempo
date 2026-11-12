@@ -498,6 +498,7 @@ impl Default for PendingStalenessTracker {
 /// - Refreshing the AMM liquidity cache from `FeeManager` updates
 /// - Removing transactions signed with revoked keychain keys
 /// - Evicting transactions when their fee token is paused
+/// - Releasing delayed transactions shortly before their `valid_after`
 ///
 /// Consolidates these operations into a single event loop to avoid multiple tasks
 /// competing for canonical state updates and to minimize contention on pool locks.
@@ -710,6 +711,10 @@ where
                 revalidate_txs.extend(removed_txs);
             }
         }
+
+        // Delayed transactions that are about to become valid enter the live sub-pools the same
+        // way: resubmitted, so they are validated against current state first.
+        revalidate_txs.extend(pool.take_due_delayed_transactions());
 
         if !revalidate_txs.is_empty() {
             let pool = pool.clone();
