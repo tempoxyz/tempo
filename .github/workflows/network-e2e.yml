@@ -1,4 +1,4 @@
-name: Tempo Network E2E
+name: Tempo CI Image
 
 on:
   # Detection reads PR data through pinned actions; fork code is never executed.
