@@ -795,7 +795,7 @@ impl TempoPoolBuilder {
         client: Client,
         validator: EthTransactionValidatorBuilder<Client, TempoEvmConfig>,
         executor: Runtime,
-        mut pool_config: PoolConfig,
+        pool_config: PoolConfig,
         lazy_kzg_settings: bool,
     ) -> eyre::Result<TempoTransactionPool<Client>>
     where
@@ -805,8 +805,6 @@ impl TempoPoolBuilder {
             + Clone
             + 'static,
     {
-        pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
-
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
         let validator = validator
@@ -854,15 +852,15 @@ impl TempoPoolBuilder {
             .with_disable_fee_amm_check(disable_fee_amm_check)
             .with_address_filter(address_filter.clone())
         });
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             validator,
             TempoTipOrdering::default(),
             blob_store,
             pool_config,
         );
 
-        // Wrap the protocol pool in our hybrid TempoTransactionPool
-        Ok(TempoTransactionPool::new(protocol_pool, aa_2d_pool))
+        // The Reth pool only validates and notifies: the 2D nonce pool holds the transactions
+        Ok(TempoTransactionPool::new(reth_pool, aa_2d_pool))
     }
 
     /// Sets the maximum number of transactions per regular 2D nonce lane.

@@ -1,10 +1,9 @@
 // Tempo transaction pool that implements Reth's TransactionPool trait
-// Routes non-AA transactions to Reth pool
-// Routes AA transactions, whatever their nonce key, to the 2D nonce pool
+// Keeps every transaction, AA or not, in the 2D nonce pool
+// The Reth pool holds none: it validates transactions and carries the listeners
 
 use crate::{
     amm::AmmLiquidityCache,
-    best::MergeBestTransactions,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::{AA2dPool, AASequenceId},
@@ -55,16 +54,17 @@ pub trait TempoTransactionPoolExt: TransactionPool {
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
 }
 
-/// Tempo transaction pool that routes based on transaction type
+/// Tempo transaction pool that keeps all transactions in the 2D nonce pool
 pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
-    /// Vanilla pool for all non-AA transactions.
-    protocol_pool: Pool<
+    /// Reth pool that never holds a transaction: it runs validation, tracks the block info and
+    /// carries the transaction listeners, which this pool notifies.
+    reth_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
         TempoTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
-    /// Pool for all AA transactions: protocol nonces (nonce_key = 0), 2D nonces and expiring
-    /// nonces.
+    /// Pool for all transactions: protocol nonces (non-AA transactions and nonce_key = 0), 2D
+    /// nonces and expiring nonces.
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
@@ -76,16 +76,16 @@ where
     EvmConfig: ConfigureTempoPoolEvm,
 {
     pub fn new(
-        protocol_pool: Pool<
+        reth_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
             TempoTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
         mut aa_2d_pool: AA2dPool,
     ) -> Self {
-        aa_2d_pool.set_base_fee(protocol_pool.inner().block_info().pending_basefee);
+        aa_2d_pool.set_base_fee(reth_pool.inner().block_info().pending_basefee);
         Self {
-            protocol_pool,
+            reth_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
         }
     }
@@ -99,10 +99,7 @@ where
 {
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
-        self.protocol_pool
-            .validator()
-            .validator()
-            .amm_liquidity_cache()
+        self.reth_pool.validator().validator().amm_liquidity_cache()
     }
 
     /// Returns the best transactions whose time bounds and keychain key expiry permit inclusion
@@ -124,7 +121,7 @@ where
 
     /// Returns the configured client
     pub fn client(&self) -> &Client {
-        self.protocol_pool.validator().validator().client()
+        self.reth_pool.validator().validator().client()
     }
 
     /// Updates the 2d nonce pool with the given state changes.
@@ -135,22 +132,34 @@ where
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
-        // Note: mined transactions are notified via the vanilla pool updates
-        self.protocol_pool
+        // Note: mined transactions are notified via the Reth pool's canonical state updates
+        self.reth_pool
             .inner()
             .notify_on_transaction_updates(promoted, discarded);
         mined
     }
 
-    /// Reports transactions removed from the 2D nonce pool as discarded, as the protocol pool
-    /// does for the ones removed from it.
-    fn notify_aa_pool_discarded(
-        &self,
-        discarded: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>],
-    ) {
-        self.protocol_pool
+    /// Reports removed transactions as discarded.
+    fn notify_discarded(&self, discarded: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) {
+        self.reth_pool
             .inner()
             .notify_on_transaction_updates(Vec::new(), discarded.to_vec());
+    }
+
+    /// Moves the protocol nonce lanes of `accounts` to their on-chain nonces.
+    ///
+    /// Transactions left below the new nonce are removed. They are reported as discarded unless
+    /// `mined` holds them, which the listeners already heard of as mined.
+    fn update_account_nonces(&self, accounts: &[ChangedAccount], mined: &[TxHash]) {
+        let (promoted, removed, mut discarded) = self.aa_2d_pool.write().on_account_nonce_updates(
+            accounts
+                .iter()
+                .map(|account| (account.address, account.nonce)),
+        );
+        discarded.extend(removed.into_iter().filter(|tx| !mined.contains(tx.hash())));
+        self.reth_pool
+            .inner()
+            .notify_on_transaction_updates(promoted, discarded);
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.
@@ -213,13 +222,13 @@ where
 
         // Resolve the active hardfork for storage context.
         let tip_timestamp = self
-            .protocol_pool
+            .reth_pool
             .validator()
             .validator()
             .inner
             .fork_tracker()
             .tip_timestamp();
-        let spec = self.protocol_pool.validator().validator().active_hardfork();
+        let spec = self.reth_pool.validator().validator().active_hardfork();
 
         // Cache policy lookups per fee token to avoid redundant storage reads.
         // For compound policies (TIP-1015), the cache stores all sub-policy IDs
@@ -574,11 +583,10 @@ where
         self.remove_transactions(to_remove)
     }
 
-    /// Adds a validated transaction to the subpool derived from its type.
+    /// Adds a validated transaction to the 2D nonce pool and notifies the listeners.
     ///
-    /// AA transactions go to the 2D nonce pool whatever their nonce key, so the ones on the
-    /// protocol nonce (nonce key 0) are tracked there as one more lane. Everything else stays
-    /// in the protocol pool.
+    /// Non-AA transactions and AA transactions with nonce key 0 share the sender's protocol
+    /// nonce lane.
     fn add_validated_transaction(
         &self,
         origin: TransactionOrigin,
@@ -586,98 +594,74 @@ where
     ) -> PoolResult<AddedTransactionOutcome> {
         match transaction {
             TransactionValidationOutcome::Valid {
-                balance,
                 state_nonce,
-                bytecode_hash,
                 transaction,
                 propagate,
                 authorities,
+                ..
             } => {
-                if transaction.transaction().is_aa() {
-                    let transaction = transaction.into_transaction();
-                    let sender_id = self
-                        .protocol_pool
-                        .inner()
-                        .get_sender_id(transaction.sender());
-                    let transaction_id = TransactionId::new(sender_id, transaction.nonce());
-                    let tx = ValidPoolTransaction {
-                        transaction,
-                        transaction_id,
-                        propagate,
-                        timestamp: Instant::now(),
-                        origin,
-                        authority_ids: authorities
-                            .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
+                let transaction = transaction.into_transaction();
+                let sender_id = self.reth_pool.inner().get_sender_id(transaction.sender());
+                let transaction_id = TransactionId::new(sender_id, transaction.nonce());
+                let tx = ValidPoolTransaction {
+                    transaction,
+                    transaction_id,
+                    propagate,
+                    timestamp: Instant::now(),
+                    origin,
+                    authority_ids: authorities
+                        .map(|auths| self.reth_pool.inner().get_sender_ids(auths)),
+                };
+
+                // Get the active Tempo hardfork for expiring nonce handling
+                let hardfork = self.reth_pool.validator().validator().active_hardfork();
+
+                let tx = Arc::new(tx);
+                let (added, mut discarded) = {
+                    let mut aa_2d_pool = self.aa_2d_pool.write();
+                    let mut added = aa_2d_pool.add_transaction(tx, state_nonce, hardfork)?;
+                    // Taken so `notify_event_listeners` doesn't report them a second time.
+                    let discarded = match &mut added {
+                        AddedTransaction::Pending(pending) => {
+                            std::mem::take(&mut pending.discarded)
+                        }
+                        AddedTransaction::Parked { .. } => aa_2d_pool.discard(),
                     };
-
-                    // Get the active Tempo hardfork for expiring nonce handling
-                    let hardfork = self.protocol_pool.validator().validator().active_hardfork();
-
-                    let tx = Arc::new(tx);
-                    let (added, mut discarded) = {
-                        let mut aa_2d_pool = self.aa_2d_pool.write();
-                        let mut added = aa_2d_pool.add_transaction(tx, state_nonce, hardfork)?;
-                        // Taken so `notify_event_listeners` doesn't report them a second time.
-                        let discarded = match &mut added {
-                            AddedTransaction::Pending(pending) => {
-                                std::mem::take(&mut pending.discarded)
-                            }
-                            AddedTransaction::Parked { .. } => aa_2d_pool.discard(),
-                        };
-                        (added, discarded)
-                    };
-                    let hash = *added.hash();
-                    if discarded.iter().any(|tx| *tx.hash() == hash) {
-                        // The insert's own events are skipped, so the transaction it replaced is
-                        // reported as discarded instead.
-                        discarded.extend(added.replaced().cloned());
-                        self.protocol_pool
-                            .inner()
-                            .notify_on_transaction_updates(Vec::new(), discarded);
-                        return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
-                    }
-                    if let Some(pending) = added.as_pending() {
-                        self.protocol_pool
-                            .inner()
-                            .on_new_pending_transaction(pending);
-                    }
-
-                    let state = added.transaction_state();
-                    // notify regular event listeners from the protocol pool
-                    self.protocol_pool.inner().notify_event_listeners(&added);
-                    // Sent after the insert's events so a promoted transaction that was evicted
-                    // again ends as discarded.
-                    if !discarded.is_empty() {
-                        self.protocol_pool
-                            .inner()
-                            .notify_on_transaction_updates(Vec::new(), discarded);
-                    }
-                    self.protocol_pool
+                    (added, discarded)
+                };
+                let hash = *added.hash();
+                if discarded.iter().any(|tx| *tx.hash() == hash) {
+                    // The insert's own events are skipped, so the transaction it replaced is
+                    // reported as discarded instead.
+                    discarded.extend(added.replaced().cloned());
+                    self.reth_pool
                         .inner()
-                        .on_new_transaction(added.into_new_transaction_event());
-
-                    Ok(AddedTransactionOutcome { hash, state })
-                } else {
-                    self.protocol_pool
-                        .inner()
-                        .add_transactions(
-                            origin,
-                            std::iter::once(TransactionValidationOutcome::Valid {
-                                balance,
-                                state_nonce,
-                                bytecode_hash,
-                                transaction,
-                                propagate,
-                                authorities,
-                            }),
-                        )
-                        .pop()
-                        .unwrap()
+                        .notify_on_transaction_updates(Vec::new(), discarded);
+                    return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
                 }
+                if let Some(pending) = added.as_pending() {
+                    self.reth_pool.inner().on_new_pending_transaction(pending);
+                }
+
+                let state = added.transaction_state();
+                // notify regular event listeners
+                self.reth_pool.inner().notify_event_listeners(&added);
+                // Sent after the insert's events so a promoted transaction that was evicted
+                // again ends as discarded.
+                if !discarded.is_empty() {
+                    self.reth_pool
+                        .inner()
+                        .notify_on_transaction_updates(Vec::new(), discarded);
+                }
+                self.reth_pool
+                    .inner()
+                    .on_new_transaction(added.into_new_transaction_event());
+
+                Ok(AddedTransactionOutcome { hash, state })
             }
             invalid => {
                 // this forwards for event listener updates
-                self.protocol_pool
+                self.reth_pool
                     .inner()
                     .add_transactions(origin, Some(invalid))
                     .pop()
@@ -691,7 +675,7 @@ where
 impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
     fn clone(&self) -> Self {
         Self {
-            protocol_pool: self.protocol_pool.clone(),
+            reth_pool: self.reth_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
         }
     }
@@ -701,7 +685,7 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
 impl<Client, EvmConfig> std::fmt::Debug for TempoTransactionPool<Client, EvmConfig> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TempoTransactionPool")
-            .field("protocol_pool", &"Pool<...>")
+            .field("reth_pool", &"Pool<...>")
             .field("aa_2d_nonce_pool", &"AA2dPool<...>")
             .finish_non_exhaustive()
     }
@@ -743,7 +727,7 @@ where
         let mut failed = 0;
         let mut invalid = Vec::new();
         for outcome in self
-            .protocol_pool
+            .reth_pool
             .validator()
             .validate_transactions(transactions)
             .await
@@ -781,20 +765,21 @@ where
     type Transaction = TempoPooledTransaction;
 
     fn pool_size(&self) -> PoolSize {
-        let mut size = self.protocol_pool.pool_size();
         let aa_2d_pool = self.aa_2d_pool.read();
         let (pending, queued) = aa_2d_pool.pending_and_queued_txn_count();
         let (pending_size, queued_size) = aa_2d_pool.pending_and_queued_txn_size();
-        size.pending += pending;
-        size.pending_size += pending_size;
-        size.queued += queued;
-        size.queued_size += queued_size;
-        size.total += pending + queued;
-        size
+        PoolSize {
+            pending,
+            pending_size,
+            queued,
+            queued_size,
+            total: pending + queued,
+            ..Default::default()
+        }
     }
 
     fn block_info(&self) -> BlockInfo {
-        self.protocol_pool.block_info()
+        self.reth_pool.block_info()
     }
 
     async fn add_transaction_and_subscribe(
@@ -837,20 +822,12 @@ where
             return Vec::new();
         }
 
-        // Fully delegate to protocol pool for non-AA transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa()) {
-            return self
-                .protocol_pool
-                .add_transactions_with_origins(transactions)
-                .await;
-        }
-
         let origins = transactions
             .iter()
             .map(|(origin, _)| *origin)
             .collect::<Vec<_>>();
 
-        self.protocol_pool
+        self.reth_pool
             .validator()
             .validate_transactions(transactions)
             .await
@@ -861,35 +838,29 @@ where
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
-        self.protocol_pool
-            .transaction_event_listener(tx_hash)
-            .or_else(|| {
-                // Subscribing under the lock orders it before a removal, whose discard is
-                // reported once the lock is released.
-                let aa_2d_pool = self.aa_2d_pool.read();
-                aa_2d_pool.contains(&tx_hash).then(|| {
-                    self.protocol_pool
-                        .inner()
-                        .subscribe_transaction_events(tx_hash)
-                })
-            })
+        // Subscribing under the lock orders it before a removal, whose discard is reported once
+        // the lock is released.
+        let aa_2d_pool = self.aa_2d_pool.read();
+        aa_2d_pool
+            .contains(&tx_hash)
+            .then(|| self.reth_pool.inner().subscribe_transaction_events(tx_hash))
     }
 
     fn all_transactions_event_listener(
         &self,
     ) -> reth_transaction_pool::AllTransactionsEvents<Self::Transaction> {
-        self.protocol_pool.all_transactions_event_listener()
+        self.reth_pool.all_transactions_event_listener()
     }
 
     fn pending_transactions_listener_for(
         &self,
         kind: reth_transaction_pool::TransactionListenerKind,
     ) -> tokio::sync::mpsc::Receiver<B256> {
-        self.protocol_pool.pending_transactions_listener_for(kind)
+        self.reth_pool.pending_transactions_listener_for(kind)
     }
 
     fn blob_transaction_sidecars_listener(&self) -> tokio::sync::mpsc::Receiver<NewBlobSidecar> {
-        self.protocol_pool.blob_transaction_sidecars_listener()
+        self.reth_pool.blob_transaction_sidecars_listener()
     }
 
     fn new_transactions_listener_for(
@@ -897,54 +868,37 @@ where
         kind: reth_transaction_pool::TransactionListenerKind,
     ) -> tokio::sync::mpsc::Receiver<reth_transaction_pool::NewTransactionEvent<Self::Transaction>>
     {
-        self.protocol_pool.new_transactions_listener_for(kind)
+        self.reth_pool.new_transactions_listener_for(kind)
     }
 
     fn pooled_transaction_hashes(&self) -> Vec<B256> {
-        let mut hashes = self.protocol_pool.pooled_transaction_hashes();
-        hashes.extend(self.aa_2d_pool.read().pooled_transactions_hashes_iter());
-        hashes
+        self.aa_2d_pool
+            .read()
+            .pooled_transactions_hashes_iter()
+            .collect()
     }
 
     fn pooled_transaction_hashes_max(&self, max: usize) -> Vec<B256> {
-        let protocol_hashes = self.protocol_pool.pooled_transaction_hashes_max(max);
-        if protocol_hashes.len() >= max {
-            return protocol_hashes;
-        }
-        let remaining = max - protocol_hashes.len();
-        let mut hashes = protocol_hashes;
-        hashes.extend(
-            self.aa_2d_pool
-                .read()
-                .pooled_transactions_hashes_iter()
-                .take(remaining),
-        );
-        hashes
+        self.aa_2d_pool
+            .read()
+            .pooled_transactions_hashes_iter()
+            .take(max)
+            .collect()
     }
 
     fn pooled_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.protocol_pool.pooled_transactions();
-        txs.extend(self.aa_2d_pool.read().pooled_transactions_iter());
-        txs
+        self.aa_2d_pool.read().pooled_transactions_iter().collect()
     }
 
     fn pooled_transactions_max(
         &self,
         max: usize,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.protocol_pool.pooled_transactions_max(max);
-        if txs.len() >= max {
-            return txs;
-        }
-
-        let remaining = max - txs.len();
-        txs.extend(
-            self.aa_2d_pool
-                .read()
-                .pooled_transactions_iter()
-                .take(remaining),
-        );
-        txs
+        self.aa_2d_pool
+            .read()
+            .pooled_transactions_iter()
+            .take(max)
+            .collect()
     }
 
     fn get_pooled_transaction_elements(
@@ -963,31 +917,9 @@ where
         limit: GetPooledTransactionLimit,
         out: &mut Vec<<Self::Transaction as PoolTransaction>::Pooled>,
     ) {
-        let mut accumulated_size = 0;
-        self.aa_2d_pool.read().append_pooled_transaction_elements(
-            tx_hashes,
-            limit,
-            &mut accumulated_size,
-            out,
-        );
-
-        // If the limit is already exceeded, don't query the protocol pool
-        if limit.exceeds(accumulated_size) {
-            return;
-        }
-
-        // Adjust the limit for the protocol pool based on what we've already collected
-        let remaining_limit = match limit {
-            GetPooledTransactionLimit::None => GetPooledTransactionLimit::None,
-            GetPooledTransactionLimit::ResponseSizeSoftLimit(max) => {
-                GetPooledTransactionLimit::ResponseSizeSoftLimit(
-                    max.saturating_sub(accumulated_size),
-                )
-            }
-        };
-
-        self.protocol_pool
-            .append_pooled_transaction_elements(tx_hashes, remaining_limit, out);
+        self.aa_2d_pool
+            .read()
+            .append_pooled_transaction_elements(tx_hashes, limit, &mut 0, out);
     }
 
     fn get_pooled_transaction_element(
@@ -995,79 +927,54 @@ where
         tx_hash: B256,
     ) -> Option<reth_primitives_traits::Recovered<<Self::Transaction as PoolTransaction>::Pooled>>
     {
-        self.protocol_pool
-            .get_pooled_transaction_element(tx_hash)
-            .or_else(|| {
-                self.aa_2d_pool
-                    .read()
-                    .get(&tx_hash)
-                    .and_then(|tx| tx.transaction.clone_into_pooled().ok())
-            })
+        self.aa_2d_pool
+            .read()
+            .get(&tx_hash)
+            .and_then(|tx| tx.transaction.clone_into_pooled().ok())
     }
 
     fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let protocol_pool = self.protocol_pool.inner();
-        let base_fee = protocol_pool.block_info().pending_basefee;
-        let left = protocol_pool.best_transactions();
-        let right = self.aa_2d_pool.read().best_transactions();
-        Box::new(MergeBestTransactions::new(Box::new(left), right, base_fee))
+        Box::new(self.aa_2d_pool.read().best_transactions())
     }
 
     fn best_transactions_with_attributes(
         &self,
         attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let left = self
-            .protocol_pool
-            .best_transactions_with_attributes(attributes);
-        let right = self
-            .aa_2d_pool
-            .read()
-            .best_transactions_with_base_fee(attributes.basefee);
-        Box::new(MergeBestTransactions::new(left, right, attributes.basefee))
+        Box::new(
+            self.aa_2d_pool
+                .read()
+                .best_transactions_with_base_fee(attributes.basefee),
+        )
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut pending = self.protocol_pool.pending_transactions();
-        pending.extend(self.aa_2d_pool.read().pending_transactions());
-        pending
+        self.aa_2d_pool.read().pending_transactions().collect()
     }
 
     fn pending_transactions_max(
         &self,
         max: usize,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let protocol_txs = self.protocol_pool.pending_transactions_max(max);
-        if protocol_txs.len() >= max {
-            return protocol_txs;
-        }
-        let remaining = max - protocol_txs.len();
-        let mut txs = protocol_txs;
-        txs.extend(
-            self.aa_2d_pool
-                .read()
-                .pending_transactions()
-                .take(remaining),
-        );
-        txs
+        self.aa_2d_pool
+            .read()
+            .pending_transactions()
+            .take(max)
+            .collect()
     }
 
     fn queued_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut queued = self.protocol_pool.queued_transactions();
-        queued.extend(self.aa_2d_pool.read().queued_transactions());
-        queued
+        self.aa_2d_pool.read().queued_transactions().collect()
     }
 
     fn pending_and_queued_txn_count(&self) -> (usize, usize) {
-        let (protocol_pending, protocol_queued) = self.protocol_pool.pending_and_queued_txn_count();
-        let (aa_pending, aa_queued) = self.aa_2d_pool.read().pending_and_queued_txn_count();
-        (protocol_pending + aa_pending, protocol_queued + aa_queued)
+        self.aa_2d_pool.read().pending_and_queued_txn_count()
     }
 
     fn all_transactions(&self) -> AllPoolTransactions<Self::Transaction> {
-        let mut transactions = self.protocol_pool.all_transactions();
+        let mut transactions = AllPoolTransactions::default();
         self.aa_2d_pool
             .read()
             .append_all_transactions(&mut transactions);
@@ -1078,7 +985,7 @@ where
         &self,
         sender: Address,
     ) -> AllPoolTransactions<Self::Transaction> {
-        let mut transactions = self.protocol_pool.all_transactions_by_sender(sender);
+        let mut transactions = AllPoolTransactions::default();
         self.aa_2d_pool
             .read()
             .append_all_transactions_by_sender(sender, &mut transactions);
@@ -1086,18 +993,18 @@ where
     }
 
     fn all_transaction_hashes(&self) -> Vec<B256> {
-        let mut hashes = self.protocol_pool.all_transaction_hashes();
-        hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
-        hashes
+        self.aa_2d_pool
+            .read()
+            .all_transaction_hashes_iter()
+            .collect()
     }
 
     fn remove_transactions(
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
-        self.notify_aa_pool_discarded(&txs);
-        txs.extend(self.protocol_pool.remove_transactions(hashes));
+        let txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        self.notify_discarded(&txs);
         txs
     }
 
@@ -1105,15 +1012,11 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
+        let txs = self
             .aa_2d_pool
             .write()
             .remove_transactions_and_descendants(hashes.iter());
-        self.notify_aa_pool_discarded(&txs);
-        txs.extend(
-            self.protocol_pool
-                .remove_transactions_and_descendants(hashes),
-        );
+        self.notify_discarded(&txs);
         txs
     }
 
@@ -1121,12 +1024,11 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
+        let txs = self
             .aa_2d_pool
             .write()
             .remove_transactions_by_sender(sender);
-        self.notify_aa_pool_discarded(&txs);
-        txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
+        self.notify_discarded(&txs);
         txs
     }
 
@@ -1134,16 +1036,10 @@ where
         &self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
-        txs.extend(self.protocol_pool.prune_transactions(hashes));
-        txs
+        self.aa_2d_pool.write().remove_transactions(hashes.iter())
     }
 
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
-        self.protocol_pool.retain_unknown(announcement);
-        if announcement.is_empty() {
-            return;
-        }
         let aa_pool = self.aa_2d_pool.read();
         announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
     }
@@ -1159,84 +1055,62 @@ where
     }
 
     fn contains(&self, tx_hash: &B256) -> bool {
-        self.protocol_pool.contains(tx_hash) || self.aa_2d_pool.read().contains(tx_hash)
+        self.aa_2d_pool.read().contains(tx_hash)
     }
 
     fn get(&self, tx_hash: &B256) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        self.protocol_pool
-            .get(tx_hash)
-            .or_else(|| self.aa_2d_pool.read().get(tx_hash))
+        self.aa_2d_pool.read().get(tx_hash)
     }
 
     fn get_all(&self, txs: Vec<B256>) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut result = self.aa_2d_pool.read().get_all(txs.iter());
-        result.extend(self.protocol_pool.get_all(txs));
-        result
+        self.aa_2d_pool.read().get_all(txs.iter())
     }
 
     fn on_propagated(&self, txs: PropagatedTransactions) {
-        self.protocol_pool.on_propagated(txs);
+        self.reth_pool.on_propagated(txs);
     }
 
     fn get_transactions_by_sender(
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.protocol_pool.get_transactions_by_sender(sender);
-        txs.extend(
-            self.aa_2d_pool
-                .read()
-                .get_transactions_by_sender_iter(sender),
-        );
-        txs
+        self.aa_2d_pool
+            .read()
+            .get_transactions_by_sender_iter(sender)
+            .collect()
     }
 
     fn get_pending_transactions_with_predicate(
         &self,
         mut predicate: impl FnMut(&ValidPoolTransaction<Self::Transaction>) -> bool,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .protocol_pool
-            .get_pending_transactions_with_predicate(&mut predicate);
-        txs.extend(
-            self.aa_2d_pool
-                .read()
-                .pending_transactions()
-                .filter(|tx| predicate(tx)),
-        );
-        txs
+        self.aa_2d_pool
+            .read()
+            .pending_transactions()
+            .filter(|tx| predicate(tx))
+            .collect()
     }
 
     fn get_pending_transactions_by_sender(
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .protocol_pool
-            .get_pending_transactions_by_sender(sender);
-        txs.extend(
-            self.aa_2d_pool
-                .read()
-                .pending_transactions()
-                .filter(|tx| tx.sender() == sender),
-        );
-
-        txs
+        self.aa_2d_pool
+            .read()
+            .pending_transactions()
+            .filter(|tx| tx.sender() == sender)
+            .collect()
     }
 
     fn get_queued_transactions_by_sender(
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.protocol_pool.get_queued_transactions_by_sender(sender);
-        txs.extend(
-            self.aa_2d_pool
-                .read()
-                .queued_transactions()
-                .filter(|tx| tx.sender() == sender),
-        );
-
-        txs
+        self.aa_2d_pool
+            .read()
+            .queued_transactions()
+            .filter(|tx| tx.sender() == sender)
+            .collect()
     }
 
     fn get_highest_transaction_by_sender(
@@ -1244,18 +1118,12 @@ where
         sender: Address,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         // With 2D nonces, there's no concept of a single "highest" nonce across all nonce_keys
-        // Return the highest protocol nonce (nonce_key=0) only, which both pools can hold
-        let aa_2d_tx = self
-            .aa_2d_pool
+        // Return the highest protocol nonce (nonce_key=0) only
+        self.aa_2d_pool
             .read()
             .lane_transactions_from(AASequenceId::new(sender, U256::ZERO), 0)
             .next_back()
-            .cloned();
-        self.protocol_pool
-            .get_highest_transaction_by_sender(sender)
-            .into_iter()
-            .chain(aa_2d_tx)
-            .max_by_key(|tx| tx.nonce())
+            .cloned()
     }
 
     fn get_highest_consecutive_transaction_by_sender(
@@ -1263,33 +1131,14 @@ where
         sender: Address,
         on_chain_nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // Only the protocol nonce (nonce_key=0) is followed. Its sequence can alternate between
-        // the pools, so each one continues from where the other one stopped.
-        let seq_id = AASequenceId::new(sender, U256::ZERO);
-        let mut highest = None;
-        let mut next_nonce = on_chain_nonce;
-        loop {
-            let tx = self
-                .protocol_pool
-                .get_highest_consecutive_transaction_by_sender(sender, next_nonce)
-                .or_else(|| {
-                    self.aa_2d_pool
-                        .read()
-                        .lane_transactions_from(seq_id, next_nonce)
-                        .zip(next_nonce..)
-                        .take_while(|(tx, nonce)| tx.nonce() == *nonce)
-                        .last()
-                        .map(|(tx, _)| tx.clone())
-                });
-            let Some(tx) = tx else {
-                return highest;
-            };
-            let Some(nonce) = tx.nonce().checked_add(1) else {
-                return Some(tx);
-            };
-            next_nonce = nonce;
-            highest = Some(tx);
-        }
+        // Only the protocol nonce (nonce_key=0) is followed
+        self.aa_2d_pool
+            .read()
+            .lane_transactions_from(AASequenceId::new(sender, U256::ZERO), on_chain_nonce)
+            .zip(on_chain_nonce..=u64::MAX)
+            .take_while(|(tx, nonce)| tx.nonce() == *nonce)
+            .last()
+            .map(|(tx, _)| tx.clone())
     }
 
     fn get_transaction_by_sender_and_nonce(
@@ -1298,50 +1147,36 @@ where
         nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         // Only returns transactions on the protocol nonce (nonce_key=0)
-        self.protocol_pool
-            .get_transaction_by_sender_and_nonce(sender, nonce)
-            .or_else(|| {
-                self.aa_2d_pool
-                    .read()
-                    .lane_transactions_from(AASequenceId::new(sender, U256::ZERO), nonce)
-                    .next()
-                    .filter(|tx| tx.nonce() == nonce)
-                    .cloned()
-            })
+        self.aa_2d_pool
+            .read()
+            .lane_transactions_from(AASequenceId::new(sender, U256::ZERO), nonce)
+            .next()
+            .filter(|tx| tx.nonce() == nonce)
+            .cloned()
     }
 
     fn get_transactions_by_origin(
         &self,
         origin: TransactionOrigin,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.protocol_pool.get_transactions_by_origin(origin);
-        txs.extend(
-            self.aa_2d_pool
-                .read()
-                .get_transactions_by_origin_iter(origin),
-        );
-        txs
+        self.aa_2d_pool
+            .read()
+            .get_transactions_by_origin_iter(origin)
+            .collect()
     }
 
     fn get_pending_transactions_by_origin(
         &self,
         origin: TransactionOrigin,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .protocol_pool
-            .get_pending_transactions_by_origin(origin);
-        txs.extend(
-            self.aa_2d_pool
-                .read()
-                .get_pending_transactions_by_origin_iter(origin),
-        );
-        txs
+        self.aa_2d_pool
+            .read()
+            .get_pending_transactions_by_origin_iter(origin)
+            .collect()
     }
 
     fn unique_senders(&self) -> AddressSet {
-        let mut senders = self.protocol_pool.unique_senders();
-        senders.extend(self.aa_2d_pool.read().senders_iter().copied());
-        senders
+        self.aa_2d_pool.read().senders_iter().copied().collect()
     }
 
     fn get_blob(
@@ -1351,7 +1186,7 @@ where
         Option<Arc<alloy_eips::eip7594::BlobTransactionSidecarVariant>>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
-        self.protocol_pool.get_blob(tx_hash)
+        self.reth_pool.get_blob(tx_hash)
     }
 
     fn get_all_blobs(
@@ -1364,7 +1199,7 @@ where
         )>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
-        self.protocol_pool.get_all_blobs(tx_hashes)
+        self.reth_pool.get_all_blobs(tx_hashes)
     }
 
     fn get_all_blobs_exact(
@@ -1374,14 +1209,14 @@ where
         Vec<Arc<alloy_eips::eip7594::BlobTransactionSidecarVariant>>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
-        self.protocol_pool.get_all_blobs_exact(tx_hashes)
+        self.reth_pool.get_all_blobs_exact(tx_hashes)
     }
 
     fn has_blobs_for_versioned_hashes(
         &self,
         versioned_hashes: &[B256],
     ) -> Result<Vec<bool>, reth_transaction_pool::blobstore::BlobStoreError> {
-        self.protocol_pool
+        self.reth_pool
             .has_blobs_for_versioned_hashes(versioned_hashes)
     }
 
@@ -1392,7 +1227,7 @@ where
         Vec<Option<alloy_eips::eip4844::BlobAndProofV1>>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
-        self.protocol_pool
+        self.reth_pool
             .get_blobs_for_versioned_hashes_v1(versioned_hashes)
     }
 
@@ -1403,7 +1238,7 @@ where
         Option<Vec<alloy_eips::eip4844::BlobAndProofV2>>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
-        self.protocol_pool
+        self.reth_pool
             .get_blobs_for_versioned_hashes_v2(versioned_hashes)
     }
 
@@ -1414,7 +1249,7 @@ where
         Vec<Option<alloy_eips::eip4844::BlobAndProofV2>>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
-        self.protocol_pool
+        self.reth_pool
             .get_blobs_for_versioned_hashes_v3(versioned_hashes)
     }
 
@@ -1426,12 +1261,12 @@ where
         Vec<Option<alloy_eips::eip4844::BlobCellsAndProofsV1>>,
         reth_transaction_pool::blobstore::BlobStoreError,
     > {
-        self.protocol_pool
+        self.reth_pool
             .get_blobs_for_versioned_hashes_v4(versioned_hashes, cell_mask)
     }
 
     fn blob_store(&self) -> Box<dyn reth_transaction_pool::BlobStore> {
-        TransactionPool::blob_store(&self.protocol_pool)
+        TransactionPool::blob_store(&self.reth_pool)
     }
 }
 
@@ -1464,33 +1299,37 @@ where
     type Block = Block;
 
     fn set_block_info(&self, info: BlockInfo) {
-        self.protocol_pool.set_block_info(info);
+        self.reth_pool.set_block_info(info);
         self.aa_2d_pool.write().set_base_fee(info.pending_basefee);
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        // Keep the AA 2D pool's base fee in sync with the protocol pool. Reth only calls
+        // Keep the AA 2D pool's base fee in sync with the Reth pool's block info. Reth only calls
         // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
         // keep ordering its eviction sets against a stale base fee once the fee starts moving.
         let pending_basefee = update.pending_block_base_fee;
-        self.protocol_pool.on_canonical_state_change(update);
+        let changed_accounts = update.changed_accounts.clone();
+        let mined_transactions = update.mined_transactions.clone();
+        // Moves the validator to the new tip and reports the mined transactions.
+        self.reth_pool.on_canonical_state_change(update);
         self.aa_2d_pool.write().set_base_fee(pending_basefee);
+        self.update_account_nonces(&changed_accounts, &mined_transactions);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
-        self.protocol_pool.update_accounts(accounts)
+        self.update_account_nonces(&accounts, &[]);
     }
 
     fn delete_blob(&self, tx: B256) {
-        self.protocol_pool.delete_blob(tx)
+        self.reth_pool.delete_blob(tx)
     }
 
     fn delete_blobs(&self, txs: Vec<B256>) {
-        self.protocol_pool.delete_blobs(txs)
+        self.reth_pool.delete_blobs(txs)
     }
 
     fn cleanup_blobs(&self) {
-        self.protocol_pool.cleanup_blobs()
+        self.reth_pool.cleanup_blobs()
     }
 }
 
@@ -1805,13 +1644,13 @@ mod tests {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(task.run());
         }
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()))
+        TempoTransactionPool::new(reth_pool, AA2dPool::new(Default::default()))
     }
 
     fn add_validated(
@@ -2118,10 +1957,10 @@ mod tests {
     }
 
     #[test]
-    fn protocol_nonce_transactions_are_found_in_both_pools() {
+    fn protocol_nonce_lookups_cover_aa_and_non_aa_transactions() {
         let pool = create_test_pool(create_provider_with_tip());
         let sender = Address::random();
-        // The sender's protocol nonce sequence alternates between the pools and has a gap at 4.
+        // The sender's protocol nonce lane mixes transaction types and has a gap at 4.
         let [aa0, aa1, aa3, aa5] =
             [0, 1, 3, 5].map(|nonce| TxBuilder::aa(sender).nonce(nonce).build());
         let eip1559 = TxBuilder::aa(sender).nonce(2).build_eip1559();
@@ -2147,18 +1986,16 @@ mod tests {
         }
 
         for (nonce, hash) in (0..).zip(by_nonce) {
-            let is_aa = nonce != 2;
             assert_eq!(
                 pool.get_transaction_by_sender_and_nonce(sender, nonce)
                     .map(|tx| *tx.hash()),
                 hash,
                 "nonce {nonce}"
             );
-            if let Some(hash) = hash {
-                assert_eq!(pool.aa_2d_pool.read().contains(&hash), is_aa);
-                assert_eq!(pool.protocol_pool.contains(&hash), !is_aa);
-            }
         }
+        // The Reth pool is left without transactions.
+        assert_eq!(pool.reth_pool.pool_size().total, 0);
+        assert_eq!(pool.pool_size().total, 5);
         assert_eq!(
             pool.get_highest_transaction_by_sender(sender)
                 .map(|tx| tx.nonce()),
@@ -2218,6 +2055,70 @@ mod tests {
     }
 
     #[test]
+    fn canonical_state_change_moves_protocol_nonce_lanes() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        // Nonce 0 is mined, nonce 1 was replaced on chain by a transaction the pool never saw,
+        // and nonce 3 waits behind a gap that the block closes.
+        let mined = TxBuilder::aa(sender).build_eip1559();
+        let stale = TxBuilder::aa(sender).nonce(1).build();
+        let promoted = TxBuilder::aa(sender).nonce(3).build();
+        let mut listeners = Vec::new();
+        for tx in [mined, stale, promoted] {
+            let (hash, result) = add_aa_2d(&pool, tx);
+            assert!(result.is_ok());
+            listeners.push((hash, pool.transaction_event_listener(hash).unwrap()));
+        }
+        let [
+            (mined, mined_events),
+            (stale, stale_events),
+            (promoted, promoted_events),
+        ] = listeners.try_into().unwrap();
+        let mut pending = pool.pending_transactions_listener();
+
+        let new_tip = SealedBlock::seal_slow(Block::default());
+        pool.on_canonical_state_change(CanonicalStateUpdate {
+            new_tip: &new_tip,
+            pending_block_base_fee: 0,
+            pending_block_blob_fee: None,
+            changed_accounts: vec![ChangedAccount {
+                address: sender,
+                nonce: 3,
+                balance: U256::ZERO,
+            }],
+            mined_transactions: vec![mined],
+            update_kind: PoolUpdateKind::Commit,
+        });
+
+        assert!(!pool.contains(&mined));
+        assert!(!pool.contains(&stale));
+        assert_eq!(tx_hashes(&pool.pending_transactions()), [promoted]);
+        assert_eq!(pending.try_recv(), Ok(promoted));
+        let events = |mut events: TransactionEvents| {
+            std::iter::from_fn(move || events.next().now_or_never().flatten()).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            events(mined_events),
+            [TransactionEvent::Mined(new_tip.hash())]
+        );
+        assert_eq!(events(stale_events), [TransactionEvent::Discarded]);
+        assert_eq!(events(promoted_events), [TransactionEvent::Pending]);
+
+        // A drifted pool reloads the account, and what its new nonce leaves behind is discarded.
+        let mut events = pool.transaction_event_listener(promoted).unwrap();
+        pool.update_accounts(vec![ChangedAccount {
+            address: sender,
+            nonce: 4,
+            balance: U256::ZERO,
+        }]);
+        assert_eq!(pool.pool_size().total, 0);
+        assert_eq!(
+            events.next().now_or_never().flatten(),
+            Some(TransactionEvent::Discarded)
+        );
+    }
+
+    #[test]
     fn canonical_state_change_refreshes_aa_2d_base_fee() {
         let pool = create_test_pool(create_provider_with_tip());
         let initial_base_fee = pool.aa_2d_pool.read().base_fee();
@@ -2247,7 +2148,7 @@ mod tests {
 
         assert_eq!(pool.aa_2d_pool.read().base_fee(), pending_block_base_fee);
         assert_eq!(
-            pool.protocol_pool.block_info().pending_basefee,
+            pool.reth_pool.block_info().pending_basefee,
             pending_block_base_fee
         );
     }
@@ -2633,13 +2534,13 @@ mod tests {
         );
 
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(reth_pool, AA2dPool::new(Default::default()));
 
         pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
         let validated = TransactionValidationOutcome::Valid {
@@ -2792,13 +2693,13 @@ mod tests {
         );
 
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(reth_pool, AA2dPool::new(Default::default()));
 
         let validated = TransactionValidationOutcome::Valid {
             balance: *pooled.cost(),
@@ -2873,13 +2774,13 @@ mod tests {
         );
 
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(reth_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
             add_validated(&pool, pooled.clone());
@@ -2955,13 +2856,13 @@ mod tests {
         );
 
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(reth_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
             add_validated(&pool, pooled.clone());
@@ -3033,13 +2934,13 @@ mod tests {
         );
 
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = TempoTransactionPool::new(reth_pool, AA2dPool::new(Default::default()));
 
         for pooled in [&matching, &untouched] {
             add_validated(&pool, pooled.clone());

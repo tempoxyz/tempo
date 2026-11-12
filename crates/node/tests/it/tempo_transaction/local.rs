@@ -399,7 +399,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
-    ); // Protocol pool
+    ); // Protocol nonce lane
     sent.push(
         send_tx(
             &mut setup,
@@ -411,7 +411,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
-    ); // 2D pool
+    ); // 2D nonce lane
     sent.push(
         send_tx(
             &mut setup,
@@ -423,7 +423,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
-    ); // 2D pool
+    ); // 2D nonce lane
 
     for tx_hash in &sent {
         // Assert that transactions are in the pool
@@ -456,7 +456,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         .wait_for_pool_removal(sent.iter().copied())
         .await
         .wrap_err("scenario 1 transactions did not leave the pool")?;
-    println!("  ✓ All 3 transactions from different pools included in block");
+    println!("  ✓ All 3 transactions from different nonce lanes included in block");
 
     // ===========================================================================
     // Scenario 2: Priority Fee Ordering (with subsequent nonces)
@@ -480,7 +480,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             low_fee,
         )
         .await?,
-    ); // Protocol pool, low fee
+    ); // Protocol nonce lane, low fee
     sent.push(
         send_tx(
             &mut setup,
@@ -492,7 +492,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             high_fee,
         )
         .await?,
-    ); // 2D pool, highest fee
+    ); // 2D nonce lane, highest fee
     sent.push(
         send_tx(
             &mut setup,
@@ -504,7 +504,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             mid_fee,
         )
         .await?,
-    ); // 2D pool, medium fee
+    ); // 2D nonce lane, medium fee
 
     for tx_hash in &sent {
         // Assert that transactions are in the pool

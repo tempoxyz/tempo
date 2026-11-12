@@ -2066,9 +2066,7 @@ where
         ctx: &BuilderContext<Node>,
         evm_config: ZoneEvmConfig,
     ) -> eyre::Result<Self::Pool> {
-        // Zone blocks have no protocol base fee, so allow zero-fee transactions into the pool.
-        let mut pool_config = ctx.pool_config().with_disabled_protocol_base_fee();
-        pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
+        let pool_config = ctx.pool_config();
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
@@ -2122,14 +2120,14 @@ where
             // Zones collect the selected fee token directly and never route through FeeAMM.
             .with_disable_fee_amm_check(true)
         });
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             validator,
             TempoTipOrdering::default(),
             blob_store,
             pool_config.clone(),
         );
 
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+        let transaction_pool = TempoTransactionPool::new(reth_pool, aa_2d_pool);
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
