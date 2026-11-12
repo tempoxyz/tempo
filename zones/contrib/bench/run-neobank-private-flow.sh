@@ -294,13 +294,20 @@ if [[ "$ZONES_BENCH_NEOBANK_PRESET" == "private-withdrawal" ||
 fi
 
 # Zone-only transfers never deposit during measurement, so the admission seed
-# funds every journey an account runs: the transfer amount plus its Zone fee.
+# funds every journey an account runs: the transfer amount plus a fee budget of
+# deposit-amount or the transfer's maximum Zone fee (gas limit x max fee per gas,
+# converted to 6-decimal token units), whichever is larger.
 if [[ "$ZONES_BENCH_NEOBANK_PRESET" == "zone-transfers" ]]; then
-    bigint_true "$ZONES_BENCH_DEPOSIT_AMOUNT > $ZONES_BENCH_ACTIVITY_AMOUNT" ||
-        die "zone-transfers requires deposit-amount greater than activity-amount for Zone fees"
     journeys_per_account="$(bigint_eval \
         "($ZONES_BENCH_COUNT + $ZONES_BENCH_ACCOUNTS - 1) / $ZONES_BENCH_ACCOUNTS")"
-    transfer_seed_amount="$(bigint_eval "$journeys_per_account * $ZONES_BENCH_DEPOSIT_AMOUNT")"
+    transfer_max_fee="$(bigint_eval \
+        "($ZONES_BENCH_ACTIVITY_GAS_LIMIT * $ZONES_BENCH_ZONE_MAX_FEE_PER_GAS + 10^12 - 1) / 10^12")"
+    transfer_fee_budget="$ZONES_BENCH_DEPOSIT_AMOUNT"
+    if bigint_true "$transfer_fee_budget < $transfer_max_fee"; then
+        transfer_fee_budget="$transfer_max_fee"
+    fi
+    transfer_seed_amount="$(bigint_eval \
+        "$journeys_per_account * ($ZONES_BENCH_ACTIVITY_AMOUNT + $transfer_fee_budget)")"
     bigint_true "$transfer_seed_amount <= $(bigint_eval '2^128 - 1')" ||
         die "zone-transfers admission seed amount overflow"
     if bigint_true "$ZONES_BENCH_ADMISSION_SEED_AMOUNT < $transfer_seed_amount"; then
