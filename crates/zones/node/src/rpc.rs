@@ -449,94 +449,98 @@ impl<E> NodeZoneDebugApi<E> {
     }
 }
 
-#[async_trait::async_trait]
 impl<E> ZoneDebugApi for NodeZoneDebugApi<E>
 where
     E: FullEthApi<Evm = ZoneEvmConfig, Primitives = TempoPrimitives>,
 {
-    async fn zone_execution_witness(&self, block_id: BlockId) -> RpcResult<ZoneExecutionWitness> {
-        let _permit = self
-            .eth_api
-            .tracing_task_guard()
-            .clone()
-            .acquire_owned()
-            .await;
-
-        let pending = if let BlockId::Hash(hash) = block_id
-            && hash.require_canonical != Some(true)
-        {
-            self.eth_api
-                .provider()
-                .pending_block()
-                .map_err(|error| operator_rpc_error(internal(error)))?
-                .filter(|block| block.hash() == hash.block_hash)
-        } else {
-            None
-        };
-        let block = match pending {
-            Some(block) => Some(block),
-            None => self
+    fn zone_execution_witness(
+        &self,
+        block_id: BlockId,
+    ) -> futures::future::BoxFuture<'_, RpcResult<ZoneExecutionWitness>> {
+        Box::pin(async move {
+            let _permit = self
                 .eth_api
-                .recovered_block(block_id)
+                .tracing_task_guard()
+                .clone()
+                .acquire_owned()
+                .await;
+
+            let pending = if let BlockId::Hash(hash) = block_id
+                && hash.require_canonical != Some(true)
+            {
+                self.eth_api
+                    .provider()
+                    .pending_block()
+                    .map_err(|error| operator_rpc_error(internal(error)))?
+                    .filter(|block| block.hash() == hash.block_hash)
+            } else {
+                None
+            };
+            let block = match pending {
+                Some(block) => Some(block),
+                None => self
+                    .eth_api
+                    .recovered_block(block_id)
+                    .await
+                    .map_err(|error| operator_rpc_error(internal(error)))?,
+            }
+            .ok_or_else(|| operator_rpc_error(internal(format!("block {block_id} not found"))))?;
+            let block_number = block.header().number();
+            let block_hash = block.hash();
+            let parent_hash = block.parent_hash();
+            let first_tx_input = block
+                .body()
+                .transactions
+                .first()
+                .map(|tx| tx.input().clone());
+
+            let (execution_witness, reads, initial_tempo) = self
+                .eth_api
+                .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
+                    let initial_tempo = db
+                        .db
+                        .inner()
+                        .0
+                        .tempo_num_hash()
+                        .map_err(EthApiError::from)?;
+                    let (evm_config, recorder) = eth_api.evm_config().with_l1_storage_recorder();
+                    let block_executor = evm_config.executor(&mut db);
+                    let mode = ExecutionWitnessMode::default();
+                    let output = block_executor
+                        .execute(&block)
+                        .map_err(|error| EthApiError::Internal(error.into()))?;
+                    db.commit_source(&BundleSource(&output.state));
+
+                    let witness = ExecutionWitnessRecord::new(&db)
+                        .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
+                        .into_execution_witness(
+                            &db.db.inner().0.0,
+                            eth_api.provider(),
+                            block_number,
+                            mode,
+                        )
+                        .map_err(EthApiError::from)?;
+                    Ok((witness, recorder.take_reads(), initial_tempo))
+                })
                 .await
-                .map_err(|error| operator_rpc_error(internal(error)))?,
-        }
-        .ok_or_else(|| operator_rpc_error(internal(format!("block {block_id} not found"))))?;
-        let block_number = block.header().number();
-        let block_hash = block.hash();
-        let parent_hash = block.parent_hash();
-        let first_tx_input = block
-            .body()
-            .transactions
-            .first()
-            .map(|tx| tx.input().clone());
+                .map_err(|error| operator_rpc_error(internal(error)))?;
 
-        let (execution_witness, reads, initial_tempo) = self
-            .eth_api
-            .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
-                let initial_tempo = db
-                    .db
-                    .inner()
-                    .0
-                    .tempo_num_hash()
-                    .map_err(EthApiError::from)?;
-                let (evm_config, recorder) = eth_api.evm_config().with_l1_storage_recorder();
-                let block_executor = evm_config.executor(&mut db);
-                let mode = ExecutionWitnessMode::default();
-                let output = block_executor
-                    .execute(&block)
-                    .map_err(|error| EthApiError::Internal(error.into()))?;
-                db.commit_source(&BundleSource(&output.state));
-
-                let witness = ExecutionWitnessRecord::new(&db)
-                    .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
-                    .into_execution_witness(
-                        &db.db.inner().0.0,
-                        eth_api.provider(),
-                        block_number,
-                        mode,
-                    )
-                    .map_err(EthApiError::from)?;
-                Ok((witness, recorder.take_reads(), initial_tempo))
-            })
+            let (initial_tempo_header, tempo_state) = collect_tempo_witness(
+                &self.l1_provider,
+                initial_tempo,
+                first_tx_input.as_ref().map(|input| input.as_ref()),
+                &reads,
+            )
             .await
-            .map_err(|error| operator_rpc_error(internal(error)))?;
-
-        let (initial_tempo_header, tempo_state) = collect_tempo_witness(
-            &self.l1_provider,
-            initial_tempo,
-            first_tx_input.as_ref().map(|input| input.as_ref()),
-            &reads,
-        )
-        .await
-        .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
-        Ok(ZoneExecutionWitness {
-            block_number,
-            block_hash,
-            parent_hash,
-            execution_witness,
-            initial_tempo_header,
-            tempo_state,
+            .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
+            Ok(ZoneExecutionWitness {
+                block_number,
+                block_hash,
+                parent_hash,
+                execution_witness,
+                initial_tempo_header,
+                tempo_state,
+            })
         })
     }
 }

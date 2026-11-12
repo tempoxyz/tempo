@@ -63,7 +63,6 @@ tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 jsonrpsee.workspace = true
 proptest.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
