@@ -500,8 +500,8 @@ where
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
-        // work would consume that window. A transaction whose execution exhausts
-        // the budget is discarded and left in the pool for a later block.
+        // work would consume that window. A transaction, other than the first, whose
+        // execution exhausts the budget is discarded and left in the pool for a later block.
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
@@ -634,21 +634,6 @@ where
             // Snapshot before `result_closure` borrows the counter mutably.
             let gas_used_before_tx = cumulative_gas_used;
             let mut exceeded_build_budget = false;
-            let mut exceeds_build_budget = |result: &TempoTxResult| {
-                let Some(plan) = build_plan.as_ref() else {
-                    return false;
-                };
-                let workload = ValidationLatencyWorkload::new(
-                    gas_used_before_tx + result.block_gas_used(),
-                    pool_transactions_included as usize + 1,
-                );
-                exceeded_build_budget = plan.exhausted(&plan.decision(
-                    start.elapsed(),
-                    normal_transaction_fill_idle_elapsed,
-                    workload,
-                ));
-                exceeded_build_budget
-            };
 
             let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
@@ -676,9 +661,24 @@ where
                 executor.execute_transaction_without_commit(tx.transaction.executable())
             };
             let execution_result = executed.and_then(|result| {
-                // Leave the transaction uncommitted and unmarked so it stays in the pool.
-                if exceeds_build_budget(&result) {
-                    return Ok(());
+                // The first pool transaction is always committed, so a single transaction that
+                // exhausts the budget on its own cannot keep every block empty.
+                if pool_transactions_included > 0
+                    && let Some(plan) = build_plan.as_ref()
+                {
+                    let workload = ValidationLatencyWorkload::new(
+                        gas_used_before_tx + result.block_gas_used(),
+                        pool_transactions_included as usize + 1,
+                    );
+                    exceeded_build_budget = plan.exhausted(&plan.decision(
+                        start.elapsed(),
+                        normal_transaction_fill_idle_elapsed,
+                        workload,
+                    ));
+                    // Leave the transaction uncommitted and unmarked so it stays in the pool.
+                    if exceeded_build_budget {
+                        return Ok(());
+                    }
                 }
                 result_closure(&result);
                 executor.commit_transaction(result).map(|_| ())
