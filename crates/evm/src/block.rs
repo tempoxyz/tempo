@@ -469,16 +469,6 @@ impl<'a> TempoBlockExecutor<'a> {
         if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
             return Ok(());
         }
-        // Unlike the committee system call, this rejects trailing bytes,
-        // also before ValidatorConfigV2 is initialized.
-        let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
-            commonware_codec::Copying(self.extra_data.as_ref()),
-        )
-        .map_err(|err| {
-            BlockValidationError::msg(format!(
-                "failed decoding boundary block extra data as DKG outcome: {err}"
-            ))
-        })?;
         let mut parent_state: &mut dyn evm2::evm::DynDatabase = self.evm_mut().database_mut();
         let config = crate::TempoStateAccess::<((), ())>::dkg_ceremony_config(
             &mut parent_state,
@@ -490,6 +480,15 @@ impl<'a> TempoBlockExecutor<'a> {
         let Some(config) = config else {
             return Ok(());
         };
+        // Unlike the committee system call, this rejects trailing bytes.
+        let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+            commonware_codec::Copying(self.extra_data.as_ref()),
+        )
+        .map_err(|err| {
+            BlockValidationError::msg(format!(
+                "failed decoding boundary block extra data as DKG outcome: {err}"
+            ))
+        })?;
         let current_epoch = block_number / epoch_length;
         let next_epoch = current_epoch + 1;
         let expected = config.boundary_outcome(next_epoch, proposed.output.clone());
@@ -1708,19 +1707,6 @@ mod tests {
                 wrong_players.encode().into()
             ),
             Ok(())
-        );
-        let mut trailing = wrong_players.encode().to_vec();
-        trailing.push(0);
-        assert_eq!(
-            run(
-                InMemoryDB::default(),
-                TempoHardfork::T15,
-                4,
-                trailing.into()
-            ),
-            Err("failed decoding boundary block extra data as DKG outcome: \
-                Extra Data: 1 bytes remained in buffer after decoding"
-                .to_string())
         );
 
         // Blocks other than the boundary carry no outcome.
