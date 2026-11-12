@@ -645,7 +645,8 @@ where
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash()))
                     .filter(|tx| {
-                        tx.transaction.has_authority_in(&changed_commitments)
+                        tx.transaction
+                            .has_authority_where(|account| changed_commitments.contains(account))
                             || tx
                                 .transaction
                                 .configurable_grant_target()

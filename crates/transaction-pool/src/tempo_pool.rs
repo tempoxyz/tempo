@@ -721,7 +721,12 @@ where
         let transactions: Vec<_> = self
             .all_transactions()
             .iter()
-            .filter(|tx| accounts.is_none_or(|accounts| tx.transaction.has_authority_in(accounts)))
+            .filter(|tx| {
+                accounts.is_none_or(|accounts| {
+                    tx.transaction
+                        .has_authority_where(|account| accounts.contains(account))
+                })
+            })
             .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
             .collect();
         if transactions.is_empty() {
