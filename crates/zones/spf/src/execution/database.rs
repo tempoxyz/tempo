@@ -12,7 +12,7 @@ use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use reth_evm::Database;
 use reth_primitives_traits::Account;
 use reth_trie_common::{
-    EMPTY_ROOT_HASH, HashedPostState, KeccakKeyHasher, TrieNode, bundle_state::BundleState,
+    EMPTY_ROOT_HASH, HashedPostState, KeccakKeyHasher, bundle_state::BundleState,
 };
 use tempo_contracts::TempoHardfork;
 use tempo_primitives::{TempoHeader, account::decode_config_commitment};
@@ -20,7 +20,7 @@ use zone_precompiles::{L1StateError, L1StorageReader};
 
 use crate::{
     Error, StatelessSparseTrieError, TempoStateWitness, ZoneStateWitness,
-    mpt::{StatelessSparseTrie, WitnessPathReader, decode_witness_nodes, index_witness_nodes},
+    mpt::{StatelessSparseTrie, WitnessNodes, WitnessPathReader, index_witness_nodes},
 };
 
 /// Errors emitted while resolving an execution read against a witness.
@@ -177,7 +177,7 @@ pub struct TempoWitnessDatabase {
     tempo_block_number: u64,
     /// The batch-wide Tempo node pool, indexed by hash once and shared by
     /// every checkpoint reader.
-    nodes: Arc<B256Map<TrieNode>>,
+    nodes: Arc<WitnessNodes>,
     missing_read: Arc<Mutex<Option<MissingTempoStorageRead>>>,
 }
 
@@ -192,9 +192,7 @@ pub(crate) struct MissingTempoStorageRead {
 impl TempoWitnessDatabase {
     /// Construct the reader for the initial Tempo checkpoint.
     pub fn from_tempo_state_witness(witness: TempoStateWitness) -> Result<Self, Error> {
-        let nodes = Arc::new(decode_witness_nodes(&index_witness_nodes(
-            &witness.node_pool,
-        )?)?);
+        let nodes = Arc::new(WitnessNodes::decode(&witness.node_pool)?);
         let (state_root, tempo_block_hash, tempo_block_number) =
             checkpoint_state(&witness.initial_tempo_header_rlp, &nodes)?;
 
@@ -271,14 +269,14 @@ impl TempoWitnessDatabase {
 
 fn checkpoint_state(
     header_rlp: &[u8],
-    nodes: &B256Map<TrieNode>,
+    nodes: &WitnessNodes,
 ) -> Result<(Option<B256>, B256, u64), Error> {
     let header: TempoHeader = alloy_rlp::decode_exact(header_rlp)
         .map_err(|_| WitnessDatabaseError::InvalidTempoHeader)?;
 
     let state_root = header.state_root();
     let state_root =
-        (state_root == EMPTY_ROOT_HASH || nodes.contains_key(&state_root)).then_some(state_root);
+        (state_root == EMPTY_ROOT_HASH || nodes.contains(&state_root)).then_some(state_root);
 
     Ok((state_root, keccak256(header_rlp), header.number()))
 }
@@ -375,7 +373,8 @@ mod tests {
         header.inner.state_root = EMPTY_ROOT_HASH;
         header.inner.number = 42;
         let encoded = alloy_rlp::encode(header);
-        let (state, hash, number) = checkpoint_state(&encoded, &B256Map::default()).unwrap();
+        let (state, hash, number) =
+            checkpoint_state(&encoded, &WitnessNodes::decode(&[]).unwrap()).unwrap();
         assert!(state.is_some());
         assert_eq!(hash, keccak256(&encoded));
         assert_eq!(number, 42);
@@ -386,7 +385,7 @@ mod tests {
         invalid.push([encoded.as_slice(), &[0x80]].concat());
         for bytes in invalid {
             assert_eq!(
-                checkpoint_state(&bytes, &B256Map::default()).unwrap_err(),
+                checkpoint_state(&bytes, &WitnessNodes::decode(&[]).unwrap()).unwrap_err(),
                 WitnessDatabaseError::InvalidTempoHeader.into()
             );
         }
@@ -404,10 +403,7 @@ mod tests {
         .unwrap();
         let account = Address::repeat_byte(0x33);
 
-        let invalid = StatelessSparseTrieError::StateRootMismatch {
-            expected: B256::ZERO,
-            actual: EMPTY_ROOT_HASH,
-        };
+        let invalid = StatelessSparseTrieError::InvalidSparseTrie;
         assert_eq!(
             database.witness_read_failure(invalid, account, None),
             format!("invalid Tempo witness: {invalid}")

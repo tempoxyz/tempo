@@ -1251,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn fully_reveals_the_active_tempo_checkpoint() {
+    fn reads_storage_from_the_active_tempo_checkpoint() {
         let account = Address::repeat_byte(0x34);
         let slot = U256::from(7);
         let value = U256::from(11);

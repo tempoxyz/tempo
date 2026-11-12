@@ -6,10 +6,13 @@
 //! [`reth_trie_sparse::SparseStateTrie`], and checked against the committed
 //! pre-state root before it can serve reads.
 //!
-//! Read-only checkpoints use [`WitnessPathReader`] instead, which decodes only
-//! the nodes on each read's path.
+//! Read-only state uses [`WitnessPathReader`] instead, which walks each read's
+//! path from the root through a pool decoded once by [`WitnessNodes::decode`].
 
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256, map::B256Map};
+use alloy_primitives::{
+    Address, B256, Bytes, U256, keccak256,
+    map::{B256Map, Entry},
+};
 use reth_trie_common::{
     DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, Nibbles, TrieAccount, TrieNode,
 };
@@ -225,21 +228,18 @@ impl StatelessSparseTrie {
 /// node pool by walking each read's path from the root.
 ///
 /// Nodes are looked up by their keccak hash, so every node on a path is bound
-/// to the root. Only the nodes on the read's path are decoded, so a read costs
-/// the same however many other nodes the pool holds.
-#[derive(Clone, Copy, Debug)]
+/// to the root. A read visits only the nodes on its own path, so it costs the
+/// same however many other nodes the pool holds.
 pub(crate) struct WitnessPathReader<'a> {
     /// Root every read starts from.
     state_root: B256,
-    /// Witness nodes keyed by the keccak hash of their encoding, from
-    /// [`decode_witness_nodes`].
-    nodes: &'a B256Map<TrieNode>,
+    /// Witness nodes keyed by the keccak hash of their encoding.
+    nodes: &'a WitnessNodes,
 }
 
 impl<'a> WitnessPathReader<'a> {
-    /// Create a reader for `state_root` over nodes decoded by
-    /// [`decode_witness_nodes`].
-    pub(crate) const fn new(state_root: B256, nodes: &'a B256Map<TrieNode>) -> Self {
+    /// Create a reader for `state_root` over a decoded witness node pool.
+    pub(crate) const fn new(state_root: B256, nodes: &'a WitnessNodes) -> Self {
         Self { state_root, nodes }
     }
 
@@ -284,7 +284,7 @@ impl<'a> WitnessPathReader<'a> {
         if root == EMPTY_ROOT_HASH {
             return Ok(PathEnd::Absent);
         }
-        let Some(mut node) = self.nodes.get(&root) else {
+        let Some(mut node) = self.nodes.0.get(&root) else {
             return Ok(PathEnd::Blinded);
         };
         let path = Nibbles::unpack(key);
@@ -313,25 +313,21 @@ impl<'a> WitnessPathReader<'a> {
                     &extension.child
                 }
                 TrieNode::Branch(branch) => {
-                    if depth == path.len() {
+                    let Some(nibble) = path.get(depth) else {
                         return Err(StatelessSparseTrieError::InvalidSparseTrie);
-                    }
-                    let nibble = path.get_unchecked(depth);
+                    };
                     depth += 1;
                     if !branch.state_mask.is_bit_set(nibble) {
                         return Ok(PathEnd::Absent);
                     }
-                    // Children are stored in nibble order for the set bits of the mask. Decoding
-                    // builds the mask from the present children, so the stack always matches it.
+                    // Children are stored in nibble order for the set bits of the mask, and
+                    // `TrieNode::decode` builds the mask from the children it pushes.
                     let index = (branch.state_mask.get() & ((1 << nibble) - 1)).count_ones();
-                    branch
-                        .stack
-                        .get(index as usize)
-                        .ok_or(StatelessSparseTrieError::InvalidSparseTrie)?
+                    &branch.stack[index as usize]
                 }
             };
             node = match child.as_hash() {
-                Some(hash) => match self.nodes.get(&hash) {
+                Some(hash) => match self.nodes.0.get(&hash) {
                     Some(node) => node,
                     None => return Ok(PathEnd::Blinded),
                 },
@@ -388,19 +384,42 @@ pub(crate) fn index_witness_nodes(
     Ok(nodes)
 }
 
-/// Decode every node of a pool indexed by [`index_witness_nodes`] once, keyed by
-/// the same hashes, so reads walk decoded nodes instead of decoding them again.
-pub(crate) fn decode_witness_nodes(
-    nodes: &B256Map<Bytes>,
-) -> Result<B256Map<TrieNode>, StatelessSparseTrieError> {
-    nodes
-        .iter()
-        .map(|(hash, bytes)| {
-            let node = alloy_rlp::decode_exact(bytes)
-                .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?;
-            Ok((*hash, node))
-        })
-        .collect()
+/// Decoded witness nodes keyed by the keccak hash of their encoding.
+///
+/// Only [`WitnessNodes::decode`] builds one, so every key is the hash of its
+/// node, which is what binds a [`WitnessPathReader`]'s paths to their root.
+pub(crate) struct WitnessNodes(B256Map<TrieNode>);
+
+impl WitnessNodes {
+    /// Hash, deduplicate and decode a flat witness node pool in one pass,
+    /// rejecting duplicate nodes and any node that is not exact RLP.
+    pub(crate) fn decode(node_pool: &[Bytes]) -> Result<Self, StatelessSparseTrieError> {
+        let mut nodes = B256Map::with_capacity_and_hasher(node_pool.len(), Default::default());
+        for bytes in node_pool {
+            let node_hash = keccak256(bytes);
+            let Entry::Vacant(entry) = nodes.entry(node_hash) else {
+                return Err(StatelessSparseTrieError::DuplicateNodeHash { node_hash });
+            };
+            entry.insert(
+                alloy_rlp::decode_exact(bytes)
+                    .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?,
+            );
+        }
+        Ok(Self(nodes))
+    }
+
+    /// Whether the pool holds the node with this hash.
+    pub(crate) fn contains(&self, node_hash: &B256) -> bool {
+        self.0.contains_key(node_hash)
+    }
+}
+
+impl core::fmt::Debug for WitnessNodes {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WitnessNodes")
+            .field("len", &self.0.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The pinned Reth helper assumes internally consistent paths in a few places.
@@ -413,19 +432,22 @@ fn guarded<T>(
         .unwrap_or(Err(StatelessSparseTrieError::InvalidSparseTrie))
 }
 
-/// Errors emitted while constructing or reading a stateless sparse trie.
+/// Errors emitted while validating or reading witness tries, through
+/// [`StatelessSparseTrie`] or [`WitnessPathReader`].
 #[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatelessSparseTrieError {
     /// `node_pool` is not deduplicated by node hash.
     #[error("duplicate trie node hash in witness: {node_hash:?}")]
     DuplicateNodeHash { node_hash: B256 },
-    /// A trie node needed to reconstruct the supplied proof is not valid RLP.
+    /// A witness trie node is not valid RLP.
     #[error("invalid RLP-encoded trie node in witness")]
     InvalidNodeEncoding,
     /// The node pool does not provide the node committed by the state root.
     #[error("state root is absent from the node pool: {state_root:?}")]
     MissingStateRootNode { state_root: B256 },
-    /// Reth rejected the witness while reconstructing the sparse trie.
+    /// The witness is not a valid trie proof: Reth rejected it while
+    /// reconstructing the sparse trie, or a node on a read's path has an
+    /// impossible shape.
     #[error("state witness is not a valid sparse trie proof")]
     InvalidSparseTrie,
     /// The reconstructed trie does not hash to the committed state root.
@@ -516,7 +538,7 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         let nodes = index_witness_nodes(&pool).unwrap();
-        let decoded = decode_witness_nodes(&nodes).unwrap();
+        let decoded = WitnessNodes::decode(&pool).unwrap();
         let reader = WitnessPathReader::new(state_root, &decoded);
         let trie = StatelessSparseTrie::new(state_root, &nodes).unwrap();
         for address in read {
@@ -544,8 +566,7 @@ mod tests {
         );
 
         // Without the storage proof the account still resolves, but its slots do not.
-        let account_only =
-            decode_witness_nodes(&index_witness_nodes(&account_nodes).unwrap()).unwrap();
+        let account_only = WitnessNodes::decode(&account_nodes).unwrap();
         let reader = WitnessPathReader::new(state_root, &account_only);
         assert!(reader.account(with_storage).unwrap().is_some());
         assert_eq!(
@@ -557,11 +578,14 @@ mod tests {
         );
 
         // A path through a node missing from the pool is an incomplete proof.
-        let root_only = decoded
-            .iter()
-            .filter(|(hash, _)| **hash == state_root)
-            .map(|(hash, node)| (*hash, node.clone()))
-            .collect::<B256Map<_>>();
+        let root_only = WitnessNodes(
+            decoded
+                .0
+                .iter()
+                .filter(|(hash, _)| **hash == state_root)
+                .map(|(hash, node)| (*hash, node.clone()))
+                .collect(),
+        );
         assert_eq!(
             WitnessPathReader::new(state_root, &root_only).account(address(3)),
             Err(StatelessSparseTrieError::IncompleteAccountProof {
@@ -569,36 +593,101 @@ mod tests {
             })
         );
         assert_eq!(
-            WitnessPathReader::new(EMPTY_ROOT_HASH, &B256Map::default()).account(address(3)),
+            WitnessPathReader::new(EMPTY_ROOT_HASH, &WitnessNodes::decode(&[]).unwrap())
+                .account(address(3)),
             Ok(None)
         );
     }
 
     /// Indexes `nodes` by hash and returns the first node's hash as the root.
-    fn pool(nodes: &[TrieNode]) -> (B256, B256Map<TrieNode>) {
+    fn pool(nodes: &[TrieNode]) -> (B256, WitnessNodes) {
         let nodes = nodes
             .iter()
             .map(|node| Bytes::from(alloy_rlp::encode(node)))
             .collect::<Vec<_>>();
-        let decoded = decode_witness_nodes(&index_witness_nodes(&nodes).unwrap()).unwrap();
-        (keccak256(&nodes[0]), decoded)
+        (keccak256(&nodes[0]), WitnessNodes::decode(&nodes).unwrap())
     }
 
     #[test]
-    fn path_reader_rejects_invalid_node_encoding() {
+    fn witness_nodes_reject_invalid_and_duplicate_nodes() {
         let mut leaf = alloy_rlp::encode(TrieNode::Leaf(LeafNode::new(
             Nibbles::unpack(keccak256(Address::ZERO)),
             vec![0x80],
         )));
         leaf.push(0x80);
         for invalid in [vec![0xc2, 0x80], leaf] {
-            let invalid = Bytes::from(invalid);
-            let root = keccak256(&invalid);
-            let nodes = B256Map::from_iter([(root, invalid)]);
             assert_eq!(
-                decode_witness_nodes(&nodes),
-                Err(StatelessSparseTrieError::InvalidNodeEncoding)
+                WitnessNodes::decode(&[Bytes::from(invalid)]).unwrap_err(),
+                StatelessSparseTrieError::InvalidNodeEncoding
             );
+        }
+
+        let node = Bytes::from(alloy_rlp::encode(TrieNode::EmptyRoot));
+        assert_eq!(
+            WitnessNodes::decode(&[node.clone(), node.clone()]).unwrap_err(),
+            StatelessSparseTrieError::DuplicateNodeHash {
+                node_hash: keccak256(&node)
+            }
+        );
+    }
+
+    #[test]
+    fn path_reader_follows_inline_children() {
+        // Keys that differ only in the last nibble put a branch of two tiny leaves at the
+        // bottom, both short enough to be embedded in their parent instead of hashed.
+        let first = B256::ZERO;
+        let second = B256::with_last_byte(0x01);
+        let leaves = BTreeMap::from([(first, vec![0x01]), (second, vec![0x02])]);
+        let (root, proof) = prove(&leaves, &[first, second]);
+        let nodes = WitnessNodes::decode(&proof).unwrap();
+        let TrieNode::Extension(extension) = &nodes.0[&root] else {
+            panic!("expected an extension root");
+        };
+        assert!(extension.child.as_hash().is_none());
+
+        let reader = WitnessPathReader::new(root, &nodes);
+        assert!(matches!(reader.walk(root, first), Ok(PathEnd::Leaf(value)) if value == [0x01]));
+        assert!(matches!(reader.walk(root, second), Ok(PathEnd::Leaf(value)) if value == [0x02]));
+        assert!(matches!(
+            reader.walk(root, B256::with_last_byte(0x02)),
+            Ok(PathEnd::Absent)
+        ));
+    }
+
+    #[test]
+    fn path_reader_rejects_invalid_inline_child() {
+        // A one-item list is not a trie node.
+        let (root, nodes) = pool(&[TrieNode::Extension(ExtensionNode::new(
+            Nibbles::from_nibbles([0]),
+            RlpNode::from_raw(&[0xc1, 0x80]).unwrap(),
+        ))]);
+        assert!(matches!(
+            WitnessPathReader::new(root, &nodes).walk(root, B256::ZERO),
+            Err(StatelessSparseTrieError::InvalidNodeEncoding)
+        ));
+    }
+
+    #[test]
+    fn path_reader_proves_absence() {
+        let hashed_child = RlpNode::word_rlp(&B256::ZERO);
+        let extension_mismatch = TrieNode::Extension(ExtensionNode::new(
+            Nibbles::from_nibbles([1]),
+            hashed_child.clone(),
+        ));
+        let unset_mask_bit = TrieNode::Branch(BranchNode::new(
+            vec![hashed_child.clone(), hashed_child],
+            TrieMask::new(0b110),
+        ));
+        let leaf_key_mismatch = TrieNode::Leaf(LeafNode::new(
+            Nibbles::unpack(B256::repeat_byte(0x11)),
+            vec![0x80],
+        ));
+        for node in [extension_mismatch, unset_mask_bit, leaf_key_mismatch] {
+            let (root, nodes) = pool(&[node]);
+            assert!(matches!(
+                WitnessPathReader::new(root, &nodes).walk(root, B256::ZERO),
+                Ok(PathEnd::Absent)
+            ));
         }
     }
 
