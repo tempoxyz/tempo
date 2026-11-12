@@ -55,6 +55,8 @@ images it is given, so they must be in the image rather than copied in when a co
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
 | `parallel_driver_rotate_leader` | Hands leadership to another sequencer, through the admin or a zone node's `zone_setLeader` relay, then observes production and settlement if its term is not superseded |
 | `serial_driver_single_sequencer_outage` | In a quiet window, checks availability during a non-leader crash or recovery after a crashed leader restarts, then catch-up and renewed quorum participation; leader recovery includes an explicit portal handoff |
+| `serial_driver_quorum_loss_recovery` | Holds both followers down, proves a newly executed canary cannot settle at 1-of-3, then restores one follower and requires its fresh quorum participation |
+| `serial_driver_handoff_campaign` | Rotates to a stopped, lagging successor, optionally returns A→B→A before B can activate, then requires fresh final-term settlement and exact predecessor preservation |
 | `serial_driver_recovery` | Pauses faults for 600 seconds, then proves a fresh canary settles on finalized L1 and all nodes preserve its receipt and the prior settled prefix within 300 seconds |
 | `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, settled workload transactions stay final, and every zone block comes from the leader the portal names at its Tempo anchor; reconciles persistent handoff history |
 | `eventually_settled` | After faults stop, resolves every durable signed intent first, then every confirmed deposit is credited or refunded and every confirmed withdrawal is paid, and all nodes converge |
@@ -108,15 +110,20 @@ docker compose -f contrib/antithesis/zones/docker-compose.yaml exec workload \
 
 ## Zone-only faults
 
-Run `bash contrib/antithesis/zones/launch.sh CONFIG_IMAGE@sha256:DIGEST MINUTES COMPUTE_HOURS`
+Run `bash contrib/antithesis/zones/launch.sh CONFIG_IMAGE@sha256:DIGEST COMPUTE_HOURS`
 to print the exact launch command. Add `--launch` only after approving its paid compute budget.
-The script requires a digest-pinned config, uses the `custom_faults` launcher, and explicitly
-passes both duration and compute-hours. Confirm the accepted settings in the run metadata;
-the compute-hours parameter is not a substitute for checking the server's duration.
+The script requires a digest-pinned config and uses the `custom_faults` launcher. It sends
+only a compute budget and a five-minute setup timeout, never a duration as well. Confirm
+that the deployed custom launcher supports the budget and its billing/teardown semantics
+before submitting: CLI validation alone does not prove a hard spending cap. Inspect accepted
+settings and actual usage, and do not reuse an earlier run's approval.
 
 Only `zone-0`, `zone-1` and `zone-2` are eligible for container termination. Tempo `l1`, the
 provisioner, the workload and the RPC-only follower are excluded. Network faults, node hangs,
 node throttling, clock jitter and CPU modulation are disabled in this focused profile.
+Add `--network-faults` for the leader/quorum campaign: sequencer network faults and
+container termination are then enabled together, with the same excluded services. Quiet
+serial episodes still suspend unrelated platform faults while checking their controlled cases.
 The custom launcher reports `legacy` internally; do not pass `antithesis.fault_tolerance`.
 Machine-wide thread pausing cannot be excluded per container. Target selection does not enforce
 one simultaneous failure across different nodes; the controlled probe below does.
@@ -204,3 +211,41 @@ Omitting `--case` lets Antithesis choose through SDK randomness. The global `--f
 option (`FAULT_CONTROL_DIR`) selects the workload's control path; supervisors use
 `ZONE_FAULT_CONTROL_DIR`. Both default to `/fault-control`. Do not shorten the supervisor's
 180-second hold watchdog below the workload's 150-second held-down deadline in a real run.
+
+## Controlled quorum and overlapping handoffs
+
+Both new serial commands request the same 1,800-second quiet window and use a 1,500-second
+process backstop. Their internal deadlines include restart readiness, catch-up and settlement;
+reaching the new term or becoming RPC-ready is an outcome, not a condition for starting the
+recovery clock. Each executed episode has an `always` completion check and independent
+reachability properties. A pre-fault skip is not successful case coverage.
+
+- `quorum-loss-recovery` keeps the leader healthy and holds **both** followers down. It signs
+  a fresh canary after both matching DOWN acknowledgements, requires execution, and checks
+  that neither latest nor finalized L1 settlement includes that canary during the observation
+  interval. Old certificates may legitimately settle older batches. It restores one follower
+  while the other remains held, then requires exact canary settlement with unchanged 2-of-3
+  membership. This forces a fresh signature from the restarted follower. Finally it releases
+  both holds and checks all four nodes' receipts and the canonical prefix.
+- `handoff-campaign --case lagging-successor` holds B down while A creates a durable tail,
+  submits another signed canary without waiting for inclusion, and finalizes A→B. A fast
+  leader may include that transaction before the handoff; this does not guarantee a transaction
+  remains in flight across activation. It restores B and
+  requires a fresh B-term canary to settle, with predecessor and in-flight receipts intact.
+- `handoff-campaign --case overlapping-handoffs` adds B→A before B is restarted. There is no
+  independent fresh-work demand for superseded B, but B must still supply any missing blocks
+  in its historical activation interval. The final stable A term must make fresh progress
+  and preserve the prefix. The old leader remains available to provide its legitimate tail.
+
+For a focused campaign, build the config with workflow input `direct_handoffs=true` (locally,
+`ZONE_HANDOFF_DIRECT_ONLY=true`). This pins the workload's random rotation driver to durable
+signed admin transactions so a lost relay reply cannot make every subsequent controlled
+case inconclusive. The default is `false`, retaining relay coverage. This does not clear old
+unknown requests: use fresh state for a new profile. Direct local callers can also pass
+`rotate-leader --direct-only`.
+
+These scenarios complement the existing leader crash/restart probe and randomized platform
+faults. They do not inject a crash at an exact persistence instruction or implement operator
+forced recovery when a predecessor prefix never existed. Do not interpret them as proof of
+those scenarios or as automatic leader election. Use a baseline containing the T14 checkpoint
+metering fix and fresh genesis/state; historical pre-T14 gas behavior is deliberately unchanged.

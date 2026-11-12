@@ -169,6 +169,8 @@ services:
     cap_add:
       - SYS_PTRACE
     entrypoint: ["/opt/zones/workload.sh"]
+    environment:
+      ZONE_HANDOFF_DIRECT_ONLY: ${ZONE_HANDOFF_DIRECT_ONLY:-false}
     depends_on:
       provision:
         condition: service_completed_successfully

@@ -35,6 +35,7 @@ use zone_precompiles::ecies::encrypt_deposit;
 use intents::{Chain, Effect};
 use ledger::{Account, Lease, Ledger, Record};
 
+mod campaign;
 mod checks;
 mod handoff;
 mod intents;
@@ -133,7 +134,11 @@ enum Command {
     Fanout,
     /// Hands zone leadership to another sequencer, through the admin or a node's
     /// `zone_setLeader` relay.
-    RotateLeader,
+    RotateLeader {
+        /// Use only durable signed admin handoffs, avoiding ambiguous relay replies in focused runs.
+        #[arg(long, env = "ZONE_HANDOFF_DIRECT_ONLY")]
+        direct_only: bool,
+    },
     /// Checks that zone nodes agree with L1 settlement while faults run.
     CheckConsistency,
     /// After faults stop: every confirmed deposit and withdrawal lands and nodes converge.
@@ -148,6 +153,14 @@ enum Command {
         /// Omitted randomly chooses backup availability or leader restart recovery with admin handoff.
         #[arg(long, value_enum)]
         case: Option<outage::Case>,
+    },
+    /// Proves fresh settlement stops below quorum and resumes when one follower returns.
+    QuorumLossRecovery,
+    /// Overlaps leadership transitions with lagging replicas and crash/restart recovery.
+    HandoffCampaign {
+        /// Omitted randomly chooses a campaign case.
+        #[arg(long, value_enum)]
+        case: Option<campaign::Case>,
     },
     /// Releases intentional process holds left by an interrupted serial command.
     ReleaseOutages,
@@ -195,12 +208,18 @@ impl Antithesis {
                     .single_sequencer_outage(&self.fault_control_dir, case)
                     .await;
             }
+            Command::QuorumLossRecovery => {
+                return ctx.quorum_loss_recovery(&self.fault_control_dir).await;
+            }
+            Command::HandoffCampaign { case } => {
+                return ctx.handoff_campaign(&self.fault_control_dir, case).await;
+            }
             Command::ReleaseOutages => return Ok(()),
             Command::Deposit => ctx.deposit().await,
             Command::Transfer => ctx.transfer().await,
             Command::Withdraw => ctx.withdraw().await,
             Command::Fanout => ctx.fanout().await,
-            Command::RotateLeader => ctx.rotate_leader().await,
+            Command::RotateLeader { direct_only } => ctx.rotate_leader(direct_only).await,
         };
         // RPC failures leave durable intents unresolved, including nonce-too-low responses.
         // Only a mined receipt can distinguish success from revert. Other errors fail the run.
@@ -982,4 +1001,51 @@ fn shuffled<T>(mut items: Vec<T>) -> Vec<T> {
         items.swap(i, random_index(i + 1));
     }
     items
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn controlled_campaign_commands_parse() {
+        assert!(matches!(
+            Antithesis::try_parse_from(["zones", "quorum-loss-recovery"])
+                .unwrap()
+                .command,
+            Command::QuorumLossRecovery
+        ));
+        assert!(matches!(
+            Antithesis::try_parse_from([
+                "zones",
+                "handoff-campaign",
+                "--case",
+                "lagging-successor"
+            ])
+            .unwrap()
+            .command,
+            Command::HandoffCampaign {
+                case: Some(campaign::Case::LaggingSuccessor)
+            }
+        ));
+        assert!(matches!(
+            Antithesis::try_parse_from([
+                "zones",
+                "handoff-campaign",
+                "--case",
+                "overlapping-handoffs"
+            ])
+            .unwrap()
+            .command,
+            Command::HandoffCampaign {
+                case: Some(campaign::Case::OverlappingHandoffs)
+            }
+        ));
+        assert!(matches!(
+            Antithesis::try_parse_from(["zones", "rotate-leader", "--direct-only"])
+                .unwrap()
+                .command,
+            Command::RotateLeader { direct_only: true }
+        ));
+    }
 }

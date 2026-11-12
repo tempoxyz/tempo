@@ -13,12 +13,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZonePortal};
+use tokio::time::Instant;
 use zone_rpc::types::SetLeaderResponse;
 
 use super::{
     ADMIN_INDEX, Account, BRIDGE_WAIT, Context, Record, SEQUENCER_INDICES,
     intents::{Chain, Effect},
+    outage::Membership,
     poll_until, random_below, random_choice, random_index,
+    recovery::{ReceiptProof, recover_until},
 };
 
 /// Maximum L1 block range in one history query.
@@ -71,10 +74,12 @@ pub(super) struct Update {
 impl Context {
     /// Journals a handoff before sending it, then observes production and settlement if its
     /// term survives. A lost reply leaves an intent recoverable by `reconcile_handoffs`.
-    pub(super) async fn rotate_leader(&self) -> eyre::Result<()> {
+    /// `direct_only` suppresses new relays; it never clears earlier unknown submissions.
+    pub(super) async fn rotate_leader(&self, direct_only: bool) -> eyre::Result<()> {
         let _episode = self.ledger.episode_lock(false).await?;
         self.reconcile_handoffs().await?;
-        let relayed = random_below(2) == 0;
+        // Focused campaigns avoid new ambiguous relays, without clearing old unknown sends.
+        let relayed = !direct_only && random_below(2) == 0;
         let admin = Account::at(ADMIN_INDEX)?;
         let _lease = if relayed {
             None
@@ -232,6 +237,134 @@ impl Context {
             update.epoch
         );
         Ok(())
+    }
+
+    /// Sends only journaled admin transactions and returns the exact finalized transition.
+    /// The caller bounds this operation and holds the exclusive episode lock.
+    pub(super) async fn campaign_handoff(
+        &self,
+        prior: &Membership,
+        target: Address,
+    ) -> eyre::Result<Update> {
+        eyre::ensure!(target != prior.leader, "campaign handoff is a no-op");
+        let admin = Account::at(ADMIN_INDEX)?;
+        let _lease = self
+            .ledger
+            .try_lease(&admin)?
+            .ok_or_eyre("campaign handoff admin is busy")?;
+        let from_l1_block = self.l1.get_block_number().await?;
+        let transaction = ZonePortal::new(self.portal, &self.l1)
+            .setLeader(target, prior.epoch)
+            .into_transaction_request();
+        let intent = self
+            .prepare_intent(
+                &admin,
+                Chain::L1,
+                0,
+                transaction,
+                Effect::Leadership { target },
+            )
+            .await?;
+        self.ledger.append(&Record::HandoffRequest(Request {
+            id: self.ledger.next_id()?,
+            previous_leader: prior.leader,
+            expected_epoch: prior.epoch,
+            target,
+            relayed: false,
+            from_l1_block,
+            l1_tx: Some(intent.tx),
+        }))?;
+        let receipt = self.outage_receipt(&intent).await?;
+        eyre::ensure!(receipt.status(), "campaign admin handoff reverted");
+        recover_until(Instant::now() + BRIDGE_WAIT, async || {
+            let history = self.canonical_handoffs().await?;
+            validate_history(&history)?;
+            let Some(update) = history.iter().find(|update| update.l1_tx == intent.tx) else {
+                return Ok(None);
+            };
+            eyre::ensure!(
+                update.previous_leader == prior.leader
+                    && update.new_leader == target
+                    && Some(update.epoch) == prior.epoch.checked_add(1),
+                "campaign finalized handoff differs from journaled request"
+            );
+            Ok(Some(update.clone()))
+        })
+        .await
+    }
+
+    /// Requires activation on every node in the exact final term, not a stale A block in A→B→A.
+    /// With a canary, checks its exact block; without one, checks tips before signing fresh work.
+    /// Missing activation retries; a superseding term or contradictory canonical identity fails.
+    pub(super) async fn handoff_term_ready(
+        &self,
+        update: &Update,
+        expected: &Membership,
+        canary: Option<&ReceiptProof>,
+    ) -> eyre::Result<bool> {
+        let history = self.canonical_handoffs().await?;
+        validate_history(&history)?;
+        eyre::ensure!(
+            history.last() == Some(update),
+            "campaign final term was superseded or its canonical event changed"
+        );
+        let finalized = self
+            .l1
+            .get_block_by_number(BlockNumberOrTag::Finalized)
+            .await?
+            .ok_or_eyre("campaign final term has no finalized L1 block")?;
+        eyre::ensure!(
+            self.outage_membership(BlockId::hash(finalized.header.hash))
+                .await?
+                == *expected
+                && self.outage_membership(BlockId::latest()).await? == *expected,
+            "campaign final membership or epoch changed"
+        );
+        eyre::ensure!(
+            self.zones.len() == 4,
+            "campaign final term requires all four nodes"
+        );
+        let mut ready = true;
+        for zone in &self.zones {
+            let number = canary.map_or(BlockNumberOrTag::Latest, |proof| proof.height.into());
+            let Some(block) = zone.get_block_by_number(number).await? else {
+                ready = false;
+                continue;
+            };
+            if let Some(proof) = canary {
+                eyre::ensure!(
+                    block.header.hash == proof.hash && block.header.number == proof.height,
+                    "campaign canary block differs from canonical proof"
+                );
+            }
+            let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
+                .tempoBlockNumber()
+                .block(BlockId::hash(block.header.hash))
+                .call()
+                .await?;
+            if anchor < update.activation_tempo_block {
+                ready = false;
+                continue;
+            }
+            if canary.is_some() && anchor > finalized.header.number {
+                ready = false;
+                continue;
+            }
+            let l1 = self
+                .l1
+                .get_block_by_number(anchor.into())
+                .await?
+                .ok_or_eyre("campaign canary Tempo anchor is missing")?;
+            let at = BlockId::hash(l1.header.hash);
+            let portal = ZonePortal::new(self.portal, &self.l1);
+            eyre::ensure!(
+                block.header.beneficiary == update.new_leader
+                    && portal.leader().block(at).call().await? == update.new_leader
+                    && portal.leaderEpoch().block(at).call().await? == update.epoch,
+                "campaign block is not authorized by the final Tempo term"
+            );
+        }
+        Ok(ready)
     }
 
     /// True only when every prior handoff is provably unable to change future leadership.
@@ -607,9 +740,234 @@ fn competing_requests(requests: &[Request]) -> bool {
 mod tests {
     use super::*;
     use alloy::{
-        primitives::Bloom, providers::ProviderBuilder, rpc::types::Block,
+        primitives::{Bloom, Bytes},
+        providers::ProviderBuilder,
+        rpc::types::Block,
+        sol_types::SolValue as _,
         transports::mock::Asserter,
     };
+
+    #[derive(Debug, Clone, Copy)]
+    enum TermFault {
+        None,
+        PartialActivation,
+        MissingFollower,
+        StaleEpoch,
+        Superseded,
+        CanonicalMismatch,
+        WrongAuthority,
+        Rpc,
+    }
+
+    fn queue_campaign_membership(l1: &Asserter, expected: &Membership, epoch: u64) {
+        l1.push_success(&Bytes::from(U256::from(3).abi_encode()));
+        l1.push_success(&Bytes::from(
+            (
+                U256::from(10),
+                expected
+                    .members
+                    .iter()
+                    .map(|member| Bytes::from(member.abi_encode()))
+                    .collect::<Vec<_>>(),
+            )
+                .abi_encode_params(),
+        ));
+        for value in [U256::from(expected.threshold), U256::from(expected.version)] {
+            l1.push_success(&Bytes::from(value.abi_encode()));
+        }
+        l1.push_success(&Bytes::from(expected.leader.abi_encode()));
+        l1.push_success(&Bytes::from(U256::from(epoch).abi_encode()));
+    }
+
+    // Exercises the actual RPC-backed final-term gate, not a detached boolean model.
+    async fn campaign_term_fixture(fault: TermFault, fixed_canary: bool) -> eyre::Result<bool> {
+        let dir = tempfile::tempdir().unwrap();
+        let l1 = Asserter::new();
+        let zones: Vec<_> = (0..4).map(|_| Asserter::new()).collect();
+        let ctx = Context {
+            ledger: crate::ledger::Ledger::open(dir.path()).unwrap(),
+            l1: ProviderBuilder::new()
+                .connect_mocked_client(l1.clone())
+                .erased(),
+            zones: zones
+                .iter()
+                .cloned()
+                .map(|zone| ProviderBuilder::new().connect_mocked_client(zone).erased())
+                .collect(),
+            zone_urls: vec![],
+            http: Default::default(),
+            l1_url: "http://localhost:1".parse().unwrap(),
+            portal: Address::repeat_byte(9),
+        };
+        let expected = Membership {
+            members: (1..=3).map(Address::repeat_byte).collect(),
+            threshold: 2,
+            version: 1,
+            leader: Address::repeat_byte(1),
+            epoch: 3,
+        };
+        let final_term = update(3, 20, 2, 1);
+        let mut history = vec![update(2, 10, 1, 2), final_term.clone()];
+        if matches!(fault, TermFault::Superseded) {
+            history.push(update(4, 30, 1, 3));
+        }
+        let mut finalized = Block::<B256>::default();
+        finalized.header.number = 100;
+        finalized.header.hash = B256::repeat_byte(100);
+        l1.push_success(&finalized);
+        let logs: Vec<_> = history
+            .iter()
+            .map(|event| Log {
+                inner: alloy::primitives::Log {
+                    address: ctx.portal,
+                    data: ZonePortal::LeaderUpdated {
+                        previousLeader: event.previous_leader,
+                        newLeader: event.new_leader,
+                        epoch: event.epoch,
+                        activationTempoBlock: event.activation_tempo_block,
+                    }
+                    .encode_log_data(),
+                },
+                block_number: Some(event.l1_block),
+                block_hash: Some(event.l1_block_hash),
+                transaction_hash: Some(event.l1_tx),
+                log_index: Some(event.log_index),
+                ..Default::default()
+            })
+            .collect();
+        l1.push_success(&logs);
+        l1.push_success(&finalized);
+        l1.push_success(&finalized);
+        queue_campaign_membership(
+            &l1,
+            &expected,
+            if matches!(fault, TermFault::StaleEpoch) {
+                1
+            } else {
+                3
+            },
+        );
+        l1.push_success(&finalized);
+        queue_campaign_membership(&l1, &expected, 3);
+        let canary = ReceiptProof {
+            tx: B256::repeat_byte(6),
+            height: 40,
+            hash: B256::repeat_byte(40),
+            success: true,
+        };
+        for (index, zone) in zones.iter().enumerate() {
+            if index == 3 && matches!(fault, TermFault::MissingFollower) {
+                zone.push_success(&None::<Block<B256>>);
+                continue;
+            }
+            if index == 3 && matches!(fault, TermFault::Rpc) {
+                zone.push_failure_msg("campaign follower RPC unavailable");
+                continue;
+            }
+            let mut block = Block::<B256>::default();
+            block.header.number = canary.height;
+            block.header.hash = if index == 3 && matches!(fault, TermFault::CanonicalMismatch) {
+                B256::ZERO
+            } else {
+                canary.hash
+            };
+            block.header.beneficiary = expected.leader;
+            zone.push_success(&block);
+            // Old A blocks are valid history, but not evidence for final A's activation.
+            let anchor = if index == 3 && matches!(fault, TermFault::PartialActivation) {
+                9
+            } else {
+                20
+            };
+            zone.push_success(&Bytes::from(U256::from(anchor).abi_encode()));
+            if anchor >= 20 {
+                l1.push_success(&finalized);
+                l1.push_success(&Bytes::from(expected.leader.abi_encode()));
+                let epoch = if index == 3 && matches!(fault, TermFault::WrongAuthority) {
+                    1
+                } else {
+                    3
+                };
+                l1.push_success(&Bytes::from(U256::from(epoch).abi_encode()));
+            }
+        }
+        ctx.handoff_term_ready(&final_term, &expected, fixed_canary.then_some(&canary))
+            .await
+    }
+
+    #[tokio::test]
+    async fn campaign_final_term_requires_every_node_and_rejects_old_a_activation() {
+        for fixed in [false, true] {
+            assert!(campaign_term_fixture(TermFault::None, fixed).await.unwrap());
+            for fault in [TermFault::PartialActivation, TermFault::MissingFollower] {
+                assert!(
+                    !campaign_term_fixture(fault, fixed).await.unwrap(),
+                    "{fault:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn campaign_missing_activation_times_out_before_fresh_work() {
+        let mut fresh_work_started = false;
+        let result: eyre::Result<()> = async {
+            recover_until(
+                Instant::now() + std::time::Duration::from_secs(1),
+                async || {
+                    Ok(campaign_term_fixture(TermFault::PartialActivation, false)
+                        .await?
+                        .then_some(()))
+                },
+            )
+            .await?;
+            fresh_work_started = true;
+            Ok(())
+        }
+        .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "recovery observation timed out"
+        );
+        assert!(!fresh_work_started);
+    }
+
+    #[tokio::test]
+    async fn campaign_rejects_stale_epoch_supersession_wrong_authority_and_hash() {
+        for (fault, message) in [
+            (
+                TermFault::StaleEpoch,
+                "campaign final membership or epoch changed",
+            ),
+            (
+                TermFault::Superseded,
+                "campaign final term was superseded or its canonical event changed",
+            ),
+            (
+                TermFault::CanonicalMismatch,
+                "campaign canary block differs from canonical proof",
+            ),
+            (
+                TermFault::WrongAuthority,
+                "campaign block is not authorized by the final Tempo term",
+            ),
+        ] {
+            assert_eq!(
+                campaign_term_fixture(fault, true)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                message
+            );
+        }
+        assert!(
+            campaign_term_fixture(TermFault::Rpc, true)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("campaign follower RPC unavailable")
+        );
+    }
 
     fn relay_request() -> Request {
         Request {

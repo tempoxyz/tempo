@@ -15,3 +15,15 @@ for index in range(3):
 assert services["zone-rpc"]["entrypoint"] == ["/opt/zones/zone-node.sh"]
 print("compose fault isolation fixtures passed")
 '
+
+for mode in false true; do
+    ZONE_HANDOFF_DIRECT_ONLY="$mode" docker compose -f "$root/docker-compose.yaml" config --format json |
+        EXPECTED_MODE="$mode" python3 -c '
+import json, os, sys
+services = json.load(sys.stdin)["services"]
+assert services["workload"]["environment"]["ZONE_HANDOFF_DIRECT_ONLY"] == os.environ["EXPECTED_MODE"]
+assert all("ZONE_HANDOFF_DIRECT_ONLY" not in service.get("environment", {})
+           for name, service in services.items() if name != "workload")
+'
+done
+echo 'focused handoff configuration fixtures passed'

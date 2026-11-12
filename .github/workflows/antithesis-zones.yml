@@ -19,6 +19,11 @@ on:
       - ".github/workflows/antithesis-zones.yml"
   workflow_dispatch:
     inputs:
+      direct_handoffs:
+        description: "Use only journaled admin handoffs for a focused recovery campaign"
+        type: boolean
+        default: false
+        required: false
       validate_config_digest:
         description: "Validate an existing config image digest instead of building images"
         type: string
@@ -120,6 +125,7 @@ jobs:
           BRANCH: ${{ steps.tags.outputs.branch }}
           DIGEST: ${{ steps.image.outputs.digest }}
           WORKLOAD_DIGEST: ${{ steps.workload.outputs.digest }}
+          DIRECT_HANDOFFS: ${{ inputs.direct_handoffs || false }}
         run: |
           dir="$RUNNER_TEMP/antithesis-config"
           mkdir -p "$dir"
@@ -129,6 +135,7 @@ jobs:
           {
             echo "ZONES_IMAGE=$REGISTRY/tempo-zones-antithesis@$DIGEST"
             echo "WORKLOAD_IMAGE=$REGISTRY/tempo-zones-antithesis-workload@$WORKLOAD_DIGEST"
+            echo "ZONE_HANDOFF_DIRECT_ONLY=$DIRECT_HANDOFFS"
           } > "$dir/.env"
           printf 'FROM scratch\nCOPY docker-compose.yaml .env /\n' > "$dir/Dockerfile"
           docker build --platform linux/amd64 \
@@ -184,7 +191,7 @@ jobs:
           CONFIG_DIGEST: ${{ inputs.validate_config_digest }}
           SNOUTY_CONTAINER_ENGINE: docker
         run: |
-          unset ZONES_IMAGE WORKLOAD_IMAGE
+          unset ZONES_IMAGE WORKLOAD_IMAGE ZONE_HANDOFF_DIRECT_ONLY
           dir="$RUNNER_TEMP/zones-validation"
           mkdir -p "$dir"
           config="$REGISTRY/tempo-zones-antithesis-config@$CONFIG_DIGEST"
