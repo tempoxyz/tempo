@@ -272,10 +272,11 @@ where
 
         // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency).
         let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
+        let best_attributes = BestTransactionsAttributes::new(base_fee, None);
         let (prewarming, _pool_prewarming) = match tempo_import {
             TempoImport::Full(prepared) => {
                 let context = PrewarmingExecutionContext::new(
-                    &self.task_executor,
+                    self.task_executor.clone(),
                     self.provider.clone(),
                     &self.evm_config,
                     (*parent_header).clone(),
@@ -291,16 +292,14 @@ where
                 let mut size = 0usize;
                 let transactions = self
                     .pool
-                    .best_transactions_with_attributes(BestTransactionsAttributes::new(
-                        base_fee, None,
-                    ))
+                    .best_transactions_with_attributes(best_attributes)
                     .take_while(|tx| {
                         size = size.saturating_add(tx.transaction.encoded_length());
                         size <= pool_tx_size_budget
                     });
                 (
-                    context.start(&self.task_executor, prepared),
-                    context.start_pool(&self.task_executor, transactions, arrivals),
+                    context.start(prepared),
+                    context.start_pool(transactions, arrivals),
                 )
             }
             TempoImport::CheckpointOnly(_) => Default::default(),
@@ -332,9 +331,7 @@ where
             // Execute pool transactions until either all of them fit or their packed RLP bytes reach
             // the size budget
             // The block executor owns gas-capacity accounting.
-            let raw_best_txs = self
-                .pool
-                .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
+            let raw_best_txs = self.pool.best_transactions_with_attributes(best_attributes);
             // Zones resolve fee tokens without a fallback list.
             let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
             let mut unlisted = Vec::new();

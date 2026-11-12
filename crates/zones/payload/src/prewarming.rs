@@ -8,14 +8,14 @@ use alloy_primitives::{Address, B256, map::HashSet};
 use futures::{
     FutureExt as _, Stream, StreamExt as _,
     channel::mpsc,
-    future::{AbortHandle, abortable, ready},
+    future::{AbortHandle, Abortable, ready},
 };
 use reth_evm::{
     BlockExecutor as _, ConfigureEvm, database::StateProviderDatabase, execute::BlockBuilder,
 };
 use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_storage_api::{StateProvider, StateProviderFactory};
-use reth_tasks::{TaskExecutor, cancel::ManualCancel};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::ValidPoolTransaction;
 use std::{error::Error, future::Future, sync::Arc};
 use tempo_contracts::zones::DepositType;
@@ -41,6 +41,7 @@ enum Simulation {
 
 /// Immutable canonical inputs used to construct isolated prewarming workers.
 pub(crate) struct PrewarmingExecutionContext<Provider> {
+    task_executor: TaskExecutor,
     provider: Provider,
     evm_config: ZoneEvmConfig<L1StoragePrewarmer>,
     parent_header: SealedHeader<TempoHeader>,
@@ -54,7 +55,7 @@ where
 {
     /// Creates the context and spawns its [`L1StoragePrewarmer`] fetch task.
     pub(crate) fn new(
-        task_executor: &TaskExecutor,
+        task_executor: TaskExecutor,
         provider: Provider,
         evm_config: &ZoneEvmConfig,
         parent_header: SealedHeader<TempoHeader>,
@@ -65,14 +66,10 @@ where
         let (reader, fetch_task) =
             L1StoragePrewarmer::new(evm_config.l1_reader().clone(), l1_block_number);
         task_executor.spawn_task(fetch_task);
-        let evm_config = ZoneEvmConfig::new(
-            evm_config.chain_spec().clone(),
-            reader,
-            evm_config.portal_address(),
-        );
         Arc::new(Self {
+            task_executor,
             provider,
-            evm_config,
+            evm_config: evm_config.with_l1_reader(reader),
             parent_header,
             next_block_env_attributes,
             chain_id,
@@ -80,17 +77,14 @@ where
     }
 
     /// Enqueues one disposable simulation per deposit.
-    pub(crate) fn start(
-        self: &Arc<Self>,
-        task_executor: &TaskExecutor,
-        prepared: &PreparedL1Block,
-    ) -> Prewarming {
+    pub(crate) fn start(self: &Arc<Self>, prepared: &PreparedL1Block) -> Prewarming {
         let handle = Prewarming::default();
         let mut decryptions = prepared.decryptions.iter();
         for deposit in &prepared.queued_deposits {
             let decryptions = (deposit.depositType == DepositType::Deposit)
-                .then(|| decryptions.next().cloned())
+                .then(|| decryptions.next())
                 .flatten()
+                .cloned()
                 .into_iter()
                 .collect();
             // Queue-hash validation may fail, but earlier reads have already warmed the cache.
@@ -102,11 +96,7 @@ where
                 recipients: Vec::new(),
                 follows_checkpoint_blocks: false,
             };
-            self.spawn(
-                task_executor,
-                &handle.cancel,
-                Simulation::Deposit(Box::new(partial)),
-            );
+            self.spawn(&handle.0, Simulation::Deposit(Box::new(partial)));
         }
         handle
     }
@@ -118,41 +108,34 @@ where
     /// following the pool lets those later transactions warm the cache ahead of execution.
     pub(crate) fn start_pool(
         self: &Arc<Self>,
-        task_executor: &TaskExecutor,
         transactions: impl IntoIterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         mut arrivals: impl Stream<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
         + Send
         + Unpin
         + 'static,
     ) -> Prewarming {
-        let cancel = ManualCancel::default();
+        let (abort, follow) = AbortHandle::new_pair();
         for transaction in transactions {
-            self.spawn(task_executor, &cancel, Simulation::Pool(transaction));
+            self.spawn(&abort, Simulation::Pool(transaction));
         }
-        let (context, executor, follower_cancel) =
-            (self.clone(), task_executor.clone(), cancel.clone());
-        let (follow, abort) = abortable(async move {
-            while let Some(transaction) = arrivals.next().await {
-                context.spawn(&executor, &follower_cancel, Simulation::Pool(transaction));
-            }
-        });
-        task_executor.spawn_task(follow.map(drop));
-        Prewarming {
-            cancel,
-            follow: Some(abort),
-        }
+        let (context, follower_abort) = (self.clone(), abort.clone());
+        let follow = Abortable::new(
+            async move {
+                while let Some(transaction) = arrivals.next().await {
+                    context.spawn(&follower_abort, Simulation::Pool(transaction));
+                }
+            },
+            follow,
+        );
+        self.task_executor.spawn_task(follow.map(drop));
+        Prewarming(abort)
     }
 
-    /// Enqueues `simulation` on the prewarming pool, skipped once `cancel` is cancelled.
-    fn spawn(
-        self: &Arc<Self>,
-        task_executor: &TaskExecutor,
-        cancel: &ManualCancel,
-        simulation: Simulation,
-    ) {
-        let (context, cancel) = (self.clone(), cancel.clone());
-        task_executor.prewarming_pool().spawn(move || {
-            if !cancel.is_cancelled()
+    /// Enqueues `simulation` on the prewarming pool, skipped once `abort` is aborted.
+    fn spawn(self: &Arc<Self>, abort: &AbortHandle, simulation: Simulation) {
+        let (context, abort) = (self.clone(), abort.clone());
+        self.task_executor.prewarming_pool().spawn(move || {
+            if !abort.is_aborted()
                 && let Err(error) = context.simulate(simulation)
             {
                 // Failures are expected (queue-hash checks, parent-state nonces); reads before
@@ -198,18 +181,18 @@ where
 }
 
 /// Cancels queued work that has not started, and stops following the pool, when dropped.
-#[derive(Debug, Default)]
-pub(crate) struct Prewarming {
-    cancel: ManualCancel,
-    follow: Option<AbortHandle>,
+#[derive(Debug)]
+pub(crate) struct Prewarming(AbortHandle);
+
+impl Default for Prewarming {
+    fn default() -> Self {
+        Self(AbortHandle::new_pair().0)
+    }
 }
 
 impl Drop for Prewarming {
     fn drop(&mut self) {
-        self.cancel.clone().cancel();
-        if let Some(follow) = &self.follow {
-            follow.abort();
-        }
+        self.0.abort();
     }
 }
 
