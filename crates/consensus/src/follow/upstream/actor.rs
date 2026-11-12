@@ -45,6 +45,12 @@ const RECONNECT_JITTER: Duration = Duration::from_secs(1);
 /// How often websocket pings are sent while the connection to the upstream node is idle. A ping
 /// that is not answered before the next one is due closes the connection, triggering a reconnect.
 const PING_INTERVAL: Duration = Duration::from_secs(5);
+/// How long the upstream node may take to answer a heartbeat before the connection is
+/// considered dead.
+///
+/// alloy only pings after a quiet interval with no outbound frames, so steady requests to a
+/// half-open connection would hide it; the heartbeat needs an answer from the upstream.
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long connecting to the upstream node, including the websocket handshake, may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the upstream node may take to answer `consensus_subscribe`.
@@ -418,12 +424,23 @@ impl UpstreamClient for WsClient {
             .await
             .map_err(|_| eyre::eyre!("timed out subscribing to consensus events"))??;
             let on_drop = SetOnDrop(client.stream_dropped);
-            Ok(subscription
+            let events = subscription
                 .into_result_stream()
                 .map(move |event| {
                     let _ = &on_drop;
-                    event.map_err(Report::new)
+                    Some(event.map_err(Report::new))
                 })
+                .chain(futures::stream::once(async { None }));
+            let heartbeat = futures::stream::unfold(client.provider, |provider| async move {
+                tokio::time::sleep(PING_INTERVAL).await;
+                let failure = heartbeat_failure(&provider).await;
+                Some((failure, provider))
+            })
+            .filter_map(|failure| async move { failure.map(|error| Some(Err(error))) });
+            // Ends with the event stream; the heartbeat only adds errors.
+            Ok(futures::stream::select(events, heartbeat)
+                .take_while(|item| futures::future::ready(item.is_some()))
+                .filter_map(futures::future::ready)
                 .boxed())
         }
         .boxed()
@@ -440,6 +457,18 @@ impl UpstreamClient for WsClient {
     fn get_block(&self, digest: Digest) -> BoxFuture<'static, eyre::Result<Option<Block>>> {
         let client = self.provider.clone();
         async move { get_block(client, digest).await }.boxed()
+    }
+}
+
+/// Asks the upstream for its chain ID and returns why the connection looks dead, if it does.
+///
+/// Any JSON-RPC answer, including an error, shows the connection is alive.
+async fn heartbeat_failure(provider: &RootProvider<TempoNetwork>) -> Option<Report> {
+    match tokio::time::timeout(HEARTBEAT_TIMEOUT, provider.get_chain_id()).await {
+        Ok(Ok(_)) => None,
+        Ok(Err(error)) if error.as_error_resp().is_some() => None,
+        Ok(Err(error)) => Some(Report::new(error).wrap_err("upstream heartbeat failed")),
+        Err(_) => Some(eyre::eyre!("upstream did not answer the heartbeat in time")),
     }
 }
 
@@ -654,6 +683,69 @@ mod tests {
         // lost, so the actor reconnects rather than resubscribing next to the old subscription.
         drop(events);
         assert!(!client.is_connected());
+    }
+
+    #[tokio::test]
+    async fn unanswered_heartbeat_fails_event_stream() {
+        let mut module = jsonrpsee::RpcModule::new(());
+        module
+            .register_subscription(
+                "consensus_subscribe",
+                "consensus_event",
+                "consensus_unsubscribe",
+                |_, pending, _| async move {
+                    let sink = pending.accept().await?;
+                    sink.closed().await;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        // Stands in for a half-open connection: requests are sent but never answered.
+        module
+            .register_async_method("eth_chainId", |_, _| {
+                std::future::pending::<jsonrpsee::core::RpcResult<u64>>()
+            })
+            .unwrap();
+        let server = jsonrpsee::server::Server::builder()
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let _handle = server.start(module);
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = connector.connect(0).await;
+        let mut events = UpstreamClient::subscribe_events(&client.unwrap())
+            .await
+            .unwrap();
+        let next = tokio::time::timeout(
+            PING_INTERVAL + HEARTBEAT_TIMEOUT + Duration::from_secs(5),
+            events.next(),
+        )
+        .await
+        .expect("the heartbeat must fail the event stream");
+        let error = next
+            .expect("expected an error, not the end of the stream")
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "upstream did not answer the heartbeat in time"
+        );
+    }
+
+    #[tokio::test]
+    async fn heartbeat_error_response_keeps_connection() {
+        let server = jsonrpsee::server::Server::builder()
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        // No eth_chainId: the upstream answers with method not found.
+        let _handle = server.start(jsonrpsee::RpcModule::new(()));
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = connector.connect(0).await;
+        assert!(heartbeat_failure(&client.unwrap().provider).await.is_none());
     }
 
     #[tokio::test]
