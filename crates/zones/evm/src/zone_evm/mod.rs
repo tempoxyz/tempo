@@ -438,11 +438,19 @@ pub(crate) mod tests {
 
     #[test]
     fn l1_read_gas_is_independent_of_discarded_attempt() {
+        use tempo_precompiles::{
+            DEFAULT_FEE_TOKEN,
+            storage::StorageKey,
+            tip20::slots::{BALANCES, TRANSFER_POLICY_ID, TRANSFER_POLICY_ID_OFFSET},
+            tip403_registry::ALLOW_ALL_POLICY_ID,
+        };
+
         let sender = Address::repeat_byte(0x01);
         let tx = transaction(
             sender,
             TxLegacy {
                 nonce: 1,
+                gas_price: 20_000_000_000_000,
                 gas_limit: 1_000_000,
                 to: TxKind::Call(ZONE_OUTBOX_ADDRESS),
                 input: IZoneOutbox::pendingWithdrawalsCountCall {}
@@ -452,32 +460,64 @@ pub(crate) mod tests {
             }
             .into_signed(Signature::test_signature()),
         );
+        let precompile = AccountInfo::default().with_code(evm2::bytecode::Bytecode::new_raw(
+            alloy_primitives::Bytes::from_static(&[0xef]),
+        ));
 
-        for (spec, expected_gas) in [
-            (TempoHardfork::T13, 27_394),
-            (TempoHardfork::T14, 39_994),
-            (TempoHardfork::T15, 39_994),
+        // Gas of a discarded attempt, its retry and a fresh replay. Configurable accounts select
+        // the anchor from T14. Fee collection reads the TIP-403 binding (unmetered) at every fork,
+        // so T13 keeps its cache-dependent gas: fixing it would change historical blocks.
+        for (fees, spec, expected) in [
+            (false, TempoHardfork::T13, [27_394; 3]),
+            (false, TempoHardfork::T14, [39_994; 3]),
+            (false, TempoHardfork::T15, [39_994; 3]),
+            (true, TempoHardfork::T13, [25_294, 27_394, 25_294]),
+            (true, TempoHardfork::T14, [39_994; 3]),
+            (true, TempoHardfork::T15, [39_994; 3]),
         ] {
             let l1 = MockL1Reader::default();
             l1.seed_active_sequencer(Address::ZERO, 0, sender);
             let make_evm = || {
-                BlockExecutorFactory::evm_with_env(
-                    &config(l1.clone()),
-                    sender_db(sender),
-                    fee_free_env(spec),
-                )
+                let mut db = sender_db(sender);
+                db.insert_account_info(&DEFAULT_FEE_TOKEN, precompile.clone());
+                db.insert_account_info(&TIP403_REGISTRY_ADDRESS, precompile.clone());
+                db.insert_account_storage(
+                    &DEFAULT_FEE_TOKEN,
+                    &TRANSFER_POLICY_ID,
+                    &(U256::from(ALLOW_ALL_POLICY_ID) << (TRANSFER_POLICY_ID_OFFSET * 8)),
+                );
+                db.insert_account_storage(
+                    &DEFAULT_FEE_TOKEN,
+                    &sender.mapping_slot(BALANCES),
+                    &U256::from(u64::MAX),
+                );
+                let mut env = fee_free_env(spec);
+                env.version
+                    .features
+                    .remove(evm2::EvmFeatures::BALANCE_CHECK);
+                if fees {
+                    env.version.features.insert(evm2::EvmFeatures::FEE_CHARGE);
+                }
+                BlockExecutorFactory::evm_with_env(&config(l1.clone()), db, env)
             };
             let mut builder = make_evm();
             let mut replay = make_evm();
 
-            // Discarding keeps the account cache warm but resets the selected L1 anchor.
-            let discarded = builder.transact(&tx).unwrap().discard();
-            let built = builder.transact(&tx).unwrap().discard();
-            let replayed = replay.transact(&tx).unwrap().discard();
-            for result in [discarded, built, replayed] {
-                assert!(result.status, "{spec:?}: {result:?}");
-                assert_eq!(result.tx_gas_used(), expected_gas, "{spec:?}");
-            }
+            // Discarding keeps the host cache warm but resets the selected L1 anchor.
+            let results = [
+                builder.transact(&tx).unwrap().discard(),
+                builder.transact(&tx).unwrap().discard(),
+                replay.transact(&tx).unwrap().discard(),
+            ];
+            assert!(
+                results.iter().all(|result| result.status),
+                "{spec:?}: {results:?}"
+            );
+            assert_eq!(
+                results.map(|result| result.tx_gas_used()),
+                expected,
+                "{fees} {spec:?}"
+            );
         }
     }
 
