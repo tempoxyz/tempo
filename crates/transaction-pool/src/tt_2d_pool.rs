@@ -282,6 +282,40 @@ impl AA2dPool {
             ));
         }
 
+        // At the per-authority limit, the on-chain nonce of a lane whose transactions wait behind
+        // a gap is still added, which makes them executable, in place of the lane's highest nonce.
+        // That one must free a slot for each authority at the limit, or the transaction is
+        // rejected below. A lane with a nonce at or below the on-chain one still holds
+        // transactions the pool hasn't removed as mined, so it has no gap to fill.
+        let evicted = if tx_id.nonce == on_chain_nonce
+            && let Some((lowest_id, lowest)) = self.by_id.range(tx_id.seq_id.range()).next()
+            && lowest_id.nonce > tx_id.nonce
+            && !lowest.is_pending()
+        {
+            let highest = self.by_id.range(tx_id.seq_id.range()).next_back();
+            let highest = highest.filter(|(_, highest)| {
+                let freed = highest.inner.transaction.transaction.authorities();
+                let mut at_capacity = transaction
+                    .transaction
+                    .authorities()
+                    .into_iter()
+                    .flatten()
+                    .filter(|authority| {
+                        self.txs_by_authority.get(authority) >= self.config.max_txs_per_authority
+                    })
+                    .peekable();
+                at_capacity.peek().is_some()
+                    && at_capacity.all(|authority| freed.contains(&Some(authority)))
+            });
+            let highest = highest.map(|(id, _)| *id);
+            highest.and_then(|id| self.remove_transaction_by_id(&id))
+        } else {
+            None
+        };
+        if evicted.is_some() {
+            self.metrics.inc_removed(1);
+        }
+
         // assume the transaction is not pending, will get updated later
         let tx = Arc::new(AA2dInternalTransaction {
             inner: AA2dStoredTransaction::new(self.next_id(), transaction.clone()),
@@ -461,7 +495,7 @@ impl AA2dPool {
                 transaction,
                 replaced: replaced.map(|tx| tx.inner.transaction.clone()),
                 promoted: promoted.into_iter().map(|tx| tx.transaction).collect(),
-                discarded: self.discard(),
+                discarded: evicted.into_iter().chain(self.discard()).collect(),
             }));
         }
 
@@ -2042,7 +2076,9 @@ pub struct AA2dPoolConfig {
     /// signer, separate fee payer or access key.
     ///
     /// Bounds how many pooled transactions one account can invalidate with a single state
-    /// change (DoS protection).
+    /// change (DoS protection). At the limit, the on-chain nonce of a lane whose transactions
+    /// wait behind a gap is still added in place of the lane's highest nonce, if that frees a
+    /// slot for each authority at the limit, to allow gap filling.
     pub max_txs_per_authority: usize,
     /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
@@ -6081,6 +6117,92 @@ mod tests {
             0,
             TempoHardfork::T1,
         )
+    }
+
+    #[test]
+    fn per_authority_limit_evicts_highest_nonce_for_on_chain_nonce() {
+        let mut pool = authority_limit_pool(3);
+        let sender = Address::random();
+        let access_key = PrivateKeySigner::random();
+        let fee_payer = PrivateKeySigner::random();
+        let build = |nonce_key, nonce| {
+            TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build_keychain(sender, &access_key)
+        };
+        // The sender and its access key are at the limit with one lane, whose highest nonce the
+        // fee payer does not sponsor. Another sender's transaction takes the fee payer's last slot.
+        let lane = [
+            sponsor(build(U256::ONE, 1), &fee_payer),
+            sponsor(build(U256::ONE, 2), &fee_payer),
+            build(U256::ONE, 3),
+        ];
+        let hashes = lane.each_ref().map(|tx| *tx.hash());
+        for tx in lane {
+            add_expiring(&mut pool, tx).unwrap();
+        }
+        let other = TxBuilder::aa(Address::random())
+            .nonce_key(U256::MAX)
+            .build();
+        add_expiring(&mut pool, sponsor(other, &fee_payer)).unwrap();
+
+        // A future nonce and the on-chain nonce of an empty lane are rejected at the limit, and
+        // so is the on-chain nonce when the lane's highest nonce leaves an authority at the limit.
+        for tx in [
+            build(U256::ONE, 4),
+            build(U256::from(2), 0),
+            sponsor(build(U256::ONE, 0), &fee_payer),
+        ] {
+            let err = add_expiring(&mut pool, tx).unwrap_err();
+            assert!(
+                matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(address) if address == sender),
+                "unexpected error: {:?}",
+                err.kind
+            );
+        }
+        // Nor does a nonce validated past the lane's transactions, which the pool has yet to
+        // remove as mined, evict one of them.
+        let tx = wrap_valid_tx(build(U256::ONE, 4), TransactionOrigin::External);
+        let err = pool
+            .add_transaction(Arc::new(tx), 4, TempoHardfork::T1)
+            .unwrap_err();
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::SpammerExceededCapacity(address) if address == sender
+        ));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 3));
+
+        let added = add_expiring(&mut pool, build(U256::ONE, 0)).unwrap();
+        let added = added.as_pending().unwrap();
+        let hashes_of = |txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]| {
+            txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>()
+        };
+        assert_eq!(hashes_of(&added.promoted), hashes[..2]);
+        assert_eq!(hashes_of(&added.discarded), hashes[2..]);
+        assert_eq!(pool.pending_and_queued_txn_count(), (4, 0));
+        for authority in [sender, access_key.address(), fee_payer.address()] {
+            assert_eq!(pool.txs_by_authority.get(&authority), 3);
+        }
+
+        // Once nonce 0 is mined the lane is executable from nonce 1, so a replay of nonce 0 that
+        // was validated before that block fills no gap.
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(AASequenceId::new(sender, U256::ONE), 1);
+        pool.on_nonce_changes(on_chain_ids);
+        let tx = wrap_valid_tx(build(U256::ONE, 3), TransactionOrigin::External);
+        pool.add_transaction(Arc::new(tx), 1, TempoHardfork::T1)
+            .unwrap();
+        let tx = wrap_valid_tx(build(U256::ONE, 0), TransactionOrigin::External);
+        let err = pool
+            .add_transaction(Arc::new(tx), 0, TempoHardfork::T1)
+            .unwrap_err();
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::SpammerExceededCapacity(address) if address == sender
+        ));
+        assert_eq!(pool.pending_and_queued_txn_count(), (4, 0));
+        pool.assert_invariants();
     }
 
     /// A fee payer sponsoring distinct senders is limited like a sender, and its slots are
