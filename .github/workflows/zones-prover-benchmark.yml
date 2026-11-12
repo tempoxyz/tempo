@@ -31,10 +31,10 @@ on:
         default: us-east-1
         options: [us-east-1, us-west-2, eu-central-1, ap-southeast-1, ap-northeast-1]
       preset:
-        description: Neobank scenario containing a withdrawal.
+        description: Neobank scenario; cold-accounts loads fresh accounts on the Zone with no withdrawal.
         type: choice
         default: full-journey
-        options: [full-journey, full-journey-pathusd-fees, private-withdrawal, swapped-lifecycle, swapped-redemption]
+        options: [full-journey, full-journey-pathusd-fees, private-withdrawal, swapped-lifecycle, swapped-redemption, cold-accounts]
       accounts:
         type: string
         default: "20"

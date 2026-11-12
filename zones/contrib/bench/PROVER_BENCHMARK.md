@@ -26,6 +26,13 @@ many of them in one block. The summary reports the mean Zone block build time fr
 `tempo_zone_payload_build_duration_seconds`, for example with
 `derek bench zones prover=false tempo-hardfork=t14 tps=50 accounts=500 recipient-mode=random l1-latency-ms=40`.
 
+`preset=cold-accounts` measures the builder under uncached commitment reads alone: each
+instance is one sponsored Zone transaction with 32 zero-value calls to fresh random
+addresses, so from T14 it makes 32 cold commitment reads with no L1 deposit or withdrawal
+and the ZonePortal deposit limit never applies. Setup still seeds each account once for
+pool admission. Compare the mean Zone block build time between phases, for example with
+`derek bench zones prover=false preset=cold-accounts tempo-hardfork=t14 tps=20 accounts=500 l1-latency-ms=40`.
+
 For `preset=full-journey`, the controller reports p50/p95 for withdrawal submit → L1
 funds (split into submit → Zone inclusion and Zone → L1 processing), deposit submit →
 Zone credit (split into submit → L1 enqueue and L1 enqueue → Zone credit), and the full

@@ -94,7 +94,8 @@ def run_with_results(name, files, **payload):
 class BenchCommandTests(unittest.TestCase):
     def test_zones_command_defaults_to_prover_on_full_journey(self):
         for body, prover, preset in (("derek bench zones", "true", "full-journey"),
-                                     ("derek bench zones prover=false preset=private-withdrawal", "false", "private-withdrawal")):
+                                     ("derek bench zones prover=false preset=private-withdrawal", "false", "private-withdrawal"),
+                                     ("derek bench zones prover=false preset=cold-accounts", "false", "cold-accounts")):
             with self.subTest(body=body):
                 result = parse(body)
                 self.assertEqual(result["failures"], [])
