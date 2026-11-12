@@ -137,6 +137,9 @@ struct Authorization {
     captured: U96,
     /// Total refunded by the payee under this id.
     refunded: U96,
+    /// End of the owner's day (TIP-1169 daily limits) a card hold counted in, packed beside the
+    /// totals its capture writes; zero when none counted it.
+    day_end: u32,
     /// Access key that placed the hold or first charge, whose limit counts it; zero for the root
     /// key. Other access keys of the owner cannot act on this id.
     key_id: Address,
@@ -500,7 +503,7 @@ impl Reservations {
         };
         // Card holds count against the owner's spend window for the issuer, and a merchant's hold
         // against its merchant mandate too; a stand-in approval counts without the check.
-        let (merchant, window_end) = match placement {
+        let (merchant, window_end, day_end) = match placement {
             Placement::Card { issuer, .. } | Placement::CardLine { issuer, .. } => {
                 Cards::new().count_window(owner, issuer, B256::ZERO, call.amount, true)?
             }
@@ -510,7 +513,7 @@ impl Reservations {
             Placement::CardStandIn { issuer, .. } => {
                 Cards::new().count_window(owner, issuer, B256::ZERO, 0, false)?
             }
-            _ => (0, 0),
+            _ => (0, 0, 0),
         };
         // A dormant, closed or estate account takes no new holds; a card's checks above already
         // refuse one through a closed or estate account's card as inactive.
@@ -577,6 +580,7 @@ impl Reservations {
             ),
             dispute_reserve: matches!(placement, Placement::Dispute { .. }),
             window_end,
+            day_end,
             merchant,
             ..Default::default()
         };
@@ -678,7 +682,9 @@ impl Reservations {
                     auth.card_line,
                     auth.merchant,
                     auth.window_end,
+                    auth.day_end,
                     increase,
+                    committed + increase,
                 )?;
             }
             let mut token = TIP20Token::from_address(auth.token)?;
@@ -2116,6 +2122,7 @@ fn follow_card(auth: &Authorization, before: u128) -> Result<()> {
         auth.card_line,
         auth.merchant,
         auth.window_end,
+        auth.day_end,
         before,
         auth.committed(),
     )
@@ -5132,9 +5139,12 @@ mod tests {
     #[test]
     fn test_card_and_line_holds_add_no_authorization_slot() {
         use __packing_authorization::{
-            CARD_LINE_LOC, COUNTED_LOC, LINE_LOC, SLOT_COUNT, STAND_IN_LOC,
+            CAPTURED_LOC, CARD_LINE_LOC, COUNTED_LOC, DAY_END_LOC, LINE_LOC, SLOT_COUNT,
+            STAND_IN_LOC,
         };
         assert_eq!(SLOT_COUNT, 5);
+        // A daily hold's day shares the slot every capture writes.
+        assert_eq!(DAY_END_LOC.offset_slots, CAPTURED_LOC.offset_slots);
         for loc in [STAND_IN_LOC, CARD_LINE_LOC, LINE_LOC] {
             assert_eq!(loc.offset_slots, COUNTED_LOC.offset_slots);
         }
@@ -5296,6 +5306,108 @@ mod tests {
                             issuer: payee,
                             firstEnd: 0,
                             limit: U96::ZERO,
+                        },
+                    )
+                    .unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_daily_limits_bound_card_holds_net_of_refunds() -> eyre::Result<()> {
+        // The current day ends an hour from now; days roll every 24 hours after it.
+        let end = (NOW + 3_600) as u32;
+        let late = NOW + 30 * 86_400;
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Active,
+                U96::from(1_000),
+            )?;
+            let (owner, payee) = (f.owner, f.payee);
+            cards.set_daily_limits(
+                owner,
+                ICards::setDailyLimitsCall {
+                    issuer: payee,
+                    firstEnd: end,
+                    limit: 150,
+                    perPurchase: 100,
+                },
+            )?;
+            let day = |cards: &Cards| -> Result<(u32, u64)> {
+                let d = cards.daily_limits(owner, payee)?;
+                Ok((d.periodEnd, d.committed))
+            };
+            let over = || CardsError::window_limit_exceeded().into();
+
+            // One purchase past the cap, or a day past its limit, is refused.
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 120, card).unwrap_err(),
+                over()
+            );
+            let first = B256::random();
+            hold_card(&mut f, first, 90, card)?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 70, card).unwrap_err(),
+                over()
+            );
+            assert_eq!(f.adjust(first, 101).unwrap_err(), over());
+
+            // Refunds give back to the day the purchase counted in.
+            f.capture(first, 90)?;
+            f.refund(payee, first, 30)?;
+            assert_eq!(day(&cards)?, (end, 60));
+            let second = B256::random();
+            hold_card_for(&mut f, second, 70, card, B256::ZERO, late)?;
+            assert_eq!(day(&cards)?, (end, 130));
+
+            // A new day starts at zero; yesterday's hold gives nothing back to it and grows only
+            // within the cap.
+            StorageCtx.set_timestamp(U256::from(end));
+            assert_eq!(day(&cards)?, (end + 86_400, 0));
+            f.reservations.release(owner, second)?;
+            assert_eq!(day(&cards)?, (end + 86_400, 0));
+            let third = B256::random();
+            hold_card_for(&mut f, third, 100, card, B256::ZERO, late)?;
+            hold_card_for(&mut f, B256::random(), 50, card, B256::ZERO, late)?;
+            assert_eq!(
+                hold_card_for(&mut f, B256::random(), 1, card, B256::ZERO, late).unwrap_err(),
+                over()
+            );
+            assert_eq!(f.adjust(third, 101).unwrap_err(), over());
+
+            // Removing the limits lifts both checks; only the root key sets them.
+            cards.set_daily_limits(
+                owner,
+                ICards::setDailyLimitsCall {
+                    issuer: payee,
+                    firstEnd: 0,
+                    limit: 0,
+                    perPurchase: 0,
+                },
+            )?;
+            hold_card_for(&mut f, B256::random(), 200, card, B256::ZERO, late)?;
+            let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(owner)?;
+            keychain.set_transaction_key(Address::random())?;
+            assert_eq!(
+                cards
+                    .set_daily_limits(
+                        owner,
+                        ICards::setDailyLimitsCall {
+                            issuer: payee,
+                            firstEnd: end,
+                            limit: 0,
+                            perPurchase: 0,
                         },
                     )
                     .unwrap_err(),

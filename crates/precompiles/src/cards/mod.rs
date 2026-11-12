@@ -104,6 +104,19 @@ struct Window {
     period_end: u32,
 }
 
+/// An owner's daily window and per-purchase cap on one issuer's card holds, in one slot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+struct DailyLimits {
+    /// Most one card hold may commit; [`u64::MAX`] is no cap.
+    per_purchase: u64,
+    /// Most holds counted in one day may commit; [`u64::MAX`] is no limit.
+    limit: u64,
+    /// What card holds counted in the current day commit now.
+    committed: u64,
+    /// End of the current day; zero is no daily limits.
+    period_end: u32,
+}
+
 /// An owner's mandate for one merchant under one issuer, in one slot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 struct MerchantMandate {
@@ -150,6 +163,8 @@ pub struct Cards {
     last_merchant: u64,
     /// Payouts keyed by owner, token then the facility a sweep paid into.
     payouts: Mapping<Address, Mapping<Address, Mapping<Address, Payout>>>,
+    /// Daily limits keyed by owner then issuer.
+    daily: Mapping<Address, Mapping<Address, DailyLimits>>,
 }
 
 impl Cards {
@@ -184,20 +199,30 @@ impl Cards {
         Ok(line)
     }
 
-    /// Checks that `line` may commit `amount` more now: active, unexpired and within its limit,
-    /// and within its owner's window and `merchant`'s mandate while the authorization's period
-    /// (`window_end`) is current. Called by `IReservations.adjust` before it raises a card hold.
+    /// Checks that `line` may commit `amount` more now, to `total` for the authorization: active,
+    /// unexpired and within its limit, within its owner's per-purchase cap, and within its owner's
+    /// windows and `merchant`'s mandate while the authorization's periods (`window_end`, `day_end`)
+    /// are current. Called by `IReservations.adjust` before it raises a card hold.
     pub(crate) fn ensure_may_grow(
         &self,
         line: u64,
         merchant: u64,
         window_end: u32,
+        day_end: u32,
         amount: u128,
+        total: u128,
     ) -> Result<()> {
         self.ensure_active(line)?;
         self.ensure_within_limit(line, amount)?;
         let owner = self.lines[line].owner.read()?;
         let issuer = self.lines[line].payee.read()?;
+        let day = day_rolled(self.daily[owner][issuer].read()?, self.now());
+        if day.period_end != 0
+            && (passes(0, total, day.per_purchase)
+                || (day_end == day.period_end && passes(day.committed, amount, day.limit)))
+        {
+            return Err(CardsError::window_limit_exceeded().into());
+        }
         let window = rolled(self.windows[owner][issuer].read()?, self.now());
         if window.period_end != 0
             && window_end == window.period_end
@@ -219,15 +244,16 @@ impl Cards {
     }
 
     /// Moves `line`'s committed counter by an authorization's change of committed amount, from
-    /// `before` to `after`, and its owner's window and `merchant` counters while the period it
-    /// counted in (`window_end`) is current. Called by the reservations precompile after every
-    /// change to a card authorization, without checks: captures, releases and refunds never depend
-    /// on the card.
+    /// `before` to `after`, and its owner's window, day and `merchant` counters while the periods
+    /// it counted in (`window_end`, `day_end`) are current. Called by the reservations precompile
+    /// after every change to a card authorization, without checks: captures, releases and refunds
+    /// never depend on the card.
     pub(crate) fn follow_commitment(
         &mut self,
         line: u64,
         merchant: u64,
         window_end: u32,
+        day_end: u32,
         before: u128,
         after: u128,
     ) -> Result<()> {
@@ -249,6 +275,17 @@ impl Cards {
         if window != stored {
             self.windows[owner][issuer].write(window)?;
         }
+        // A hold counted in no day leaves the daily limits unread.
+        if day_end != 0 {
+            let stored = self.daily[owner][issuer].read()?;
+            let mut day = day_rolled(stored, self.now());
+            if day.period_end != 0 && day_end == day.period_end {
+                day.committed = moved_u64(day.committed, before, after)?;
+            }
+            if day != stored {
+                self.daily[owner][issuer].write(day)?;
+            }
+        }
         if merchant != 0 {
             let stored = self.merchants[merchant].read()?;
             let mut mandate = merchant_rolled(stored, window.period_end);
@@ -264,9 +301,9 @@ impl Cards {
 
     /// Checks that a card hold of `amount` by `owner` through `issuer`'s card fits its spend window
     /// and, for a non-zero `merchant`, that merchant's mandate (`MerchantRevoked`,
-    /// `WindowLimitExceeded`), rolling both into the current period. Returns the mandate's id and
-    /// the window's period end for the authorization. `check` false records a stand-in approval
-    /// without the limits.
+    /// `WindowLimitExceeded`), and its daily limits, rolling each into the current period. Returns the
+    /// mandate's id and the window's and day's period ends for the authorization. `check` false
+    /// records a stand-in approval without the limits.
     pub(crate) fn count_window(
         &mut self,
         owner: Address,
@@ -274,13 +311,24 @@ impl Cards {
         merchant: B256,
         amount: u128,
         check: bool,
-    ) -> Result<(u64, u32)> {
+    ) -> Result<(u64, u32, u32)> {
         let stored = self.windows[owner][issuer].read()?;
         let window = rolled(stored, self.now());
         if window != stored {
             self.windows[owner][issuer].write(window)?;
         }
         if check && window.period_end != 0 && exceeds(window.committed, amount, window.limit) {
+            return Err(CardsError::window_limit_exceeded().into());
+        }
+        let stored = self.daily[owner][issuer].read()?;
+        let day = day_rolled(stored, self.now());
+        if day != stored {
+            self.daily[owner][issuer].write(day)?;
+        }
+        if check
+            && day.period_end != 0
+            && (passes(0, amount, day.per_purchase) || passes(day.committed, amount, day.limit))
+        {
             return Err(CardsError::window_limit_exceeded().into());
         }
         let id = if merchant.is_zero() {
@@ -301,7 +349,7 @@ impl Cards {
                 return Err(CardsError::window_limit_exceeded().into());
             }
         }
-        Ok((id, window.period_end))
+        Ok((id, window.period_end, day.period_end))
     }
 
     pub(crate) fn set_spend_window(
@@ -329,6 +377,49 @@ impl Cards {
             call.firstEnd,
             call.limit,
         ))
+    }
+
+    pub(crate) fn set_daily_limits(
+        &mut self,
+        owner: Address,
+        call: ICards::setDailyLimitsCall,
+    ) -> Result<()> {
+        if AccountKeychain::new().signing_access_key(owner)?.is_some() {
+            return Err(CardsError::unauthorized().into());
+        }
+        // As for the window, a new anchor keeps what the current day counted.
+        let mut day = if call.firstEnd == 0 {
+            DailyLimits::default()
+        } else {
+            day_rolled(self.daily[owner][call.issuer].read()?, self.now())
+        };
+        if call.firstEnd != 0 {
+            day.limit = call.limit;
+            day.per_purchase = call.perPurchase;
+            day.period_end = call.firstEnd;
+        }
+        self.daily[owner][call.issuer].write(day)?;
+        self.emit_event(CardsEvent::daily_limits_set(
+            owner,
+            call.issuer,
+            call.firstEnd,
+            call.limit,
+            call.perPurchase,
+        ))
+    }
+
+    pub(crate) fn daily_limits(
+        &self,
+        owner: Address,
+        issuer: Address,
+    ) -> Result<ICards::dailyLimitsReturn> {
+        let day = day_rolled(self.daily[owner][issuer].read()?, self.now());
+        Ok(ICards::dailyLimitsReturn {
+            periodEnd: day.period_end,
+            limit: day.limit,
+            perPurchase: day.per_purchase,
+            committed: day.committed,
+        })
     }
 
     pub(crate) fn set_merchant_mandate(
@@ -997,6 +1088,29 @@ fn moved(counter: U96, before: u128, after: u128) -> Result<U96> {
         counter.saturating_sub(before - after)
     };
     U96::try_from(next).map_err(|_| TempoPrecompileError::under_overflow())
+}
+
+/// `moved` for a daily counter.
+fn moved_u64(counter: u64, before: u128, after: u128) -> Result<u64> {
+    let next = moved(U96::from(counter), before, after)?;
+    u64::try_from(next).map_err(|_| TempoPrecompileError::under_overflow())
+}
+
+/// Whether `committed` plus `amount` passes a daily `limit`; [`u64::MAX`] is no limit.
+fn passes(committed: u64, amount: u128, limit: u64) -> bool {
+    limit != u64::MAX && u128::from(committed).saturating_add(amount) > u128::from(limit)
+}
+
+/// `day` as of `now`: each day that ended starts the next 24 hours later, at zero.
+fn day_rolled(mut day: DailyLimits, now: u64) -> DailyLimits {
+    let end = u64::from(day.period_end);
+    if end == 0 || now < end {
+        return day;
+    }
+    let next = end + ((now - end) / 86_400 + 1) * 86_400;
+    day.period_end = u32::try_from(next).unwrap_or(u32::MAX);
+    day.committed = 0;
+    day
 }
 
 /// Whether `committed` plus `amount` passes `limit`; [`U96::MAX`] is no limit.

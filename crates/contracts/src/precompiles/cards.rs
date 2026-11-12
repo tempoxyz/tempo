@@ -98,6 +98,12 @@ crate::sol! {
         /// The owner, with its root key, sets whether `merchant` (an opaque reference the issuer
         /// supplies) may hold through `issuer`'s cards, and its limit in each spend window period.
         function setMerchantMandate(address issuer, bytes32 merchant, bool revoked, uint96 limit) external;
+        /// The owner, with its root key, sets its daily limits for `issuer`'s card holds: `limit` on
+        /// what they commit in a day, whose current one ends at `firstEnd` and each later one 24 hours
+        /// after, and `perPurchase` on what one hold commits. A `firstEnd` of zero removes both.
+        function setDailyLimits(address issuer, uint32 firstEnd, uint64 limit, uint64 perPurchase) external;
+        /// Reads an owner's daily limits for an issuer, as of now; a zero `periodEnd` is none.
+        function dailyLimits(address owner, address issuer) external view returns (uint32 periodEnd, uint64 limit, uint64 perPurchase, uint64 committed);
         /// Reads an owner's spend window for an issuer, as of now; a zero `periodEnd` is no window.
         function spendWindow(address owner, address issuer) external view returns (uint32 periodEnd, uint96 limit, uint96 committed);
         /// Reads an owner's mandate for a merchant under an issuer, as of now.
@@ -123,6 +129,7 @@ crate::sol! {
         event PayoutRecorded(address indexed owner, address indexed token, address indexed via, address to, uint128 amount);
         event AccountSwept(address indexed owner, address indexed token, address indexed to, uint128 debtRepaid, uint128 paid);
         event SpendWindowSet(address indexed owner, address indexed issuer, uint32 periodEnd, uint96 limit);
+        event DailyLimitsSet(address indexed owner, address indexed issuer, uint32 periodEnd, uint64 limit, uint64 perPurchase);
         event MerchantMandateSet(address indexed owner, address indexed issuer, bytes32 indexed merchant, bool revoked, uint96 limit);
         event AuthoritySet(address indexed authority, Role role, bool listed, address payout, uint32 dormancy, uint32 escheatAfter);
 

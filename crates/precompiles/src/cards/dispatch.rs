@@ -52,10 +52,14 @@ impl Precompile for Cards {
                     setSpendWindow(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_spend_window(sender, c)
                     }),
+                    setDailyLimits(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_daily_limits(sender, c)
+                    }),
                     setMerchantMandate(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_merchant_mandate(sender, c)
                     }),
                     spendWindow(call) => view(call, |c| self.spend_window(c.owner, c.issuer)),
+                    dailyLimits(call) => view(call, |c| self.daily_limits(c.owner, c.issuer)),
                     merchantMandate(call) => view(call, |c| {
                         self.merchant_mandate(c.owner, c.issuer, c.merchant)
                     }),
