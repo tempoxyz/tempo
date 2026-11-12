@@ -61,6 +61,8 @@ alloy-rpc-types-admin.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
 alloy-primitives.workspace = true
+alloy-provider = { workspace = true, features = ["pubsub"] }
+alloy-rpc-client.workspace = true
 
 clap.workspace = true
 commonware-codec.workspace = true
@@ -72,7 +74,6 @@ futures.workspace = true
 governor.workspace = true
 jiff = { workspace = true, features = ["std"] }
 jsonrpsee.workspace = true
-jsonrpsee-core-client.workspace = true
 reqwest.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true
@@ -87,7 +88,8 @@ tokio-stream = { workspace = true, features = ["sync"] }
 antithesis_sdk = { workspace = true, optional = true }
 
 [dev-dependencies]
-jsonrpsee-ws-client.workspace = true
+alloy-rpc-client = { workspace = true, features = ["ws-base"] }
+alloy-transport.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
 tempo-precompiles.workspace = true

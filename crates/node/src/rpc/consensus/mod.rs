@@ -13,6 +13,8 @@ mod tests;
 
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
 
+use alloy_provider::{GetSubscription, Provider, ProviderCall};
+use alloy_rpc_client::NoParams;
 use jsonrpsee::{
     ConnectionId,
     core::RpcResult,
@@ -22,11 +24,8 @@ use jsonrpsee::{
         error::{INTERNAL_ERROR_CODE, SERVER_IS_BUSY_CODE, TOO_MANY_SUBSCRIPTIONS_CODE},
     },
 };
-use jsonrpsee_core_client::{
-    client::{ClientT, Error, Subscription, SubscriptionClientT},
-    params::ArrayParams,
-};
 use parking_lot::Mutex;
+use tempo_alloy::TempoNetwork;
 use tokio::sync::Semaphore;
 
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
@@ -89,34 +88,32 @@ pub trait TempoConsensusApi {
 }
 
 /// Client interface for the consensus namespace.
-pub trait TempoConsensusApiClient: ClientT {
+pub trait TempoConsensusApiClient: Provider<TempoNetwork> {
     /// Get finalization by height query.
-    fn get_finalization(
-        &self,
-        query: Query,
-    ) -> impl Future<Output = Result<CertifiedBlock, Error>> + Send {
-        self.request("consensus_getFinalization", (query,))
+    fn get_finalization(&self, query: Query) -> ProviderCall<(Query,), CertifiedBlock> {
+        self.client()
+            .request("consensus_getFinalization", (query,))
+            .into()
     }
 
     /// Get the current consensus state snapshot.
-    fn get_latest(&self) -> impl Future<Output = Result<ConsensusState, Error>> + Send {
-        self.request("consensus_getLatest", ArrayParams::new())
+    fn get_latest(&self) -> ProviderCall<NoParams, ConsensusState> {
+        self.client().request_noparams("consensus_getLatest").into()
     }
 
-    /// Subscribe to finalized block events.
-    fn subscribe_events(&self) -> impl Future<Output = Result<Subscription<Event>, Error>> + Send
+    /// Subscribe to finalized block events. Needs a pubsub transport.
+    ///
+    /// Dropping the subscription does not send `consensus_unsubscribe`: the server releases it
+    /// when the connection closes.
+    fn subscribe_events(&self) -> GetSubscription<NoParams, Event>
     where
-        Self: SubscriptionClientT,
+        Self: Sized,
     {
-        self.subscribe(
-            "consensus_subscribe",
-            ArrayParams::new(),
-            "consensus_unsubscribe",
-        )
+        self.subscribe_to("consensus_subscribe")
     }
 }
 
-impl<T: ClientT> TempoConsensusApiClient for T {}
+impl<T: Provider<TempoNetwork>> TempoConsensusApiClient for T {}
 
 /// Default cap on concurrent `consensus_subscribe` subscriptions across all connections.
 ///

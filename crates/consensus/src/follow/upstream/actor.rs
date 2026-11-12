@@ -1,17 +1,20 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::Arc,
+    task::{Context, Poll, Waker},
+    time::Duration,
+};
 
+use alloy_provider::{Provider as _, RootProvider};
+use alloy_rpc_client::{RpcClient, WsConnect};
 use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
-use jsonrpsee_client::{
-    core::client::{ClientT as _, Subscription},
-    rpc_params,
-    ws_client::{PingConfig, WsClient, WsClientBuilder},
-};
 use rand_08::Rng as _;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
+use tempo_alloy::TempoNetwork;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 use tempo_telemetry_util::display_duration;
@@ -19,6 +22,7 @@ use tokio::{
     select,
     sync::{mpsc, oneshot},
 };
+use tower::Service as _;
 use tracing::{debug, debug_span, instrument, warn, warn_span};
 use url::Url;
 
@@ -33,15 +37,9 @@ const RECONNECT_BACKOFF_FACTOR: u64 = 2;
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
 const RECONNECT_JITTER: Duration = Duration::from_secs(1);
 
-/// How often websocket pings are sent to keep the connection to the upstream
-/// node alive (and to detect dead connections, triggering a reconnect).
+/// How often websocket pings are sent while the connection to the upstream node is idle. A ping
+/// that is not answered before the next one is due closes the connection, triggering a reconnect.
 const PING_INTERVAL: Duration = Duration::from_secs(5);
-/// How long the connection may stay inactive (no pongs or other messages)
-/// before it is considered dead and closed.
-const PING_INACTIVE_LIMIT: Duration = Duration::from_secs(10);
-/// How many times the connection may exceed the inactivity limit before it is
-/// closed.
-const PING_MAX_FAILURES: usize = 1;
 
 /// Manages the connection to the upstream node.
 ///
@@ -339,21 +337,19 @@ impl WebSocketConnector {
 }
 
 impl Connector for WebSocketConnector {
-    type Client = Arc<WsClient>;
+    type Client = RootProvider<TempoNetwork>;
 
     fn connect(&self, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<Self::Client>)> {
         let url = self.url.clone();
         async move {
-            let client = WsClientBuilder::default()
-                .enable_ws_ping(
-                    PingConfig::new()
-                        .ping_interval(PING_INTERVAL)
-                        .inactive_limit(PING_INACTIVE_LIMIT)
-                        .max_failures(PING_MAX_FAILURES),
-                )
-                .build(url.as_ref())
+            let connect = WsConnect::new(url.as_str())
+                .with_keepalive_interval(PING_INTERVAL)
+                // This actor reconnects with its own backoff. alloy still makes one reconnect
+                // attempt (and resubscribes) before it gives up on a dropped connection.
+                .with_max_retries(0);
+            let client = RpcClient::connect_pubsub(connect)
                 .await
-                .map(Arc::new)
+                .map(RootProvider::new)
                 .map_err(Report::new);
             (attempts, client)
         }
@@ -365,17 +361,28 @@ impl Connector for WebSocketConnector {
     }
 }
 
-impl UpstreamClient for Arc<WsClient> {
+impl UpstreamClient for RootProvider<TempoNetwork> {
     fn is_connected(&self) -> bool {
-        WsClient::is_connected(self)
+        // alloy has no connection getter; its pubsub frontend stops being ready once the
+        // websocket service has shut down.
+        self.client().pubsub_frontend().is_some_and(|frontend| {
+            matches!(
+                frontend
+                    .clone()
+                    .poll_ready(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Ok(()))
+            )
+        })
     }
 
     fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<EventStream>> {
         let client = self.clone();
         async move {
-            let stream: Subscription<Event> =
-                TempoConsensusApiClient::subscribe_events(client.as_ref()).await?;
-            Ok(stream.map(|event| event.map_err(Report::new)).boxed())
+            let subscription = TempoConsensusApiClient::subscribe_events(&client).await?;
+            Ok(subscription
+                .into_result_stream()
+                .map(|event| event.map_err(Report::new))
+                .boxed())
         }
         .boxed()
     }
@@ -412,10 +419,10 @@ async fn respond_until_closed<T>(
 
 #[instrument(skip_all, fields(%height), err)]
 async fn get_finalization(
-    client: Arc<WsClient>,
+    client: RootProvider<TempoNetwork>,
     height: Height,
 ) -> eyre::Result<Option<CertifiedBlock>> {
-    TempoConsensusApiClient::get_finalization(client.as_ref(), Query::Height(height.get()))
+    TempoConsensusApiClient::get_finalization(&client, Query::Height(height.get()))
         .await
         .map(Some)
         .wrap_err("failed getting finalization")
@@ -423,11 +430,15 @@ async fn get_finalization(
 
 /// Fetches a full consensus block from the upstream node.
 #[instrument(skip_all, fields(%digest), err)]
-async fn get_block(client: Arc<WsClient>, digest: Digest) -> eyre::Result<Option<Block>> {
+async fn get_block(
+    client: RootProvider<TempoNetwork>,
+    digest: Digest,
+) -> eyre::Result<Option<Block>> {
     let block = client
-        .request::<Option<RpcBlock<Transaction<TempoTxEnvelope>, TempoHeader>>, _>(
+        .client()
+        .request::<_, Option<RpcBlock<Transaction<TempoTxEnvelope>, TempoHeader>>>(
             "eth_getBlockByHash",
-            rpc_params![digest.0, true],
+            (digest.0, true),
         )
         .await
         .wrap_err("failed getting block by hash")?
@@ -460,6 +471,31 @@ mod tests {
         fn drop(&mut self) {
             self.0.store(true, Ordering::SeqCst);
         }
+    }
+
+    #[tokio::test]
+    async fn websocket_client_reports_disconnect() {
+        let server = jsonrpsee::server::Server::builder()
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = server.start(jsonrpsee::RpcModule::new(()));
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = connector.connect(0).await;
+        let client = client.unwrap();
+        assert!(client.is_connected());
+
+        handle.stop().unwrap();
+        handle.stopped().await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while client.is_connected() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("client must report the upstream connection as closed");
     }
 
     #[test]

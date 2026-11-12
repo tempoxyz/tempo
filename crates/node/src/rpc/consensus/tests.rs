@@ -1,5 +1,8 @@
 use super::*;
 use alloy_primitives::B256;
+use alloy_provider::RootProvider;
+use alloy_rpc_client::{RpcClient, WsConnect};
+use alloy_transport::TransportResult;
 use jsonrpsee::{
     Methods,
     server::{Server, ServerConfig},
@@ -8,11 +11,39 @@ use jsonrpsee::{
         response::{SubscriptionResponse, Success},
     },
 };
-use jsonrpsee_ws_client::WsClientBuilder;
 use reth_primitives_traits::SealedBlock;
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc, time::Duration};
+use tempo_alloy::TempoNetwork;
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
+
+async fn connect(addr: SocketAddr) -> RootProvider<TempoNetwork> {
+    RootProvider::new(
+        RpcClient::connect_pubsub(WsConnect::new(format!("ws://{addr}")))
+            .await
+            .unwrap(),
+    )
+}
+
+/// Sends \`consensus_subscribe\` as a plain call and returns the server's subscription ID, so the
+/// test can end it with \`consensus_unsubscribe\` (alloy only sends \`eth_unsubscribe\`).
+async fn open_subscription(
+    client: &RootProvider<TempoNetwork>,
+) -> TransportResult<serde_json::Value> {
+    client
+        .client()
+        .request_noparams("consensus_subscribe")
+        .await
+}
+
+async fn close_subscription(client: &RootProvider<TempoNetwork>, id: serde_json::Value) {
+    let closed: bool = client
+        .client()
+        .request("consensus_unsubscribe", (id,))
+        .await
+        .unwrap();
+    assert!(closed);
+}
 
 async fn subscribe(
     module: &Methods,
@@ -115,19 +146,16 @@ async fn unsubscribe_releases_permit_without_events() {
     let addr = server.local_addr().unwrap();
     let _handle = server.start(module);
 
-    let client = WsClientBuilder::default()
-        .build(format!("ws://{addr}"))
-        .await
-        .unwrap();
+    let client = connect(addr).await;
 
-    let subscription = client.subscribe_events().await.unwrap();
+    let id = open_subscription(&client).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
-    subscription.unsubscribe().await.unwrap();
+    close_subscription(&client, id).await;
     wait_for_live_subscriptions(&events_tx, 0).await;
 
     // The only permit on this connection must be available again.
-    let _subscription = client.subscribe_events().await.unwrap();
+    let _id = open_subscription(&client).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 }
 
@@ -259,7 +287,7 @@ impl ConsensusFeed for ClosingFeed {
 }
 
 #[tokio::test]
-async fn server_ended_subscription_closes_client_stream() {
+async fn server_ended_subscription_sends_close_notification() {
     let (events_tx, events_rx) = broadcast::channel(1);
     let module = TempoConsensusRpc::new(
         ClosingFeed {
@@ -269,23 +297,16 @@ async fn server_ended_subscription_closes_client_stream() {
     )
     .into_rpc();
 
-    let server = Server::builder().build("127.0.0.1:0").await.unwrap();
-    let addr = server.local_addr().unwrap();
-    let _handle = server.start(module);
-    let client = WsClientBuilder::default()
-        .build(format!("ws://{addr}"))
-        .await
-        .unwrap();
-
-    let mut subscription = client.subscribe_events().await.unwrap();
-    // The server ends the subscription while the connection stays open; the client must see its
-    // stream end so it can resubscribe.
+    let mut subscription = subscribe(&module).await.unwrap();
+    // The server ends the subscription; the close notification tells the subscriber to resubscribe
+    // and backfill.
     drop(events_tx);
-    let next = tokio::time::timeout(Duration::from_secs(5), subscription.next())
+    let notification = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
         .await
-        .expect("client stream must end once the server closes the subscription");
-    assert!(next.is_none(), "expected the stream to end, got {next:?}");
-    assert!(client.is_connected());
+        .expect("server must notify the subscriber once it closes the subscription")
+        .expect("expected a close notification");
+    let notification = serde_json::from_str::<serde_json::Value>(&notification).unwrap();
+    assert_eq!(notification["params"]["error"], "consensus feed closed");
 }
 
 #[tokio::test]
@@ -302,27 +323,24 @@ async fn subscriptions_are_capped_per_connection() {
     let server = Server::builder().build("127.0.0.1:0").await.unwrap();
     let addr = server.local_addr().unwrap();
     let _handle = server.start(module);
-    let connect = || WsClientBuilder::default().build(format!("ws://{addr}"));
-
-    let first = connect().await.unwrap();
+    let first = connect(addr).await;
     let mut held = Vec::new();
     for _ in 0..DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() {
-        held.push(first.subscribe_events().await.unwrap());
+        held.push(open_subscription(&first).await.unwrap());
     }
     wait_for_live_subscriptions(&events_tx, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get()).await;
 
-    let jsonrpsee_core_client::client::Error::Call(err) = first
-        .subscribe_events()
+    let err = open_subscription(&first)
         .await
-        .expect_err("subscription over the per-connection cap must be rejected")
-    else {
-        panic!("expected a JSON-RPC error");
-    };
-    assert_eq!(err.code(), TOO_MANY_SUBSCRIPTIONS_CODE);
+        .expect_err("subscription over the per-connection cap must be rejected");
+    assert_eq!(
+        err.as_error_resp().expect("expected a JSON-RPC error").code,
+        i64::from(TOO_MANY_SUBSCRIPTIONS_CODE)
+    );
 
     // Another connection still gets its own share.
-    let second = connect().await.unwrap();
-    let _other = second.subscribe_events().await.unwrap();
+    let second = connect(addr).await;
+    let _other = open_subscription(&second).await.unwrap();
     wait_for_live_subscriptions(
         &events_tx,
         DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() + 1,
@@ -330,9 +348,9 @@ async fn subscriptions_are_capped_per_connection() {
     .await;
 
     // Ending one subscription frees a slot on the first connection.
-    held.pop().unwrap().unsubscribe().await.unwrap();
+    close_subscription(&first, held.pop().unwrap()).await;
     wait_for_live_subscriptions(&events_tx, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get()).await;
-    let _again = first.subscribe_events().await.unwrap();
+    let _again = open_subscription(&first).await.unwrap();
 }
 
 #[tokio::test]
