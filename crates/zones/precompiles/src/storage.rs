@@ -162,7 +162,7 @@ impl<P> L1State<P> {
             return Err(L1StateError::AnchorConflict { current, new: to });
         }
 
-        // `finalizeTempo` already charged the checkpoint read.
+        // `finalizeTempo` charged the checkpoint read, and an earlier selection fails above.
         *anchor = Some((to, true));
         Ok(())
     }
