@@ -11,14 +11,16 @@ use alloy_primitives::{
 use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use reth_evm::Database;
 use reth_primitives_traits::Account;
-use reth_trie_common::{HashedPostState, KeccakKeyHasher, bundle_state::BundleState};
+use reth_trie_common::{
+    EMPTY_ROOT_HASH, HashedPostState, KeccakKeyHasher, bundle_state::BundleState,
+};
 use tempo_contracts::TempoHardfork;
 use tempo_primitives::{TempoHeader, account::decode_config_commitment};
 use zone_precompiles::{L1StateError, L1StorageReader};
 
 use crate::{
     Error, StatelessSparseTrieError, TempoStateWitness, ZoneStateWitness,
-    mpt::{StatelessSparseTrie, index_witness_nodes},
+    mpt::{StatelessSparseTrie, WitnessPathReader, index_witness_nodes},
 };
 
 /// Errors emitted while resolving an execution read against a witness.
@@ -164,12 +166,13 @@ impl Database for WitnessDatabase {
 
 /// Tempo state reader for the checkpoint header supplied in the witness.
 ///
-/// When the shared node pool includes that checkpoint's root, it owns a fully
-/// revealed immutable sparse trie. Otherwise it remains inactive and rejects
-/// any Tempo storage read as an incomplete witness.
+/// When the shared node pool includes that checkpoint's root, each read walks
+/// only its own path from that root through the pool. Otherwise the reader
+/// remains inactive and rejects any Tempo storage read as an incomplete witness.
 #[derive(Clone, Debug)]
 pub struct TempoWitnessDatabase {
-    state: Option<Arc<StatelessSparseTrie>>,
+    /// The checkpoint's state root, when the node pool can serve reads from it.
+    state_root: Option<B256>,
     tempo_block_hash: B256,
     tempo_block_number: u64,
     /// The batch-wide Tempo node pool, indexed by hash once and shared by
@@ -190,11 +193,11 @@ impl TempoWitnessDatabase {
     /// Construct the reader for the initial Tempo checkpoint.
     pub fn from_tempo_state_witness(witness: TempoStateWitness) -> Result<Self, Error> {
         let nodes = Arc::new(index_witness_nodes(&witness.node_pool)?);
-        let (state, tempo_block_hash, tempo_block_number) =
+        let (state_root, tempo_block_hash, tempo_block_number) =
             checkpoint_state(&witness.initial_tempo_header_rlp, &nodes)?;
 
         Ok(Self {
-            state,
+            state_root,
             tempo_block_hash,
             tempo_block_number,
             nodes,
@@ -209,11 +212,11 @@ impl TempoWitnessDatabase {
         self,
         header_rlp: &alloy_primitives::Bytes,
     ) -> Result<Self, Error> {
-        let (state, tempo_block_hash, tempo_block_number) =
+        let (state_root, tempo_block_hash, tempo_block_number) =
             checkpoint_state(header_rlp, &self.nodes)?;
 
         Ok(Self {
-            state,
+            state_root,
             tempo_block_hash,
             tempo_block_number,
             nodes: self.nodes,
@@ -267,18 +270,15 @@ impl TempoWitnessDatabase {
 fn checkpoint_state(
     header_rlp: &[u8],
     nodes: &B256Map<Bytes>,
-) -> Result<(Option<Arc<StatelessSparseTrie>>, B256, u64), Error> {
+) -> Result<(Option<B256>, B256, u64), Error> {
     let header: TempoHeader = alloy_rlp::decode_exact(header_rlp)
         .map_err(|_| WitnessDatabaseError::InvalidTempoHeader)?;
 
     let state_root = header.state_root();
-    let state = match StatelessSparseTrie::new(state_root, nodes) {
-        Ok(state) => Some(Arc::new(state)),
-        Err(StatelessSparseTrieError::MissingStateRootNode { .. }) => None,
-        Err(error) => return Err(error.into()),
-    };
+    let state_root =
+        (state_root == EMPTY_ROOT_HASH || nodes.contains_key(&state_root)).then_some(state_root);
 
-    Ok((state, keccak256(header_rlp), header.number()))
+    Ok((state_root, keccak256(header_rlp), header.number()))
 }
 
 impl L1StorageReader for TempoWitnessDatabase {
@@ -297,7 +297,7 @@ impl L1StorageReader for TempoWitnessDatabase {
             ));
         }
 
-        let state = self.state.as_ref().ok_or_else(|| {
+        let state_root = self.state_root.ok_or_else(|| {
             self.record_missing_read(account, Some(slot), tempo_block_number);
             storage_unavailable(
                 account,
@@ -306,6 +306,7 @@ impl L1StorageReader for TempoWitnessDatabase {
                 "witness does not include the checkpoint state root",
             )
         })?;
+        let state = WitnessPathReader::new(state_root, &self.nodes);
         let value = state.storage(account, slot.into()).map_err(|error| {
             L1StateError::StorageUnavailable {
                 account,
@@ -332,11 +333,11 @@ impl L1StorageReader for TempoWitnessDatabase {
                 "witness has no root for the requested checkpoint".into(),
             ));
         }
-        let state = self.state.as_ref().ok_or_else(|| {
+        let state_root = self.state_root.ok_or_else(|| {
             self.record_missing_read(account, None, tempo_block_number);
             unavailable("witness does not include the checkpoint state root".into())
         })?;
-        let trie_account = state
+        let trie_account = WitnessPathReader::new(state_root, &self.nodes)
             .account(account)
             .map_err(|error| unavailable(self.witness_read_failure(error, account, None)))?;
         // A proven absence has no commitment. A present account's extension follows TIP-1108,
@@ -365,7 +366,6 @@ fn storage_unavailable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_trie_common::EMPTY_ROOT_HASH;
 
     #[test]
     fn checkpoint_requires_exact_header_rlp() {
