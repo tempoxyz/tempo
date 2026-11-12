@@ -250,21 +250,30 @@ where
 {
     let mut module = RpcModule::new(());
     module.merge(TempoForkScheduleRpc::new(provider.clone()).into_rpc())?;
-    let set_leader_sequencer = sequencer.clone();
-    module.register_async_method("zone_setLeader", move |params, _, _| {
-        let sequencer = set_leader_sequencer.clone();
-        async move {
-            let (target,) = params.parse::<(Address,)>()?;
-            set_leader(portal_address, sequencer.as_ref(), target)
-                .await
-                .map_err(operator_rpc_error)
-        }
-    })?;
     module.register_async_method("zone_getSequencerInfo", move |_, _, _| {
         let sequencer = sequencer.clone();
         let provider = provider.clone();
         async move {
             get_sequencer_info(zone_id, portal_address, sequencer.as_ref(), &provider)
+                .map_err(operator_rpc_error)
+        }
+    })?;
+    Ok(module)
+}
+
+/// Build the operator HTTP RPC's `zone_setLeader`, which submits an L1 transaction with this node's
+/// key.
+pub(crate) fn operator_set_leader_module(
+    portal_address: Address,
+    sequencer: Arc<std::sync::OnceLock<SequencerRpcContext>>,
+) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError> {
+    let mut module = RpcModule::new(());
+    module.register_async_method("zone_setLeader", move |params, _, _| {
+        let sequencer = sequencer.clone();
+        async move {
+            let (target,) = params.parse::<(Address,)>()?;
+            set_leader(portal_address, sequencer.as_ref(), target)
+                .await
                 .map_err(operator_rpc_error)
         }
     })?;
@@ -2146,9 +2155,8 @@ mod tests {
         .expect("operator zone RPC module should register");
 
         let methods = module.method_names().collect::<HashSet<_>>();
-        assert_eq!(methods.len(), 3);
+        assert_eq!(methods.len(), 2);
         assert!(methods.contains("zone_getSequencerInfo"));
-        assert!(methods.contains("zone_setLeader"));
         assert!(methods.contains("tempo_forkSchedule"));
 
         for (timestamp, active, next) in [(999, "T12", Some(("T13", 1_000))), (1_000, "T13", None)]
@@ -2188,7 +2196,12 @@ mod tests {
         assert_eq!(info.mode, "single");
         assert_eq!(info.portal, Address::repeat_byte(0x11));
 
-        let error = module
+        let set_leader = operator_set_leader_module(
+            Address::repeat_byte(0x11),
+            Arc::new(std::sync::OnceLock::new()),
+        )
+        .expect("set leader RPC module should register");
+        let error = set_leader
             .call::<_, SetLeaderResponse>("zone_setLeader", [Address::repeat_byte(0x22)])
             .await
             .expect_err("an uninitialized sequencer context should reject the call");
@@ -2198,7 +2211,7 @@ mod tests {
                 .contains("zone_setLeader requires multi-sequencer mode")
         );
 
-        let error = module
+        let error = set_leader
             .call::<_, SetLeaderResponse>(
                 "zone_setLeader",
                 (
