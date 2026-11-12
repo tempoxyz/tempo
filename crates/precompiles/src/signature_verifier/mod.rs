@@ -187,7 +187,32 @@ impl SignatureVerifier {
         let (commitment, code_hash) = self.storage.with_account_info(account, |info| {
             Ok((account_config_commitment(info, spec)?, info.code_hash))
         })?;
+        let verified = self.verify_configurable_signature_against(
+            account,
+            hash,
+            signature,
+            commitment,
+            valid_account_code(code_hash, commitment),
+        )?;
+        Ok(verified.then_some(commitment))
+    }
 
+    /// Verifies a configurable account signature for `account` against `commitment`, without
+    /// reading the account. A zero `commitment` means the account was unregistered: the signature
+    /// must carry its version-0 configuration, whose derivation is charged on top.
+    ///
+    /// Charges the verification gas first. Returns `false` when the signature names another
+    /// account, `account` cannot be configurable, `code_valid` is unset or the configuration
+    /// doesn't match `commitment`, and reverts with `InvalidSignature` when the owner approvals
+    /// don't reach the threshold.
+    pub(crate) fn verify_configurable_signature_against(
+        &self,
+        account: Address,
+        hash: B256,
+        signature: &ConfigurableAccountSignature,
+        commitment: B256,
+        code_valid: bool,
+    ) -> Result<bool> {
         let initial_proof_gas = if commitment.is_zero() {
             signature
                 .config()
@@ -202,18 +227,18 @@ impl SignatureVerifier {
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage.deduct_gas(verification_gas)?;
         if signature.account() != account
-            || !valid_account(account, spec)
-            || !valid_account_code(code_hash, commitment)
+            || !valid_account(account, self.storage.spec())
+            || !code_valid
             || signature.validate_account_commitment(commitment).is_err()
         {
-            return Ok(None);
+            return Ok(false);
         }
 
         signature.verify_approvals(hash).map_err(|error| {
             trace!(%error, "invalid configurable account approvals");
             SignatureVerifierError::invalid_signature()
         })?;
-        Ok(Some(commitment))
+        Ok(true)
     }
 }
 

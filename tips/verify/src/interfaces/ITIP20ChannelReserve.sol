@@ -144,6 +144,10 @@ interface ITIP20ChannelReserve {
         bytes32 indexed channelId, address indexed payer, address indexed payee
     );
 
+    event SignerSnapshotCached(
+        bytes32 indexed channelId, address indexed signer, bytes32 commitment
+    );
+
     error ChannelAlreadyExists();
     error ChannelNotFound();
     error NotPayer();
@@ -159,5 +163,6 @@ interface ITIP20ChannelReserve {
     error CloseNotReady();
     error DepositOverflow();
     error RootKeyRetired(address account);
+    error SignerConfigChanged(address signer);
 
 }
