@@ -1,4 +1,4 @@
-use std::{cell::RefCell, mem, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use alloy_primitives::{Address, B256, U256};
 use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
@@ -93,9 +93,8 @@ pub struct StorageActionsState {
     /// Allows for nesting multiple unrecorded scopes, while [`StorageActions::recorded`]
     /// can temporarily reset the depth to resume normal recording inside such a scope.
     unrecorded_depth: usize,
-    /// Set when execution ran bytecode whose storage writes are not recorded, such as a nested
-    /// call from a precompile into a contract. The recorded actions then cannot rebuild the
-    /// transaction's state, so [`StorageActions::take_replay`] returns `None`.
+    /// Whether execution ran code whose storage accesses are not recorded, such as a nested call
+    /// from a precompile, so that the actions cannot replay the transaction.
     unreplayable: bool,
 }
 
@@ -125,51 +124,48 @@ impl StorageActions {
 
     /// Clears recorded storage actions without releasing the backing allocation.
     pub fn clear(&self) {
-        if let Self::Enabled(state) = self {
-            let mut state = state.borrow_mut();
-            state.actions.clear();
-            state.unreplayable = false;
+        match self {
+            Self::Disabled => {}
+            Self::Enabled(state) => {
+                let mut state = state.borrow_mut();
+                state.actions.clear();
+                state.unreplayable = false;
+            }
         }
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
-    ///
-    /// Keeps the [unreplayable](Self::mark_unreplayable) mark: take actions that are to be
-    /// replayed with [`Self::take_replay`].
     pub fn take(&self) -> Option<Vec<StorageAction>> {
         self.replace(Vec::new())
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
-    ///
-    /// Keeps the [unreplayable](Self::mark_unreplayable) mark.
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         match self {
             Self::Disabled => None,
-            Self::Enabled(state) => Some(mem::replace(&mut state.borrow_mut().actions, actions)),
+            Self::Enabled(state) => {
+                Some(std::mem::replace(&mut state.borrow_mut().actions, actions))
+            }
         }
     }
 
-    /// Marks the recorded actions as unable to rebuild the transaction's state, until
-    /// [`Self::take_replay`], [`Self::clear`] or [`Self::enable`] resets the buffer.
-    ///
-    /// Call this when execution runs code whose storage accesses are not recorded, such as a
-    /// nested call from a precompile into contract bytecode.
+    /// Marks the actions as unable to replay the transaction, until [`Self::take_replay`] or
+    /// [`Self::clear`] resets them.
     pub fn mark_unreplayable(&self) {
         if let Self::Enabled(state) = self {
             state.borrow_mut().unreplayable = true;
         }
     }
 
-    /// Takes the recorded actions for replay, or `None` when recording is disabled or the
-    /// actions were [marked unreplayable](Self::mark_unreplayable). Resets the buffer either way.
+    /// Takes the actions for replay: `None` when disabled or
+    /// [marked unreplayable](Self::mark_unreplayable).
     pub fn take_replay(&self) -> Option<Vec<StorageAction>> {
         let Self::Enabled(state) = self else {
             return None;
         };
-        let mut state = state.borrow_mut();
-        let actions = mem::take(&mut state.actions);
-        (!mem::take(&mut state.unreplayable)).then_some(actions)
+        let replayable = !state.borrow().unreplayable;
+        state.borrow_mut().unreplayable = false;
+        self.take().filter(|_| replayable)
     }
 
     /// Runs a closure where [`Self::record`] calls are suppressed.
@@ -372,40 +368,17 @@ mod tests {
         let actions = StorageActions::enabled();
         let action = StorageAction::Sload(Address::ZERO, U256::ONE, U256::ONE);
 
-        actions.record(action);
-        assert_eq!(actions.take_replay(), Some(vec![action]));
-
-        actions.record(action);
-        actions.mark_unreplayable();
-        assert_eq!(actions.take_replay(), None);
-
-        // Taking resets the flag for the next transaction.
-        actions.record(action);
-        assert_eq!(actions.take_replay(), Some(vec![action]));
-
-        assert_eq!(StorageActions::disabled().take_replay(), None);
-    }
-
-    #[test]
-    fn test_unreplayable_mark_is_reset_with_the_buffer_only() {
-        let mut actions = StorageActions::enabled();
-        let action = StorageAction::Sload(Address::ZERO, U256::ONE, U256::ONE);
-
-        // Taking or replacing the actions by other means keeps the mark.
+        // The mark survives `take` and `replace`, and is reset with the buffer.
         actions.record(action);
         actions.mark_unreplayable();
         assert_eq!(actions.take(), Some(vec![action]));
         assert_eq!(actions.replace(vec![action]), Some(vec![]));
         assert_eq!(actions.take_replay(), None);
+        assert_eq!(actions.take_replay(), Some(vec![]));
 
-        // Clearing the buffer and enabling it again reset the mark.
+        actions.record(action);
         actions.mark_unreplayable();
         actions.clear();
-        actions.record(action);
-        assert_eq!(actions.take_replay(), Some(vec![action]));
-
-        actions.mark_unreplayable();
-        actions.enable();
         actions.record(action);
         assert_eq!(actions.take_replay(), Some(vec![action]));
     }

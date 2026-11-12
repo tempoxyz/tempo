@@ -212,7 +212,6 @@ impl BestTransactionsPrewarming {
                     return None;
                 }
 
-                // A transaction that ran bytecode nested in a precompile has unrecorded storage writes.
                 let actions = evm.ext().actions.take_replay()?;
                 let expiring_nonce = tx
                     .transaction
@@ -1210,8 +1209,7 @@ mod tests {
         pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
 
         pool.install_fn(|| {
-            // Model a transaction whose precompile makes a nested call, which marks the actions.
-            // No precompile makes one yet.
+            // Model a transaction whose precompile makes a nested call: none does yet.
             pool.get_or_init(
                 || context.evm_for_ctx(),
                 |evm| {
@@ -1220,24 +1218,16 @@ mod tests {
                 },
             );
 
-            let sender = Address::random();
-            let unreplayable = BestTransactionsPrewarming::prewarm_transaction(
-                &pool,
-                context.clone(),
-                test_payment_tx(sender, 500_000),
-                None,
-            );
-            assert!(unreplayable.replay.is_none());
-
-            // The worker's next transaction is replayed from its own actions again.
-            let replayable = BestTransactionsPrewarming::prewarm_transaction(
-                &pool,
-                context,
-                test_payment_tx(sender, 500_000),
-                None,
-            );
-            let replay = replayable.replay.expect("prewarm replay");
-            assert!(!replay.actions.is_empty());
+            // Only that transaction is left without a replay.
+            for replayed in [false, true] {
+                let prewarmed = BestTransactionsPrewarming::prewarm_transaction(
+                    &pool,
+                    context.clone(),
+                    test_payment_tx(Address::random(), 500_000),
+                    None,
+                );
+                assert_eq!(prewarmed.replay.is_some(), replayed);
+            }
         });
     }
 

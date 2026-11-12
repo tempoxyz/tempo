@@ -263,22 +263,10 @@ impl StorageCtx {
         Self::with_storage(|s| s.is_static())
     }
 
-    /// Returns whether [`StorageCtx::call`] can run a callee. It cannot where the precompile was
-    /// not dispatched with its call frame, such as from a zone's precompile provider or a
-    /// transaction hook, and then fails with [`TempoPrecompileError::NestedCallUnavailable`],
-    /// which reverts the precompile call.
-    pub fn can_call(&self) -> bool {
-        Self::with_storage(|s| s.can_call())
-    }
-
-    /// Calls `target` from the running precompile. See [`PrecompileStorageProvider::call`].
+    /// Calls `target` from the running precompile, see [`PrecompileStorageProvider::call`].
     ///
-    /// The provider stays borrowed while the callee runs. A callee that is a Tempo precompile,
-    /// the caller included, runs in its own storage context over the same state, so the caller
-    /// must write its state before the call and read it again afterwards.
-    ///
-    /// A [`CheckpointGuard`] that reverts after the call undoes the callee's state and settles
-    /// the gas merged from it as if the callee had reverted.
+    /// A callee that is a Tempo precompile, the caller included, runs in its own storage context
+    /// over the same state, so write state before the call and read it again afterwards.
     pub fn call(
         &mut self,
         target: Address,

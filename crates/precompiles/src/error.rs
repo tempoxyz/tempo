@@ -145,15 +145,9 @@ pub enum TempoPrecompileError {
     #[error("Invalid account commitment write")]
     InvalidConfigCommitmentWrite,
 
-    /// A nested call was made while as many as are allowed were running (see
-    /// [`MAX_NESTED_CALLS`](crate::storage::evm::MAX_NESTED_CALLS)). Reverts the precompile call.
-    #[error("Too many nested calls")]
-    NestedCallLimitReached,
-
-    /// A nested call was made where the precompile has no call frame to make it from (see
-    /// [`StorageCtx::can_call`](crate::storage::StorageCtx::can_call)). Reverts the precompile
-    /// call.
-    #[error("Nested calls are unavailable")]
+    /// A nested call was made without a precompile call frame, or with
+    /// [`MAX_NESTED_CALLS`](crate::storage::evm::MAX_NESTED_CALLS) of them running.
+    #[error("Nested call unavailable")]
     NestedCallUnavailable,
 }
 
@@ -193,7 +187,6 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::ZoneFactoryError(_)
             | TempoPrecompileError::ConfigurableAccountError(_)
             | TempoPrecompileError::InvalidConfigCommitmentWrite
-            | TempoPrecompileError::NestedCallLimitReached
             | TempoPrecompileError::NestedCallUnavailable
             | TempoPrecompileError::OutOfGas
             | TempoPrecompileError::StaticCallNotAllowed
@@ -268,7 +261,6 @@ impl TempoPrecompileError {
             | Self::StaticCallNotAllowed
             | Self::Fatal(_)
             | Self::InvalidConfigCommitmentWrite
-            | Self::NestedCallLimitReached
             | Self::NestedCallUnavailable => [0, 0, 0, 0],
         }
         .into()
@@ -284,7 +276,6 @@ impl TempoPrecompileError {
             | Self::Fatal(_)
             | Self::Panic(_)
             | Self::StorageDeltaUnderflow(_)
-            | Self::NestedCallLimitReached
             | Self::NestedCallUnavailable => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
@@ -373,9 +364,7 @@ impl TempoPrecompileError {
             Self::Fatal(msg) => {
                 return Err(msg.into());
             }
-            Self::InvalidConfigCommitmentWrite
-            | Self::NestedCallLimitReached
-            | Self::NestedCallUnavailable => Bytes::new(),
+            Self::InvalidConfigCommitmentWrite | Self::NestedCallUnavailable => Bytes::new(),
         };
         Err(PrecompileError::Revert(bytes))
     }
@@ -552,17 +541,13 @@ mod tests {
     }
 
     #[test]
-    fn nested_call_errors_revert_without_data_and_are_not_swallowed() {
-        for error in [
-            TempoPrecompileError::NestedCallLimitReached,
-            TempoPrecompileError::NestedCallUnavailable,
-        ] {
-            assert!(error.is_system_error());
-            assert!(matches!(
-                error.into_precompile_result(),
-                Err(PrecompileError::Revert(data)) if data.is_empty()
-            ));
-        }
+    fn nested_call_unavailable_reverts_without_data_and_is_not_swallowed() {
+        let error = TempoPrecompileError::NestedCallUnavailable;
+        assert!(error.is_system_error());
+        assert!(matches!(
+            error.into_precompile_result(),
+            Err(PrecompileError::Revert(data)) if data.is_empty()
+        ));
     }
 
     #[test]

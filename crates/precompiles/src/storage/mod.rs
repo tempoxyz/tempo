@@ -195,42 +195,10 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
-    /// Returns whether [`call`](Self::call) can run a callee: the provider serves a precompile
-    /// call frame of a live EVM. `false` means every call fails with
-    /// [`TempoPrecompileError::NestedCallUnavailable`].
-    fn can_call(&self) -> bool {
-        false
-    }
-
-    /// Calls `target` from the running precompile, as `STATICCALL` when `is_static` and as a
-    /// zero-value `CALL` otherwise. The callee sees the precompile as its caller, runs one call
-    /// level deeper and inherits a static context.
-    ///
-    /// Gas follows `CALL`: the access to `target` (and to its EIP-7702 delegate) is charged
-    /// first, then at most `gas_limit`, capped at 63/64 of the remaining gas, is forwarded. What
-    /// the callee leaves unused is returned, unless it halted.
-    ///
-    /// A callee that reverts or halts is rolled back on its own and reported as
-    /// [`CallOutcome::Failure`], so the precompile decides how to continue. Whoever calls the
-    /// precompile picks its gas and how deep it runs, so a precompile must stay correct when the
-    /// callee fails.
-    ///
-    /// An `Err` is never a callee failure and must be propagated, so that the precompile call
-    /// fails. It is one of:
-    /// - this frame running out of gas, a database error or a fatal error;
-    /// - [`TempoPrecompileError::NestedCallLimitReached`], when
-    ///   [`MAX_NESTED_CALLS`](evm::MAX_NESTED_CALLS) nested calls are running. Nothing is charged
-    ///   and the precompile call reverts: were the refusal a callee failure, whoever nests the
-    ///   calls could pick the path the precompile takes;
-    /// - [`TempoPrecompileError::NestedCallUnavailable`], from a provider without a precompile
-    ///   call frame (see [`can_call`](Self::can_call)). The precompile call reverts.
-    ///
-    /// The gas a successful callee reports (its refund and EIP-8037 state gas) is merged into
-    /// this frame, and taken back by a [`checkpoint_revert`](Self::checkpoint_revert) that rolls
-    /// the callee's state back.
-    ///
-    /// A transaction that makes a nested call cannot be rebuilt from its recorded storage
-    /// actions, see [`StorageActions::take_replay`].
+    /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
+    /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back
+    /// and reported as [`CallOutcome::Failure`]: an `Err` is the precompile's own and must be
+    /// propagated.
     fn call(
         &mut self,
         _target: Address,
@@ -256,11 +224,8 @@ pub trait PrecompileStorageProvider {
 
     /// Reverts all state changes back to the given checkpoint.
     ///
-    /// The gas charged and refunded for the precompile's own writes stays as it is. The gas
-    /// merged from the nested callees ([`call`](Self::call)) that this rolls back is settled as
-    /// if they had reverted: their refund and state gas are dropped and a state gas refill of
-    /// theirs is charged again. A frame that already spent such a refill and cannot pay it back
-    /// fails the precompile call with out of gas.
+    /// The gas merged from the nested callees ([`call`](Self::call)) that this rolls back is
+    /// settled as if they had reverted.
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
     fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint);
@@ -332,14 +297,13 @@ pub trait PrecompileStorageProvider {
     ) -> Result<()>;
 }
 
-/// Result of a nested call that a precompile made with [`PrecompileStorageProvider::call`].
+/// Outcome of a nested call made with [`PrecompileStorageProvider::call`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "a failed callee is rolled back but does not fail the precompile on its own"]
 pub enum CallOutcome {
-    /// The callee returned this data and its state changes are kept.
+    /// The callee returned this data.
     Success(Bytes),
-    /// The callee reverted or halted and its state changes were rolled back. Holds its revert
-    /// data, which is empty unless it reverted.
+    /// The callee reverted with this data or halted, and was rolled back.
     Failure(Bytes),
 }
 
