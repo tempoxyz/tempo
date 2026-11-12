@@ -1,6 +1,7 @@
 //! Durable handoff intents and canonical, finalized portal leadership history.
 
 use alloy::{
+    network::AnyTransactionReceipt,
     primitives::{Address, B256, U256},
     providers::Provider as _,
     rpc::types::{BlockId, BlockNumberOrTag, Filter, Log},
@@ -128,7 +129,6 @@ impl Context {
                 return Ok(());
             };
             // The relay waits for a receipt, but a successful same-target no-op emits no event.
-            // Query logs because the Ethereum provider cannot decode Tempo relay receipts.
             let logs = self
                 .l1
                 .get_logs(
@@ -249,7 +249,15 @@ impl Context {
             .await?
             .ok_or_eyre("no finalized L1 block for handoff drain")?;
         for tx in hashes {
-            let Some(receipt) = self.l1.get_transaction_receipt(tx).await? else {
+            // The L1 provider's Ethereum envelope rejects Tempo's 0x76 relay receipts.
+            let Some(receipt) = self
+                .l1
+                .raw_request::<_, Option<AnyTransactionReceipt>>(
+                    "eth_getTransactionReceipt".into(),
+                    [tx],
+                )
+                .await?
+            else {
                 return Ok(false);
             };
             eyre::ensure!(
@@ -435,11 +443,20 @@ impl Request {
         ledger: &crate::ledger::Ledger,
         response: Result<SetLeaderResponse, alloy::transports::TransportError>,
     ) -> eyre::Result<Option<B256>> {
-        if response
-            .as_ref()
-            .is_err_and(relay_refused_before_submission)
-        {
-            ledger.append(&Record::HandoffNotSubmitted { id: self.id })?;
+        if let Err(error) = &response {
+            if relay_refused_before_submission(error) {
+                ledger.append(&Record::HandoffNotSubmitted { id: self.id })?;
+            } else if let Some(error) = error.as_error_resp()
+                && error.code == -32603
+                && let Some(hash) = error.message.strip_prefix("setLeader transaction 0x")
+                && let Some(hash) = hash.strip_suffix(" reverted on L1")
+                && hash.len() == 64
+                && let Ok(tx) = hash.parse::<B256>()
+            {
+                // The node reports the mined hash, not finality; the drain still checks its receipt.
+                self.l1_tx = Some(tx);
+                ledger.append(&Record::HandoffRequest(self.clone()))?;
+            }
         }
         let response = response?;
         eyre::ensure!(
@@ -798,6 +815,87 @@ mod tests {
 
     #[tokio::test]
     async fn drain_requires_exact_canonical_finalized_receipts_even_for_reverts() {
+        assert_drain_requires_exact_canonical_finalized_receipts(request(1, 2, 2), None).await;
+    }
+
+    #[tokio::test]
+    async fn drain_accepts_tempo_relay_receipts_only_when_canonical_and_finalized() {
+        assert_drain_requires_exact_canonical_finalized_receipts(
+            Request {
+                relayed: true,
+                ..request(1, 2, 2)
+            },
+            None,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reverted_relay_hash_is_journaled_but_drain_still_requires_finality() {
+        let tx = B256::repeat_byte(7);
+        assert_drain_requires_exact_canonical_finalized_receipts(
+            relay_request(),
+            Some(rpc_error(
+                -32603,
+                &format!("setLeader transaction {tx} reverted on L1"),
+            )),
+        )
+        .await;
+    }
+
+    #[test]
+    fn ambiguous_relay_errors_do_not_recover_a_transaction_hash() {
+        let tx = B256::repeat_byte(7);
+        let reverted = format!("setLeader transaction {tx} reverted on L1");
+        for (code, message) in [
+            (-32602, reverted.clone()),
+            (-32603, "setLeader transaction reverted on L1".into()),
+            (-32603, "setLeader transaction 0x1234 reverted on L1".into()),
+            (
+                -32603,
+                format!("setLeader transaction {tx}00 reverted on L1"),
+            ),
+            (
+                -32603,
+                format!("setLeader transaction 0x{} reverted on L1", "g".repeat(64)),
+            ),
+            (
+                -32603,
+                format!("setLeader transaction {} reverted on L1", "07".repeat(32)),
+            ),
+            (-32603, format!("unexpected {reverted}")),
+            (-32603, format!("{reverted} (retry)")),
+            (
+                -32603,
+                "setLeader confirmation timed out after 30 seconds".into(),
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let ledger = crate::ledger::Ledger::open(dir.path()).unwrap();
+            let mut request = relay_request();
+            ledger
+                .append(&Record::HandoffRequest(request.clone()))
+                .unwrap();
+            let error = rpc_error(code, &message);
+            let expected = error.to_string();
+            assert_eq!(
+                request
+                    .record_relay_response(&ledger, Err(error))
+                    .unwrap_err()
+                    .to_string(),
+                expected
+            );
+            assert_eq!(request.l1_tx, None);
+            let records = ledger.records().unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(handoff_hashes(&records).unwrap(), None);
+        }
+    }
+
+    async fn assert_drain_requires_exact_canonical_finalized_receipts(
+        mut request: Request,
+        relay_error: Option<alloy::transports::TransportError>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let l1 = Asserter::new();
         let ctx = Context {
@@ -811,17 +909,36 @@ mod tests {
             l1_url: "http://localhost:1".parse().unwrap(),
             portal: Address::repeat_byte(9),
         };
-        let request = request(1, 2, 2);
         ctx.ledger
             .append(&Record::HandoffRequest(request.clone()))
             .unwrap();
+        if let Some(error) = relay_error {
+            let expected = error.to_string();
+            assert_eq!(
+                request
+                    .record_relay_response(&ctx.ledger, Err(error))
+                    .unwrap_err()
+                    .to_string(),
+                expected,
+            );
+            assert_eq!(request.l1_tx, Some(B256::repeat_byte(7)));
+            let records = ctx.ledger.records().unwrap();
+            assert_eq!(records.len(), 2);
+            assert!(
+                matches!(&records[1], Record::HandoffRequest(recorded) if *recorded == request)
+            );
+            assert_eq!(
+                handoff_hashes(&records).unwrap(),
+                Some(BTreeSet::from([B256::repeat_byte(7)]))
+            );
+        }
         let mut finalized = Block::<B256>::default();
         finalized.header.number = 10;
         finalized.header.hash = B256::repeat_byte(10);
-        let receipt = json!({"type":"0x0", "status":"0x1", "cumulativeGasUsed":"0x1", "logs":[], "logsBloom":Bloom::ZERO,
+        let receipt = json!({"type": if request.relayed { "0x76" } else { "0x0" }, "status":"0x1", "cumulativeGasUsed":"0x1", "logs":[], "logsBloom":Bloom::ZERO,
             "transactionHash":request.l1_tx.unwrap(), "transactionIndex":"0x0", "blockHash":finalized.header.hash,
             "blockNumber":"0xa", "gasUsed":"0x1", "effectiveGasPrice":"0x1",
-            "from":Address::ZERO, "to":ctx.portal, "contractAddress":null});
+            "from":Address::ZERO, "to":ctx.portal, "contractAddress":null, "feePayer":Address::ZERO});
         // Not mined, RPC error, mined above finality, noncanonical block, missing block/hash,
         // wrong receipt identity and a changed pinned finalized snapshot must all block readiness.
         l1.push_success(&finalized);

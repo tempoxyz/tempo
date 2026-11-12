@@ -68,7 +68,10 @@ durably journal signed transaction bytes before broadcasting, then record their 
 receipt outcome and confirmed deposit, withdrawal or transfer obligations. A killed driver or
 ambiguous RPC error leaves a pending intent: reconciliation rebroadcasts the identical bytes and
 never replaces the nonce or creates a second payment. Unknown intents cannot be omitted from
-`eventually_settled`. The terminal checks and serial recovery probe require quiescent payment
+`eventually_settled`, even when a replay is rejected by one node: another node may already have
+accepted the bytes. If the workload signs an invalid transaction that cannot be included,
+diagnose and fix its generation rather than silently removing it from the inclusion check.
+The terminal checks and serial recovery probe require quiescent payment
 writers, which their Antithesis scheduling supplies; direct local invocations must also stop
 parallel payment drivers. Leadership requests and observed updates survive driver cancellation;
 consistency and recovery check their history and activation boundaries.
@@ -139,10 +142,14 @@ assertion. Terminal checks release outstanding holds after a cancelled driver.
 
 Before choosing a victim, the probe drains previously submitted handoffs to canonical,
 finalized receipts, including reverted transactions and signed admin intents whose driver died
-before recording a handoff request. A relay with a lost reply and no transaction ID cannot be
-proved quiescent: the episode is reported as inconclusive before any kill, without reporting
-availability or recovery success. This may reduce outage coverage on that timeline; an
-unrelated same-target event is not evidence that the ambiguous request completed.
+before recording a handoff request. Tempo relay receipts use their own transaction type;
+receipt checks accept that type without relaxing canonical-block or finality validation. A
+relay's reverted-transaction error preserves its transaction ID for that same receipt barrier.
+A lost reply, client timeout or confirmation timeout without a transaction ID cannot be proved
+quiescent: every later episode on that timeline remains inconclusive before any kill, without
+reporting availability or recovery success. Neither an unrelated same-target event nor equal
+pending/finalized nonce observations prove that a delayed submission cannot still arrive.
+Report actual completed-case coverage separately from these skipped episodes.
 
 Every zone node must also have imported a block from the finalized
 portal leader at or beyond that term's activation anchor. L1 finality alone is not proof of
