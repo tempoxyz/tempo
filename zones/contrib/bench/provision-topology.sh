@@ -968,6 +968,12 @@ provision_up() {
         --token "$zone_token" \
         --zone-gas-rate 0 \
         --bounceback-gas 0
+    if [[ "$neobank_preset" == zone-transfers ]]; then
+        # Zone TIP-20 transfers revert until the portal admin opts in (T15 and later).
+        echo "enabling Zone-internal TIP-20 transfers"
+        L1_RPC_URL="$l1_a_rpc" L1_PORTAL_ADDRESS="$portal" ADMIN_KEY="$admin_key" \
+            "$ZONES_XTASK_BIN" set-transfers-enabled --enabled
+    fi
 
     local -a prover_args=()
     if [[ -n "${ZONES_BENCH_PROVER_ADDRESS:-}" ]]; then

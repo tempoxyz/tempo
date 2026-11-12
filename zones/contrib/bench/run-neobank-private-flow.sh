@@ -296,6 +296,8 @@ fi
 # Zone-only transfers never deposit during measurement, so the admission seed
 # funds every journey an account runs: the transfer amount plus its Zone fee.
 if [[ "$ZONES_BENCH_NEOBANK_PRESET" == "zone-transfers" ]]; then
+    bigint_true "$ZONES_BENCH_DEPOSIT_AMOUNT > $ZONES_BENCH_ACTIVITY_AMOUNT" ||
+        die "zone-transfers requires deposit-amount greater than activity-amount for Zone fees"
     journeys_per_account="$(bigint_eval \
         "($ZONES_BENCH_COUNT + $ZONES_BENCH_ACCOUNTS - 1) / $ZONES_BENCH_ACCOUNTS")"
     transfer_seed_amount="$(bigint_eval "$journeys_per_account * $ZONES_BENCH_DEPOSIT_AMOUNT")"
@@ -726,6 +728,24 @@ if [[ "$ZONES_BENCH_NEOBANK_PRESET" == "slippage-bounce" ]]; then
     [[ "$bounce_earn_supply" =~ ^[0-9]+$ && "$bounce_vault_balance" =~ ^[0-9]+$ ]] ||
         die "could not read slippage-bounce L1 preconditions"
     stage_end slippage_precondition
+fi
+
+# Zone transfers need T15 and the portal opt-in, which the Zone applies only once it has
+# finalized the L1 block that set it; wait until a seeded account can transfer.
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" == "zone-transfers" ]]; then
+    stage_start zone_transfer_ready
+    transfer_probe_from="$(jq -er '.[0]' "$ZONES_BENCH_OUTPUT/accounts.json")"
+    transfer_probe_to="$(jq -er '.[-1]' "$ZONES_BENCH_OUTPUT/accounts.json")"
+    transfer_ready_deadline=$((SECONDS + 300))
+    until cast call "$ZONES_BENCH_TOKEN" 'transfer(address,uint256)(bool)' \
+        "$transfer_probe_to" "$ZONES_BENCH_ACTIVITY_AMOUNT" \
+        --from "$transfer_probe_from" --rpc-url "$ZONE_RPC_URL" >/dev/null 2>&1
+    do
+        (( SECONDS < transfer_ready_deadline )) ||
+            die "Zone TIP-20 transfers are still disabled; zone-transfers needs tempo-hardfork t15 or later and the portal transfer opt-in"
+        sleep 1
+    done
+    stage_end zone_transfer_ready
 fi
 
 measured_token_balance_before=""
