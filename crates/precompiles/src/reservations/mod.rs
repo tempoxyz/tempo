@@ -15,6 +15,11 @@
 //! every limit it lends and has not lent yet, a hold may put part of its amount on a line, and a
 //! capture draws that part from the lender's reservation once the owner's available balance is
 //! spent. Refunds of such a capture repay the line before landing as balance.
+//!
+//! A record's payee can open a dispute on it, give provisional credit within the refund room and
+//! resolve it: a cardholder win refunds the rest and closes the record to refunds, and a merchant
+//! win takes the provisional credit back, as debt past the cap where the balance falls short.
+//! Holds naming an open dispute reserve the merchant side for the dispute's window.
 
 pub mod dispatch;
 
@@ -38,8 +43,21 @@ use tempo_precompiles_macros::{Storable, contract};
 /// and would only lock funds; the bound also caps how long a hold outlives a policy change.
 pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
 
+/// Longest a hold naming an open dispute may last, in seconds: 120 days.
+///
+/// Card networks give a cardholder 120 days to dispute, and the merchant side's reserve must last
+/// until the dispute resolves; only a hold tied to an open dispute of its payee may last this long.
+pub const MAX_DISPUTE_HOLD_DURATION: u64 = 120 * 24 * 60 * 60;
+
 /// Basis points in one whole, for capture tolerances.
 const BPS: u64 = 10_000;
+
+/// Dispute states: opened, then provisional credit, representment, pre-arbitration and
+/// arbitration in that order while open, and won or lost once resolved. Zero means no dispute.
+const DISPUTE_OPENED: u8 = 1;
+const DISPUTE_ARBITRATION: u8 = 5;
+const DISPUTE_WON: u8 = 6;
+const DISPUTE_LOST: u8 = 7;
 
 /// Reserved and owed amounts of one owner in one token, packed in one slot.
 ///
@@ -113,6 +131,10 @@ struct Authorization {
     /// Whether `holdWithLine` or `holdCardWithLine` placed the hold, so part of it is on a credit
     /// line recorded in `Reservations::credit_holds`.
     line: bool,
+    /// Whether a dispute was opened on this record, so refunds read `Reservations::disputes`.
+    disputed: bool,
+    /// Whether `holdForDispute` placed the hold, naming the dispute in `Reservations::dispute_holds`.
+    dispute_reserve: bool,
 }
 
 impl Authorization {
@@ -129,6 +151,32 @@ impl Authorization {
     fn committed(&self) -> u128 {
         self.held.to::<u128>() + (self.captured - self.refunded).to::<u128>()
     }
+}
+
+/// The dispute on one authorization, in two slots.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct Dispute {
+    /// Zero without a dispute, `DISPUTE_OPENED` to `DISPUTE_ARBITRATION` while open, then won or lost.
+    state: u8,
+    /// Disputed amount, at most what the record had captured and not refunded when opened.
+    amount: U96,
+    /// Provisional credit the payee gave that no refund has settled since.
+    provisional: U96,
+    /// Part of `provisional` that repaid the record's credit line instead of landing as balance.
+    line_share: U96,
+}
+
+impl Dispute {
+    fn is_open(&self) -> bool {
+        (DISPUTE_OPENED..=DISPUTE_ARBITRATION).contains(&self.state)
+    }
+}
+
+/// The dispute a reserve hold names, in two slots.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct DisputeHold {
+    owner: Address,
+    id: B256,
 }
 
 /// A lender's credit line in one token, in two slots.
@@ -219,6 +267,12 @@ pub struct Reservations {
     /// Line parts of authorizations, keyed by owner then hold id; read only for holds placed with
     /// `holdWithLine`.
     credit_holds: Mapping<Address, Mapping<B256, CreditHold>>,
+    /// Disputes keyed by the disputed record's owner then hold id.
+    #[slot(20)]
+    disputes: Mapping<Address, Mapping<B256, Dispute>>,
+    /// The dispute each reserve hold names, keyed by the hold's owner then hold id.
+    #[slot(21)]
+    dispute_holds: Mapping<Address, Mapping<B256, DisputeHold>>,
 }
 
 impl Reservations {
@@ -306,8 +360,9 @@ impl Reservations {
 
     /// Places `hold`, `holdStandIn`, which reserves only what is available, `holdCard`, which
     /// first checks the card, `holdWithLine`, which puts part of the hold on a credit line,
-    /// `holdCardWithLine`, which does both, or `holdCardStandIn`, which checks the card but not
-    /// its limit and then reserves as `holdStandIn`.
+    /// `holdCardWithLine`, which does both, `holdCardStandIn`, which checks the card but not
+    /// its limit and then reserves as `holdStandIn`, or `holdForDispute`, which
+    /// reserves for an open dispute.
     fn hold(
         &mut self,
         owner: Address,
@@ -316,7 +371,11 @@ impl Reservations {
     ) -> Result<()> {
         amount_u96(call.amount)?;
         let now = self.now();
-        if call.expiresAt <= now || call.expiresAt > now.saturating_add(MAX_HOLD_DURATION) {
+        let longest = match placement {
+            Placement::Dispute { .. } => MAX_DISPUTE_HOLD_DURATION,
+            _ => MAX_HOLD_DURATION,
+        };
+        if call.expiresAt <= now || call.expiresAt > now.saturating_add(longest) {
             return Err(ReservationsError::invalid_amount().into());
         }
         let mut token = TIP20Token::from_address(call.token)?;
@@ -324,6 +383,23 @@ impl Reservations {
         token.ensure_transfer_authorized(owner, payee)?;
         if self.authorizations[owner][call.id].token.read()? != Address::ZERO {
             return Err(ReservationsError::hold_exists().into());
+        }
+        // A reserve names an open dispute of its own payee and holds at most the disputed amount.
+        if let Placement::Dispute {
+            owner: disputed,
+            id: disputed_id,
+        } = placement
+        {
+            let dispute = self.disputes[disputed][disputed_id].read()?;
+            if !dispute.is_open() {
+                return Err(ReservationsError::dispute_not_found().into());
+            }
+            if self.authorizations[disputed][disputed_id].payee.read()? != payee {
+                return Err(ReservationsError::unauthorized().into());
+            }
+            if call.amount > dispute.amount.to::<u128>() {
+                return Err(ReservationsError::invalid_amount().into());
+            }
         }
         let card = match placement {
             // The card counts the whole amount, line part included, against its limit.
@@ -339,7 +415,10 @@ impl Reservations {
                 card,
                 Cards::new().line_for_hold(owner, issuer, card, call.token)?,
             )),
-            Placement::Plain | Placement::StandIn | Placement::Line { .. } => None,
+            Placement::Plain
+            | Placement::StandIn
+            | Placement::Line { .. }
+            | Placement::Dispute { .. } => None,
         };
 
         let mut position = self.positions[owner][call.token].read()?;
@@ -350,10 +429,14 @@ impl Reservations {
             Placement::StandIn | Placement::CardStandIn { .. } => {
                 (call.amount.min(free), call.amount.min(free))
             }
-            Placement::Plain | Placement::Card { .. } if call.amount > free => {
+            Placement::Plain | Placement::Card { .. } | Placement::Dispute { .. }
+                if call.amount > free =>
+            {
                 return Err(ReservationsError::insufficient_available().into());
             }
-            Placement::Plain | Placement::Card { .. } => (call.amount, call.amount),
+            Placement::Plain | Placement::Card { .. } | Placement::Dispute { .. } => {
+                (call.amount, call.amount)
+            }
             Placement::Line { part, line, lender }
             | Placement::CardLine {
                 part, line, lender, ..
@@ -392,6 +475,7 @@ impl Reservations {
                 placement,
                 Placement::Line { .. } | Placement::CardLine { .. }
             ),
+            dispute_reserve: matches!(placement, Placement::Dispute { .. }),
             ..Default::default()
         };
         record_spend(&mut auth, spend, held);
@@ -412,6 +496,21 @@ impl Reservations {
         }
         match placement {
             Placement::Plain | Placement::Card { .. } => Ok(()),
+            Placement::Dispute {
+                owner: disputed,
+                id: disputed_id,
+            } => {
+                self.dispute_holds[owner][call.id].write(DisputeHold {
+                    owner: disputed,
+                    id: disputed_id,
+                })?;
+                self.emit_event(ReservationsEvent::dispute_hold_placed(
+                    owner,
+                    call.id,
+                    disputed,
+                    disputed_id,
+                ))
+            }
             Placement::StandIn | Placement::CardStandIn { .. } => self.emit_event(
                 ReservationsEvent::stand_in_hold_placed(owner, call.id, call.token, call.amount),
             ),
@@ -582,6 +681,13 @@ impl Reservations {
         if auth.payee != payee {
             return Err(ReservationsError::unauthorized().into());
         }
+        // A dispute reserve pays its payee only once the cardholder won the dispute it names.
+        if auth.dispute_reserve {
+            let named = self.dispute_holds[owner][id].read()?;
+            if self.disputes[named.owner][named.id].state.read()? != DISPUTE_WON {
+                return Err(ReservationsError::unauthorized().into());
+            }
+        }
         // The owner may be its own payee; another of its access keys still may not settle the hold.
         ensure_key_may_act(owner, &auth)?;
         // The hold is the owner's consent; capturing more would spend beyond it.
@@ -684,46 +790,37 @@ impl Reservations {
             .filter(|refunded| *refunded <= auth.captured)
             .ok_or_else(ReservationsError::refund_exceeds_capture)?;
 
-        let mut token = TIP20Token::from_address(auth.token)?;
-        token.ensure_transfer_authorized(payee, call.owner)?;
-        // A refund to an owner in debt to the refunding payee first cancels that debt, so a
-        // payee can refund a debt-financed payment without holding the unpaid part.
-        let position = self.positions[call.owner][auth.token].read()?;
-        let offset =
-            if position.debt != 0 && self.creditors[call.owner][auth.token].read()? == payee {
-                position.debt.min(call.amount)
+        // Provisional credit on an open dispute already returned what this refund takes past what
+        // the purchase still nets: that part settles it instead of reaching the owner again.
+        let settled = if auth.disputed {
+            let mut dispute = self.disputes[call.owner][call.id].read()?;
+            // A cardholder win already refunded the disputed amount and closed the record to refunds.
+            if dispute.state == DISPUTE_WON {
+                return Err(ReservationsError::refund_exceeds_capture().into());
+            }
+            let settled = if dispute.is_open() {
+                (refunded.to::<u128>() + dispute.provisional.to::<u128>())
+                    .saturating_sub(auth.captured.to::<u128>())
             } else {
                 0
             };
-        let moved = call.amount - offset;
-        // The part a credit line paid, and the owner still owes, repays the line first.
-        let mut line_hold = self.credit_hold(call.owner, call.id, &auth)?;
-        let repaid = match line_hold {
-            Some(hold) if moved != 0 && !hold.drawn.is_zero() => {
-                let owed = self.credits[call.owner][hold.lender][hold.line]
-                    .owed
-                    .read()?;
-                moved.min(hold.drawn.min(owed).to::<u128>())
+            if settled != 0 {
+                // Fits: `refunded <= captured`, so at most `provisional`.
+                dispute.provisional -= U96::from(settled);
+                // The balance part settles first; a line share stays repaid.
+                dispute.line_share = dispute.line_share.min(dispute.provisional);
+                self.disputes[call.owner][call.id].write(dispute)?;
+                self.emit_event(ReservationsEvent::dispute_settled(
+                    call.owner, call.id, settled,
+                ))?;
             }
-            _ => 0,
+            settled
+        } else {
+            0
         };
-        if moved != 0 {
-            AccountKeychain::new().authorize_transfer(payee, auth.token, U256::from(moved))?;
+        if call.amount != settled {
+            self.pay_back(payee, call.owner, call.id, &auth, call.amount - settled)?;
         }
-        if offset != 0 {
-            self.reduce_debt(call.owner, auth.token, position, payee, offset)?;
-        }
-        if let Some(hold) = line_hold.as_mut()
-            && repaid != 0
-        {
-            token.ensure_transfer_authorized(payee, hold.lender)?;
-            token.reservation_transfer(payee, hold.lender, U256::from(repaid))?;
-            self.repay_line(call.owner, hold.lender, hold.line, repaid)?;
-            // Fits: at most `hold.drawn`.
-            hold.drawn -= U96::from(repaid);
-            self.credit_holds[call.owner][call.id].write(*hold)?;
-        }
-        token.reservation_transfer(payee, call.owner, U256::from(moved - repaid))?;
         let committed = auth.committed();
         // Refunds of non-final captures leave a live hold's amount committed.
         auth.refunded = refunded;
@@ -735,6 +832,313 @@ impl Reservations {
             call.id,
             call.amount,
         ))
+    }
+
+    /// Pays `amount` of `owner`'s record `id` from its payee back to the owner, as a refund does: debt
+    /// the owner owes the payee is cancelled first, then the part a credit line paid and the owner
+    /// still owes repays the line, and the rest moves to the owner. Returns what repaid the line.
+    fn pay_back(
+        &mut self,
+        payee: Address,
+        owner: Address,
+        id: B256,
+        auth: &Authorization,
+        amount: u128,
+    ) -> Result<u128> {
+        let mut token = TIP20Token::from_address(auth.token)?;
+        token.ensure_transfer_authorized(payee, owner)?;
+        // A refund to an owner in debt to the refunding payee first cancels that debt, so a
+        // payee can refund a debt-financed payment without holding the unpaid part.
+        let position = self.positions[owner][auth.token].read()?;
+        let offset = if position.debt != 0 && self.creditors[owner][auth.token].read()? == payee {
+            position.debt.min(amount)
+        } else {
+            0
+        };
+        let moved = amount - offset;
+        // The part a credit line paid, and the owner still owes, repays the line first.
+        let mut line_hold = self.credit_hold(owner, id, auth)?;
+        let repaid = match line_hold {
+            Some(hold) if moved != 0 && !hold.drawn.is_zero() => {
+                let owed = self.credits[owner][hold.lender][hold.line].owed.read()?;
+                moved.min(hold.drawn.min(owed).to::<u128>())
+            }
+            _ => 0,
+        };
+        if moved != 0 {
+            AccountKeychain::new().authorize_transfer(payee, auth.token, U256::from(moved))?;
+        }
+        if offset != 0 {
+            self.reduce_debt(owner, auth.token, position, payee, offset)?;
+        }
+        if let Some(hold) = line_hold.as_mut()
+            && repaid != 0
+        {
+            token.ensure_transfer_authorized(payee, hold.lender)?;
+            token.reservation_transfer(payee, hold.lender, U256::from(repaid))?;
+            self.repay_line(owner, hold.lender, hold.line, repaid)?;
+            // Fits: at most `hold.drawn`.
+            hold.drawn -= U96::from(repaid);
+            self.credit_holds[owner][id].write(*hold)?;
+        }
+        token.reservation_transfer(payee, owner, U256::from(moved - repaid))?;
+        Ok(repaid)
+    }
+
+    /// Opens a dispute on `call.owner`'s record for its payee, the caller.
+    fn open_dispute(&mut self, payee: Address, call: IReservations::openDisputeCall) -> Result<()> {
+        let amount = amount_u96(call.amount)?;
+        let auth = self.authorizations[call.owner][call.id].read()?;
+        if !auth.exists() {
+            return Err(ReservationsError::hold_not_found().into());
+        }
+        if auth.payee != payee {
+            return Err(ReservationsError::unauthorized().into());
+        }
+        // One dispute per record: a resolved one stays as its history.
+        if auth.disputed {
+            return Err(ReservationsError::dispute_exists().into());
+        }
+        if amount > auth.captured - auth.refunded {
+            return Err(ReservationsError::refund_exceeds_capture().into());
+        }
+        self.authorizations[call.owner][call.id]
+            .disputed
+            .write(true)?;
+        self.disputes[call.owner][call.id].write(Dispute {
+            state: DISPUTE_OPENED,
+            amount,
+            ..Default::default()
+        })?;
+        self.emit_event(ReservationsEvent::dispute_opened(
+            call.owner,
+            call.id,
+            call.amount,
+            call.evidence,
+        ))
+    }
+
+    /// Moves an open dispute forward for the record's payee, the caller, paying any provisional
+    /// credit back as a refund would without counting it as refunded.
+    fn dispute_step(&mut self, payee: Address, call: IReservations::disputeStepCall) -> Result<()> {
+        let (auth, mut dispute) = self.open_dispute_of(call.owner, call.id, payee)?;
+        // States only move forward, and a step never resolves the dispute.
+        if call.state <= dispute.state || call.state > DISPUTE_ARBITRATION {
+            return Err(ReservationsError::invalid_dispute_step().into());
+        }
+        if call.provisional != 0 {
+            // Refunds and provisional credit together never return more than the purchase, nor
+            // provisional credit more than the disputed amount.
+            let provisional = U96::try_from(call.provisional)
+                .ok()
+                .and_then(|provisional| dispute.provisional.checked_add(provisional))
+                .filter(|total| {
+                    *total <= dispute.amount
+                        && total.to::<u128>() + auth.refunded.to::<u128>()
+                            <= auth.captured.to::<u128>()
+                })
+                .ok_or_else(ReservationsError::refund_exceeds_capture)?;
+            let repaid = self.pay_back(payee, call.owner, call.id, &auth, call.provisional)?;
+            dispute.provisional = provisional;
+            // Fits: at most `provisional`.
+            dispute.line_share += U96::from(repaid);
+        }
+        dispute.state = call.state;
+        self.disputes[call.owner][call.id].write(dispute)?;
+        self.emit_event(ReservationsEvent::dispute_stepped(
+            call.owner,
+            call.id,
+            call.state,
+            call.provisional,
+            call.evidence,
+            call.merchantEvidence,
+        ))
+    }
+
+    /// Resolves an open dispute for the record's payee, the caller.
+    fn resolve_dispute(
+        &mut self,
+        payee: Address,
+        call: IReservations::resolveDisputeCall,
+    ) -> Result<()> {
+        let (owner, id) = (call.owner, call.id);
+        let (mut auth, mut dispute) = self.open_dispute_of(owner, id, payee)?;
+        let (amount, debt) = if call.cardholderWins {
+            if call.collected != 0 {
+                return Err(ReservationsError::invalid_amount().into());
+            }
+            // A win refunds what is still unrefunded of the disputed amount, of which the
+            // provisional credit, within the refund room, was already paid.
+            let credited = dispute.amount.min(auth.captured - auth.refunded);
+            let rest = credited
+                .checked_sub(dispute.provisional)
+                .ok_or_else(TempoPrecompileError::under_overflow)?
+                .to::<u128>();
+            if rest != 0 {
+                self.pay_back(payee, owner, id, &auth, rest)?;
+            }
+            let committed = auth.committed();
+            // Fits: at most `captured`.
+            auth.refunded += credited;
+            settle_limit(owner, &mut auth)?;
+            self.authorizations[owner][id].write(auth)?;
+            follow_card(&auth, committed)?;
+            dispute.state = DISPUTE_WON;
+            (rest, 0)
+        } else {
+            let provisional = dispute.provisional.to::<u128>();
+            let line_share = dispute.line_share.to::<u128>();
+            // `collected` is what the payee already recovered elsewhere, such as the owner's
+            // savings, so only the part that landed as balance can be collected that way.
+            if call.collected > provisional - line_share {
+                return Err(ReservationsError::invalid_amount().into());
+            }
+            let mut token = TIP20Token::from_address(auth.token)?;
+            let redrawn = match self.credit_hold(owner, id, &auth)? {
+                Some(hold) if line_share != 0 => {
+                    self.redraw_line(owner, id, &mut token, payee, hold, line_share)?
+                }
+                _ => 0,
+            };
+            let owed = provisional - redrawn - call.collected;
+            let (recovered, debt) = if owed == 0 {
+                (0, 0)
+            } else {
+                token.ensure_transfer_authorized(owner, payee)?;
+                let recovered = owed.min(available(&token, owner)?);
+                let debt = owed - recovered;
+                if debt != 0 {
+                    self.owe_payee(owner, auth.token, payee, debt, provisional)?;
+                }
+                token.reservation_transfer(owner, payee, U256::from(recovered))?;
+                (recovered, debt)
+            };
+            dispute.state = DISPUTE_LOST;
+            (recovered, debt)
+        };
+        self.disputes[owner][id].write(dispute)?;
+        self.emit_event(ReservationsEvent::dispute_resolved(
+            owner,
+            id,
+            call.cardholderWins,
+            amount,
+            debt,
+        ))
+    }
+
+    /// Draws up to `wanted` of `hold`'s line again within the credit's undrawn limit, the lender
+    /// paying `payee` from its lien, and returns what was drawn. Called when a merchant wins a
+    /// dispute whose provisional credit repaid the line.
+    fn redraw_line(
+        &mut self,
+        owner: Address,
+        id: B256,
+        token: &mut TIP20Token,
+        payee: Address,
+        mut hold: CreditHold,
+        wanted: u128,
+    ) -> Result<u128> {
+        let mut credit = self.credits[owner][hold.lender][hold.line].read()?;
+        let planned = wanted.min(credit.headroom());
+        if planned == 0 {
+            return Ok(0);
+        }
+        let before = credit.lien();
+        // Fits: within the limit, a `U96`.
+        credit.owed += U96::from(planned);
+        let mut line = self.lines[hold.lender][hold.line].read()?;
+        // Drawing within the headroom lowers the lien by what it draws (see `Credit::lien`).
+        let lowered = before
+            .checked_sub(credit.lien())
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        let freed = self.shrink_lien(hold.lender, hold.line, &mut line, lowered)?;
+        // A compliance burn of the lender's balance can leave the lien short.
+        let drawn = planned.min(freed);
+        credit.owed -= U96::from(planned - drawn);
+        self.credits[owner][hold.lender][hold.line].write(credit)?;
+        return_to_balance(line.token, hold.lender, freed)?;
+        if drawn == 0 {
+            return Ok(0);
+        }
+        // Fits: at most what the line was repaid for this record.
+        hold.drawn += U96::from(drawn);
+        self.credit_holds[owner][id].write(hold)?;
+        token.ensure_transfer_authorized(hold.lender, payee)?;
+        token.reservation_transfer(hold.lender, payee, U256::from(drawn))?;
+        self.emit_event(ReservationsEvent::credit_drawn(
+            owner,
+            id,
+            hold.lender,
+            hold.line,
+            drawn,
+        ))?;
+        Ok(drawn)
+    }
+
+    /// Adds `amount` to `owner`'s debt in `token` towards `payee` for a lost dispute: past the
+    /// owner's debt cap only by the dispute's `provisional` credit, and only while the owner owes no
+    /// other creditor in the token (one creditor per owner and token; the payee retries later).
+    fn owe_payee(
+        &mut self,
+        owner: Address,
+        token: Address,
+        payee: Address,
+        amount: u128,
+        provisional: u128,
+    ) -> Result<()> {
+        let mut position = self.positions[owner][token].read()?;
+        let new_creditor = position.debt == 0;
+        if !new_creditor && self.creditors[owner][token].read()? != payee {
+            return Err(ReservationsError::debt_cap_exceeded().into());
+        }
+        position.debt = position
+            .debt
+            .checked_add(amount)
+            .ok_or_else(ReservationsError::debt_cap_exceeded)?;
+        let cap = self.debt_caps[owner][payee][token].read()?;
+        if U256::from(position.debt) > U256::from(cap) + U256::from(provisional) {
+            return Err(ReservationsError::debt_cap_exceeded().into());
+        }
+        if new_creditor {
+            self.creditors[owner][token].write(payee)?;
+            TIP403Registry::new().count_reservation_debt(owner, true)?;
+        }
+        self.positions[owner][token].write(position)
+    }
+
+    /// Reads `owner`'s record `id` and its open dispute, for a call by the record's payee.
+    fn open_dispute_of(
+        &self,
+        owner: Address,
+        id: B256,
+        payee: Address,
+    ) -> Result<(Authorization, Dispute)> {
+        let auth = self.authorizations[owner][id].read()?;
+        if !auth.exists() {
+            return Err(ReservationsError::hold_not_found().into());
+        }
+        if auth.payee != payee {
+            return Err(ReservationsError::unauthorized().into());
+        }
+        let dispute = if auth.disputed {
+            self.disputes[owner][id].read()?
+        } else {
+            Dispute::default()
+        };
+        if !dispute.is_open() {
+            return Err(ReservationsError::dispute_not_found().into());
+        }
+        Ok((auth, dispute))
+    }
+
+    fn dispute_of(&self, owner: Address, id: B256) -> Result<IReservations::disputeOfReturn> {
+        let dispute = self.disputes[owner][id].read()?;
+        Ok(IReservations::disputeOfReturn {
+            state: dispute.state,
+            amount: dispute.amount.to(),
+            provisional: dispute.provisional.to(),
+            lineShare: dispute.line_share.to(),
+        })
     }
 
     fn set_debt_cap(&mut self, owner: Address, call: IReservations::setDebtCapCall) -> Result<()> {
@@ -1263,6 +1667,9 @@ impl Reservations {
         settle_limit(owner, &mut auth)?;
         if auth.captured.is_zero() {
             self.authorizations[owner][id].delete()?;
+            if auth.dispute_reserve {
+                self.dispute_holds[owner][id].delete()?;
+            }
         } else {
             self.authorizations[owner][id].write(auth)?;
         }
@@ -1619,6 +2026,8 @@ enum Placement {
         line: B256,
         lender: Address,
     },
+    /// `holdForDispute`: `hold` for the open dispute on `owner`'s record `id`, for up to 120 days.
+    Dispute { owner: Address, id: B256 },
 }
 
 #[cfg(test)]
@@ -5368,5 +5777,485 @@ mod tests {
         )?;
         keychain.set_transaction_key(key)?;
         Ok(keychain)
+    }
+
+    impl Fixture {
+        fn open_dispute(&mut self, id: B256, amount: u128) -> Result<()> {
+            self.reservations.open_dispute(
+                self.payee,
+                IReservations::openDisputeCall {
+                    owner: self.owner,
+                    id,
+                    amount,
+                    evidence: B256::repeat_byte(0xc1),
+                },
+            )
+        }
+
+        fn dispute_step(&mut self, id: B256, state: u8, provisional: u128) -> Result<()> {
+            self.reservations.dispute_step(
+                self.payee,
+                IReservations::disputeStepCall {
+                    owner: self.owner,
+                    id,
+                    state,
+                    provisional,
+                    evidence: B256::ZERO,
+                    merchantEvidence: false,
+                },
+            )
+        }
+
+        fn resolve_dispute(
+            &mut self,
+            id: B256,
+            cardholder_wins: bool,
+            collected: u128,
+        ) -> Result<()> {
+            self.reservations.resolve_dispute(
+                self.payee,
+                IReservations::resolveDisputeCall {
+                    owner: self.owner,
+                    id,
+                    cardholderWins: cardholder_wins,
+                    collected,
+                },
+            )
+        }
+
+        /// The dispute's state, amount, provisional credit and line share.
+        fn dispute(&self, id: B256) -> Result<(u8, u128, u128, u128)> {
+            let dispute = self.reservations.dispute_of(self.owner, id)?;
+            Ok((
+                dispute.state,
+                dispute.amount,
+                dispute.provisional,
+                dispute.lineShare,
+            ))
+        }
+
+        /// Places a reserve of `amount` on `account` for `payee` naming the dispute on the owner's `disputed` record.
+        fn reserve(
+            &mut self,
+            account: Address,
+            id: B256,
+            amount: u128,
+            expires_at: u64,
+            payee: Address,
+            disputed: B256,
+        ) -> Result<()> {
+            self.reservations.hold(
+                account,
+                IReservations::holdCall {
+                    token: self.token.address(),
+                    id,
+                    amount,
+                    expiresAt: expires_at,
+                    payee,
+                },
+                Placement::Dispute {
+                    owner: self.owner,
+                    id: disputed,
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn test_lost_dispute_takes_the_provisional_credit_back() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let id = B256::random();
+            f.hold(id, 80)?;
+            f.capture(id, 80)?;
+            f.reservations.clear_emitted_events();
+            f.open_dispute(id, 80)?;
+            f.dispute_step(id, 2, 80)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::dispute_opened(f.owner, id, 80, B256::repeat_byte(0xc1)),
+                ReservationsEvent::dispute_stepped(f.owner, id, 2, 80, B256::ZERO, false),
+            ]);
+            assert_eq!(f.balance(f.owner)?, U256::from(100));
+            assert_eq!(f.balance(f.payee)?, U256::ZERO);
+            // Provisional credit is not refunded: the record still nets the purchase.
+            assert_eq!(f.captured(id)?, (80, 0));
+            f.transfer(f.owner, Address::random(), 90)?;
+            f.dispute_step(id, 3, 0)?;
+            // States only move forward, and a step never resolves.
+            for state in [3, 2, 6, 7] {
+                assert_eq!(
+                    f.dispute_step(id, state, 0).unwrap_err(),
+                    ReservationsError::invalid_dispute_step().into()
+                );
+            }
+            f.dispute_step(id, 5, 0)?;
+
+            f.reservations.clear_emitted_events();
+            f.resolve_dispute(id, false, 0)?;
+            // The balance comes back first and the rest is debt past the zero cap.
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::dispute_resolved(
+                    f.owner, id, false, 10, 70,
+                )]);
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(
+                f.debt()?,
+                IReservations::debtOfReturn {
+                    creditor: f.payee,
+                    amount: 70
+                }
+            );
+            assert_eq!(f.dispute(id)?, (7, 80, 80, 0));
+            assert_eq!(
+                f.dispute_step(id, 5, 0).unwrap_err(),
+                ReservationsError::dispute_not_found().into()
+            );
+            assert_eq!(
+                f.resolve_dispute(id, true, 0).unwrap_err(),
+                ReservationsError::dispute_not_found().into()
+            );
+            // The next credit repays the payee first, with no fee.
+            f.mint(f.owner, 100)?;
+            assert_eq!(f.balance(f.owner)?, U256::from(30));
+            assert_eq!(f.balance(f.payee)?, U256::from(80));
+            assert_eq!(f.debt()?.amount, 0);
+            // A lost dispute leaves the record open to refunds.
+            f.refund(f.payee, id, 10)?;
+            assert_eq!(f.captured(id)?, (80, 10));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dispute_calls_are_the_payees_within_the_refund_room() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let id = B256::random();
+            f.hold(id, 60)?;
+            f.capture(id, 60)?;
+            assert_eq!(
+                f.dispute_step(id, 2, 0).unwrap_err(),
+                ReservationsError::dispute_not_found().into()
+            );
+            let stranger = Address::random();
+            let call = IReservations::openDisputeCall {
+                owner: f.owner,
+                id,
+                amount: 10,
+                evidence: B256::ZERO,
+            };
+            assert_eq!(
+                f.reservations.open_dispute(stranger, call).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            assert_eq!(
+                f.open_dispute(B256::random(), 10).unwrap_err(),
+                ReservationsError::hold_not_found().into()
+            );
+            assert_eq!(
+                f.open_dispute(id, 0).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            f.refund(f.payee, id, 20)?;
+            assert_eq!(
+                f.open_dispute(id, 41).unwrap_err(),
+                ReservationsError::refund_exceeds_capture().into()
+            );
+            f.open_dispute(id, 30)?;
+            assert_eq!(
+                f.open_dispute(id, 30).unwrap_err(),
+                ReservationsError::dispute_exists().into()
+            );
+            // Provisional credit stops at the disputed amount.
+            assert_eq!(
+                f.dispute_step(id, 2, 31).unwrap_err(),
+                ReservationsError::refund_exceeds_capture().into()
+            );
+            f.dispute_step(id, 2, 30)?;
+            assert_eq!(f.dispute(id)?, (2, 30, 30, 0));
+
+            // A refund past what the purchase still nets settles provisional credit instead of
+            // paying it again: 20 refunded and 30 provisional leave 10 of the 60 captured.
+            let before = f.balance(f.owner)?;
+            f.reservations.clear_emitted_events();
+            f.refund(f.payee, id, 15)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::dispute_settled(f.owner, id, 5),
+                ReservationsEvent::refunded(f.owner, id, 15),
+            ]);
+            assert_eq!(f.balance(f.owner)?, before + U256::from(10));
+            assert_eq!(f.dispute(id)?, (2, 30, 25, 0));
+            // With no room left, provisional credit stops too.
+            assert_eq!(
+                f.dispute_step(id, 3, 1).unwrap_err(),
+                ReservationsError::refund_exceeds_capture().into()
+            );
+
+            let resolve = IReservations::resolveDisputeCall {
+                owner: f.owner,
+                id,
+                cardholderWins: true,
+                collected: 0,
+            };
+            assert_eq!(
+                f.reservations
+                    .resolve_dispute(stranger, resolve)
+                    .unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            assert_eq!(
+                f.resolve_dispute(id, true, 1).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            // The win pays nothing more: the provisional credit already covers what is unrefunded.
+            f.resolve_dispute(id, true, 0)?;
+            assert_eq!(f.captured(id)?, (60, 60));
+            assert_eq!(f.balance(f.owner)?, before + U256::from(10));
+            assert_eq!(f.dispute(id)?, (6, 30, 25, 0));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_won_dispute_refunds_the_rest_and_closes_the_record() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let id = B256::random();
+            f.hold(id, 50)?;
+            f.capture(id, 50)?;
+            f.open_dispute(id, 40)?;
+            f.dispute_step(id, 2, 10)?;
+            assert_eq!(f.balance(f.owner)?, U256::from(60));
+            f.reservations.clear_emitted_events();
+            f.resolve_dispute(id, true, 0)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::dispute_resolved(
+                    f.owner, id, true, 30, 0,
+                )]);
+            assert_eq!(f.balance(f.owner)?, U256::from(90));
+            assert_eq!(f.balance(f.payee)?, U256::from(10));
+            assert_eq!(f.captured(id)?, (50, 40));
+            // The record is closed to refunds, even within what was never disputed.
+            assert_eq!(
+                f.refund(f.payee, id, 5).unwrap_err(),
+                ReservationsError::refund_exceeds_capture().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_lost_dispute_debt_is_bounded() -> eyre::Result<()> {
+        at_t15(|| {
+            // Another creditor in the token blocks the clawback until it is repaid.
+            let mut f = Fixture::new(50)?;
+            let id = B256::random();
+            f.hold(id, 50)?;
+            f.capture(id, 50)?;
+            f.open_dispute(id, 50)?;
+            f.dispute_step(id, 2, 50)?;
+            f.transfer(f.owner, Address::random(), 50)?;
+            let other = Address::random();
+            f.set_debt_cap(other, 10)?;
+            f.charge(B256::random(), 10, other)?;
+            assert_eq!(
+                f.resolve_dispute(id, false, 0).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+            assert_eq!(
+                f.resolve_dispute(id, false, 51).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            f.mint(f.owner, 10)?;
+            assert_eq!(f.debt()?.amount, 0);
+            // What the payee collected elsewhere is not taken again.
+            f.resolve_dispute(id, false, 20)?;
+            assert_eq!(
+                f.debt()?,
+                IReservations::debtOfReturn {
+                    creditor: f.payee,
+                    amount: 30
+                }
+            );
+
+            // Past the cap, debt grows only by the provisional credit the payee paid.
+            let mut f = Fixture::new(10)?;
+            f.set_debt_cap(f.payee, 100)?;
+            let id = B256::random();
+            f.charge(id, 100, f.payee)?;
+            assert_eq!(f.debt()?.amount, 90);
+            f.set_debt_cap(f.payee, 0)?;
+            f.open_dispute(id, 100)?;
+            // Provisional credit cancels debt owed to the payee first, as a refund does.
+            f.dispute_step(id, 2, 5)?;
+            assert_eq!(f.debt()?.amount, 85);
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(
+                f.resolve_dispute(id, false, 0).unwrap_err(),
+                ReservationsError::debt_cap_exceeded().into()
+            );
+            f.set_debt_cap(f.payee, 85)?;
+            f.resolve_dispute(id, false, 0)?;
+            assert_eq!(f.debt()?.amount, 90);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dispute_line_share_repays_and_redraws_the_line() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 300, 200, lender, line)?;
+            f.capture(id, 300)?;
+            assert_eq!(f.credit(lender, line)?, (500, 200, 0));
+            f.open_dispute(id, 300)?;
+            // Provisional credit repays the line first, as a refund does; the rest lands.
+            f.dispute_step(id, 2, 250)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(50));
+            assert_eq!(f.dispute(id)?, (2, 300, 250, 200));
+            assert_eq!(f.balance(f.payee)?, U256::from(50));
+            // Only the part that landed can have been collected elsewhere.
+            assert_eq!(
+                f.resolve_dispute(id, false, 51).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+
+            f.reservations.clear_emitted_events();
+            f.resolve_dispute(id, false, 0)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::line_reserved(lender, line, f.token.address(), 300),
+                ReservationsEvent::credit_drawn(f.owner, id, lender, line, 200),
+                ReservationsEvent::dispute_resolved(f.owner, id, false, 50, 0),
+            ]);
+            assert_eq!(f.credit(lender, line)?, (500, 200, 0));
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
+            assert_eq!(f.reservation_of(lender)?, (300, 500));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dispute_line_share_redraws_only_the_undrawn_limit() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 300, 200, lender, line)?;
+            f.capture(id, 300)?;
+            f.open_dispute(id, 300)?;
+            f.dispute_step(id, 2, 250)?;
+            // The lender lowers the limit, so only 100 goes back on the line.
+            f.offer_credit(lender, line, f.payee, 100)?;
+            f.resolve_dispute(id, false, 0)?;
+            assert_eq!(f.credit(lender, line)?, (100, 100, 0));
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(f.debt()?.amount, 100);
+            assert_eq!(f.balance(f.payee)?, U256::from(200));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dispute_reserve_holds() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let id = B256::random();
+            f.hold(id, 80)?;
+            f.capture(id, 80)?;
+            let merchant = Address::random();
+            f.mint(merchant, 50)?;
+            let reserve = B256::random();
+            let longest = NOW + MAX_DISPUTE_HOLD_DURATION;
+            assert_eq!(
+                f.reserve(merchant, reserve, 30, longest, f.payee, id)
+                    .unwrap_err(),
+                ReservationsError::dispute_not_found().into()
+            );
+            f.open_dispute(id, 40)?;
+            assert_eq!(
+                f.reserve(merchant, reserve, 30, longest + 1, f.payee, id)
+                    .unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            assert_eq!(
+                f.reserve(merchant, reserve, 30, longest, Address::random(), id)
+                    .unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            assert_eq!(
+                f.reserve(merchant, reserve, 41, longest, f.payee, id)
+                    .unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            // Only a hold naming an open dispute lasts past an authorization's 31 days.
+            let plain = IReservations::holdCall {
+                token: f.token.address(),
+                id: reserve,
+                amount: 30,
+                expiresAt: longest,
+                payee: f.payee,
+            };
+            assert_eq!(
+                f.reservations
+                    .hold(merchant, plain, Placement::Plain)
+                    .unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+
+            f.reservations.clear_emitted_events();
+            f.reserve(merchant, reserve, 30, longest, f.payee, id)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::hold_placed(
+                    merchant,
+                    reserve,
+                    f.token.address(),
+                    f.payee,
+                    30,
+                    longest,
+                ),
+                ReservationsEvent::dispute_hold_placed(merchant, reserve, f.owner, id),
+            ]);
+            assert_eq!(f.reservation_of(merchant)?, (30, 20));
+            // The payee captures a reserve only once the cardholder won.
+            assert_eq!(
+                f.reservations
+                    .capture_for_part(f.payee, merchant, reserve, 30, true)
+                    .unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            f.resolve_dispute(id, true, 0)?;
+            f.reservations
+                .capture_for_part(f.payee, merchant, reserve, 30, true)?;
+            assert_eq!(f.reservation_of(merchant)?, (0, 20));
+            assert_eq!(f.balance(f.payee)?, U256::from(70));
+
+            // A merchant win leaves the reserve to be released, which clears it.
+            let second = B256::random();
+            f.hold(second, 10)?;
+            f.capture(second, 10)?;
+            f.open_dispute(second, 10)?;
+            let released = B256::random();
+            f.reserve(merchant, released, 10, longest, f.payee, second)?;
+            f.resolve_dispute(second, false, 0)?;
+            assert_eq!(
+                f.reservations
+                    .capture_for_part(f.payee, merchant, released, 10, true)
+                    .unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            f.reservations.release(merchant, released)?;
+            assert_eq!(f.reservation_of(merchant)?, (0, 20));
+            assert!(
+                f.reservations.dispute_holds[merchant][released]
+                    .read()?
+                    .owner
+                    .is_zero()
+            );
+            Ok(())
+        })
     }
 }

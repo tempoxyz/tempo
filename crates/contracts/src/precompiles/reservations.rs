@@ -90,6 +90,20 @@ crate::sol! {
         /// Repays up to `amount` of what the caller owes on `lender`'s line `line` from its
         /// available balance.
         function repayCredit(address lender, bytes32 line, uint128 amount) external;
+        /// Opens a dispute of `amount`, at most what `owner`'s record `id` captured and has not
+        /// refunded, with the cardholder's evidence hash. Called by the record's payee.
+        function openDispute(address owner, bytes32 id, uint128 amount, bytes32 evidence) external;
+        /// Moves the open dispute on `owner`'s record `id` forward to `state` (2 provisional
+        /// credit, 3 representment, 4 pre-arbitration, 5 arbitration), giving `provisional` credit
+        /// within the refund room and attaching an evidence hash. Called by the record's payee.
+        function disputeStep(address owner, bytes32 id, uint8 state, uint128 provisional, bytes32 evidence, bool merchantEvidence) external;
+        /// Resolves the open dispute on `owner`'s record `id`. A cardholder win refunds the rest of the
+        /// disputed amount and closes the record to refunds; a merchant win takes the provisional
+        /// credit back, less `collected` the payee already recovered elsewhere. Called by the record's payee.
+        function resolveDispute(address owner, bytes32 id, bool cardholderWins, uint128 collected) external;
+        /// `hold` naming the open dispute on `disputeOwner`'s record `disputeId`, whose payee must be
+        /// `payee`: may last up to 120 days, and its payee captures it only once the cardholder won.
+        function holdForDispute(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee, address disputeOwner, bytes32 disputeId) external;
 
         function getHold(address owner, bytes32 id) external view returns (Hold memory);
         function reserved(address owner, address token) external view returns (uint128);
@@ -105,6 +119,9 @@ crate::sol! {
         function getLine(address lender, bytes32 line) external view returns (address token, uint128 lien);
         /// The lender's standing offer to `owner` on the line; a zero limit when there is none.
         function creditOffer(address lender, bytes32 line, address owner) external view returns (address payee, uint128 limit);
+        /// The dispute on `owner`'s record `id`: its state (zero without one, 1 to 5 open, 6 won, 7
+        /// lost), disputed amount, provisional credit standing and the part of it that repaid a line.
+        function disputeOf(address owner, bytes32 id) external view returns (uint8 state, uint128 amount, uint128 provisional, uint128 lineShare);
 
         event HoldPlaced(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint64 expiresAt);
         event CardHoldPlaced(address indexed owner, bytes32 indexed id, bytes32 indexed card, uint64 line);
@@ -125,6 +142,16 @@ crate::sol! {
         event CreditHeld(address indexed owner, bytes32 indexed id, address indexed lender, bytes32 line, uint128 amount);
         event CreditDrawn(address indexed owner, bytes32 indexed id, address indexed lender, bytes32 line, uint128 amount);
         event CreditRepaid(address indexed owner, address indexed lender, bytes32 line, uint128 amount);
+        event DisputeOpened(address indexed owner, bytes32 indexed id, uint128 amount, bytes32 evidence);
+        /// A step's state, the provisional credit it gave and its evidence hash, zero for none.
+        event DisputeStepped(address indexed owner, bytes32 indexed id, uint8 state, uint128 provisional, bytes32 evidence, bool merchantEvidence);
+        /// For a cardholder win, what was paid back beyond the provisional credit; for a merchant
+        /// win, what was taken from the owner's balance and the debt it left.
+        event DisputeResolved(address indexed owner, bytes32 indexed id, bool cardholderWins, uint128 amount, uint128 debt);
+        /// A refund settled `amount` of provisional credit instead of paying it to the owner again.
+        event DisputeSettled(address indexed owner, bytes32 indexed id, uint128 amount);
+        /// Follows `HoldPlaced` for a hold naming a dispute.
+        event DisputeHoldPlaced(address indexed owner, bytes32 indexed id, address indexed disputeOwner, bytes32 disputeId);
 
         error HoldExists();
         error HoldNotFound();
@@ -139,5 +166,8 @@ crate::sol! {
         error LineExists();
         error LineNotFound();
         error CreditNotOffered();
+        error DisputeExists();
+        error DisputeNotFound();
+        error InvalidDisputeStep();
     }
 }

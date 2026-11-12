@@ -87,6 +87,20 @@ impl Precompile for Reservations {
                         };
                         self.hold(sender, c, placement)
                     }),
+                    holdForDispute(call) => mutate(call, msg_sender, |sender, c| {
+                        let placement = Placement::Dispute {
+                            owner: c.disputeOwner,
+                            id: c.disputeId,
+                        };
+                        let c = IReservations::holdCall {
+                            token: c.token,
+                            id: c.id,
+                            amount: c.amount,
+                            expiresAt: c.expiresAt,
+                            payee: c.payee,
+                        };
+                        self.hold(sender, c, placement)
+                    }),
                     adjust(call) => mutate(call, msg_sender, |sender, c| self.adjust(sender, c)),
                     capture(call) => mutate(call, msg_sender, |sender, c| {
                         self.capture_part(sender, c.id, c.amount, true)
@@ -134,6 +148,15 @@ impl Precompile for Reservations {
                     repayCredit(call) => mutate(call, msg_sender, |sender, c| {
                         self.repay_credit(sender, c)
                     }),
+                    openDispute(call) => mutate(call, msg_sender, |sender, c| {
+                        self.open_dispute(sender, c)
+                    }),
+                    disputeStep(call) => mutate(call, msg_sender, |sender, c| {
+                        self.dispute_step(sender, c)
+                    }),
+                    resolveDispute(call) => mutate(call, msg_sender, |sender, c| {
+                        self.resolve_dispute(sender, c)
+                    }),
                     getHold(call) => view(call, |c| self.get_hold(c.owner, c.id)),
                     reserved(call) => view(call, |c| self.reserved_of(c.owner, c.token)),
                     available(call) => view(call, |c| self.available_of(c.owner, c.token)),
@@ -151,6 +174,7 @@ impl Precompile for Reservations {
                     creditOffer(call) => view(call, |c| {
                         self.credit_offer(c.lender, c.line, c.owner)
                     }),
+                    disputeOf(call) => view(call, |c| self.dispute_of(c.owner, c.id)),
                 }
             }
         )
