@@ -81,7 +81,7 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// Execution time at or above which a transaction discarded for exhausting the build budget is
 /// removed from the pool instead of being left there for a later block.
-const SLOW_TRANSACTION_EXECUTION_THRESHOLD: Duration = Duration::from_millis(200);
+const SLOW_TRANSACTION_EXECUTION_THRESHOLD: Duration = Duration::from_millis(100);
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
