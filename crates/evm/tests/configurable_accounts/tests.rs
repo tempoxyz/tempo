@@ -303,11 +303,7 @@ impl Redeem {
             }
             .abi_encode(),
         };
-        Call {
-            to: TxKind::Call(TIP20_CHANNEL_RESERVE_ADDRESS),
-            value: U256::ZERO,
-            input: input.into(),
-        }
+        Call::new(TIP20_CHANNEL_RESERVE_ADDRESS, input)
     }
 }
 
@@ -346,11 +342,7 @@ impl Verifier {
             }
             .abi_encode(),
         };
-        Call {
-            to: TxKind::Call(SIGNATURE_VERIFIER_ADDRESS),
-            value: U256::ZERO,
-            input: input.into(),
-        }
+        Call::new(SIGNATURE_VERIFIER_ADDRESS, input)
     }
 }
 
@@ -1279,29 +1271,25 @@ fn eoa_migration_preserves_account_state() {
     fund(&mut f, account, 50_000_000);
 
     // Allowance, then an ordinary, a revoked and an expiring access key.
-    let approve = Call {
-        to: TxKind::Call(PATH_USD_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20::approveCall {
+    let approve = Call::new(
+        PATH_USD_ADDRESS,
+        ITIP20::approveCall {
             spender,
             amount: U256::from(77),
         }
-        .abi_encode()
-        .into(),
-    };
+        .abi_encode(),
+    );
     let tx = f.primitive(3, vec![approve]);
     assert!(f.run(&tx).status);
     grant_key(&mut f, 4, &keys[0], 0);
     grant_key(&mut f, 5, &keys[1], 0);
-    let revoke = Call {
-        to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
-        value: U256::ZERO,
-        input: IAccountKeychain::revokeKeyCall {
+    let revoke = Call::new(
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        IAccountKeychain::revokeKeyCall {
             keyId: keys[1].address(),
         }
-        .abi_encode()
-        .into(),
-    };
+        .abi_encode(),
+    );
     let tx = f.primitive(6, vec![revoke]);
     assert!(f.run(&tx).status);
     grant_key(&mut f, 7, &keys[2], 1000);
@@ -1770,15 +1758,15 @@ fn retired_root_rejects_delegated_roles() {
         })
         .unwrap()
     };
-    let spend = |amount: u64| Call {
-        to: TxKind::Call(PATH_USD_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20::transferCall {
-            to: Address::repeat_byte(0x66),
-            amount: U256::from(amount),
-        }
-        .abi_encode()
-        .into(),
+    let spend = |amount: u64| {
+        Call::new(
+            PATH_USD_ADDRESS,
+            ITIP20::transferCall {
+                to: Address::repeat_byte(0x66),
+                amount: U256::from(amount),
+            }
+            .abi_encode(),
+        )
     };
     let tx = keychain_tx(&f, &key, 4, vec![spend(30)]);
     let result = f.run(&tx);
@@ -1911,25 +1899,21 @@ fn retired_root_keeps_owner_parent_and_sender_authority() {
     f.config = migrate(&mut f, 4, root);
     let account = f.account;
     fund(&mut f, account, 50_000_000);
-    let transfer = Call {
-        to: TxKind::Call(PATH_USD_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20::transferCall {
+    let transfer = Call::new(
+        PATH_USD_ADDRESS,
+        ITIP20::transferCall {
             to: Address::repeat_byte(0x66),
             amount: U256::from(10),
         }
-        .abi_encode()
-        .into(),
-    };
-    let revoke = Call {
-        to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
-        value: U256::ZERO,
-        input: IAccountKeychain::revokeKeyCall {
+        .abi_encode(),
+    );
+    let revoke = Call::new(
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        IAccountKeychain::revokeKeyCall {
             keyId: old_key.address(),
         }
-        .abi_encode()
-        .into(),
-    };
+        .abi_encode(),
+    );
 
     // X's old uncommitted access key still signs for X.
     let tx = keychain_tx(&f, &old_key, 5, vec![f.getter()]);
@@ -2223,14 +2207,7 @@ fn listed_tx(
     if aa {
         let tx = TempoTransaction {
             tempo_authorization_list: entries.iter().map(|entry| entry.sign().1).collect(),
-            ..aa_tx(
-                0,
-                vec![Call {
-                    to: TxKind::Call(to),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
-            )
+            ..aa_tx(0, vec![Call::new(to, Bytes::new())])
         };
         let signature = sender.sign_hash_sync(&tx.signature_hash()).unwrap();
         TempoTxEnvelope::AA(tx.into_signed(signature.into()))
@@ -2692,10 +2669,9 @@ fn permit_signed(
         .concat(),
     );
     let signature = key.sign_hash_sync(&digest).unwrap();
-    Call {
-        to: TxKind::Call(PATH_USD_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20::permitCall {
+    Call::new(
+        PATH_USD_ADDRESS,
+        ITIP20::permitCall {
             owner,
             spender,
             value,
@@ -2704,9 +2680,8 @@ fn permit_signed(
             r: signature.r().into(),
             s: signature.s().into(),
         }
-        .abi_encode()
-        .into(),
-    }
+        .abi_encode(),
+    )
 }
 
 /// The permit nonce of `owner` and its path USD allowance for `spender`.
@@ -2867,10 +2842,9 @@ fn open_channel(
 
 /// The call opening a path USD channel to `payee` with the given voucher signer.
 fn open_call(payee: Address, authorized_signer: Address, deposit: u64) -> Call {
-    Call {
-        to: TxKind::Call(TIP20_CHANNEL_RESERVE_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20ChannelReserve::openCall {
+    Call::new(
+        TIP20_CHANNEL_RESERVE_ADDRESS,
+        ITIP20ChannelReserve::openCall {
             payee,
             operator: Address::ZERO,
             token: PATH_USD_ADDRESS,
@@ -2878,9 +2852,8 @@ fn open_call(payee: Address, authorized_signer: Address, deposit: u64) -> Call {
             salt: B256::repeat_byte(0x5a),
             authorizedSigner: authorized_signer,
         }
-        .abi_encode()
-        .into(),
-    }
+        .abi_encode(),
+    )
 }
 
 /// A voucher of `key` for `amount` cumulative units of the channel.
@@ -3032,18 +3005,16 @@ fn retired_root_channel_close_without_capture_stays_allowed() {
     let (channel, signature) = voucher_setup(&mut f, &payer, &payer);
     retire(&mut f, payer.address());
     let before = channel_snapshot(&mut f, &channel);
-    let call = Call {
-        to: TxKind::Call(TIP20_CHANNEL_RESERVE_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20ChannelReserve::closeCall {
+    let call = Call::new(
+        TIP20_CHANNEL_RESERVE_ADDRESS,
+        ITIP20ChannelReserve::closeCall {
             descriptor: channel.descriptor.clone(),
             cumulativeAmount: U96::from(60),
             captureAmount: U96::ZERO,
             signature,
         }
-        .abi_encode()
-        .into(),
-    };
+        .abi_encode(),
+    );
     let result = send(&mut f, payee, vec![call]);
     assert!(result.status, "{result:?}");
     let after = channel_snapshot(&mut f, &channel);
@@ -3176,16 +3147,14 @@ fn grant_kind(f: &mut Fixture, nonce: u64, kind: SigKind, key: Address, admin: b
 }
 
 fn is_admin_key_call(account: Address, key_id: Address) -> Call {
-    Call {
-        to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
-        value: U256::ZERO,
-        input: IAccountKeychain::isAdminKeyCall {
+    Call::new(
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        IAccountKeychain::isAdminKeyCall {
             account,
             keyId: key_id,
         }
-        .abi_encode()
-        .into(),
-    }
+        .abi_encode(),
+    )
 }
 
 /// Sends `call` from an unrelated relayer, with `warm` in the access list, and returns the
@@ -3313,33 +3282,29 @@ fn retired_root_signatures_still_recover_and_keychain_format_is_unchanged() {
     retire(&mut f, account);
     let signature = f.owner.sign_hash_sync(&hash).unwrap();
     let raw: Bytes = PrimitiveSignature::Secp256k1(signature).to_bytes();
-    let recover = Call {
-        to: TxKind::Call(SIGNATURE_VERIFIER_ADDRESS),
-        value: U256::ZERO,
-        input: ISignatureVerifier::recoverCall {
+    let recover = Call::new(
+        SIGNATURE_VERIFIER_ADDRESS,
+        ISignatureVerifier::recoverCall {
             hash,
             signature: raw.clone(),
         }
-        .abi_encode()
-        .into(),
-    };
+        .abi_encode(),
+    );
     let result = send(&mut f, signer(9).address(), vec![recover]);
     assert!(result.status, "{result:?}");
     assert_eq!(
         ISignatureVerifier::recoverCall::abi_decode_returns(&result.output).unwrap(),
         account
     );
-    let verify = Call {
-        to: TxKind::Call(SIGNATURE_VERIFIER_ADDRESS),
-        value: U256::ZERO,
-        input: ISignatureVerifier::verifyCall {
+    let verify = Call::new(
+        SIGNATURE_VERIFIER_ADDRESS,
+        ISignatureVerifier::verifyCall {
             signer: account,
             hash,
             signature: raw,
         }
-        .abi_encode()
-        .into(),
-    };
+        .abi_encode(),
+    );
     assert!(bool_query(&mut f, verify, None, "verify").0);
     // A V2 keychain signature whose inner signature is a configurable account one is not an admin
     // keychain one, retired key or not, whether the configurable account names the parent account
@@ -3588,13 +3553,10 @@ fn retired_root_check_in_admin_caller_reads_the_warm_sender() {
         let mut f = Fixture::with_spec(false, spec);
         let (account, owner) = (f.account, f.owner.clone());
         grant_kind(&mut f, 3, SigKind::Secp256k1, account, false);
-        let revoke = Call {
-            to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
-            value: U256::ZERO,
-            input: IAccountKeychain::revokeKeyCall { keyId: account }
-                .abi_encode()
-                .into(),
-        };
+        let revoke = Call::new(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            IAccountKeychain::revokeKeyCall { keyId: account }.abi_encode(),
+        );
         let tx = keychain_tx(&f, &owner, 4, vec![revoke]);
         let result = f.run(&tx);
         assert!(result.status, "{spec:?}: {result:?}");
@@ -4055,11 +4017,7 @@ fn sender_registration_gas(lane: NonceLane, create_first: bool, empty_sender: bo
     let account = f.account;
     seed_account(&mut f, account, empty_sender);
     let call = if create_first {
-        Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: bytes!("00"),
-        }
+        Call::new(TxKind::Create, bytes!("00"))
     } else {
         f.getter()
     };
@@ -4478,11 +4436,7 @@ fn configurable_sender_rejections() {
 /// gas, on top of the first-use account proof, the TIP-1108 registration write and its event.
 #[test]
 fn native_signature_verification_is_intrinsic_gas() {
-    let calls = vec![Call {
-        to: TxKind::Call(Address::repeat_byte(0x44)),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    }];
+    let calls = vec![Call::new(Address::repeat_byte(0x44), Bytes::new())];
     // The root and the configurable account both hold nonce 3, so no new-account cost differs.
     let mut root = Fixture::with_parent(false);
     let tx = root.primitive(3, calls.clone());
@@ -4532,11 +4486,7 @@ fn zone_gas_params() -> GasParams {
 /// target's read, and never registers, so it charges no write and emits no registration log.
 #[test]
 fn zones_charge_the_sender_read_instead_of_registering() {
-    let calls = vec![Call {
-        to: TxKind::Call(Address::repeat_byte(0x44)),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    }];
+    let calls = vec![Call::new(Address::repeat_byte(0x44), Bytes::new())];
     let gas = tempo_gas_params(TempoHardfork::T14);
     let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
     let reads = cold_access + 2 * L1_COMMITMENT_READ_GAS;
@@ -4581,11 +4531,7 @@ fn zone_commitment_reads_are_charged_once_per_read_account() {
             3,
             targets
                 .into_iter()
-                .map(|to| Call {
-                    to: TxKind::Call(to),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                })
+                .map(|to| Call::new(to, Bytes::new()))
                 .collect(),
         );
         tx.access_list = AccessList(
@@ -5005,11 +4951,7 @@ fn configurable_account_marker_dispatch() {
     let mut f = Fixture::new();
     let account = f.account;
     assert_eq!(f.info(account).unwrap().code_hash, KECCAK256_EMPTY);
-    let receive = Call {
-        to: TxKind::Call(account),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    };
+    let receive = Call::new(account, Bytes::new());
     let result = f.run(&f.signed(3, vec![receive.clone()]));
     assert!(result.status, "{result:?}");
     assert!(result.output.is_empty());
@@ -5112,12 +5054,11 @@ fn configurable_account_erc1271_propagates_verifier_reverts() {
     seed_relayer(&mut f);
     let signature =
         configurable_account_approval(account, &f.config, &f.owner, CONFIGURABLE_ACCOUNT_HASH);
-    let call = |hash, signature: Bytes| Call {
-        to: TxKind::Call(account),
-        value: U256::ZERO,
-        input: IConfigurableAccountShim::isValidSignatureCall { hash, signature }
-            .abi_encode()
-            .into(),
+    let call = |hash, signature: Bytes| {
+        Call::new(
+            account,
+            IConfigurableAccountShim::isValidSignatureCall { hash, signature }.abi_encode(),
+        )
     };
     let witness = TempoSignature::ConfigurableAccount(signature).to_bytes();
     let result = relayed(&mut f, call(B256::ZERO, witness), 1_000_000, None);
@@ -5370,16 +5311,14 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                     .collect(),
             );
             let grant_signature = root_approval(&f, parent_native, authorization.signature_hash());
-            let transfer = Call {
-                to: TxKind::Call(PATH_USD_ADDRESS),
-                value: U256::ZERO,
-                input: ITIP20::transferCall {
+            let transfer = Call::new(
+                PATH_USD_ADDRESS,
+                ITIP20::transferCall {
                     to: Address::repeat_byte(0x66),
                     amount: U256::from(10),
                 }
-                .abi_encode()
-                .into(),
-            };
+                .abi_encode(),
+            );
             let mut tx = TempoTransaction {
                 chain_id: 1,
                 nonce: 3,

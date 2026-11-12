@@ -91,13 +91,6 @@ mod legacy_compat {
     use serde::de::DeserializeOwned;
     use tempo_node::rpc::TempoTransactionRequest;
 
-    fn should_retry_with_selector_arrays(err: &RpcError<TransportErrorKind>) -> bool {
-        let err_str = err.to_string().to_lowercase();
-        err_str.contains("invalid params")
-            && err_str.contains("expected an array of length 4")
-            && err_str.contains("invalid type: string")
-    }
-
     pub(super) fn request_value_with_selector_arrays(
         mut request: serde_json::Value,
     ) -> serde_json::Value {
@@ -156,7 +149,14 @@ mod legacy_compat {
             .await
         {
             Ok(response) => Ok(response),
-            Err(err) if should_retry_with_selector_arrays(&err) => {
+            Err(err) => {
+                let err_str = err.to_string().to_lowercase();
+                if !(err_str.contains("invalid params")
+                    && err_str.contains("expected an array of length 4")
+                    && err_str.contains("invalid type: string"))
+                {
+                    return Err(err);
+                }
                 provider
                     .raw_request::<_, T>(
                         method.into(),
@@ -164,7 +164,6 @@ mod legacy_compat {
                     )
                     .await
             }
-            Err(err) => Err(err),
         }
     }
 }
@@ -204,11 +203,7 @@ pub(super) async fn fund_address_with(
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 2_000_000,
-        calls: vec![Call {
-            to: fee_token.into(),
-            value: U256::ZERO,
-            input: transfer_calldata.into(),
-        }],
+        calls: vec![Call::new(fee_token, transfer_calldata)],
         nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(funder_addr).await?,
         fee_token: Some(fee_token),
@@ -649,20 +644,15 @@ pub(crate) fn sign_aa_tx_with_webauthn_access_key(
 
 /// Helper to create a TIP20 transfer call for a given token
 pub(super) fn create_transfer_call(token: Address, to: Address, amount: U256) -> Call {
-    Call {
-        to: token.into(),
-        value: U256::ZERO,
-        input: transferCall { to, amount }.abi_encode().into(),
-    }
+    Call::new(token, transferCall { to, amount }.abi_encode())
 }
 
 /// Helper to create a TIP20 balanceOf call (useful as a benign call for key authorization txs)
 pub(super) fn create_balance_of_call(account: Address) -> Call {
-    Call {
-        to: DEFAULT_FEE_TOKEN.into(),
-        value: U256::ZERO,
-        input: ITIP20::balanceOfCall { account }.abi_encode().into(),
-    }
+    Call::new(
+        DEFAULT_FEE_TOKEN,
+        ITIP20::balanceOfCall { account }.abi_encode(),
+    )
 }
 
 /// Helper to create a mock P256 signature for key authorization
@@ -744,11 +734,7 @@ pub(super) fn create_expiring_nonce_tx(
     let mut tx = create_basic_aa_tx(
         chain_id,
         0,
-        vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        vec![Call::new(recipient, Bytes::new())],
         2_000_000,
     );
     tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
@@ -831,7 +817,12 @@ pub(crate) async fn configure_fee_payer_context(
     // Callers fund the fee payer right before this.
     let balance_before =
         settled_balance(provider, token, fee_payer_addr, |bal| !bal.is_zero()).await?;
-    add_fee_payer_access_gas(tx);
+    // From T14 a fee payer signature costs one cold account access: the sponsor's account is read
+    // to check that its root key is still active. Callers that take their gas limit from the RPC
+    // send [`FEE_PAYER_SIGNATURE_MARKER`] with the request instead (see
+    // [`fill_sponsored_gas_limit`]), so the estimate includes that charge; this is for callers
+    // that set the limit by hand. Before T14 the extra limit only goes unused.
+    tx.gas_limit += COLD_ACCOUNT_ACCESS_COST;
     sign_fee_payer(tx, signer_addr, fee_payer_signer)?;
 
     Ok(Some(FeePayerContext {
@@ -915,17 +906,6 @@ pub(crate) async fn assert_batch_recipient_balances(
     Ok(())
 }
 
-/// Raises the gas limit of a transaction that a fee payer is about to sign.
-///
-/// From T14 a fee payer signature costs one cold account access: the sponsor's account is read to
-/// check that its root key is still active. Callers that take their gas limit from the RPC send
-/// [`FEE_PAYER_SIGNATURE_MARKER`] with the request instead
-/// (see [`fill_sponsored_gas_limit`]), so the estimate includes that charge; this is for callers
-/// that set the limit by hand. Before T14 the extra limit only goes unused.
-fn add_fee_payer_access_gas(tx: &mut TempoTransaction) {
-    tx.gas_limit += COLD_ACCOUNT_ACCESS_COST;
-}
-
 pub(crate) fn sign_fee_payer(
     tx: &mut TempoTransaction,
     signer_addr: Address,
@@ -993,38 +973,32 @@ pub(crate) fn create_send_calls(
     if batch_calls {
         let recipient_2 = recipient_2.expect("batch calls require two recipients");
         vec![
-            Call {
-                to: fee_token.into(),
-                value: U256::ZERO,
-                input: transferCall {
+            Call::new(
+                fee_token,
+                transferCall {
                     to: recipient_1,
                     amount: transfer_amount,
                 }
-                .abi_encode()
-                .into(),
-            },
-            Call {
-                to: fee_token.into(),
-                value: U256::ZERO,
-                input: transferCall {
+                .abi_encode(),
+            ),
+            Call::new(
+                fee_token,
+                transferCall {
                     to: recipient_2,
                     amount: transfer_amount,
                 }
-                .abi_encode()
-                .into(),
-            },
+                .abi_encode(),
+            ),
         ]
     } else {
-        vec![Call {
-            to: fee_token.into(),
-            value: U256::ZERO,
-            input: transferCall {
+        vec![Call::new(
+            fee_token,
+            transferCall {
                 to: recipient_1,
                 amount: transfer_amount,
             }
-            .abi_encode()
-            .into(),
-        }]
+            .abi_encode(),
+        )]
     }
 }
 
@@ -1213,11 +1187,7 @@ pub(crate) fn build_fill_request_context(
             nonce: test_case.explicit_nonce,
             ..Default::default()
         },
-        calls: vec![Call {
-            to: TxKind::Call(recipient),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        calls: vec![Call::new(recipient, Bytes::new())],
         key_type: Some(key_type_to_signature_type(test_case.key_type)),
         key_data: None,
         key_authorization: test_case.key_authorization.clone(),

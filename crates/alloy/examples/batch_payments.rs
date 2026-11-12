@@ -23,26 +23,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token_address: Address = address!("0x20c0000000000000000000000000000000000001");
 
     let calls = vec![
-        Call {
-            to: token_address.into(),
-            input: ITIP20::transferCall {
+        Call::new(
+            token_address,
+            ITIP20::transferCall {
                 to: recipient1,
                 amount: U256::from(100_000_000),
             }
-            .abi_encode()
-            .into(),
-            value: U256::ZERO,
-        },
-        Call {
-            to: token_address.into(),
-            input: ITIP20::transferCall {
+            .abi_encode(),
+        ),
+        Call::new(
+            token_address,
+            ITIP20::transferCall {
                 to: recipient2,
                 amount: U256::from(50_000_000),
             }
-            .abi_encode()
-            .into(),
-            value: U256::ZERO,
-        },
+            .abi_encode(),
+        ),
     ];
 
     let pending = provider

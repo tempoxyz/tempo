@@ -133,6 +133,15 @@ pub struct Call {
 }
 
 impl Call {
+    /// Creates a call to `to` with `input` and zero value.
+    pub fn new(to: impl Into<TxKind>, input: impl Into<Bytes>) -> Self {
+        Self {
+            to: to.into(),
+            value: U256::ZERO,
+            input: input.into(),
+        }
+    }
+
     fn size(&self) -> usize {
         size_of::<Self>() + self.input.len()
     }
@@ -1023,11 +1032,7 @@ mod tests {
     use arbitrary::{Arbitrary, Unstructured};
 
     fn create_call(to: TxKind) -> Call {
-        Call {
-            to,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }
+        Call::new(to, Bytes::new())
     }
 
     #[test]
@@ -1190,11 +1195,7 @@ mod tests {
     #[test]
     fn test_tempo_transaction_validation() {
         // Create a dummy call to satisfy validation
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Valid: valid_before > valid_after
         let tx1 = TempoTransaction {
@@ -1419,11 +1420,7 @@ mod tests {
 
     #[test]
     fn test_encode_for_fee_payer_service_uses_signature_placeholder_and_skips_fee_token() {
-        let call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::from(vec![1, 2, 3, 4]),
-        };
+        let call = Call::new(Address::random(), vec![1, 2, 3, 4]);
 
         let tx = TempoTransaction {
             chain_id: 1,
@@ -1517,11 +1514,7 @@ mod tests {
     #[test]
     fn test_nonce_system() {
         // Create a dummy call to satisfy validation
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Test 1: Protocol nonce (key 0)
         let tx1 = TempoTransaction {
@@ -1605,11 +1598,7 @@ mod tests {
     #[test]
     fn test_effective_gas_price() {
         // Create a dummy call to satisfy validation
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         let tx = TempoTransaction {
             max_priority_fee_per_gas: 1000000000,
@@ -1636,11 +1625,7 @@ mod tests {
         let token1 = Address::with_last_byte(2);
         let token2 = Address::with_last_byte(3);
 
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Transaction with fee_token = None
         let tx_no_token = TempoTransaction {
@@ -1714,11 +1699,7 @@ mod tests {
         // Verify that fee payer signature hash uses the magic byte 0x78
 
         let sender = Address::with_last_byte(1);
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         let tx = TempoTransaction {
             chain_id: 1,
@@ -1754,11 +1735,7 @@ mod tests {
         let token1 = Address::with_last_byte(2);
         let token2 = Address::with_last_byte(3);
 
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Transaction WITHOUT fee_payer, fee_token = None
         let tx_no_payer_no_token = TempoTransaction {
@@ -1816,11 +1793,7 @@ mod tests {
 
         let token = Address::with_last_byte(2);
 
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Transaction with fee_token
         let tx_with_token = TempoTransaction {
@@ -1878,11 +1851,7 @@ mod tests {
 
         let token = Address::with_last_byte(2);
 
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Scenario 1: No fee payer, no token
         let tx_no_payer_no_token = TempoTransaction {
@@ -2035,11 +2004,7 @@ mod tests {
     #[test]
     fn test_aa_signed_rlp_direct() {
         // Simple test for AASigned RLP encoding/decoding without key_authorization
-        let call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(TxKind::Create, Bytes::new());
 
         let tx = TempoTransaction {
             chain_id: 0,
@@ -2073,11 +2038,7 @@ mod tests {
     #[test]
     fn test_tempo_transaction_envelope_roundtrip_without_key_auth() {
         // Test that TempoTransaction in envelope works without key_authorization
-        let call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(TxKind::Create, Bytes::new());
 
         let tx = TempoTransaction {
             chain_id: 0,
@@ -2198,11 +2159,7 @@ mod tests {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             access_list: Default::default(),
             nonce_key: U256::ZERO,
             nonce: 1,
@@ -2260,16 +2217,8 @@ mod tests {
 
     #[test]
     fn test_create_must_be_first_call() {
-        let create_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
-        let call_call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let create_call = Call::new(TxKind::Create, Bytes::new());
+        let call_call = Call::new(Address::random(), Bytes::new());
 
         // Valid: CREATE as first call
         let tx_valid = TempoTransaction {
@@ -2289,11 +2238,7 @@ mod tests {
 
     #[test]
     fn test_only_one_create_allowed() {
-        let create_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let create_call = Call::new(TxKind::Create, Bytes::new());
 
         // Valid: Single CREATE
         let tx_valid = TempoTransaction {
@@ -2318,11 +2263,7 @@ mod tests {
 
     #[test]
     fn test_create_forbidden_with_auth_list() {
-        let create_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let create_call = Call::new(TxKind::Create, Bytes::new());
 
         let signed_auth = TempoSignedAuthorization::new_unchecked(
             Authorization {
@@ -2348,11 +2289,7 @@ mod tests {
     #[test]
     fn test_create_validation_allows_call_only_batch() {
         // A batch with only CALL operations should be valid
-        let call1 = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call1 = Call::new(Address::random(), Bytes::new());
         let call2 = Call {
             to: TxKind::Call(Address::random()),
             value: U256::random(),
@@ -2389,11 +2326,7 @@ mod tests {
 
     #[test]
     fn test_validate_does_not_check_expiring_nonce_constraints() {
-        let dummy_call = Call {
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(Address::ZERO, Bytes::new());
 
         // Transaction with expiring nonce key but nonce != 0 should pass validate()
         // (expiring nonce constraints are hardfork-dependent and checked elsewhere)
@@ -2493,11 +2426,7 @@ mod compact_tests {
                     value: U256::from(1000u64),
                     input: bytes!("cafe"),
                 },
-                Call {
-                    to: TxKind::Create,
-                    value: U256::ZERO,
-                    input: bytes!("6080604052"),
-                },
+                Call::new(TxKind::Create, bytes!("6080604052")),
             ],
             access_list: AccessList(vec![AccessListItem {
                 address: Address::with_last_byte(1),

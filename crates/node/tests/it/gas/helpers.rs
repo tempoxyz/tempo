@@ -148,9 +148,6 @@ impl<P: Provider> TempoTxSender<P> {
 pub(crate) struct TempoCalls {
     calls: Vec<Call>,
     gas_limit: u64,
-    fee_token: Option<Address>,
-    nonce_key: U256,
-    expect_existing_nonce: bool,
 }
 
 pub(crate) struct Receipt {
@@ -163,18 +160,11 @@ impl TempoCalls {
         Self {
             calls: Vec::new(),
             gas_limit: GAS_LIMIT,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            nonce_key: U256::ZERO,
-            expect_existing_nonce: false,
         }
     }
 
     pub(crate) fn push<C: SolCall>(mut self, to: Address, call: C) -> Self {
-        self.calls.push(Call {
-            to: to.into(),
-            value: U256::ZERO,
-            input: call.abi_encode().into(),
-        });
+        self.calls.push(Call::new(to, call.abi_encode()));
         self
     }
 
@@ -186,35 +176,13 @@ impl TempoCalls {
     {
         self.calls.extend(values.into_iter().map(|value| {
             let (to, call) = f(value);
-            Call {
-                to: to.into(),
-                value: U256::ZERO,
-                input: call.abi_encode().into(),
-            }
+            Call::new(to, call.abi_encode())
         }));
-        self
-    }
-
-    #[expect(dead_code)]
-    pub(crate) fn fee_token(mut self, fee_token: Option<Address>) -> Self {
-        self.fee_token = fee_token;
-        self
-    }
-
-    #[expect(dead_code)]
-    pub(crate) fn nonce_key(mut self, nonce_key: U256) -> Self {
-        self.nonce_key = nonce_key;
         self
     }
 
     pub(crate) fn gas_limit(mut self, gas_limit: u64) -> Self {
         self.gas_limit = gas_limit;
-        self
-    }
-
-    #[expect(dead_code)]
-    pub(crate) fn expect_existing_nonce(mut self) -> Self {
-        self.expect_existing_nonce = true;
         self
     }
 
@@ -231,9 +199,6 @@ impl TempoCalls {
     ) -> eyre::Result<Receipt> {
         let call_count = self.calls.len();
         eyre::ensure!(call_count > 0, "cannot send TempoCalls with zero calls");
-        if self.expect_existing_nonce {
-            eyre::ensure!(sender.nonce > 0, "expected existing Tempo nonce");
-        }
 
         let tx = TempoTransaction {
             chain_id: sender.chain_id,
@@ -241,9 +206,8 @@ impl TempoCalls {
             max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
             gas_limit: self.gas_limit,
             calls: self.calls,
-            nonce_key: self.nonce_key,
             nonce: sender.nonce,
-            fee_token: self.fee_token,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
             ..Default::default()
         };
         let signature = sender.signer.sign_hash_sync(&tx.signature_hash())?;

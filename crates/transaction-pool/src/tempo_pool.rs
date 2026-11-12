@@ -1558,7 +1558,7 @@ mod tests {
         tt_2d_pool::AA2dPoolConfig,
     };
     use alloy_consensus::Header;
-    use alloy_primitives::{Signature, TxKind, U256, address, uint};
+    use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use futures::{FutureExt, StreamExt};
@@ -3494,11 +3494,7 @@ mod tests {
         let replacement = lane_tx
             .max_fee(40_000_000_000)
             .max_priority_fee(2_000_000_000)
-            .calls(vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: vec![0; 256].into(),
-            }])
+            .calls(vec![Call::new(Address::random(), vec![0; 256])])
             .build();
         let (replacement, result) = add_aa_2d(&pool, replacement);
         assert!(matches!(
