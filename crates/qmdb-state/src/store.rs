@@ -46,7 +46,10 @@ use futures::{StreamExt as _, channel::mpsc as async_mpsc, try_join};
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tracing::{Instrument, Span, debug, debug_span, error, warn};
 
-use crate::layout::{self, ACCOUNT_LEN, AccountValue, Key, SLOT_LEN, SlotValue, Write, Writes};
+use crate::{
+    layout::{self, ACCOUNT_LEN, AccountValue, Key, SLOT_LEN, SlotValue, Write, Writes},
+    record::{self, Call, Header, RecordOptions, Recorder},
+};
 
 type Family = mmb::Family;
 /// Bitmap chunk size in bytes of the `current` layer.
@@ -240,6 +243,9 @@ pub enum Error {
     /// Reading or writing the format file failed.
     #[error("reading or writing the QMDB format file failed")]
     FormatIo(#[from] std::io::Error),
+    /// Copying the snapshot or creating the recording failed.
+    #[error("starting the QMDB recording failed")]
+    Record(#[source] std::io::Error),
 }
 
 /// Handle to the QMDB state, run on its own commonware runtime thread.
@@ -255,6 +261,8 @@ pub struct Store {
     /// The latest stage the payload builder opened on each parent, which
     /// [`Self::build_unregistered`] builds with.
     builder_stages: Mutex<HashMap<B256, StageId>>,
+    /// Records the store's calls, see [`crate::record`].
+    recorder: Option<Arc<Recorder>>,
 }
 
 impl Store {
@@ -264,7 +272,42 @@ impl Store {
     /// applied block, so [`Self::set_base`] is only needed when the journal lacks it. A crash
     /// between committing the two databases leaves them at different blocks: opening rewinds both
     /// to the latest recorded block.
+    ///
+    /// Records the store's calls when [`record::RECORD_ENV`] is set, see
+    /// [`RecordOptions::from_env`].
     pub fn open(config: Config) -> Result<Self, Error> {
+        Self::open_recording(config, RecordOptions::from_env())
+    }
+
+    /// Like [`Self::open`], recording the store's calls as `record` says, see [`crate::record`].
+    pub fn open_recording(config: Config, record: Option<RecordOptions>) -> Result<Self, Error> {
+        if let Some(snapshot) = record.as_ref().and_then(|record| record.snapshot.as_ref()) {
+            record::copy_snapshot(&config.directory, snapshot).map_err(Error::Record)?;
+        }
+        let recorded_config = (
+            config.threads.get() as u64,
+            config.page_cache_pages.get() as u64,
+            config.max_pending.get() as u64,
+        );
+        let mut store = Self::open_unrecorded(config)?;
+        if let Some(record) = record {
+            let origin = Instant::now();
+            let status = store.status()?;
+            let header = Header {
+                applied: status.applied,
+                base: status.base,
+                root: status.root,
+                threads: recorded_config.0,
+                page_cache_pages: recorded_config.1,
+                max_pending: recorded_config.2,
+            };
+            let recorder = Recorder::create(&record, origin, &header).map_err(Error::Record)?;
+            store.recorder = Some(Arc::new(recorder));
+        }
+        Ok(store)
+    }
+
+    fn open_unrecorded(config: Config) -> Result<Self, Error> {
         check_format(&config.directory, true)?;
         let (commands, receiver) = async_mpsc::unbounded();
         let (opened_tx, opened_rx) = mpsc::channel();
@@ -304,6 +347,7 @@ impl Store {
             readers,
             next_stage: AtomicU64::new(0),
             builder_stages: Mutex::new(HashMap::new()),
+            recorder: None,
         })
     }
 
@@ -366,7 +410,10 @@ impl Store {
     /// Only needed when [`Status::base`] is `None` after opening, with the canonical hash of
     /// [`Status::applied`]: the commit journal had no record of it.
     pub fn set_base(&self, hash: B256) -> Result<(), Error> {
-        self.call(|reply| Command::SetBase { hash, reply })
+        let start = Instant::now();
+        let result = self.call(|reply| Command::SetBase { hash, reply });
+        self.record(start, || Call::SetBase { hash });
+        result
     }
 
     /// Builds the batch of `block` from its sorted `writes`, registers it under the block's hash,
@@ -386,12 +433,23 @@ impl Store {
         writes: Writes,
         stage: Option<StageId>,
     ) -> Result<QmdbBatch, Error> {
-        self.call(|reply| Command::Build {
+        let start = Instant::now();
+        let recorded = self.recorder.as_ref().map(|_| writes.clone());
+        let result = self.call(|reply| Command::Build {
             block,
             writes,
             stage,
             reply,
-        })
+        });
+        if let Some(writes) = recorded {
+            self.record(start, || Call::Build {
+                block,
+                writes,
+                stage: stage.map(|stage| stage.0),
+                root: result.as_ref().ok().map(QmdbBatch::root),
+            });
+        }
+        result
     }
 
     /// Builds the batch of a block whose hash is not known yet, without registering it.
@@ -409,20 +467,37 @@ impl Store {
             .lock()
             .expect("never poisoned")
             .remove(&parent_hash);
-        self.call(|reply| Command::BuildUnregistered {
+        let start = Instant::now();
+        let recorded = self.recorder.as_ref().map(|_| writes.clone());
+        let result = self.call(|reply| Command::BuildUnregistered {
             number,
             parent_hash,
             writes,
             stage,
             span: Span::current(),
-            sent: Instant::now(),
+            sent: start,
             reply,
-        })
+        });
+        if let Some(writes) = recorded {
+            self.record(start, || Call::BuildUnregistered {
+                number,
+                parent_hash,
+                writes,
+                root: result.as_ref().ok().map(QmdbBatch::root),
+            });
+        }
+        result
     }
 
     /// Registers `batch` as the batch of block `hash`, replacing any earlier one.
     pub fn register(&self, hash: B256, batch: QmdbBatch) -> Result<(), Error> {
-        self.call(|reply| Command::Register { hash, batch, reply })
+        let start = Instant::now();
+        let root = self.recorder.as_ref().map(|_| batch.root());
+        let result = self.call(|reply| Command::Register { hash, batch, reply });
+        if let Some(root) = root {
+            self.record(start, || Call::Register { hash, root });
+        }
+        result
     }
 
     /// Like [`Self::build`], but returns at once and passes the outcome to `on_done` on the store
@@ -433,11 +508,30 @@ impl Store {
         writes: Writes,
         on_done: impl FnOnce(Result<B256, Error>) + Send + 'static,
     ) -> Result<(), Error> {
+        let start = Instant::now();
+        let recorded = self
+            .recorder
+            .as_ref()
+            .map(|recorder| (recorder.clone(), writes.clone()));
         self.send(Command::Build {
             block,
             writes,
             stage: None,
-            reply: Box::new(move |result| on_done(result.map(|batch| batch.root()))),
+            reply: Box::new(move |result| {
+                let root = result.map(|batch| batch.root());
+                if let Some((recorder, writes)) = recorded {
+                    recorder.record(
+                        start,
+                        Call::Build {
+                            block,
+                            writes,
+                            stage: None,
+                            root: root.as_ref().ok().copied(),
+                        },
+                    );
+                }
+                on_done(root);
+            }),
         })
     }
 
@@ -451,7 +545,10 @@ impl Store {
     ///
     /// The records are durable when this returns. Finalizing the applied block again does nothing.
     pub fn finalize(&self, hash: B256) -> Result<(), Error> {
-        self.call(|reply| Command::Finalize { hash, reply })
+        let start = Instant::now();
+        let result = self.call(|reply| Command::Finalize { hash, reply });
+        self.record(start, || Call::Finalize { hash });
+        result
     }
 
     /// Applies one chunk of a snapshot import directly to disk.
@@ -471,7 +568,10 @@ impl Store {
     /// does nothing. Fails with [`Error::UnknownCommit`] when the commit journal has no record of
     /// `number`, such as a block above the applied one.
     pub fn rewind_to(&self, number: u64) -> Result<(), Error> {
-        self.call(|reply| Command::RewindTo { number, reply })
+        let start = Instant::now();
+        let result = self.call(|reply| Command::RewindTo { number, reply });
+        self.record(start, || Call::RewindTo { number });
+        result
     }
 
     /// Returns the value of account `key` in the applied state, ignoring unapplied batches.
@@ -482,7 +582,12 @@ impl Store {
     /// Returns the values of account `keys` in the applied state, in the same order, ignoring
     /// unapplied batches.
     pub fn get_accounts(&self, keys: Vec<Key>) -> Result<Vec<Option<AccountValue>>, Error> {
-        self.readers.read(&self.readers.accounts, "accounts", &keys)
+        let start = Instant::now();
+        let result = self.readers.read(&self.readers.accounts, "accounts", &keys);
+        if self.records_reads() {
+            self.record(start, || Call::ReadAccounts { keys });
+        }
+        result
     }
 
     /// Returns the value of slot `key` in the applied state, ignoring unapplied batches.
@@ -493,7 +598,12 @@ impl Store {
     /// Returns the values of slot `keys` in the applied state, in the same order, ignoring
     /// unapplied batches.
     pub fn get_slots(&self, keys: Vec<Key>) -> Result<Vec<Option<SlotValue>>, Error> {
-        self.readers.read(&self.readers.slots, "slots", &keys)
+        let start = Instant::now();
+        let result = self.readers.read(&self.readers.slots, "slots", &keys);
+        if self.records_reads() {
+            self.record(start, || Call::ReadSlots { keys });
+        }
+        result
     }
 
     /// Reads from disk what building a batch that writes account keys `accounts` and slot keys
@@ -503,11 +613,20 @@ impl Store {
     /// Reads only the applied state, concurrently with other reads, and returns once the reads
     /// finish. It changes nothing, so callers may pass keys that end up not being written.
     pub fn prefetch(&self, accounts: Vec<Key>, slots: Vec<Key>) -> Result<(), Error> {
-        self.call(|reply| Command::Prefetch {
+        let start = Instant::now();
+        let recorded = self
+            .recorder
+            .as_ref()
+            .map(|_| (accounts.clone(), slots.clone()));
+        let result = self.call(|reply| Command::Prefetch {
             accounts,
             slots,
             reply,
-        })
+        });
+        if let Some((accounts, slots)) = recorded {
+            self.record(start, || Call::Prefetch { accounts, slots });
+        }
+        result
     }
 
     /// Opens a stage for a block on `parent_hash`: [`Self::stage`] reads keys into it while
@@ -517,6 +636,7 @@ impl Store {
     /// is the one [`Self::build_unregistered`] builds with; others are passed to
     /// [`Self::build_staged`]. A stage on an unknown parent stays closed.
     pub fn open_stage(&self, parent_hash: B256, builder: bool) -> Result<StageId, Error> {
+        let start = Instant::now();
         let id = StageId(self.next_stage.fetch_add(1, Ordering::Relaxed));
         self.send(Command::OpenStage { id, parent_hash })?;
         if builder {
@@ -525,6 +645,11 @@ impl Store {
                 .expect("never poisoned")
                 .insert(parent_hash, id);
         }
+        self.record(start, || Call::OpenStage {
+            stage: id.0,
+            parent_hash,
+            builder,
+        });
         Ok(id)
     }
 
@@ -532,12 +657,39 @@ impl Store {
     /// the rest of what building the block reads for them like [`Self::prefetch`], which is all
     /// it does once the stage is closed.
     pub fn stage(&self, stage: StageId, accounts: Vec<Key>, slots: Vec<Key>) -> Result<(), Error> {
-        self.call(|reply| Command::Stage {
+        let start = Instant::now();
+        let recorded = self
+            .recorder
+            .as_ref()
+            .map(|_| (accounts.clone(), slots.clone()));
+        let result = self.call(|reply| Command::Stage {
             stage,
             accounts,
             slots,
             reply,
-        })
+        });
+        if let Some((accounts, slots)) = recorded {
+            self.record(start, || Call::Stage {
+                stage: stage.0,
+                accounts,
+                slots,
+            });
+        }
+        result
+    }
+
+    /// Records a call that started at `start` and returns now, when recording.
+    fn record(&self, start: Instant, call: impl FnOnce() -> Call) {
+        if let Some(recorder) = &self.recorder {
+            recorder.record(start, call());
+        }
+    }
+
+    /// Whether state reads are recorded.
+    fn records_reads(&self) -> bool {
+        self.recorder
+            .as_ref()
+            .is_some_and(|recorder| recorder.reads())
     }
 
     fn call<T: Send + 'static>(

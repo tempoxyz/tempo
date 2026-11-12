@@ -17,10 +17,15 @@
 //! [`Store`] holds both databases on a dedicated commonware runtime thread. It builds each executed
 //! block's batches on its parent's unapplied batches, and applies them to disk only when the node
 //! persists the block, so the on-disk state never runs ahead of the database.
+//!
+//! [`record`] records a store's calls on a node and [`replay`] runs them again offline, to
+//! measure changes to building and persisting batches without a node.
 
 pub mod diff;
 pub mod import;
 pub mod layout;
+pub mod record;
+pub mod replay;
 mod store;
 
 pub use store::{BlockRef, Config, Error, QmdbBatch, StageId, Status, Store};
