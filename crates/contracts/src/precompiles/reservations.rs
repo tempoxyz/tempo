@@ -52,6 +52,10 @@ crate::sol! {
         /// `token` now, then records the approval as `holdStandIn` does and the card's line. The card's
         /// limit does not bound it: the offline cap does, as for any stand-in approval.
         function holdCardStandIn(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee, address issuer, bytes32 card) external;
+        /// `holdCard` for a stored-card or subscription charge from `merchant`, an opaque reference
+        /// the issuer supplies: also reverts `MerchantRevoked` when the owner cancelled that merchant
+        /// and `WindowLimitExceeded` past the merchant's monthly limit (TIP-1169).
+        function holdCardForMerchant(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee, address issuer, bytes32 card, bytes32 merchant) external;
         /// `charge` for an approval the payee made in stand-in: the shortfall may become debt up to
         /// the larger of the debt cap and the offline cap.
         function chargeStandIn(address token, bytes32 id, uint128 amount, address payee) external;

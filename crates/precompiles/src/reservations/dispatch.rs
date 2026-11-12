@@ -41,6 +41,21 @@ impl Precompile for Reservations {
                         };
                         self.hold(sender, c, placement)
                     }),
+                    holdCardForMerchant(call) => mutate(call, msg_sender, |sender, c| {
+                        let placement = Placement::CardMerchant {
+                            issuer: c.issuer,
+                            card: c.card,
+                            merchant: c.merchant,
+                        };
+                        let c = IReservations::holdCall {
+                            token: c.token,
+                            id: c.id,
+                            amount: c.amount,
+                            expiresAt: c.expiresAt,
+                            payee: c.payee,
+                        };
+                        self.hold(sender, c, placement)
+                    }),
                     holdCardStandIn(call) => mutate(call, msg_sender, |sender, c| {
                         let placement = Placement::CardStandIn {
                             issuer: c.issuer,

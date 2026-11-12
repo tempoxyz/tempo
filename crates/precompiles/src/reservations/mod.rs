@@ -143,6 +143,9 @@ struct Authorization {
     /// End of `key_id`'s limit period of the latest spend counted; limit is given back only
     /// within that period.
     limit_period_end: u64,
+    /// End of the owner's spend window period (TIP-1169) a card hold counted in; its window and
+    /// merchant counters follow it only while that period is current. Zero when none counted it.
+    window_end: u32,
     /// Amount `key_id`'s limit counted in that period and not yet given back. Spend the root key
     /// adds is never counted, so it is never given back.
     counted: U96,
@@ -160,6 +163,8 @@ struct Authorization {
     disputed: bool,
     /// Whether `holdForDispute` placed the hold, naming the dispute in `Reservations::dispute_holds`.
     dispute_reserve: bool,
+    /// Merchant mandate (TIP-1169) a `holdCardForMerchant` hold counts against; zero for none.
+    merchant: u64,
 }
 
 impl Authorization {
@@ -474,7 +479,9 @@ impl Reservations {
         }
         let card = match placement {
             // The card counts the whole amount, line part included, against its limit.
-            Placement::Card { issuer, card } | Placement::CardLine { issuer, card, .. } => {
+            Placement::Card { issuer, card }
+            | Placement::CardLine { issuer, card, .. }
+            | Placement::CardMerchant { issuer, card, .. } => {
                 let cards = Cards::new();
                 let line = cards.line_for_hold(owner, issuer, card, call.token)?;
                 cards.ensure_within_limit(line, call.amount)?;
@@ -491,6 +498,20 @@ impl Reservations {
             | Placement::Line { .. }
             | Placement::Dispute { .. } => None,
         };
+        // Card holds count against the owner's spend window for the issuer, and a merchant's hold
+        // against its merchant mandate too; a stand-in approval counts without the check.
+        let (merchant, window_end) = match placement {
+            Placement::Card { issuer, .. } | Placement::CardLine { issuer, .. } => {
+                Cards::new().count_window(owner, issuer, B256::ZERO, call.amount, true)?
+            }
+            Placement::CardMerchant {
+                issuer, merchant, ..
+            } => Cards::new().count_window(owner, issuer, merchant, call.amount, true)?,
+            Placement::CardStandIn { issuer, .. } => {
+                Cards::new().count_window(owner, issuer, B256::ZERO, 0, false)?
+            }
+            _ => (0, 0),
+        };
         // A dormant, closed or estate account takes no new holds; a card's checks above already
         // refuse one through a closed or estate account's card as inactive.
         Cards::new().ensure_account_active(owner)?;
@@ -503,14 +524,18 @@ impl Reservations {
             Placement::StandIn | Placement::CardStandIn { .. } => {
                 (call.amount.min(free), call.amount.min(free))
             }
-            Placement::Plain | Placement::Card { .. } | Placement::Dispute { .. }
+            Placement::Plain
+            | Placement::Card { .. }
+            | Placement::CardMerchant { .. }
+            | Placement::Dispute { .. }
                 if call.amount > free =>
             {
                 return Err(ReservationsError::insufficient_available().into());
             }
-            Placement::Plain | Placement::Card { .. } | Placement::Dispute { .. } => {
-                (call.amount, call.amount)
-            }
+            Placement::Plain
+            | Placement::Card { .. }
+            | Placement::CardMerchant { .. }
+            | Placement::Dispute { .. } => (call.amount, call.amount),
             Placement::Line { part, line, lender }
             | Placement::CardLine {
                 part, line, lender, ..
@@ -550,6 +575,8 @@ impl Reservations {
                 Placement::Line { .. } | Placement::CardLine { .. }
             ),
             dispute_reserve: matches!(placement, Placement::Dispute { .. }),
+            window_end,
+            merchant,
             ..Default::default()
         };
         record_spend(&mut auth, spend, held);
@@ -569,7 +596,7 @@ impl Reservations {
             ))?;
         }
         match placement {
-            Placement::Plain | Placement::Card { .. } => Ok(()),
+            Placement::Plain | Placement::Card { .. } | Placement::CardMerchant { .. } => Ok(()),
             Placement::Dispute {
                 owner: disputed,
                 id: disputed_id,
@@ -646,7 +673,12 @@ impl Reservations {
             let increase = call.amount - previous;
             // A card hold grows only while its card is active and within its limit.
             if auth.card_line != 0 {
-                Cards::new().ensure_may_grow(auth.card_line, increase)?;
+                Cards::new().ensure_may_grow(
+                    auth.card_line,
+                    auth.merchant,
+                    auth.window_end,
+                    increase,
+                )?;
             }
             let mut token = TIP20Token::from_address(auth.token)?;
             let free = available(&token, owner)?;
@@ -2079,7 +2111,13 @@ fn follow_card(auth: &Authorization, before: u128) -> Result<()> {
     if auth.card_line == 0 {
         return Ok(());
     }
-    Cards::new().follow_commitment(auth.card_line, before, auth.committed())
+    Cards::new().follow_commitment(
+        auth.card_line,
+        auth.merchant,
+        auth.window_end,
+        before,
+        auth.committed(),
+    )
 }
 
 /// Lowers `auth.counted` to at most what the authorization still commits (`Authorization::committed`),
@@ -2199,6 +2237,12 @@ enum Placement {
     },
     /// `holdForDispute`: `hold` for the open dispute on `owner`'s record `id`, for up to 120 days.
     Dispute { owner: Address, id: B256 },
+    /// `holdCardForMerchant`: `holdCard` for a charge from `merchant`, checked against its mandate.
+    CardMerchant {
+        issuer: Address,
+        card: B256,
+        merchant: B256,
+    },
 }
 
 #[cfg(test)]
@@ -5097,6 +5141,193 @@ mod tests {
             assert!(CARD_LINE_LOC.offset_bytes + CARD_LINE_LOC.size <= LINE_LOC.offset_bytes);
             assert!(LINE_LOC.offset_bytes + LINE_LOC.size <= 32);
         }
+    }
+
+    #[test]
+    fn test_spend_window_and_merchant_mandates_bound_card_holds() -> eyre::Result<()> {
+        // 1970-02-01 and 1970-03-01, UTC.
+        const FEB: u32 = 2_678_400;
+        const MAR: u32 = 5_097_600;
+        const LATE: u64 = FEB as u64 + 600;
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Active,
+                U96::from(1_000),
+            )?;
+            let (owner, payee) = (f.owner, f.payee);
+            let merchant = B256::random();
+            cards.set_spend_window(
+                owner,
+                ICards::setSpendWindowCall {
+                    issuer: payee,
+                    firstEnd: FEB,
+                    limit: U96::from(100),
+                },
+            )?;
+            cards.set_merchant_mandate(
+                owner,
+                ICards::setMerchantMandateCall {
+                    issuer: payee,
+                    merchant,
+                    revoked: false,
+                    limit: U96::from(30),
+                },
+            )?;
+            let window = |cards: &Cards| -> Result<(u32, U96)> {
+                let w = cards.spend_window(owner, payee)?;
+                Ok((w.periodEnd, w.committed))
+            };
+            let at_merchant = |cards: &Cards| -> Result<U96> {
+                Ok(cards.merchant_mandate(owner, payee, merchant)?.committed)
+            };
+
+            // The merchant's limit and the window's both bound new holds.
+            let streaming = B256::random();
+            hold_card_for(&mut f, streaming, 20, card, merchant, LATE)?;
+            assert_eq!(
+                hold_card_for(&mut f, B256::random(), 11, card, merchant, LATE).unwrap_err(),
+                CardsError::window_limit_exceeded().into()
+            );
+            assert_eq!(
+                f.adjust(streaming, 31).unwrap_err(),
+                CardsError::window_limit_exceeded().into()
+            );
+            let gym = B256::random();
+            hold_card_for(&mut f, gym, 70, card, B256::random(), LATE)?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 11, card).unwrap_err(),
+                CardsError::window_limit_exceeded().into()
+            );
+            assert_eq!(window(&cards)?, (FEB, U96::from(90)));
+            assert_eq!(at_merchant(&cards)?, U96::from(20));
+
+            // Give-backs restore both.
+            f.reservations.release(owner, streaming)?;
+            assert_eq!(window(&cards)?, (FEB, U96::from(70)));
+            assert_eq!(at_merchant(&cards)?, U96::ZERO);
+
+            // A revoked merchant can neither hold nor grow a hold; its holds still shrink.
+            let next = B256::random();
+            hold_card_for(&mut f, next, 10, card, merchant, LATE)?;
+            cards.set_merchant_mandate(
+                owner,
+                ICards::setMerchantMandateCall {
+                    issuer: payee,
+                    merchant,
+                    revoked: true,
+                    limit: U96::from(30),
+                },
+            )?;
+            assert_eq!(
+                hold_card_for(&mut f, B256::random(), 1, card, merchant, LATE).unwrap_err(),
+                CardsError::merchant_revoked().into()
+            );
+            assert_eq!(
+                f.adjust(next, 11).unwrap_err(),
+                CardsError::merchant_revoked().into()
+            );
+            f.adjust(next, 5)?;
+            assert_eq!(window(&cards)?, (FEB, U96::from(75)));
+
+            // A new month starts at zero; holds counted in the last one give nothing back to it.
+            StorageCtx.set_timestamp(U256::from(FEB));
+            assert_eq!(window(&cards)?, (MAR, U96::ZERO));
+            f.reservations.release(owner, gym)?;
+            assert_eq!(window(&cards)?, (MAR, U96::ZERO));
+
+            // The window follows the account, not the card, across a replacement.
+            let replacement = B256::random();
+            cards.replace_card(
+                payee,
+                ICards::replaceCardCall {
+                    card,
+                    next: replacement,
+                },
+            )?;
+            hold_card_for(
+                &mut f,
+                B256::random(),
+                100,
+                replacement,
+                B256::random(),
+                LATE,
+            )?;
+            assert_eq!(
+                hold_card_for(&mut f, B256::random(), 1, replacement, B256::ZERO, LATE)
+                    .unwrap_err(),
+                CardsError::window_limit_exceeded().into()
+            );
+
+            // Stand-in approvals are recorded past the window, and counted in it.
+            f.reservations.hold(
+                owner,
+                IReservations::holdCall {
+                    token: f.token.address(),
+                    id: B256::random(),
+                    amount: 5,
+                    expiresAt: LATE,
+                    payee,
+                },
+                Placement::CardStandIn {
+                    issuer: payee,
+                    card: replacement,
+                },
+            )?;
+            assert_eq!(window(&cards)?, (MAR, U96::from(105)));
+
+            // Only the root key sets windows and mandates.
+            let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(owner)?;
+            keychain.set_transaction_key(Address::random())?;
+            assert_eq!(
+                cards
+                    .set_spend_window(
+                        owner,
+                        ICards::setSpendWindowCall {
+                            issuer: payee,
+                            firstEnd: 0,
+                            limit: U96::ZERO,
+                        },
+                    )
+                    .unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            Ok(())
+        })
+    }
+
+    /// Holds `amount` through the owner's `card` for `merchant` under the fixture's payee.
+    fn hold_card_for(
+        f: &mut Fixture,
+        id: B256,
+        amount: u128,
+        card: B256,
+        merchant: B256,
+        expires_at: u64,
+    ) -> Result<()> {
+        f.reservations.hold(
+            f.owner,
+            IReservations::holdCall {
+                token: f.token.address(),
+                id,
+                amount,
+                expiresAt: expires_at,
+                payee: f.payee,
+            },
+            Placement::CardMerchant {
+                issuer: f.payee,
+                card,
+                merchant,
+            },
+        )
     }
 
     /// Has the fixture's payee issue `card` on `owner`'s account.

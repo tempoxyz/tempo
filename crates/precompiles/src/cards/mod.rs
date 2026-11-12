@@ -11,6 +11,9 @@
 //! available balance (debts first) to a payout address, and an Estate authority from the
 //! registry the admin keeps can hand the account to an executor, who settles it once no holds
 //! are open.
+//!
+//! An owner can also bound what an issuer's card holds commit in each calendar month (a spend
+//! window) and, within it, what each merchant may commit or whether it may hold at all.
 
 pub mod dispatch;
 
@@ -84,6 +87,26 @@ struct Authority {
     payout: Address,
 }
 
+/// An owner's calendar-month window on one issuer's card holds, in one slot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+struct Window {
+    limit: U96,
+    /// What card holds counted in the current period commit now.
+    committed: U96,
+    /// End of the current period; zero is no window.
+    period_end: u32,
+}
+
+/// An owner's mandate for one merchant under one issuer, in one slot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+struct MerchantMandate {
+    revoked: bool,
+    limit: U96,
+    committed: U96,
+    /// The window period `committed` counts in; zero while the issuer has no window.
+    period_end: u32,
+}
+
 const ACTIVE: u8 = ICards::AccountStatus::Active as u8;
 const DORMANT: u8 = ICards::AccountStatus::Dormant as u8;
 const ESTATE: u8 = ICards::AccountStatus::Estate as u8;
@@ -110,6 +133,14 @@ pub struct Cards {
     accounts: Mapping<Address, AccountRecord>,
     /// Registry entries keyed by role ([`ICards::Role`]) then authority.
     authorities: Mapping<u8, Mapping<Address, Authority>>,
+    /// Spend windows keyed by owner then issuer.
+    windows: Mapping<Address, Mapping<Address, Window>>,
+    /// Merchant mandate ids keyed by owner, issuer then merchant reference; zero for none.
+    merchant_ids: Mapping<Address, Mapping<Address, Mapping<B256, u64>>>,
+    /// Merchant mandates by id, from one.
+    merchants: Mapping<u64, MerchantMandate>,
+    /// Id of the latest merchant mandate.
+    last_merchant: u64,
 }
 
 impl Cards {
@@ -144,31 +175,217 @@ impl Cards {
         Ok(line)
     }
 
-    /// Checks that `line` may commit `amount` more now: active, unexpired and within its limit.
-    /// Called by `IReservations.adjust` before it raises a card hold.
-    pub(crate) fn ensure_may_grow(&self, line: u64, amount: u128) -> Result<()> {
+    /// Checks that `line` may commit `amount` more now: active, unexpired and within its limit,
+    /// and within its owner's window and `merchant`'s mandate while the authorization's period
+    /// (`window_end`) is current. Called by `IReservations.adjust` before it raises a card hold.
+    pub(crate) fn ensure_may_grow(
+        &self,
+        line: u64,
+        merchant: u64,
+        window_end: u32,
+        amount: u128,
+    ) -> Result<()> {
         self.ensure_active(line)?;
-        self.ensure_within_limit(line, amount)
+        self.ensure_within_limit(line, amount)?;
+        let owner = self.lines[line].owner.read()?;
+        let issuer = self.lines[line].payee.read()?;
+        let window = rolled(self.windows[owner][issuer].read()?, self.now());
+        if window.period_end != 0
+            && window_end == window.period_end
+            && exceeds(window.committed, amount, window.limit)
+        {
+            return Err(CardsError::window_limit_exceeded().into());
+        }
+        if merchant != 0 {
+            let mandate = merchant_rolled(self.merchants[merchant].read()?, window.period_end);
+            if mandate.revoked {
+                return Err(CardsError::merchant_revoked().into());
+            }
+            if window_end == mandate.period_end && exceeds(mandate.committed, amount, mandate.limit)
+            {
+                return Err(CardsError::window_limit_exceeded().into());
+            }
+        }
+        Ok(())
     }
 
     /// Moves `line`'s committed counter by an authorization's change of committed amount, from
-    /// `before` to `after`. Called by the reservations precompile after every change to a card
-    /// authorization, without checks: captures, releases and refunds never depend on the card.
-    pub(crate) fn follow_commitment(&mut self, line: u64, before: u128, after: u128) -> Result<()> {
+    /// `before` to `after`, and its owner's window and `merchant` counters while the period it
+    /// counted in (`window_end`) is current. Called by the reservations precompile after every
+    /// change to a card authorization, without checks: captures, releases and refunds never depend
+    /// on the card.
+    pub(crate) fn follow_commitment(
+        &mut self,
+        line: u64,
+        merchant: u64,
+        window_end: u32,
+        before: u128,
+        after: u128,
+    ) -> Result<()> {
         if before == after {
             return Ok(());
         }
-        let committed = self.lines[line].committed.read()?.to::<u128>();
-        let next = if after > before {
-            committed
-                .checked_add(after - before)
-                .ok_or_else(TempoPrecompileError::under_overflow)?
+        let committed = self.lines[line].committed.read()?;
+        self.lines[line]
+            .committed
+            .write(moved(committed, before, after)?)?;
+        let owner = self.lines[line].owner.read()?;
+        let issuer = self.lines[line].payee.read()?;
+        let stored = self.windows[owner][issuer].read()?;
+        let mut window = rolled(stored, self.now());
+        if window.period_end != 0 && window_end == window.period_end {
+            window.committed = moved(window.committed, before, after)?;
+        }
+        if window != stored {
+            self.windows[owner][issuer].write(window)?;
+        }
+        if merchant != 0 {
+            let stored = self.merchants[merchant].read()?;
+            let mut mandate = merchant_rolled(stored, window.period_end);
+            if window_end == mandate.period_end {
+                mandate.committed = moved(mandate.committed, before, after)?;
+            }
+            if mandate != stored {
+                self.merchants[merchant].write(mandate)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks that a card hold of `amount` by `owner` through `issuer`'s card fits its spend window
+    /// and, for a non-zero `merchant`, that merchant's mandate (`MerchantRevoked`,
+    /// `WindowLimitExceeded`), rolling both into the current period. Returns the mandate's id and
+    /// the window's period end for the authorization. `check` false records a stand-in approval
+    /// without the limits.
+    pub(crate) fn count_window(
+        &mut self,
+        owner: Address,
+        issuer: Address,
+        merchant: B256,
+        amount: u128,
+        check: bool,
+    ) -> Result<(u64, u32)> {
+        let stored = self.windows[owner][issuer].read()?;
+        let window = rolled(stored, self.now());
+        if window != stored {
+            self.windows[owner][issuer].write(window)?;
+        }
+        if check && window.period_end != 0 && exceeds(window.committed, amount, window.limit) {
+            return Err(CardsError::window_limit_exceeded().into());
+        }
+        let id = if merchant.is_zero() {
+            0
         } else {
-            // Give-backs never exceed what the same authorizations added.
-            committed.saturating_sub(before - after)
+            self.merchant_ids[owner][issuer][merchant].read()?
         };
-        let next = U96::try_from(next).map_err(|_| TempoPrecompileError::under_overflow())?;
-        self.lines[line].committed.write(next)
+        if id != 0 {
+            let stored = self.merchants[id].read()?;
+            let mandate = merchant_rolled(stored, window.period_end);
+            if mandate != stored {
+                self.merchants[id].write(mandate)?;
+            }
+            if mandate.revoked {
+                return Err(CardsError::merchant_revoked().into());
+            }
+            if check && exceeds(mandate.committed, amount, mandate.limit) {
+                return Err(CardsError::window_limit_exceeded().into());
+            }
+        }
+        Ok((id, window.period_end))
+    }
+
+    pub(crate) fn set_spend_window(
+        &mut self,
+        owner: Address,
+        call: ICards::setSpendWindowCall,
+    ) -> Result<()> {
+        if AccountKeychain::new().signing_access_key(owner)?.is_some() {
+            return Err(CardsError::unauthorized().into());
+        }
+        // A new anchor keeps what the current period counted, so re-anchoring cannot clear it.
+        let mut window = if call.firstEnd == 0 {
+            Window::default()
+        } else {
+            rolled(self.windows[owner][call.issuer].read()?, self.now())
+        };
+        if call.firstEnd != 0 {
+            window.limit = call.limit;
+            window.period_end = call.firstEnd;
+        }
+        self.windows[owner][call.issuer].write(window)?;
+        self.emit_event(CardsEvent::spend_window_set(
+            owner,
+            call.issuer,
+            call.firstEnd,
+            call.limit,
+        ))
+    }
+
+    pub(crate) fn set_merchant_mandate(
+        &mut self,
+        owner: Address,
+        call: ICards::setMerchantMandateCall,
+    ) -> Result<()> {
+        if AccountKeychain::new().signing_access_key(owner)?.is_some() {
+            return Err(CardsError::unauthorized().into());
+        }
+        if call.merchant.is_zero() {
+            return Err(CardsError::invalid_card().into());
+        }
+        let mut id = self.merchant_ids[owner][call.issuer][call.merchant].read()?;
+        if id == 0 {
+            id = self
+                .last_merchant
+                .read()?
+                .checked_add(1)
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            self.last_merchant.write(id)?;
+            self.merchant_ids[owner][call.issuer][call.merchant].write(id)?;
+        }
+        let mut mandate = self.merchants[id].read()?;
+        mandate.revoked = call.revoked;
+        mandate.limit = call.limit;
+        self.merchants[id].write(mandate)?;
+        self.emit_event(CardsEvent::merchant_mandate_set(
+            owner,
+            call.issuer,
+            call.merchant,
+            call.revoked,
+            call.limit,
+        ))
+    }
+
+    pub(crate) fn spend_window(
+        &self,
+        owner: Address,
+        issuer: Address,
+    ) -> Result<ICards::spendWindowReturn> {
+        let window = rolled(self.windows[owner][issuer].read()?, self.now());
+        Ok(ICards::spendWindowReturn {
+            periodEnd: window.period_end,
+            limit: window.limit,
+            committed: window.committed,
+        })
+    }
+
+    pub(crate) fn merchant_mandate(
+        &self,
+        owner: Address,
+        issuer: Address,
+        merchant: B256,
+    ) -> Result<ICards::merchantMandateReturn> {
+        let id = self.merchant_ids[owner][issuer][merchant].read()?;
+        let window = rolled(self.windows[owner][issuer].read()?, self.now());
+        let mandate = if id == 0 {
+            MerchantMandate::default()
+        } else {
+            merchant_rolled(self.merchants[id].read()?, window.period_end)
+        };
+        Ok(ICards::merchantMandateReturn {
+            revoked: mandate.revoked,
+            limit: mandate.limit,
+            committed: mandate.committed,
+        })
     }
 
     pub(crate) fn issue_card(&mut self, payee: Address, call: ICards::issueCardCall) -> Result<()> {
@@ -628,6 +845,102 @@ impl Cards {
     }
 }
 
+/// A counter moved by an authorization's change of committed amount from `before` to `after`;
+/// give-backs never take it below zero.
+fn moved(counter: U96, before: u128, after: u128) -> Result<U96> {
+    let counter = counter.to::<u128>();
+    let next = if after > before {
+        counter
+            .checked_add(after - before)
+            .ok_or_else(TempoPrecompileError::under_overflow)?
+    } else {
+        counter.saturating_sub(before - after)
+    };
+    U96::try_from(next).map_err(|_| TempoPrecompileError::under_overflow())
+}
+
+/// Whether `committed` plus `amount` passes `limit`; [`U96::MAX`] is no limit.
+fn exceeds(committed: U96, amount: u128, limit: U96) -> bool {
+    limit != U96::MAX && committed.to::<u128>().saturating_add(amount) > limit.to::<u128>()
+}
+
+/// `window` as of `now`: each period that ended starts the next a calendar month later, at zero.
+fn rolled(mut window: Window, now: u64) -> Window {
+    if window.period_end == 0 {
+        return window;
+    }
+    while now >= u64::from(window.period_end) {
+        let next = add_month(window.period_end);
+        if next <= window.period_end {
+            break;
+        }
+        window.period_end = next;
+        window.committed = U96::ZERO;
+    }
+    window
+}
+
+/// `mandate` counted in the window period ending at `period_end`: a new period starts it at zero.
+fn merchant_rolled(mut mandate: MerchantMandate, period_end: u32) -> MerchantMandate {
+    if mandate.period_end != period_end {
+        mandate.period_end = period_end;
+        mandate.committed = U96::ZERO;
+    }
+    mandate
+}
+
+/// The same UTC time of day one calendar month after `timestamp`, on the last day of the month
+/// when that day is missing; saturates at [`u32::MAX`].
+fn add_month(timestamp: u32) -> u32 {
+    let days = i64::from(timestamp / 86_400);
+    let seconds = i64::from(timestamp % 86_400);
+    let (year, month, day) = civil_from_days(days);
+    let (year, month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let day = day.min(days_in_month(year, month));
+    let next = days_from_civil(year, month, day) * 86_400 + seconds;
+    u32::try_from(next).unwrap_or(u32::MAX)
+}
+
+fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 31,
+    }
+}
+
+/// Days since 1970-01-01 to a proleptic Gregorian (year, month, day), after Howard Hinnant's
+/// `civil_from_days`.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date, after Howard Hinnant's `days_from_civil`.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let yoe = year.rem_euclid(400);
+    let month = i64::from(month);
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 /// Stores a status, rejecting values outside the enum with `InvalidCard`.
 fn status_byte(status: ICards::Status) -> Result<u8> {
     let byte = status as u8;
@@ -970,6 +1283,15 @@ mod tests {
             );
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_add_month_keeps_the_time_and_clamps_the_day() {
+        // 2024-01-31 to the leap day, 2025-01-31 to 2025-02-28, and 2026-12-15 12:00 to 2027.
+        assert_eq!(add_month(1_706_659_200), 1_709_164_800);
+        assert_eq!(add_month(1_738_281_600), 1_740_700_800);
+        assert_eq!(add_month(1_797_336_000), 1_800_014_400);
+        assert_eq!(add_month(u32::MAX - 1), u32::MAX);
     }
 
     #[test]

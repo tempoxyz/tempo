@@ -78,6 +78,18 @@ crate::sol! {
         /// address and periods in seconds.
         function setAuthority(address authority, Role role, bool listed, address payout, uint32 dormancy, uint32 escheatAfter) external;
 
+        /// The owner, with its root key, sets its calendar-month spend window for `issuer`'s card
+        /// holds: `limit` on what they commit in a period, whose current one ends at `firstEnd` and
+        /// each later one a calendar month after (UTC). A `firstEnd` of zero removes the window.
+        function setSpendWindow(address issuer, uint32 firstEnd, uint96 limit) external;
+        /// The owner, with its root key, sets whether `merchant` (an opaque reference the issuer
+        /// supplies) may hold through `issuer`'s cards, and its limit in each spend window period.
+        function setMerchantMandate(address issuer, bytes32 merchant, bool revoked, uint96 limit) external;
+        /// Reads an owner's spend window for an issuer, as of now; a zero `periodEnd` is no window.
+        function spendWindow(address owner, address issuer) external view returns (uint32 periodEnd, uint96 limit, uint96 committed);
+        /// Reads an owner's mandate for a merchant under an issuer, as of now.
+        function merchantMandate(address owner, address issuer, bytes32 merchant) external view returns (bool revoked, uint96 limit, uint96 committed);
+
         /// Reads an owner's account record; an owner never recorded reads Active.
         function getAccount(address owner) external view returns (Account memory);
         /// Reads an authority's registry entry in a role.
@@ -96,6 +108,8 @@ crate::sol! {
         event ProgramTokensSet(address indexed payee, address[] tokens);
         event AccountStatusSet(address indexed owner, AccountStatus status, address agent);
         event AccountSwept(address indexed owner, address indexed token, address indexed to, uint128 debtRepaid, uint128 paid);
+        event SpendWindowSet(address indexed owner, address indexed issuer, uint32 periodEnd, uint96 limit);
+        event MerchantMandateSet(address indexed owner, address indexed issuer, bytes32 indexed merchant, bool revoked, uint96 limit);
         event AuthoritySet(address indexed authority, Role role, bool listed, address payout, uint32 dormancy, uint32 escheatAfter);
 
         error CardExists();
@@ -109,5 +123,7 @@ crate::sol! {
         error AccountInactive();
         error AccountStateInvalid();
         error HoldsOpen();
+        error MerchantRevoked();
+        error WindowLimitExceeded();
     }
 }

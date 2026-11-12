@@ -42,6 +42,16 @@ impl Precompile for Cards {
                     setAuthority(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_authority(sender, c)
                     }),
+                    setSpendWindow(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_spend_window(sender, c)
+                    }),
+                    setMerchantMandate(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_merchant_mandate(sender, c)
+                    }),
+                    spendWindow(call) => view(call, |c| self.spend_window(c.owner, c.issuer)),
+                    merchantMandate(call) => view(call, |c| {
+                        self.merchant_mandate(c.owner, c.issuer, c.merchant)
+                    }),
                     getAccount(call) => view(call, |c| self.get_account(c.owner)),
                     authorityOf(call) => view(call, |c| self.authority_of(c.authority, c.role)),
                     getCard(call) => view(call, |c| self.get_card(c.payee, c.card)),
