@@ -119,16 +119,19 @@ pub(crate) struct AdmissionMetrics {
     pub(crate) batch_size: Histogram,
 
     /// Time one validation of an admission batch takes in seconds, from handing it to the
-    /// validation tasks to receiving its outcomes. Includes the wait for a free task, which
+    /// validation tasks to inserting its last outcome. Includes the wait for a free task, which
     /// [`ValidationMetrics::batch_duration_seconds`] leaves out.
     pub(crate) validation_duration_seconds: Histogram,
+
+    /// Validated transactions an admission hands to the pool together.
+    pub(crate) insert_group_size: Histogram,
 }
 
 /// Transaction validator metrics.
 #[derive(Metrics, Clone)]
 #[metrics(scope = "transaction_pool.validation")]
 pub(crate) struct ValidationMetrics {
-    /// Time a validation task spends on one batch in seconds: opening the tip's state and
-    /// validating every transaction in the batch against it.
+    /// Time a validation task spends on one batch in seconds: opening the tip's state, again
+    /// whenever the admission epoch advances, and validating every transaction in the batch.
     pub(crate) batch_duration_seconds: Histogram,
 }

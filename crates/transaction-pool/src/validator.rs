@@ -119,8 +119,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     active_hardfork: AtomicU8,
     metrics: ValidationMetrics,
     /// Advanced before the pool is repaired for a canonical update. Validation stamps each
-    /// transaction with the value it read before opening state, and admission inserts, under the
-    /// read lock, only transactions stamped with the current value.
+    /// transaction with the value it read before opening that transaction's state, and admission
+    /// inserts, under the read lock, only transactions stamped with the current value.
     pub(crate) admission_epoch: RwLock<u64>,
 }
 
@@ -358,44 +358,65 @@ where
         Ok(())
     }
 
-    /// Validates a batch of transactions against the same state snapshot.
+    /// Validates each transaction against the tip's state and passes its outcome to `on_outcome`
+    /// before validating the next, in the order of `transactions`.
     ///
-    /// All transactions share the validator's tip-scoped [`StateCache`], so repeated state reads
-    /// are served from memory across transactions and across concurrent validation calls.
+    /// Stamps each transaction with the admission epoch read before its state was opened, and
+    /// opens the tip's state again once the epoch advances, so the transactions that follow are
+    /// validated against the state the pool was repaired for. A failure to open state passes an
+    /// error outcome for every transaction left.
     ///
-    /// `admission_epoch` is the admission epoch read before `state_provider` was opened.
-    fn validate_batch<P: StateProvider>(
+    /// Transactions validated against one state share an EVM and the validator's tip-scoped
+    /// [`StateCache`], so repeated state reads are served from memory across transactions and across
+    /// concurrent validation calls.
+    pub(crate) fn validate_each(
         &self,
-        admission_epoch: u64,
-        state_provider: P,
-        cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
-    ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let db = StateCacheDb::new(
-            &cached_state,
-            StateProviderDatabase::new(
-                (&state_provider as &dyn StateProvider).into_evm_state_provider(),
-            ),
-        );
-        let mut evm_env = self
-            .cached_evm_env
-            .read()
-            .clone()
-            .with_nonce_check_disabled();
-        evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
+        mut on_outcome: impl FnMut(TransactionValidationOutcome<TempoPooledTransaction>),
+    ) {
+        let start = Instant::now();
+        let mut transactions = transactions.into_iter().peekable();
+        while transactions.peek().is_some() {
+            let admission_epoch = *self.admission_epoch.read();
+            let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    for (_, transaction) in transactions {
+                        on_outcome(TransactionValidationOutcome::Error(
+                            *transaction.hash(),
+                            Box::new(err.clone()),
+                        ));
+                    }
+                    break;
+                }
+            };
+            let db = StateCacheDb::new(
+                &cached_state,
+                StateProviderDatabase::new(
+                    (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+                ),
+            );
+            let mut evm_env = self
+                .cached_evm_env
+                .read()
+                .clone()
+                .with_nonce_check_disabled();
+            evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
 
-        // Reuse the configured EVM and its loaded reads for the whole batch.
-        let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
-        evm.ext_mut().skip_valid_after_check = true;
-        evm.ext_mut().skip_liquidity_check = true;
+            // Reuse the configured EVM and its loaded reads until the epoch advances.
+            let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
+            evm.ext_mut().skip_valid_after_check = true;
+            evm.ext_mut().skip_liquidity_check = true;
 
-        transactions
-            .into_iter()
-            .map(|(origin, mut transaction)| {
+            for (origin, mut transaction) in transactions.by_ref() {
                 transaction.set_admission_epoch(admission_epoch);
-                self.validate_one_with_evm(origin, transaction, &mut evm)
-            })
-            .collect()
+                on_outcome(self.validate_one_with_evm(origin, transaction, &mut evm));
+                if *self.admission_epoch.read() != admission_epoch {
+                    break;
+                }
+            }
+        }
+        self.metrics.batch_duration_seconds.record(start.elapsed());
     }
 
     /// Returns the current tip's state provider and matching read cache.
@@ -793,26 +814,13 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let start = Instant::now();
-        let admission_epoch = *self.admission_epoch.read();
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
-
-        let outcome = self
-            .validate_batch(
-                admission_epoch,
-                state_provider,
-                cached_state,
-                core::iter::once((origin, transaction)),
-            )
+        let mut outcomes = Vec::with_capacity(1);
+        self.validate_each(core::iter::once((origin, transaction)), |outcome| {
+            outcomes.push(outcome)
+        });
+        outcomes
             .pop()
-            .expect("validate_batch returns one outcome per transaction");
-        self.metrics.batch_duration_seconds.record(start.elapsed());
-        outcome
+            .expect("validate_each passes one outcome per transaction")
     }
 
     async fn validate_transactions(
@@ -820,23 +828,8 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let start = Instant::now();
-        let admission_epoch = *self.admission_epoch.read();
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|(_, tx)| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        let outcomes =
-            self.validate_batch(admission_epoch, state_provider, cached_state, transactions);
-        self.metrics.batch_duration_seconds.record(start.elapsed());
+        let mut outcomes = Vec::new();
+        self.validate_each(transactions, |outcome| outcomes.push(outcome));
         outcomes
     }
 
@@ -845,27 +838,10 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let start = Instant::now();
-        let admission_epoch = *self.admission_epoch.read();
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        let outcomes = self.validate_batch(
-            admission_epoch,
-            state_provider,
-            cached_state,
-            transactions.into_iter().map(|tx| (origin, tx)),
-        );
-        self.metrics.batch_duration_seconds.record(start.elapsed());
+        let mut outcomes = Vec::new();
+        self.validate_each(transactions.into_iter().map(|tx| (origin, tx)), |outcome| {
+            outcomes.push(outcome)
+        });
         outcomes
     }
 
