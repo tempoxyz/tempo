@@ -12,6 +12,7 @@ use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
 use alloy_primitives::{Bytes, TxHash, U256};
 use alloy_sol_types::SolCall;
+use futures::StreamExt as _;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
@@ -282,6 +283,11 @@ where
                     chain_id,
                     prepared.header.number(),
                 );
+                // Subscribe before the snapshot so no arrival falls between them.
+                let arrivals = self
+                    .pool
+                    .new_pending_pool_transactions_listener()
+                    .map(|event| event.transaction);
                 let mut size = 0usize;
                 let transactions = self
                     .pool
@@ -294,7 +300,7 @@ where
                     });
                 (
                     context.start(&self.task_executor, prepared),
-                    context.start_pool(&self.task_executor, transactions),
+                    context.start_pool(&self.task_executor, transactions, arrivals),
                 )
             }
             TempoImport::CheckpointOnly(_) => Default::default(),
