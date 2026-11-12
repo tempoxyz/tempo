@@ -71,6 +71,13 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         // The accepted cache keys mirrored slots without their anchor. That is sound because a
         // Zone EVM executes one block, whose committed opening advanceTempo is its only anchor change.
         self.l1.begin_transaction(initial_anchor);
+        // Evict accounts loaded without an anchor unless written since, such as by state overrides.
+        let cached = &mut request.host.state_mut().overlay_db_mut().cache.accounts;
+        for (address, info) in self.l1.take_unanchored_accounts() {
+            if cached.get(&address) == Some(&info) {
+                cached.remove(&address);
+            }
+        }
 
         let tx_hash = match request.envelope.execution_context() {
             ExecutionContext::Transaction { tx_hash } => tx_hash,
@@ -137,17 +144,25 @@ pub(crate) mod tests {
         registry::{HandlerError, TxRegistry, TxRequest, handler},
     };
     use reth_chainspec::EthChainSpec;
-    use reth_evm::{BlockExecutor, BlockExecutorFactory, ConfigureEvm};
+    use reth_evm::{BlockExecutor, BlockExecutorFactory, ConfigureEvm, Evm};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
-    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
+    use tempo_contracts::{
+        precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount},
+        zones::IZoneOutbox,
+    };
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
     };
-    use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, storage::StorageCtx};
+    use tempo_precompiles::{
+        DEFAULT_FEE_TOKEN, TIP403_REGISTRY_ADDRESS,
+        storage::{StorageCtx, StorageKey},
+        tip20::slots::{BALANCES, TRANSFER_POLICY_ID, TRANSFER_POLICY_ID_OFFSET},
+        tip403_registry::ALLOW_ALL_POLICY_ID,
+    };
     use tempo_primitives::{
         TempoEvmKind, TempoTxEnvelope,
         transaction::{
@@ -160,7 +175,7 @@ pub(crate) mod tests {
         ADVANCE_TEMPO_SELECTOR, ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader,
         zone_fee_manager,
     };
-    use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
+    use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, zone_chain_id};
 
     /// A dev Zone EVM config that reads Tempo through `l1`.
     pub(crate) fn config(l1: MockL1Reader) -> ZoneEvmConfig<MockL1Reader> {
@@ -434,6 +449,74 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn l1_read_gas_is_independent_of_discarded_attempt() {
+        let sender = Address::repeat_byte(0x01);
+        let tx = transaction(
+            sender,
+            TxLegacy {
+                nonce: 1,
+                gas_price: 20_000_000_000_000,
+                gas_limit: 1_000_000,
+                to: TxKind::Call(ZONE_OUTBOX_ADDRESS),
+                input: IZoneOutbox::pendingWithdrawalsCountCall {}
+                    .abi_encode()
+                    .into(),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        let precompile = AccountInfo::default().with_code(evm2::bytecode::Bytecode::new_raw(
+            alloy_primitives::Bytes::from_static(&[0xef]),
+        ));
+
+        // Gas of [discarded, retry, fresh replay]. T13 fee txs keep their cache-dependent gas.
+        for (hardfork, is_fee, expected) in [
+            (TempoHardfork::T13, false, [27_394; 3]),
+            (TempoHardfork::T13, true, [25_294, 27_394, 25_294]),
+            (TempoHardfork::T14, false, [39_994; 3]),
+            (TempoHardfork::T14, true, [39_994; 3]),
+            (TempoHardfork::T15, false, [39_994; 3]),
+            (TempoHardfork::T15, true, [39_994; 3]),
+        ] {
+            let l1 = MockL1Reader::default();
+            l1.seed_active_sequencer(Address::ZERO, 0, sender);
+            let make_evm = || {
+                let mut db = sender_db(sender);
+                db.insert_account_info(&DEFAULT_FEE_TOKEN, precompile.clone());
+                db.insert_account_info(&TIP403_REGISTRY_ADDRESS, precompile.clone());
+                db.insert_account_storage(
+                    &DEFAULT_FEE_TOKEN,
+                    &TRANSFER_POLICY_ID,
+                    &(U256::from(ALLOW_ALL_POLICY_ID) << (TRANSFER_POLICY_ID_OFFSET * 8)),
+                );
+                db.insert_account_storage(
+                    &DEFAULT_FEE_TOKEN,
+                    &sender.mapping_slot(BALANCES),
+                    &U256::from(u64::MAX),
+                );
+                let mut env = fee_free_env(hardfork);
+                env.version
+                    .features
+                    .remove(evm2::EvmFeatures::BALANCE_CHECK);
+                if is_fee {
+                    env.version.features.insert(evm2::EvmFeatures::FEE_CHARGE);
+                }
+                BlockExecutorFactory::evm_with_env(&config(l1.clone()), db, env)
+            };
+            let (mut builder, mut replay) = (make_evm(), make_evm());
+
+            // Discarding keeps the host cache warm but resets the selected L1 anchor.
+            let results = [
+                builder.transact(&tx).unwrap().discard(),
+                builder.transact(&tx).unwrap().discard(),
+                replay.transact(&tx).unwrap().discard(),
+            ];
+            assert!(results.iter().all(|result| result.status));
+            assert_eq!(results.map(|result| result.tx_gas_used()), expected);
+        }
+    }
+
+    #[test]
     fn configurable_account_precompile_reads_tempo_and_rejects_writes() {
         let (sender, account) = (Address::repeat_byte(0x01), Address::repeat_byte(0x04));
         let commitment = B256::repeat_byte(7);
@@ -489,5 +572,48 @@ pub(crate) mod tests {
                 IConfigurableAccount::UnsupportedOnZone {}.abi_encode()
             );
         }
+    }
+
+    /// Accounts loaded outside a transaction, as `eth_callBundle` loads its coinbase, reload at
+    /// the next transaction's anchor unless written in between.
+    #[test]
+    fn transaction_reloads_accounts_loaded_outside_transactions() {
+        let (retired, written) = (Address::repeat_byte(0x0b), Address::repeat_byte(0x0c));
+        let l1 = MockL1Reader::default();
+        l1.insert_commitment(retired, 0, B256::repeat_byte(7));
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &config(l1),
+            sender_db(Address::ZERO),
+            fee_free_env(TempoHardfork::T14),
+        );
+
+        // Both load with their zone-local view, then `written` is overridden in the cache.
+        assert_eq!(Evm::account_info(&mut evm, &retired).unwrap(), None);
+        assert_eq!(Evm::account_info(&mut evm, &written).unwrap(), None);
+        let overridden = AccountInfo::default().with_balance(U256::from(5));
+        evm.state_mut()
+            .overlay_db_mut()
+            .insert_account_info(&written, overridden.clone());
+
+        // The commitment retires the primitive root key that signs this legacy transaction.
+        let tx = TxLegacy {
+            gas_limit: 100_000,
+            to: written.into(),
+            ..Default::default()
+        };
+        let error = evm
+            .transact(&transaction(
+                retired,
+                tx.into_signed(Signature::test_signature()),
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::RootKeyRetired { account, .. }) if *account == retired
+        ));
+        assert_eq!(
+            Evm::account_info(&mut evm, &written).unwrap(),
+            Some(overridden)
+        );
     }
 }

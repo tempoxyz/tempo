@@ -178,14 +178,17 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
         let mut info = self.inner.get_account(address)?;
         // Only accounts without zone code carry a Tempo commitment (TIP-1154): zones reject
         // authorization lists and contract creation, so code belongs to a protocol contract.
-        // Outside a zone transaction, such as in block-level system calls, accounts load with
-        // their zone-local view.
         if !self.spec.is_t14()
             || info.as_ref().is_some_and(|info| !info.is_empty_code_hash())
             || !valid_account(*address, self.spec)
             || is_zone_precompile(*address, self.spec)
-            || self.l1.initial_anchor().is_none()
         {
+            return Ok(info);
+        }
+        // Outside a zone transaction, such as in block-level system calls, accounts load with
+        // their zone-local view. The next transaction evicts them so it reloads them anchored.
+        if self.l1.initial_anchor().is_none() {
+            self.l1.record_unanchored_account(*address, info.clone());
             return Ok(info);
         }
 

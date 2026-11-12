@@ -5,11 +5,15 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use core::fmt;
+use core::{fmt, mem};
 
-use alloy_primitives::{Address, B256, U256, map::HashSet};
+use alloy_primitives::{
+    Address, B256, U256,
+    map::{AddressMap, HashSet},
+};
 use evm2::{
     AnyError,
+    evm::AccountInfo,
     interpreter::gas::{
         COLD_SLOAD_COST as EVM2_COLD_SLOAD_COST,
         WARM_STORAGE_READ_COST as EVM2_WARM_STORAGE_READ_COST,
@@ -80,14 +84,17 @@ pub struct L1State<P> {
     /// Committed Zone checkpoint captured from the EVM overlay at transaction entry.
     /// This is a fallback for database reads, not a selected L1 view.
     initial_anchor: Arc<Mutex<Option<U256>>>,
-    /// Tempo block number selected for the current transaction attempt.
-    anchor: Arc<Mutex<Option<u64>>>,
+    /// Tempo block number selected for the current transaction attempt, and whether the attempt
+    /// charged the `TempoState` checkpoint read (unmetered host loads can also select the anchor).
+    anchor: Arc<Mutex<Option<(u64, bool)>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
     /// Used for cold/warm gas accounting. Unlike REVM's journal, this access set is not rolled back
     /// when a subcall reverts, preserving charges for potentially incurred L1 fetch work and
     /// simplifying the accounting model.
     access_set: Arc<Mutex<HashSet<(Address, B256)>>>,
+    /// Accounts loaded outside a transaction, with the zone-local view returned for them.
+    unanchored_accounts: Arc<Mutex<AddressMap<Option<AccountInfo>>>>,
     /// Underlying cache/RPC-backed reader for storage at an explicit Tempo block number.
     provider: P,
     /// ZonePortal read through the L1 provider by explicit storage operations.
@@ -101,6 +108,7 @@ impl<P> L1State<P> {
             initial_anchor: Arc::new(Mutex::new(None)),
             anchor: Arc::new(Mutex::new(None)),
             access_set: Arc::new(Mutex::new(HashSet::default())),
+            unanchored_accounts: Arc::new(Mutex::new(AddressMap::default())),
             provider,
             portal_address,
         }
@@ -127,7 +135,17 @@ impl<P> L1State<P> {
 
     /// Returns the anchor selected for the current transaction, if any.
     pub fn get_anchor(&self) -> Option<u64> {
-        *self.anchor.lock()
+        self.anchor.lock().map(|(anchor, _)| anchor)
+    }
+
+    /// Records the zone-local view of `account` returned without a transaction anchor.
+    pub fn record_unanchored_account(&self, account: Address, info: Option<AccountInfo>) {
+        self.unanchored_accounts.lock().insert(account, info);
+    }
+
+    /// Takes the accounts recorded by [`Self::record_unanchored_account`] since the last call.
+    pub fn take_unanchored_accounts(&self) -> AddressMap<Option<AccountInfo>> {
+        mem::take(&mut *self.unanchored_accounts.lock())
     }
 
     /// Returns the configured ZonePortal address.
@@ -139,11 +157,11 @@ impl<P> L1State<P> {
         let mut anchor = self.anchor.lock();
         match *anchor {
             None => {
-                *anchor = Some(new);
+                *anchor = Some((new, false));
                 Ok(())
             }
-            Some(current) if current == new => Ok(()),
-            Some(current) => Err(L1StateError::AnchorConflict { current, new }),
+            Some((current, _)) if current == new => Ok(()),
+            Some((current, _)) => Err(L1StateError::AnchorConflict { current, new }),
         }
     }
 
@@ -157,11 +175,12 @@ impl<P> L1State<P> {
         }
 
         let mut anchor = self.anchor.lock();
-        if let Some(current) = *anchor {
+        if let Some((current, _)) = *anchor {
             return Err(L1StateError::AnchorConflict { current, new: to });
         }
 
-        *anchor = Some(to);
+        // `finalizeTempo` charged the checkpoint read, and an earlier selection fails above.
+        *anchor = Some((to, true));
         Ok(())
     }
 }
@@ -348,9 +367,19 @@ struct L1Storage<'a, P> {
 
 impl<P: L1StorageReader> StorageOps for L1Storage<'_, P> {
     fn load(&self, slot: U256) -> tempo_precompiles::Result<U256> {
-        let anchor = match self.l1.get_anchor() {
-            Some(anchor) => anchor,
-            None => TempoState::new().tempo_block_number.read()?,
+        let is_t14 = StorageCtx::default().spec().is_t14();
+        let selected = *self.l1.anchor.lock();
+        let anchor = match selected {
+            Some((anchor, charged)) if charged || !is_t14 => anchor,
+            // From T14, charge the checkpoint once per attempt even if a host load selected it.
+            _ => {
+                let checkpoint = TempoState::new().tempo_block_number.read()?;
+                let anchor = selected.map_or(checkpoint, |(anchor, _)| anchor);
+                if is_t14 {
+                    *self.l1.anchor.lock() = Some((anchor, true));
+                }
+                anchor
+            }
         };
         self.l1
             .read_l1_storage(self.account, slot.into(), anchor)
