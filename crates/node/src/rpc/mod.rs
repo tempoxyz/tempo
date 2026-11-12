@@ -38,7 +38,7 @@ use reth_ethereum::tasks::{
     Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
-use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
+use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, DynDatabase, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx, RpcNodeCoreFor};
 use reth_provider::{ChainSpecProvider, ProviderError, StateProvider as _};
@@ -367,6 +367,16 @@ where
         self.inner.evm_memory_limit()
     }
 
+    fn simulate_call_nonce(
+        &self,
+        request: &TempoTransactionRequest,
+        db: &mut dyn DynDatabase,
+    ) -> Result<Option<u64>, EthApiError> {
+        Ok(nonce_key_nonce(request, |slot| {
+            db.get_storage(&NONCE_PRECOMPILE_ADDRESS, &slot)
+        })?)
+    }
+
     /// Returns the max gas limit that the caller can afford given a transaction environment.
     fn caller_gas_allowance(
         &self,
@@ -414,20 +424,12 @@ where
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
-        if let Some(nonce_key) = request.nonce_key
-            && !nonce_key.is_zero()
-            && request.nonce.is_none()
-        {
-            let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-                0 // expiring nonce must be 0
-            } else {
-                // 2D nonce: fetch from storage
-                let slot =
-                    NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
+        if request.nonce.is_none()
+            && let Some(nonce) = nonce_key_nonce(&request, |slot| {
                 db.get_storage(&NONCE_PRECOMPILE_ADDRESS, &slot)
-                    .map_err(Into::into)?
-                    .saturating_to()
-            };
+                    .map_err(Into::into)
+            })?
+        {
             request.nonce = Some(nonce);
         }
 
@@ -641,6 +643,23 @@ fn next_lane_nonce(
         }
         _ => Ok(on_chain_nonce),
     }
+}
+
+/// Returns the current nonce of the lane a request's `nonceKey` selects, reading `NonceManager`
+/// storage through `read_slot`, or `None` for the protocol nonce.
+fn nonce_key_nonce<E>(
+    request: &TempoTransactionRequest,
+    read_slot: impl FnOnce(U256) -> Result<U256, E>,
+) -> Result<Option<u64>, E> {
+    let Some(nonce_key) = request.nonce_key.filter(|key| !key.is_zero()) else {
+        return Ok(None);
+    };
+    if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+        // expiring nonce must be 0
+        return Ok(Some(0));
+    }
+    let slot = NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
+    Ok(Some(read_slot(slot)?.saturating_to()))
 }
 
 #[cfg(test)]

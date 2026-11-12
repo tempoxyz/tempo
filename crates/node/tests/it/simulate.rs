@@ -1,12 +1,18 @@
 use alloy::{
     hex,
-    primitives::{Address, U256, address},
+    primitives::{Address, Bytes, TxKind, U256, address},
     providers::{Provider, ProviderBuilder},
+    rpc::types::{
+        TransactionRequest,
+        simulate::{SimBlock, SimulatePayload},
+    },
 };
 use reth_e2e_test_utils::wallet::test_signer;
 use serde_json::json;
+use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_node::rpc::simulate::TempoSimulateV1Response;
+use tempo_primitives::transaction::tempo_transaction::Call;
 
 use crate::utils::{TestNodeBuilder, setup_test_token};
 
@@ -139,5 +145,52 @@ async fn test_simulate_block_gas_override_exceeds_general_limit() -> eyre::Resul
             assert!(gas_used > U256::from(1_000_000), "{method}: {response}");
         }
     }
+    Ok(())
+}
+
+/// Calls on a `nonceKey` lane without a nonce simulate with the lane's nonce, not the sender's
+/// protocol nonce.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_simulate_fills_nonce_key_nonces() -> eyre::Result<()> {
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let wallet = test_signer(0);
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(setup.http_url);
+    // Moves the protocol nonce past the lane nonce.
+    setup_test_token(provider.clone(), caller).await?;
+
+    let call = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(caller),
+            gas: Some(1_000_000),
+            max_fee_per_gas: Some(TEMPO_T1_BASE_FEE as u128),
+            ..Default::default()
+        },
+        nonce_key: Some(U256::from(42)),
+        calls: vec![Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let payload = SimulatePayload {
+        block_state_calls: vec![SimBlock {
+            block_overrides: None,
+            state_overrides: None,
+            calls: vec![call.clone(), call],
+        }],
+        trace_transfers: false,
+        validation: true,
+        return_full_transactions: true,
+    };
+    let response: TempoSimulateV1Response<serde_json::Value> = provider
+        .raw_request("tempo_simulateV1".into(), (payload,))
+        .await?;
+    let txs = &response.blocks[0].inner["transactions"];
+    assert_eq!(txs[0]["nonce"], "0x0");
+    assert_eq!(txs[1]["nonce"], "0x1");
     Ok(())
 }
