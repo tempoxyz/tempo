@@ -73,10 +73,9 @@ jobs:
               - '!tips/*.md'
               - '!crates/node/tests/it/**'
               - '!crates/zones/node/tests/**'
-              # The fuzzer and corpus crates are never linked into these images.
-              - '!crates/corpus/**'
+              # The fuzzer crates are never linked into these images. corpus and
+              # fuzz-types are, through the network-e2e image's corpus feature.
               - '!crates/fuzz-harness/**'
-              - '!crates/fuzz-types/**'
               - '!crates/invariants/**'
               - '!crates/nitro-attestation/fuzz/**'
       - name: Detect Reth revision changes
@@ -113,6 +112,7 @@ jobs:
       pull-requests: read
       packages: write
       id-token: write
+      attestations: write
     # Pinned CI actionlint 1.7.12 does not support the newer $/ syntax yet.
     uses: ./.github/workflows/docker.yml # zizmor: ignore[self-repository]
     secrets: inherit # zizmor: ignore[secrets-inherit]
@@ -151,7 +151,7 @@ jobs:
         run: |
           set -euo pipefail
           # Never dispatch with an empty, mutable, or independently reconstructed tag.
-          [[ "$IMAGE_TAG" =~ ^network-e2e-[0-9]{1,20}-[0-9]{1,5}$ ]]
+          [[ "$IMAGE_TAG" =~ ^ci-[0-9]{1,20}-[0-9]{1,5}$ ]]
           trap 'rm -f "$RUNNER_TEMP/network-e2e.key" "$RUNNER_TEMP/network-e2e.crt"' EXIT
           umask 077
           printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/network-e2e.key"
@@ -162,6 +162,31 @@ jobs:
           curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
             --retry 3 --retry-all-errors ${{ secrets.EVENTS_ARGS }} \
             --key "$RUNNER_TEMP/network-e2e.key" --cert "$RUNNER_TEMP/network-e2e.crt" \
+            -H 'Content-Type: application/json' --data "$payload"
+      - name: Submit corpus replay event
+        # Every merge group whose image was built, not only network-relevant ones, so execution
+        # changes get the cmin replay too. Its status is advisory and must not fail this job.
+        if: github.event_name == 'merge_group' && needs.build.result == 'success'
+        continue-on-error: true
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          SHA: ${{ github.event.merge_group.head_sha }}
+          BRANCH: ${{ github.ref_name }}
+          IMAGE_TAG: ${{ needs.build.outputs.tempo_image_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_TAG" =~ ^ci-[0-9]{1,20}-[0-9]{1,5}$ ]]
+          trap 'rm -f "$RUNNER_TEMP/corpus-replay.key" "$RUNNER_TEMP/corpus-replay.crt"' EXIT
+          umask 077
+          printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/corpus-replay.key"
+          printf '%s' "$EVENTS_CERT" > "$RUNNER_TEMP/corpus-replay.crt"
+          payload=$(jq -n --arg sha "$SHA" --arg branch "$BRANCH" \
+            --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --arg tag "$IMAGE_TAG" \
+            '{repository:"tempoxyz/tempo", event:"tempo_corpus_replay", data:{sha:$sha, branch:$branch, run:$run, tag:$tag}}')
+          curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
+            --retry 3 --retry-all-errors ${{ secrets.EVENTS_ARGS }} \
+            --key "$RUNNER_TEMP/corpus-replay.key" --cert "$RUNNER_TEMP/corpus-replay.crt" \
             -H 'Content-Type: application/json' --data "$payload"
       - name: Report skipped tests or dispatch failure
         if: always()

@@ -112,6 +112,8 @@ ZONES_BENCH_WITHDRAWAL_TX_GAS_LIMIT="${ZONES_BENCH_WITHDRAWAL_TX_GAS_LIMIT:-1000
 ZONES_BENCH_APPROVAL_GAS_LIMIT="${ZONES_BENCH_APPROVAL_GAS_LIMIT:-2000000}"
 ZONES_BENCH_ADMISSION_SEED_AMOUNT="${ZONES_BENCH_ADMISSION_SEED_AMOUNT:-1}"
 ZONES_BENCH_ADMISSION_SEED_TPS="${ZONES_BENCH_ADMISSION_SEED_TPS:-200}"
+# Stays below ZonePortal.MAX_UNPROCESSED_DEPOSITS (230).
+ZONES_BENCH_ADMISSION_SEED_MAX_CONCURRENT="${ZONES_BENCH_ADMISSION_SEED_MAX_CONCURRENT:-100}"
 ZONES_BENCH_RECIPIENT_ACCOUNT_START="${ZONES_BENCH_RECIPIENT_ACCOUNT_START:-$ZONES_BENCH_ACCOUNT_START}"
 ZONES_BENCH_RECIPIENT_ACCOUNT_END="${ZONES_BENCH_RECIPIENT_ACCOUNT_END:-$ZONES_BENCH_ACCOUNT_END}"
 if [[ -z "${ZONES_BENCH_RECIPIENT_GENERATOR:-}" ]]; then
@@ -478,7 +480,8 @@ trap cleanup EXIT INT TERM
 run_setup_scenario() {
     local stage="$1" scenario="$2" count="$3" report="$4" context="${5:-}"
     local starts_per_second="${6:-0}"
-    local concurrency="$ZONES_BENCH_MAX_CONCURRENT"
+    local concurrency="${7:-$ZONES_BENCH_MAX_CONCURRENT}"
+    if (( 10#$concurrency > 10#$ZONES_BENCH_MAX_CONCURRENT )); then concurrency="$ZONES_BENCH_MAX_CONCURRENT"; fi
     if (( 10#$concurrency > 10#$count )); then concurrency="$count"; fi
 
     echo "neobank stage=start run_id=$ZONES_BENCH_RUN_ID preset=$ZONES_BENCH_NEOBANK_PRESET stage=$stage${context:+ $context}"
@@ -495,9 +498,9 @@ run_setup_scenario() {
 # balance of an enabled token. Run one exact encrypted onramp per benchmark
 # account before the untimed outbox approvals. Pace the deposits so a large
 # account pool is not packed into one L1 block and rejected by ZonePortal's
-# per-block deposit cap. This setup scenario uses account leases, so
-# count=accounts touches every account exactly once while respecting the
-# configured max-in-flight cap.
+# per-block deposit cap, and keep deposits in flight below its unprocessed-deposit
+# cap. This setup scenario uses account leases, so count=accounts touches every
+# account exactly once.
 seed_zone_admission_balances() {
     local seed_report="$ZONES_BENCH_OUTPUT/admission-seed-report.json"
     local total=$((10#$ZONES_BENCH_ACCOUNTS))
@@ -505,7 +508,7 @@ seed_zone_admission_balances() {
     run_setup_scenario \
         zone_admission_seed "$admission_seed_scenario" "$total" "$seed_report" \
         "starts_per_second=$ZONES_BENCH_ADMISSION_SEED_TPS" \
-        "$ZONES_BENCH_ADMISSION_SEED_TPS"
+        "$ZONES_BENCH_ADMISSION_SEED_TPS" "$ZONES_BENCH_ADMISSION_SEED_MAX_CONCURRENT"
     echo "Zone admission seed verified: $total/$total exact encrypted deposits processed"
 }
 

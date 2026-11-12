@@ -703,6 +703,14 @@ def txgen-zone-count [preset_name: string, automatic: int] {
     $env.TXGEN_ZONE_COUNT? | default ($pinned | default $automatic) | into int
 }
 
+# Settlement fixtures anchor batches to Tempo block `block.number - offset`; the portal needs that
+# block's hash from EIP-2935. Nodes whose history contract lags the head need a larger offset.
+def txgen-zone-anchor-offset [] {
+    let offset = ($env.TXGEN_ZONE_ANCHOR_OFFSET? | default "1" | into int)
+    if $offset < 1 { error make {msg: "TXGEN_ZONE_ANCHOR_OFFSET must be positive"} }
+    $offset
+}
+
 # Sends zone settlement and Earn deposits from users[0] with ordered nonces.
 def txgen-single-sender-templates [templates: record] {
     $templates | items { |name, template|
@@ -785,7 +793,7 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     if $mode not-in [mixed deposit withdraw] { error make {msg: "TXGEN_ZONE_MODE must be mixed, deposit, or withdraw"} }
     let spec = (open $spec_path)
     let token = "0x20c0000000000000000000000000000000000000"
-    mut steps = [$spec.setup.steps.0]
+    mut steps = [($spec.setup.steps.0 | update deploy.constructor_args.0 (txgen-zone-anchor-offset))]
     # Each portal deploys through CreateX (salt = zone, so its address doesn't depend on a nonce)
     # on its own 2D nonce lane, which its funding step reuses: portals deploy in parallel from
     # one sender instead of queueing on the deployer's protocol nonce.
@@ -802,44 +810,48 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
             | update tx.calls.0.args [{var: $"setup.portal_($zone).address"} $count]))
     }
     let groups = if ($groups | is-empty) { [{users: [0 $accounts], zones: [0 $zones]}] } else { $groups }
-    mut templates = {}
-    mut mix = []
-    mut pair = 0
-    for group in $groups {
+    let pair_counts = ($groups | each { |group| [($group.users.1 - $group.users.0) ($group.zones.1 - $group.zones.0)] | math max })
+    # Build each user's rows in one pass: appending to a list or record per user copies it,
+    # which made rendering quadratic in accounts.
+    let rows = ($groups | enumerate | each { |item|
+        let group = $item.item
+        let first_pair = ($pair_counts | take $item.index | append 0 | math sum)
         let group_users = $group.users.1 - $group.users.0
         let group_zones = $group.zones.1 - $group.zones.0
-        let pairs = ([$group_users $group_zones] | math max)
+        let pairs = ($pair_counts | get $item.index)
         let minimum_per_zone = ($pairs // $group_zones)
-        for offset in 0..<$pairs {
+        0..<$pairs | each { |offset|
+            let pair = $first_pair + $offset
             let user = $group.users.0 + ($offset mod $group_users)
             let zone_offset = $offset mod $group_zones
             let zone = $group.zones.0 + $zone_offset
             let portal = {var: $"setup.portal_($zone).address"}
             let account = {pool: users, select: {index: $user}}
             let recipient = {pool: $account}
-            if $mode != withdraw {
-                $steps = ($steps | append ($spec.setup.steps.2 | update id $"approve_($pair)"
+            let approve = if $mode != withdraw {
+                $spec.setup.steps.2 | update id $"approve_($pair)"
                     | update tx.from $account
                     | update tx.calls [{to: $token, abi: ERC20, function: approve,
-                        args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]))
-            }
+                        args: [$portal "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]}]
+            } else { null }
             let per_zone = $minimum_per_zone + (if $zone_offset < ($pairs mod $group_zones) { 1 } else { 0 })
             let weight = $minimum_per_zone * ($minimum_per_zone + 1) // $per_zone
-            for kind in (if $mode == mixed { [deposit withdraw] } else { [$mode] }) {
-                let name = $"zone_($kind)_($pair)"
+            let entries = ((if $mode == mixed { [deposit withdraw] } else { [$mode] }) | each { |kind|
                 mut template = ($spec.templates | get $"zone_($kind)" | update from $account)
                 if $kind == deposit {
                     $template = ($template | update calls.0.to $portal | update calls.0.args.4 $recipient)
                 }
                 let settlement_index = if $kind == deposit { 1 } else { 0 }
                 let call = ($template.calls | get $settlement_index | update args [$portal $token $recipient ($kind == withdraw)])
-                $template = ($template | update calls ($template.calls | update $settlement_index $call))
-                $templates = ($templates | insert $name $template)
-                $mix = ($mix | append {template: $name, weight: $weight})
-            }
-            $pair = $pair + 1
+                {name: $"zone_($kind)_($pair)", template: ($template | update calls ($template.calls | update $settlement_index $call)), weight: $weight}
+            })
+            {approve: $approve, entries: $entries}
         }
-    }
+    } | flatten)
+    let steps = ($steps | append ($rows | get approve | compact))
+    let entries = ($rows | get entries | flatten)
+    let templates = ($entries | select name template | transpose -r -d)
+    let mix = ($entries | each { |entry| {template: $entry.name, weight: $entry.weight} })
     let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
     mkdir $output_dir
     let output = ($output_dir | path join zones.yml)
@@ -880,7 +892,7 @@ def txgen-prepare-zone-to-zone-preset [spec_path: string, count: int, accounts: 
     let withdraw_call = ($spec.templates.zone_withdraw.calls | first)
     # Closed portals only pay plain withdrawals to their allowlisted account (the deployer).
     let allowlisted = {var: setup.settlement.sender}
-    mut steps = ($spec.setup.steps | take 3)
+    mut steps = ($spec.setup.steps | take 3 | update 0 { update deploy.constructor_args.0 (txgen-zone-anchor-offset) })
     for zone in 0..<$zones {
         $steps = ($steps | append ($spec.setup.steps.3 | update id $"portal_($zone)" | update deploy.constructor_args.6 $closed))
     }
@@ -1298,11 +1310,32 @@ def txgen-after-vault [steps: list<any>, vault_setup: list<any>] {
     }
 }
 
+# The prepare_user step that funds users [0, end): it mints each user's pathUSD. All prepare_user
+# steps send from users[0] in one ordered nonce lane, so once the last one lands every earlier one
+# has, and a step that waits for it waits for the whole slice without one dependency per user.
+def txgen-after-user-funding [users: list<any>, end: int] {
+    $users | get ($end - 1) | get id
+}
+
+# A deployment-shapes file passed inline in TXGEN_NEOBANK_SHAPES_GZ_B64 (gzip, then base64), such as
+# one compiled outside this repository and sent through bench-env, written to output_dir. Null when
+# unset.
+def txgen-neobank-inline-shapes [output_dir: string] {
+    let encoded = ($env.TXGEN_NEOBANK_SHAPES_GZ_B64? | default "" | str trim)
+    if $encoded == "" { return null }
+    mkdir $output_dir
+    let path = ($output_dir | path join neobank-inline-shapes.yml)
+    let result = ($encoded | decode base64 | ^gzip -dc | complete)
+    if $result.exit_code != 0 { error make {msg: $"TXGEN_NEOBANK_SHAPES_GZ_B64 is not gzip, then base64: ($result.stderr | str trim)"} }
+    $result.stdout | save --force $path
+    $path
+}
+
 def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, output_dir: string] {
     let presets = ($spec_path | path dirname)
-    # A relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
+    # Inline shapes win; a relative TXGEN_NEOBANK_INSTANCES path resolves from the working directory, then the repository root.
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
-    let config = ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | get $preset_name)))
+    let config = (txgen-neobank-inline-shapes $output_dir | default ($env.TXGEN_NEOBANK_INSTANCES? | default ($presets | path join ($TXGEN_HELPER_NEOBANK_MULTI_PRESETS | get $preset_name))))
     let config = if ($config | path exists) { $config } else { [ (txgen-repo-root) $config ] | path join }
     if not ($config | path exists) { error make {msg: $"neobank instances file not found: ($config)"} }
     let instances = (txgen-neobank-instances $config --presets-dir $presets)
@@ -1393,9 +1426,13 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
         let treasury_end = ([$range.1 ($range.0 + $TXGEN_HELPER_BATCH_TREASURY_SIZE)] | math min)
         let keychain = if ($families | any { |entry| $entry.template | str starts-with "keychain_" }) {
             let keys = ($range | each { |user| $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START + $user | into string })
+            # Authorizing a key reserves its whole gas limit in pathUSD from the user, more than state
+            # bloat leaves users past the genesis accounts: wait for prepare_user to mint their balance.
+            let funded = (txgen-after-user-funding $users $range.1)
             [(txgen-neobank-instance-text $keychain_step $instance $index
                 | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_START}' $keys.0
-                | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_END}' $keys.1)]
+                | str replace '${TXGEN_KEYCHAIN_ACCESS_KEYS_END}' $keys.1
+                | str replace --regex '(?m)^(    - id: .+)$' ('${1}' + (char nl) + $'      depends_on: [($funded)]'))]
         } else { [] }
         {
             accounts: {
@@ -1541,7 +1578,7 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let keychain_setup = if ($spec.mix | any { |entry| ($entry | get -o template | default "") | str starts-with "keychain_" }) {
         let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join access-key-mix.yml) | complete)
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
-        $result.stdout | from json
+        $result.stdout | from json | each { |step| $step | upsert depends_on [(txgen-after-user-funding $users $accounts)] }
     } else { [] }
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append (txgen-after-vault ($users | append $zone_spec.setup.steps | append $dex_setup | append $keychain_setup) $vault_setup))},

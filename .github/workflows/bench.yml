@@ -77,6 +77,7 @@ jobs:
       run-pairs: ${{ steps.args.outputs.run-pairs }}
       run-side: ${{ steps.args.outputs.run-side }}
       prover: ${{ steps.args.outputs.prover }}
+      zones-workload: ${{ steps.args.outputs.zones-workload }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
       pr-head-sha: ${{ steps.args.outputs.pr-head-sha }}
       pr-head-ref: ${{ steps.args.outputs.pr-head-ref }}
@@ -196,12 +197,12 @@ jobs:
             actor = context.payload.comment.user.login;
 
             const body = context.payload.comment.body.trim();
-            const intArgs = new Set(['duration', 'bloat', 'token-count', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'general-gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs']);
+            const intArgs = new Set(['duration', 'bloat', 'token-count', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'general-gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs', 'l1-latency-ms', 'state-bloat-mib']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
-            const stringArgs = new Set(['mode', 'preset', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork', 'run-side']);
-            const boolArgs = new Set(['samply', 'tracy', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'valscope', 'metrics', 'skip-state-root', 'prover']);
+            const stringArgs = new Set(['mode', 'preset', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork', 'run-side', 'tempo-hardfork', 'recipient-mode']);
+            const boolArgs = new Set(['samply', 'tracy', 'force-bloat', 'no-cache', 'slack', 'no-slack', 'otlp', 'valscope', 'metrics', 'skip-state-root', 'prover']);
             const bloatValues = new Set(['1', '10', '100']);
-            const defaults = { mode: 'e2e', preset: 'default', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1500000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison', prover: 'true' };
+            const defaults = { mode: 'e2e', preset: 'default', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1500000000', 'force-bloat': 'false', 'no-cache': 'false', slack: 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison', prover: 'true' };
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
@@ -292,7 +293,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [run-side=comparison|feature] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [general-gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=HARDFORK] [feature-hardfork=HARDFORK] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [skip-state-root] [force-bloat] [no-cache] [no-slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [run-side=comparison|feature] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [general-gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=HARDFORK] [feature-hardfork=HARDFORK] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [skip-state-root] [force-bloat] [no-cache] [slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -332,7 +333,8 @@ jobs:
             runType = 'manual';
             forceBloat = defaults['force-bloat'];
             noCache = defaults['no-cache'];
-            noSlack = defaults['no-slack'];
+            // Slack notifications are opt-in: only `slack` (without `no-slack`) sends them.
+            noSlack = defaults.slack === 'true' && defaults['no-slack'] !== 'true' ? 'false' : 'true';
             benchArgs = defaults['bench-args'];
             benchEnv = defaults['bench-env'];
             baselineEnv = defaults['baseline-env'];
@@ -353,7 +355,7 @@ jobs:
               tracyOffset = String(Math.floor(Number(duration) / 2));
             }
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [run-side=comparison|feature] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [general-gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=HARDFORK] [feature-hardfork=HARDFORK] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [skip-state-root] [force-bloat] [no-cache] [no-slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [run-side=comparison|feature] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [general-gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=HARDFORK] [feature-hardfork=HARDFORK] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [skip-state-root] [force-bloat] [no-cache] [slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {
@@ -380,8 +382,10 @@ jobs:
               core.setFailed(msg);
               return;
             }
-            const zonesUsage = '**Usage:** `derek bench zones [prover=true|false] [preset=full-journey|private-withdrawal|swapped-lifecycle|swapped-redemption] [baseline=REF] [feature=REF] [no-slack]`';
-            const zoneArgs = new Set(['mode', 'prover', 'preset', 'baseline', 'feature', 'no-slack']);
+            const zonesUsage = '**Usage:** `derek bench zones [prover=true|false] [preset=full-journey|private-withdrawal|swapped-lifecycle|swapped-redemption] [tempo-hardfork=HARDFORK] [tps=N] [accounts=N] [recipient-mode=existing|random] [l1-latency-ms=N] [state-bloat-mib=N] [baseline=REF] [feature=REF] [slack]`';
+            // Workload overrides, forwarded to the Zone benchmark only when given.
+            const zoneWorkloadArgs = ['tempo-hardfork', 'tps', 'accounts', 'recipient-mode', 'l1-latency-ms', 'state-bloat-mib'];
+            const zoneArgs = new Set(['mode', 'prover', 'preset', 'baseline', 'feature', 'slack', 'no-slack', ...zoneWorkloadArgs]);
             const zonePresets = ['full-journey', 'private-withdrawal', 'swapped-lifecycle', 'swapped-redemption'];
             let zonesError = '';
             if (mode === 'zones') {
@@ -391,9 +395,18 @@ jobs:
                 zonesError = `\`${unsupported.join('`, `')}\` is not supported with \`derek bench zones\`.`;
               } else if (!zonePresets.includes(preset)) {
                 zonesError = `\`preset=${preset}\` is not a Zone preset.`;
+              } else if (provided.has('recipient-mode') && !['existing', 'random'].includes(defaults['recipient-mode'])) {
+                zonesError = '`recipient-mode` must be `existing` or `random`.';
+              } else if (provided.has('tempo-hardfork') && !/^t\d+[a-z]*$/i.test(defaults['tempo-hardfork'])) {
+                zonesError = '`tempo-hardfork` must be a Tempo hardfork such as `t14`.';
+              } else if (provided.has('state-bloat-mib') && Number(defaults['state-bloat-mib']) > 5000) {
+                zonesError = '`state-bloat-mib` must be between 0 and 5000.';
               }
             } else if (provided.has('prover')) {
               zonesError = '`prover` is only supported with `derek bench zones`.';
+            } else {
+              const zoneOnly = ['tempo-hardfork', 'recipient-mode', 'l1-latency-ms', 'state-bloat-mib'].filter(key => provided.has(key));
+              if (zoneOnly.length) zonesError = `\`${zoneOnly.join('`, `')}\` is only supported with \`derek bench zones\`.`;
             }
             if (zonesError) {
               const msg = `❌ **Invalid bench command**\n\n${zonesError}\n\n${zonesUsage}`;
@@ -559,6 +572,9 @@ jobs:
             core.setOutput('run-pairs', runPairs);
             core.setOutput('run-side', runSide);
             core.setOutput('prover', defaults.prover);
+            core.setOutput('zones-workload', JSON.stringify(mode === 'zones'
+              ? Object.fromEntries(zoneWorkloadArgs.filter(key => provided.has(key)).map(key => [key, defaults[key]]))
+              : {}));
 
       - name: Acknowledge request
         id: ack
@@ -594,6 +610,7 @@ jobs:
           ACK_RUN_SIDE: ${{ steps.args.outputs.run-side }}
           ACK_NO_CACHE: ${{ steps.args.outputs.no-cache }}
           ACK_PROVER: ${{ steps.args.outputs.prover }}
+          ACK_ZONES_WORKLOAD: ${{ steps.args.outputs.zones-workload }}
         with:
           github-token: ${{ steps.github-sts.outputs.token }}
           script: |
@@ -649,7 +666,7 @@ jobs:
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
             const runSideNote = runSide !== 'comparison' ? `, run-side: \`${runSide}\`` : '';
             const config = mode === 'zones'
-              ? `**Config:** mode: \`zones\`, prover: \`${process.env.ACK_PROVER}\`, preset: \`${preset}\`, baseline: \`${baseline}\`, feature: \`${feature}\``
+              ? `**Config:** mode: \`zones\`, prover: \`${process.env.ACK_PROVER}\`, preset: \`${preset}\`${Object.entries(JSON.parse(process.env.ACK_ZONES_WORKLOAD || '{}')).map(([key, value]) => `, ${key}: \`${value}\``).join('')}, baseline: \`${baseline}\`, feature: \`${feature}\``
               : `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`${generalGasLimitNote}, run-pairs: \`${runPairs}\`${runSideNote}, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${naNote}${noCacheNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
@@ -752,8 +769,11 @@ jobs:
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
       pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
+      slack: ${{ needs.tempo-bench-ack.outputs.no-slack == 'true' && 'never' || 'always' }}
     secrets:
       DEREK_UPDATE_RETH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
@@ -776,6 +796,12 @@ jobs:
       feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
       prover: ${{ needs.tempo-bench-ack.outputs.prover }}
       preset: ${{ needs.tempo-bench-ack.outputs.preset }}
+      tempo-hardfork: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload)['tempo-hardfork'] || '' }}
+      tps: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload).tps || '' }}
+      accounts: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload).accounts || '' }}
+      recipient-mode: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload)['recipient-mode'] || '' }}
+      l1-latency-ms: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload)['l1-latency-ms'] || '' }}
+      state-bloat-mib: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload)['state-bloat-mib'] || '' }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
       slack: ${{ needs.tempo-bench-ack.outputs.no-slack == 'true' && 'never' || 'always' }}

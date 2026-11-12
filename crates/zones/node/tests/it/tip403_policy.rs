@@ -55,7 +55,7 @@ async fn test_tip20_transfer_on_zone() -> eyre::Result<()> {
 
     // T6+ transfers also consult the recipient's address-level receive policy on L1.
     // Seed the anchor before pool validation; the next execution block inherits this baseline.
-    fixture.seed_no_receive_policy(bob)?;
+    fixture.seed_transfer_recipient(bob)?;
 
     let tip20 = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
     let pending = tip20

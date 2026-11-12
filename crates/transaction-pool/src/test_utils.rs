@@ -332,6 +332,27 @@ impl TxBuilder {
     }
 }
 
+/// Re-signs an AA transaction's fee payment as sponsored by `fee_payer`.
+pub(crate) fn sponsor(
+    tx: TempoPooledTransaction,
+    fee_payer: &alloy_signer_local::PrivateKeySigner,
+) -> TempoPooledTransaction {
+    let sender = tx.inner().signer();
+    let TempoTxEnvelope::AA(mut signed) = tx.inner().clone().into_inner() else {
+        panic!("expected AA transaction");
+    };
+    let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+    signed.tx_mut().fee_payer_signature = Some(
+        fee_payer
+            .sign_hash_sync(&fee_payer_hash)
+            .expect("fee payer signing should succeed"),
+    );
+    TempoPooledTransaction::new(Recovered::new_unchecked(
+        TempoTxEnvelope::AA(signed),
+        sender,
+    ))
+}
+
 /// Helper to wrap a transaction in ValidPoolTransaction.
 ///
 /// Note: Creates a dummy SenderId for testing since the AA2dPool doesn't use it.
