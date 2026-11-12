@@ -1,4 +1,4 @@
-//! Controlled process outages, not container termination or automatic leader failover.
+//! Backup availability and leader recovery after process restart, not automatic leader failover.
 
 use alloy::{
     primitives::Address,
@@ -56,7 +56,7 @@ macro_rules! phase {
 pub(super) enum Case {
     /// Leaves the current leader running.
     Backup,
-    /// Crashes the leader and explicitly hands leadership to a healthy sequencer as admin.
+    /// Crashes the leader, hands leadership over as admin, then proves recovery after restart.
     Leader,
 }
 
@@ -141,41 +141,68 @@ impl Context {
                     Case::Leader => backups[random_index(2)],
                 };
                 let mut expected = membership.clone();
-                let max_tip = self.maximum_zone_tip().await?;
                 let mut held = Hold::new(self, dir, victim)?;
-                let outage = phase!(
-                    case,
-                    "Fresh settlement progresses while the first sequencer stays down",
-                    HOLD_TIMEOUT,
-                    async {
-                        held.kill().await?;
-                        held.while_down(async {
-                            if matches!(case, Case::Leader) {
-                                phase!(
-                                    "Leader outage: Explicit admin handoff from the crashed leader finalizes",
-                                    HOLD_TIMEOUT,
-                                    self.outage_handoff(&membership, members[active])
-                                )?;
-                                expected.leader = members[active];
-                                expected.epoch = expected
-                                    .epoch
-                                    .checked_add(1)
-                                    .ok_or_eyre("leader epoch overflow")?;
-                            }
-                            self.outage_canary(&baseline, max_tip, active, victim, &expected)
+                let outage = match case {
+                    Case::Backup => {
+                        let max_tip = self.maximum_zone_tip().await?;
+                        phase!(
+                            "Backup outage: Fresh settlement progresses while the first sequencer stays down",
+                            HOLD_TIMEOUT,
+                            async {
+                                held.kill().await?;
+                                held.while_down(self.outage_canary(
+                                    &baseline, max_tip, active, Some(victim), &expected,
+                                ))
                                 .await
-                        })
-                        .await
+                            }
+                        )
+                        .map(Some)
                     }
-                );
+                    Case::Leader => phase!(
+                        "Leader outage: Explicit admin handoff finalizes while the crashed leader stays down",
+                        HOLD_TIMEOUT,
+                        async {
+                            held.kill().await?;
+                            held.while_down(self.outage_handoff(&membership, members[active]))
+                                .await
+                        }
+                    )
+                    .map(|()| None),
+                };
+                // Always request and confirm restart before propagating a held-down phase failure.
                 let restored = phase!(
                     case,
                     "First crashed sequencer restarts",
                     PHASE_TIMEOUT,
                     held.restore()
                 );
-                let (settled, canary) = outage?;
+                let outage = outage?;
                 restored?;
+                let (settled, canary) = match outage {
+                    Some(proof) => proof,
+                    None => {
+                        expected.leader = members[active];
+                        expected.epoch = expected
+                            .epoch
+                            .checked_add(1)
+                            .ok_or_eyre("leader epoch overflow")?;
+                        phase!(
+                            "Leader outage: Fresh settlement recovers after the crashed leader restarts",
+                            PHASE_TIMEOUT,
+                            async {
+                                // A RUNNING acknowledgement precedes RPC readiness. Read every
+                                // current tip AFTER restart, then sign a new canary above them all.
+                                let max_tip =
+                                    recover_until(Instant::now() + PHASE_TIMEOUT, async || {
+                                        self.maximum_zone_tip().await.map(Some)
+                                    })
+                                    .await?;
+                                self.outage_canary(&baseline, max_tip, active, None, &expected)
+                                    .await
+                            }
+                        )?
+                    }
+                };
                 phase!(
                     case,
                     "Restarted sequencer catches up to the exact finalized receipt and hash",
@@ -196,7 +223,7 @@ impl Context {
                         &json!({"case": case, "victim": victim, "canary": canary})
                     ),
                     Case::Leader => assert_reachable!(
-                        "Leader outage: A controlled sequencer restarts and catches up after outage settlement",
+                        "Leader outage: All nodes agree on fresh settlement after the crashed leader restarts",
                         &json!({"case": case, "victim": victim, "canary": canary})
                     ),
                 }
@@ -216,9 +243,13 @@ impl Context {
                     HOLD_TIMEOUT,
                     async {
                         held.kill().await?;
-                        held.while_down(
-                            self.outage_canary(&settled, max_tip, active, other, &expected),
-                        )
+                        held.while_down(self.outage_canary(
+                            &settled,
+                            max_tip,
+                            active,
+                            Some(other),
+                            &expected,
+                        ))
                         .await
                     }
                 );
@@ -253,7 +284,7 @@ impl Context {
                         &json!({"victim": victim, "fresh": fresh, "canary": second})
                     ),
                     Case::Leader => assert_reachable!(
-                        "Leader process outage with explicit admin handoff settles and the restarted victim freshly attests",
+                        "Leader recovery after restart and explicit admin handoff settles and the restarted victim freshly attests",
                         &json!({"victim": victim, "leader": active, "fresh": fresh, "canary": second})
                     ),
                 }
@@ -342,6 +373,8 @@ impl Context {
         let request = ZonePortal::new(self.portal, &self.l1)
             .setLeader(target, prior.epoch)
             .into_transaction_request();
+        // Reconciliation can broadcast as soon as prepare_intent journals the signed bytes.
+        let from_l1_block = self.l1.get_block_number().await?;
         let intent = self
             .prepare_intent(&admin, Chain::L1, 0, request, Effect::Leadership { target })
             .await?;
@@ -352,7 +385,7 @@ impl Context {
                 expected_epoch: prior.epoch,
                 target,
                 relayed: false,
-                from_l1_block: self.l1.get_block_number().await?,
+                from_l1_block,
                 l1_tx: Some(intent.tx),
             }))?;
         let receipt = self.outage_receipt(&intent).await?;
@@ -382,7 +415,7 @@ impl Context {
         baseline: &FinalizedCheckpoint,
         max_tip: u64,
         active: usize,
-        down: usize,
+        down: Option<usize>,
         expected: &Membership,
     ) -> eyre::Result<(FinalizedCheckpoint, ReceiptProof)> {
         let deadline = Instant::now() + HOLD_TIMEOUT;
@@ -402,7 +435,9 @@ impl Context {
             success: receipt.status(),
         };
         ensure_fresh(&canary, max_tip)?;
-        let live: Vec<_> = (0..self.zones.len()).filter(|node| *node != down).collect();
+        let live: Vec<_> = (0..self.zones.len())
+            .filter(|node| Some(*node) != down)
+            .collect();
         let settled = recover_until(deadline, async || {
             let settled = self.finalized_checkpoint().await?;
             if settled.height < canary.height {
@@ -620,11 +655,11 @@ fn ensure_down(status: Status, id: u64, generation: u64) -> eyre::Result<()> {
     Ok(())
 }
 
-fn ensure_fresh(canary: &ReceiptProof, maximum_pre_kill_tip: u64) -> eyre::Result<()> {
+fn ensure_fresh(canary: &ReceiptProof, maximum_pre_canary_tip: u64) -> eyre::Result<()> {
     eyre::ensure!(canary.success, "outage canary reverted");
     eyre::ensure!(
-        canary.height > maximum_pre_kill_tip,
-        "outage canary can reuse pre-kill signatures"
+        canary.height > maximum_pre_canary_tip,
+        "outage canary can reuse pre-existing signatures"
     );
     Ok(())
 }
@@ -634,12 +669,18 @@ mod tests {
     use super::*;
     use crate::ledger::Ledger;
     use alloy::{
-        primitives::{B256, Bloom, Bytes, keccak256},
+        primitives::{B256, Bloom, Bytes, U256, keccak256},
         providers::ProviderBuilder,
+        rpc::types::{Block, Log},
+        sol_types::{SolEvent as _, SolValue as _},
         transports::mock::Asserter,
     };
 
     use std::collections::BTreeMap;
+    use tokio::{
+        io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
+        net::TcpListener,
+    };
 
     #[test]
     fn outage_cases_have_independent_sdk_catalog_properties() {
@@ -662,7 +703,6 @@ mod tests {
             for phase in [
                 "Single-sequencer outage episode finishes within the quiet window",
                 "Outage preconditions become ready",
-                "Fresh settlement progresses while the first sequencer stays down",
                 "First crashed sequencer restarts",
                 "Restarted sequencer catches up to the exact finalized receipt and hash",
                 "Restarted victim participates in fresh settlement with the other backup down",
@@ -671,18 +711,23 @@ mod tests {
             ] {
                 expected.insert(format!("{case} outage: {phase}"), "Always");
             }
-            expected.insert(
-                format!("{case} outage: A controlled sequencer restarts and catches up after outage settlement"),
-                "Reachable",
-            );
         }
-        expected.insert(
-            "Leader outage: Explicit admin handoff from the crashed leader finalizes".to_owned(),
-            "Always",
-        );
+        for message in [
+            "Backup outage: Fresh settlement progresses while the first sequencer stays down",
+            "Leader outage: Explicit admin handoff finalizes while the crashed leader stays down",
+            "Leader outage: Fresh settlement recovers after the crashed leader restarts",
+        ] {
+            expected.insert(message.to_owned(), "Always");
+        }
+        for message in [
+            "Backup outage: A controlled sequencer restarts and catches up after outage settlement",
+            "Leader outage: All nodes agree on fresh settlement after the crashed leader restarts",
+        ] {
+            expected.insert(message.to_owned(), "Reachable");
+        }
         for message in [
             "Backup process outage settles and the restarted victim freshly attests",
-            "Leader process outage with explicit admin handoff settles and the restarted victim freshly attests",
+            "Leader recovery after restart and explicit admin handoff settles and the restarted victim freshly attests",
         ] {
             expected.insert(message.to_owned(), "Reachable");
         }
@@ -765,7 +810,7 @@ mod tests {
             canary.height = height;
             assert_eq!(
                 ensure_fresh(&canary, 100).unwrap_err().to_string(),
-                "outage canary can reuse pre-kill signatures"
+                "outage canary can reuse pre-existing signatures"
             );
         }
         canary.height = 101;
@@ -1043,6 +1088,331 @@ mod tests {
             crate::intents::pending(&ctx.ledger.records().unwrap()).unwrap(),
             vec![other]
         );
+    }
+
+    // Exercise the real episode orchestration with Alloy's existing mock transport and the
+    // same local HTTP signing fixture used by intents.rs, rather than injecting a phase helper.
+    #[derive(Clone, Copy)]
+    enum LeaderObservation {
+        FreshTip,
+        HandoffError,
+        HandoffTimeout,
+        StaleRestart,
+    }
+
+    async fn leader_episode(observation: LeaderObservation) {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(dir.path()).unwrap();
+        ledger.new_account().unwrap();
+        let l1 = Asserter::new();
+        let zones: [_; 4] = std::array::from_fn(|_| Asserter::new());
+        let members: Vec<_> = SEQUENCER_INDICES
+            .map(|index| Account::at(index).unwrap().address())
+            .collect();
+        let mut block = Block::<B256>::default();
+        block.header.number = 10;
+        block.header.hash = B256::repeat_byte(1);
+        l1.push_success(&block);
+        l1.push_success(&Bytes::from(U256::from(100).abi_encode()));
+        l1.push_success(&Bytes::from(B256::repeat_byte(2).abi_encode()));
+        for latest in [false, true] {
+            if latest {
+                l1.push_success(&block);
+            }
+            l1.push_success(&Bytes::from(U256::from(3).abi_encode()));
+            l1.push_success(&Bytes::from(
+                (
+                    U256::from(10),
+                    members
+                        .iter()
+                        .map(|m| Bytes::from(m.abi_encode()))
+                        .collect::<Vec<_>>(),
+                )
+                    .abi_encode_params(),
+            ));
+            for value in [U256::from(2), U256::from(1)] {
+                l1.push_success(&Bytes::from(value.abi_encode()));
+            }
+            l1.push_success(&Bytes::from(members[0].abi_encode()));
+            l1.push_success(&Bytes::from(U256::from(1).abi_encode()));
+        }
+        let mut zone_block = block.clone();
+        zone_block.header.number = 100;
+        zone_block.header.hash = B256::repeat_byte(2);
+        for zone in &zones {
+            zone.push_success(&zone_block);
+        }
+        if matches!(observation, LeaderObservation::HandoffError) {
+            // Malformed ABI-independent RPC result fails before signing, without being retried.
+            l1.push_success(&"invalid block number");
+        } else {
+            l1.push_success(&"0xa");
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let ctx = Context {
+            ledger,
+            http: Default::default(),
+            l1_url: url,
+            l1: ProviderBuilder::new()
+                .connect_mocked_client(l1.clone())
+                .erased(),
+            zone_urls: Vec::new(),
+            zones: zones
+                .iter()
+                .cloned()
+                .map(|mock| ProviderBuilder::new().connect_mocked_client(mock).erased())
+                .collect(),
+            portal: Address::repeat_byte(9),
+        };
+        let ctx = Context {
+            zone_urls: vec![ctx.l1_url.clone(); 4],
+            ..ctx
+        };
+        let signing = async {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut length = None;
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = Some(value.trim().parse::<usize>().unwrap());
+                    }
+                }
+                let mut body = vec![0; length.unwrap()];
+                reader.read_exact(&mut body).await.unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                if matches!(observation, LeaderObservation::HandoffTimeout) {
+                    tokio::time::pause();
+                    tokio::time::advance(HOLD_TIMEOUT + POLL).await;
+                    std::future::pending::<()>().await;
+                }
+                // The lower bound must be consumed before signing exposes a durable intent.
+                assert!(
+                    l1.read_q().is_empty(),
+                    "handoff lower bound was read after signing"
+                );
+                let result = match body["method"].as_str().unwrap() {
+                    "eth_chainId" => json!("0x7b"),
+                    "eth_getTransactionCount" => json!("0x0"),
+                    "eth_estimateGas" => json!("0x7a120"),
+                    "eth_gasPrice" => json!("0x1"),
+                    "eth_getBlockByNumber" => json!(block),
+                    "eth_feeHistory" => {
+                        json!({"oldestBlock":"0x9", "baseFeePerGas":["0x1", "0x1"], "gasUsedRatio":[0.5], "reward":[["0x1"]]})
+                    }
+                    other => panic!("unexpected signing RPC {other}"),
+                };
+                let response =
+                    json!({"jsonrpc":"2.0", "id":body["id"], "result":result}).to_string();
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
+                );
+                let mut stream = reader.into_inner();
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        };
+        let supervisor = async {
+            let mut replied = [0; 3];
+            let mut handoff_seen = false;
+            let mut canary_seen = false;
+            loop {
+                for (node, prior) in replied.iter_mut().enumerate() {
+                    let path = dir.path().join(format!("zone-{node}.request"));
+                    if !path.exists() {
+                        continue;
+                    }
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                    let id = request["id"].as_u64().unwrap();
+                    if id == *prior {
+                        continue;
+                    }
+                    *prior = id;
+                    let killed = request["action"] == "kill";
+                    let restarted = id == 5;
+                    if restarted {
+                        assert!(
+                            ctx.ledger
+                                .records()
+                                .unwrap()
+                                .iter()
+                                .all(|r| !matches!(r, Record::Intent(i) if i.chain == Chain::Zone)),
+                            "leader canary was signed before restart"
+                        );
+                        // The formerly crashed endpoint is initially not RPC-ready. On retry its
+                        // new tip is higher than the old baseline and must fence the new canary.
+                        zones[0].push_failure_msg("RPC not ready after restart");
+                        for zone in &zones {
+                            zone.push_success(&"0x65");
+                        }
+                        for zone in &zones[1..3] {
+                            zone.push_success(&Bytes::from(
+                                U256::from(crate::MIN_SENDER_BALANCE).abi_encode(),
+                            ));
+                        }
+                    }
+                    let generation =
+                        if restarted && !matches!(observation, LeaderObservation::StaleRestart) {
+                            4
+                        } else {
+                            3
+                        };
+                    fs::write(dir.path().join(format!("zone-{node}.status")), serde_json::to_vec(&json!({"id":id, "state": if killed { "down" } else { "running" }, "generation":generation})).unwrap()).unwrap();
+                    if restarted && matches!(observation, LeaderObservation::StaleRestart) {
+                        tokio::time::pause();
+                        tokio::time::advance(Duration::from_secs(31)).await;
+                    }
+                }
+                for record in ctx.ledger.records().unwrap() {
+                    if let Record::Intent(intent) = record {
+                        let is_handoff = intent.chain == Chain::L1;
+                        if (is_handoff && handoff_seen) || (!is_handoff && canary_seen) {
+                            continue;
+                        }
+                        let receipt = json!({"type":"0x0", "status":"0x1", "cumulativeGasUsed":"0x1", "logs":[], "logsBloom":Bloom::ZERO,
+                            "transactionHash":intent.tx, "transactionIndex":"0x0", "blockHash": B256::repeat_byte(4),
+                            "blockNumber": if is_handoff { "0xb" } else { "0x65" }, "gasUsed":"0x1", "effectiveGasPrice":"0x1",
+                            "from":intent.sender, "to":ctx.portal, "contractAddress":null});
+                        if is_handoff {
+                            handoff_seen = true;
+                            let Effect::Leadership { target } = intent.effect else {
+                                panic!("not a handoff")
+                            };
+                            l1.push_success(&receipt);
+                            let mut finalized = block.clone();
+                            finalized.header.number = 12;
+                            l1.push_success(&finalized);
+                            let log = Log {
+                                inner: alloy::primitives::Log {
+                                    address: ctx.portal,
+                                    data: ZonePortal::LeaderUpdated {
+                                        previousLeader: members[0],
+                                        newLeader: target,
+                                        epoch: 2,
+                                        activationTempoBlock: 12,
+                                    }
+                                    .encode_log_data(),
+                                },
+                                block_hash: Some(finalized.header.hash),
+                                block_number: Some(11),
+                                transaction_hash: Some(intent.tx),
+                                log_index: Some(0),
+                                ..Default::default()
+                            };
+                            l1.push_success(&vec![log]);
+                            l1.push_success(&finalized);
+                        } else {
+                            canary_seen = true;
+                            let restored = read_status(dir.path(), 0).unwrap();
+                            assert_eq!(restored.id, 5);
+                            assert_eq!(restored.state, State::Running);
+                            assert_eq!(restored.generation, 4);
+                            zones[intent.node].push_success(&receipt);
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        let result = timeout(Duration::from_secs(400), async {
+            tokio::select! {
+                result = ctx.single_sequencer_outage(dir.path(), Some(Case::Leader)) => result,
+                () = signing => panic!("signing fixture stopped"),
+                () = supervisor => panic!("supervisor fixture stopped"),
+            }
+        })
+        .await
+        .unwrap();
+        let error = format!("{:#}", result.unwrap_err());
+        let restored = read_status(dir.path(), 0).unwrap();
+        assert_eq!(
+            restored.id, 5,
+            "failure returned without waiting for START acknowledgement: {error}"
+        );
+        assert_eq!(restored.state, State::Running);
+        let records = ctx.ledger.records().unwrap();
+        match observation {
+            LeaderObservation::FreshTip => {
+                assert!(
+                    error.ends_with("outage canary can reuse pre-existing signatures"),
+                    "{error}"
+                );
+                assert!(
+                    records
+                        .iter()
+                        .any(|r| matches!(r, Record::Intent(i) if i.chain == Chain::Zone))
+                );
+                let request = records
+                    .iter()
+                    .find_map(|r| {
+                        if let Record::HandoffRequest(r) = r {
+                            Some(r)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap();
+                assert_eq!(request.from_l1_block, 10);
+                assert!(
+                    records
+                        .iter()
+                        .any(|r| matches!(r, Record::HandoffUpdate(u) if u.l1_block == 11))
+                );
+            }
+            LeaderObservation::HandoffError => {
+                assert!(error.contains("invalid block number"), "{error}");
+                assert!(records.iter().all(|r| !matches!(r, Record::Intent(_))));
+            }
+            LeaderObservation::HandoffTimeout => {
+                assert!(error.contains("Explicit admin handoff finalizes while the crashed leader stays down: timed out"), "{error}");
+                assert!(records.iter().all(|r| !matches!(r, Record::Intent(_))));
+            }
+            LeaderObservation::StaleRestart => {
+                assert!(
+                    error.contains(
+                        "First crashed sequencer restarts: recovery observation timed out"
+                    ),
+                    "{error}"
+                );
+                assert!(
+                    records
+                        .iter()
+                        .all(|r| !matches!(r, Record::Intent(i) if i.chain == Chain::Zone))
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn leader_canary_waits_for_restart_and_fresh_rpc_ready_tips() {
+        leader_episode(LeaderObservation::FreshTip).await;
+    }
+
+    #[tokio::test]
+    async fn leader_handoff_error_cannot_skip_confirmed_restore() {
+        leader_episode(LeaderObservation::HandoffError).await;
+    }
+
+    #[tokio::test]
+    async fn leader_handoff_timeout_cannot_skip_confirmed_restore() {
+        leader_episode(LeaderObservation::HandoffTimeout).await;
+    }
+
+    #[tokio::test]
+    async fn leader_stale_restart_cannot_start_canary() {
+        leader_episode(LeaderObservation::StaleRestart).await;
     }
 
     #[test]

@@ -54,7 +54,7 @@ images it is given, so they must be in the image rather than copied in when a co
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
 | `parallel_driver_rotate_leader` | Hands leadership to another sequencer, through the admin or a zone node's `zone_setLeader` relay, then observes production and settlement if its term is not superseded |
-| `serial_driver_single_sequencer_outage` | In a quiet window, crashes one sequencer process, requires progress while it stays down, then checks catch-up and renewed quorum participation; leader loss uses an explicit portal handoff |
+| `serial_driver_single_sequencer_outage` | In a quiet window, checks availability during a non-leader crash or recovery after a crashed leader restarts, then catch-up and renewed quorum participation; leader recovery includes an explicit portal handoff |
 | `serial_driver_recovery` | Pauses faults for 600 seconds, then proves a fresh canary settles on finalized L1 and all nodes preserve its receipt and the prior settled prefix within 300 seconds |
 | `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, settled workload transactions stay final, and every zone block comes from the leader the portal names at its Tempo anchor; reconciles persistent handoff history |
 | `eventually_settled` | After faults stop, resolves every durable signed intent first, then every confirmed deposit is credited or refunded and every confirmed withdrawal is paid, and all nodes converge |
@@ -136,13 +136,18 @@ supervisor exits on an unexpected child failure rather than hiding crashes in a 
 An abandoned intentional hold expires after 180 seconds; an early expiry cannot pass an outage
 assertion. Terminal checks release outstanding holds after a cancelled driver.
 
-The two cases are a backup crash with the leader alive, and a leader crash followed by an
-**explicit admin handoff** to a surviving sequencer. Neither claims automatic leader election.
-Each case has independent episode, phase and reachability properties, so a leader-case failure
-cannot mark the backup-case properties as failed.
-For each case, progress must include a new canary transaction finalized on L1 while the victim
-is still held down. After restart, the victim must catch up through real RPC reads at the same
-finalized checkpoint and preserve the canary receipt.
+The two cases have different progress requirements:
+
+- **Non-leader availability (`--case backup`):** the leader stays alive. A new canary must be
+  signed after the victim is confirmed down and finalized on L1 while it remains down. After
+  restart, the victim must catch up to that exact finalized checkpoint and canary receipt.
+- **Leader restart recovery (`--case leader`):** the leader is killed, then an explicit admin
+  handoff to a surviving sequencer finalizes while the old leader stays down. The old leader
+  is restored before a new canary is signed. Fresh settlement and all-node receipt/hash
+  agreement are required after restart, not while the leader is down.
+
+Each case has independent episode, phase and reachability properties. Neither claims automatic
+leader election. RPC readiness or agreement on an old tip alone cannot satisfy recovery.
 
 To prove that the recovered sequencer attests again, the test then holds the other backup down
 and creates another fresh canary. The configured signer set and 2-of-3 threshold must remain
@@ -151,13 +156,11 @@ both to sign; a certificate produced before this second outage cannot contain th
 The other backup is restored and all-node convergence is checked before returning. All waits
 are bounded; timeouts, premature restarts and changed quorum/leadership fail the check.
 
-**Current leader-loss limitation:** the leader case is a strict availability assertion, not a
-promise that ordinary handoff supports crashed-leader recovery. If the outgoing leader dies
-before producing the next pre-activation block, the replacement cannot activate even after
-`setLeader` finalizes. The local backup case passes; the leader case reaches its held-down
-deadline in this situation and recovery succeeds only after the original leader returns.
-The random template includes this case and will report that limitation as a failure. The
-[operator forced-recovery procedure](../../../crates/zones/p2p/README.md) is a different scenario
+**Scope:** this tests uninterrupted availability for a non-leader crash, but only recovery
+following restart for a leader crash. Ordinary handoff can wait for the outgoing leader's
+pre-activation block even after `setLeader` finalizes; restoring that leader lets it supply
+that block before the successor activates. The probe does not require uninterrupted service
+while the leader is stopped. The [operator forced-recovery procedure](../../../crates/zones/p2p/README.md) is a different scenario
 and is not implemented by this probe.
 
 Run the local harness fixtures without contacting Antithesis:

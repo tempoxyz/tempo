@@ -143,9 +143,9 @@ enum Command {
     CheckLedger,
     /// After faults stop, reconcile all intents and prove a fresh canary settles canonically.
     RecoveryProbe,
-    /// Proves settlement during a controlled process outage, then restart and fresh attestation.
+    /// Proves backup availability or leader recovery after restart, then fresh victim attestation.
     SingleSequencerOutage {
-        /// Omitted chooses backup or explicit-admin-handoff leader outage with SDK randomness.
+        /// Omitted randomly chooses backup availability or leader restart recovery with admin handoff.
         #[arg(long, value_enum)]
         case: Option<outage::Case>,
     },
