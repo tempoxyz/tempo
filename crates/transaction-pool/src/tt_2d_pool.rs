@@ -317,10 +317,13 @@ impl AA2dPool {
             }
             Entry::Vacant(entry) => {
                 // Check per-sender limit and increment the count for new (non-replacement)
-                // transactions with a single map lookup
+                // transactions with a single map lookup. The on-chain nonce of a lane that holds
+                // transactions is admitted at capacity: it makes them executable.
                 match self.txs_by_sender.entry(sender) {
                     hash_map::Entry::Occupied(mut count) => {
-                        if *count.get() >= self.config.max_txs_per_sender {
+                        if *count.get() >= self.config.max_txs_per_sender
+                            && (tx_id.nonce > on_chain_nonce || lane_count == 0)
+                        {
                             return Err(PoolError::new(
                                 *transaction.hash(),
                                 PoolErrorKind::SpammerExceededCapacity(sender),
@@ -2060,7 +2063,9 @@ pub struct AA2dPoolConfig {
     pub queued_limit: SubPoolLimit,
     /// Maximum number of transactions per sender.
     ///
-    /// Prevents a single sender from monopolizing pool capacity (DoS protection).
+    /// Prevents a single sender from monopolizing pool capacity (DoS protection). The current
+    /// on-chain nonce of a lane that already holds transactions is admitted even at capacity to
+    /// allow gap filling, so a sender holds at most twice this many.
     pub max_txs_per_sender: usize,
     /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
@@ -5803,6 +5808,43 @@ mod tests {
         );
         assert!(result.is_ok(), "Different sender should be accepted");
 
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn sender_limit_allows_on_chain_nonce_of_occupied_lane() {
+        let mut pool = AA2dPool::new(AA2dPoolConfig {
+            max_txs_per_sender: 3,
+            ..Default::default()
+        });
+        let sender = Address::random();
+        let make_tx = |nonce_key, nonce| {
+            Arc::new(wrap_valid_tx(
+                TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .nonce(nonce)
+                    .build(),
+                TransactionOrigin::External,
+            ))
+        };
+        for nonce in 1..=3 {
+            pool.add_transaction(make_tx(U256::ONE, nonce), 0, TempoHardfork::T1)
+                .unwrap();
+        }
+
+        // A future nonce and the on-chain nonce of an empty lane are rejected at capacity.
+        for tx in [make_tx(U256::ONE, 4), make_tx(U256::from(2), 0)] {
+            let err = pool.add_transaction(tx, 0, TempoHardfork::T1).unwrap_err();
+            assert!(matches!(
+                err.kind,
+                PoolErrorKind::SpammerExceededCapacity(address) if address == sender
+            ));
+        }
+        let added = pool
+            .add_transaction(make_tx(U256::ONE, 0), 0, TempoHardfork::T1)
+            .unwrap();
+        assert_eq!(added.as_pending().unwrap().promoted.len(), 3);
+        assert_eq!(pool.txs_by_sender[&sender], 4);
         pool.assert_invariants();
     }
 
