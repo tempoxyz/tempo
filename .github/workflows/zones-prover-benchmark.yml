@@ -115,6 +115,10 @@ on:
       l1-latency-ms:
         type: string
         required: false
+      state-bloat-mib:
+        description: Tempo L1 bloat in MiB (0-5000).
+        type: string
+        required: false
       max-concurrent:
         type: string
         required: false
