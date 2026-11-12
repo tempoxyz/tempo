@@ -87,6 +87,13 @@ struct Authority {
     payout: Address,
 }
 
+/// What sweeps of one owner's token paid into one facility, for whom, in one slot.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct Payout {
+    to: Address,
+    amount: U96,
+}
+
 /// An owner's calendar-month window on one issuer's card holds, in one slot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 struct Window {
@@ -141,6 +148,8 @@ pub struct Cards {
     merchants: Mapping<u64, MerchantMandate>,
     /// Id of the latest merchant mandate.
     last_merchant: u64,
+    /// Payouts keyed by owner, token then the facility a sweep paid into.
+    payouts: Mapping<Address, Mapping<Address, Mapping<Address, Payout>>>,
 }
 
 impl Cards {
@@ -230,6 +239,7 @@ impl Cards {
             .committed
             .write(moved(committed, before, after)?)?;
         let owner = self.lines[line].owner.read()?;
+        self.note_activity(owner)?;
         let issuer = self.lines[line].payee.read()?;
         let stored = self.windows[owner][issuer].read()?;
         let mut window = rolled(stored, self.now());
@@ -407,6 +417,10 @@ impl Cards {
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         self.last_line.write(line)?;
         self.credentials[payee][call.card].write(line)?;
+        // Issuance starts the owner's activity clock; only stamped accounts can become dormant.
+        let mut account = self.accounts[call.owner].read()?;
+        account.last_active = self.now();
+        self.accounts[call.owner].write(account)?;
         let record = &mut self.lines[line];
         record.owner.write(call.owner)?;
         record.expires_at.write(call.expiresAt)?;
@@ -685,6 +699,128 @@ impl Cards {
             return Err(CardsError::account_state_invalid().into());
         }
         self.pay_out(owner, token, record.agent)
+    }
+
+    /// Records activity for `owner` when its clock was started: holds and card authorization
+    /// changes call it, so an account in use never becomes dormant.
+    pub(crate) fn note_activity(&mut self, owner: Address) -> Result<()> {
+        let mut record = self.accounts[owner].read()?;
+        let now = self.now();
+        if record.last_active == 0 || record.last_active == now {
+            return Ok(());
+        }
+        record.last_active = now;
+        self.accounts[owner].write(record)
+    }
+
+    pub(crate) fn mark_dormant(&mut self, authority: Address, owner: Address) -> Result<()> {
+        let entry = self.authorities[ICards::Role::Escheat as u8][authority].read()?;
+        if !entry.listed {
+            return Err(CardsError::unauthorized().into());
+        }
+        let mut record = self.accounts[owner].read()?;
+        if record.status != ACTIVE
+            || record.last_active == 0
+            || self.now() < record.last_active.saturating_add(entry.dormancy.into())
+        {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        record.status = DORMANT;
+        self.accounts[owner].write(record)?;
+        self.emit_event(CardsEvent::account_status_set(
+            owner,
+            ICards::AccountStatus::Dormant,
+            record.agent,
+        ))
+    }
+
+    pub(crate) fn reactivate(&mut self, owner: Address) -> Result<()> {
+        if AccountKeychain::new().signing_access_key(owner)?.is_some() {
+            return Err(CardsError::unauthorized().into());
+        }
+        let mut record = self.accounts[owner].read()?;
+        if record.status != DORMANT {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        record.status = ACTIVE;
+        record.last_active = self.now();
+        self.accounts[owner].write(record)?;
+        self.emit_event(CardsEvent::account_status_set(
+            owner,
+            ICards::AccountStatus::Active,
+            record.agent,
+        ))
+    }
+
+    pub(crate) fn touch(&mut self, owner: Address) -> Result<()> {
+        if AccountKeychain::new().signing_access_key(owner)?.is_some() {
+            return Err(CardsError::unauthorized().into());
+        }
+        let mut record = self.accounts[owner].read()?;
+        if record.status != ACTIVE {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        record.last_active = self.now();
+        self.accounts[owner].write(record)
+    }
+
+    pub(crate) fn escheat(
+        &mut self,
+        authority: Address,
+        call: ICards::escheatCall,
+    ) -> Result<u128> {
+        let entry = self.authorities[ICards::Role::Escheat as u8][authority].read()?;
+        if !entry.listed || entry.payout.is_zero() {
+            return Err(CardsError::unauthorized().into());
+        }
+        let record = self.accounts[call.owner].read()?;
+        if record.status != DORMANT
+            || self.now()
+                < record
+                    .last_active
+                    .saturating_add(entry.escheat_after.into())
+        {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        if call.via.is_zero() {
+            return self.pay_out(call.owner, call.token, entry.payout);
+        }
+        // Paid into a facility that redeems it for the payout address, such as Earn shares into
+        // a savings facility, which reads the record to pay the cash on.
+        let paid = self.pay_out(call.owner, call.token, call.via)?;
+        let mut payout = self.payouts[call.owner][call.token][call.via].read()?;
+        let amount = payout
+            .amount
+            .to::<u128>()
+            .checked_add(paid)
+            .and_then(|total| U96::try_from(total).ok())
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        payout = Payout {
+            to: entry.payout,
+            amount,
+        };
+        self.payouts[call.owner][call.token][call.via].write(payout)?;
+        self.emit_event(CardsEvent::payout_recorded(
+            call.owner,
+            call.token,
+            call.via,
+            entry.payout,
+            amount.to::<u128>(),
+        ))?;
+        Ok(paid)
+    }
+
+    pub(crate) fn payout_of(
+        &self,
+        owner: Address,
+        token: Address,
+        via: Address,
+    ) -> Result<ICards::payoutOfReturn> {
+        let payout = self.payouts[owner][token][via].read()?;
+        Ok(ICards::payoutOfReturn {
+            to: payout.to,
+            amount: payout.amount.to::<u128>(),
+        })
     }
 
     pub(crate) fn set_estate(

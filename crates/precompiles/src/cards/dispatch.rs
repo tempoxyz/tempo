@@ -35,6 +35,13 @@ impl Precompile for Cards {
                         self.close_account(sender, c)
                     }),
                     sweep(call) => mutate(call, msg_sender, |_, c| self.sweep(c.owner, c.token)),
+                    markDormant(call) => mutate(call, msg_sender, |sender, c| {
+                        self.mark_dormant(sender, c.owner)
+                    }),
+                    reactivate(call) => mutate(call, msg_sender, |sender, _| self.reactivate(sender)),
+                    touch(call) => mutate(call, msg_sender, |sender, _| self.touch(sender)),
+                    escheat(call) => mutate(call, msg_sender, |sender, c| self.escheat(sender, c)),
+                    payoutOf(call) => view(call, |c| self.payout_of(c.owner, c.token, c.via)),
                     setEstate(call) => mutate(call, msg_sender, |sender, c| self.set_estate(sender, c)),
                     settleEstate(call) => mutate(call, msg_sender, |sender, c| {
                         self.settle_estate(sender, c)

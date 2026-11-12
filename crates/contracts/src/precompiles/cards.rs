@@ -68,6 +68,19 @@ crate::sol! {
         /// Repays a closed account's debt in `token` from its available balance and pays the rest
         /// to its payout address. Anyone may call it.
         function sweep(address owner, address token) external returns (uint128 paid);
+        /// A listed Escheat authority marks an Active owner dormant once it has been idle for the
+        /// authority's dormancy period: new holds stop until the owner reactivates.
+        function markDormant(address owner) external;
+        /// The owner, with its root key, returns its dormant account to Active.
+        function reactivate() external;
+        /// The owner, with its root key, records activity on its Active account.
+        function touch() external;
+        /// A listed Escheat authority takes a dormant account's `token`, after debts, once it has been
+        /// idle for the authority's escheat period: paid to the authority's payout address, or into
+        /// `via` (such as a savings facility) for that address. Returns what it paid.
+        function escheat(address owner, address token, address via) external returns (uint128 paid);
+        /// What sweeps of `owner`'s `token` paid into `via` so far, and who it is for.
+        function payoutOf(address owner, address token, address via) external view returns (address to, uint128 amount);
         /// An Estate authority records an owner's death: holds stop, cards read Frozen, and only
         /// `executor` can settle the estate.
         function setEstate(address owner, address executor) external;
@@ -107,6 +120,7 @@ crate::sol! {
         event CardTokenSet(address indexed payee, bytes32 indexed card, bytes32 tokenHash);
         event ProgramTokensSet(address indexed payee, address[] tokens);
         event AccountStatusSet(address indexed owner, AccountStatus status, address agent);
+        event PayoutRecorded(address indexed owner, address indexed token, address indexed via, address to, uint128 amount);
         event AccountSwept(address indexed owner, address indexed token, address indexed to, uint128 debtRepaid, uint128 paid);
         event SpendWindowSet(address indexed owner, address indexed issuer, uint32 periodEnd, uint96 limit);
         event MerchantMandateSet(address indexed owner, address indexed issuer, bytes32 indexed merchant, bool revoked, uint96 limit);

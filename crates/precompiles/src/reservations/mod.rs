@@ -515,6 +515,7 @@ impl Reservations {
         // A dormant, closed or estate account takes no new holds; a card's checks above already
         // refuse one through a closed or estate account's card as inactive.
         Cards::new().ensure_account_active(owner)?;
+        Cards::new().note_activity(owner)?;
 
         let mut position = self.positions[owner][call.token].read()?;
         let free = available(&token, owner)?;
@@ -7082,6 +7083,154 @@ mod tests {
             assert_eq!(f.close(&mut cards, second)?, 10);
             assert_eq!(f.balance(first)?, U256::from(100));
             assert_eq!(f.balance(second)?, U256::from(10));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dormancy_follows_activity_and_escheat_pays_the_authority() -> eyre::Result<()> {
+        const DORMANCY: u32 = 1_000;
+        const ESCHEAT_AFTER: u32 = 3_000;
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let admin = Address::random();
+            crate::validator_config_v2::ValidatorConfigV2::new().initialize(admin)?;
+            let (authority, state, facility) =
+                (Address::random(), Address::random(), Address::random());
+            cards.set_authority(
+                admin,
+                ICards::setAuthorityCall {
+                    authority,
+                    role: ICards::Role::Escheat,
+                    listed: true,
+                    payout: state,
+                    dormancy: DORMANCY,
+                    escheatAfter: ESCHEAT_AFTER,
+                },
+            )?;
+            let owner = f.owner;
+            let mark = |cards: &mut Cards, sender: Address| cards.mark_dormant(sender, owner);
+
+            // An account whose clock never started cannot become dormant.
+            StorageCtx.set_timestamp(U256::from(NOW + u64::from(DORMANCY)));
+            assert_eq!(
+                mark(&mut cards, authority).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            StorageCtx.set_timestamp(U256::from(NOW));
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                owner,
+                card,
+                ICards::Status::Active,
+                U96::MAX,
+            )?;
+            assert_eq!(cards.get_account(owner)?.lastActive, NOW);
+
+            // Card activity moves the clock.
+            let later = NOW + 100;
+            StorageCtx.set_timestamp(U256::from(later));
+            let id = B256::random();
+            f.reservations.hold(
+                owner,
+                IReservations::holdCall {
+                    token: f.token.address(),
+                    id,
+                    amount: 10,
+                    expiresAt: later + 600,
+                    payee: f.payee,
+                },
+                Placement::Card {
+                    issuer: f.payee,
+                    card,
+                },
+            )?;
+            assert_eq!(cards.get_account(owner)?.lastActive, later);
+            f.capture(id, 10)?;
+
+            let idle = later + u64::from(DORMANCY);
+            StorageCtx.set_timestamp(U256::from(idle - 1));
+            assert_eq!(
+                mark(&mut cards, authority).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            StorageCtx.set_timestamp(U256::from(idle));
+            assert_eq!(
+                mark(&mut cards, Address::random()).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            mark(&mut cards, authority)?;
+            assert_eq!(f.account_status(&cards)?, ICards::AccountStatus::Dormant);
+            assert_eq!(
+                f.hold_until(B256::random(), 1, idle + 600).unwrap_err(),
+                CardsError::account_inactive().into()
+            );
+
+            // Reactivation restarts the clock.
+            cards.reactivate(owner)?;
+            assert_eq!(f.account_status(&cards)?, ICards::AccountStatus::Active);
+            assert_eq!(cards.get_account(owner)?.lastActive, idle);
+            assert_eq!(
+                cards.reactivate(owner).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            let idle = idle + u64::from(DORMANCY);
+            StorageCtx.set_timestamp(U256::from(idle));
+            mark(&mut cards, authority)?;
+
+            let token = f.token.address();
+            let escheat = |cards: &mut Cards, sender: Address, via: Address| {
+                cards.escheat(sender, ICards::escheatCall { owner, token, via })
+            };
+            assert_eq!(
+                escheat(&mut cards, authority, Address::ZERO).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            let due = idle - u64::from(DORMANCY) + u64::from(ESCHEAT_AFTER);
+            StorageCtx.set_timestamp(U256::from(due));
+            assert_eq!(
+                escheat(&mut cards, Address::random(), Address::ZERO).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            // Paid into a facility, the record names the authority's payout address.
+            assert_eq!(escheat(&mut cards, authority, facility)?, 90);
+            assert_eq!(f.balance(facility)?, U256::from(90));
+            let payout = cards.payout_of(owner, token, facility)?;
+            assert_eq!((payout.to, payout.amount), (state, 90));
+            assert_eq!(escheat(&mut cards, authority, Address::ZERO)?, 0);
+            assert_eq!(f.account_status(&cards)?, ICards::AccountStatus::Dormant);
+            assert_eq!(f.balance(state)?, U256::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_touch_and_reactivate_need_the_root_key() -> eyre::Result<()> {
+        at_t15(|| {
+            let f = Fixture::new(100)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            assert_eq!(
+                cards.reactivate(f.owner).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            cards.touch(f.owner)?;
+            assert_eq!(cards.get_account(f.owner)?.lastActive, NOW);
+            let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(f.owner)?;
+            keychain.set_transaction_key(Address::random())?;
+            assert_eq!(
+                cards.touch(f.owner).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            assert_eq!(
+                cards.reactivate(f.owner).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
             Ok(())
         })
     }
