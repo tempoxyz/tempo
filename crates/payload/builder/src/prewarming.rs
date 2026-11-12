@@ -8,7 +8,7 @@ use std::{
 };
 
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
 use reth_evm_ethereum::EvmFactory as _;
@@ -473,36 +473,24 @@ struct InvalidTransaction {
     kind: InvalidPoolTransactionError,
 }
 
-/// Transaction lanes invalidated during a payload build.
+/// Nonce lanes invalidated during a payload build.
 ///
-/// Invalidating a regular transaction blocks every later regular transaction from the same
-/// sender. Invalidating a 2D nonce transaction blocks only its `(sender, nonce_key)` sequence.
+/// Invalidating a transaction blocks every later transaction of its `(sender, nonce_key)` lane.
+/// A sender's non-AA transactions share the lane of nonce key 0.
 #[derive(Debug, Default)]
 struct InvalidatedLanes {
-    senders: HashSet<Address>,
     sequences: HashSet<AASequenceId>,
 }
 
 impl InvalidatedLanes {
     fn insert(&mut self, invalid: &BestTransaction) {
-        if invalid.transaction.is_aa_2d() {
-            if let Some(id) = invalid.transaction.aa_transaction_id() {
-                self.sequences.insert(*id.seq_id());
-            }
-        } else {
-            self.senders.insert(invalid.transaction.sender());
-        }
+        self.sequences
+            .insert(*invalid.transaction.lane_transaction_id().seq_id());
     }
 
     fn contains(&self, candidate: &BestTransaction) -> bool {
-        if candidate.transaction.is_aa_2d() {
-            candidate
-                .transaction
-                .aa_transaction_id()
-                .is_some_and(|id| self.sequences.contains(id.seq_id()))
-        } else {
-            self.senders.contains(&candidate.transaction.sender())
-        }
+        self.sequences
+            .contains(candidate.transaction.lane_transaction_id().seq_id())
     }
 }
 
@@ -1245,6 +1233,23 @@ mod tests {
         assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[3].hash());
         // Both transactions were already buffered, so no source poll was needed.
         assert!(commands_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn invalidated_lanes_join_non_aa_and_protocol_nonce_aa() {
+        let sender = Address::random();
+        let non_aa = test_tx(sender, 0);
+        let protocol_nonce_aa = test_payment_tx_with_nonce_key(sender, 500_000, U256::ZERO);
+        let other_lane = test_payment_tx_with_nonce_key(sender, 500_000, U256::ONE);
+
+        for invalid in [&non_aa, &protocol_nonce_aa] {
+            let mut invalidated = InvalidatedLanes::default();
+            invalidated.insert(invalid);
+            assert!(invalidated.contains(&test_tx(sender, 1)));
+            assert!(invalidated.contains(&protocol_nonce_aa));
+            assert!(!invalidated.contains(&other_lane));
+            assert!(!invalidated.contains(&test_tx(Address::random(), 0)));
+        }
     }
 
     #[test]
