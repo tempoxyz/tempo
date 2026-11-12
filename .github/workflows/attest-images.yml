@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       packages: read
+      id-token: write # secure-runner
     outputs:
       image_refs: ${{ steps.expand.outputs.image_refs }}
     steps:

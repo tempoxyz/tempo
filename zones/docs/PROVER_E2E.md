@@ -11,7 +11,7 @@ There is no cron schedule.
 | Manual dispatch | Exact SHA and selected fast/full suite, regardless of changed paths | Corresponding suite status |
 
 Merge-queue detection compares the event's base SHA with its head SHA using the
-same pinned changed-paths action as Tempo Network E2E. Detection or dispatch errors
+same pinned changed-paths action as the Tempo CI Image workflow. Detection or dispatch errors
 fail the check. Main runs use the pushed SHA, not a later resolution of `main`;
 newer merges do not cancel earlier ancestry runs. T14 remains a separate opt-in
 scenario requiring distinct prover versions.

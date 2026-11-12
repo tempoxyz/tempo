@@ -931,7 +931,6 @@ jobs:
       packages: write
       id-token: write
     outputs:
-      prover_image_refs: ${{ steps.publish.outputs.prover_image_refs }}
       image_refs: ${{ steps.publish.outputs.image_refs }}
       deferred_tags: ${{ steps.publish.outputs.deferred_tags }}
       hold: ${{ steps.publish.outputs.hold }}
@@ -1065,8 +1064,6 @@ jobs:
             docker tag tempo-zone-prover-eif-builder:local "$BUILDER_REF"
             push_and_record "$BUILDER_REF"
           fi
-          grep -E '/tempo-zone-prover@' "$RUNNER_TEMP/image-refs.txt" > "$RUNNER_TEMP/prover-image-refs.txt" || true
-          printf 'prover_image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/prover-image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
           printf 'image_refs=%s\n' "$(sort -u "$RUNNER_TEMP/image-refs.txt" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
           # Each held tag moves to the digest its repository's sha- tag was pushed as.
           deferred="$(jq -Rsc --rawfile refs "$RUNNER_TEMP/image-refs.txt" '
@@ -1077,61 +1074,6 @@ jobs:
             "$RUNNER_TEMP/held-tags.txt")"
           printf 'deferred_tags=%s\n' "$deferred" >> "$GITHUB_OUTPUT"
           echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
-
-  sign-prover-images:
-    name: Sign published prover images
-    needs: publish-companion-images
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      id-token: write
-    steps:
-      - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Log in to Docker Hub
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          username: ${{ vars.DOCKER_HUB_USER }}
-          password: ${{ secrets.DOCKER_HUB_TOKEN }}
-      - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
-      - name: Sign published prover image digests
-        shell: bash
-        env:
-          PROVER_IMAGE_REFS: ${{ needs.publish-companion-images.outputs.prover_image_refs }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$PROVER_IMAGE_REFS" | jq -er '.[]' > "$RUNNER_TEMP/prover-image-refs.txt"
-          [[ -s "$RUNNER_TEMP/prover-image-refs.txt" ]] || {
-            echo "No published prover image digests to sign" >&2
-            exit 1
-          }
-
-          # Keyless signatures identify the publishing workflow, not human/VK
-          # approval or L1-approved PCRs. Tags already exist if signing fails.
-          while IFS= read -r ref; do
-            [[ "$ref" =~ ^(ghcr.io|docker.io)/tempoxyz/tempo-zone-prover@sha256:[0-9a-f]{64}$ ]] || {
-              echo "Invalid prover image reference: $ref" >&2
-              exit 1
-            }
-            for attempt in 1 2 3; do
-              if cosign sign --yes "$ref"; then
-                break
-              fi
-              if [[ "$attempt" -eq 3 ]]; then
-                echo "Failed to sign $ref after $attempt attempts" >&2
-                exit 1
-              fi
-              sleep "$((attempt * 15))"
-            done
-          done < "$RUNNER_TEMP/prover-image-refs.txt"
 
   attest-companion-images:
     name: Attest published companion images
@@ -1161,6 +1103,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # secure-runner
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
