@@ -366,7 +366,7 @@ impl Inner {
             let bytes = block.header().extra_data().clone();
             let dealer = match self
                 .dkg_manager
-                .verify_dealer_log(round.epoch(), bytes)
+                .verify_dealer_log(round.epoch(), block.header().timestamp(), bytes)
                 .await
             {
                 Ok(dealer) => dealer.ok_or_eyre("invalid DKG dealer log")?,
