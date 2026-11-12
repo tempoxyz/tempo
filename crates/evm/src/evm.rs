@@ -215,7 +215,7 @@ mod runtime_tests {
         },
     };
     use tempo_precompiles::{
-        ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+        ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RESERVATIONS_ADDRESS,
         STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
         account_keychain::AccountKeychain,
         error::TempoPrecompileError,
@@ -1272,6 +1272,7 @@ mod runtime_tests {
                     (TIP403_REGISTRY_ADDRESS, "TIP403_REGISTRY"),
                     (STORAGE_CREDITS_ADDRESS, "STORAGE_CREDITS"),
                     (NONCE_PRECOMPILE_ADDRESS, "NONCE_MANAGER"),
+                    (RESERVATIONS_ADDRESS, "RESERVATIONS"),
                 ]),
                 slots: BTreeMap::from([
                     ((TIP_FEE_MANAGER_ADDRESS, validator_token_slot), "validatorTokens[beneficiary]"),

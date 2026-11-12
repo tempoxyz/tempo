@@ -99,6 +99,11 @@ struct ReceivePolicyConfig {
     token_filter_type: u8,
     /// Recovery authority for blocked inbound funds.
     recovery_mode: RecoveryMode,
+    /// (+T15) Number of tokens in which the account owes [`Reservations`] debt. Every TIP-20
+    /// credit reads this slot, so non-debtors skip the debt lookup at no extra cost.
+    ///
+    /// [`Reservations`]: crate::reservations::Reservations
+    reservation_debts: u32,
 }
 
 /// Policy record containing base data and optional data for compound policies ([TIP-1015])
@@ -397,6 +402,31 @@ impl TIP403Registry {
         })
     }
 
+    /// Whether `account` owes [`Reservations`] debt in any token.
+    ///
+    /// [`Reservations`]: crate::reservations::Reservations
+    pub(crate) fn has_reservation_debt(&self, account: Address) -> Result<bool> {
+        Ok(self.receive_policies[account]
+            .config
+            .read()?
+            .reservation_debts
+            != 0)
+    }
+
+    /// Counts a token in which `account` starts (`owes`) or stops owing [`Reservations`] debt.
+    ///
+    /// [`Reservations`]: crate::reservations::Reservations
+    pub(crate) fn count_reservation_debt(&mut self, account: Address, owes: bool) -> Result<()> {
+        let mut config = self.receive_policies[account].config.read()?;
+        config.reservation_debts = if owes {
+            config.reservation_debts.checked_add(1)
+        } else {
+            config.reservation_debts.checked_sub(1)
+        }
+        .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.receive_policies[account].config.write(config)
+    }
+
     /// Checks `receiver`'s receive policy for an inbound transfer. Returns the blocking
     /// reason, or `None` if authorized.
     pub fn validate_receive_policy(
@@ -516,8 +546,18 @@ impl TIP403Registry {
         let sender_policy_type = self.validate_receive_policy_id(call.senderPolicyId)?;
         let token_filter_type = self.validate_receive_policy_id(call.tokenFilterId)?;
 
+        // The debt count belongs to the reservations precompile and survives policy changes.
+        let reservation_debts = if self.storage.spec().is_t15() {
+            self.receive_policies[msg_sender]
+                .config
+                .read()?
+                .reservation_debts
+        } else {
+            0
+        };
         let config = ReceivePolicyConfig {
             has_receive_policy: true,
+            reservation_debts,
             sender_policy_id: call.senderPolicyId,
             sender_policy_type,
             token_filter_id: call.tokenFilterId,

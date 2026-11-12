@@ -33,6 +33,7 @@ policy_payment:
   - "Sload(PATH_USD, balances[recipient], 0)"
   - "Sstore(PATH_USD, balances[recipient], 0, 100)"
   - "Sload(STORAGE_CREDITS, storageCredits[PATH_USD], 0)"
+  - "Sload(TIP403_REGISTRY, receivePolicies[recipient], 22300745198530623154838624654892152072964609)"
   - "Sload(STORAGE_CREDITS, storageCredits[PATH_USD], 0)"
   - "Sdec(FEE_TOKEN, balances[FeeManager], 1000, 443)"
   - "Sinc(FEE_TOKEN, balances[sender], 999000, 443)"
