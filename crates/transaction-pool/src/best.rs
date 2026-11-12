@@ -1,11 +1,15 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    ordering::TempoTipOrdering,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::BestAA2dTransactions,
 };
-use alloy_primitives::{Address, U256, map::HashMap};
-use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
+use alloy_primitives::{
+    Address, U256,
+    map::{AddressSet, HashMap},
+};
+use evm2::evm::{AccountChangeRef, StateChangeSink, StateChangeSource, StorageChange};
 use reth_evm::BlockTransactionResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -19,10 +23,30 @@ use tempo_precompiles::tip20::is_tip20_prefix;
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
-struct DecreasedBalancesSink<'a>(&'a mut HashMap<(Address, U256), U256>);
+/// Collects the changes of an executed transaction that `StateAwareBestTransactions` checks
+/// later candidates against.
+struct BlockChangesSink<'a> {
+    decreased_balances: &'a mut HashMap<(Address, U256), U256>,
+    changed_commitments: &'a mut AddressSet,
+}
 
-impl StateChangeSink for DecreasedBalancesSink<'_> {
+impl StateChangeSink for BlockChangesSink<'_> {
     type Error = core::convert::Infallible;
+
+    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        if change
+            .original
+            .map(|info| info.extension.as_ref())
+            .unwrap_or_default()
+            != change
+                .current
+                .map(|info| info.extension.as_ref())
+                .unwrap_or_default()
+        {
+            self.changed_commitments.insert(change.address);
+        }
+        Ok(())
+    }
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         if !is_tip20_prefix(change.address) {
@@ -30,8 +54,12 @@ impl StateChangeSink for DecreasedBalancesSink<'_> {
         }
 
         if change.current < change.original {
-            self.0.insert((change.address, change.key), change.current);
-        } else if let Some(balance) = self.0.get_mut(&(change.address, change.key)) {
+            self.decreased_balances
+                .insert((change.address, change.key), change.current);
+        } else if let Some(balance) = self
+            .decreased_balances
+            .get_mut(&(change.address, change.key))
+        {
             *balance = change.current;
         }
         Ok(())
@@ -44,7 +72,7 @@ impl StateChangeSink for DecreasedBalancesSink<'_> {
         value: U256,
     ) -> Result<(), Self::Error> {
         if is_tip20_prefix(address)
-            && let Some(balance) = self.0.get_mut(&(address, key))
+            && let Some(balance) = self.decreased_balances.get_mut(&(address, key))
         {
             *balance = value;
         }
@@ -176,6 +204,12 @@ pub struct StateAwareBestTransactions<I> {
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
     decreased_balances: HashMap<(Address, U256), U256>,
+    /// Accounts whose configuration commitment changed earlier in the block.
+    ///
+    /// A candidate naming one as an authority was validated against the old commitment, so it
+    /// is skipped for this block instead of executed. Pool maintenance revalidates it once the
+    /// block commits.
+    changed_commitments: AddressSet,
     /// Ordered fallback fee tokens active for the block being built.
     fallback_fee_tokens: &'static [Address],
 }
@@ -193,6 +227,7 @@ where
         Self {
             inner,
             decreased_balances: HashMap::default(),
+            changed_commitments: AddressSet::default(),
             fallback_fee_tokens,
         }
     }
@@ -203,7 +238,10 @@ where
         result
             .result()
             .pending_state
-            .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
+            .visit(&mut BlockChangesSink {
+                decreased_balances: &mut self.decreased_balances,
+                changed_commitments: &mut self.changed_commitments,
+            })
             .unwrap();
     }
 
@@ -239,6 +277,19 @@ where
         loop {
             let tx = self.inner.next()?;
             let best_tx = tx.best_transaction();
+
+            if best_tx
+                .transaction
+                .has_authority_in(&self.changed_commitments)
+            {
+                self.inner.mark_invalid(
+                    &tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::AuthorityCommitmentChanged,
+                    )),
+                );
+                continue;
+            }
 
             let Some(key) = best_tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
@@ -301,7 +352,9 @@ mod tests {
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, B256};
+    use alloy_signer_local::PrivateKeySigner;
+    use evm2::evm::{AccountInfo, PendingState};
     use futures::executor::block_on;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
     use reth_transaction_pool::{
@@ -311,6 +364,7 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_evm::ResolvedFeeToken;
+    use tempo_primitives::account::encode_config_commitment;
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -673,5 +727,78 @@ mod tests {
             TempoHardfork::T12.fallback_fee_tokens(),
             &[path_usd]
         ));
+    }
+
+    #[test]
+    fn test_block_changes_sink_collects_changed_commitments() {
+        let info = |commitment: Option<B256>| AccountInfo {
+            extension: commitment
+                .map(encode_config_commitment)
+                .unwrap_or_default()
+                .into(),
+            ..Default::default()
+        };
+        let registered = Address::random();
+        let rotated = Address::random();
+        let funded = Address::random();
+        let mut state = PendingState::default();
+        state.insert_account(
+            registered,
+            Some(info(None)),
+            Some(info(Some(B256::random()))),
+        );
+        state.insert_account(
+            rotated,
+            Some(info(Some(B256::random()))),
+            Some(info(Some(B256::random()))),
+        );
+        // A balance change alone leaves the commitment as it was.
+        state.insert_account(
+            funded,
+            Some(info(None)),
+            Some(AccountInfo {
+                balance: U256::ONE,
+                ..info(None)
+            }),
+        );
+
+        let mut decreased_balances = HashMap::default();
+        let mut changed_commitments = AddressSet::default();
+        state
+            .visit(&mut BlockChangesSink {
+                decreased_balances: &mut decreased_balances,
+                changed_commitments: &mut changed_commitments,
+            })
+            .unwrap();
+
+        assert_eq!(
+            changed_commitments,
+            AddressSet::from_iter([registered, rotated])
+        );
+    }
+
+    #[test]
+    fn test_state_aware_skips_transactions_of_changed_authorities() {
+        let user = Address::random();
+        let access_key = PrivateKeySigner::random();
+        let sender = Address::random();
+        let unrelated = protocol_tx(0, 1);
+        let keychain = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user)
+                .max_priority_fee(3)
+                .max_fee(u128::from(TEMPO_T1_BASE_FEE) + 3)
+                .build_keychain(user, &access_key),
+            TransactionOrigin::External,
+        ));
+        let from_sender = protocol_tx_for_sender(sender, 0, 2);
+        let descendant = protocol_tx_for_sender(sender, 1, 2);
+        let mut best = StateAwareBestTransactions::new(
+            protocol_best_transactions(vec![unrelated.clone(), keychain, from_sender, descendant]),
+            TempoHardfork::T13.fallback_fee_tokens(),
+        );
+        best.changed_commitments = AddressSet::from_iter([access_key.address(), sender]);
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*unrelated.hash()));
+        assert!(best.next().is_none());
     }
 }

@@ -678,6 +678,14 @@ pub enum TempoPoolTransactionError {
     )]
     ExceedsNonPaymentLimit,
 
+    /// The configuration commitment of one of the transaction's authorities changed.
+    ///
+    /// Thrown by the payload builder after the transaction is already in the pool, when an
+    /// earlier transaction in the block being built changed a commitment the transaction was
+    /// validated against. It is skipped for that block and revalidated once the block commits.
+    #[error("Transaction authority configuration changed earlier in the block")]
+    AuthorityCommitmentChanged,
+
     /// An AA transaction's `valid_before` is too close to the current pool tip.
     ///
     /// Thrown during pool admission when `valid_before` is less than or equal to
@@ -878,6 +886,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
+            | Self::AuthorityCommitmentChanged
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
@@ -1672,6 +1681,7 @@ mod tests {
     fn test_is_bad_transaction() {
         let cases: &[(TempoPoolTransactionError, bool)] = &[
             (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
+            (TempoPoolTransactionError::AuthorityCommitmentChanged, false),
             (
                 TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore {
                     valid_before: 100,
