@@ -118,9 +118,10 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
     metrics: ValidationMetrics,
-    /// Advanced before the pool is repaired for a canonical update. Validation reports each
-    /// outcome with the value it read before opening the state it validated against, and
-    /// admission inserts, under the read lock, only outcomes reported with the current value.
+    /// Advanced after what validation reads is refreshed for a canonical update and before the
+    /// pool is repaired for it. Validation reports each outcome with the value it read before
+    /// opening the state it validated against, and admission inserts, under the read lock, only
+    /// outcomes reported with the current value.
     pub(crate) admission_epoch: RwLock<u64>,
 }
 
@@ -875,6 +876,10 @@ where
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
+
+        // Reth calls this before it updates its pool for the new tip, so the advance comes after
+        // everything refreshed above and before that repair.
+        *self.admission_epoch.write() += 1;
     }
 }
 

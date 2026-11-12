@@ -51,9 +51,9 @@ use tokio::sync::mpsc;
 /// Validations of a transaction before admission rejects it because the admission epoch advanced
 /// during each of them.
 ///
-/// A single canonical update advances it at most four times (reth's pool update, two in pool
-/// maintenance and a zone's authority revalidation), so a rejection takes advances from at least
-/// three canonical updates during one admission.
+/// A single canonical update advances it at most four times (the validator's head refresh, two
+/// in pool maintenance and a zone's authority revalidation), so a rejection takes advances from
+/// at least three canonical updates during one admission.
 const ADMISSION_ATTEMPTS: usize = 10;
 
 /// Transaction pool operations for Tempo nonce lanes.
@@ -114,7 +114,8 @@ where
     ///
     /// Call before repairing the pool for a canonical update, and after refreshing what
     /// validation reads besides chain state. An admission that validated earlier would otherwise
-    /// insert a transaction that repair would have removed.
+    /// insert a transaction that repair would have removed. Reth's own pool update needs no
+    /// call: the validator advances the epoch when its head is refreshed.
     pub(crate) fn advance_admission_epoch(&self) {
         *self
             .protocol_pool
@@ -1495,9 +1496,8 @@ where
         // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
         // keep ordering its eviction sets against a stale base fee once the fee starts moving.
         let pending_basefee = update.pending_block_base_fee;
-        // Reth prunes mined transactions and moves sender nonces below. An admission that
-        // validated against the previous state would insert with the nonce it read then.
-        self.advance_admission_epoch();
+        // Reth refreshes the validator's head, which advances the admission epoch, before it
+        // prunes mined transactions and moves sender nonces.
         self.protocol_pool.on_canonical_state_change(update);
         self.aa_2d_pool.write().set_base_fee(pending_basefee);
     }
