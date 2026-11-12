@@ -854,6 +854,9 @@ where
             return Vec::new();
         }
 
+        self.admission_metrics
+            .batch_size
+            .record(transactions.len() as f64);
         let has_2d = transactions.iter().any(|(_, tx)| tx.is_aa_2d());
         let origins = transactions
             .iter()
@@ -862,7 +865,11 @@ where
         let validator = self.protocol_pool.validator();
 
         let mut seen = *self.admission_epoch.read();
+        let mut validation_start = Instant::now();
         let mut outcomes = validator.validate_transactions(transactions).await;
+        self.admission_metrics
+            .validation_duration_seconds
+            .record(validation_start.elapsed());
         let mut attempts = 1;
         loop {
             {
@@ -926,10 +933,12 @@ where
             self.admission_metrics
                 .revalidated
                 .increment(stale.len() as u64);
-            for (slot, outcome) in slots
-                .into_iter()
-                .zip(validator.validate_transactions(stale).await)
-            {
+            validation_start = Instant::now();
+            let validated = validator.validate_transactions(stale).await;
+            self.admission_metrics
+                .validation_duration_seconds
+                .record(validation_start.elapsed());
+            for (slot, outcome) in slots.into_iter().zip(validated) {
                 outcomes[slot] = outcome;
             }
         }

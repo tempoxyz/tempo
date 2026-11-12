@@ -114,4 +114,21 @@ pub(crate) struct AdmissionMetrics {
     /// Valid transactions rejected because a canonical update landed during every validation
     /// attempt.
     pub(crate) rejected: Counter,
+
+    /// Transactions in one admission batch.
+    pub(crate) batch_size: Histogram,
+
+    /// Time one validation of an admission batch takes in seconds, from handing it to the
+    /// validation tasks to receiving its outcomes. Includes the wait for a free task, which
+    /// [`ValidationMetrics::batch_duration_seconds`] leaves out.
+    pub(crate) validation_duration_seconds: Histogram,
+}
+
+/// Transaction validator metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.validation")]
+pub(crate) struct ValidationMetrics {
+    /// Time a validation task spends on one batch in seconds: opening the tip's state and
+    /// validating every transaction in the batch against it.
+    pub(crate) batch_duration_seconds: Histogram,
 }

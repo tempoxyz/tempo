@@ -1,6 +1,7 @@
 use crate::{
     AddressFilter,
     amm::AmmLiquidityCache,
+    metrics::ValidationMetrics,
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
@@ -29,6 +30,7 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
+    time::Instant,
 };
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
@@ -115,6 +117,7 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Cached here so hot paths can resolve the active hardfork with a single atomic load
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
+    metrics: ValidationMetrics,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -153,6 +156,7 @@ where
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+            metrics: ValidationMetrics::default(),
         }
     }
 
@@ -778,6 +782,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
+        let start = Instant::now();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -785,13 +790,16 @@ where
             }
         };
 
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            core::iter::once((origin, transaction)),
-        )
-        .pop()
-        .expect("validate_batch returns one outcome per transaction")
+        let outcome = self
+            .validate_batch(
+                state_provider,
+                cached_state,
+                core::iter::once((origin, transaction)),
+            )
+            .pop()
+            .expect("validate_batch returns one outcome per transaction");
+        self.metrics.batch_duration_seconds.record(start.elapsed());
+        outcome
     }
 
     async fn validate_transactions(
@@ -799,6 +807,7 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let start = Instant::now();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -811,7 +820,9 @@ where
             }
         };
 
-        self.validate_batch(state_provider, cached_state, transactions)
+        let outcomes = self.validate_batch(state_provider, cached_state, transactions);
+        self.metrics.batch_duration_seconds.record(start.elapsed());
+        outcomes
     }
 
     async fn validate_transactions_with_origin(
@@ -819,6 +830,7 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let start = Instant::now();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -831,11 +843,13 @@ where
             }
         };
 
-        self.validate_batch(
+        let outcomes = self.validate_batch(
             state_provider,
             cached_state,
             transactions.into_iter().map(|tx| (origin, tx)),
-        )
+        );
+        self.metrics.batch_duration_seconds.record(start.elapsed());
+        outcomes
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
