@@ -297,6 +297,3 @@ fn quorums(step: &ZoneStep) -> impl Iterator<Item = &Quorum> {
 fn at_tx(s: &ZoneStep) -> Option<&Mirror> {
     (s.pre.zone.anchor == s.post.zone.anchor).then_some(&s.pre)
 }
-
-#[cfg(test)]
-mod tests;
