@@ -304,11 +304,10 @@ impl AA2dPool {
                 // authorities are checked with the replaced transaction's slots released.
                 let replaced_tx = &entry.get().inner.transaction.transaction;
                 self.txs_by_authority.remove(replaced_tx);
-                if let Some(authority) = self.txs_by_authority.at_capacity(
-                    self.config.max_txs_per_authority,
-                    &transaction.transaction,
-                    None,
-                ) {
+                if let Some(authority) = self
+                    .txs_by_authority
+                    .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+                {
                     self.txs_by_authority.add(replaced_tx);
                     return Err(PoolError::new(
                         *transaction.hash(),
@@ -327,16 +326,11 @@ impl AA2dPool {
                 Some(replaced)
             }
             Entry::Vacant(entry) => {
-                // Check the per-authority limit for new (non-replacement) transactions. A sender
-                // at capacity still adds the on-chain nonce of a lane that holds transactions:
-                // it makes them executable.
-                let exempt =
-                    (tx_id.nonce == on_chain_nonce && lane_count > 0).then(|| transaction.sender());
-                if let Some(authority) = self.txs_by_authority.at_capacity(
-                    self.config.max_txs_per_authority,
-                    &transaction.transaction,
-                    exempt,
-                ) {
+                // Check the per-authority limit for new (non-replacement) transactions
+                if let Some(authority) = self
+                    .txs_by_authority
+                    .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+                {
                     return Err(PoolError::new(
                         *transaction.hash(),
                         PoolErrorKind::SpammerExceededCapacity(authority),
@@ -493,11 +487,10 @@ impl AA2dPool {
         };
 
         // Check the per-authority limit
-        if let Some(authority) = self.txs_by_authority.at_capacity(
-            self.config.max_txs_per_authority,
-            &transaction.transaction,
-            None,
-        ) {
+        if let Some(authority) = self
+            .txs_by_authority
+            .at_capacity(self.config.max_txs_per_authority, &transaction.transaction)
+        {
             return Err(PoolError::new(
                 tx_hash,
                 PoolErrorKind::SpammerExceededCapacity(authority),
@@ -2036,9 +2029,7 @@ pub struct AA2dPoolConfig {
     /// signer, separate fee payer or access key.
     ///
     /// Bounds how many pooled transactions one account can invalidate with a single state
-    /// change (DoS protection). A sender's on-chain nonce in a lane that already holds
-    /// transactions is admitted even at capacity to allow gap filling, so a sender holds at most
-    /// twice this many.
+    /// change (DoS protection).
     pub max_txs_per_authority: usize,
     /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
@@ -6068,44 +6059,6 @@ mod tests {
             0,
             TempoHardfork::T1,
         )
-    }
-
-    #[test]
-    fn per_authority_limit_allows_sender_on_chain_nonce_of_occupied_lane() {
-        let mut pool = authority_limit_pool(3);
-        let sender = Address::random();
-        let fee_payer = PrivateKeySigner::random();
-        let build = |nonce_key, nonce| {
-            TxBuilder::aa(sender)
-                .nonce_key(nonce_key)
-                .nonce(nonce)
-                .build()
-        };
-        for nonce in 1..=3 {
-            add_expiring(&mut pool, sponsor(build(U256::ONE, nonce), &fee_payer)).unwrap();
-        }
-
-        // A future nonce and the on-chain nonce of an empty lane are rejected at capacity, and
-        // so is the on-chain nonce when another authority is at capacity.
-        for (tx, authority) in [
-            (build(U256::ONE, 4), sender),
-            (build(U256::from(2), 0), sender),
-            (
-                sponsor(build(U256::ONE, 0), &fee_payer),
-                fee_payer.address(),
-            ),
-        ] {
-            let err = add_expiring(&mut pool, tx).unwrap_err();
-            assert!(
-                matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(address) if address == authority),
-                "unexpected error: {:?}",
-                err.kind
-            );
-        }
-        let added = add_expiring(&mut pool, build(U256::ONE, 0)).unwrap();
-        assert_eq!(added.as_pending().unwrap().promoted.len(), 3);
-        assert_eq!(pool.txs_by_authority.get(&sender), 4);
-        pool.assert_invariants();
     }
 
     /// A fee payer sponsoring distinct senders is limited like a sender, and its slots are

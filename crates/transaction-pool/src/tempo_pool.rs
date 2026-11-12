@@ -1415,13 +1415,17 @@ where
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
-        // Reth reloads the pooled senders after it missed blocks. Their nonces take the same path
-        // as a block's state changes.
+        // Reth reloads the pooled senders after it missed blocks, at a block the tip may have
+        // passed by now. Their lanes move to the tip's nonces instead, through the same path as a
+        // block's state changes, so that a reload never moves a lane behind an applied block.
+        let Ok(tip_state) = self.client().latest() else {
+            return;
+        };
         let state = accounts
             .into_iter()
-            .map(|account| {
+            .filter_map(|account| {
                 let info = AccountInfo {
-                    nonce: account.nonce,
+                    nonce: tip_state.account_nonce(&account.address).ok()??,
                     ..Default::default()
                 };
                 let account_state = BundleAccount::new(
@@ -1430,10 +1434,12 @@ where
                     Default::default(),
                     AccountStatus::Changed,
                 );
-                (account.address, account_state)
+                Some((account.address, account_state))
             })
             .collect();
-        self.notify_aa_pool_on_state_updates(&state);
+        let removed = self.notify_aa_pool_on_state_updates(&state);
+        // No canonical update reports these as mined.
+        self.notify_discarded(&removed);
     }
 
     fn delete_blob(&self, tx: B256) {
@@ -2176,7 +2182,8 @@ mod tests {
 
     #[test]
     fn state_updates_move_protocol_nonce_lanes() {
-        let pool = create_test_pool(create_provider_with_tip());
+        let provider = create_provider_with_tip();
+        let pool = create_test_pool(provider.clone());
         let sender = Address::random();
         // Nonces 0 and 1 are below the account's new nonce, and nonce 3 waits behind a gap that
         // the block closes.
@@ -2210,13 +2217,19 @@ mod tests {
             Some(TransactionEvent::Pending)
         );
 
-        // A drifted pool reloads the account, whose nonce takes the same path.
+        // A drifted pool reloads the account. The lane moves to the tip's nonce, not to the one
+        // Reth read at an earlier block, and what it leaves behind is discarded.
+        provider.add_account(sender, ExtendedAccount::new(4, U256::ZERO));
         pool.update_accounts(vec![ChangedAccount {
             address: sender,
-            nonce: 4,
+            nonce: 3,
             balance: U256::ZERO,
         }]);
         assert_eq!(pool.pool_size().total, 0);
+        assert_eq!(
+            events.next().now_or_never().flatten(),
+            Some(TransactionEvent::Discarded)
+        );
     }
 
     #[test]
@@ -2238,7 +2251,8 @@ mod tests {
 
         let removed = pool.prune_transactions(vec![pruned, expiring]);
 
-        assert_eq!(tx_hashes(&removed), [pruned, expiring]);
+        assert_eq!(removed.len(), 2);
+        assert_eq!(pool.pool_size().total, 1);
         let best = pool.best_transactions().collect::<Vec<_>>();
         assert_eq!(tx_hashes(&best), [successor]);
     }

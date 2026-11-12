@@ -2104,7 +2104,9 @@ where
             pending_limit: pool_config.pending_limit,
             queued_limit: pool_config.queued_limit,
             max_txs_per_authority: pool_config.max_account_slots,
-            ..Default::default()
+            // Zones have no separate lane limit: the protocol nonce lane holds as many
+            // transactions as the sender's account slots, as the Reth pool did.
+            max_txs_per_lane: pool_config.max_account_slots,
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
