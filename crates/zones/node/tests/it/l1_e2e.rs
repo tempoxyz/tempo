@@ -2604,12 +2604,19 @@ async fn wait_for_deposit_bounce<P: Provider>(
     .await
 }
 
+/// Members of the default group, which `zoneAdmin_setDepositAllowed` edits.
 async fn get_deposit_allowlist(node: &ZoneTestNode) -> eyre::Result<Vec<Address>> {
     let snapshot: serde_json::Value = node
         .provider()
         .raw_request("zoneAdmin_getDepositAllowlist".into(), ())
         .await?;
-    Ok(serde_json::from_value(snapshot["addresses"].clone())?)
+    let members = snapshot["policy"]["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|group| group["id"] == "default")
+        .map_or_else(|| serde_json::json!([]), |group| group["members"].clone());
+    Ok(serde_json::from_value(members)?)
 }
 
 mod allowlist_admin {

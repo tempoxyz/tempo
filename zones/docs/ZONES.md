@@ -336,24 +336,53 @@ that should bounce.
 | File state | Behavior while leading |
 |------------|------------------------|
 | Missing (uninitialized) | Credits every deposit and admits every transfer. The node logs a warning at startup. |
-| Present | Credits only listed senders and admits only transfers between listed accounts. A present but empty list bounces every deposit. |
-| Unreadable, or over 80,000 addresses | The node fails to start. |
+| Present | Credits, admits and routes only what its [groups](#groups-and-routers) allow. A list with no members bounces every deposit. |
+| Unreadable, or over the [limits](#groups-and-routers) | The node fails to start. |
 
-The node creates the file on the first write, which must be `zoneAdmin_replaceDepositAllowlist`:
-an uninitialized sequencer rejects `zoneAdmin_setDepositAllowed`, because a partial first list
-would bounce everyone else. Change the file only through the `zoneAdmin` methods,
-never by hand. Each write persists the file with an fsync before the leader uses the new list.
+The node creates the file on the first write, which must be `zoneAdmin_replaceDepositAllowlist` or
+`zoneAdmin_replaceDepositAllowlistGroups`: an uninitialized sequencer rejects
+`zoneAdmin_setDepositAllowed`, because a partial first list would bounce everyone else. Change the
+file only through the `zoneAdmin` methods, never by hand. Each write persists the file with an
+fsync before the leader uses the new list. A file written by an earlier release, holding one flat
+`addresses` list, loads as the `default` group and is rewritten in the grouped shape on the next
+write; earlier releases cannot read the grouped file.
 
-#### Transfers between listed accounts
+#### Groups and routers
+
+The list is a set of named groups, such as one per tenant of a shared zone, plus the L1 routers
+each group may use, such as a vault's Earn router:
+
+- **Deposits:** the decrypted zone recipient must be in a group that also holds the L1 sender, or
+  that the sender serves as a router. An address in several groups, such as a shared on-ramp,
+  funds each of them.
+- **Transfers:** the sender, the recipient and any `transferFrom` spender must all be in one group
+  whose `transfers` flag is set. Membership in two groups never combines.
+- **Withdrawals to a router:** the withdrawer must be in one of the router's groups. A zone Earn
+  deposit or redemption is a withdrawal to the router, so this keeps a vault to the groups it
+  serves. Withdrawals to any other address are not checked.
+
+| Limit | Value |
+|-------|-------|
+| Entries: every group membership plus every group a router serves | 80,000 |
+| Groups | 256 |
+| Routers | 256 |
+| Group ID | 1 to 32 bytes, unique |
+
+`zoneAdmin_setDepositAllowed` and `zoneAdmin_replaceDepositAllowlist` edit only the `default`
+group, created with transfers allowed, so a zone that never writes other groups behaves like a
+single list. `zoneAdmin_replaceDepositAllowlistGroups` replaces every group and router at once.
+
+#### Transfers between group members
 
 Users keep the same address on Tempo and the zone, so the list also restricts zone TIP-20
 transfers once [transfers are enabled](#enabling-zone-transfers). A sequencer with
 `--deposits.allowlist` rejects a transaction on submission when one of its calls (including the
-calls of an AA batch) is a `transfer`, `transferFrom`, or memo variant whose `from` or `to` is not
-listed. While it leads, it checks each pool transaction again against its current list before
+calls of an AA batch) is a `transfer`, `transferFrom`, or memo variant whose parties share no group
+that allows transfers, or a withdrawal to a router that serves none of the withdrawer's groups. While it leads, it checks each pool transaction again against its current list before
 executing it, and leaves out and drops from its pool any that the list now rejects. Submission
-also rejects a `transferFrom` from an unlisted caller, whatever parties it names, so an unlisted
-account cannot learn whether an address is listed from whether its transaction is accepted. A
+also rejects a `transferFrom` whose caller is not in the parties' group, whatever parties it names,
+so an account outside a group cannot learn whether an address is in it from whether its
+transaction is accepted. A
 screened call whose arguments do not decode is rejected with `malformed transfer calldata`, since
 the precompile would revert it. `ReceivePolicyGuard` claims are not checked: from T15 a transfer
 or mint that a receive policy blocks reverts on a zone instead of moving funds into the guard.
@@ -375,16 +404,16 @@ enforces its own list.
 
 Removing an account from the list does not trap its funds. Fees and transfers to the outbox are
 exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if
-the withdrawal bounces on Tempo, so it must be the withdrawer, or the withdrawer and the fallback
-recipient must both be listed. The fallback is checked when the withdrawal is requested, so it is
+the withdrawal bounces on Tempo, so it must be the withdrawer, or share a group that allows
+transfers with the withdrawer. The fallback is checked when the withdrawal is requested, so it is
 still credited if it is removed from the list before the bounce. The withdrawal's Tempo recipient
-is not checked, since Tempo transfers are open anyway.
+is checked only when it is a listed router, since Tempo transfers are open anyway.
 
 Limits:
 
 - Only the leader enforces the list; followers and the prover accept any block.
-- The submission error tells a listed sender that a counterparty is not listed, so a listed
-  account can check addresses one at a time.
+- The submission error tells a group member that a counterparty is not in its group, so a member
+  can check addresses one at a time against its own groups, though not against groups it is not in.
 - Simulations (`eth_call`, `eth_estimateGas`) do not check the list.
 
 #### Flags and methods
@@ -400,15 +429,20 @@ The methods are served over HTTP JSON-RPC:
 
 | Method | Description |
 |--------|-------------|
-| `zoneAdmin_setDepositAllowed(addresses, allowed, nonce, deadline, signature)` | Add (`allowed = true`) or remove senders |
-| `zoneAdmin_replaceDepositAllowlist(addresses, nonce, deadline, signature)` | Replace the whole list |
-| `zoneAdmin_getDepositAllowlist()` | `{initialized, nonce, listHash, count, addresses}`. Through a relay, fails if the sequencers differ. |
+| `zoneAdmin_setDepositAllowed(addresses, allowed, nonce, deadline, signature)` | Add (`allowed = true`) or remove members of the `default` group |
+| `zoneAdmin_replaceDepositAllowlist(addresses, nonce, deadline, signature)` | Replace the members of the `default` group, keeping every other group and router |
+| `zoneAdmin_replaceDepositAllowlistGroups(policy, nonce, deadline, signature)` | Replace every group and router. `policy` is `{groups: [{id, members, transfers}], routers: [{router, groups}]}`. |
+| `zoneAdmin_getDepositAllowlist()` | `{initialized, nonce, listHash, count, policy}`, with `policy` in canonical order. Through a relay, fails if the sequencers differ. |
 | `zoneAdmin_getDepositAllowlistStatus()` | `{sequencer, initialized, nonce, listHash, count}` for each sequencer through a relay; a sequencer reports only itself, without `sequencer` |
 
 Writes carry an EIP-712 signature from the admin address. The domain is
 `{name: "TempoZoneDepositAllowlist", version: "1", chainId: <zone chain id>}`, and the structs are
-`SetDepositAllowed(address[] addresses,bool allowed,uint64 nonce,uint64 deadline)` and
-`ReplaceDepositAllowlist(address[] addresses,uint64 nonce,uint64 deadline)`. Each nonce must
+`SetDepositAllowed(address[] addresses,bool allowed,uint64 nonce,uint64 deadline)`,
+`ReplaceDepositAllowlist(address[] addresses,uint64 nonce,uint64 deadline)` and
+`ReplaceDepositAllowlistGroups(AllowlistPolicy policy,uint64 nonce,uint64 deadline)`, where
+`AllowlistPolicy(AllowlistGroup[] groups,AllowlistRouter[] routers)`,
+`AllowlistGroup(string id,address[] members,bool transfers)` and
+`AllowlistRouter(address router,string[] groups)`. Each nonce must
 exceed the last applied nonce; gaps are allowed, so Unix milliseconds work. The deadline is in
 Unix seconds, at most 10 minutes ahead.
 
@@ -419,7 +453,9 @@ again. Each RPC follower relays one write at a time and answers `Busy` to a writ
 another is in flight, but writes sent through different followers can still reach sequencers in
 different orders, so send writes one at a time and wait for each to succeed before sending the
 next.
-`listHash` is the keccak-256 of the addresses concatenated in ascending order. Sequencers with the
+`listHash` is the EIP-712 struct hash of the list as an `AllowlistPolicy` in canonical order: groups
+sorted by ID, members and routers ascending, and each router's groups sorted. `count` is the number
+of entries. Sequencers with the
 same `initialized`, `nonce`, and `listHash` hold the same list.
 
 #### Enabling the allowlist on a zone
@@ -480,8 +516,8 @@ fork schedule (`t15Time`). A zone whose genesis does not schedule T15 rejects tr
 after the opt-in. Zone transactions see the change once the zone has
 finalized the Tempo block that recorded it. Abdicating `AccessPolicy` freezes the current
 setting once the 30-day abdication delay has passed. Sequencers running the deposit allowlist
-also admit only transfers between listed accounts; see
-[Transfers between listed accounts](#transfers-between-listed-accounts).
+also admit only transfers between members of one group; see
+[Transfers between group members](#transfers-between-group-members).
 
 ### 5. Start the Zone Node
 
@@ -955,7 +991,7 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
 | `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
 | `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
-| `--deposits.allowlist` | false | Bounce deposits whose L1 sender or zone recipient is missing from `<datadir>/deposit-allowlist.json`, and reject zone transfers unless both parties are listed; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
+| `--deposits.allowlist` | false | Enforce the allowlist groups in `<datadir>/deposit-allowlist.json` on deposits, zone transfers and withdrawals to routers; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
 | `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers |
 | `--deposit-decryption-keys-file` | (optional) | File containing additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `--zone.batch-interval-blocks` | 120 | Zone blocks between empty withdrawal batch boundaries / L1 submissions (~1 minute at Tempo's 500 ms block time) |

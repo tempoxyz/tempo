@@ -940,7 +940,7 @@ mod tests {
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
     use crate::{
-        TransferAllowlist,
+        Movement, TransferAllowlist,
         abi::{self, DepositType, IZoneInbox},
     };
     use zone_l1::PreparedL1Block;
@@ -1134,7 +1134,7 @@ mod tests {
     struct EmptyAllowlist;
 
     impl TransferAllowlist for EmptyAllowlist {
-        fn allows_all(&self, _addresses: &[Address]) -> bool {
+        fn admits(&self, _movements: &[Movement]) -> bool {
             false
         }
     }

@@ -404,7 +404,7 @@ impl ZoneEngine {
                     &mut prepared.decryptions,
                 )?;
                 if rejected > 0 {
-                    info!(target: "zone::engine", rejected, "Bouncing deposits whose sender or recipient is not on the allowlist");
+                    info!(target: "zone::engine", rejected, "Bouncing deposits the allowlist groups do not admit");
                     metrics::counter!("zone_deposit_allowlist_rejected_total")
                         .increment(rejected as u64);
                 }

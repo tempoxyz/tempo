@@ -24,16 +24,31 @@ use tempo_transaction_pool::transaction::{TempoPoolTransactionError, TempoPooled
 
 use crate::abi::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 
-/// Zone accounts that may send and receive TIP-20 transfers in blocks this node builds.
-pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
-    /// Whether every one of `addresses` may send or receive Zone transfers, read from a single
-    /// version of the list so a concurrent write cannot approve each party under a different
-    /// one. An allowlist that has never been written allows every address.
-    fn allows_all(&self, addresses: &[Address]) -> bool;
+/// A movement of Zone funds that the screen found in a transaction's calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Movement {
+    /// Funds moving from `from` to `to` on the Zone: a TIP-20 transfer, made by `spender` when it
+    /// is a `transferFrom`, or a withdrawal's fallback recipient, credited if the withdrawal
+    /// bounces.
+    Transfer {
+        spender: Option<Address>,
+        from: Address,
+        to: Address,
+    },
+    /// A withdrawal by `sender` to `to` on Tempo.
+    Withdrawal { sender: Address, to: Address },
 }
 
-/// Reject a transaction whose calls move TIP-20 funds or name a withdrawal fallback recipient
-/// outside `allowlist`, or call `transferFrom` from an unlisted account. Every party of the
+/// Zone fund movements that blocks this node builds may include.
+pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
+    /// Whether every one of `movements` is allowed, read from a single version of the list so a
+    /// concurrent write cannot approve each movement under a different one. An allowlist that has
+    /// never been written allows every movement.
+    fn admits(&self, movements: &[Movement]) -> bool;
+}
+
+/// Reject a transaction with a call whose [`Movement`] `allowlist` does not admit: a TIP-20
+/// transfer, a withdrawal fallback recipient, or a withdrawal to a router. Every movement of the
 /// transaction is checked against one version of the list.
 ///
 /// Pool admission calls this on submission, and the leader's builder calls it again before
@@ -43,13 +58,13 @@ pub fn validate_transfer_calls(
     tx: &TempoPooledTransaction,
 ) -> Result<(), InvalidPoolTransactionError> {
     let sender = *tx.sender_ref();
-    let mut parties = Vec::new();
+    let mut movements = Vec::new();
     for (kind, input) in tx.inner().calls() {
         if let TxKind::Call(target) = kind {
-            push_parties(sender, target, input, &mut parties)?;
+            push_movements(sender, target, input, &mut movements)?;
         }
     }
-    if parties.is_empty() || allowlist.allows_all(&parties) {
+    if movements.is_empty() || allowlist.admits(&movements) {
         Ok(())
     } else {
         Err(transfer_error(
@@ -58,23 +73,23 @@ pub fn validate_transfer_calls(
     }
 }
 
-/// Push the accounts that a call from `sender` to `target` moves Zone funds between onto
-/// `parties`.
+/// Push the movements of Zone funds that a call from `sender` to `target` makes onto
+/// `movements`.
 ///
 /// Fails when `input` has a screened selector but does not decode. The precompile would revert
 /// such a call, and admitting it unscreened would rely on both decoders agreeing.
-fn push_parties(
+fn push_movements(
     sender: Address,
     target: Address,
     input: &[u8],
-    parties: &mut Vec<Address>,
+    movements: &mut Vec<Movement>,
 ) -> Result<(), InvalidPoolTransactionError> {
     let Some(&selector) = input.first_chunk::<4>() else {
         return Ok(());
     };
     let malformed = |_| transfer_error("malformed transfer calldata");
     if target.is_tip20() {
-        // A listed spender is required, so `transferFrom(a, b, 0)` cannot probe the list.
+        // The spender must share the parties' group, so `transferFrom(a, b, 0)` cannot probe it.
         let (spender, from, to) = match selector {
             ITIP20::transferCall::SELECTOR => {
                 ITIP20::transferCall::abi_decode(input).map(|call| (None, sender, call.to))
@@ -91,19 +106,26 @@ fn push_parties(
             _ => return Ok(()),
         }
         .map_err(malformed)?;
-        parties.extend(spender);
         // Moving funds into the outbox withdraws, which an unlisted account may still do.
         if from != ZONE_OUTBOX_ADDRESS && to != ZONE_OUTBOX_ADDRESS {
-            parties.extend([from, to]);
+            movements.push(Movement::Transfer { spender, from, to });
         }
     } else if target == ZONE_OUTBOX_ADDRESS
         && selector == IZoneOutbox::requestWithdrawalCall::SELECTOR
     {
         let call = IZoneOutbox::requestWithdrawalCall::abi_decode(input).map_err(malformed)?;
+        movements.push(Movement::Withdrawal {
+            sender,
+            to: call.to,
+        });
         // The fallback is credited if the withdrawal bounces back from L1. Naming oneself is
         // always allowed, so an unlisted account can still withdraw.
         if call.zoneFallbackRecipient != sender {
-            parties.extend([sender, call.zoneFallbackRecipient]);
+            movements.push(Movement::Transfer {
+                spender: None,
+                from: sender,
+                to: call.zoneFallbackRecipient,
+            });
         }
     }
     Ok(())
@@ -133,13 +155,22 @@ mod tests {
     const BOB: Address = address!("0x0000000000000000000000000000000000000b0b");
     const CAROL: Address = address!("0x00000000000000000000000000000000000ca201");
 
-    /// Allows only the listed addresses.
+    const ROUTER: Address = address!("0x00000000000000000000000000000000000c0de0");
+
+    /// Allows transfers between listed addresses, and withdrawals to [`ROUTER`] only from listed
+    /// addresses.
     #[derive(Debug)]
     struct Listed(BTreeSet<Address>);
 
     impl TransferAllowlist for Listed {
-        fn allows_all(&self, addresses: &[Address]) -> bool {
-            addresses.iter().all(|address| self.0.contains(address))
+        fn admits(&self, movements: &[Movement]) -> bool {
+            movements.iter().all(|movement| match *movement {
+                Movement::Transfer { spender, from, to } => spender
+                    .into_iter()
+                    .chain([from, to])
+                    .all(|address| self.0.contains(&address)),
+                Movement::Withdrawal { sender, to } => to != ROUTER || self.0.contains(&sender),
+            })
         }
     }
 
@@ -176,11 +207,15 @@ mod tests {
     }
 
     fn request_withdrawal(fallback_recipient: Address) -> Call {
+        withdraw_to(fallback_recipient, fallback_recipient)
+    }
+
+    fn withdraw_to(to: Address, fallback_recipient: Address) -> Call {
         call(
             ZONE_OUTBOX_ADDRESS,
             IZoneOutbox::requestWithdrawalCall {
                 token: Address::new_tip20(0),
-                to: fallback_recipient,
+                to,
                 amount: 1,
                 memo: Default::default(),
                 gasLimit: 0,
@@ -280,6 +315,18 @@ mod tests {
         assert!(admits_calls(ALICE, vec![request_withdrawal(BOB)]));
         assert!(!admits_calls(CAROL, vec![request_withdrawal(ALICE)]));
         assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
+    }
+
+    #[test]
+    fn withdrawals_are_screened_by_their_tempo_recipient() {
+        assert!(admits_calls(ALICE, vec![withdraw_to(ROUTER, ALICE)]));
+        assert!(!admits_calls(CAROL, vec![withdraw_to(ROUTER, CAROL)]));
+        assert!(admits_calls(CAROL, vec![withdraw_to(BOB, CAROL)]));
+        // Every withdrawal in a batch is screened.
+        assert!(!admits_calls(
+            CAROL,
+            vec![withdraw_to(BOB, CAROL), withdraw_to(ROUTER, CAROL)]
+        ));
     }
 
     #[test]

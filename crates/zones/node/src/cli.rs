@@ -738,10 +738,12 @@ pub struct ZoneArgs {
     )]
     pub shadow_prover_pcrs: Option<zone_prover::ShadowProofVerifier>,
 
-    /// Bounce deposits whose L1 sender or zone recipient is not on the allowlist persisted at
-    /// `<datadir>/deposit-allowlist.json`, and reject Zone TIP-20 transfers unless both parties
-    /// are on it. Until the admin first writes the list, the sequencer credits every deposit and
-    /// admits every transfer. Requires `--deposits.allowlist.admin`.
+    /// Enforce the allowlist groups persisted at `<datadir>/deposit-allowlist.json`: bounce
+    /// deposits whose L1 sender does not share a group with the zone recipient, reject Zone TIP-20
+    /// transfers unless both parties share a group that allows transfers, and reject withdrawals
+    /// to a listed router from accounts outside its groups. Until the admin first writes the list,
+    /// the sequencer credits every deposit and admits every transfer. Requires
+    /// `--deposits.allowlist.admin`.
     #[arg(long = "deposits.allowlist", env = "DEPOSITS_ALLOWLIST")]
     pub deposit_allowlist: bool,
 
