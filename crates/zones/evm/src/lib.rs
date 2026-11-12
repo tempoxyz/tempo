@@ -46,7 +46,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{
     FeeTokenResolver, TempoBlockAssembler, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmEnv,
     TempoEvmError, TempoEvmExt, TempoEvmTypes, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxEnv, evm::TempoEvm,
+    TempoTxEnv, ZoneCheckpointSlot, evm::TempoEvm,
 };
 use tempo_payload_types::TempoExecutionData;
 use tempo_precompiles::{error::Result as TempoResult, storage::actions::StorageActions};
@@ -55,6 +55,8 @@ use tempo_primitives::{
 };
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::state::{L1StateCache, L1StateProvider, L1StateProviderConfig};
+use zone_precompiles::tempo_state::TEMPO_BLOCK_NUMBER_SLOT;
+use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
 /// Zone execution uses Tempo's EVM2 type family and a Zone-configured database and precompile set.
 pub type ZoneEvm<'a> = TempoEvm<'a>;
@@ -279,7 +281,11 @@ where
             env.spec,
         );
         let l1 = db.l1_state().clone();
-        let ext = TempoEvmExt::new(TempoEvmKind::Zone, ZoneProtocolFeeManager::new());
+        let mut ext = TempoEvmExt::new(TempoEvmKind::Zone, ZoneProtocolFeeManager::new());
+        ext.zone_checkpoint_slot = Some(ZoneCheckpointSlot {
+            address: TEMPO_STATE_ADDRESS,
+            slot: TEMPO_BLOCK_NUMBER_SLOT,
+        });
         let precompiles = ZonePrecompiles::<TempoEvmTypes, L1>::new(
             env.spec,
             ext.actions.clone(),
@@ -470,8 +476,9 @@ pub struct TempoStorageRead {
 mod tests {
     use super::*;
 
+    use crate::zone_evm::tests::{config, fee_free_env, sender_db};
     use alloy_consensus::{Sealable as _, SignableTransaction, TxLegacy};
-    use alloy_primitives::{B256, Bytes, U256, address};
+    use alloy_primitives::{B256, Bytes, Signature, U256, address};
     use alloy_sol_types::SolCall;
     use evm2::{
         bytecode::Bytecode,
@@ -483,7 +490,7 @@ mod tests {
         hardfork::TempoHardfork,
         spec::{MODERATO, TempoHardforks},
     };
-    use tempo_contracts::zones::IZoneInbox;
+    use tempo_contracts::zones::{IZoneInbox, IZoneOutbox};
     use tempo_precompiles::{
         TIP403_REGISTRY_ADDRESS,
         storage::StorageKey,
@@ -498,7 +505,9 @@ mod tests {
         tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
         test_utils::MockL1Reader,
     };
-    use zone_primitives::constants::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, zone_chain_id};
+    use zone_primitives::constants::{
+        TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, zone_chain_id,
+    };
 
     #[test]
     fn l1_storage_recorder_deduplicates_successful_reads() {
@@ -690,6 +699,88 @@ mod tests {
             let tx = advance_tempo_tx(&child, vec![enabled_token.clone()]);
             assert!(evm.transact(&tx).unwrap().commit().status);
             assert_eq!(paused(&mut evm), paused_at_child, "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_t14_transactions_use_the_accepted_child_checkpoint() {
+        let sender = Address::repeat_byte(1);
+        let child = child_header(TempoHeader::default().hash_slow(), 1);
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
+            let reader = MockL1Reader::default();
+            reader.seed_active_sequencer(Address::ZERO, 1, sender);
+            let mut db = sender_db(sender);
+            db.insert_account_info(&TEMPO_STATE_ADDRESS, Default::default());
+            db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
+            db.insert_account_storage(
+                &TEMPO_STATE_ADDRESS,
+                &TEMPO_BLOCK_HASH,
+                &TempoHeader::default().hash_slow().into(),
+            );
+            let mut evm =
+                BlockExecutorFactory::evm_with_env(&config(reader.clone()), db, fee_free_env(spec));
+            let advance = evm
+                .transact(&advance_tempo_tx(&child, vec![]))
+                .unwrap()
+                .commit();
+            assert!(advance.status, "{spec:?}: {advance:?}");
+            assert_eq!(
+                evm.state_mut()
+                    .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)
+                    .unwrap(),
+                U256::ONE
+            );
+
+            let query = Recovered::new_unchecked(
+                Recovered::new_unchecked(
+                    TempoTxEnvelope::from(
+                        TxLegacy {
+                            nonce: 1,
+                            gas_limit: 1_000_000,
+                            to: ZONE_OUTBOX_ADDRESS.into(),
+                            input: IZoneOutbox::pendingWithdrawalsCountCall {}
+                                .abi_encode()
+                                .into(),
+                            ..Default::default()
+                        }
+                        .into_signed(Signature::test_signature()),
+                    ),
+                    sender,
+                )
+                .into(),
+                sender,
+            );
+            let result = evm.transact(&query).unwrap().discard();
+            assert!(result.status, "{spec:?}: {result:?}");
+            assert_eq!(
+                IZoneOutbox::pendingWithdrawalsCountCall::abi_decode_returns(&result.output)
+                    .unwrap(),
+                U256::ZERO
+            );
+            assert!(
+                reader
+                    .commitment_requests()
+                    .iter()
+                    .all(|(_, anchor)| *anchor == 1)
+            );
+            assert!(
+                reader
+                    .storage_requests()
+                    .iter()
+                    .all(|(_, _, anchor)| *anchor == 1)
+            );
+            let reads = (reader.commitment_requests(), reader.storage_requests());
+            let cached = evm.transact(&query).unwrap().discard();
+            assert_eq!(cached.output, result.output);
+            assert_eq!(cached.tx_gas_used(), result.tx_gas_used());
+            assert_eq!(reader.commitment_requests(), reads.0);
+            assert_eq!(reader.storage_requests().len(), reads.1.len() + 1);
+            assert!(
+                reader
+                    .storage_requests()
+                    .iter()
+                    .all(|(_, _, anchor)| *anchor == 1)
+            );
         }
     }
 

@@ -5,6 +5,7 @@ use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx as _, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
+use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256, IntoLogData as _};
 use evm2::{
     Evm,
@@ -173,6 +174,33 @@ pub(crate) fn validate_state(
     envelope: &TempoTxEnv,
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
+    let checkpoint_gas = if spec.is_t14() && host.ext().kind == TempoEvmKind::Zone {
+        if let Some(checkpoint) = host.ext().zone_checkpoint_slot {
+            // Non-AA handlers apply access lists after this hook. Honor only the checkpoint
+            // here so the existing commitment-account charges keep their ordering.
+            if envelope.as_aa().is_none()
+                && envelope.access_list().is_some_and(|list| {
+                    list.iter().any(|item| {
+                        item.address == checkpoint.address
+                            && item.storage_keys.contains(&B256::from(checkpoint.slot))
+                    })
+                })
+            {
+                host.state_mut()
+                    .prewarm_storage_slot(&checkpoint.address, checkpoint.slot);
+            }
+            // Zone entry already pinned this accepted value before any account hydration.
+            let (result, gas) = StorageCtx::enter_evm_with_gas_limit(host, u64::MAX, 0, || {
+                StorageCtx.sload(checkpoint.address, checkpoint.slot)
+            });
+            result?;
+            gas.spent()
+        } else {
+            0
+        }
+    } else {
+        0
+    };
     let ConfigurableRoleCharges {
         mut extra_gas,
         state_gas,
@@ -186,6 +214,7 @@ pub(crate) fn validate_state(
             accounts: Vec::new(),
         },
     };
+    extra_gas += checkpoint_gas;
     if spec.is_t14() {
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
         if let Some(aa) = envelope.as_aa() {

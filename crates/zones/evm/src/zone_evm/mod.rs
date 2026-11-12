@@ -1,6 +1,8 @@
 //! Zone runtime EVM and its private execution policies.
 
 #[cfg(test)]
+mod checkpoint;
+#[cfg(test)]
 mod cold_access;
 pub(crate) mod contract_creation;
 mod validation;
@@ -21,7 +23,7 @@ use zone_precompiles::{
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
 
-use crate::database::validate_journal;
+use crate::{ZoneDbError, database::validate_journal};
 
 /// Wraps Tempo's handlers with Zone transaction validation and transaction-local L1 context.
 pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
@@ -80,10 +82,19 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .envelope
             .fee_payer()
             .unwrap_or_else(|_| request.tx.signer());
-        Ok(ZoneTxContext {
+        let context = ZoneTxContext {
             l1: self.l1.clone(),
             _transaction: tx_context::set_current_transaction(tx_hash, fee_payer),
-        })
+        };
+        if request.host.config_spec_id().is_t14() && !request.envelope.evm_tx().is_system_tx() {
+            let anchor = u64::try_from(initial_anchor).map_err(|_| {
+                HandlerError::Fatal(AnyError::new(ZoneDbError::AnchorOverflow(initial_anchor)))
+            })?;
+            self.l1
+                .select_anchor(anchor)
+                .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
+        }
+        Ok(context)
     }
 }
 

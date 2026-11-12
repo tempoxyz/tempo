@@ -110,6 +110,19 @@ pub struct TempoEvmExt {
     pub resolved_fee_token: Option<ResolvedFeeToken>,
     /// Access-key expiry resolved for the most recently handled transaction.
     pub key_expiry: Option<u64>,
+    /// Local checkpoint slot charged during T14 Zone intrinsic preparation.
+    /// Production Zone factories must set this. `None` skips the charge for L1 or standalone
+    /// setups without Zone checkpoint storage.
+    pub zone_checkpoint_slot: Option<ZoneCheckpointSlot>,
+}
+
+/// Local Zone checkpoint storage charged before validating an ordinary transaction's gas limit.
+#[derive(Clone, Copy, Debug)]
+pub struct ZoneCheckpointSlot {
+    /// Local precompile that owns the accepted Tempo checkpoint.
+    pub address: Address,
+    /// Generated storage slot holding the accepted Tempo block number.
+    pub slot: U256,
 }
 
 impl Default for TempoEvmExt {
@@ -131,6 +144,7 @@ impl TempoEvmExt {
             skip_liquidity_check: false,
             resolved_fee_token: None,
             key_expiry: None,
+            zone_checkpoint_slot: None,
         }
     }
 }

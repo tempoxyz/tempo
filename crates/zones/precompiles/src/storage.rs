@@ -61,8 +61,8 @@ pub trait L1StorageReader: Clone + Send + Sync + 'static {
 /// Zone state by the L1-backed `TempoState` precompile. The anchor starts unset and is selected
 /// in one of two ways:
 ///
-/// - For an ordinary transaction, the first L1 read selects the `tempoBlockNumber` loaded from the
-///   chosen Zone state.
+/// - From T14, ordinary Zone transaction entry selects the accepted `tempoBlockNumber` before
+///   account hydration. Earlier forks select it on the first L1 read.
 /// - During `advanceTempo`, the `TempoState` precompile governs advancement: it first
 ///   validates that the submitted header is the direct child of the stored checkpoint, then
 ///   advances the anchor to that child before any reads at the new checkpoint.
@@ -78,7 +78,7 @@ pub trait L1StorageReader: Clone + Send + Sync + 'static {
 #[derive(Clone)]
 pub struct L1State<P> {
     /// Committed Zone checkpoint captured from the EVM overlay at transaction entry.
-    /// This is a fallback for database reads, not a selected L1 view.
+    /// This is also a fallback for database reads before an L1 view is selected.
     initial_anchor: Arc<Mutex<Option<U256>>>,
     /// Tempo block number selected for the current transaction attempt.
     anchor: Arc<Mutex<Option<u64>>>,
@@ -107,7 +107,7 @@ impl<P> L1State<P> {
     }
 
     /// Starts a transaction at the checkpoint visible through the EVM's accepted overlay.
-    /// The first L1 read or a validated advancement still selects the transaction's L1 view.
+    /// Ordinary T14 entry selects the L1 view next. System transactions wait for advancement.
     pub fn begin_transaction(&self, initial_anchor: U256) {
         self.reset_transaction_state();
         *self.initial_anchor.lock() = Some(initial_anchor);
@@ -135,7 +135,9 @@ impl<P> L1State<P> {
         self.portal_address
     }
 
-    fn set_anchor(&self, new: u64) -> Result<(), L1StateError> {
+    /// Selects the transaction's L1 view, or rejects a different view once one is selected.
+    /// Ordinary T14 entry calls this before account hydration. Raw reads only validate that view.
+    pub fn select_anchor(&self, new: u64) -> Result<(), L1StateError> {
         let mut anchor = self.anchor.lock();
         match *anchor {
             None => {
@@ -178,7 +180,7 @@ impl<P: L1StorageReader> L1State<P> {
         slot: B256,
         block_number: u64,
     ) -> Result<B256, L1StateError> {
-        self.set_anchor(block_number)?;
+        self.select_anchor(block_number)?;
         self.provider.read_l1_storage(account, slot, block_number)
     }
 
@@ -191,7 +193,7 @@ impl<P: L1StorageReader> L1State<P> {
         account: Address,
         block_number: u64,
     ) -> Result<B256, L1StateError> {
-        self.set_anchor(block_number)?;
+        self.select_anchor(block_number)?;
         self.provider.read_l1_commitment(account, block_number)
     }
 
@@ -393,6 +395,42 @@ mod tests {
             })
         );
         assert_eq!(reader.commitment_requests(), [(account, 10)]);
+    }
+
+    #[test]
+    fn entry_selected_anchor_needs_no_checkpoint_discovery() -> eyre::Result<()> {
+        let mut ctx = test_context();
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+        let reader = MockL1Reader::default();
+        let l1 = L1State::new(reader.clone(), Address::ZERO);
+        l1.begin_transaction(U256::from(42));
+        l1.select_anchor(42)?;
+        assert_eq!(l1.get_anchor(), Some(42));
+        // Selecting the ordinary view forbids advancement even before any provider fetch.
+        assert_eq!(
+            l1.advance_anchor(42, 43),
+            Err(L1StateError::AnchorConflict {
+                current: 42,
+                new: 43,
+            })
+        );
+
+        let slot = Slot::<B256>::new(U256::ZERO, Address::repeat_byte(1));
+        let gas_before = storage.gas_used();
+        assert_eq!(
+            StorageCtx::enter(&mut storage, || l1.read_l1(&slot))?,
+            B256::ZERO
+        );
+        assert_eq!(storage.gas_used() - gas_before, COLD_SLOAD_COST);
+        assert_eq!(
+            reader.storage_requests(),
+            [(slot.address(), B256::ZERO, 42)]
+        );
+
+        l1.reset_transaction_state();
+        assert_eq!(l1.initial_anchor(), None);
+        assert_eq!(l1.get_anchor(), None);
+        Ok(())
     }
 
     #[test]
