@@ -212,7 +212,8 @@ impl BestTransactionsPrewarming {
                     return None;
                 }
 
-                let actions = evm.ext().actions.take()?;
+                // A transaction that ran bytecode nested in a precompile has unrecorded storage writes.
+                let actions = evm.ext().actions.take_replay()?;
                 let expiring_nonce = tx
                     .transaction
                     .is_expiring_nonce()

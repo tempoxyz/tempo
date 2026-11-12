@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import { Deposit, DepositType, WithdrawalBounceBackDeposit } from "../interfaces/IZone.sol";
+import {
+    Deposit,
+    DepositType,
+    VirtualDeposit,
+    WithdrawalBounceBackDeposit
+} from "../interfaces/IZone.sol";
 
 /// @title DepositQueueLib
 /// @notice Library for managing the deposit queue hash chain
@@ -45,6 +50,19 @@ library DepositQueueLib {
         returns (bytes32 newHash)
     {
         newHash = keccak256(abi.encode(DepositType.Deposit, depositData, currentHash));
+    }
+
+    /// @notice Enqueue a TIP-1094 virtual deposit
+    /// @dev Hash chain: newHash = keccak256(abi.encode(DepositType.ZoneVirtual, deposit, prevHash))
+    function enqueueVirtual(
+        bytes32 currentHash,
+        VirtualDeposit memory depositData
+    )
+        internal
+        pure
+        returns (bytes32 newHash)
+    {
+        newHash = keccak256(abi.encode(DepositType.ZoneVirtual, depositData, currentHash));
     }
 
 }

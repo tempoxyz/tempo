@@ -10,8 +10,8 @@ use crate::{
 };
 use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
-use alloy_primitives::{Bytes, TxHash, U256};
-use alloy_sol_types::SolCall;
+use alloy_primitives::{B256, Bytes, TxHash, U256, keccak256};
+use alloy_sol_types::{SolCall, SolValue};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
@@ -74,6 +74,29 @@ const BLOCK_SIZE_SAFETY_MARGIN: usize = 1024 * 1024;
 /// Diagnostic retained when upstream Tempo precompile storage stringifies an [`L1StateError`].
 const L1_STORAGE_UNAVAILABLE_ERROR_PREFIX: &str = "Tempo L1 storage unavailable";
 
+/// TIP-1094 FF1 address key. It decrypts every deposit address of its version, so its `Debug`
+/// output is redacted like the zone's other sequencer keys.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct VirtualAddressKey(B256);
+
+impl VirtualAddressKey {
+    /// Wrap a 32-byte FF1 key.
+    pub const fn new(key: B256) -> Self {
+        Self(key)
+    }
+
+    /// The raw key.
+    pub const fn expose(&self) -> B256 {
+        self.0
+    }
+}
+
+impl core::fmt::Debug for VirtualAddressKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("VirtualAddressKey(<redacted>)")
+    }
+}
+
 /// Factory for constructing the zone payload builder.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -81,6 +104,7 @@ pub struct ZonePayloadFactory {
     withdrawal_batch_interval_blocks: u64,
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
+    virtual_address_key: Option<VirtualAddressKey>,
 }
 
 impl ZonePayloadFactory {
@@ -90,7 +114,15 @@ impl ZonePayloadFactory {
             withdrawal_batch_interval_blocks: withdrawal_batch_interval_blocks.max(1),
             withdrawal_reveal_encryptor: None,
             transfer_allowlist: None,
+            virtual_address_key: None,
         }
+    }
+
+    /// TIP-1094: initialize `key` as address key version 1 in the first block this node
+    /// builds once T15 is active and version 1 is still uninitialized.
+    pub fn with_virtual_address_key(mut self, key: VirtualAddressKey) -> Self {
+        self.virtual_address_key = Some(key);
+        self
     }
 
     pub fn with_withdrawal_reveal_encryptor(
@@ -143,6 +175,7 @@ where
             withdrawal_reveal_encryptor: self.withdrawal_reveal_encryptor.clone(),
             transfer_allowlist: self.transfer_allowlist.clone(),
             metrics: ZonePayloadBuilderMetrics::default(),
+            virtual_address_key: self.virtual_address_key,
         })
     }
 }
@@ -166,6 +199,8 @@ pub struct ZonePayloadBuilder<Provider> {
     /// Accounts that may send and receive TIP-20 transfers. `None` admits every transfer.
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
     metrics: ZonePayloadBuilderMetrics,
+    /// TIP-1094 address key version 1, initialized once when still unset.
+    virtual_address_key: Option<VirtualAddressKey>,
 }
 
 impl<Provider> PayloadBuilder for ZonePayloadBuilder<Provider>
@@ -306,6 +341,27 @@ where
                 err
             })?;
         drop(prewarming);
+
+        // TIP-1094: the executor accepts key initialization only directly after a full
+        // advanceTempo, at most once per block.
+        if !checkpoint_only
+            && let Some(key) = self.virtual_address_key
+            && builder.evm().config_spec_id().is_t15()
+            && state_provider
+                .storage(ZONE_INBOX_ADDRESS, virtual_address_key_flag_slot(1))?
+                .unwrap_or_default()
+                .is_zero()
+        {
+            info!(target: "zone::payload", "Initializing TIP-1094 address key version 1");
+            builder
+                .execute_transaction(build_initialize_virtual_address_key_tx(
+                    1,
+                    key.expose(),
+                    chain_id,
+                ))
+                .map(|_| ())
+                .map_err(PayloadBuilderError::evm)?;
+        }
 
         if !checkpoint_only {
             // Execute pool transactions until either all of them fit or their packed RLP bytes reach
@@ -878,6 +934,34 @@ fn build_advance_tempo_tx_from_parts(
         input: calldata.into(),
     };
 
+    Recovered::new_unchecked(
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
+        TEMPO_SYSTEM_TX_SENDER,
+    )
+}
+
+/// The storage slot of the native inbox's initialized flag for TIP-1094 key `version`.
+fn virtual_address_key_flag_slot(version: u8) -> B256 {
+    keccak256((U256::from(version), keccak256(b"tempo.zvda.addressKeys")).abi_encode())
+}
+
+/// Build the TIP-1094 `initializeVirtualAddressKey(version, key)` system transaction.
+fn build_initialize_virtual_address_key_tx(
+    version: u8,
+    key: B256,
+    chain_id: u64,
+) -> Recovered<TempoTxEnvelope> {
+    let tx = TxLegacy {
+        chain_id: Some(chain_id),
+        nonce: 0,
+        gas_price: 0,
+        gas_limit: 0,
+        to: ZONE_INBOX_ADDRESS.into(),
+        value: U256::ZERO,
+        input: abi::IZoneInbox::initializeVirtualAddressKeyCall { version, key }
+            .abi_encode()
+            .into(),
+    };
     Recovered::new_unchecked(
         TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
         TEMPO_SYSTEM_TX_SENDER,

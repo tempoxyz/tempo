@@ -112,6 +112,21 @@ crate::sol! {
             uint64 depositNumber
         );
 
+        /// TIP-1094: a TIP-20 transfer to a zone deposit address was queued.
+        event VirtualDepositMade(
+            bytes32 indexed newCurrentDepositQueueHash,
+            address indexed originator,
+            address token,
+            address destination,
+            uint128 netAmount,
+            uint128 fee,
+            uint64 depositNumber,
+            bool hasMemo,
+            bytes32 memo
+        );
+        event VirtualDepositsEnabledUpdated(bool enabled);
+        event AddressVersionsRetired(uint8 minimumVersion);
+
         /// Event emitted when a new TIP-20 token is enabled for bridging.
         /// Includes token metadata so the zone can create a matching TIP-20.
         event TokenEnabled(address indexed token, string name, string symbol, string currency);
@@ -253,6 +268,10 @@ crate::sol! {
         error InvalidQuorumCertificate();
         error CallbackDidNotReturnToZone();
         error InvalidBouncebackRecipient();
+        error VirtualDepositsDisabled();
+        error AddressVersionRetired(uint8 version);
+        error InvalidVersionRetirement(uint8 minimumVersion);
+        error InvalidVirtualDeposit();
         error TokenNotEnabled();
         error DepositBlockCapacityExceeded(uint64 maximum);
         error InvalidCallbackTarget();
@@ -273,6 +292,18 @@ crate::sol! {
         function setGatewayMode(bool enforced) external;
         function transfersEnabled() external view returns (bool);
         function setTransfersEnabled(bool enabled) external;
+        /// TIP-1094: called by native TIP-20 routing after crediting the portal. Active from T15.
+        function depositVirtual(
+            address originator,
+            uint128 grossAmount,
+            address destination,
+            bool hasMemo,
+            bytes32 memo
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+        function virtualDepositsEnabled() external view returns (bool);
+        function setVirtualDepositsEnabled(bool enabled) external;
+        function minimumAddressVersion() external view returns (uint8);
+        function retireAddressVersionsBelow(uint8 minimumVersion) external;
         function hasRole(address account, Role role) external view returns (bool);
         function setAllowedAccount(address account, bool allowed) external;
         function setGateway(address account, bool allowed) external;

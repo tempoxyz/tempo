@@ -703,19 +703,25 @@ fn non_canonical_deposits_are_rejected() {
         non_canonical.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
 
         assert!(
-            decode_deposits(vec![QueuedDeposit {
-                depositType: deposit_type,
-                rejected: false,
-                depositData: canonical.into(),
-            }])
+            decode_deposits(
+                vec![QueuedDeposit {
+                    depositType: deposit_type,
+                    rejected: false,
+                    depositData: canonical.into(),
+                }],
+                true
+            )
             .is_ok()
         );
         assert!(
-            decode_deposits(vec![QueuedDeposit {
-                depositType: deposit_type,
-                rejected: false,
-                depositData: non_canonical.into(),
-            }])
+            decode_deposits(
+                vec![QueuedDeposit {
+                    depositType: deposit_type,
+                    rejected: false,
+                    depositData: non_canonical.into(),
+                }],
+                true
+            )
             .is_err()
         );
     }
@@ -1289,4 +1295,297 @@ fn bridged_credits_use_recipient_policy_from_t13() -> eyre::Result<()> {
         assert!(harness.pending_withdrawals()?.is_empty());
     }
     Ok(())
+}
+
+// --- TIP-1094 virtual deposits ---
+
+const ZVDA_KEY: B256 = B256::repeat_byte(0x5a);
+const VIRTUAL_AMOUNT: u128 = 100;
+
+fn deposit_address(version: u8, zone_id: u32, master_id: u32, tag: u16) -> Address {
+    let mut plaintext = [0u8; 6];
+    plaintext[..4].copy_from_slice(&master_id.to_be_bytes());
+    plaintext[4..].copy_from_slice(&tag.to_be_bytes());
+    ZoneDepositAddress {
+        zone_id,
+        version,
+        ciphertext: crate::ff1::encrypt(&ZVDA_KEY.0, version, zone_id, plaintext).into(),
+    }
+    .encode()
+}
+
+fn virtual_deposit(destination: Address, memo: Option<B256>) -> VirtualDeposit {
+    VirtualDeposit {
+        token: PATH_USD_ADDRESS,
+        originator: ALICE,
+        amount: VIRTUAL_AMOUNT,
+        destination,
+        hasMemo: memo.is_some(),
+        memo: memo.unwrap_or_default(),
+    }
+}
+
+impl Harness {
+    fn t15() -> eyre::Result<Self> {
+        Self::new_with_hardfork(TempoHardfork::T15)
+    }
+
+    fn init_key(&mut self, version: u8) -> PrecompileResult {
+        self.call(
+            Address::ZERO,
+            IZoneInbox::initializeVirtualAddressKeyCall {
+                version,
+                key: ZVDA_KEY,
+            }
+            .abi_encode(),
+        )
+    }
+
+    /// Registers `recipient` in the zone registry (zone ID 0, the harness's non-portal L1).
+    fn register(&mut self, recipient: Address) -> eyre::Result<u32> {
+        let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || {
+            let id = crate::address_registry::ZoneAddressRegistry::new()
+                .register_master(0, recipient, B256::random())
+                .map_err(|err| eyre::eyre!("{err:?}"))?;
+            Ok(u32::from_be_bytes(id.0))
+        })
+    }
+
+    fn advance_virtual(&mut self, deposits: Vec<VirtualDeposit>) -> PrecompileResult {
+        self.advance_virtual_flagged(deposits.into_iter().map(|d| (d, false)).collect())
+    }
+
+    /// Advances with virtual deposits, each paired with the sequencer's `rejected` flag.
+    fn advance_virtual_flagged(
+        &mut self,
+        deposits: Vec<(VirtualDeposit, bool)>,
+    ) -> PrecompileResult {
+        let mut head = B256::ZERO;
+        let queued = deposits
+            .into_iter()
+            .map(|(deposit, rejected)| {
+                head = keccak256(
+                    (DepositType::ZoneVirtual, deposit.clone(), head).abi_encode_params(),
+                );
+                QueuedDeposit {
+                    depositType: DepositType::ZoneVirtual,
+                    depositData: deposit.abi_encode().into(),
+                    rejected,
+                }
+            })
+            .collect();
+        self.set_queue_hash(head);
+        self.call(
+            Address::ZERO,
+            self.advance_call(queued, Vec::new()).abi_encode(),
+        )
+    }
+}
+
+#[test]
+fn virtual_deposit_credits_registered_recipient() -> eyre::Result<()> {
+    let mut harness = Harness::t15()?;
+    assert!(harness.init_key(1)?.is_success());
+    let master = harness.register(BOB)?;
+
+    let output = harness.advance_virtual(vec![
+        virtual_deposit(deposit_address(1, 0, master, 7), None),
+        virtual_deposit(
+            deposit_address(1, 0, master, 8),
+            Some(B256::repeat_byte(0x33)),
+        ),
+    ])?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(
+        harness.balance(PATH_USD_ADDRESS, BOB)?,
+        U256::from(2 * VIRTUAL_AMOUNT)
+    );
+    assert!(harness.pending_withdrawals()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn failed_virtual_deposits_refund_the_originator() -> eyre::Result<()> {
+    for (name, destination) in [
+        ("unregistered master", deposit_address(1, 0, 1_000, 0)),
+        ("uninitialized version", deposit_address(2, 0, 0, 0)),
+        ("other zone", deposit_address(1, 9, 0, 0)),
+        ("version zero", deposit_address(0, 0, 0, 0)),
+        ("not a deposit address", BOB),
+    ] {
+        let mut harness = Harness::t15()?;
+        assert!(harness.init_key(1)?.is_success());
+        assert_eq!(harness.register(BOB)?, 0);
+
+        let output = harness.advance_virtual(vec![virtual_deposit(destination, None)])?;
+        assert!(output.is_success(), "{name}: {output:?}");
+        assert_eq!(
+            harness.balance(PATH_USD_ADDRESS, BOB)?,
+            U256::ZERO,
+            "{name}"
+        );
+        harness.assert_single_bounce_back(PATH_USD_ADDRESS, VIRTUAL_AMOUNT, ALICE)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn virtual_deposit_blocked_by_recipient_policy_refunds_the_originator() -> eyre::Result<()> {
+    let mut harness = Harness::t15()?;
+    assert!(harness.init_key(1)?.is_success());
+    let master = harness.register(BOB)?;
+    {
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.change_transfer_policy_id(
+                ALICE,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+            Ok(())
+        })?;
+    }
+
+    let output = harness.advance_virtual(vec![virtual_deposit(
+        deposit_address(1, 0, master, 0),
+        None,
+    )])?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::ZERO);
+    harness.assert_single_bounce_back(PATH_USD_ADDRESS, VIRTUAL_AMOUNT, ALICE)?;
+    Ok(())
+}
+
+#[test]
+fn virtual_deposits_are_malformed_before_t15() -> eyre::Result<()> {
+    let mut harness = Harness::new_with_hardfork(TempoHardfork::T14)?;
+    let output =
+        harness.advance_virtual(vec![virtual_deposit(deposit_address(1, 0, 0, 0), None)])?;
+    assert!(output.is_revert());
+    assert!(output.bytes.is_empty(), "malformed calldata reverts empty");
+    Ok(())
+}
+
+#[test]
+fn virtual_address_keys_initialize_once_and_in_order() -> eyre::Result<()> {
+    let mut harness = Harness::t15()?;
+    let not_system = harness.call(
+        SEQUENCER,
+        IZoneInbox::initializeVirtualAddressKeyCall {
+            version: 1,
+            key: ZVDA_KEY,
+        }
+        .abi_encode(),
+    )?;
+    assert_eq!(not_system.bytes, IZoneInbox::OnlySequencer {}.abi_encode());
+
+    for version in [0, 2] {
+        let output = harness.init_key(version)?;
+        assert_eq!(
+            output.bytes,
+            IZoneInbox::InvalidAddressKeyVersion { version }.abi_encode()
+        );
+    }
+    assert!(harness.init_key(1)?.is_success());
+    assert_eq!(
+        harness.init_key(1)?.bytes,
+        IZoneInbox::InvalidAddressKeyVersion { version: 1 }.abi_encode()
+    );
+    assert!(harness.init_key(2)?.is_success());
+
+    let mut legacy = Harness::new_with_hardfork(TempoHardfork::T14)?;
+    assert!(legacy.init_key(1)?.is_revert());
+    Ok(())
+}
+
+#[test]
+fn rejected_virtual_deposit_refunds_the_originator_without_crediting() -> eyre::Result<()> {
+    let mut harness = Harness::t15()?;
+    assert!(harness.init_key(1)?.is_success());
+    let master = harness.register(BOB)?;
+
+    let output = harness.advance_virtual_flagged(vec![
+        (
+            virtual_deposit(deposit_address(1, 0, master, 1), None),
+            true,
+        ),
+        (
+            virtual_deposit(deposit_address(1, 0, master, 2), None),
+            false,
+        ),
+    ])?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(
+        harness.balance(PATH_USD_ADDRESS, BOB)?,
+        U256::from(VIRTUAL_AMOUNT)
+    );
+    harness.assert_single_bounce_back(PATH_USD_ADDRESS, VIRTUAL_AMOUNT, ALICE)?;
+    Ok(())
+}
+
+#[test]
+fn rejected_flag_is_ignored_on_withdrawal_bounce_backs() -> eyre::Result<()> {
+    let mut harness = Harness::new()?;
+    let nonce = 7u64;
+    harness.seed_fallback_recipient(nonce, BOB)?;
+    let deposit = WithdrawalBounceBackDeposit {
+        token: PATH_USD_ADDRESS,
+        to: Address::left_padding_from(&nonce.to_be_bytes()),
+        amount: 321,
+    };
+    harness.set_queue_hash(keccak256(
+        (
+            DepositType::WithdrawalBounceBack,
+            deposit.clone(),
+            B256::ZERO,
+        )
+            .abi_encode_params(),
+    ));
+
+    let output = harness.call(
+        Address::ZERO,
+        harness
+            .advance_call(
+                vec![QueuedDeposit {
+                    depositType: DepositType::WithdrawalBounceBack,
+                    rejected: true,
+                    depositData: deposit.abi_encode().into(),
+                }],
+                Vec::new(),
+            )
+            .abi_encode(),
+    )?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(321));
+    assert!(harness.pending_withdrawals()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn node_side_resolution_matches_the_inbox() -> eyre::Result<()> {
+    let mut harness = Harness::t15()?;
+    assert!(harness.init_key(1)?.is_success());
+    let master = harness.register(BOB)?;
+
+    let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        let resolve = |destination| {
+            super::virtual_deposit_recipient(Address::ZERO, destination, |address, slot| {
+                Slot::<U256>::new(slot, address).read()
+            })
+        };
+        assert_eq!(resolve(deposit_address(1, 0, master, 3))?, Some(BOB));
+        for destination in [
+            deposit_address(1, 0, 1_000, 0),
+            deposit_address(2, 0, master, 0),
+            deposit_address(1, 9, master, 0),
+            deposit_address(0, 0, master, 0),
+            BOB,
+        ] {
+            assert_eq!(resolve(destination)?, None, "{destination}");
+        }
+        Ok(())
+    })
 }

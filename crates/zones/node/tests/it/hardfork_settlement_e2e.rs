@@ -539,6 +539,7 @@ async fn recovery_witness(
             finalize_withdrawal_batch_count: finalization,
             finalize_withdrawal_batch_encrypted_senders: vec![],
             transactions: vec![],
+            virtual_address_key: None,
         });
         final_header = header;
     }

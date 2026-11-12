@@ -24,7 +24,7 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    zones::{IZoneOutbox, TempoAdvanced},
+    zones::{IZoneInbox, IZoneOutbox, TempoAdvanced},
 };
 use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
@@ -50,6 +50,8 @@ const T15_REMOVED_PREDEPLOYS: [Address; 2] = [PERMIT2_ADDRESS, MULTICALL3_ADDRES
 enum ZoneBlockPhase {
     /// The block has not yet committed its required opening `advanceTempo` transaction.
     AwaitingAdvanceTempo,
+    /// The block has committed `advanceTempo`; a TIP-1094 key initialization may still follow.
+    AdvancedTempo,
     /// The block has committed `advanceTempo` and may execute ordinary transactions.
     Executing,
     /// The block authenticated Tempo headers and must contain no further transactions.
@@ -70,7 +72,9 @@ impl ZoneBlockPhase {
         let tx_kind = ZoneTransactionKind::classify(tx.is_system_tx(), || tx.calls());
 
         match (self, tx_kind) {
-            (Self::AwaitingAdvanceTempo, ZoneTransactionKind::AdvanceTempo) => Ok(Self::Executing),
+            (Self::AwaitingAdvanceTempo, ZoneTransactionKind::AdvanceTempo) => {
+                Ok(Self::AdvancedTempo)
+            }
             (Self::AwaitingAdvanceTempo, ZoneTransactionKind::AdvanceTempoHeaders) => {
                 Ok(Self::CheckpointOnly)
             }
@@ -78,18 +82,34 @@ impl ZoneBlockPhase {
                 "advanceTempo must be the first transaction in a zone block",
             )
             .into()),
-            (Self::Executing, ZoneTransactionKind::AdvanceTempo) => Err(BlockValidationError::msg(
-                "advanceTempo must only execute once per zone block",
-            )
-            .into()),
-            (Self::Executing, ZoneTransactionKind::AdvanceTempoHeaders) => Err(
-                BlockValidationError::msg("advanceTempoHeaders must only open a zone block").into(),
+            (Self::AdvancedTempo | Self::Executing, ZoneTransactionKind::AdvanceTempo) => Err(
+                BlockValidationError::msg("advanceTempo must only execute once per zone block")
+                    .into(),
             ),
-            (Self::Executing, ZoneTransactionKind::Regular) => Ok(Self::Executing),
-            (Self::Executing, ZoneTransactionKind::FinalizeWithdrawalBatch) => {
-                Ok(Self::WithdrawalsFinalized)
+            (Self::AdvancedTempo | Self::Executing, ZoneTransactionKind::AdvanceTempoHeaders) => {
+                Err(
+                    BlockValidationError::msg("advanceTempoHeaders must only open a zone block")
+                        .into(),
+                )
             }
-            (Self::Executing, ZoneTransactionKind::UnexpectedSystem) => {
+            (Self::AdvancedTempo, ZoneTransactionKind::InitializeVirtualAddressKey) => {
+                Ok(Self::Executing)
+            }
+            (Self::Executing, ZoneTransactionKind::InitializeVirtualAddressKey) => {
+                Err(BlockValidationError::msg(
+                    "initializeVirtualAddressKey must directly follow advanceTempo and run at \
+                     most once per zone block",
+                )
+                .into())
+            }
+            (Self::AdvancedTempo | Self::Executing, ZoneTransactionKind::Regular) => {
+                Ok(Self::Executing)
+            }
+            (
+                Self::AdvancedTempo | Self::Executing,
+                ZoneTransactionKind::FinalizeWithdrawalBatch,
+            ) => Ok(Self::WithdrawalsFinalized),
+            (Self::AdvancedTempo | Self::Executing, ZoneTransactionKind::UnexpectedSystem) => {
                 Err(BlockValidationError::msg(
                     "system transactions after advanceTempo must call \
                      ZoneOutbox.finalizeWithdrawalBatch",
@@ -118,6 +138,8 @@ enum ZoneTransactionKind {
     AdvanceTempo,
     AdvanceTempoHeaders,
     Regular,
+    /// TIP-1094 key initialization; the inbox only accepts it from T15.
+    InitializeVirtualAddressKey,
     FinalizeWithdrawalBatch,
     UnexpectedSystem,
 }
@@ -142,6 +164,13 @@ impl ZoneTransactionKind {
                 && input.starts_with(&ADVANCE_TEMPO_HEADERS_SELECTOR)
         }) {
             return Self::AdvanceTempoHeaders;
+        }
+
+        if calls().any(|(kind, input)| {
+            kind.to() == Some(&ZONE_INBOX_ADDRESS)
+                && input.starts_with(&IZoneInbox::initializeVirtualAddressKeyCall::SELECTOR)
+        }) {
+            return Self::InitializeVirtualAddressKey;
         }
 
         if calls().any(|(kind, input)| {
@@ -575,11 +604,45 @@ mod tests {
 
         let next_phase = phase.validate_transaction(&advance_tempo).unwrap();
         assert_eq!(phase, ZoneBlockPhase::AwaitingAdvanceTempo);
-        assert_eq!(next_phase, ZoneBlockPhase::Executing);
+        assert_eq!(next_phase, ZoneBlockPhase::AdvancedTempo);
 
         // Only committing the result records the opening transaction.
         phase.advance_to(next_phase);
-        assert_eq!(phase, ZoneBlockPhase::Executing);
+        assert_eq!(phase, ZoneBlockPhase::AdvancedTempo);
+    }
+
+    #[test]
+    fn virtual_address_key_initialization_must_follow_advance_tempo_once() {
+        let init = system_tx(
+            ZONE_INBOX_ADDRESS,
+            IZoneInbox::initializeVirtualAddressKeyCall {
+                version: 1,
+                key: Default::default(),
+            }
+            .abi_encode()
+            .into(),
+        );
+        let ordinary = ordinary_tx(Address::repeat_byte(0x11), Bytes::new());
+
+        let mut phase = ZoneBlockPhase::AwaitingAdvanceTempo;
+        assert!(phase.validate_transaction(&init).is_err());
+        phase.advance_to(phase.validate_transaction(&advance_tempo_tx()).unwrap());
+        let next = phase.validate_transaction(&init).unwrap();
+        assert_eq!(next, ZoneBlockPhase::Executing);
+        phase.advance_to(next);
+        assert!(phase.validate_transaction(&init).is_err());
+
+        // A user transaction closes the window.
+        let mut phase = ZoneBlockPhase::AdvancedTempo;
+        phase.advance_to(phase.validate_transaction(&ordinary).unwrap());
+        assert!(phase.validate_transaction(&init).is_err());
+
+        // A checkpoint-only block takes no key initialization.
+        assert!(
+            ZoneBlockPhase::CheckpointOnly
+                .validate_transaction(&init)
+                .is_err()
+        );
     }
 
     #[test]
@@ -931,7 +994,19 @@ mod tests {
             ZoneBlockPhase::AwaitingAdvanceTempo
                 .validate_transaction(&advance)
                 .unwrap(),
+            ZoneBlockPhase::AdvancedTempo
+        );
+        assert_eq!(
+            ZoneBlockPhase::AdvancedTempo
+                .validate_transaction(&regular)
+                .unwrap(),
             ZoneBlockPhase::Executing
+        );
+        assert_eq!(
+            ZoneBlockPhase::AdvancedTempo
+                .validate_transaction(&finalize)
+                .unwrap(),
+            ZoneBlockPhase::WithdrawalsFinalized
         );
         for tx in [&regular, &finalize, &unexpected_system] {
             assert_eq!(

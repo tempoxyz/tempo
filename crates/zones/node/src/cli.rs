@@ -390,9 +390,18 @@ async fn configure_sequencing(
         !args.deposit_allowlist || should_sequence_blocks,
         "--deposits.allowlist requires a sequencer"
     );
+    eyre::ensure!(
+        args.virtual_address_key_file.is_none() || should_sequence_blocks,
+        "--sequencer.virtual-address-key-file requires a node that produces blocks"
+    );
     let enforced_allowlist_admin = enforced_allowlist_admin(args, zone_chain_id)?;
     if should_sequence_blocks {
         let sequencer_signer = load_sequencer_signer(args.sequencer_key_file.as_deref()).await?;
+        if let Some(key) =
+            load_virtual_address_key(args.virtual_address_key_file.as_deref()).await?
+        {
+            node = node.with_virtual_address_key(key);
+        }
         let deposit_allowlist = enforced_allowlist_admin
             .map(|admin| DepositAllowlist::load(data_dir.join(DEPOSIT_ALLOWLIST_FILE_NAME), admin))
             .transpose()?;
@@ -467,6 +476,30 @@ async fn load_sequencer_signer(
         .map_err(|_| eyre::eyre!("invalid sequencer key from {source}"))
 }
 
+async fn load_virtual_address_key(
+    key_file: Option<&std::path::Path>,
+) -> eyre::Result<Option<zone_payload::VirtualAddressKey>> {
+    let Some(path) = key_file else {
+        return Ok(None);
+    };
+    let path = path.to_path_buf();
+    let display_path = path.display().to_string();
+    let key = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+        .await
+        .map_err(|err| {
+            eyre::eyre!("virtual address key reader task failed for {display_path}: {err}")
+        })?
+        .map_err(|err| {
+            eyre::eyre!("failed to read virtual address key from {display_path}: {err}")
+        })?;
+    let key = Zeroizing::new(key);
+    let key = key
+        .trim()
+        .parse::<alloy_primitives::B256>()
+        .map_err(|_| eyre::eyre!("invalid virtual address key in {display_path}"))?;
+    Ok(Some(zone_payload::VirtualAddressKey::new(key)))
+}
+
 async fn load_decryption_keys(
     key_file: Option<&std::path::Path>,
 ) -> eyre::Result<Vec<k256::SecretKey>> {
@@ -539,6 +572,17 @@ pub struct ZoneArgs {
         value_name = "PATH"
     )]
     pub deposit_decryption_keys_file: Option<PathBuf>,
+
+    /// File containing the TIP-1094 FF1 key (32-byte hex) to initialize as address key version 1
+    /// once T15 is active. Every sequencer of the zone should use the same key; whichever builds
+    /// the first eligible block initializes it. Keep it secret: it decrypts every version-1
+    /// deposit address.
+    #[arg(
+        long = "sequencer.virtual-address-key-file",
+        env = "ZONE_VIRTUAL_ADDRESS_KEY_FILE",
+        value_name = "PATH"
+    )]
+    pub virtual_address_key_file: Option<PathBuf>,
 
     /// Path to the static multi-sequencer manifest. Its presence activates
     /// multi-sequencer mode and makes the manifest authoritative for role selection.
@@ -1167,6 +1211,38 @@ mod tests {
             signer.address(),
             alloy_primitives::address!("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn loads_virtual_address_key_from_file_and_redacts_it() {
+        let path = std::env::temp_dir().join(format!(
+            "tempo-zone-virtual-address-key-{}",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\n",
+        )
+        .unwrap();
+
+        let key = load_virtual_address_key(Some(&path))
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(key.expose(), alloy_primitives::B256::repeat_byte(0x5a));
+        assert!(!format!("{key:?}").contains("5a5a"));
+        assert!(load_virtual_address_key(None).await.unwrap().is_none());
+        let error = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.virtual-address-key",
+            "0x01",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[tokio::test(flavor = "current_thread")]

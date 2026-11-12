@@ -17818,6 +17818,7 @@ dependencies = [
 name = "zone-precompiles"
 version = "0.5.0"
 dependencies = [
+ "aes 0.8.4",
  "aes-gcm 0.10.3",
  "alloy",
  "alloy-consensus",

@@ -196,7 +196,10 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         }
     }
 
-    fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
+    /// Dispatches a call to the Tempo precompile at `address`.
+    ///
+    /// Takes no `self`: a precompile may make nested calls that re-enter this provider.
+    fn call_tempo(address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
             TIP20Token::from_address(address)
                 .expect("TIP-20 prefix already checked")
@@ -296,9 +299,10 @@ where
         let input = evm.message_input(message).to_vec();
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
-            .with_non_creditable_slots(self.non_creditable_slots.clone());
+            .with_non_creditable_slots(self.non_creditable_slots.clone())
+            .with_frame(message.call_target, message.depth);
         Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.call_target, &input, message.caller)
+            Self::call_tempo(message.call_target, &input, message.caller)
         }))
     }
 }

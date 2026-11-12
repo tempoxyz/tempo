@@ -488,6 +488,7 @@ mod tests {
                 finalize_withdrawal_batch_count: None,
                 finalize_withdrawal_batch_encrypted_senders: vec![Bytes::from_static(&[0x03])],
                 transactions: vec![Bytes::from_static(&[0x04, 0x05])],
+                virtual_address_key: None,
             }],
             zone_state_witness: ZoneStateWitness {
                 node_pool: vec![Bytes::from_static(&[0x06])],

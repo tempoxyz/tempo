@@ -1280,7 +1280,7 @@ where
         for deposit in &portal_events.deposits {
             match deposit {
                 L1Deposit::WithdrawalBounceBack(_) => withdrawal_bounce_backs += 1,
-                L1Deposit::Deposit(_) => deposits += 1,
+                L1Deposit::Deposit(_) | L1Deposit::ZoneVirtual(_) => deposits += 1,
             }
         }
         if withdrawal_bounce_backs > 0 {

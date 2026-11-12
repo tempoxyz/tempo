@@ -424,6 +424,17 @@ impl DepositAllowlist {
             .map_err(|err| DepositAllowlistError::Internal(err.to_string()))?
     }
 
+    /// Whether a deposit from §sender§ to §recipient§ is admitted. An uninitialized list admits
+    /// every deposit; a §None§ recipient (the deposit is refunded anyway) is not checked.
+    pub fn admits(&self, sender: Address, recipient: Option<Address>) -> bool {
+        let state = self.inner.state.read();
+        let Some(state) = state.as_ref() else {
+            return true;
+        };
+        state.addresses.contains(&sender)
+            && recipient.is_none_or(|recipient| state.addresses.contains(&recipient))
+    }
+
     /// Replace the decryption data of every deposit whose sender or decrypted zone recipient is
     /// not allowed. An uninitialized list allows every deposit.
     ///
