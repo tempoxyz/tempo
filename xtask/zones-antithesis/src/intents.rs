@@ -42,6 +42,8 @@ pub(crate) enum Effect {
     Withdrawal { to: Address, amount: u128 },
     /// An allowance needed before a deposit or withdrawal.
     Approval { spender: Address },
+    /// Explicit admin leadership change used by a controlled outage.
+    Leadership { target: Address },
     /// Funding a fresh L1 depositor.
     Funding { to: Address, amount: u128 },
 }
@@ -116,7 +118,7 @@ impl Intent {
                 to,
                 amount,
             }),
-            Effect::Approval { .. } | Effect::Funding { .. } => None,
+            Effect::Approval { .. } | Effect::Funding { .. } | Effect::Leadership { .. } => None,
         })
     }
 }
@@ -319,10 +321,12 @@ impl Context {
         Ok(pending(&self.ledger.records()?)?.is_empty())
     }
 
-    /// Signs and journals a fresh canary, releasing the lease only after the durable intent
-    /// blocks sender reuse. None means no free funded sender; callers may retry preparation.
-    pub(crate) async fn prepare_recovery_canary(&self) -> eyre::Result<Option<Intent>> {
-        let node = crate::random_index(self.zones.len());
+    /// Signs and journals a fresh canary on the caller's selected live endpoint, releasing the
+    /// lease only after its durable intent blocks reuse. None means no free funded sender.
+    pub(crate) async fn prepare_recovery_canary(
+        &self,
+        node: usize,
+    ) -> eyre::Result<Option<Intent>> {
         let Some((sender, _, _lease)) = self.lease_zone_sender(&self.zones[node]).await? else {
             return Ok(None);
         };

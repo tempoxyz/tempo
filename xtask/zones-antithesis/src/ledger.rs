@@ -86,6 +86,34 @@ impl Ledger {
         })
     }
 
+    /// Excludes process-outage episodes from handoffs and recovery. Shared holders may race
+    /// handoffs as before; exclusive holders wait boundedly, never skip the requested check.
+    pub(super) async fn episode_lock(&self, exclusive: bool) -> eyre::Result<File> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.dir.join("locks/episode"))
+            .wrap_err("failed opening outage episode lock")?;
+        super::recovery::recover_until(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+            async || match if exclusive {
+                file.try_lock()
+            } else {
+                file.try_lock_shared()
+            } {
+                Ok(()) => Ok(Some(())),
+                Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+                Err(std::fs::TryLockError::Error(error)) => {
+                    Err(error).wrap_err("failed locking outage episode")
+                }
+            },
+        )
+        .await?;
+        Ok(file)
+    }
+
     /// Returns every complete record in append order.
     pub(super) fn records(&self) -> eyre::Result<Vec<Record>> {
         let file = self.locked_file()?;

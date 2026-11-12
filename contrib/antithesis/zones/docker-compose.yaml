@@ -29,7 +29,6 @@ x-zone: &zone
   depends_on:
     provision:
       condition: service_completed_successfully
-  restart: unless-stopped
 
 services:
   l1:
@@ -90,7 +89,6 @@ services:
     healthcheck:
       <<: *rpc-healthcheck
       start_period: 30s
-    restart: unless-stopped
 
   provision:
     image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
@@ -111,10 +109,12 @@ services:
     <<: *zone
     container_name: zone-0
     hostname: zone-0
-    command: ["0"]
+    entrypoint: ["/bin/bash", "/opt/zones/zone-supervisor.sh"]
+    command: ["0", "/opt/zones/zone-node.sh", "0"]
     volumes:
       - shared:/shared:ro
       - zone-0-data:/data
+      - fault-control:/fault-control
     networks:
       zones:
         ipv4_address: 10.20.0.11
@@ -123,10 +123,12 @@ services:
     <<: *zone
     container_name: zone-1
     hostname: zone-1
-    command: ["1"]
+    entrypoint: ["/bin/bash", "/opt/zones/zone-supervisor.sh"]
+    command: ["1", "/opt/zones/zone-node.sh", "1"]
     volumes:
       - shared:/shared:ro
       - zone-1-data:/data
+      - fault-control:/fault-control
     networks:
       zones:
         ipv4_address: 10.20.0.12
@@ -135,10 +137,12 @@ services:
     <<: *zone
     container_name: zone-2
     hostname: zone-2
-    command: ["2"]
+    entrypoint: ["/bin/bash", "/opt/zones/zone-supervisor.sh"]
+    command: ["2", "/opt/zones/zone-node.sh", "2"]
     volumes:
       - shared:/shared:ro
       - zone-2-data:/data
+      - fault-control:/fault-control
     networks:
       zones:
         ipv4_address: 10.20.0.13
@@ -171,6 +175,7 @@ services:
     volumes:
       - shared:/shared:ro
       - workload-state:/state
+      - fault-control:/fault-control
     networks:
       zones:
         ipv4_address: 10.20.0.30
@@ -183,6 +188,7 @@ volumes:
   zone-2-data:
   zone-rpc-data:
   workload-state:
+  fault-control:
 
 networks:
   zones:

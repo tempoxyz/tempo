@@ -54,7 +54,8 @@ images it is given, so they must be in the image rather than copied in when a co
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
 | `parallel_driver_rotate_leader` | Hands leadership to another sequencer, through the admin or a zone node's `zone_setLeader` relay, then observes production and settlement if its term is not superseded |
-| `serial_driver_recovery` | Pauses faults for 360 seconds, then proves a fresh canary settles on finalized L1 and all nodes preserve its receipt and the prior settled prefix within 300 seconds |
+| `serial_driver_single_sequencer_outage` | In a quiet window, crashes one sequencer process, requires progress while it stays down, then checks catch-up and renewed quorum participation; leader loss uses an explicit portal handoff |
+| `serial_driver_recovery` | Pauses faults for 600 seconds, then proves a fresh canary settles on finalized L1 and all nodes preserve its receipt and the prior settled prefix within 300 seconds |
 | `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, settled workload transactions stay final, and every zone block comes from the leader the portal names at its Tempo anchor; reconciles persistent handoff history |
 | `eventually_settled` | After faults stop, resolves every durable signed intent first, then every confirmed deposit is credited or refunded and every confirmed withdrawal is paid, and all nodes converge |
 | `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
@@ -73,12 +74,13 @@ consistency and recovery check their history and activation boundaries.
 
 ### Mid-run recovery
 
-`serial_driver_recovery` invokes the binary at `ANTITHESIS_STOP_FAULTS`, if nonempty, with `360`
+`serial_driver_recovery` invokes the binary at `ANTITHESIS_STOP_FAULTS`, if nonempty, with `600`
 seconds. The platform restores killed containers and network connectivity and resumes faults
 automatically when the window expires. Locally, with the variable unset, the same check runs
 without requesting a pause. There is no external-faults toggle.
 
-The probe has one 300-second async deadline covering startup, reconciliation, sends and reads;
+After releasing any intentional holds (bounded separately), the recovery probe has one
+300-second async deadline covering startup, reconciliation, sends and reads;
 individual HTTP requests are also bounded. It first requires every configured node, including
 the RPC-only follower, to answer and agree with a baseline portal settlement read at a single
 **finalized L1 block hash**. After resolving old signed intents it journals a new canary before sending it. A lost send
@@ -99,3 +101,81 @@ Run a command against the local stack the way the platform does:
 docker compose -f contrib/antithesis/zones/docker-compose.yaml exec workload \
     /opt/antithesis/test/v1/zone_payments/first_seed
 ```
+
+## Zone-only faults
+
+Run `bash contrib/antithesis/zones/launch.sh CONFIG_IMAGE@sha256:DIGEST MINUTES COMPUTE_HOURS`
+to print the exact launch command. Add `--launch` only after approving its paid compute budget.
+The script requires a digest-pinned config, uses the `custom_faults` launcher, and explicitly
+passes both duration and compute-hours. Confirm the accepted settings in the run metadata;
+the compute-hours parameter is not a substitute for checking the server's duration.
+
+Only `zone-0`, `zone-1` and `zone-2` are eligible for container termination. Tempo `l1`, the
+provisioner, the workload and the RPC-only follower are excluded. Network faults, node hangs,
+node throttling, clock jitter and CPU modulation are disabled in this focused profile.
+The custom launcher reports `legacy` internally; do not pass `antithesis.fault_tolerance`.
+Machine-wide thread pausing cannot be excluded per container. Target selection does not enforce
+one simultaneous failure across different nodes; the controlled probe below does.
+
+No service has a Compose restart policy: Antithesis owns recovery from platform container
+termination. An unconditional restart policy could bring a killed container back prematurely.
+
+## Controlled single-sequencer outage
+
+The serial outage driver first requests a 1,800-second platform quiet window. Its Rust episode
+has a 1,200-second deadline, with a 1,500-second process timeout as a backstop. During this
+window a test-only supervisor SIGKILLs and reaps the selected `tempo-zone` process, retains its
+datadir, and holds it down until the workload requests a restart. This is a **process crash**,
+not a container restart: container/network namespace and supervisor remain alive. Outside the
+probe, the launcher independently exercises real zone-container termination.
+
+The shared `/fault-control` volume carries only commands and generation-matched acknowledgements;
+it is not evidence of replication, recovery or settlement. Only the workload and three sequencer
+containers mount it. No Docker socket or production RPC control endpoint is exposed. The
+supervisor exits on an unexpected child failure rather than hiding crashes in a restart loop.
+An abandoned intentional hold expires after 180 seconds; an early expiry cannot pass an outage
+assertion. Terminal checks release outstanding holds after a cancelled driver.
+
+The two cases are a backup crash with the leader alive, and a leader crash followed by an
+**explicit admin handoff** to a surviving sequencer. Neither claims automatic leader election.
+For each case, progress must include a new canary transaction finalized on L1 while the victim
+is still held down. After restart, the victim must catch up through real RPC reads at the same
+finalized checkpoint and preserve the canary receipt.
+
+To prove that the recovered sequencer attests again, the test then holds the other backup down
+and creates another fresh canary. The configured signer set and 2-of-3 threshold must remain
+unchanged. Finalizing this canary with only the leader and recovered sequencer alive requires
+both to sign; a certificate produced before this second outage cannot contain the new canary.
+The other backup is restored and all-node convergence is checked before returning. All waits
+are bounded; timeouts, premature restarts and changed quorum/leadership fail the check.
+
+**Current leader-loss limitation:** the leader case is a strict availability assertion, not a
+promise that ordinary handoff supports crashed-leader recovery. If the outgoing leader dies
+before producing the next pre-activation block, the replacement cannot activate even after
+`setLeader` finalizes. The local backup case passes; the leader case reaches its held-down
+deadline in this situation and recovery succeeds only after the original leader returns.
+The random template includes this case and will report that limitation as a failure. The
+[operator forced-recovery procedure](../../../crates/zones/p2p/README.md) is a different scenario
+and is not implemented by this probe.
+
+Run the local harness fixtures without contacting Antithesis:
+
+```bash
+bash contrib/antithesis/zones/tests/test-launch.sh
+bash contrib/antithesis/zones/tests/test-compose.sh
+bash contrib/antithesis/zones/tests/test-zone-supervisor.sh
+cargo test -p tempo-zones-antithesis --locked
+```
+
+Against the local Compose stack, seed accounts once, then exercise both cases explicitly:
+
+```bash
+docker compose -f contrib/antithesis/zones/docker-compose.yaml exec -T workload tempo-zones-antithesis seed
+docker compose -f contrib/antithesis/zones/docker-compose.yaml exec -T workload tempo-zones-antithesis single-sequencer-outage --case backup
+docker compose -f contrib/antithesis/zones/docker-compose.yaml exec -T workload tempo-zones-antithesis single-sequencer-outage --case leader
+```
+
+Omitting `--case` lets Antithesis choose through SDK randomness. The global `--fault-control-dir`
+option (`FAULT_CONTROL_DIR`) selects the workload's control path; supervisors use
+`ZONE_FAULT_CONTROL_DIR`. Both default to `/fault-control`. Do not shorten the supervisor's
+180-second hold watchdog below the workload's 150-second held-down deadline in a real run.

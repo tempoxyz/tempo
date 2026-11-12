@@ -70,6 +70,7 @@ impl Context {
     /// Journals a handoff before sending it, then observes production and settlement if its
     /// term survives. A lost reply leaves an intent recoverable by `reconcile_handoffs`.
     pub(super) async fn rotate_leader(&self) -> eyre::Result<()> {
+        let _episode = self.ledger.episode_lock(false).await?;
         self.reconcile_handoffs().await?;
         let relayed = random_below(2) == 0;
         let admin = Account::at(ADMIN_INDEX)?;

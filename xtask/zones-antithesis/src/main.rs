@@ -39,6 +39,7 @@ mod checks;
 mod handoff;
 mod intents;
 mod ledger;
+mod outage;
 mod recovery;
 
 #[tokio::main]
@@ -110,6 +111,10 @@ struct Antithesis {
     #[arg(long, env = "WORKLOAD_STATE_DIR", default_value = "/state")]
     state_dir: PathBuf,
 
+    /// Shared test-only sequencer supervisor control directory.
+    #[arg(long, env = "FAULT_CONTROL_DIR", default_value = "/fault-control")]
+    fault_control_dir: PathBuf,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -138,12 +143,35 @@ enum Command {
     CheckLedger,
     /// After faults stop, reconcile all intents and prove a fresh canary settles canonically.
     RecoveryProbe,
+    /// Proves settlement during a controlled process outage, then restart and fresh attestation.
+    SingleSequencerOutage {
+        /// Omitted chooses backup or explicit-admin-handoff leader outage with SDK randomness.
+        #[arg(long, value_enum)]
+        case: Option<outage::Case>,
+    },
+    /// Releases intentional process holds left by an interrupted serial command.
+    ReleaseOutages,
 }
 
 impl Antithesis {
     async fn run(self) -> eyre::Result<()> {
         antithesis_sdk::antithesis_init();
         let ctx = Context::init(&self).await?;
+        // Terminal commands can follow SIGKILL: Drop did not run, so release holds first.
+        // The same lock excludes an in-flight outage and leadership changes until checks finish.
+        let _episode = if matches!(
+            self.command,
+            Command::RecoveryProbe
+                | Command::CheckSettled
+                | Command::CheckLedger
+                | Command::ReleaseOutages
+        ) {
+            let lock = ctx.ledger.episode_lock(true).await?;
+            ctx.release_outages(&self.fault_control_dir).await?;
+            Some(lock)
+        } else {
+            None
+        };
         // Recovery/check commands own their deadline and reconciliation pass.
         if matches!(
             self.command,
@@ -162,6 +190,12 @@ impl Antithesis {
             Command::CheckSettled => return ctx.check_settled().await,
             Command::CheckLedger => return ctx.check_ledger().await,
             Command::RecoveryProbe => return ctx.recovery_probe().await,
+            Command::SingleSequencerOutage { case } => {
+                return ctx
+                    .single_sequencer_outage(&self.fault_control_dir, case)
+                    .await;
+            }
+            Command::ReleaseOutages => return Ok(()),
             Command::Deposit => ctx.deposit().await,
             Command::Transfer => ctx.transfer().await,
             Command::Withdraw => ctx.withdraw().await,

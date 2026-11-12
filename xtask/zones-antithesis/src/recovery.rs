@@ -15,7 +15,7 @@ use tokio::time::{Instant, timeout, timeout_at};
 
 use super::{Context, POLL, Record, intents::Outcome, is_rpc_error};
 
-/// Leaves one minute of the serial driver's 360-second quiet window for command overhead.
+/// Bounds RPC recovery separately from the supervisor release phase in the serial driver.
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(300);
 /// Never substitute `latest`: a mined settlement can still be rolled back on L1.
 const SETTLEMENT_TAG: BlockNumberOrTag = BlockNumberOrTag::Finalized;
@@ -69,7 +69,7 @@ impl Context {
 
             // The canary is signed and durably journaled only after the finalized baseline.
             // Cancellation leaves that exact intent for the next reconciliation, not a new send.
-            let intent = recover_until(deadline, async || self.prepare_recovery_canary().await).await?;
+            let intent = recover_until(deadline, async || self.prepare_recovery_canary(crate::random_index(self.zones.len())).await).await?;
             match self.send_intent(&intent).await {
                 Ok(_) => {},
                 Err(error) if is_rpc_error(&error) => {
@@ -90,57 +90,7 @@ impl Context {
                 if settled.height < canary.height || settled.height <= baseline.height {
                     return Ok(None);
                 }
-                let prefix = self.l1.get_block_by_number(baseline.l1_height.into()).await?
-                    .ok_or_eyre("baseline finalized L1 block is missing")?;
-                eyre::ensure!(prefix.header.hash == baseline.l1_hash, "finalized L1 baseline changed");
-                let mut nodes = Vec::with_capacity(self.zones.len());
-                for zone in &self.zones {
-                    let prefix = zone.get_block_by_number(baseline.height.into()).await?;
-                    let checkpoint = zone.get_block_by_number(settled.height.into()).await?;
-                    let block = zone.get_block_by_number(canary.height.into()).await?;
-                    let receipt = zone.get_transaction_receipt(canary.tx).await?;
-                    let mut proof = NodeProof {
-                        checkpoint_anchor: None,
-                        prefix: prefix.map(|block| block.header.hash),
-                        checkpoint: checkpoint.as_ref().map(|block| block.header.hash),
-                        canary_block: block.as_ref().map(|block| block.header.hash),
-                        receipt: receipt.map(|receipt| {
-                            eyre::Ok(ReceiptProof {
-                                tx: receipt.transaction_hash,
-                                height: receipt.block_number.ok_or_eyre("canary receipt has no height")?,
-                                hash: receipt.block_hash.ok_or_eyre("canary receipt has no block hash")?,
-                                success: receipt.status(),
-                            })
-                        }).transpose()?,
-                    };
-                    for (block, is_checkpoint) in [(block, false), (checkpoint, true)] {
-                        let Some(block) = block else { continue; };
-                        let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
-                            .tempoBlockNumber()
-                            .block(BlockId::hash(block.header.hash))
-                            .call()
-                            .await?;
-                        if is_checkpoint {
-                            proof.checkpoint_anchor = Some(anchor);
-                        }
-                        eyre::ensure!(anchor <= settled.l1_height, "zone anchor is not finalized");
-                        let l1_anchor = self.l1
-                            .get_block_by_number(anchor.into())
-                            .await?
-                            .ok_or_eyre("zone block's L1 anchor is missing")?;
-                        let leader = ZonePortal::new(self.portal, &self.l1)
-                            .leader()
-                            .block(BlockId::hash(l1_anchor.header.hash))
-                            .call()
-                            .await?;
-                        // Eligibility is at this block's anchor, not today's leader or a
-                        // superseded intermediate handoff that need never produce a block.
-                        eyre::ensure!(block.header.beneficiary == leader,
-                            "recovery block was not produced by its eligible leader");
-                    }
-                    nodes.push(proof);
-                }
-                let complete = checkpoint_matches(&baseline, &settled, &canary, &nodes, self.zones.len())?;
+                let complete = self.check_checkpoint(&baseline, &settled, &canary, &(0..self.zones.len()).collect::<Vec<_>>()).await?;
                 Ok(complete.then_some(settled))
             })
             .await?;
@@ -156,8 +106,87 @@ impl Context {
         .await
     }
 
+    /// Verifies the finalized prefix, checkpoint and exact canary receipt on selected live nodes.
+    pub(super) async fn check_checkpoint(
+        &self,
+        baseline: &FinalizedCheckpoint,
+        settled: &FinalizedCheckpoint,
+        canary: &ReceiptProof,
+        nodes: &[usize],
+    ) -> eyre::Result<bool> {
+        let prefix = self
+            .l1
+            .get_block_by_number(baseline.l1_height.into())
+            .await?
+            .ok_or_eyre("baseline finalized L1 block is missing")?;
+        eyre::ensure!(
+            prefix.header.hash == baseline.l1_hash,
+            "finalized L1 baseline changed"
+        );
+        let mut proofs = Vec::with_capacity(nodes.len());
+        for &node in nodes {
+            let zone = &self.zones[node];
+            let prefix = zone.get_block_by_number(baseline.height.into()).await?;
+            let checkpoint = zone.get_block_by_number(settled.height.into()).await?;
+            let block = zone.get_block_by_number(canary.height.into()).await?;
+            let receipt = zone.get_transaction_receipt(canary.tx).await?;
+            let mut proof = NodeProof {
+                checkpoint_anchor: None,
+                prefix: prefix.map(|block| block.header.hash),
+                checkpoint: checkpoint.as_ref().map(|block| block.header.hash),
+                canary_block: block.as_ref().map(|block| block.header.hash),
+                receipt: receipt
+                    .map(|receipt| {
+                        eyre::Ok(ReceiptProof {
+                            tx: receipt.transaction_hash,
+                            height: receipt
+                                .block_number
+                                .ok_or_eyre("canary receipt has no height")?,
+                            hash: receipt
+                                .block_hash
+                                .ok_or_eyre("canary receipt has no block hash")?,
+                            success: receipt.status(),
+                        })
+                    })
+                    .transpose()?,
+            };
+            for (block, is_checkpoint) in [(block, false), (checkpoint, true)] {
+                let Some(block) = block else {
+                    continue;
+                };
+                let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
+                    .tempoBlockNumber()
+                    .block(BlockId::hash(block.header.hash))
+                    .call()
+                    .await?;
+                if is_checkpoint {
+                    proof.checkpoint_anchor = Some(anchor);
+                }
+                eyre::ensure!(anchor <= settled.l1_height, "zone anchor is not finalized");
+                let l1_anchor = self
+                    .l1
+                    .get_block_by_number(anchor.into())
+                    .await?
+                    .ok_or_eyre("zone block's L1 anchor is missing")?;
+                let leader = ZonePortal::new(self.portal, &self.l1)
+                    .leader()
+                    .block(BlockId::hash(l1_anchor.header.hash))
+                    .call()
+                    .await?;
+                // Eligibility is at this block's anchor, not today's leader or a
+                // superseded intermediate handoff that need never produce a block.
+                eyre::ensure!(
+                    block.header.beneficiary == leader,
+                    "recovery block was not produced by its eligible leader"
+                );
+            }
+            proofs.push(proof);
+        }
+        checkpoint_matches(baseline, settled, canary, &proofs, nodes.len())
+    }
+
     /// Reads both portal fields at the same finalized L1 block hash, never a moving tag.
-    async fn finalized_checkpoint(&self) -> eyre::Result<FinalizedCheckpoint> {
+    pub(super) async fn finalized_checkpoint(&self) -> eyre::Result<FinalizedCheckpoint> {
         let block = self
             .l1
             .get_block_by_number(SETTLEMENT_TAG)
@@ -174,20 +203,30 @@ impl Context {
     }
 }
 
+/// Portal settlement fields read at one pinned finalized L1 block.
 #[derive(Debug, Clone, Serialize)]
-struct FinalizedCheckpoint {
-    l1_height: u64,
-    l1_hash: B256,
-    height: u64,
-    hash: B256,
+pub(super) struct FinalizedCheckpoint {
+    /// Finalized L1 height at which the portal was read.
+    pub(super) l1_height: u64,
+    /// Canonical identity of that L1 snapshot.
+    pub(super) l1_hash: B256,
+    /// Last settled zone height at the snapshot.
+    pub(super) height: u64,
+    /// Portal's committed zone block hash at `height`.
+    pub(super) hash: B256,
 }
 
+/// Exact mined canary identity, compared on every participating node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct ReceiptProof {
-    tx: B256,
-    height: u64,
-    hash: B256,
-    success: bool,
+pub(super) struct ReceiptProof {
+    /// Hash of the durably signed canary.
+    pub(super) tx: B256,
+    /// Zone block containing the canary.
+    pub(super) height: u64,
+    /// Canonical hash of that zone block.
+    pub(super) hash: B256,
+    /// False rejects a reverted canary rather than counting it as progress.
+    pub(super) success: bool,
 }
 
 #[derive(Debug, Clone)]
