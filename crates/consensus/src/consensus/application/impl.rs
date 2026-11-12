@@ -1,6 +1,9 @@
 //! Tempo's block building and verification.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::AtomicU64,
+    time::{Duration, Instant},
+};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
@@ -10,7 +13,7 @@ use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epoch, Epocher as _, FixedEpocher, Height},
+    types::{Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Digested, Digestible as _,
@@ -19,16 +22,18 @@ use commonware_cryptography::{
 };
 use commonware_runtime::{
     Clock, Spawner,
-    telemetry::metrics::{Counter, MetricsExt as _},
+    telemetry::metrics::{Counter, MetricsExt as _, Registered},
 };
 use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
+use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_payload_types::{
-    Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
+    Estimator, EstimatorSnapshot, ProposalKey, ProposalTiming, TempoPayloadAttributes,
+    ValidationLatencyWorkload,
 };
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
@@ -37,7 +42,7 @@ use tracing::{Level, debug, info, instrument, warn};
 use super::parent_state::TempoParentState;
 use crate::{
     consensus::{Digest, block::Block},
-    executor::DeferredExtraData,
+    executor::DeferredCeremonyOutput,
 };
 
 pub(in crate::consensus) struct Config<TContext> {
@@ -121,18 +126,17 @@ impl Inner {
             parent: (parent_view, parent_digest),
         } = context;
 
-        let (extra_data, deferred_extra_data) = if self.is_boundary(parent.height().next()) {
-            // The boundary block carries the DKG outcome.
-            //
-            // Part of it is read from the post-state of the parent,
-            // so the executor resolves it only after the parent returned VALID.
+        let (extra_data, ceremony_output) = if self.is_boundary(parent.height().next()) {
+            // The boundary block carries the DKG outcome. Consensus supplies
+            // the ceremony output, and the payload builder fills in the rest
+            // from the parent state.
             //
             // The DKG actor reads no chain state, so it starts on the
             // ceremony output now, while the executor works on the parent.
             let ceremony = self.dkg_manager.subscribe_dkg_ceremony(parent.clone());
             (
                 Bytes::default(),
-                Some(self.boundary_dkg_outcome(round.epoch(), parent.digest(), ceremony)),
+                Some(deferred_ceremony_output(parent.digest(), ceremony)),
             )
         } else {
             // Regular block: try to include DKG dealer log.
@@ -213,7 +217,7 @@ impl Inner {
                     parent: (parent_view, parent_digest),
                 },
                 attrs,
-                deferred_extra_data,
+                ceremony_output,
             )?
             .await
             .wrap_err(
@@ -225,10 +229,9 @@ impl Inner {
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
         let (block, execution_block_encoded) = payload.into_consensus_execution_payload();
-        let proposal = Block::from_execution_block_unchecked_with_encoded_cache(
-            block,
-            execution_block_encoded,
-        );
+        let proposal =
+            Block::try_from_execution_block_with_encoded_cache(block, execution_block_encoded)
+                .wrap_err("built an invalid proposal")?;
         let proposal_elapsed = window_opened.elapsed();
         // Reserve the full validation estimate when pacing an early-finished proposal.
         let return_after = return_budget.saturating_sub(validation_latency_elapsed);
@@ -241,6 +244,8 @@ impl Inner {
         let spent = return_budget.max(proposal_elapsed.saturating_add(sampling_replay_reserve));
         debug!(
             proposal.digest = %proposal.digest(),
+            return_budget = %display_duration(return_budget),
+            preparation = %display_duration(window_opened.saturating_duration_since(propose_start)),
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
@@ -274,6 +279,9 @@ impl Inner {
             );
         }
 
+        self.metrics
+            .observe_estimator(&self.estimator.snapshot(Instant::now()));
+
         #[cfg(feature = "fuzz")]
         antithesis_sdk::assert_sometimes!(
             round.view().get().saturating_sub(parent_view.get()) > 1,
@@ -288,52 +296,15 @@ impl Inner {
         Ok(proposal)
     }
 
-    /// Returns the DKG outcome of a boundary block in `epoch` as deferred
-    /// extra data. The executor resolves it with the parent once the parent
-    /// returned VALID, so the post-state of the parent is available.
-    ///
-    /// `ceremony` is the request for the ceremony output on the parent
-    /// `parent_digest`.
-    fn boundary_dkg_outcome(
-        &self,
-        epoch: Epoch,
-        parent_digest: Digest,
-        ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
-    ) -> DeferredExtraData {
-        let parent_state = self.parent_state.clone();
-        let epoch_strategy = self.epoch_strategy.clone();
-        DeferredExtraData::new(move |parent| {
-            async move {
-                ensure!(
-                    parent.digest() == parent_digest,
-                    "the executor built on `{}`, but the DKG ceremony was requested \
-                    for `{parent_digest}`",
-                    parent.digest(),
-                );
-                let output = ceremony
-                    .await
-                    .wrap_err("failed getting public dkg ceremony outcome")?;
-                let outcome =
-                    parent_state.boundary_outcome(&epoch_strategy, parent.inner(), output)?;
-                ensure!(
-                    epoch.next() == outcome.epoch(),
-                    "outcome is for epoch `{}`, but we are trying to include the \
-                    outcome for epoch `{}`",
-                    outcome.epoch,
-                    epoch.next(),
-                );
-                info!(
-                    %outcome.epoch,
-                    outcome.network_identity = %outcome.network_identity(),
-                    outcome.dealers = ?outcome.dealers(),
-                    outcome.players = ?outcome.players(),
-                    outcome.next_players = ?outcome.next_players(),
-                    "received DKG outcome; will include in payload builder attributes",
-                );
-                Ok(outcome.encode().into())
-            }
-            .boxed()
-        })
+    /// Returns whether T15 is active at `timestamp`, in seconds. From T15,
+    /// execution checks the DKG outcome of a boundary block against the
+    /// parent state, and consensus compares only the ceremony output.
+    fn is_t15(&self, timestamp: u64) -> bool {
+        self.parent_state
+            .node
+            .chain_spec()
+            .tempo_hardfork_at(timestamp)
+            .is_t15()
     }
 
     /// Returns whether the block at `height` is the last block of its epoch,
@@ -476,6 +447,36 @@ impl Inner {
         }
         Ok(())
     }
+
+    /// From T15, checks that the boundary block carries the DKG ceremony
+    /// output this node calculates for its parent. Execution has already
+    /// checked the rest of the outcome against the parent state.
+    ///
+    /// If this node cannot calculate the output, that says nothing about the
+    /// block. The future then stays pending and the vote is not cast.
+    ///
+    /// `ceremony` is the request for the ceremony output on the parent.
+    #[instrument(skip_all, err(Display))]
+    async fn verify_boundary_output(
+        &self,
+        ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
+        proposed_outcome: &OnchainDkgOutcome,
+    ) -> eyre::Result<()> {
+        info!("verifying that the boundary block contains the correct DKG ceremony output");
+        let output = match ceremony.await {
+            Ok(output) => output,
+            Err(reason) => {
+                warn!(%reason, "DKG ceremony output unavailable; abstaining");
+                return std::future::pending().await;
+            }
+        };
+        ensure!(
+            output == proposed_outcome.output,
+            "our DKG ceremony output does not match the one stored in the \
+            block header extra_data field",
+        );
+        Ok(())
+    }
 }
 
 impl<TContext> commonware_consensus::Application<TContext> for Inner
@@ -596,9 +597,17 @@ where
             Some(outcome) => {
                 let (parent, ceremony) =
                     boundary.expect("`verify_header` decodes an outcome only for a boundary block");
-                self.verify_boundary_outcome(parent.inner(), ceremony, &outcome)
-                    .await
-                    .is_ok()
+                if self.is_t15(block.inner().header().timestamp()) {
+                    // Execution has checked the rest of the outcome against
+                    // the parent state.
+                    self.verify_boundary_output(ceremony, &outcome)
+                        .await
+                        .is_ok()
+                } else {
+                    self.verify_boundary_outcome(parent.inner(), ceremony, &outcome)
+                        .await
+                        .is_ok()
+                }
             }
         }
     }
@@ -633,6 +642,8 @@ impl Reporter for Inner {
                     self.metrics.network_samples.metric().inc();
                 }
             }
+            self.metrics
+                .observe_estimator(&self.estimator.snapshot(Instant::now()));
             ack.acknowledge();
         }
         Feedback::Ok
@@ -652,7 +663,24 @@ async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
 struct Metrics {
     parent_ahead_of_local_time: Counter,
     network_samples: Counter,
+    /// Network reservation the most recent own proposal subtracted from the
+    /// target block time.
+    estimator_network_reserve_seconds: FloatGauge,
+    /// Unclamped adaptive network reservation target, including warm-up and
+    /// fast rise. Zero in fixed mode or without live network feedback.
+    estimator_network_target_seconds: FloatGauge,
+    /// Proposal return budget of the most recent own proposal.
+    estimator_proposal_return_budget_seconds: FloatGauge,
+    /// Recent P90 execution-layer validation time.
+    estimator_validation_latency_p90_seconds: FloatGauge,
+    /// Build time multiplier in use.
+    estimator_build_time_multiplier: FloatGauge,
+    /// Finish a build reserves once its pool ran dry.
+    estimator_dry_build_finish_seconds: FloatGauge,
 }
+
+/// A gauge that holds a fractional value, such as seconds or a ratio.
+type FloatGauge = Registered<prometheus_client::metrics::gauge::Gauge<f64, AtomicU64>>;
 
 impl Metrics {
     fn init<TContext: commonware_runtime::Metrics>(context: &TContext) -> Self {
@@ -660,16 +688,92 @@ impl Metrics {
             "parent_ahead_of_local_time",
             "number of times the parent block timestamp was ahead of local time when proposing",
         );
+        let float_gauge = |name: &str, help: &str| -> FloatGauge {
+            context.register(name, help, Default::default())
+        };
 
-        let network_samples = context.counter(
-            "network_samples",
-            "number of network samples recorded from finalized successors of own proposals",
-        );
         Self {
             parent_ahead_of_local_time,
-            network_samples,
+            network_samples: context.counter(
+                "network_samples",
+                "number of network samples recorded from finalized successors of own proposals",
+            ),
+            estimator_network_reserve_seconds: float_gauge(
+                "estimator_network_reserve_seconds",
+                "network allowance covering propagation, votes, unprojected validation and next-proposal preparation",
+            ),
+            estimator_network_target_seconds: float_gauge(
+                "estimator_network_target_seconds",
+                "unclamped adaptive network reservation target including warm-up and fast rise; zero in fixed mode or without live samples",
+            ),
+            estimator_proposal_return_budget_seconds: float_gauge(
+                "estimator_proposal_return_budget_seconds",
+                "local proposal return budget of the most recent own proposal",
+            ),
+            estimator_validation_latency_p90_seconds: float_gauge(
+                "estimator_validation_latency_p90_seconds",
+                "recent p90 execution-layer block validation time",
+            ),
+            estimator_build_time_multiplier: float_gauge(
+                "estimator_build_time_multiplier",
+                "payload build time multiplier in use",
+            ),
+            estimator_dry_build_finish_seconds: float_gauge(
+                "estimator_dry_build_finish_seconds",
+                "finish reserved by payload builds whose pool ran dry",
+            ),
         }
     }
+
+    fn observe_estimator(&self, snapshot: &EstimatorSnapshot) {
+        self.estimator_network_reserve_seconds
+            .set(snapshot.network_reserve.as_secs_f64());
+        self.estimator_network_target_seconds
+            .set(snapshot.network_target.map_or(0.0, |d| d.as_secs_f64()));
+        self.estimator_proposal_return_budget_seconds
+            .set(snapshot.proposal_return_budget.as_secs_f64());
+        self.estimator_validation_latency_p90_seconds.set(
+            snapshot
+                .validation_latency_p90
+                .map_or(0.0, |d| d.as_secs_f64()),
+        );
+        self.estimator_build_time_multiplier
+            .set(snapshot.build_time_multiplier);
+        self.estimator_dry_build_finish_seconds
+            .set(snapshot.dry_build_finish.as_secs_f64());
+    }
+}
+
+/// Defers the DKG ceremony output on the parent `parent_digest` until the
+/// executor has delivered that parent. The payload builder fills in the rest
+/// of the boundary block's outcome from the parent state.
+///
+/// `ceremony` is the request for the ceremony output on that parent.
+fn deferred_ceremony_output(
+    parent_digest: Digest,
+    ceremony: oneshot::Receiver<Output<MinSig, PublicKey>>,
+) -> DeferredCeremonyOutput {
+    DeferredCeremonyOutput::new(move |parent| {
+        async move {
+            ensure!(
+                parent.digest() == parent_digest,
+                "the executor built on `{}`, but the DKG ceremony was requested \
+                for `{parent_digest}`",
+                parent.digest(),
+            );
+            let output = ceremony
+                .await
+                .wrap_err("failed getting public dkg ceremony outcome")?;
+            info!(
+                output.network_identity = %output.public().public(),
+                output.dealers = ?output.dealers(),
+                output.players = ?output.players(),
+                "received DKG ceremony output; will include in payload builder attributes",
+            );
+            Ok(output)
+        }
+        .boxed()
+    })
 }
 
 #[cfg(test)]

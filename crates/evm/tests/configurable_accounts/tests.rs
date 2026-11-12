@@ -35,7 +35,9 @@ use reth_trie_db::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{num::NonZeroU64, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, spec::DEV};
+use tempo_chainspec::{
+    TempoChainSpec, constants::gas::L1_COMMITMENT_READ_GAS, gas_params::apply_zone, spec::DEV,
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, ISignatureVerifier, ITIP20ChannelReserve,
     PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -58,7 +60,8 @@ use tempo_precompiles::{
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
-    Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
+    Block as TempoBlock, MAX_WEBAUTHN_SIGNATURE_LENGTH, SignatureType, TempoEvmKind, TempoHeader,
+    TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
         AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CallScope,
@@ -2114,7 +2117,7 @@ fn retired_root_error_order_and_access_gas() {
     // T14 prices every transaction a little differently, with or without role checks; the
     // role charges are measured on top of a plain transaction.
     let base = delta(&|f| f.primitive(4, vec![f.getter()]));
-    // The caller is free, even as the grant signer.
+    // The caller is free, even as the grant signer; the granted key ID costs a cold access.
     let grant_tx = |f: &Fixture| {
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, other.address());
         let signature = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
@@ -2123,7 +2126,7 @@ fn retired_root_error_order_and_access_gas() {
             ..aa_tx(4, vec![f.getter()])
         })
     };
-    assert_eq!(delta(&grant_tx), base);
+    assert_eq!(delta(&grant_tx), base + cold);
     // A cold fee payer costs a cold access, an access-listed one a warm access.
     let paid = |f: &Fixture, payer: &PrivateKeySigner, list: &AccessList| {
         f.sign_primitive(sponsored(
@@ -2379,7 +2382,7 @@ fn retired_root_authorization_list_entries_skipped() {
 
 #[test]
 fn retired_root_authorization_list_entries_skipped_after_a_same_block_migration() {
-    // TIP-1112: an entry the root key signed before migrating, relayed by a later transaction
+    // TIP-1113: an entry the root key signed before migrating, relayed by a later transaction
     // of the same block, is skipped.
     let target = Address::repeat_byte(0x55);
     let sender = signer(2);
@@ -3338,9 +3341,9 @@ fn retired_root_signatures_still_recover_and_keychain_format_is_unchanged() {
         .into(),
     };
     assert!(bool_query(&mut f, verify, None, "verify").0);
-    // A V2 keychain signature whose inner signature is a configurable account one is not a
+    // A V2 keychain signature whose inner signature is a configurable account one is not an admin
     // keychain one, retired key or not, whether the configurable account names the parent account
-    // or another.
+    // or another. As a delegate signature it is rejected: the parent account grants neither.
     let signing_hash = KeychainSignature::signing_hash(hash, account);
     let other_owner = signer(3);
     let other_config = ConfigurableAccountConfig {
@@ -3354,15 +3357,12 @@ fn retired_root_signatures_still_recover_and_keychain_format_is_unchanged() {
         let approval =
             configurable_account_approval(named, &other_config, &other_owner, signing_hash);
         let signature = TempoSignature::Keychain(KeychainSignature::new(account, approval));
-        for function in [Verifier::Keychain, Verifier::KeychainAdmin] {
-            let call = function.call(account, hash, signature.to_bytes());
-            let result = send(&mut f, signer(9).address(), vec![call]);
-            assert_reverts_with(
-                &result,
-                ISignatureVerifier::InvalidFormat {},
-                &format!("{function:?} naming {named}"),
-            );
-        }
+        let label = format!("naming {named}");
+        let call = Verifier::Keychain.call(account, hash, signature.to_bytes());
+        assert!(!bool_query(&mut f, call, None, &label).0, "{label}");
+        let call = Verifier::KeychainAdmin.call(account, hash, signature.to_bytes());
+        let result = send(&mut f, signer(9).address(), vec![call]);
+        assert_reverts_with(&result, ISignatureVerifier::InvalidFormat {}, &label);
     }
 }
 
@@ -3473,6 +3473,111 @@ fn retired_root_keychain_verifiers_check_in_order() {
     assert!(accepted);
     assert!(!rejected);
     assert_eq!(after + lookup, before + read);
+}
+
+#[test]
+fn verify_keychain_accepts_large_configurable_delegate_signatures() {
+    let hash = B256::repeat_byte(0x42);
+    let mut f = Fixture::with_spec(false, TempoHardfork::T14);
+    let account = f.account;
+    // A delegate whose eight WebAuthn owners must all approve.
+    let seeds = 1..=8;
+    let owners = seeds
+        .clone()
+        .map(|seed| p256_primitive(SigKind::WebAuthn, seed, hash).0)
+        .collect();
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(7),
+        version: 0,
+        threshold: 8,
+        owners: owner_set(owners),
+    };
+    let delegate = config.derive_account().unwrap();
+    let digest = configurable_account_digest(
+        KeychainSignature::signing_hash(hash, account),
+        delegate,
+        config.version,
+    );
+    let mut approvals: Vec<_> = seeds
+        .map(|seed| p256_primitive(SigKind::WebAuthn, seed, digest))
+        .collect();
+    approvals.sort_by_key(|(owner, _)| *owner);
+    let approvals = approvals
+        .into_iter()
+        .map(|(_, approval)| approval)
+        .collect();
+    let inner = ConfigurableAccountSignature::try_new(delegate, config, approvals).unwrap();
+    let signature = TempoSignature::Keychain(KeychainSignature::new(account, inner)).to_bytes();
+    // Larger than the one WebAuthn signature a `verify` call carries at most.
+    assert!(signature.len() > (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32));
+    let result = f.run(&grant_tx(
+        &f,
+        3,
+        SignatureType::ConfigurableAccount,
+        delegate,
+    ));
+    assert!(result.status, "{result:?}");
+    let call = Verifier::Keychain.call(account, hash, signature);
+    assert!(bool_query(&mut f, call, None, "granted delegate").0);
+}
+
+#[test]
+fn verify_keychain_reads_a_migrated_primitive_delegate_once() {
+    let hash = B256::repeat_byte(0x42);
+    let (key, owner) = (signer(6), signer(8));
+    // The same signature of a migrated delegate, granted as its primitive or configurable type.
+    let [primitive, configurable] = [SignatureType::Secp256k1, SignatureType::ConfigurableAccount]
+        .map(|key_type| {
+            let mut f = Fixture::with_spec(false, TempoHardfork::T14);
+            let account = f.account;
+            let result = f.run(&grant_tx(&f, 3, key_type, key.address()));
+            assert!(result.status, "{key_type:?}: {result:?}");
+            seed_eoa(&mut f, key.address(), 0);
+            let config = migrate_key(&mut f, &key, 0, &owner);
+            let digest = KeychainSignature::signing_hash(hash, account);
+            let inner = configurable_account_approval(key.address(), &config, &owner, digest);
+            let signature =
+                TempoSignature::Keychain(KeychainSignature::new(account, inner)).to_bytes();
+            let call = Verifier::Keychain.call(account, hash, signature);
+            let (granted, gas) = bool_query(&mut f, call, None, &format!("{key_type:?}"));
+            assert!(granted, "{key_type:?}");
+            gas
+        });
+    // The primitive grant reuses the delegate's loaded commitment: no second account read.
+    assert_eq!(primitive, configurable);
+    assert_eq!(primitive, 284_530);
+}
+
+#[test]
+fn verify_keychain_rejects_another_accounts_delegate_before_reading_it() {
+    let mut f = Fixture::with_spec(false, TempoHardfork::T14);
+    seed_relayer(&mut f);
+    let account = f.account;
+    let owner = signer(2);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(2),
+        version: 0,
+        threshold: 1,
+        owners: owner_set(vec![owner.address()]),
+    };
+    let delegate = config.derive_account().unwrap();
+    // The delegate's signature of a transaction of the fixture's account.
+    let tx = aa_tx(0, Vec::new());
+    let hash = tx.signature_hash();
+    let signed = delegate_keychain_signed(tx, account, delegate, &config, &owner);
+    let signature = signed.signature().to_bytes();
+    // Checked against another account than it names, the signature is rejected before the
+    // delegate's commitment is read: listing the delegate costs its 2400 intrinsic gas and saves
+    // nothing. The spent gas is compared before the calldata floor, which would hide the read.
+    let other = signer(5).address();
+    let [cold, warm] = [None, Some(delegate)].map(|warm| {
+        let call = Verifier::Keychain.call(other, hash, signature.clone());
+        let result = relayed(&mut f, call, AA_GAS_LIMIT, warm);
+        assert!(result.status, "warm {warm:?}: {result:?}");
+        assert!(!bool::abi_decode(&result.output).unwrap(), "warm {warm:?}");
+        result.total_gas_spent
+    });
+    assert_eq!(cold + 2400, warm);
 }
 
 #[test]
@@ -4405,6 +4510,121 @@ fn native_signature_verification_is_intrinsic_gas() {
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
+    );
+}
+
+/// A fixture whose EVM is a zone's, which reads commitments from Tempo L1.
+fn zone_fixture(configurable: bool) -> Fixture {
+    let mut f = Fixture::with_parent(configurable);
+    f.evm.ext_mut().kind = TempoEvmKind::Zone;
+    f.reconfigure(|version| apply_zone(version, TempoHardfork::T14));
+    f
+}
+
+/// The gas parameters of a zone's EVM at T14.
+fn zone_gas_params() -> GasParams {
+    let mut version = *tempo_execution_config(TempoHardfork::T14, CHAIN_ID).version();
+    apply_zone(&mut version, TempoHardfork::T14);
+    version.gas_params
+}
+
+/// A zone charges the sender's Tempo read with the cold access it skips, and the eligible call
+/// target's read, and never registers, so it charges no write and emits no registration log.
+#[test]
+fn zones_charge_the_sender_read_instead_of_registering() {
+    let calls = vec![Call {
+        to: TxKind::Call(Address::repeat_byte(0x44)),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    }];
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
+    let reads = cold_access + 2 * L1_COMMITMENT_READ_GAS;
+
+    let mut local = Fixture::with_parent(false);
+    let local_primitive = local.run(&local.primitive(3, calls.clone()));
+    let mut f = zone_fixture(false);
+    let primitive = f.run(&f.primitive(3, calls.clone()));
+    assert!(primitive.status, "{primitive:?}");
+    assert_eq!(
+        primitive.tx_gas_used() - local_primitive.tx_gas_used(),
+        reads
+    );
+
+    let mut local = Fixture::new();
+    let registering = local.run(&local.signed(3, calls.clone()));
+    let mut f = zone_fixture(true);
+    let native = f.run(&f.signed(3, calls));
+    assert!(native.status, "{native:?}");
+    assert_eq!(native.logs, []);
+    assert!(f.commitment().is_zero());
+    let registration = gas.get(GasId::NewAccountCost) + 375 + 2 * 375 + 8 * 224;
+    assert_eq!(
+        registering.tx_gas_used() + reads - native.tx_gas_used(),
+        registration
+    );
+}
+
+/// On a zone, the first call target pays its Tempo read in intrinsic gas, whatever its code.
+/// A later call to a new target and access-list entries pay it through the zone's cold access and
+/// access-list costs, whatever the address. A later call to a repeated target pays a warm access.
+#[test]
+fn zone_commitment_reads_are_charged_once_per_read_account() {
+    let contract = Address::repeat_byte(0x55);
+    let (eligible, other) = (Address::repeat_byte(0x44), Address::repeat_byte(0x45));
+    let run = |access_list: Vec<Address>, targets: Vec<Address>| {
+        let mut f = zone_fixture(false);
+        f.update_account(contract, |info| {
+            *info = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0x00])))
+        });
+        let mut tx = aa_tx(
+            3,
+            targets
+                .into_iter()
+                .map(|to| Call {
+                    to: TxKind::Call(to),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                })
+                .collect(),
+        );
+        tx.access_list = AccessList(
+            access_list
+                .into_iter()
+                .map(|address| AccessListItem {
+                    address,
+                    storage_keys: Vec::new(),
+                })
+                .collect(),
+        );
+        let result = f.run(&f.sign_primitive(tx));
+        assert!(result.status, "{result:?}");
+        result.tx_gas_used()
+    };
+    let gas = zone_gas_params();
+    let access_list_entry = gas.get(GasId::TxAccessListAddressCost);
+    let cold_access = gas.get(GasId::WarmStorageReadCost) + gas.cold_account_additional_cost();
+    assert_eq!(
+        access_list_entry,
+        tempo_gas_params(TempoHardfork::T14).get(GasId::TxAccessListAddressCost)
+            + L1_COMMITMENT_READ_GAS
+    );
+
+    let base = run(vec![], vec![contract]);
+    // A contract target pays the read like an eligible one.
+    assert_eq!(run(vec![], vec![eligible]), base);
+    assert_eq!(
+        run(
+            vec![CONFIGURABLE_ACCOUNT_ADDRESS, contract, other],
+            vec![contract]
+        ) - base,
+        3 * access_list_entry
+    );
+    // A second call pays the zone's cold access for a new target, and a warm access for a repeated one.
+    assert_eq!(run(vec![], vec![eligible, other]) - base, cold_access);
+    assert_eq!(
+        run(vec![], vec![eligible, eligible]) - base,
+        gas.get(GasId::WarmStorageReadCost)
     );
 }
 
@@ -5463,17 +5683,19 @@ fn native_sender_signing_its_own_grant_registers_once() {
         let grant = tx.key_authorization.as_mut().unwrap();
         let tx = if invalid_grant {
             // A valid outer signature must not mask an invalid grant quorum.
-            grant.signature = configurable_account_approval(
-                account,
-                &f.config,
-                &signer(3),
-                grant.signature_hash(),
-            )
-            .into();
+            *grant = grant
+                .authorization()
+                .clone()
+                .into_signed(configurable_account_approval(
+                    account,
+                    &f.config,
+                    &signer(3),
+                    grant.signature_hash(),
+                ));
             configurable_account_signed(&f, tx)
         } else {
             // The grant's approval does not authorize the transaction's digest.
-            let approval = grant.signature.as_configurable_account().unwrap().clone();
+            let approval = grant.signature().as_configurable_account().unwrap().clone();
             tx.into_signed(TempoSignature::ConfigurableAccount(approval))
         };
         assert_eq!(
@@ -5572,4 +5794,23 @@ fn native_granted_configurable_account_access_is_charged_once() {
         gas(GrantUser::Delegate, true, false) + gas(GrantUser::AccessKey, false, false),
         gas(GrantUser::AccessKey, true, false) + gas(GrantUser::Delegate, false, false)
     );
+}
+
+/// A granted delegate that is also the block beneficiary pays the same cold access as any other.
+#[test]
+fn granted_configurable_account_access_ignores_beneficiary_warmth() {
+    let delegate = Address::repeat_byte(0xbe);
+    let gas = |beneficiary: Address| {
+        let mut f = Fixture::with_parent(false);
+        f.update_block(|block| block.beneficiary = beneficiary);
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate);
+        let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        let result = f.run(&f.sign_primitive(TempoTransaction {
+            key_authorization: Some(grant.into_signed(PrimitiveSignature::Secp256k1(approval))),
+            ..aa_tx(3, vec![f.getter()])
+        }));
+        assert!(result.status, "{result:?}");
+        result.total_gas_spent
+    };
+    assert_eq!(gas(delegate), gas(Address::repeat_byte(0x77)));
 }

@@ -114,6 +114,14 @@ for name in $serial_names {
     assert equal $template.expiring_nonce false
 }
 assert equal ($serial.templates.zone_deposit_0.expiring_nonce) true
+assert equal ($serial.setup.steps | where id == settlement | first | get deploy.constructor_args) [1]
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "2"} {
+    let lagged = (open (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec zone-earn-serial).spec_path 1000 4 2 1337 --out-dir $serial_dir))
+    assert equal ($lagged.setup.steps | where id == settlement | first | get deploy.constructor_args) [2]
+}
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "0"} {
+    assert ((try { txgen-zone-anchor-offset; false } catch { true }))
+}
 rm -rf $serial_dir
 # Card settlement keeps 18 unsponsored shard senders that forward redemptions.
 let card_dir = (mktemp -d)
@@ -490,6 +498,11 @@ with-env {TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
     let closed_mix = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 2 2 --out-dir $z2z_dir))
     assert equal ($closed_mix.templates.zone_withdraw_0.calls.0.args.2) {var: setup.settlement.sender}
 }
+assert equal ($z2z.setup.steps.0.deploy.constructor_args) [1]
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "2"} {
+    let lagged = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 2 2 --out-dir $z2z_dir))
+    assert equal ($lagged.setup.steps.0.deploy.constructor_args) [2]
+}
 with-env {TXGEN_ZONE_TO_ZONE_ACCESS: gated} {
     assert ((try { txgen-zone-to-zone-config; false } catch { true }))
 }
@@ -509,4 +522,17 @@ with-env {TXGEN_TEST_BASE: "/x"} {
     assert equal (txgen-bench-env-txgen-vars "") {}
     assert equal (txgen-bench-env-txgen-vars "TXGEN_NEOBANK_MODULES='spend,cashout' BENCH_TPS_SCHEDULE=200:30s TXGEN_ZONE_COUNT=\"8\" TXGEN_NEOBANK_INSTANCES=$TXGEN_TEST_BASE/i.yml") {TXGEN_NEOBANK_MODULES: "spend,cashout", TXGEN_ZONE_COUNT: "8", TXGEN_NEOBANK_INSTANCES: "/x/i.yml"}
 }
+# Inline deployment shapes (gzip, then base64) decode to a file neobank-multi reads like any shapes file.
+let shapes_file = ($multi_spec.spec_path | path dirname | path join shapes examples.yml)
+let inline_dir = (mktemp -d)
+assert equal (txgen-neobank-inline-shapes $inline_dir) null
+with-env {TXGEN_NEOBANK_SHAPES_GZ_B64: (open --raw $shapes_file | ^gzip -c | encode base64)} {
+    let inline = (txgen-neobank-inline-shapes $inline_dir)
+    assert equal (open $inline) (open $shapes_file)
+    assert equal (txgen-neobank-instances $inline | get name) (txgen-neobank-instances $shapes_file | get name)
+}
+with-env {TXGEN_NEOBANK_SHAPES_GZ_B64: "bm90IGd6aXA="} {
+    assert (try { txgen-neobank-inline-shapes $inline_dir; false } catch { true })
+}
+rm -rf $inline_dir
 print "Preset, policy setup, state-bloat, and workload metadata checks passed"

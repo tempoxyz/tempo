@@ -8,6 +8,7 @@ use eyre::{OptionExt as _, WrapErr as _};
 use futures::stream;
 use std::{collections::HashSet, ops::RangeInclusive};
 use tempo_contracts::precompiles::{
+    CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount,
     ITIP20::{PauseStateUpdate, TransferPolicyUpdate},
     TIP403_REGISTRY_ADDRESS,
 };
@@ -569,6 +570,19 @@ fn cache_invalidation_address(address: Address, topic0: Option<&B256>) -> Option
     .then_some(TIP403_REGISTRY_ADDRESS)
 }
 
+/// Returns the account whose cached TIP-1108 commitment a configurable-account precompile log
+/// changes: initial registrations and owner updates (both `ConfigurableAccountConfigUpdated`) and
+/// migrations.
+fn config_commitment_invalidation_account(log: &alloy_rpc_types_eth::Log) -> Option<Address> {
+    let [topic0, account, ..] = log.topics() else {
+        return None;
+    };
+    (log.address() == CONFIGURABLE_ACCOUNT_ADDRESS
+        && (*topic0 == IConfigurableAccount::ConfigurableAccountConfigUpdated::SIGNATURE_HASH
+            || *topic0 == IConfigurableAccount::AccountUpgraded::SIGNATURE_HASH))
+        .then(|| Address::from_word(*account))
+}
+
 /// Returns whether `address` is a TIP-20 token whose L1 pause flag changed in this log.
 ///
 /// Zone execution reads the token's `paused` slot from L1, and the forward cache carries it to later
@@ -1068,12 +1082,22 @@ where
                         .inspect_err(|_| {
                             fetch_failures.increment(1);
                         })?;
-                    let block_hash = header_resp.hash();
+                    // Use the recomputed hash, not the one reported by the RPC.
+                    let sealed = SealedHeader::seal_slow(header_resp.inner.inner);
+                    if sealed.number() != block_number {
+                        fetch_failures.increment(1);
+                        return Err(eyre::eyre!(
+                            "L1 header number mismatch: requested {block_number}, got {}",
+                            sealed.number()
+                        )
+                        .into());
+                    }
+                    let block = NumHash::new(block_number, sealed.hash());
                     let receipts = fetch_and_verify_receipts_for_header(
                         provider,
-                        NumHash::new(block_number, block_hash),
-                        header_resp.receipts_root(),
-                        header_resp.logs_bloom(),
+                        block,
+                        sealed.receipts_root(),
+                        sealed.logs_bloom(),
                     )
                     .await
                     .inspect_err(|_| {
@@ -1081,7 +1105,7 @@ where
                     })?;
                     // Abort before enqueueing work or advancing caches if a portal log fails to decode.
                     let processed_events = self
-                        .extract_events(NumHash::new(block_number, block_hash), &receipts)
+                        .extract_events(block, &receipts)
                         .inspect_err(|_| {
                             subscriber_metrics.decode_fence_failures.increment(1);
                         })
@@ -1092,12 +1116,11 @@ where
                     let elapsed = start.elapsed();
                     debug!(
                         block_number,
-                        %block_hash,
+                        block_hash = %block.hash,
                         elapsed_ms = elapsed.as_millis() as u64,
                         receipts = receipts.len(),
                         "Fetched, validated, and decoded L1 block data"
                     );
-                    let sealed = SealedHeader::seal_slow(header_resp.inner.inner);
                     Ok::<_, L1SubscriberError>((sealed, processed_events))
                 }
             })
@@ -1228,6 +1251,8 @@ where
                     invalidated.extend([address, log.address()]);
                 } else if is_tip20_pause_update(address, log.topic0()) {
                     invalidated.insert(address);
+                } else if let Some(account) = config_commitment_invalidation_account(log) {
+                    invalidated.insert(account);
                 }
             }
         }
@@ -1368,7 +1393,8 @@ pub fn verify_receipts_against_header(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_primitives::{IntoLogData, address};
+    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountEvent};
 
     #[test]
     fn token_policy_updates_invalidate_the_registry() {
@@ -1392,6 +1418,47 @@ mod tests {
             Some(&TransferPolicyUpdate::SIGNATURE_HASH)
         ));
         assert!(!is_tip20_pause_update(Address::repeat_byte(0x11), pause));
+    }
+
+    #[test]
+    fn configurable_account_logs_invalidate_their_account() {
+        let account = Address::repeat_byte(0x11);
+        let rpc_log = |address, event: ConfigurableAccountEvent| alloy_rpc_types_eth::Log {
+            inner: alloy_primitives::Log {
+                address,
+                data: event.into_log_data(),
+            },
+            ..Default::default()
+        };
+        let events = [
+            ConfigurableAccountEvent::configurable_account_config_updated(
+                account,
+                B256::ZERO,
+                1,
+                1,
+                vec![],
+            ),
+            ConfigurableAccountEvent::account_upgraded(
+                account,
+                B256::repeat_byte(1),
+                B256::ZERO,
+                1,
+                vec![],
+            ),
+        ];
+        for event in events {
+            assert_eq!(
+                config_commitment_invalidation_account(&rpc_log(
+                    CONFIGURABLE_ACCOUNT_ADDRESS,
+                    event.clone()
+                )),
+                Some(account)
+            );
+            assert_eq!(
+                config_commitment_invalidation_account(&rpc_log(Address::ZERO, event)),
+                None
+            );
+        }
     }
 
     #[test]

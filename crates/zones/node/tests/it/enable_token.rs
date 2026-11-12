@@ -146,7 +146,7 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
         DEFAULT_TIMEOUT,
     )
     .await?;
-    fixture.seed_no_receive_policy(recipient)?;
+    fixture.seed_transfer_recipient(recipient)?;
 
     let token = ITIP20::new(token_address, &provider);
     assert_eq!(

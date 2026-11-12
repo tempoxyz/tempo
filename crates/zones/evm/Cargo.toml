@@ -1,7 +1,7 @@
 [package]
 name = "zone-evm"
 description = "Tempo Zone EVM configuration and block execution"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -32,6 +32,7 @@ reth-evm.workspace = true
 reth-evm-ethereum.workspace = true
 reth-execution-types.workspace = true
 reth-primitives-traits.workspace = true
+reth-trie-common.workspace = true
 
 # alloy
 alloy-consensus.workspace = true
@@ -49,6 +50,8 @@ tokio.workspace = true
 alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-rlp.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 eyre.workspace = true
 serde_json = { workspace = true, default-features = true }
 zone-precompiles = { workspace = true, features = ["std", "test-utils"] }

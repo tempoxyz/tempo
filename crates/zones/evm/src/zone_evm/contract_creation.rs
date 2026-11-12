@@ -5,7 +5,9 @@ use evm2::{
     EvmConfig, ExecutionConfig, OpcodeConfig, SpecId, Version,
     interpreter::{
         InstrStop, InterpreterState, Pc, Result, StackMut,
-        instructions::create as CreateInstruction, op, private::Instruction,
+        instructions::create as CreateInstruction,
+        op,
+        private::{Instruction, InstructionFlags},
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -44,7 +46,7 @@ const fn zone_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<TempoEvmT
 struct ZoneCreate<const IS_CREATE2: bool>;
 
 impl<const IS_CREATE2: bool> Instruction<TempoEvmTypes> for ZoneCreate<IS_CREATE2> {
-    const DYNAMIC_GAS: bool = true;
+    const FLAGS: InstructionFlags = CreateInstruction::<TempoEvmTypes, IS_CREATE2>::FLAGS;
 
     fn execute(
         pc: &mut Pc,
@@ -94,7 +96,7 @@ mod tests {
 
     struct TestCreate<const IS_CREATE2: bool>;
     impl<const IS_CREATE2: bool> Instruction<TempoEvmTypes> for TestCreate<IS_CREATE2> {
-        const DYNAMIC_GAS: bool = true;
+        const FLAGS: InstructionFlags = CreateInstruction::<TempoEvmTypes, IS_CREATE2>::FLAGS;
         fn execute(
             pc: &mut Pc,
             stack: StackMut<'_>,
@@ -228,8 +230,8 @@ mod tests {
             }
             .into_signed(Signature::test_signature()),
         );
-        assert!(validate_transaction(tx.inner(), &[], TempoHardfork::T7).is_err());
-        assert!(validate_transaction(tx.inner(), &[caller], TempoHardfork::T7).is_ok());
+        assert!(validate_transaction(tx.inner(), &[]).is_err());
+        assert!(validate_transaction(tx.inner(), &[caller]).is_ok());
     }
 
     #[test]
@@ -304,18 +306,15 @@ mod tests {
             Address::repeat_byte(0x11),
             TxKind::Call(Address::repeat_byte(0x22)),
         );
-        assert!(
-            validate_transaction(tx.inner(), CONTRACT_DEPLOYER_ALLOWLIST, TempoHardfork::T7)
-                .is_ok()
-        );
+        assert!(validate_transaction(tx.inner(), CONTRACT_DEPLOYER_ALLOWLIST).is_ok());
     }
 
     #[test]
     fn aa_create_respects_allowlist() {
         let caller = Address::repeat_byte(0x11);
         let tx = aa_tx(caller, TxKind::Create);
-        assert!(validate_transaction(tx.inner(), &[], TempoHardfork::T7).is_err());
-        assert!(validate_transaction(tx.inner(), &[caller], TempoHardfork::T7).is_ok());
+        assert!(validate_transaction(tx.inner(), &[]).is_err());
+        assert!(validate_transaction(tx.inner(), &[caller]).is_ok());
     }
 
     fn aa_tx(caller: Address, to: TxKind) -> Recovered<TempoTxEnv> {

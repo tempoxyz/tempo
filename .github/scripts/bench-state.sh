@@ -2,7 +2,8 @@
 # Restore the last successful benchmark commit from an Actions artifact.
 # Usage: bench-state.sh owner/repo replay|e2e|zones state-key
 # Requires GH_TOKEN with actions:read. State is scoped to GITHUB_REF_NAME (main
-# outside Actions). Missing/expired state bootstraps; API/corruption errors fail.
+# outside Actions). Missing, expired, or old state bootstraps; API/corruption
+# errors fail.
 set -euo pipefail
 
 repo=${1:?expected owner/repo}
@@ -21,12 +22,19 @@ esac
 name="bench-state-$series-$key"
 workflow=".github/workflows/bench-$series-scheduled.yml"
 branch=${GITHUB_REF_NAME:-main}
+# Passing runs save state, and runs that don't benchmark because the ref is
+# unchanged (skipped, or a stale replay nightly) re-save it. Old state therefore
+# means every benchmark since has failed, e.g. a baseline too old to run current
+# blocks or workloads. Old state bootstraps instead.
+max_age_days=${BENCH_STATE_MAX_AGE_DAYS:-3}
 
 # Filter before downloading: dispatches on test branches must not change main's
 # baseline. Pagination matters when hourly state accumulates over its retention.
 artifacts=$(gh api --paginate --slurp "repos/$repo/actions/artifacts?name=$name&per_page=100")
-candidates=$(jq -r --arg name "$name" --arg branch "$branch" '
-  [.[].artifacts[] | select(.name == $name and .expired == false
+candidates=$(jq -r --arg name "$name" --arg branch "$branch" --argjson max_age_days "$max_age_days" '
+  (now - $max_age_days * 86400 | todate) as $cutoff
+  | [.[].artifacts[] | select(.name == $name and .expired == false
+    and .created_at >= $cutoff
     and .workflow_run.head_branch == $branch
     and .workflow_run.head_repository_id == .workflow_run.repository_id)]
   | sort_by(.id) | reverse | .[] | [.id, .workflow_run.id] | @tsv

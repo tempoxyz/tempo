@@ -47,7 +47,7 @@ fn test_resolve_fee_context_warms_balance_without_fee_collection() {
 }
 
 #[test]
-fn test_resolve_fee_context_validates_max_fee_when_collection_is_disabled() {
+fn test_resolve_fee_context_skips_max_fee_balance_check_when_collection_is_disabled() {
     let fee_payer = Address::random();
     let gas_limit = 100_000;
     let gas_price = 1_000_000_000_000_u128;
@@ -73,19 +73,8 @@ fn test_resolve_fee_context_validates_max_fee_when_collection_is_disabled() {
     let tx = fee_tx_env(fee_payer, PATH_USD_ADDRESS, gas_limit, gas_price);
     let result = TempoHandlerHooks::resolve_fee_context(&mut evm, &tx);
 
-    assert!(
-        matches!(
-            result,
-            Err(ref error)
-                if matches!(
-                    error.external_ref::<TempoInvalidTransaction>(),
-                    Some(TempoInvalidTransaction::CollectFeePreTx(
-                        FeePaymentError::InsufficientFeeTokenBalance { fee, balance },
-                    )) if *fee == max_fee && *balance == max_fee - U256::ONE
-                )
-        ),
-        "disabled fee collection must still validate max-fee balance, got: {result:?}"
-    );
+    let context = result.expect("disabled fee collection must not check the max-fee balance");
+    assert_eq!(context.collected, U256::ZERO);
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use super::{
+    configurable_account::ConfigurableAccountSignature,
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
     unique_tx_identifier_from_signable,
@@ -111,6 +112,29 @@ impl AASigned {
             .get_or_init(|| self.tx.signature_hash().into())
     }
 
+    /// Whether configurable account approvals sign this transaction: the outer signature, directly
+    /// or inside a keychain envelope, or the inline key authorization.
+    pub fn has_configurable_approvals(&self) -> bool {
+        self.configurable_account_signatures().next().is_some()
+    }
+
+    /// Returns the configurable account signatures approving this transaction: the outer
+    /// signature, directly or inside a keychain envelope, then the inline key authorization's.
+    pub fn configurable_account_signatures(
+        &self,
+    ) -> impl Iterator<Item = &ConfigurableAccountSignature> {
+        let outer = match &self.signature {
+            TempoSignature::Keychain(keychain) => keychain.signature.as_configurable_account(),
+            signature => signature.as_configurable_account(),
+        };
+        let grant = self
+            .tx
+            .key_authorization
+            .as_ref()
+            .and_then(|auth| auth.signature().as_configurable_account());
+        outer.into_iter().chain(grant)
+    }
+
     /// Recovers the sender and verifies any configurable account owner quorum signing an inline key
     /// authorization, so execution only checks commitments against state.
     fn recover_sender(
@@ -119,7 +143,7 @@ impl AASigned {
     ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         let signer = self.signature.recover_signer(sig_hash)?;
         if let Some(auth) = &self.tx.key_authorization
-            && let Some(signature) = auth.signature.as_configurable_account()
+            && let Some(signature) = auth.signature().as_configurable_account()
         {
             signature
                 .verify_approvals(auth.signature_hash())

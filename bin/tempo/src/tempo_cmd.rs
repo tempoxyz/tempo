@@ -48,7 +48,7 @@ use tempo_validator_config::ValidatorConfig;
 
 #[cfg(feature = "corpus")]
 use crate::corpus;
-use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
+use crate::{init_state, p2p_proxy::P2pProxyArgs, payload_bench, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -86,6 +86,9 @@ pub enum TempoSubcommand {
 
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
+
+    /// Benchmark the payload builder alone on an existing database and a real transaction pool.
+    PayloadBench(Box<payload_bench::PayloadBench>),
 
     /// Historical execution corpus: capture an archive range once, replay it without a DB.
     #[cfg(feature = "corpus")]
@@ -147,6 +150,11 @@ impl ExtendedCommand for TempoSubcommand {
                 Ok(())
             }
             Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
+            Self::PayloadBench(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
@@ -472,7 +480,7 @@ pub struct ValidatorTransactionArgs {
     wallet: WalletArgs,
 
     /// The RPC URL to submit the transaction to.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Skip the interactive confirmation prompt.
@@ -699,7 +707,7 @@ pub struct CreateAddValidatorSignatureArgs {
     #[arg(
         long,
         value_name = "RPC_URL",
-        default_value = "https://rpc.presto.tempo.xyz"
+        default_value = "https://rpc.mainnet.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
     #[command(flatten)]
@@ -740,7 +748,7 @@ pub struct CreateRotateValidatorSignatureArgs {
     #[arg(
         long,
         value_name = "RPC_URL",
-        default_value = "https://rpc.presto.tempo.xyz"
+        default_value = "https://rpc.mainnet.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
     #[command(flatten)]
@@ -1225,7 +1233,7 @@ pub struct ValidatorInfo {
     id: ValidatorId,
 
     /// RPC URL to query.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
@@ -2231,7 +2239,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(requested_url.as_deref(), Some("wss://rpc.presto.tempo.xyz"));
+        assert_eq!(
+            requested_url.as_deref(),
+            Some("wss://rpc.mainnet.tempo.xyz")
+        );
         assert_eq!(err.to_string(), "failed to get latest block number");
         assert!(asserter.read_q().is_empty());
     }

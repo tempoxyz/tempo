@@ -158,7 +158,7 @@ pub fn configurable_account(cx: _) -> Result {
         return Err(InstrStop::OpcodeNotFound);
     }
     let account = cx.state.message().destination;
-    let input = cx.state.message().input.clone();
+    let input = cx.state.input().to_vec();
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
     let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, &input)) {
