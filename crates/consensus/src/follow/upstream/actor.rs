@@ -1,6 +1,9 @@
 use std::{
     future::Future,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll, Waker},
     time::Duration,
 };
@@ -343,7 +346,7 @@ impl WebSocketConnector {
 }
 
 impl Connector for WebSocketConnector {
-    type Client = RootProvider<TempoNetwork>;
+    type Client = WsClient;
 
     fn connect(&self, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<Self::Client>)> {
         let url = self.url.clone();
@@ -359,7 +362,10 @@ impl Connector for WebSocketConnector {
                 .await
                 .map_err(|_| eyre::eyre!("timed out connecting to upstream node"))
                 .and_then(|client| client.map_err(Report::new))
-                .map(RootProvider::new);
+                .map(|client| WsClient {
+                    provider: RootProvider::new(client),
+                    stream_dropped: Arc::new(AtomicBool::new(false)),
+                });
             (attempts, client)
         }
         .boxed()
@@ -370,18 +376,36 @@ impl Connector for WebSocketConnector {
     }
 }
 
-impl UpstreamClient for RootProvider<TempoNetwork> {
+/// The websocket connection to the upstream node.
+#[derive(Clone, Debug)]
+pub(crate) struct WsClient {
+    provider: RootProvider<TempoNetwork>,
+    /// Set once an event stream of this connection is dropped.
+    ///
+    /// alloy cannot send `consensus_unsubscribe`, so the upstream only releases a subscription
+    /// when its connection closes. Reporting the connection as lost once its stream is dropped
+    /// makes the actor reconnect instead of resubscribing next to the old subscription.
+    stream_dropped: Arc<AtomicBool>,
+}
+
+impl UpstreamClient for WsClient {
     fn is_connected(&self) -> bool {
+        if self.stream_dropped.load(Ordering::Acquire) {
+            return false;
+        }
         // alloy has no connection getter; its pubsub frontend stops being ready once the
         // websocket service has shut down.
-        self.client().pubsub_frontend().is_some_and(|frontend| {
-            matches!(
-                frontend
-                    .clone()
-                    .poll_ready(&mut Context::from_waker(Waker::noop())),
-                Poll::Ready(Ok(()))
-            )
-        })
+        self.provider
+            .client()
+            .pubsub_frontend()
+            .is_some_and(|frontend| {
+                matches!(
+                    frontend
+                        .clone()
+                        .poll_ready(&mut Context::from_waker(Waker::noop())),
+                    Poll::Ready(Ok(()))
+                )
+            })
     }
 
     fn subscribe_events(&self) -> BoxFuture<'static, eyre::Result<EventStream>> {
@@ -389,13 +413,17 @@ impl UpstreamClient for RootProvider<TempoNetwork> {
         async move {
             let subscription = tokio::time::timeout(
                 SUBSCRIBE_TIMEOUT,
-                TempoConsensusApiClient::subscribe_events(&client).into_future(),
+                TempoConsensusApiClient::subscribe_events(&client.provider).into_future(),
             )
             .await
             .map_err(|_| eyre::eyre!("timed out subscribing to consensus events"))??;
+            let on_drop = SetOnDrop(client.stream_dropped);
             Ok(subscription
                 .into_result_stream()
-                .map(|event| event.map_err(Report::new))
+                .map(move |event| {
+                    let _ = &on_drop;
+                    event.map_err(Report::new)
+                })
                 .boxed())
         }
         .boxed()
@@ -405,13 +433,22 @@ impl UpstreamClient for RootProvider<TempoNetwork> {
         &self,
         height: Height,
     ) -> BoxFuture<'static, eyre::Result<Option<CertifiedBlock>>> {
-        let client = self.clone();
+        let client = self.provider.clone();
         async move { get_finalization(client, height).await }.boxed()
     }
 
     fn get_block(&self, digest: Digest) -> BoxFuture<'static, eyre::Result<Option<Block>>> {
-        let client = self.clone();
+        let client = self.provider.clone();
         async move { get_block(client, digest).await }.boxed()
+    }
+}
+
+/// Sets the flag when dropped.
+struct SetOnDrop(Arc<AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -569,6 +606,54 @@ mod tests {
             .await
             .expect("event stream must end once the server closes the subscription");
         assert!(next.is_none(), "expected the stream to end, got {next:?}");
+    }
+
+    #[tokio::test]
+    async fn dropped_event_stream_reports_disconnect() {
+        let mut module = jsonrpsee::RpcModule::new(());
+        module
+            .register_subscription(
+                "consensus_subscribe",
+                "consensus_event",
+                "consensus_unsubscribe",
+                |_, pending, _| async move {
+                    let sink = pending.accept().await?;
+                    let undecodable = jsonrpsee::SubscriptionMessage::new(
+                        sink.method_name(),
+                        sink.subscription_id().clone(),
+                        &"not an event",
+                    )
+                    .unwrap();
+                    sink.send(undecodable).await?;
+                    sink.closed().await;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let server = jsonrpsee::server::Server::builder()
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let _handle = server.start(module);
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = connector.connect(0).await;
+        let client = client.unwrap();
+        let mut events = UpstreamClient::subscribe_events(&client).await.unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(10), events.next())
+            .await
+            .expect("the undecodable event must arrive");
+        assert!(
+            matches!(next, Some(Err(_))),
+            "expected a decode error, got {next:?}"
+        );
+        assert!(client.is_connected());
+
+        // The actor drops the stream to retry. The client must then report the connection as
+        // lost, so the actor reconnects rather than resubscribing next to the old subscription.
+        drop(events);
+        assert!(!client.is_connected());
     }
 
     #[tokio::test]
