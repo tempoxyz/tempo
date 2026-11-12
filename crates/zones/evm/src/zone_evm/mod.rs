@@ -150,7 +150,12 @@ pub(crate) mod tests {
     use tempo_evm::{
         ResolvedFeeToken, TempoEvmEnv, TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv,
     };
-    use tempo_precompiles::{TIP403_REGISTRY_ADDRESS, storage::StorageCtx};
+    use tempo_precompiles::{
+        DEFAULT_FEE_TOKEN, TIP403_REGISTRY_ADDRESS,
+        storage::{StorageCtx, StorageKey},
+        tip20::slots::{BALANCES, TRANSFER_POLICY_ID, TRANSFER_POLICY_ID_OFFSET},
+        tip403_registry::ALLOW_ALL_POLICY_ID,
+    };
     use tempo_primitives::{
         TempoEvmKind, TempoTxEnvelope,
         transaction::{
@@ -438,13 +443,6 @@ pub(crate) mod tests {
 
     #[test]
     fn l1_read_gas_is_independent_of_discarded_attempt() {
-        use tempo_precompiles::{
-            DEFAULT_FEE_TOKEN,
-            storage::StorageKey,
-            tip20::slots::{BALANCES, TRANSFER_POLICY_ID, TRANSFER_POLICY_ID_OFFSET},
-            tip403_registry::ALLOW_ALL_POLICY_ID,
-        };
-
         let sender = Address::repeat_byte(0x01);
         let tx = transaction(
             sender,
@@ -467,13 +465,13 @@ pub(crate) mod tests {
         // Gas of a discarded attempt, its retry and a fresh replay. Configurable accounts select
         // the anchor from T14. Fee collection reads the TIP-403 binding (unmetered) at every fork,
         // so T13 keeps its cache-dependent gas: fixing it would change historical blocks.
-        for (fees, spec, expected) in [
-            (false, TempoHardfork::T13, [27_394; 3]),
-            (false, TempoHardfork::T14, [39_994; 3]),
-            (false, TempoHardfork::T15, [39_994; 3]),
-            (true, TempoHardfork::T13, [25_294, 27_394, 25_294]),
-            (true, TempoHardfork::T14, [39_994; 3]),
-            (true, TempoHardfork::T15, [39_994; 3]),
+        for (hardfork, is_fee, expected) in [
+            (TempoHardfork::T13, false, [27_394; 3]),
+            (TempoHardfork::T13, true, [25_294, 27_394, 25_294]),
+            (TempoHardfork::T14, false, [39_994; 3]),
+            (TempoHardfork::T14, true, [39_994; 3]),
+            (TempoHardfork::T15, false, [39_994; 3]),
+            (TempoHardfork::T15, true, [39_994; 3]),
         ] {
             let l1 = MockL1Reader::default();
             l1.seed_active_sequencer(Address::ZERO, 0, sender);
@@ -491,11 +489,11 @@ pub(crate) mod tests {
                     &sender.mapping_slot(BALANCES),
                     &U256::from(u64::MAX),
                 );
-                let mut env = fee_free_env(spec);
+                let mut env = fee_free_env(hardfork);
                 env.version
                     .features
                     .remove(evm2::EvmFeatures::BALANCE_CHECK);
-                if fees {
+                if is_fee {
                     env.version.features.insert(evm2::EvmFeatures::FEE_CHARGE);
                 }
                 BlockExecutorFactory::evm_with_env(&config(l1.clone()), db, env)
@@ -511,12 +509,12 @@ pub(crate) mod tests {
             ];
             assert!(
                 results.iter().all(|result| result.status),
-                "{spec:?}: {results:?}"
+                "{hardfork:?}: {results:?}"
             );
             assert_eq!(
                 results.map(|result| result.tx_gas_used()),
                 expected,
-                "{fees} {spec:?}"
+                "{hardfork:?} is_fee={is_fee}"
             );
         }
     }
