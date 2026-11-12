@@ -1383,7 +1383,7 @@ mod tests {
 
     struct StubDebugApi(ZoneExecutionWitness);
 
-    #[jsonrpsee::core::async_trait]
+    #[async_trait::async_trait]
     impl ZoneDebugApi for StubDebugApi {
         async fn zone_execution_witness(
             &self,
