@@ -1,13 +1,13 @@
 // Tempo transaction pool that implements Reth's TransactionPool trait
-// Routes protocol nonces (nonce_key=0) to Reth pool
-// Routes user nonces (nonce_key>0) to minimal 2D nonce pool
+// Routes non-AA transactions to Reth pool
+// Routes AA transactions, whatever their nonce key, to the 2D nonce pool
 
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool,
+    tt_2d_pool::{AA2dPool, AASequenceId},
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
 use alloy_consensus::Transaction;
@@ -55,15 +55,16 @@ pub trait TempoTransactionPoolExt: TransactionPool {
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
 }
 
-/// Tempo transaction pool that routes based on nonce_key
+/// Tempo transaction pool that routes based on transaction type
 pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
-    /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
+    /// Vanilla pool for all non-AA transactions.
     protocol_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client, EvmConfig>>,
         TempoTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
-    /// Minimal pool for 2D nonces (nonce_key > 0)
+    /// Pool for all AA transactions: protocol nonces (nonce_key = 0), 2D nonces and expiring
+    /// nonces.
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
@@ -139,6 +140,17 @@ where
             .inner()
             .notify_on_transaction_updates(promoted, discarded);
         mined
+    }
+
+    /// Reports transactions removed from the 2D nonce pool as discarded, as the protocol pool
+    /// does for the ones removed from it.
+    fn notify_aa_pool_discarded(
+        &self,
+        discarded: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>],
+    ) {
+        self.protocol_pool
+            .inner()
+            .notify_on_transaction_updates(Vec::new(), discarded.to_vec());
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.
@@ -562,11 +574,11 @@ where
         self.remove_transactions(to_remove)
     }
 
-    /// Adds a validated transaction to the subpool derived from its type and nonce key.
+    /// Adds a validated transaction to the subpool derived from its type.
     ///
-    /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
-    /// nonce keys, including expiring nonces, to the 2D nonce pool. Everything else
-    /// stays in the protocol pool.
+    /// AA transactions go to the 2D nonce pool whatever their nonce key, so the ones on the
+    /// protocol nonce (nonce key 0) are tracked there as one more lane. Everything else stays
+    /// in the protocol pool.
     fn add_validated_transaction(
         &self,
         origin: TransactionOrigin,
@@ -581,7 +593,7 @@ where
                 propagate,
                 authorities,
             } => {
-                if transaction.transaction().is_aa_2d() {
+                if transaction.transaction().is_aa() {
                     let transaction = transaction.into_transaction();
                     let sender_id = self
                         .protocol_pool
@@ -825,8 +837,8 @@ where
             return Vec::new();
         }
 
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
+        // Fully delegate to protocol pool for non-AA transactions
+        if !transactions.iter().any(|(_, tx)| tx.is_aa()) {
             return self
                 .protocol_pool
                 .add_transactions_with_origins(transactions)
@@ -849,7 +861,18 @@ where
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
-        self.protocol_pool.transaction_event_listener(tx_hash)
+        self.protocol_pool
+            .transaction_event_listener(tx_hash)
+            .or_else(|| {
+                // Subscribing under the lock orders it before a removal, whose discard is
+                // reported once the lock is released.
+                let aa_2d_pool = self.aa_2d_pool.read();
+                aa_2d_pool.contains(&tx_hash).then(|| {
+                    self.protocol_pool
+                        .inner()
+                        .subscribe_transaction_events(tx_hash)
+                })
+            })
     }
 
     fn all_transactions_event_listener(
@@ -1073,6 +1096,7 @@ where
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        self.notify_aa_pool_discarded(&txs);
         txs.extend(self.protocol_pool.remove_transactions(hashes));
         txs
     }
@@ -1085,6 +1109,7 @@ where
             .aa_2d_pool
             .write()
             .remove_transactions_and_descendants(hashes.iter());
+        self.notify_aa_pool_discarded(&txs);
         txs.extend(
             self.protocol_pool
                 .remove_transactions_and_descendants(hashes),
@@ -1100,6 +1125,7 @@ where
             .aa_2d_pool
             .write()
             .remove_transactions_by_sender(sender);
+        self.notify_aa_pool_discarded(&txs);
         txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
         txs
     }
@@ -1218,8 +1244,18 @@ where
         sender: Address,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         // With 2D nonces, there's no concept of a single "highest" nonce across all nonce_keys
-        // Return the highest protocol nonce (nonce_key=0) only
-        self.protocol_pool.get_highest_transaction_by_sender(sender)
+        // Return the highest protocol nonce (nonce_key=0) only, which both pools can hold
+        let aa_2d_tx = self
+            .aa_2d_pool
+            .read()
+            .lane_transactions_from(AASequenceId::new(sender, U256::ZERO), 0)
+            .next_back()
+            .cloned();
+        self.protocol_pool
+            .get_highest_transaction_by_sender(sender)
+            .into_iter()
+            .chain(aa_2d_tx)
+            .max_by_key(|tx| tx.nonce())
     }
 
     fn get_highest_consecutive_transaction_by_sender(
@@ -1227,9 +1263,33 @@ where
         sender: Address,
         on_chain_nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // This is complex with 2D nonces - delegate to protocol pool
-        self.protocol_pool
-            .get_highest_consecutive_transaction_by_sender(sender, on_chain_nonce)
+        // Only the protocol nonce (nonce_key=0) is followed. Its sequence can alternate between
+        // the pools, so each one continues from where the other one stopped.
+        let seq_id = AASequenceId::new(sender, U256::ZERO);
+        let mut highest = None;
+        let mut next_nonce = on_chain_nonce;
+        loop {
+            let tx = self
+                .protocol_pool
+                .get_highest_consecutive_transaction_by_sender(sender, next_nonce)
+                .or_else(|| {
+                    self.aa_2d_pool
+                        .read()
+                        .lane_transactions_from(seq_id, next_nonce)
+                        .zip(next_nonce..)
+                        .take_while(|(tx, nonce)| tx.nonce() == *nonce)
+                        .last()
+                        .map(|(tx, _)| tx.clone())
+                });
+            let Some(tx) = tx else {
+                return highest;
+            };
+            let Some(nonce) = tx.nonce().checked_add(1) else {
+                return Some(tx);
+            };
+            next_nonce = nonce;
+            highest = Some(tx);
+        }
     }
 
     fn get_transaction_by_sender_and_nonce(
@@ -1237,9 +1297,17 @@ where
         sender: Address,
         nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // Only returns transactions from protocol pool (nonce_key=0)
+        // Only returns transactions on the protocol nonce (nonce_key=0)
         self.protocol_pool
             .get_transaction_by_sender_and_nonce(sender, nonce)
+            .or_else(|| {
+                self.aa_2d_pool
+                    .read()
+                    .lane_transactions_from(AASequenceId::new(sender, U256::ZERO), nonce)
+                    .next()
+                    .filter(|tx| tx.nonce() == nonce)
+                    .cloned()
+            })
     }
 
     fn get_transactions_by_origin(
@@ -1567,7 +1635,7 @@ mod tests {
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
         AllTransactionsEvents, FullTransactionEvent, PoolConfig, PoolUpdateKind, SubPoolLimit,
-        TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+        TransactionEvent, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
@@ -2047,6 +2115,63 @@ mod tests {
             .collect();
         assert_eq!(hashes, vec![hash]);
         assert_eq!(pool.pool_size().total, 3);
+    }
+
+    #[test]
+    fn protocol_nonce_transactions_are_found_in_both_pools() {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        // The sender's protocol nonce sequence alternates between the pools and has a gap at 4.
+        let [aa0, aa1, aa3, aa5] =
+            [0, 1, 3, 5].map(|nonce| TxBuilder::aa(sender).nonce(nonce).build());
+        let eip1559 = TxBuilder::aa(sender).nonce(2).build_eip1559();
+        let by_nonce = [
+            Some(*aa0.hash()),
+            Some(*aa1.hash()),
+            Some(*eip1559.hash()),
+            Some(*aa3.hash()),
+            None,
+            Some(*aa5.hash()),
+        ];
+        for tx in [aa0, aa1, aa3, aa5, eip1559] {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: U256::MAX,
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(tx, None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .unwrap();
+        }
+
+        for (nonce, hash) in (0..).zip(by_nonce) {
+            let is_aa = nonce != 2;
+            assert_eq!(
+                pool.get_transaction_by_sender_and_nonce(sender, nonce)
+                    .map(|tx| *tx.hash()),
+                hash,
+                "nonce {nonce}"
+            );
+            if let Some(hash) = hash {
+                assert_eq!(pool.aa_2d_pool.read().contains(&hash), is_aa);
+                assert_eq!(pool.protocol_pool.contains(&hash), !is_aa);
+            }
+        }
+        assert_eq!(
+            pool.get_highest_transaction_by_sender(sender)
+                .map(|tx| tx.nonce()),
+            Some(5)
+        );
+        for (on_chain_nonce, highest) in [(0, Some(3)), (2, Some(3)), (4, None), (5, Some(5))] {
+            assert_eq!(
+                pool.get_highest_consecutive_transaction_by_sender(sender, on_chain_nonce)
+                    .map(|tx| tx.nonce()),
+                highest,
+                "on-chain nonce {on_chain_nonce}"
+            );
+        }
     }
 
     #[test]
@@ -3391,6 +3516,36 @@ mod tests {
             10,
             TempoHardfork::T3,
         ));
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    fn aa_removals_report_discarded_to_transaction_listener(nonce_key: U256) {
+        type TestPool = TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>;
+        type Removed = Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>;
+        let removals: [fn(&TestPool, Address, TxHash) -> Removed; 3] = [
+            |pool, _, hash| pool.remove_transactions(vec![hash]),
+            |pool, _, hash| pool.remove_transactions_and_descendants(vec![hash]),
+            |pool, sender, _| pool.remove_transactions_by_sender(sender),
+        ];
+        let pool = create_test_pool(create_provider_with_tip());
+        for remove in removals {
+            let sender = Address::random();
+            let tx = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+            let (hash, result) = add_aa_2d(&pool, tx);
+            assert!(result.is_ok());
+            let mut events = pool
+                .transaction_event_listener(hash)
+                .expect("a pooled transaction has a listener");
+
+            assert_eq!(tx_hashes(&remove(&pool, sender, hash)), [hash]);
+
+            assert_eq!(
+                events.next().now_or_never().flatten(),
+                Some(TransactionEvent::Discarded)
+            );
+            assert!(pool.transaction_event_listener(hash).is_none());
+        }
     }
 
     #[test]

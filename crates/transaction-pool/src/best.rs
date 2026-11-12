@@ -149,7 +149,7 @@ impl Iterator for MergeBestTransactions {
 
 impl BestTransactions for MergeBestTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
-        if transaction.transaction.is_aa_2d() {
+        if transaction.transaction.is_aa() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
         } else {
             self.protocol_pool.mark_invalid(transaction, kind);
@@ -301,9 +301,10 @@ mod tests {
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::Address;
+    use alloy_consensus::{SignableTransaction, TxEip1559};
+    use alloy_primitives::{Address, Signature, TxKind};
     use futures::executor::block_on;
-    use reth_primitives_traits::transaction::error::InvalidTransactionError;
+    use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
     use reth_transaction_pool::{
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
@@ -311,6 +312,7 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_evm::ResolvedFeeToken;
+    use tempo_primitives::TempoTxEnvelope;
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -331,7 +333,20 @@ mod tests {
     }
 
     fn protocol_tx_for_sender(sender: Address, nonce: u64, priority: u128) -> TestTx {
-        tx_with_nonce_key(U256::ZERO, sender, nonce, priority)
+        let tx = TxEip1559 {
+            chain_id: 42431,
+            nonce,
+            gas_limit: 1_000_000,
+            max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE) + priority,
+            max_priority_fee_per_gas: priority,
+            to: TxKind::Call(Address::random()),
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip1559(tx.into_signed(Signature::test_signature()));
+        Arc::new(wrap_valid_tx(
+            TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender)),
+            TransactionOrigin::External,
+        ))
     }
 
     fn aa_2d_tx(nonce: u64, priority: u128) -> TestTx {
@@ -606,13 +621,12 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_invalid_routes_protocol_aa_to_left_pool() {
+    fn test_mark_invalid_routes_non_aa_to_left_pool() {
         let protocol_sender = Address::random();
         let left_tx = protocol_tx_for_sender(protocol_sender, 0, 10);
         let left_descendant = protocol_tx_for_sender(protocol_sender, 1, 9);
         let right_tx = aa_2d_tx(0, 8);
-        assert!(left_tx.transaction.is_aa());
-        assert!(!left_tx.transaction.is_aa_2d());
+        assert!(!left_tx.transaction.is_aa());
         assert!(right_tx.transaction.is_aa_2d());
 
         let mut merged = merged_best_transactions(
@@ -627,6 +641,31 @@ mod tests {
         merged.mark_invalid(&first, kind);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_mark_invalid_routes_protocol_nonce_aa_to_right_pool() {
+        let sender = Address::random();
+        let left_tx = protocol_tx_for_sender(sender, 0, 8);
+        let right_tx = tx_with_nonce_key(U256::ZERO, sender, 0, 10);
+        let right_descendant = tx_with_nonce_key(U256::ZERO, sender, 1, 9);
+        assert!(right_tx.transaction.is_aa());
+        assert!(!right_tx.transaction.is_aa_2d());
+
+        let mut merged = merged_best_transactions(
+            vec![left_tx.clone()],
+            vec![right_tx.clone(), right_descendant],
+        );
+        let first = merged.next().unwrap();
+        assert_eq!(*first.hash(), *right_tx.hash());
+
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid(&first, kind);
+
+        // The lane's descendant is skipped, while the sender's non-AA transaction still yields.
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*left_tx.hash()));
         assert!(merged.next().is_none());
     }
 

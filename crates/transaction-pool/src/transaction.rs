@@ -199,8 +199,8 @@ impl TempoPooledTransaction {
         self.is_payment_v3
     }
 
-    /// Returns true if this transaction belongs into the 2D nonce pool:
-    /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
+    /// Returns true if this AA transaction's nonce is tracked by the `NonceManager` rather than
+    /// by the account's protocol nonce: `nonce key != 0` (includes expiring nonce txs)
     pub fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction

@@ -475,8 +475,8 @@ struct InvalidTransaction {
 
 /// Transaction lanes invalidated during a payload build.
 ///
-/// Invalidating a regular transaction blocks every later regular transaction from the same
-/// sender. Invalidating a 2D nonce transaction blocks only its `(sender, nonce_key)` sequence.
+/// Invalidating a non-AA transaction blocks every later non-AA transaction from the same
+/// sender. Invalidating an AA transaction blocks only its `(sender, nonce_key)` sequence.
 #[derive(Debug, Default)]
 struct InvalidatedLanes {
     senders: HashSet<Address>,
@@ -485,7 +485,7 @@ struct InvalidatedLanes {
 
 impl InvalidatedLanes {
     fn insert(&mut self, invalid: &BestTransaction) {
-        if invalid.transaction.is_aa_2d() {
+        if invalid.transaction.is_aa() {
             if let Some(id) = invalid.transaction.aa_transaction_id() {
                 self.sequences.insert(*id.seq_id());
             }
@@ -495,7 +495,7 @@ impl InvalidatedLanes {
     }
 
     fn contains(&self, candidate: &BestTransaction) -> bool {
-        if candidate.transaction.is_aa_2d() {
+        if candidate.transaction.is_aa() {
             candidate
                 .transaction
                 .aa_transaction_id()
@@ -1245,6 +1245,25 @@ mod tests {
         assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[3].hash());
         // Both transactions were already buffered, so no source poll was needed.
         assert!(commands_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn invalidated_lanes_keep_protocol_nonce_aa_and_non_aa_apart() {
+        let sender = Address::random();
+        let non_aa = test_tx(sender, 0);
+        let protocol_nonce_aa = test_payment_tx_with_nonce_key(sender, 500_000, U256::ZERO);
+
+        // The 2D pool yields AA transactions on the protocol nonce and blocks only their lane.
+        let mut invalidated = InvalidatedLanes::default();
+        invalidated.insert(&protocol_nonce_aa);
+        assert!(invalidated.contains(&test_payment_tx_with_nonce_key(sender, 600_000, U256::ZERO)));
+        assert!(!invalidated.contains(&non_aa));
+        assert!(!invalidated.contains(&test_payment_tx_with_nonce_key(sender, 500_000, U256::ONE)));
+
+        let mut invalidated = InvalidatedLanes::default();
+        invalidated.insert(&non_aa);
+        assert!(invalidated.contains(&test_tx(sender, 1)));
+        assert!(!invalidated.contains(&protocol_nonce_aa));
     }
 
     #[test]

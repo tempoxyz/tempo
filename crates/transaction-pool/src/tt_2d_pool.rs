@@ -1,4 +1,5 @@
-/// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
+/// Pool for AA transactions: user nonces (nonce_key > 0) and the protocol nonce (nonce_key = 0),
+/// both tracked on chain.
 use crate::{
     authority_counts::AuthorityCounts, metrics::AA2dPoolMetrics, ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -53,6 +54,10 @@ type StateUpdateResult = (
 /// A 2d nonce transaction is pending if it dosn't have a nonce gap for its nonce key, and is queued if its nonce key set has nonce gaps.
 ///
 /// This pool relies on state changes to track the nonces.
+///
+/// Transactions with nonce key 0 form a lane like any other, whose on-chain nonce is the account's
+/// protocol nonce. Non-AA transactions of the same sender consume that nonce from the protocol
+/// pool, so a lane 0 transaction behind one of them stays queued until it is mined.
 ///
 /// # Limitations
 ///
@@ -668,6 +673,18 @@ impl AA2dPool {
             .range(AASequenceId::new(address, nonce_key).range())
             .filter(|(_, tx)| tx.is_pending())
             .map(|(_, tx)| tx.inner.transaction.clone())
+    }
+
+    /// Returns the lane's pending and queued transactions with a nonce of at least `nonce`, in
+    /// nonce order.
+    pub(crate) fn lane_transactions_from(
+        &self,
+        seq_id: AASequenceId,
+        nonce: u64,
+    ) -> impl DoubleEndedIterator<Item = &Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_id
+            .range(AA2dTransactionId::new(seq_id, nonce)..=*seq_id.range().end())
+            .map(|(_, tx)| &tx.inner.transaction)
     }
 
     /// Returns an iterator over all transaction hashes in this pool
@@ -1495,7 +1512,8 @@ impl AA2dPool {
         }
     }
 
-    /// Processes nonce-precompile storage updates and updates internal state accordingly.
+    /// Processes account nonce and nonce-precompile storage updates and updates internal state
+    /// accordingly.
     pub(crate) fn on_state_updates(
         &mut self,
         state: &AddressMap<BundleAccount>,
@@ -1503,17 +1521,23 @@ impl AA2dPool {
         self.state_update_nonce_changes.clear();
         self.state_update_included_expiring_nonce_hashes.clear();
 
-        let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
-            return (Vec::new(), Vec::new(), Vec::new());
-        };
-
         let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
         let mut included_expiring_nonce_hashes =
             std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
 
+        // Protocol nonce lanes follow the account nonce, which has no `NonceManager` slot.
+        for (address, account) in state {
+            let seq_id = AASequenceId::new(*address, U256::ZERO);
+            if self.txs_by_lane.contains_key(&seq_id) {
+                let nonce = account.info.as_ref().map_or(0, |info| info.nonce);
+                changes.insert(seq_id, nonce);
+            }
+        }
+
         // Process known nonce slot changes. A slot tracks either a 2D nonce lane or an expiring
         // nonce transaction, so one lookup per changed slot is enough.
-        for (slot, value) in nonce_state.storage.iter() {
+        let nonce_state = state.get(&NONCE_PRECOMPILE_ADDRESS);
+        for (slot, value) in nonce_state.iter().flat_map(|account| &account.storage) {
             match self.slot_to_nonce_entry.get(slot) {
                 Some(NonceSlotEntry::Sequence(seq_id)) => {
                     changes.insert(*seq_id, value.present_value.saturating_to());
@@ -2620,6 +2644,7 @@ mod tests {
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use alloy_signer_local::PrivateKeySigner;
+    use evm2::evm::AccountInfo;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
     use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
@@ -6677,6 +6702,55 @@ mod tests {
         pool.assert_invariants();
         assert!(pool.state_update_nonce_changes.is_empty());
         assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
+    }
+
+    #[test]
+    fn on_state_updates_tracks_protocol_nonce_lanes_by_account_nonce() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let other = Address::random();
+        // Nonce 2 is left to a non-AA transaction, which the protocol pool would hold.
+        let [tx0, tx1, tx3] = [0, 1, 3].map(|nonce| {
+            Arc::new(wrap_valid_tx(
+                TxBuilder::aa(sender).nonce(nonce).build(),
+                TransactionOrigin::Local,
+            ))
+        });
+        let other_2d = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(other).nonce_key(U256::ONE).build(),
+            TransactionOrigin::Local,
+        ));
+        for tx in [&tx0, &tx1, &tx3, &other_2d] {
+            pool.add_transaction(tx.clone(), 0, TempoHardfork::T1)
+                .unwrap();
+        }
+        assert_eq!(pool.pending_and_queued_txn_count(), (3, 1));
+
+        let mut state = AddressMap::default();
+        for address in [sender, other] {
+            let info = AccountInfo {
+                nonce: 3,
+                ..Default::default()
+            };
+            state.insert(
+                address,
+                BundleAccount::new(None, Some(info), Default::default(), AccountStatus::Changed),
+            );
+        }
+
+        let (promoted, mined, discarded) = pool.on_state_updates(&state);
+
+        let hashes = |txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]| {
+            txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>()
+        };
+        assert_eq!(hashes(&mined), [*tx0.hash(), *tx1.hash()]);
+        assert_eq!(hashes(&promoted), [*tx3.hash()]);
+        assert!(discarded.is_empty());
+        // The account nonce does not move the other sender's 2D lane.
+        assert!(pool.contains(other_2d.hash()));
+        assert_eq!(pool.pending_and_queued_txn_count(), (2, 0));
+
+        pool.assert_invariants();
     }
 
     #[test]
