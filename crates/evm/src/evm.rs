@@ -1,6 +1,11 @@
 use crate::{ProtocolFeeManager, TempoEvmEnv, TempoEvmExt, TempoEvmTypes, TempoFeeManager};
 use evm2::evm::precompile::PrecompileProvider;
+use reth_evm::precompile_cache::{
+    CachedPrecompileProvider, PrecompileCacheMap, PrecompileCachePolicy,
+};
 use std::sync::Arc;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::TempoPrecompiles;
 
 /// Tempo's EVM is EVM2 with the Tempo type family.
 pub type TempoEvm<'a> = evm2::Evm<'a, TempoEvmTypes>;
@@ -16,7 +21,8 @@ pub type PrecompilesBuilder =
 #[derive(Clone, Debug)]
 pub struct TempoEvmFactory {
     fee_manager: Arc<dyn ProtocolFeeManager>,
-    precompiles_builder: PrecompilesBuilder,
+    /// Builds the precompiles in place of the built-in [`TempoPrecompiles`], if set.
+    precompiles_builder: Option<PrecompilesBuilder>,
     #[cfg(feature = "jit")]
     jit: Option<(crate::jit::JitBackend, crate::jit::JitMetrics)>,
     #[cfg(feature = "jit")]
@@ -25,13 +31,14 @@ pub struct TempoEvmFactory {
 
 impl Default for TempoEvmFactory {
     fn default() -> Self {
-        Self::new_with_precompiles(|env, ext| {
-            Box::new(tempo_precompiles::TempoPrecompiles::new(
-                env.spec,
-                ext.actions.clone(),
-                ext.non_creditable_slots.clone(),
-            ))
-        })
+        Self {
+            fee_manager: Arc::new(TempoFeeManager::new()),
+            precompiles_builder: None,
+            #[cfg(feature = "jit")]
+            jit: None,
+            #[cfg(feature = "jit")]
+            jit_support: false,
+        }
     }
 }
 
@@ -39,12 +46,8 @@ impl TempoEvmFactory {
     /// Creates a factory with precompiles built from its environment and shared accounting state.
     pub fn new_with_precompiles(builder: PrecompilesBuilder) -> Self {
         Self {
-            fee_manager: Arc::new(TempoFeeManager::new()),
-            precompiles_builder: builder,
-            #[cfg(feature = "jit")]
-            jit: None,
-            #[cfg(feature = "jit")]
-            jit_support: false,
+            precompiles_builder: Some(builder),
+            ..Default::default()
         }
     }
 
@@ -53,7 +56,45 @@ impl TempoEvmFactory {
         env: &TempoEvmEnv,
         ext: &TempoEvmExt,
     ) -> Box<dyn PrecompileProvider<TempoEvmTypes>> {
-        (self.precompiles_builder)(env, ext)
+        match self.precompiles_builder {
+            Some(builder) => builder(env, ext),
+            None => Box::new(TempoPrecompiles::new(
+                env.spec,
+                ext.actions.clone(),
+                ext.non_creditable_slots.clone(),
+            )),
+        }
+    }
+
+    /// Builds precompiles whose Ethereum precompile results are cached in `cache_map`.
+    ///
+    /// Tempo's own precompiles are never cached. Precompiles from a custom builder are not cached
+    /// either, since it may install stateful precompiles at Ethereum precompile addresses.
+    pub(crate) fn cached_precompiles(
+        &self,
+        env: &TempoEvmEnv,
+        ext: &TempoEvmExt,
+        cache_map: PrecompileCacheMap<TempoHardfork>,
+        metrics_enabled: bool,
+    ) -> Box<dyn PrecompileProvider<TempoEvmTypes>> {
+        if self.precompiles_builder.is_some() {
+            return self.precompiles(env, ext);
+        }
+        // The base table holds only Ethereum precompiles, whose results depend only on their
+        // input and the hardfork.
+        let base = CachedPrecompileProvider::new(
+            TempoPrecompiles::base_precompiles(env.spec),
+            cache_map,
+            env.spec,
+            PrecompileCachePolicy::All,
+            metrics_enabled,
+        );
+        Box::new(TempoPrecompiles::with_base(
+            base,
+            env.spec,
+            ext.actions.clone(),
+            ext.non_creditable_slots.clone(),
+        ))
     }
 
     /// Uses a custom protocol fee implementation for subsequently created EVMs.

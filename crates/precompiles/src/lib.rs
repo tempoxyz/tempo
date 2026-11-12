@@ -59,7 +59,7 @@ use crate::{
     zone_factory::ZoneFactory,
     zone_verifier::ZoneVerifier,
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 
@@ -167,12 +167,15 @@ sol! {
 }
 
 /// Tempo's built-in and protocol precompiles for EVM2.
+///
+/// The Ethereum precompiles run through `B`, the plain table by default.
 #[derive(Debug)]
-pub struct TempoPrecompiles<T: EvmTypesHost> {
-    base: BasePrecompiles<T>,
+pub struct TempoPrecompiles<T: EvmTypesHost, B = BasePrecompiles<T>> {
+    base: B,
     spec: TempoHardfork,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    types: PhantomData<fn() -> T>,
 }
 
 impl<T: EvmTypesHost> TempoPrecompiles<T> {
@@ -182,17 +185,44 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
+        Self::with_base(
+            Self::base_precompiles(spec),
+            spec,
+            actions,
+            non_creditable_slots,
+        )
+    }
+
+    /// Returns the Ethereum precompiles of a Tempo hardfork.
+    pub fn base_precompiles(spec: TempoHardfork) -> BasePrecompiles<T> {
         // Tempo used Prague's built-ins before T1C and follows its configured EVM fork after it.
         let base_spec = if spec.is_t1c() {
             spec.into()
         } else {
             SpecId::PRAGUE
         };
+        BasePrecompiles::base(base_spec)
+    }
+}
+
+impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
+    /// Creates the precompile provider for a Tempo hardfork whose Ethereum precompiles run through
+    /// `base`.
+    ///
+    /// `base` must run [`TempoPrecompiles::base_precompiles`] of `spec`, for example behind a
+    /// cache.
+    pub fn with_base(
+        base: B,
+        spec: TempoHardfork,
+        actions: StorageActions,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    ) -> Self {
         Self {
-            base: BasePrecompiles::base(base_spec),
+            base,
             spec,
             actions,
             non_creditable_slots,
+            types: PhantomData,
         }
     }
 
@@ -241,10 +271,11 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
     }
 }
 
-impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
+impl<T, B> PrecompileProvider<T> for TempoPrecompiles<T, B>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
     T::EvmExt: EvmStorageExt,
+    B: PrecompileProvider<T>,
 {
     fn move_precompiles(
         &mut self,
