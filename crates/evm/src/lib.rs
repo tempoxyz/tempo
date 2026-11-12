@@ -746,9 +746,10 @@ mod tests {
                 .is_some()
         );
 
-        let evm_config = evm_config.with_evm_factory(TempoEvmFactory::new_with_precompiles(
-            |_, _| Box::new(NoPrecompiles::default()),
-        ));
+        let evm_config =
+            evm_config.with_evm_factory(TempoEvmFactory::new_with_precompiles(|_, _| {
+                Box::new(NoPrecompiles::default())
+            }));
         let evm = evm_config.evm_with_precompile_cache(
             EmptyDB::default(),
             evm_env,
