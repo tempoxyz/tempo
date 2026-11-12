@@ -282,12 +282,14 @@ impl AA2dPool {
             ));
         }
 
-        // At the per-authority limit, the on-chain nonce of a lane that holds transactions is still
-        // added, which makes them executable, in place of the lane's highest nonce. That one must
-        // free a slot for each authority at the limit, or the transaction is rejected below.
+        // At the per-authority limit, the on-chain nonce of a lane whose transactions wait behind
+        // a gap is still added, which makes them executable, in place of the lane's highest nonce.
+        // That one must free a slot for each authority at the limit, or the transaction is
+        // rejected below.
         let evicted = if tx_id.nonce == on_chain_nonce
-            && lane_count > 0
             && !self.by_id.contains_key(&tx_id)
+            && let Some((_, lowest)) = self.by_id.range(tx_id.seq_id.range()).next()
+            && !lowest.is_pending()
         {
             let highest = self.by_id.range(tx_id.seq_id.range()).next_back();
             let highest = highest.filter(|(_, highest)| {
@@ -2073,9 +2075,9 @@ pub struct AA2dPoolConfig {
     /// signer, separate fee payer or access key.
     ///
     /// Bounds how many pooled transactions one account can invalidate with a single state
-    /// change (DoS protection). At the limit, the on-chain nonce of a lane that holds
-    /// transactions is still added in place of the lane's highest nonce, if that frees a slot
-    /// for each authority at the limit, to allow gap filling.
+    /// change (DoS protection). At the limit, the on-chain nonce of a lane whose transactions
+    /// wait behind a gap is still added in place of the lane's highest nonce, if that frees a
+    /// slot for each authority at the limit, to allow gap filling.
     pub max_txs_per_authority: usize,
     /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
@@ -6171,6 +6173,17 @@ mod tests {
         for authority in [sender, access_key.address(), fee_payer.address()] {
             assert_eq!(pool.txs_by_authority.get(&authority), 3);
         }
+
+        // The lane is executable now, so a nonce validated ahead of it fills no gap.
+        let tx = wrap_valid_tx(build(U256::ONE, 3), TransactionOrigin::External);
+        let err = pool
+            .add_transaction(Arc::new(tx), 3, TempoHardfork::T1)
+            .unwrap_err();
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::SpammerExceededCapacity(address) if address == sender
+        ));
+        assert_eq!(pool.pending_and_queued_txn_count(), (4, 0));
         pool.assert_invariants();
     }
 
