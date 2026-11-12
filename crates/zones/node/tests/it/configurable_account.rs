@@ -15,7 +15,9 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::{
     TempoTxEnvelope,
-    account::{CONFIGURABLE_ACCOUNT_CODE, encode_config_commitment},
+    account::{
+        CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, encode_config_commitment,
+    },
     transaction::{
         Call, ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         PrimitiveSignature, TempoSignature, TempoTransaction, configurable_account_digest,
@@ -138,6 +140,11 @@ async fn test_migrated_account_rejects_its_original_key() -> eyre::Result<()> {
     let info = provider.get_account_info(dev_address).latest().await?;
     assert!(info.code.is_empty());
     assert!(info.extension.is_empty());
+    // Its pathUSD balance lives in token storage, so the zone holds no account for it.
+    let account: Option<alloy::consensus::TrieAccount> = provider
+        .raw_request("eth_getAccount".into(), (dev_address, "latest"))
+        .await?;
+    assert_eq!(account, None);
     let outbox_code = provider.get_code_at(ZONE_OUTBOX_ADDRESS).await?;
     {
         let mut cache = zone.l1_state_cache().lock();
@@ -166,6 +173,14 @@ async fn test_migrated_account_rejects_its_original_key() -> eyre::Result<()> {
     ] {
         assert_eq!(info.code, CONFIGURABLE_ACCOUNT_CODE);
         assert_eq!(info.extension, commitment.clone().into());
+    }
+    // So does eth_getAccount, with the marker's code hash, though the zone holds no account.
+    for account in [
+        provider.get_account(dev_address).latest().await?,
+        provider.get_account(dev_address).pending().await?,
+    ] {
+        assert_eq!(account.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
+        assert_eq!(account.extension, commitment.clone().into());
     }
     let outbox_info = provider
         .get_account_info(ZONE_OUTBOX_ADDRESS)

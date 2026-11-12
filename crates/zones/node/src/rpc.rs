@@ -16,7 +16,7 @@ use std::{
 use alloy_consensus::{BlockHeader, Sealable as _, Transaction as _, transaction::TxHashRef};
 use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
 use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
-use alloy_primitives::{Address, B256, Bloom, Bytes, U64, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, KECCAK256_EMPTY, U64, U256, keccak256};
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
@@ -66,7 +66,9 @@ use tempo_contracts::precompiles::{
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
 use tempo_primitives::{
     TempoHeader, TempoPrimitives, TempoTxEnvelope,
-    account::{CONFIGURABLE_ACCOUNT_CODE, encode_config_commitment},
+    account::{
+        CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, encode_config_commitment,
+    },
 };
 use tokio::{
     sync::Mutex,
@@ -272,10 +274,11 @@ where
     Ok(module)
 }
 
-/// Operator `eth_getCode` and `eth_getAccountInfo`, which return what zone execution sees
-/// (TIP-1154): for an account without zone code whose Tempo commitment at the block's anchor is
-/// nonzero, the account marker code (and, for `eth_getAccountInfo`, the commitment extension), so
-/// off-chain verifiers that check code before `ecrecover` reject a retired original key.
+/// Operator `eth_getCode`, `eth_getAccountInfo` and `eth_getAccount`, which return what zone
+/// execution sees (TIP-1154): for an account without zone code whose Tempo commitment at the
+/// block's anchor is nonzero, the account marker code (or its hash) and, where the response has
+/// one, the commitment extension, so off-chain verifiers that check code before `ecrecover`
+/// reject a retired original key.
 pub(crate) fn operator_get_code_module<E>(
     eth_api: E,
     l1_state: L1StateProvider,
@@ -310,9 +313,10 @@ where
             })
         }
     })?;
+    let (info_eth_api, info_l1_state) = (eth_api.clone(), l1_state.clone());
     module.register_async_method("eth_getAccountInfo", move |params, _, _| {
-        let eth_api = eth_api.clone();
-        let l1_state = l1_state.clone();
+        let eth_api = info_eth_api.clone();
+        let l1_state = info_l1_state.clone();
         async move {
             let mut params = params.sequence();
             let address: Address = params.next()?;
@@ -330,6 +334,34 @@ where
                 info.extension = encode_config_commitment(commitment).into();
             }
             Ok::<_, ErrorObjectOwned>(info)
+        }
+    })?;
+    module.register_async_method("eth_getAccount", move |params, _, _| {
+        let eth_api = eth_api.clone();
+        let l1_state = l1_state.clone();
+        async move {
+            let mut params = params.sequence();
+            let address: Address = params.next()?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(params.next::<BlockId>()?);
+            let account = EthState::get_account(&eth_api, address, block_id)
+                .await
+                .map_err(Into::into)?;
+            if account
+                .as_ref()
+                .is_some_and(|account| account.code_hash != KECCAK256_EMPTY)
+            {
+                return Ok(account);
+            }
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
+            if commitment.is_zero() {
+                return Ok(account);
+            }
+            // Zone execution sees the account even when the zone holds none for it.
+            let mut account = account.unwrap_or_default();
+            account.code_hash = CONFIGURABLE_ACCOUNT_CODE_HASH;
+            account.extension = encode_config_commitment(commitment).into();
+            Ok::<_, ErrorObjectOwned>(Some(account))
         }
     })?;
     Ok(module)
