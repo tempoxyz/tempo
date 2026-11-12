@@ -175,7 +175,7 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ steps.source.outputs.image_tag == '' }}
             type=raw,value=${{ steps.source.outputs.image_tag }},priority=50,enable=${{ steps.source.outputs.image_tag != '' }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
@@ -199,7 +199,7 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ steps.source.outputs.image_tag == '' }}
             type=raw,value=${{ steps.source.outputs.image_tag }},priority=50,enable=${{ steps.source.outputs.image_tag != '' }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
@@ -223,7 +223,7 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ steps.source.outputs.image_tag == '' }}
             type=raw,value=${{ steps.source.outputs.image_tag }},priority=50,enable=${{ steps.source.outputs.image_tag != '' }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
@@ -247,7 +247,7 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ steps.source.outputs.image_tag == '' }}
             type=raw,value=${{ steps.source.outputs.image_tag }},priority=50,enable=${{ steps.source.outputs.image_tag != '' }}
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
@@ -298,6 +298,7 @@ jobs:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
           # Network E2E images also carry the corpus commands, for the merge queue's corpus replay.
+          # They push only their network-e2e-<run>-<attempt> tag, so sha-<short> stays a stock build.
           EXTRA_RUST_FEATURES: ${{ steps.source.outputs.image_tag != '' && ',corpus' || '' }}
 
       - name: Record published PR images
