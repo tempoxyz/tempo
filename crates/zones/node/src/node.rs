@@ -883,7 +883,7 @@ where
                         container
                             .modules
                             .module_config()
-                            .contains_any(&reth_rpc_builder::RethRpcModule::Admin),
+                            .contains_http(&reth_rpc_builder::RethRpcModule::Admin),
                         "the deposit allowlist methods need the admin RPC module: add admin to --http.api"
                     );
                     container.modules.merge_if_module_configured(
