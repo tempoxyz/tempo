@@ -934,6 +934,7 @@ jobs:
       prover_image_refs: ${{ steps.publish.outputs.prover_image_refs }}
       image_refs: ${{ steps.publish.outputs.image_refs }}
       deferred_tags: ${{ steps.publish.outputs.deferred_tags }}
+      hold: ${{ steps.publish.outputs.hold }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -1075,6 +1076,7 @@ jobs:
                 | {ref: ($by_repo[$repo] // error("no pushed digest for " + $repo)), tags: .})' \
             "$RUNNER_TEMP/held-tags.txt")"
           printf 'deferred_tags=%s\n' "$deferred" >> "$GITHUB_OUTPUT"
+          echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
 
   sign-prover-images:
     name: Sign published prover images
@@ -1135,8 +1137,9 @@ jobs:
     name: Attest published companion images
     needs: publish-companion-images
     # Companion images from other refs and events stay unattested; attest-images.yml
-    # refuses any run that isn't a trusted main or release-tag run.
-    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
+    # refuses any run that isn't a trusted main or release-tag run. Gated on the publish
+    # job's hold flag so held tags always get an attest job.
+    if: needs.publish-companion-images.outputs.hold == 'true'
     permissions:
       packages: write
       id-token: write

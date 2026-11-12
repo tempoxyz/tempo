@@ -44,8 +44,9 @@ for ((i = 0; i < count; i++)); do
     tag_digest=""
     for attempt in {1..12}; do
       tag_digest="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
-      [[ "$tag_digest" =~ ^sha256:[0-9a-f]{64}$ ]] && break
-      echo "Waiting for $tag to become readable (attempt $attempt/12)"
+      # A moved tag can still read as its previous digest for a while.
+      [[ "$tag_digest" == "$digest" ]] && break
+      echo "Waiting for $tag to read as $digest (attempt $attempt/12)"
       sleep 5
     done
     [[ "$tag_digest" == "$digest" ]] || {
