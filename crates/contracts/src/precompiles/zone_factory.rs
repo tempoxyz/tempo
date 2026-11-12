@@ -111,7 +111,7 @@ pub fn t14_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] 
 /// Returns the native ZoneFactory state with the T15 shared runtimes.
 ///
 /// T15 replaces only the portal runtime; the verifier and messenger keep their T13 code. The T15
-/// portal keeps T14's pause-gated refund claims and settlement.
+/// portal keeps T14's pause-gated refund claims.
 pub fn t15_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
     let [factory, _, verifier, messenger] = t13_zone_factory_state(owner);
     [

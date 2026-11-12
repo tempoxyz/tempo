@@ -1582,7 +1582,7 @@ contract ZonePortalTest is BaseTest {
         assertTrue(portal.areDepositsActive(address(pathUSD)));
     }
 
-    function test_pause_blocksValueMovementAndSettlement() public {
+    function test_pause_blocksValueMovementButAllowsBatchSubmission() public {
         vm.prank(sequencer);
         portal.pause();
 
@@ -1604,7 +1604,6 @@ contract ZonePortalTest is BaseTest {
 
         vm.roll(block.number + 1);
         bytes32 prevBlockHash = portal.blockHash();
-        vm.expectRevert(IZonePortal.PortalIsPaused.selector);
         _submitBatch(
             portal,
             uint64(block.number - 1),
@@ -1622,7 +1621,7 @@ contract ZonePortalTest is BaseTest {
             "",
             ""
         );
-        assertEq(portal.withdrawalBatchIndex(), 0);
+        assertEq(portal.withdrawalBatchIndex(), 1);
 
         vm.warp(block.timestamp + 30 days);
         assertFalse(portal.paused());
