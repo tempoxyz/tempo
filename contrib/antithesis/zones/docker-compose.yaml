@@ -1,6 +1,7 @@
 # Multi-sequencer zone on a dev-mode Tempo L1:
 #
-# - l1: Tempo dev node; zone nodes read finalized state over WebSocket
+# - l1: Tempo dev node that persists every block, so finalized blocks survive a kill; zone
+#   nodes read finalized state over WebSocket
 # - provision: creates the zone on L1 with three sequencers (2-of-3 settlement) and writes
 #   genesis, keys and the manifest to the shared volume, then exits
 # - zone-0..2: the sequencer quorum; zone-0 is the initial leader
@@ -16,6 +17,9 @@ x-zone: &zone
   image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
   entrypoint: ["/opt/zones/zone-node.sh"]
   init: true
+  # gdb -p from docker exec needs CAP_SYS_PTRACE when the kernel's Yama ptrace_scope is 1.
+  cap_add:
+    - SYS_PTRACE
   healthcheck: &rpc-healthcheck
     test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
     interval: 5s
@@ -33,6 +37,9 @@ services:
     container_name: l1
     hostname: l1
     init: true
+    # gdb -p from docker exec needs CAP_SYS_PTRACE when the kernel's Yama ptrace_scope is 1.
+    cap_add:
+      - SYS_PTRACE
     entrypoint: ["/usr/local/bin/tempo"]
     command:
       - node
@@ -43,6 +50,13 @@ services:
       - 500ms
       - --dev.finality-depth
       - "1"
+      # Persist each block as soon as it is canonical. With Tempo's default threshold a killed L1
+      # restarts behind blocks it already reported finalized and rebuilds them, which zones
+      # treat as a finality violation and halt on.
+      - --engine.persistence-threshold
+      - "0"
+      - --engine.memory-block-buffer-target
+      - "0"
       - --datadir
       - /data
       - --http
@@ -147,6 +161,9 @@ services:
     container_name: workload
     hostname: workload
     init: true
+    # gdb -p from docker exec needs CAP_SYS_PTRACE when the kernel's Yama ptrace_scope is 1.
+    cap_add:
+      - SYS_PTRACE
     entrypoint: ["/opt/zones/workload.sh"]
     depends_on:
       provision:

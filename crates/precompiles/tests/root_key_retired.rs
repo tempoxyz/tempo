@@ -13,15 +13,16 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{
-        ConfigCommitmentWriteGas, ContractStorage, StorageCtx, hashmap::HashMapStorageProvider,
-    },
+    storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     test_util::TIP20Setup,
     tip20::PERMIT_TYPEHASH,
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 
 use Party::{Delegate, Payer};
+use common::seed_commitment;
+
+mod common;
 
 const COMMITMENT: B256 = B256::repeat_byte(0x11);
 
@@ -55,9 +56,7 @@ fn storage_at(spec: TempoHardfork, committed: &[Address]) -> HashMapStorageProvi
     let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
     StorageCtx::enter(&mut storage, || {
         for account in committed {
-            StorageCtx
-                .set_config_commitment(*account, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
-                .unwrap();
+            seed_commitment(*account, COMMITMENT);
         }
     });
     storage.set_spec(spec);
@@ -298,9 +297,7 @@ impl Channel {
 fn migrate(storage: &mut HashMapStorageProvider, account: Address, spec: TempoHardfork) {
     storage.set_spec(T14);
     StorageCtx::enter(storage, || {
-        StorageCtx
-            .set_config_commitment(account, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
-            .unwrap();
+        seed_commitment(account, COMMITMENT);
     });
     storage.set_spec(spec);
 }
