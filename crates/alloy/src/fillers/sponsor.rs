@@ -27,7 +27,14 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for S
         }
     }
 
-    fn fill_sync(&self, _tx: &mut SendableTx<N>) {}
+    fn fill_sync(&self, tx: &mut SendableTx<N>) {
+        // Set before any filler prepares, so gas estimation sees the request as sponsored.
+        if let Some(builder) = tx.as_mut_builder()
+            && builder.fee_payer_signature.is_none()
+        {
+            builder.set_fee_payer_signature(FEE_PAYER_SIGNATURE_MARKER);
+        }
+    }
 
     async fn prepare<P>(&self, _provider: &P, _tx: &N::TransactionRequest) -> TransportResult<()>
     where
@@ -36,12 +43,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for S
         Ok(())
     }
 
-    async fn fill(&self, _fillable: (), mut tx: SendableTx<N>) -> TransportResult<SendableTx<N>> {
-        if let Some(builder) = tx.as_mut_builder()
-            && builder.fee_payer_signature.is_none()
-        {
-            builder.set_fee_payer_signature(FEE_PAYER_SIGNATURE_MARKER);
-        }
+    async fn fill(&self, _fillable: (), tx: SendableTx<N>) -> TransportResult<SendableTx<N>> {
         Ok(tx)
     }
 }
@@ -53,17 +55,12 @@ mod tests {
     use super::*;
     use crate::TempoNetwork;
 
-    #[tokio::test]
-    async fn defers_the_invalid_marker_until_after_async_preparation() {
+    #[test]
+    fn marks_the_request_before_preparation() {
         let filler = SponsorFiller;
         let mut tx = SendableTx::Builder(TempoTransactionRequest::default());
 
         <SponsorFiller as TxFiller<TempoNetwork>>::fill_sync(&filler, &mut tx);
-        assert!(tx.as_builder().unwrap().fee_payer_signature.is_none());
-
-        let tx = <SponsorFiller as TxFiller<TempoNetwork>>::fill(&filler, (), tx)
-            .await
-            .unwrap();
         assert_eq!(
             tx.as_builder().unwrap().fee_payer_signature,
             Some(FEE_PAYER_SIGNATURE_MARKER)
