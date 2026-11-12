@@ -6,13 +6,21 @@
 //! limit, expiry, program type, holder reference and network token hash; replacing a card maps a
 //! new credential to the same line, so open holds, limits and token hashes follow it. A line's
 //! `committed` counter follows the committed amount of every authorization held through it.
+//!
+//! Each owner has an account record: every hold needs it Active, closure sweeps the owner's
+//! available balance (debts first) to a payout address, and an Estate authority from the
+//! registry the admin keeps can hand the account to an executor, who settles it once no holds
+//! are open.
 
 pub mod dispatch;
 
 use crate::{
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
+    reservations::Reservations,
     storage::{Handler, Mapping},
+    validator_config::ValidatorConfig,
+    validator_config_v2::ValidatorConfigV2,
 };
 use alloy::primitives::{Address, B256, aliases::U96};
 pub use tempo_contracts::precompiles::{CARDS_ADDRESS, CardsError, CardsEvent, ICards};
@@ -53,6 +61,34 @@ struct TokenList {
     restricted: bool,
 }
 
+/// An owner's account record, in one slot; an owner never recorded reads Active.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct AccountRecord {
+    /// An [`ICards::AccountStatus`].
+    status: u8,
+    /// Unix time of the owner's last recorded activity; zero when never stamped.
+    last_active: u64,
+    /// The executor in Estate, the payout address once Closed.
+    agent: Address,
+}
+
+/// An authority's entry in one role, in one slot.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct Authority {
+    listed: bool,
+    /// Seconds without activity before an Escheat authority may mark an account dormant.
+    dormancy: u32,
+    /// Seconds without activity before an Escheat authority may take a dormant account's money.
+    escheat_after: u32,
+    /// Where an Escheat authority's remittances go.
+    payout: Address,
+}
+
+const ACTIVE: u8 = ICards::AccountStatus::Active as u8;
+const DORMANT: u8 = ICards::AccountStatus::Dormant as u8;
+const ESTATE: u8 = ICards::AccountStatus::Estate as u8;
+const CLOSED: u8 = ICards::AccountStatus::Closed as u8;
+
 /// Card records precompile.
 #[contract(addr = CARDS_ADDRESS)]
 pub struct Cards {
@@ -70,6 +106,10 @@ pub struct Cards {
     listed: Mapping<Address, Mapping<Address, u32>>,
     /// Each payee's token list.
     programs: Mapping<Address, TokenList>,
+    /// Each owner's account record.
+    accounts: Mapping<Address, AccountRecord>,
+    /// Registry entries keyed by role ([`ICards::Role`]) then authority.
+    authorities: Mapping<u8, Mapping<Address, Authority>>,
 }
 
 impl Cards {
@@ -137,6 +177,9 @@ impl Cards {
             return Err(CardsError::invalid_card().into());
         }
         let program = program_byte(call.program)?;
+        if self.accounts[call.owner].status.read()? == CLOSED {
+            return Err(CardsError::account_inactive().into());
+        }
         if self.credentials[payee][call.card].read()? != 0 {
             return Err(CardsError::card_exists().into());
         }
@@ -297,14 +340,22 @@ impl Cards {
             self.lines[id].read()?
         };
         let replaced_by = self.replaced_by[payee][card].read()?;
+        let account = if id == 0 {
+            ACTIVE
+        } else {
+            self.accounts[line.owner].status.read()?
+        };
         Ok(ICards::Card {
             owner: line.owner,
             payee: line.payee,
-            // A replaced credential reads closed, whatever its line's status.
-            status: if replaced_by.is_zero() {
-                status_of(line.status)
-            } else {
+            // A replaced credential and a closed account's card read closed, whatever the line's
+            // status; an estate's active card reads frozen.
+            status: if !replaced_by.is_zero() || account == CLOSED {
                 ICards::Status::Closed
+            } else if account == ESTATE && line.status == ICards::Status::Active as u8 {
+                ICards::Status::Frozen
+            } else {
+                status_of(line.status)
             },
             program: program_of(line.program),
             expiresAt: line.expires_at,
@@ -359,6 +410,8 @@ impl Cards {
         Ok(line)
     }
 
+    /// Checks that `line` is Active and unexpired, and that its owner's account is neither
+    /// Closed nor in Estate, which its card reads as.
     fn ensure_active(&self, line: u64) -> Result<()> {
         let expires_at = self.lines[line].expires_at.read()?;
         if self.lines[line].status.read()? != ICards::Status::Active as u8
@@ -366,7 +419,183 @@ impl Cards {
         {
             return Err(CardsError::card_inactive().into());
         }
+        let account = self.accounts[self.lines[line].owner.read()?]
+            .status
+            .read()?;
+        if account == CLOSED || account == ESTATE {
+            return Err(CardsError::card_inactive().into());
+        }
         Ok(())
+    }
+
+    /// Reverts `AccountInactive` unless `owner`'s account is Active. Called by every
+    /// `IReservations` hold selector after its card checks.
+    pub(crate) fn ensure_account_active(&self, owner: Address) -> Result<()> {
+        if self.accounts[owner].status.read()? != ACTIVE {
+            return Err(CardsError::account_inactive().into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn close_account(
+        &mut self,
+        owner: Address,
+        call: ICards::closeAccountCall,
+    ) -> Result<u128> {
+        if AccountKeychain::new().signing_access_key(owner)?.is_some() {
+            return Err(CardsError::unauthorized().into());
+        }
+        let mut record = self.accounts[owner].read()?;
+        if record.status == ESTATE || call.payoutTo.is_zero() {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        if record.status != CLOSED || record.agent != call.payoutTo {
+            record.status = CLOSED;
+            record.agent = call.payoutTo;
+            self.accounts[owner].write(record)?;
+            self.emit_event(CardsEvent::account_status_set(
+                owner,
+                ICards::AccountStatus::Closed,
+                call.payoutTo,
+            ))?;
+        }
+        self.pay_out(owner, call.token, call.payoutTo)
+    }
+
+    pub(crate) fn sweep(&mut self, owner: Address, token: Address) -> Result<u128> {
+        let record = self.accounts[owner].read()?;
+        if record.status != CLOSED {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        self.pay_out(owner, token, record.agent)
+    }
+
+    pub(crate) fn set_estate(
+        &mut self,
+        authority: Address,
+        call: ICards::setEstateCall,
+    ) -> Result<()> {
+        if !self.authorities[ICards::Role::Estate as u8][authority]
+            .listed
+            .read()?
+        {
+            return Err(CardsError::unauthorized().into());
+        }
+        let mut record = self.accounts[call.owner].read()?;
+        if (record.status != ACTIVE && record.status != DORMANT)
+            || call.owner.is_zero()
+            || call.executor.is_zero()
+        {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        record.status = ESTATE;
+        record.agent = call.executor;
+        self.accounts[call.owner].write(record)?;
+        self.emit_event(CardsEvent::account_status_set(
+            call.owner,
+            ICards::AccountStatus::Estate,
+            call.executor,
+        ))
+    }
+
+    pub(crate) fn settle_estate(
+        &mut self,
+        sender: Address,
+        call: ICards::settleEstateCall,
+    ) -> Result<u128> {
+        let mut record = self.accounts[call.owner].read()?;
+        if record.status != ESTATE {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        if sender != record.agent {
+            return Err(CardsError::unauthorized().into());
+        }
+        if call.to.is_zero() {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        if Reservations::new().holds_open(call.owner, call.token)? {
+            return Err(CardsError::holds_open().into());
+        }
+        let paid = self.pay_out(call.owner, call.token, call.to)?;
+        record.status = CLOSED;
+        record.agent = call.to;
+        self.accounts[call.owner].write(record)?;
+        self.emit_event(CardsEvent::account_status_set(
+            call.owner,
+            ICards::AccountStatus::Closed,
+            call.to,
+        ))?;
+        Ok(paid)
+    }
+
+    pub(crate) fn set_authority(
+        &mut self,
+        sender: Address,
+        call: ICards::setAuthorityCall,
+    ) -> Result<()> {
+        if sender.is_zero() || sender != self.admin()? {
+            return Err(CardsError::unauthorized().into());
+        }
+        let role = call.role as u8;
+        if role > ICards::Role::Estate as u8 {
+            return Err(CardsError::account_state_invalid().into());
+        }
+        self.authorities[role][call.authority].write(Authority {
+            listed: call.listed,
+            dormancy: call.dormancy,
+            escheat_after: call.escheatAfter,
+            payout: call.payout,
+        })?;
+        self.emit_event(CardsEvent::authority_set(
+            call.authority,
+            call.role,
+            call.listed,
+            call.payout,
+            call.dormancy,
+            call.escheatAfter,
+        ))
+    }
+
+    pub(crate) fn get_account(&self, owner: Address) -> Result<ICards::Account> {
+        let record = self.accounts[owner].read()?;
+        Ok(ICards::Account {
+            status: ICards::AccountStatus::try_from(record.status)
+                .unwrap_or(ICards::AccountStatus::Closed),
+            lastActive: record.last_active,
+            agent: record.agent,
+        })
+    }
+
+    pub(crate) fn authority_of(
+        &self,
+        authority: Address,
+        role: ICards::Role,
+    ) -> Result<ICards::authorityOfReturn> {
+        let entry = self.authorities[role as u8][authority].read()?;
+        Ok(ICards::authorityOfReturn {
+            listed: entry.listed,
+            payout: entry.payout,
+            dormancy: entry.dormancy,
+            escheatAfter: entry.escheat_after,
+        })
+    }
+
+    /// Repays `owner`'s debt in `token` from its available balance, pays the rest to `to` and
+    /// emits `AccountSwept`. Liens and open holds stay reserved.
+    fn pay_out(&mut self, owner: Address, token: Address, to: Address) -> Result<u128> {
+        let (repaid, paid) = Reservations::new().sweep_available(owner, token, to)?;
+        self.emit_event(CardsEvent::account_swept(owner, token, to, repaid, paid))?;
+        Ok(paid)
+    }
+
+    /// The registry's admin: the validator config owner, Tempo governance (the dev key on the
+    /// dev chain).
+    fn admin(&self) -> Result<Address> {
+        let owner = ValidatorConfigV2::new().owner()?;
+        if !owner.is_zero() {
+            return Ok(owner);
+        }
+        ValidatorConfig::new().owner()
     }
 
     /// Checks that `line` may commit `amount` more within its limit (`CardLimitExceeded`).

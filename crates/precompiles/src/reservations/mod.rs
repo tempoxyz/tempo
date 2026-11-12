@@ -386,6 +386,49 @@ impl Reservations {
         Ok(Some((creditor, U256::from(repaid))))
     }
 
+    /// Repays `owner`'s debt in `token` from its available balance, then pays the rest of that
+    /// balance to `to`, and returns what it repaid and paid. A repayment the token's policy
+    /// refuses pays nothing, so debts stay first. Liens and holds stay reserved.
+    ///
+    /// Called by `ICards` sweeps of closed accounts and estates.
+    pub(crate) fn sweep_available(
+        &mut self,
+        owner: Address,
+        token: Address,
+        to: Address,
+    ) -> Result<(u128, u128)> {
+        let mut tip20 = TIP20Token::from_address(token)?;
+        let free = available(&tip20, owner)?;
+        if free == 0 {
+            return Ok((0, 0));
+        }
+        let position = self.positions[owner][token].read()?;
+        let mut repaid = 0;
+        if position.debt != 0 {
+            let creditor = self.creditors[owner][token].read()?;
+            if !tip20.is_transfer_authorized(owner, creditor)? {
+                return Ok((0, 0));
+            }
+            repaid = position.debt.min(free);
+            self.reduce_debt(owner, token, position, creditor, repaid)?;
+            tip20.reservation_transfer(owner, creditor, U256::from(repaid))?;
+        }
+        let rest = free - repaid;
+        if rest != 0 {
+            tip20.ensure_transfer_authorized(owner, to)?;
+            tip20.reservation_transfer(owner, to, U256::from(rest))?;
+        }
+        Ok((repaid, rest))
+    }
+
+    /// Whether `owner` has holds open that reserve its balance of `token`: reserved beyond its
+    /// liens. Called by `ICards` before an estate settles.
+    pub(crate) fn holds_open(&self, owner: Address, token: Address) -> Result<bool> {
+        let reserved = self.positions[owner][token].reserved.read()?;
+        let liened = self.shortfalls[owner][token].liened.read()?.to::<u128>();
+        Ok(reserved > liened)
+    }
+
     /// Places `hold`, `holdStandIn`, which reserves only what is available, `holdCard`, which
     /// first checks the card, `holdWithLine`, which puts part of the hold on a credit line,
     /// `holdCardWithLine`, which does both, `holdCardStandIn`, which checks the card but not
@@ -448,6 +491,9 @@ impl Reservations {
             | Placement::Line { .. }
             | Placement::Dispute { .. } => None,
         };
+        // A dormant, closed or estate account takes no new holds; a card's checks above already
+        // refuse one through a closed or estate account's card as inactive.
+        Cards::new().ensure_account_active(owner)?;
 
         let mut position = self.positions[owner][call.token].read()?;
         let free = available(&token, owner)?;
@@ -2161,7 +2207,7 @@ mod tests {
     use crate::{
         account_keychain::AccountKeychain,
         address_registry::{AddressRegistry, MasterId, TempoAddressExt, UserTag},
-        cards::{Cards, CardsError, ICards},
+        cards::{Cards, CardsError, CardsEvent, ICards},
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
         tip20::{
@@ -6672,5 +6718,277 @@ mod tests {
         assert_eq!(SLOT_COUNT, 1);
         assert_eq!(LIENED_LOC.offset_slots, UNBACKED_LOC.offset_slots);
         assert_eq!(__packing_lien::SLOT_COUNT, 2);
+    }
+
+    impl Fixture {
+        fn close(&mut self, cards: &mut Cards, payout: Address) -> Result<u128> {
+            cards.close_account(
+                self.owner,
+                ICards::closeAccountCall {
+                    token: self.token.address(),
+                    payoutTo: payout,
+                },
+            )
+        }
+
+        fn account_status(&self, cards: &Cards) -> Result<ICards::AccountStatus> {
+            Ok(cards.get_account(self.owner)?.status)
+        }
+    }
+
+    #[test]
+    fn test_closed_account_refuses_holds_and_sweeps_debt_first() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(200)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Active,
+                U96::MAX,
+            )?;
+            let court = f.lien_authority()?;
+            let order = B256::random();
+            f.lien(court, order, 20)?;
+            let dinner = B256::random();
+            let hotel = B256::random();
+            hold_card(&mut f, dinner, 100, card)?;
+            hold_card(&mut f, hotel, 50, card)?;
+            f.set_debt_cap(f.payee, 100)?;
+            f.charge(B256::random(), 60, f.payee)?;
+            assert_eq!(f.available()?, 0);
+            assert_eq!(f.debt()?.amount, 30);
+
+            // Nothing is available, so closing pays nothing; the card and the account stop holds.
+            let bank = Address::random();
+            assert_eq!(f.close(&mut cards, bank)?, 0);
+            assert_eq!(f.account_status(&cards)?, ICards::AccountStatus::Closed);
+            assert_eq!(cards.get_account(f.owner)?.agent, bank);
+            assert_eq!(
+                cards.get_card(f.payee, card)?.status,
+                ICards::Status::Closed
+            );
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 1, card).unwrap_err(),
+                CardsError::card_inactive().into()
+            );
+            assert_eq!(
+                f.hold(B256::random(), 1).unwrap_err(),
+                CardsError::account_inactive().into()
+            );
+            assert_eq!(
+                issue_card(
+                    &mut cards,
+                    &f,
+                    f.owner,
+                    B256::random(),
+                    ICards::Status::Active,
+                    U96::MAX
+                )
+                .unwrap_err(),
+                CardsError::account_inactive().into()
+            );
+
+            // Open holds still settle, and a sweep of what a release frees repays the debt first.
+            f.capture(dinner, 100)?;
+            f.reservations.release(f.owner, hotel)?;
+            cards.clear_emitted_events();
+            assert_eq!(cards.sweep(f.owner, f.token.address())?, 20);
+            cards.assert_emitted_events(vec![CardsEvent::account_swept(
+                f.owner,
+                f.token.address(),
+                bank,
+                30,
+                20,
+            )]);
+            assert_eq!(f.debt()?.amount, 0);
+            assert_eq!(f.balance(bank)?, U256::from(20));
+            assert_eq!(f.reserved()?, 20);
+
+            // A late refund lands and pays out; the lien stays until its authority releases it.
+            f.refund(f.payee, dinner, 40)?;
+            assert_eq!(cards.sweep(f.owner, f.token.address())?, 40);
+            f.reservations.release_lien(court, order)?;
+            assert_eq!(f.close(&mut cards, bank)?, 20);
+            assert_eq!(f.balance(bank)?, U256::from(80));
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_closure_needs_the_root_key_and_sweeps_need_a_closed_account() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            assert_eq!(
+                cards.sweep(f.owner, f.token.address()).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            assert_eq!(
+                f.close(&mut cards, Address::ZERO).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(f.owner)?;
+            keychain.set_transaction_key(Address::random())?;
+            assert_eq!(
+                f.close(&mut cards, Address::random()).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            keychain.set_transaction_key(Address::ZERO)?;
+            let first = Address::random();
+            assert_eq!(f.close(&mut cards, first)?, 100);
+            // A later close changes the payout address.
+            f.mint(f.owner, 10)?;
+            let second = Address::random();
+            assert_eq!(f.close(&mut cards, second)?, 10);
+            assert_eq!(f.balance(first)?, U256::from(100));
+            assert_eq!(f.balance(second)?, U256::from(10));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_estate_settles_through_its_executor_once_holds_end() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let admin = Address::random();
+            crate::validator_config_v2::ValidatorConfigV2::new().initialize(admin)?;
+            let authority = Address::random();
+            let list = |cards: &mut Cards, sender: Address| {
+                cards.set_authority(
+                    sender,
+                    ICards::setAuthorityCall {
+                        authority,
+                        role: ICards::Role::Estate,
+                        listed: true,
+                        payout: Address::ZERO,
+                        dormancy: 0,
+                        escheatAfter: 0,
+                    },
+                )
+            };
+            assert_eq!(
+                list(&mut cards, authority).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            list(&mut cards, admin)?;
+            assert!(cards.authority_of(authority, ICards::Role::Estate)?.listed);
+            assert!(!cards.authority_of(authority, ICards::Role::Escheat)?.listed);
+
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Active,
+                U96::MAX,
+            )?;
+            let open = B256::random();
+            hold_card(&mut f, open, 30, card)?;
+            let executor = Address::random();
+            let owner = f.owner;
+            let estate = |cards: &mut Cards, sender: Address| {
+                cards.set_estate(sender, ICards::setEstateCall { owner, executor })
+            };
+            assert_eq!(
+                estate(&mut cards, Address::random()).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            estate(&mut cards, authority)?;
+            assert_eq!(f.account_status(&cards)?, ICards::AccountStatus::Estate);
+            assert_eq!(cards.get_account(f.owner)?.agent, executor);
+            assert_eq!(
+                cards.get_card(f.payee, card)?.status,
+                ICards::Status::Frozen
+            );
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 1, card).unwrap_err(),
+                CardsError::card_inactive().into()
+            );
+            assert_eq!(
+                f.hold(B256::random(), 1).unwrap_err(),
+                CardsError::account_inactive().into()
+            );
+            assert_eq!(
+                f.close(&mut cards, Address::random()).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            assert_eq!(
+                estate(&mut cards, authority).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+
+            let heir = Address::random();
+            let settle = |cards: &mut Cards, sender: Address, token: Address| {
+                cards.settle_estate(
+                    sender,
+                    ICards::settleEstateCall {
+                        owner,
+                        token,
+                        to: heir,
+                    },
+                )
+            };
+            let token = f.token.address();
+            assert_eq!(
+                settle(&mut cards, heir, token).unwrap_err(),
+                CardsError::unauthorized().into()
+            );
+            assert_eq!(
+                settle(&mut cards, executor, token).unwrap_err(),
+                CardsError::holds_open().into()
+            );
+            // A lien alone does not hold up the estate.
+            let court = f.lien_authority()?;
+            f.lien(court, B256::random(), 10)?;
+            f.capture(open, 30)?;
+            assert_eq!(settle(&mut cards, executor, token)?, 60);
+            assert_eq!(f.balance(heir)?, U256::from(60));
+            assert_eq!(f.account_status(&cards)?, ICards::AccountStatus::Closed);
+            assert_eq!(cards.get_account(f.owner)?.agent, heir);
+            assert_eq!(
+                cards.get_card(f.payee, card)?.status,
+                ICards::Status::Closed
+            );
+            assert_eq!(
+                settle(&mut cards, executor, token).unwrap_err(),
+                CardsError::account_state_invalid().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_sweep_repays_nothing_the_policy_refuses() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let held = B256::random();
+            f.hold(held, 100)?;
+            f.set_debt_cap(f.payee, 50)?;
+            f.capture(held, 120)?;
+            assert_eq!(f.debt()?.amount, 20);
+            let bank = Address::random();
+            assert_eq!(f.close(&mut cards, bank)?, 0);
+            f.blacklist(vec![f.payee])?;
+            // The credit cannot repay the blocked creditor, so it lands and the sweep keeps it.
+            f.mint(f.owner, 30)?;
+            assert_eq!(f.debt()?.amount, 20);
+            assert_eq!(cards.sweep(f.owner, f.token.address())?, 0);
+            assert_eq!(f.balance(bank)?, U256::ZERO);
+            Ok(())
+        })
     }
 }
