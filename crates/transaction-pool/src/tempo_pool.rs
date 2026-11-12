@@ -114,7 +114,7 @@ where
     ///
     /// Call before repairing the pool for a canonical update, and after refreshing what
     /// validation reads besides chain state. An admission that validated earlier would otherwise
-    /// insert a transaction that repair would have removed. Reth's own pool update needs no
+    /// insert a transaction that repair would have removed. Reth's canonical update needs no
     /// call: the validator advances the epoch when its head is refreshed.
     pub(crate) fn advance_admission_epoch(&self) {
         *self
@@ -1503,6 +1503,8 @@ where
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
+        // Moves sender nonces as a canonical update does.
+        self.advance_admission_epoch();
         self.protocol_pool.update_accounts(accounts)
     }
 
