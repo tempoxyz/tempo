@@ -754,7 +754,7 @@ jobs:
       # ── incident.io alert ──────────────────────────────────────
       # Pages reth on-call through incident.io's Reth CI source (which posts to
       # #eng-reth-alerts) when the update fails, and resolves the same alert on the
-      # next successful run. Skips when the incident.io secrets are not set.
+      # next successful bump. Fails loudly if a failure cannot be sent.
       - name: Update incident.io alert
         if: ${{ !cancelled() && github.repository == 'tempoxyz/tempo' }}
         env:
@@ -780,7 +780,18 @@ jobs:
             OUTCOME="failed"
           fi
 
+          # A run with no new reth rev re-verifies nothing, so it must not resolve
+          # an alert raised by an earlier failed bump.
+          if [ "$STATUS" = "resolved" ] && [ "$BUMPED" != "true" ]; then
+            echo "No reth bump this run; leaving the incident.io alert unchanged"
+            exit 0
+          fi
+
           if [ -z "$INCIDENT_IO_URL" ] || [ -z "$INCIDENT_IO_TOKEN" ]; then
+            if [ "$STATUS" = "firing" ]; then
+              echo "::error::INCIDENT_IO_RETH_CI_URL or INCIDENT_IO_RETH_CI_TOKEN is not set; cannot alert reth on-call about this failure"
+              exit 1
+            fi
             echo "::notice::INCIDENT_IO_RETH_CI_URL or INCIDENT_IO_RETH_CI_TOKEN is not set; skipping incident.io alert"
             exit 0
           fi
