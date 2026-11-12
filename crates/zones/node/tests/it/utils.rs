@@ -97,8 +97,8 @@ mod auth_tokens;
 mod network;
 
 pub(crate) use auth_tokens::{
-    build_signed_token_blob, now_secs, p256_public_key, sign_keychain_signature,
-    sign_p256_signature, sign_webauthn_signature,
+    build_signed_token_blob, build_token_with_signature, now_secs, p256_public_key,
+    sign_keychain_signature, sign_p256_signature, sign_webauthn_signature,
 };
 pub(crate) use network::{P2pChaosNetwork, TcpChaosProxy};
 
@@ -2771,7 +2771,7 @@ impl L1TestNode {
                 if refuse_state_proofs {
                     let mut module = jsonrpsee::RpcModule::new(());
                     for method in ["eth_getProof", "eth_getMultiProof"] {
-                        module.register_method(method, |_, _, _| {
+                        module.register_method(method, |_, _| {
                             Err::<(), _>(jsonrpsee::types::ErrorObjectOwned::owned(
                                 -32000,
                                 "state proofs unavailable",

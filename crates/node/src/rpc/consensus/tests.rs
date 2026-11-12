@@ -1,14 +1,65 @@
 use super::*;
 use alloy_primitives::B256;
+use alloy_provider::RootProvider;
+use alloy_rpc_client::{RpcClient, WsConnect};
+use alloy_transport::TransportResult;
 use jsonrpsee::{
-    core::EmptyServerParams,
+    Methods,
     server::{Server, ServerConfig},
-    ws_client::WsClientBuilder,
+    types::{
+        Response,
+        response::{SubscriptionResponse, Success},
+    },
 };
 use reth_primitives_traits::SealedBlock;
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc, time::Duration};
+use tempo_alloy::TempoNetwork;
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
+
+async fn connect(addr: SocketAddr) -> RootProvider<TempoNetwork> {
+    RootProvider::new(
+        RpcClient::connect_pubsub(WsConnect::new(format!("ws://{addr}")))
+            .await
+            .unwrap(),
+    )
+}
+
+/// Sends \`consensus_subscribe\` as a plain call and returns the server's subscription ID, so the
+/// test can end it with \`consensus_unsubscribe\` (alloy only sends \`eth_unsubscribe\`).
+async fn open_subscription(
+    client: &RootProvider<TempoNetwork>,
+) -> TransportResult<serde_json::Value> {
+    client
+        .client()
+        .request_noparams("consensus_subscribe")
+        .await
+}
+
+async fn close_subscription(client: &RootProvider<TempoNetwork>, id: serde_json::Value) {
+    let closed: bool = client
+        .client()
+        .request("consensus_unsubscribe", (id,))
+        .await
+        .unwrap();
+    assert!(closed);
+}
+
+async fn subscribe(
+    module: &Methods,
+) -> Result<tokio::sync::mpsc::Receiver<String>, jsonrpsee::types::ErrorObjectOwned> {
+    let (response, receiver) = module
+        .raw_json_request(
+            r#"{"jsonrpc":"2.0","id":1,"method":"consensus_subscribe","params":[]}"#,
+            256,
+        )
+        .await
+        .unwrap();
+    Success::<serde_json::Value>::try_from(
+        serde_json::from_str::<Response<'_, serde_json::Value>>(&response).unwrap(),
+    )?;
+    Ok(receiver)
+}
 
 /// A feed with no publisher of its own, modelling a node whose finalization has stalled.
 /// Tests that need events send them on `events_tx` directly.
@@ -65,10 +116,7 @@ async fn subscription_task_exits_on_disconnect_without_events() {
     )
     .into_rpc();
 
-    let subscription = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
+    let subscription = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
     drop(subscription);
@@ -98,19 +146,16 @@ async fn unsubscribe_releases_permit_without_events() {
     let addr = server.local_addr().unwrap();
     let _handle = server.start(module);
 
-    let client = WsClientBuilder::default()
-        .build(format!("ws://{addr}"))
-        .await
-        .unwrap();
+    let client = connect(addr).await;
 
-    let subscription = client.subscribe_events().await.unwrap();
+    let id = open_subscription(&client).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
-    subscription.unsubscribe().await.unwrap();
+    close_subscription(&client, id).await;
     wait_for_live_subscriptions(&events_tx, 0).await;
 
     // The only permit on this connection must be available again.
-    let _subscription = client.subscribe_events().await.unwrap();
+    let _id = open_subscription(&client).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 }
 
@@ -125,10 +170,7 @@ async fn subscription_notification_carries_event() {
     )
     .into_rpc();
 
-    let mut subscription = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
+    let mut subscription = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
     let block = CertifiedBlock {
@@ -145,7 +187,11 @@ async fn subscription_notification_carries_event() {
         }))
         .unwrap();
 
-    let (received, _) = subscription.next::<Event>().await.unwrap().unwrap();
+    let notification = subscription.recv().await.unwrap();
+    let received = serde_json::from_str::<SubscriptionResponse<'_, Event>>(&notification)
+        .unwrap()
+        .params
+        .result;
     let Event::Finalized {
         block: received_block,
         seen,
@@ -184,29 +230,19 @@ async fn subscribe_is_rejected_as_busy_once_limit_is_reached() {
     )
     .into_rpc();
 
-    let first = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
+    let first = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
-    let err = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
+    let err = subscribe(&module)
         .await
         .expect_err("second subscription must be rejected");
-    let jsonrpsee::core::server::MethodsError::JsonRpc(err) = err else {
-        panic!("expected a JSON-RPC error, got {err:?}");
-    };
     assert_eq!(err.code(), SERVER_IS_BUSY_CODE);
     assert_eq!(events_tx.receiver_count(), 1);
 
     // Dropping the live subscription frees its permit.
     drop(first);
     wait_for_live_subscriptions(&events_tx, 0).await;
-    let _again = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
+    let _again = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 }
 
@@ -222,10 +258,7 @@ async fn subscriber_that_stops_reading_is_dropped() {
     .into_rpc();
 
     // Never read from the subscription, so its notifications pile up in the buffer.
-    let _subscription = module
-        .subscribe("consensus_subscribe", EmptyServerParams::new(), 256)
-        .await
-        .unwrap();
+    let _subscription = subscribe(&module).await.unwrap();
     wait_for_live_subscriptions(&events_tx, 1).await;
 
     for _ in 0..=MAX_PENDING_NOTIFICATIONS + 1 {
@@ -254,7 +287,7 @@ impl ConsensusFeed for ClosingFeed {
 }
 
 #[tokio::test]
-async fn server_ended_subscription_closes_client_stream() {
+async fn server_ended_subscription_sends_close_notification() {
     let (events_tx, events_rx) = broadcast::channel(1);
     let module = TempoConsensusRpc::new(
         ClosingFeed {
@@ -264,23 +297,16 @@ async fn server_ended_subscription_closes_client_stream() {
     )
     .into_rpc();
 
-    let server = Server::builder().build("127.0.0.1:0").await.unwrap();
-    let addr = server.local_addr().unwrap();
-    let _handle = server.start(module);
-    let client = WsClientBuilder::default()
-        .build(format!("ws://{addr}"))
-        .await
-        .unwrap();
-
-    let mut subscription = client.subscribe_events().await.unwrap();
-    // The server ends the subscription while the connection stays open; the client must see its
-    // stream end so it can resubscribe.
+    let mut subscription = subscribe(&module).await.unwrap();
+    // The server ends the subscription; the close notification tells the subscriber to resubscribe
+    // and backfill.
     drop(events_tx);
-    let next = tokio::time::timeout(Duration::from_secs(5), subscription.next())
+    let notification = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
         .await
-        .expect("client stream must end once the server closes the subscription");
-    assert!(next.is_none(), "expected the stream to end, got {next:?}");
-    assert!(client.is_connected());
+        .expect("server must notify the subscriber once it closes the subscription")
+        .expect("expected a close notification");
+    let notification = serde_json::from_str::<serde_json::Value>(&notification).unwrap();
+    assert_eq!(notification["params"]["error"], "consensus feed closed");
 }
 
 #[tokio::test]
@@ -297,27 +323,24 @@ async fn subscriptions_are_capped_per_connection() {
     let server = Server::builder().build("127.0.0.1:0").await.unwrap();
     let addr = server.local_addr().unwrap();
     let _handle = server.start(module);
-    let connect = || WsClientBuilder::default().build(format!("ws://{addr}"));
-
-    let first = connect().await.unwrap();
+    let first = connect(addr).await;
     let mut held = Vec::new();
     for _ in 0..DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() {
-        held.push(first.subscribe_events().await.unwrap());
+        held.push(open_subscription(&first).await.unwrap());
     }
     wait_for_live_subscriptions(&events_tx, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get()).await;
 
-    let jsonrpsee::core::client::Error::Call(err) = first
-        .subscribe_events()
+    let err = open_subscription(&first)
         .await
-        .expect_err("subscription over the per-connection cap must be rejected")
-    else {
-        panic!("expected a JSON-RPC error");
-    };
-    assert_eq!(err.code(), TOO_MANY_SUBSCRIPTIONS_CODE);
+        .expect_err("subscription over the per-connection cap must be rejected");
+    assert_eq!(
+        err.as_error_resp().expect("expected a JSON-RPC error").code,
+        i64::from(TOO_MANY_SUBSCRIPTIONS_CODE)
+    );
 
     // Another connection still gets its own share.
-    let second = connect().await.unwrap();
-    let _other = second.subscribe_events().await.unwrap();
+    let second = connect(addr).await;
+    let _other = open_subscription(&second).await.unwrap();
     wait_for_live_subscriptions(
         &events_tx,
         DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() + 1,
@@ -325,9 +348,9 @@ async fn subscriptions_are_capped_per_connection() {
     .await;
 
     // Ending one subscription frees a slot on the first connection.
-    held.pop().unwrap().unsubscribe().await.unwrap();
+    close_subscription(&first, held.pop().unwrap()).await;
     wait_for_live_subscriptions(&events_tx, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get()).await;
-    let _again = first.subscribe_events().await.unwrap();
+    let _again = open_subscription(&first).await.unwrap();
 }
 
 #[tokio::test]
@@ -345,12 +368,7 @@ async fn handler_without_connection_cap_allows_more_per_connection() {
     // In-process subscriptions all share one connection ID.
     let mut held = Vec::new();
     for _ in 0..=DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() {
-        held.push(
-            module
-                .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-                .await
-                .unwrap(),
-        );
+        held.push(subscribe(&module).await.unwrap());
     }
     wait_for_live_subscriptions(
         &events_tx,
