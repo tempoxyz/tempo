@@ -282,6 +282,33 @@ impl AA2dPool {
             ));
         }
 
+        // A sender at the per-authority limit still adds the on-chain nonce of a lane that holds
+        // transactions, which makes them executable, in place of the lane's highest nonce. Any
+        // other authority at the limit rejects it below.
+        let sender = transaction.sender();
+        let evicted = if tx_id.nonce == on_chain_nonce
+            && lane_count > 0
+            && !self.by_id.contains_key(&tx_id)
+            && transaction
+                .transaction
+                .authorities()
+                .into_iter()
+                .flatten()
+                .all(|authority| {
+                    let at_capacity =
+                        self.txs_by_authority.get(&authority) >= self.config.max_txs_per_authority;
+                    at_capacity == (authority == sender)
+                }) {
+            let highest = self.by_id.range(tx_id.seq_id.range()).next_back();
+            let highest = highest.map(|(id, _)| *id);
+            highest.and_then(|id| self.remove_transaction_by_id(&id))
+        } else {
+            None
+        };
+        if evicted.is_some() {
+            self.metrics.inc_removed(1);
+        }
+
         // assume the transaction is not pending, will get updated later
         let tx = Arc::new(AA2dInternalTransaction {
             inner: AA2dStoredTransaction::new(self.next_id(), transaction.clone()),
@@ -461,7 +488,7 @@ impl AA2dPool {
                 transaction,
                 replaced: replaced.map(|tx| tx.inner.transaction.clone()),
                 promoted: promoted.into_iter().map(|tx| tx.transaction).collect(),
-                discarded: self.discard(),
+                discarded: evicted.into_iter().chain(self.discard()).collect(),
             }));
         }
 
@@ -2042,7 +2069,8 @@ pub struct AA2dPoolConfig {
     /// signer, separate fee payer or access key.
     ///
     /// Bounds how many pooled transactions one account can invalidate with a single state
-    /// change (DoS protection).
+    /// change (DoS protection). A sender at the limit still adds the on-chain nonce of a lane
+    /// that holds transactions, in place of the lane's highest nonce, to allow gap filling.
     pub max_txs_per_authority: usize,
     /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
@@ -6081,6 +6109,53 @@ mod tests {
             0,
             TempoHardfork::T1,
         )
+    }
+
+    #[test]
+    fn per_authority_limit_evicts_highest_nonce_for_on_chain_nonce() {
+        let mut pool = authority_limit_pool(3);
+        let sender = Address::random();
+        let fee_payer = PrivateKeySigner::random();
+        let build = |nonce_key, nonce| {
+            TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build()
+        };
+        let mut hashes = Vec::new();
+        for nonce in 1..=3 {
+            let tx = sponsor(build(U256::ONE, nonce), &fee_payer);
+            hashes.push(*tx.hash());
+            add_expiring(&mut pool, tx).unwrap();
+        }
+
+        // A future nonce and the on-chain nonce of an empty lane are rejected at the limit, and
+        // so is the on-chain nonce when another authority is at the limit too.
+        for tx in [
+            build(U256::ONE, 4),
+            build(U256::from(2), 0),
+            sponsor(build(U256::ONE, 0), &fee_payer),
+        ] {
+            let err = add_expiring(&mut pool, tx).unwrap_err();
+            assert!(
+                matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(address) if address == sender),
+                "unexpected error: {:?}",
+                err.kind
+            );
+        }
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 3));
+
+        let added = add_expiring(&mut pool, build(U256::ONE, 0)).unwrap();
+        let added = added.as_pending().unwrap();
+        let hashes_of = |txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]| {
+            txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>()
+        };
+        assert_eq!(hashes_of(&added.promoted), hashes[..2]);
+        assert_eq!(hashes_of(&added.discarded), hashes[2..]);
+        assert_eq!(pool.pending_and_queued_txn_count(), (3, 0));
+        assert_eq!(pool.txs_by_authority.get(&sender), 3);
+        assert_eq!(pool.txs_by_authority.get(&fee_payer.address()), 2);
+        pool.assert_invariants();
     }
 
     /// A fee payer sponsoring distinct senders is limited like a sender, and its slots are
