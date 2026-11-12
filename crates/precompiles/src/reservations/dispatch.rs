@@ -157,6 +157,10 @@ impl Precompile for Reservations {
                     resolveDispute(call) => mutate(call, msg_sender, |sender, c| {
                         self.resolve_dispute(sender, c)
                     }),
+                    lien(call) => mutate(call, msg_sender, |sender, c| self.lien(sender, c)),
+                    releaseLien(call) => mutate(call, msg_sender, |sender, c| {
+                        self.release_lien(sender, c.id)
+                    }),
                     getHold(call) => view(call, |c| self.get_hold(c.owner, c.id)),
                     reserved(call) => view(call, |c| self.reserved_of(c.owner, c.token)),
                     available(call) => view(call, |c| self.available_of(c.owner, c.token)),
@@ -175,6 +179,8 @@ impl Precompile for Reservations {
                         self.credit_offer(c.lender, c.line, c.owner)
                     }),
                     disputeOf(call) => view(call, |c| self.dispute_of(c.owner, c.id)),
+                    lienOf(call) => view(call, |c| self.lien_of(c.authority, c.id)),
+                    liened(call) => view(call, |c| self.liened_of(c.owner, c.token)),
                 }
             }
         )

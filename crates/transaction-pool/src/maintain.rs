@@ -227,7 +227,8 @@ impl TempoPoolUpdates {
                     None => {}
                 }
             }
-            // Hold and line lien changes, which all index the account and token as topics 1 and 3.
+            // Hold, line lien and lien changes, which all index the account and token as topics 1
+            // and 3.
             // Releases and captures raise the available balance, which can change a fallback
             // fee-token choice.
             else if log.address == RESERVATIONS_ADDRESS {
@@ -236,7 +237,9 @@ impl TempoPoolUpdates {
                         || topic0 == IReservations::HoldAdjusted::SIGNATURE_HASH
                         || topic0 == IReservations::HoldReleased::SIGNATURE_HASH
                         || topic0 == IReservations::HoldCaptured::SIGNATURE_HASH
-                        || topic0 == IReservations::LineReserved::SIGNATURE_HASH)
+                        || topic0 == IReservations::LineReserved::SIGNATURE_HASH
+                        || topic0 == IReservations::Liened::SIGNATURE_HASH
+                        || topic0 == IReservations::LienReleased::SIGNATURE_HASH)
                     && let [_, owner, _, token] = log.topics()
                 {
                     updates
@@ -1386,6 +1389,8 @@ mod tests {
             let adjusted_owner = Address::random();
             let released_owner = Address::random();
             let lender = Address::random();
+            let liened_owner = Address::random();
+            let unliened_owner = Address::random();
             let id = B256::random();
             let receipt = TempoReceipt {
                 tx_type: TempoTxType::Legacy,
@@ -1421,6 +1426,22 @@ mod tests {
                         lien: 3,
                     }
                     .into_log_data(),
+                    IReservations::Liened {
+                        owner: liened_owner,
+                        authority: Address::random(),
+                        token,
+                        id,
+                        amount: 4,
+                    }
+                    .into_log_data(),
+                    IReservations::LienReleased {
+                        owner: unliened_owner,
+                        authority: Address::random(),
+                        token,
+                        id,
+                        amount: 5,
+                    }
+                    .into_log_data(),
                 ]
                 .into_iter()
                 .map(|data| {
@@ -1439,7 +1460,9 @@ mod tests {
                     placed_owner,
                     adjusted_owner,
                     released_owner,
-                    lender
+                    lender,
+                    liened_owner,
+                    unliened_owner
                 ]))
             );
             assert!(updates.fee_balance_changes.is_empty());

@@ -104,6 +104,11 @@ crate::sol! {
         /// `hold` naming the open dispute on `disputeOwner`'s record `disputeId`, whose payee must be
         /// `payee`: may last up to 120 days, and its payee captures it only once the cardholder won.
         function holdForDispute(address token, bytes32 id, uint128 amount, uint64 expiresAt, address payee, address disputeOwner, bytes32 disputeId) external;
+        /// Reserves `amount` of `owner`'s available `token` balance with no expiry under `id`, which
+        /// the caller chooses. Called by a holder of the token's `LIEN_ROLE`, with its root key.
+        function lien(address owner, address token, bytes32 id, uint128 amount) external;
+        /// Ends the caller's lien `id`, returning what it still reserves to the owner's available balance.
+        function releaseLien(bytes32 id) external;
 
         function getHold(address owner, bytes32 id) external view returns (Hold memory);
         function reserved(address owner, address token) external view returns (uint128);
@@ -122,6 +127,10 @@ crate::sol! {
         /// The dispute on `owner`'s record `id`: its state (zero without one, 1 to 5 open, 6 won, 7
         /// lost), disputed amount, provisional credit standing and the part of it that repaid a line.
         function disputeOf(address owner, bytes32 id) external view returns (uint8 state, uint128 amount, uint128 provisional, uint128 lineShare);
+        /// The lien `authority` placed under `id`; a zero token when there is none.
+        function lienOf(address authority, bytes32 id) external view returns (address owner, address token, uint128 amount);
+        /// The sum of the liens on `owner`'s `token` balance.
+        function liened(address owner, address token) external view returns (uint128);
 
         event HoldPlaced(address indexed owner, bytes32 indexed id, address indexed token, address payee, uint128 amount, uint64 expiresAt);
         event CardHoldPlaced(address indexed owner, bytes32 indexed id, bytes32 indexed card, uint64 line);
@@ -152,6 +161,9 @@ crate::sol! {
         event DisputeSettled(address indexed owner, bytes32 indexed id, uint128 amount);
         /// Follows `HoldPlaced` for a hold naming a dispute.
         event DisputeHoldPlaced(address indexed owner, bytes32 indexed id, address indexed disputeOwner, bytes32 disputeId);
+        event Liened(address indexed owner, address indexed authority, address indexed token, bytes32 id, uint128 amount);
+        /// `amount` is the lien's amount; after a compliance burn the owner gets back at most what is still reserved.
+        event LienReleased(address indexed owner, address indexed authority, address indexed token, bytes32 id, uint128 amount);
 
         error HoldExists();
         error HoldNotFound();
@@ -169,5 +181,7 @@ crate::sol! {
         error DisputeExists();
         error DisputeNotFound();
         error InvalidDisputeStep();
+        error LienExists();
+        error LienNotFound();
     }
 }
