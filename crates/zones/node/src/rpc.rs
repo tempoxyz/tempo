@@ -28,7 +28,12 @@ use alloy_sol_types::SolCall;
 use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
 use futures::{StreamExt, TryStreamExt};
-use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
+use jsonrpsee::{
+    RpcModule,
+    core::RpcResult,
+    proc_macros::rpc,
+    types::{ErrorObjectOwned, Params},
+};
 use reth_chainspec::Hardforks;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
 use reth_execution_types::BundleSource;
@@ -293,12 +298,9 @@ where
         let eth_api = code_eth_api.clone();
         let l1_state = code_l1_state.clone();
         async move {
-            let mut params = params.sequence();
-            let address: Address = params.next()?;
+            let (address, block_id) = address_and_block_number(&params)?;
             // The header and anchor lookups below have no pending block to fall back from.
-            let block_id = zone_rpc::handlers::normalize_block_id(
-                params.optional_next::<BlockId>()?.unwrap_or_default(),
-            );
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id.unwrap_or_default());
             let code = EthState::get_code(&eth_api, address, Some(block_id))
                 .await
                 .map_err(Into::into)?;
@@ -318,10 +320,9 @@ where
         let eth_api = info_eth_api.clone();
         let l1_state = info_l1_state.clone();
         async move {
-            let mut params = params.sequence();
-            let address: Address = params.next()?;
+            let (address, block_id) = address_and_block(&params)?;
             // The header and anchor lookups below have no pending block to fall back from.
-            let block_id = zone_rpc::handlers::normalize_block_id(params.next::<BlockId>()?);
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id);
             let mut info = EthState::get_account_info(&eth_api, address, block_id)
                 .await
                 .map_err(Into::into)?;
@@ -340,10 +341,9 @@ where
         let eth_api = eth_api.clone();
         let l1_state = l1_state.clone();
         async move {
-            let mut params = params.sequence();
-            let address: Address = params.next()?;
+            let (address, block_id) = address_and_block(&params)?;
             // The header and anchor lookups below have no pending block to fall back from.
-            let block_id = zone_rpc::handlers::normalize_block_id(params.next::<BlockId>()?);
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id);
             let account = EthState::get_account(&eth_api, address, block_id)
                 .await
                 .map_err(Into::into)?;
@@ -365,6 +365,44 @@ where
         }
     })?;
     Ok(module)
+}
+
+/// `eth_getCode`'s address and optional block, positional or named, as reth's generated handler
+/// accepts them.
+fn address_and_block_number(
+    params: &Params<'_>,
+) -> Result<(Address, Option<BlockId>), ErrorObjectOwned> {
+    #[derive(serde::Deserialize)]
+    struct Named {
+        address: Address,
+        #[serde(default, alias = "blockNumber")]
+        block_number: Option<BlockId>,
+    }
+    if params.is_object() {
+        let Named {
+            address,
+            block_number,
+        } = params.parse()?;
+        return Ok((address, block_number));
+    }
+    let mut params = params.sequence();
+    Ok((params.next()?, params.optional_next()?))
+}
+
+/// `eth_getAccount`'s and `eth_getAccountInfo`'s address and block, positional or named, as reth's
+/// generated handlers accept them.
+fn address_and_block(params: &Params<'_>) -> Result<(Address, BlockId), ErrorObjectOwned> {
+    #[derive(serde::Deserialize)]
+    struct Named {
+        address: Address,
+        block: BlockId,
+    }
+    if params.is_object() {
+        let Named { address, block } = params.parse()?;
+        return Ok((address, block));
+    }
+    let mut params = params.sequence();
+    Ok((params.next()?, params.next()?))
 }
 
 /// The Tempo commitment zone execution reads for a codeless `address` at `block_id`, or zero for

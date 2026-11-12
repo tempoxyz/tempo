@@ -174,6 +174,29 @@ async fn test_migrated_account_rejects_its_original_key() -> eyre::Result<()> {
         assert_eq!(info.code, CONFIGURABLE_ACCOUNT_CODE);
         assert_eq!(info.extension, commitment.clone().into());
     }
+    // Named parameters, which reth's generated handlers accept, get the same answers.
+    let named_code: Bytes = provider
+        .raw_request(
+            "eth_getCode".into(),
+            serde_json::json!({ "address": dev_address, "blockNumber": "latest" }),
+        )
+        .await?;
+    assert_eq!(named_code, CONFIGURABLE_ACCOUNT_CODE);
+    let named_info: alloy::rpc::types::eth::AccountInfo = provider
+        .raw_request(
+            "eth_getAccountInfo".into(),
+            serde_json::json!({ "address": dev_address, "block": "latest" }),
+        )
+        .await?;
+    assert_eq!(named_info.code, CONFIGURABLE_ACCOUNT_CODE);
+    assert_eq!(named_info.extension, commitment.clone().into());
+    let named_account: alloy::consensus::TrieAccount = provider
+        .raw_request(
+            "eth_getAccount".into(),
+            serde_json::json!({ "address": dev_address, "block": "latest" }),
+        )
+        .await?;
+    assert_eq!(named_account.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
     // So does eth_getAccount, with the marker's code hash, though the zone holds no account.
     for account in [
         provider.get_account(dev_address).latest().await?,
