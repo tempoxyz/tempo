@@ -509,7 +509,7 @@ where
         let mut slow_discarded_transaction = None;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
-        // work would consume that window. A transaction, other than the first, whose
+        // work would consume that window. A transaction, including the first, whose
         // execution exhausts the budget is discarded and left in the pool for a later block,
         // unless its execution took at least SLOW_TRANSACTION_EXECUTION_THRESHOLD, in which
         // case it is removed from the pool.
@@ -679,11 +679,10 @@ where
                 .replay_execution_elapsed
                 .unwrap_or(transaction_execution_elapsed);
             let execution_result = executed.and_then(|result| {
-                // The first pool transaction is always committed, so a single transaction that
-                // exhausts the budget on its own cannot keep every block empty.
-                if pool_transactions_included > 0
-                    && let Some(plan) = build_plan.as_ref()
-                {
+                // Any pool transaction, including the first, is discarded when its execution
+                // exhausts the budget. A slow one is removed from the pool below, so it cannot
+                // be re-executed and discarded block after block.
+                if let Some(plan) = build_plan.as_ref() {
                     let workload = ValidationLatencyWorkload::new(
                         gas_used_before_tx + result.block_gas_used(),
                         pool_transactions_included as usize + 1,
