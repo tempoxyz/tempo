@@ -138,14 +138,19 @@ impl PayloadBench {
             max_account_slots: usize::MAX,
             ..Default::default()
         };
-        let pool = TempoPoolBuilder::default().build_with_validator(
-            provider.clone(),
-            TransactionValidationTaskExecutor::eth_builder(provider.clone(), evm_config.clone())
+        let pool = TempoPoolBuilder::default()
+            .with_max_txs_per_lane(usize::MAX)
+            .build_with_validator(
+                provider.clone(),
+                TransactionValidationTaskExecutor::eth_builder(
+                    provider.clone(),
+                    evm_config.clone(),
+                )
                 .with_additional_tasks(std::thread::available_parallelism()?.get()),
-            runtime.clone(),
-            pool_config,
-            true,
-        )?;
+                runtime.clone(),
+                pool_config,
+                true,
+            )?;
 
         let started = Instant::now();
         let transactions = match &self.txs_file {

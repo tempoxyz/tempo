@@ -28,6 +28,7 @@ use tempo_primitives::{
         tt_signature::{P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature},
     },
 };
+use test_case::test_case;
 
 const SIGNER: Address = Address::new([0x11; 20]);
 
@@ -1566,70 +1567,66 @@ fn test_key_authorization_gas_in_batch() {
     );
 }
 
-#[test]
-fn test_2d_nonce_gas_in_intrinsic_gas() {
+#[test_case(TempoHardfork::Genesis)]
+#[test_case(TempoHardfork::T0)]
+#[test_case(TempoHardfork::T1)]
+#[test_case(TempoHardfork::T1A)]
+#[test_case(TempoHardfork::T1B)]
+#[test_case(TempoHardfork::T2)]
+fn test_2d_nonce_gas_in_intrinsic_gas(spec: TempoHardfork) {
     const BASE_INTRINSIC_GAS: u64 = 21_000;
 
-    for spec in [
-        TempoHardfork::Genesis,
-        TempoHardfork::T0,
-        TempoHardfork::T1,
-        TempoHardfork::T1A,
-        TempoHardfork::T1B,
-        TempoHardfork::T2,
-    ] {
-        let gas = |nonce, nonce_key| {
-            intrinsic(
-                spec,
-                TempoTransaction {
-                    nonce,
-                    nonce_key,
-                    calls: vec![Call::new(Address::ZERO, Bytes::new())],
-                    ..Default::default()
-                },
-                secp256k1_signature(),
-            )
-            .unwrap()
+    let gas = |nonce, nonce_key| {
+        intrinsic(
+            spec,
+            TempoTransaction {
+                nonce,
+                nonce_key,
+                calls: vec![Call::new(Address::ZERO, Bytes::new())],
+                ..Default::default()
+            },
+            secp256k1_signature(),
+        )
+        .unwrap()
+    };
+
+    // Case 1: Protocol nonce (nonce_key == 0, nonce > 0) - no additional gas
+    {
+        let gas = gas(5, U256::ZERO);
+        assert_eq!(
+            gas.0, BASE_INTRINSIC_GAS,
+            "protocol nonce (nonce_key=0, nonce>0) should have no extra gas"
+        );
+    }
+
+    // Case 2: nonce_key != 0, nonce == 0
+    {
+        let evm = test_evm(spec);
+        let expected = if spec.is_t1() {
+            // T1+: any nonce==0 charges new_account_cost (250k)
+            BASE_INTRINSIC_GAS
+                + u64::from(evm.version().gas_params[GasId::NewAccountCost])
+                + evm.version().gas_params.new_account_state_gas()
+        } else {
+            // Pre-T1: charges gas_new_nonce_key for new 2D key
+            BASE_INTRINSIC_GAS + spec.gas_new_nonce_key()
         };
+        let gas = gas(0, U256::ONE);
+        assert_eq!(
+            gas.0 + gas.1,
+            expected,
+            "nonce_key!=0, nonce==0 gas mismatch"
+        );
+    }
 
-        // Case 1: Protocol nonce (nonce_key == 0, nonce > 0) - no additional gas
-        {
-            let gas = gas(5, U256::ZERO);
-            assert_eq!(
-                gas.0, BASE_INTRINSIC_GAS,
-                "{spec:?}: protocol nonce (nonce_key=0, nonce>0) should have no extra gas"
-            );
-        }
-
-        // Case 2: nonce_key != 0, nonce == 0
-        {
-            let evm = test_evm(spec);
-            let expected = if spec.is_t1() {
-                // T1+: any nonce==0 charges new_account_cost (250k)
-                BASE_INTRINSIC_GAS
-                    + u64::from(evm.version().gas_params[GasId::NewAccountCost])
-                    + evm.version().gas_params.new_account_state_gas()
-            } else {
-                // Pre-T1: charges gas_new_nonce_key for new 2D key
-                BASE_INTRINSIC_GAS + spec.gas_new_nonce_key()
-            };
-            let gas = gas(0, U256::ONE);
-            assert_eq!(
-                gas.0 + gas.1,
-                expected,
-                "{spec:?}: nonce_key!=0, nonce==0 gas mismatch"
-            );
-        }
-
-        // Case 3: Existing 2D nonce key (nonce_key != 0, nonce > 0)
-        {
-            let gas = gas(5, U256::ONE);
-            assert_eq!(
-                gas.0,
-                BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(),
-                "{spec:?}: existing 2D nonce key gas mismatch"
-            );
-        }
+    // Case 3: Existing 2D nonce key (nonce_key != 0, nonce > 0)
+    {
+        let gas = gas(5, U256::ONE);
+        assert_eq!(
+            gas.0,
+            BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(),
+            "existing 2D nonce key gas mismatch"
+        );
     }
 }
 
@@ -1642,101 +1639,94 @@ fn test_2d_nonce_gas_in_intrinsic_gas() {
 /// by using delta-based assertions: gas(nonce=0) - gas(nonce>0) == new_account_cost.
 ///
 /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
-#[test]
-fn test_2d_nonce_gas_limit_validation() {
+#[test_case(TempoHardfork::Genesis)]
+#[test_case(TempoHardfork::T0)]
+#[test_case(TempoHardfork::T1)]
+#[test_case(TempoHardfork::T2)]
+fn test_2d_nonce_gas_limit_validation(spec: TempoHardfork) {
     const BASE_INTRINSIC_GAS: u64 = 21_000;
 
-    for spec in [
-        TempoHardfork::Genesis,
-        TempoHardfork::T0,
-        TempoHardfork::T1,
-        TempoHardfork::T2,
-    ] {
-        let env = |nonce, gas_limit| {
-            aa_env(
-                TempoTransaction {
-                    chain_id: 1,
-                    nonce,
-                    nonce_key: U256::ONE,
-                    gas_limit,
-                    calls: vec![Call::new(Address::ZERO, Bytes::new())],
-                    ..Default::default()
-                },
-                secp256k1_signature(),
-            )
-        };
-        let evm = test_evm(spec);
-        let gas_params = &evm.version().gas_params;
-        let nonce_zero_gas = if spec.is_t1() {
-            gas_params.get(GasId::NewAccountCost)
-        } else {
-            spec.gas_new_nonce_key()
-        };
-        let nonce_zero_state_gas = gas_params.new_account_state_gas();
-        let nonce_zero_total = nonce_zero_gas + nonce_zero_state_gas;
+    let env = |nonce, gas_limit| {
+        aa_env(
+            TempoTransaction {
+                chain_id: 1,
+                nonce,
+                nonce_key: U256::ONE,
+                gas_limit,
+                calls: vec![Call::new(Address::ZERO, Bytes::new())],
+                ..Default::default()
+            },
+            secp256k1_signature(),
+        )
+    };
+    let evm = test_evm(spec);
+    let gas_params = &evm.version().gas_params;
+    let nonce_zero_gas = if spec.is_t1() {
+        gas_params.get(GasId::NewAccountCost)
+    } else {
+        spec.gas_new_nonce_key()
+    };
+    let nonce_zero_state_gas = gas_params.new_account_state_gas();
+    let nonce_zero_total = nonce_zero_gas + nonce_zero_state_gas;
 
-        // Build spec-specific test cases: (gas_limit, nonce, expected_result)
-        let cases = if spec.is_t0() {
-            let mut cases = vec![
-                (BASE_INTRINSIC_GAS + nonce_zero_total, 0, true), // Exactly sufficient for nonce==0 (exec + state)
-                (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
-            ];
-            // Insufficient: below total required for nonce==0
-            cases.push((BASE_INTRINSIC_GAS + nonce_zero_total - 1, 0u64, false));
-            cases
-        } else {
-            // Genesis: nonce gas is added AFTER validation, so lower gas_limit still passes
-            vec![
-                (BASE_INTRINSIC_GAS + 10_000, 0u64, true), // Passes validation (nonce gas added after)
-                (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Also passes
-                (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Also passes
-                (BASE_INTRINSIC_GAS - 1, 0, false),        // Below base intrinsic gas
-            ]
-        };
+    // Build spec-specific test cases: (gas_limit, nonce, expected_result)
+    let cases = if spec.is_t0() {
+        let mut cases = vec![
+            (BASE_INTRINSIC_GAS + nonce_zero_total, 0, true), // Exactly sufficient for nonce==0 (exec + state)
+            (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Exactly sufficient for existing key
+        ];
+        // Insufficient: below total required for nonce==0
+        cases.push((BASE_INTRINSIC_GAS + nonce_zero_total - 1, 0u64, false));
+        cases
+    } else {
+        // Genesis: nonce gas is added AFTER validation, so lower gas_limit still passes
+        vec![
+            (BASE_INTRINSIC_GAS + 10_000, 0u64, true), // Passes validation (nonce gas added after)
+            (BASE_INTRINSIC_GAS + nonce_zero_gas, 0, true), // Also passes
+            (BASE_INTRINSIC_GAS + spec.gas_existing_nonce_key(), 1, true), // Also passes
+            (BASE_INTRINSIC_GAS - 1, 0, false),        // Below base intrinsic gas
+        ]
+    };
 
-        for (gas_limit, nonce, should_succeed) in cases {
-            let mut evm = test_evm(spec);
-            if nonce > 0 {
-                StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-                    NonceManager::new()
-                        .increment_nonce(SIGNER, U256::ONE)
-                        .unwrap();
-                });
+    for (gas_limit, nonce, should_succeed) in cases {
+        let mut evm = test_evm(spec);
+        if nonce > 0 {
+            StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+                NonceManager::new()
+                    .increment_nonce(SIGNER, U256::ONE)
+                    .unwrap();
+            });
+        }
+        let env = env(nonce, gas_limit);
+        let result = evm.transact(&Recovered::new_unchecked(env, SIGNER));
+
+        if should_succeed {
+            let result = result.unwrap_or_else(|error| {
+                panic!("gas_limit={gas_limit}, nonce={nonce}: expected inclusion but got {error:?}")
+            });
+            if !spec.is_t0() && nonce == 0 && gas_limit < BASE_INTRINSIC_GAS + nonce_zero_total {
+                assert!(result.result().status);
+                assert_eq!(result.result().tx_gas_used(), BASE_INTRINSIC_GAS);
             }
-            let env = env(nonce, gas_limit);
-            let result = evm.transact(&Recovered::new_unchecked(env, SIGNER));
-
-            if should_succeed {
-                let result = result.unwrap_or_else(|error| {
-                    panic!(
-                        "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: expected inclusion but got {error:?}"
-                    )
-                });
-                if !spec.is_t0() && nonce == 0 && gas_limit < BASE_INTRINSIC_GAS + nonce_zero_total
-                {
-                    assert!(result.result().status);
-                    assert_eq!(result.result().tx_gas_used(), BASE_INTRINSIC_GAS);
-                }
-            } else {
-                assert!(
-                    matches!(
-                        result,
-                        Err(evm2::registry::HandlerError::IntrinsicGasTooLow {
-                            got,
-                            required: _,
-                        }) if got == gas_limit
-                    ),
-                    "{spec:?}: gas_limit={gas_limit}, nonce={nonce}: expected intrinsic gas rejection, got {result:?}"
-                );
-            }
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(evm2::registry::HandlerError::IntrinsicGasTooLow {
+                        got,
+                        required: _,
+                    }) if got == gas_limit
+                ),
+                "gas_limit={gas_limit}, nonce={nonce}: expected intrinsic gas rejection, got {result:?}"
+            );
         }
     }
 }
 
 use keychain::invalid_transaction;
 
-#[test_case::test_case(100, InstrStop::PrecompileOOG)]
-#[test_case::test_case(1_000_000, InstrStop::Stop)]
+#[test_case(100, InstrStop::PrecompileOOG)]
+#[test_case(1_000_000, InstrStop::Stop)]
 fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: InstrStop) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2681,6 +2671,7 @@ mod keychain {
     use tempo_precompiles::account_keychain::{
         getKeyCall, getTransactionKeyCall, isKeyAuthorizationWitnessBurnedCall,
     };
+    use test_case::{test_case, test_matrix};
 
     #[derive(Default)]
     struct LogInspector(Vec<Address>);
@@ -3131,78 +3122,75 @@ mod keychain {
         );
     }
 
-    #[test]
-    fn test_same_tx_authorization_requires_root_signature() {
-        for spec in [TempoHardfork::T6, TempoHardfork::T13] {
-            for is_admin in [false, true] {
-                for root_signed in [false, true] {
-                    let (root_signer, user) = generate_keypair();
-                    let (access_signer, key) = generate_keypair();
-                    let mut authorization =
-                        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
-                            .with_account(user);
-                    authorization.is_admin = is_admin;
-                    let signed = sign_key_auth(
-                        if root_signed {
-                            &root_signer
-                        } else {
-                            &access_signer
-                        },
-                        authorization,
-                    );
-                    let tx = TempoTransaction {
-                        chain_id: 1,
-                        fee_token: Some(DEFAULT_FEE_TOKEN),
-                        gas_limit: 2_000_000,
-                        calls: vec![Call::new(Address::ZERO, Bytes::new())],
-                        key_authorization: Some(signed),
-                        ..Default::default()
-                    };
-                    let hash = alloy_primitives::keccak256(
-                        [&[0x04], tx.signature_hash().as_slice(), user.as_slice()].concat(),
-                    );
-                    let signature = access_signer.sign_hash_sync(&hash).unwrap();
-                    let env: TempoTxEnv = Recovered::new_unchecked(
-                        TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Keychain(
-                            KeychainSignature::new(user, PrimitiveSignature::Secp256k1(signature)),
-                        ))),
-                        user,
-                    )
-                    .into();
-                    let mut evm = test_evm(spec);
-                    let result = evm.transact(&Recovered::new_unchecked(env, user));
-                    if root_signed {
-                        assert!(
-                            result
-                                .expect("root may authorize a new key for immediate use")
-                                .commit()
-                                .status
-                        );
-                    } else {
-                        let error = result
-                            .expect_err("a new key cannot authorize itself for another account");
-                        assert!(
-                            matches!(
-                                invalid_transaction(&error),
-                                Some(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                                    expected, actual,
-                                }) if *expected == user && *actual == key
-                            ),
-                            "unexpected rejection: {error:?}"
-                        );
-                    }
-                    StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-                        let key_info = AccountKeychain::new()
-                            .get_key(tempo_precompiles::account_keychain::getKeyCall {
-                                account: user,
-                                keyId: key,
-                            })
-                            .unwrap();
-                        assert_eq!(key_info.keyId == key, root_signed);
-                    });
-                }
-            }
+    #[test_matrix([TempoHardfork::T6, TempoHardfork::T13], [false, true], [false, true])]
+    fn test_same_tx_authorization_requires_root_signature(
+        spec: TempoHardfork,
+        is_admin: bool,
+        root_signed: bool,
+    ) {
+        let (root_signer, user) = generate_keypair();
+        let (access_signer, key) = generate_keypair();
+        let mut authorization =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_account(user);
+        authorization.is_admin = is_admin;
+        let signed = sign_key_auth(
+            if root_signed {
+                &root_signer
+            } else {
+                &access_signer
+            },
+            authorization,
+        );
+        let tx = TempoTransaction {
+            chain_id: 1,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            gas_limit: 2_000_000,
+            calls: vec![Call::new(Address::ZERO, Bytes::new())],
+            key_authorization: Some(signed),
+            ..Default::default()
+        };
+        let hash = alloy_primitives::keccak256(
+            [&[0x04], tx.signature_hash().as_slice(), user.as_slice()].concat(),
+        );
+        let signature = access_signer.sign_hash_sync(&hash).unwrap();
+        let env: TempoTxEnv =
+            Recovered::new_unchecked(
+                TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Keychain(
+                    KeychainSignature::new(user, PrimitiveSignature::Secp256k1(signature)),
+                ))),
+                user,
+            )
+            .into();
+        let mut evm = test_evm(spec);
+        let result = evm.transact(&Recovered::new_unchecked(env, user));
+        if root_signed {
+            assert!(
+                result
+                    .expect("root may authorize a new key for immediate use")
+                    .commit()
+                    .status
+            );
+        } else {
+            let error = result.expect_err("a new key cannot authorize itself for another account");
+            assert!(
+                matches!(
+                    invalid_transaction(&error),
+                    Some(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                        expected, actual,
+                    }) if *expected == user && *actual == key
+                ),
+                "unexpected rejection: {error:?}"
+            );
         }
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            let key_info = AccountKeychain::new()
+                .get_key(tempo_precompiles::account_keychain::getKeyCall {
+                    account: user,
+                    keyId: key,
+                })
+                .unwrap();
+            assert_eq!(key_info.keyId == key, root_signed);
+        });
     }
 
     #[test]
@@ -3723,86 +3711,88 @@ mod keychain {
         );
     }
 
-    #[test_case::test_case(TempoHardfork::T1)]
-    #[test_case::test_case(TempoHardfork::T1A)]
-    fn test_same_tx_key_authorization_oog_fee_accounting(spec: TempoHardfork) {
-        for (gas_limit, gas_price) in [
-            (400_000, 1_000_000_000_000),
-            (400_000, 0),
-            (1_000_000, 1_000_000_000_000),
-        ] {
-            let (signer, user) = generate_keypair();
-            let (access_signer, key) = generate_keypair();
-            let signed = sign_key_auth(
-                &signer,
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
-            );
-            let (mut evm, _) = make_evm(user, key, None, spec, None, false);
-            let balance = U256::from(10_000_000);
-            StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-                TIP20Setup::path_usd(user)
-                    .with_issuer(user)
-                    .with_mint(user, balance)
-                    .apply()
-                    .unwrap();
-            });
-            evm.state_mut().commit_transaction();
-            evm.state_mut().clear_transaction_state();
+    #[test_case(TempoHardfork::T1, 400_000, 1_000_000_000_000)]
+    #[test_case(TempoHardfork::T1, 400_000, 0)]
+    #[test_case(TempoHardfork::T1, 1_000_000, 1_000_000_000_000)]
+    #[test_case(TempoHardfork::T1A, 400_000, 1_000_000_000_000)]
+    #[test_case(TempoHardfork::T1A, 400_000, 0)]
+    #[test_case(TempoHardfork::T1A, 1_000_000, 1_000_000_000_000)]
+    fn test_same_tx_key_authorization_oog_fee_accounting(
+        spec: TempoHardfork,
+        gas_limit: u64,
+        gas_price: u128,
+    ) {
+        let (signer, user) = generate_keypair();
+        let (access_signer, key) = generate_keypair();
+        let signed = sign_key_auth(
+            &signer,
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key),
+        );
+        let (mut evm, _) = make_evm(user, key, None, spec, None, false);
+        let balance = U256::from(10_000_000);
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            TIP20Setup::path_usd(user)
+                .with_issuer(user)
+                .with_mint(user, balance)
+                .apply()
+                .unwrap();
+        });
+        evm.state_mut().commit_transaction();
+        evm.state_mut().clear_transaction_state();
 
-            let tx = TempoTransaction {
-                chain_id: 1,
-                fee_token: Some(PATH_USD_ADDRESS),
-                max_priority_fee_per_gas: gas_price,
-                max_fee_per_gas: gas_price,
-                gas_limit,
-                calls: vec![Call::new(Address::ZERO, Bytes::new())],
-                key_authorization: Some(signed),
-                ..Default::default()
-            };
-            let signature = access_signer.sign_hash_sync(&tx.signature_hash()).unwrap();
-            let env: TempoTxEnv = Recovered::new_unchecked(
-                TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Keychain(
-                    KeychainSignature::new_v1(user, PrimitiveSignature::Secp256k1(signature)),
-                ))),
-                user,
-            )
-            .into();
-            let result = evm.transact(&Recovered::new_unchecked(env, user));
-            let rejected = gas_limit == 400_000 && gas_price != 0;
-            if rejected {
-                assert!(
-                    matches!(
-                        result.as_ref().err().and_then(invalid_transaction),
-                        Some(TempoInvalidTransaction::CollectFeePreTx(FeePaymentError::Other(reason)))
-                            if reason.contains("KeyNotFound")
-                    ),
-                    "paid same-tx authorization OOG must reject: {result:?}"
-                );
-                drop(result);
-            } else {
-                let result = result.unwrap().commit();
-                assert_eq!(result.status, gas_limit != 400_000);
-                if !result.status {
-                    assert_eq!(result.tx_gas_used(), gas_limit);
-                }
-            }
-            assert_eq!(
-                evm.state_mut().account(&user).unwrap().nonce(),
-                u64::from(!rejected),
+        let tx = TempoTransaction {
+            chain_id: 1,
+            fee_token: Some(PATH_USD_ADDRESS),
+            max_priority_fee_per_gas: gas_price,
+            max_fee_per_gas: gas_price,
+            gas_limit,
+            calls: vec![Call::new(Address::ZERO, Bytes::new())],
+            key_authorization: Some(signed),
+            ..Default::default()
+        };
+        let signature = access_signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+        let env: TempoTxEnv = Recovered::new_unchecked(
+            TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Keychain(
+                KeychainSignature::new_v1(user, PrimitiveSignature::Secp256k1(signature)),
+            ))),
+            user,
+        )
+        .into();
+        let result = evm.transact(&Recovered::new_unchecked(env, user));
+        let rejected = gas_limit == 400_000 && gas_price != 0;
+        if rejected {
+            assert!(
+                matches!(
+                    result.as_ref().err().and_then(invalid_transaction),
+                    Some(TempoInvalidTransaction::CollectFeePreTx(FeePaymentError::Other(reason)))
+                        if reason.contains("KeyNotFound")
+                ),
+                "paid same-tx authorization OOG must reject: {result:?}"
             );
-            StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-                let key_info = AccountKeychain::new().keys[user][key].read().unwrap();
-                assert_eq!(key_info.expiry != 0, gas_limit != 400_000);
-                if rejected {
-                    assert_eq!(
-                        TIP20Token::from_address(PATH_USD_ADDRESS).unwrap().balances[user]
-                            .read()
-                            .unwrap(),
-                        balance
-                    );
-                }
-            });
+            drop(result);
+        } else {
+            let result = result.unwrap().commit();
+            assert_eq!(result.status, gas_limit != 400_000);
+            if !result.status {
+                assert_eq!(result.tx_gas_used(), gas_limit);
+            }
         }
+        assert_eq!(
+            evm.state_mut().account(&user).unwrap().nonce(),
+            u64::from(!rejected),
+        );
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            let key_info = AccountKeychain::new().keys[user][key].read().unwrap();
+            assert_eq!(key_info.expiry != 0, gas_limit != 400_000);
+            if rejected {
+                assert_eq!(
+                    TIP20Token::from_address(PATH_USD_ADDRESS).unwrap().balances[user]
+                        .read()
+                        .unwrap(),
+                    balance
+                );
+            }
+        });
     }
 
     #[test]
@@ -4292,72 +4282,64 @@ fn test_state_gas_standard_tx_nonce_zero_t4() {
 }
 
 /// Standard nonce-zero transactions charge account creation from T1, without state gas.
-#[test]
-fn test_standard_tx_nonce_zero_intrinsic_gas() {
-    for spec in [
-        TempoHardfork::Genesis,
-        TempoHardfork::T0,
-        TempoHardfork::T1,
-        TempoHardfork::T1A,
-        TempoHardfork::T1B,
-        TempoHardfork::T1C,
-    ] {
-        let required = if spec.is_t1() { 271_000 } else { 21_000 };
-        let mut evm = test_evm(spec);
-        let env = legacy_env(TxKind::Call(Address::repeat_byte(0xaa)), Bytes::new());
-        let (mut intrinsic, mut state_gas, mut floor) = (21_000, 0, 21_000);
-        <TempoHandlerHooks as TxHandlerHooks<TempoEvmTypes>>::adjust_intrinsic_gas(
-            &mut evm,
-            &env,
-            &mut intrinsic,
-            &mut state_gas,
-            &mut floor,
-        )
-        .unwrap();
-        assert_eq!(
-            (intrinsic, state_gas, floor),
-            (required, 0, 21_000),
-            "{spec:?}"
-        );
+#[test_case(TempoHardfork::Genesis)]
+#[test_case(TempoHardfork::T0)]
+#[test_case(TempoHardfork::T1)]
+#[test_case(TempoHardfork::T1A)]
+#[test_case(TempoHardfork::T1B)]
+#[test_case(TempoHardfork::T1C)]
+fn test_standard_tx_nonce_zero_intrinsic_gas(spec: TempoHardfork) {
+    let required = if spec.is_t1() { 271_000 } else { 21_000 };
+    let mut evm = test_evm(spec);
+    let env = legacy_env(TxKind::Call(Address::repeat_byte(0xaa)), Bytes::new());
+    let (mut intrinsic, mut state_gas, mut floor) = (21_000, 0, 21_000);
+    <TempoHandlerHooks as TxHandlerHooks<TempoEvmTypes>>::adjust_intrinsic_gas(
+        &mut evm,
+        &env,
+        &mut intrinsic,
+        &mut state_gas,
+        &mut floor,
+    )
+    .unwrap();
+    assert_eq!((intrinsic, state_gas, floor), (required, 0, 21_000));
 
-        for gas_limit in [required - 1, required] {
-            let mut evm = test_evm(spec);
-            let env: TempoTxEnv = Recovered::new_unchecked(
-                TempoTxEnvelope::Legacy(
-                    TxLegacy {
-                        chain_id: Some(1),
-                        gas_limit,
-                        to: TxKind::Call(Address::repeat_byte(0xaa)),
-                        ..Default::default()
-                    }
-                    .into_signed(Signature::test_signature()),
+    for gas_limit in [required - 1, required] {
+        let mut evm = test_evm(spec);
+        let env: TempoTxEnv = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(1),
+                    gas_limit,
+                    to: TxKind::Call(Address::repeat_byte(0xaa)),
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            ),
+            SIGNER,
+        )
+        .into();
+        let result = evm.transact(&Recovered::new_unchecked(env, SIGNER));
+        if gas_limit < required {
+            assert!(
+                matches!(result,
+                    Err(HandlerError::IntrinsicGasTooLow { got, required: cost })
+                        if got == gas_limit && cost == required
                 ),
-                SIGNER,
-            )
-            .into();
-            let result = evm.transact(&Recovered::new_unchecked(env, SIGNER));
-            if gas_limit < required {
-                assert!(
-                    matches!(result,
-                        Err(HandlerError::IntrinsicGasTooLow { got, required: cost })
-                            if got == gas_limit && cost == required
-                    ),
-                    "{spec:?}: expected intrinsic gas rejection, got {result:?}"
-                );
-            } else {
-                let result = result.unwrap().commit();
-                assert!(result.status);
-                assert_eq!(result.tx_gas_used(), required);
-                assert_eq!(result.state_gas_spent, 0);
-                assert_eq!(
-                    evm.state_mut()
-                        .account_info_untracked(&SIGNER)
-                        .unwrap()
-                        .unwrap()
-                        .nonce,
-                    1
-                );
-            }
+                "expected intrinsic gas rejection, got {result:?}"
+            );
+        } else {
+            let result = result.unwrap().commit();
+            assert!(result.status);
+            assert_eq!(result.tx_gas_used(), required);
+            assert_eq!(result.state_gas_spent, 0);
+            assert_eq!(
+                evm.state_mut()
+                    .account_info_untracked(&SIGNER)
+                    .unwrap()
+                    .unwrap()
+                    .nonce,
+                1
+            );
         }
     }
 }

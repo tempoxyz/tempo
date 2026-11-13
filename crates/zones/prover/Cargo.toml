@@ -16,7 +16,6 @@ zone-spf.workspace = true
 
 tempo-chainspec.workspace = true
 tempo-nitro-attestation = { workspace = true, features = ["aws-lc"] }
-tempo-precompiles.workspace = true
 
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
@@ -42,3 +41,4 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
 tempo-primitives.workspace = true
+test-case.workspace = true

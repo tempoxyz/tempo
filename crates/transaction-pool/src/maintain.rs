@@ -566,7 +566,7 @@ impl RevalidationQueue {
 /// Handles:
 /// - Evicting expired AA transactions (`valid_before <= tip_timestamp`)
 /// - Evicting transactions using expired keychain keys (`AuthorizedKey.expiry <= tip_timestamp`)
-/// - Updating the AA 2D nonce pool from `NonceManager` changes
+/// - Updating the AA 2D nonce pool from `NonceManager` and account nonce changes
 /// - Refreshing the AMM liquidity cache from `FeeManager` updates
 /// - Removing transactions signed with revoked keychain keys
 /// - Evicting transactions when their fee token is paused
