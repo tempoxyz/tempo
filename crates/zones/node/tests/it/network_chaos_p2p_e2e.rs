@@ -12,6 +12,7 @@ use alloy::{
     providers::Provider as _,
 };
 use alloy_network::ReceiptResponse as _;
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZONE_TOKEN_ADDRESS, ZonePortal};
 
 use crate::utils::{
@@ -159,12 +160,7 @@ async fn submit_leadership_rotation_direct(
         .ok_or_else(|| eyre::eyre!("leadership target node {target_index} does not exist"))?
         .address();
 
-    let receipt = portal
-        .setLeader(target, previous_epoch)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    let receipt = portal.setLeader(target, previous_epoch).mined().await?;
     eyre::ensure!(receipt.status(), "leadership rotation transaction reverted");
 
     let epoch = portal.leaderEpoch().call().await?;

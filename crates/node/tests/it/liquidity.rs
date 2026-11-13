@@ -6,6 +6,7 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use reth_e2e_test_utils::wallet::test_signer;
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20, ITIPFeeAMM};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::amm::PoolKey,
@@ -47,17 +48,13 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // Mint validator tokens for liquidity
     validator_token
         .mint(sender_address, liquidity_amount)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Mint payment tokens for liquidity
     payment_token
         .mint(sender_address, liquidity_amount)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Create pool by minting liquidity with both tokens (balanced pool)
@@ -69,9 +66,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
             liquidity_amount,
             sender_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     println!("FeeAMM pool created. Now draining liquidity...");
@@ -94,9 +89,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
             lp_balance,
             sender_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     println!("Pool drained. Verifying insufficient liquidity...");
@@ -111,9 +104,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let additional_tokens = U256::from(100_000_000_000_000u64);
     payment_token
         .mint(sender_address, additional_tokens)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Now set the user's fee token to our custom payment token (not USDC)

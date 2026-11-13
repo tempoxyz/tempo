@@ -1098,6 +1098,18 @@ pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
     Address::from_raw_public_key(&encoded_key)
 }
 
+/// Generates a random P256 signing key, returning it with its public key coordinates and the
+/// address derived from them.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn p256_keypair() -> (p256::ecdsa::SigningKey, B256, B256, Address) {
+    let signing_key = p256::ecdsa::SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let point = signing_key.verifying_key().to_encoded_point(false);
+    let pub_key_x = B256::from_slice(point.x().expect("uncompressed point has x"));
+    let pub_key_y = B256::from_slice(point.y().expect("uncompressed point has y"));
+    let address = derive_p256_address(&pub_key_x, &pub_key_y);
+    (signing_key, pub_key_x, pub_key_y, address)
+}
+
 /// Concatenates byte slices into a fixed-size array without heap allocations.
 fn concat<const N: usize>(slices: &[&[u8]]) -> [u8; N] {
     let mut out = [0u8; N];

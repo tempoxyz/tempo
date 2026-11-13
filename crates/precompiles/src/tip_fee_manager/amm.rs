@@ -734,9 +734,8 @@ mod tests {
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
-        error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, TIP403Setup},
+        test_util::{TIP20Setup, TIP403Setup, with_storage},
         tip_fee_manager::TIPFeeAMMError,
         tip20::TIP20Error,
     };
@@ -785,18 +784,14 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?.address();
             let mut amm = TipFeeManager::new();
-            assert!(matches!(
+            assert_eq!(
                 amm.mint(admin, token, token, U256::from(1000), admin),
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::IdenticalAddresses(_)
-                ))
-            ));
-            assert!(matches!(
+                Err(TIPFeeAMMError::identical_addresses().into())
+            );
+            assert_eq!(
                 amm.burn(admin, token, token, U256::from(1000), admin),
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::IdenticalAddresses(_)
-                ))
-            ));
+                Err(TIPFeeAMMError::identical_addresses().into())
+            );
             Ok(())
         })
     }
@@ -813,12 +808,7 @@ mod tests {
 
             let result =
                 amm.rebalance_swap(admin, user_token, validator_token, amount + U256::ONE, to);
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::InvalidAmount(_)
-                ))
-            ));
+            assert_eq!(result, Err(TIPFeeAMMError::invalid_amount().into()));
             Ok(())
         })
     }
@@ -838,14 +828,14 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             for (user_token, validator_token) in [(eur, usd), (usd, eur)] {
-                assert!(matches!(
+                assert_eq!(
                     amm.mint(admin, user_token, validator_token, U256::from(1000), admin),
-                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
-                ));
-                assert!(matches!(
+                    Err(TIP20Error::invalid_currency().into())
+                );
+                assert_eq!(
                     amm.burn(admin, user_token, validator_token, U256::from(1000), admin),
-                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
-                ));
+                    Err(TIP20Error::invalid_currency().into())
+                );
             }
             Ok(())
         })
@@ -869,8 +859,7 @@ mod tests {
                 to,
             ),
         ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(TempoHardfork::T8, || {
                 let user_token = TIP20Setup::create("UserToken", "UTK", admin)
                     .with_transfer_policy(TIP403Setup::whitelist(admin).with_members(user_members))
                     .apply()?
@@ -890,10 +879,7 @@ mod tests {
                     U256::from(10000),
                     recipient,
                 );
-                assert!(matches!(
-                    result,
-                    Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-                ));
+                assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
                 Ok::<_, eyre::Report>(())
             })?;
         }
@@ -910,8 +896,7 @@ mod tests {
             (&without_lp[..], &with_lp[..]),
             (&with_lp[..], &without_lp[..]),
         ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(TempoHardfork::T8, || {
                 let user_token = TIP20Setup::create("UserToken", "UTK", admin)
                     .with_transfer_policy(
                         TIP403Setup::whitelist(admin).with_members(user_members.iter().copied()),
@@ -936,10 +921,7 @@ mod tests {
                 amm.set_liquidity_balances(pool_id, lp, U256::from(10000))?;
 
                 let result = amm.burn(lp, user_token, validator_token, U256::from(1000), to);
-                assert!(matches!(
-                    result,
-                    Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-                ));
+                assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
                 Ok::<_, eyre::Report>(())
             })?;
         }
@@ -961,12 +943,7 @@ mod tests {
                 uint!(2000_U256),
                 admin,
             );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::InsufficientLiquidity(_)
-                ))
-            ));
+            assert_eq!(result, Err(TIPFeeAMMError::insufficient_liquidity().into()));
             Ok(())
         })
     }
@@ -1056,12 +1033,7 @@ mod tests {
 
             // Try to swap 200 tokens (would need ~199 output, but only 100 available)
             let result = amm.execute_fee_swap(user_token, validator_token, uint!(200_U256));
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::InsufficientLiquidity(_)
-                ))
-            ));
+            assert_eq!(result, Err(TIPFeeAMMError::insufficient_liquidity().into()));
 
             Ok(())
         })
@@ -1149,12 +1121,7 @@ mod tests {
                 amm.rebalance_swap(admin, user_token, validator_token, U256::ZERO, to)
                     .map(|_| ()),
             ] {
-                assert!(matches!(
-                    result,
-                    Err(TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InvalidAmount(_)
-                    ))
-                ));
+                assert_eq!(result, Err(TIPFeeAMMError::invalid_amount().into()));
             }
 
             Ok(())
@@ -1325,12 +1292,7 @@ mod tests {
                 liquidity,
                 other_user,
             );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::InsufficientLiquidity(_)
-                ))
-            ));
+            assert_eq!(result, Err(TIPFeeAMMError::insufficient_liquidity().into()));
 
             Ok(())
         })
@@ -1392,12 +1354,7 @@ mod tests {
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::InsufficientLiquidity(_)
-                ))
-            ));
+            assert_eq!(result, Err(TIPFeeAMMError::insufficient_liquidity().into()));
 
             Ok(())
         })

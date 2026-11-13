@@ -109,6 +109,11 @@ pub fn setup_storage() -> (HashMapStorageProvider, Address) {
     (HashMapStorageProvider::new(1), Address::random())
 }
 
+/// Runs `f` in a [`StorageCtx`] over a fresh [`HashMapStorageProvider`] (chain ID 1) at `spec`.
+pub fn with_storage<R>(spec: tempo_chainspec::hardfork::TempoHardfork, f: impl FnOnce() -> R) -> R {
+    StorageCtx::enter(&mut HashMapStorageProvider::new_with_spec(1, spec), f)
+}
+
 /// Setup mode - determines how the token is obtained.
 #[derive(Default, Clone)]
 #[cfg(any(test, feature = "test-utils"))]

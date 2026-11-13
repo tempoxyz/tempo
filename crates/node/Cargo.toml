@@ -88,6 +88,8 @@ tokio-stream = { workspace = true, features = ["sync"] }
 antithesis_sdk = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempo-alloy = { workspace = true, features = ["test-utils"] }
+tempo-primitives = { workspace = true, features = ["test-utils"] }
 alloy-rpc-client = { workspace = true, features = ["ws-base"] }
 alloy-transport.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
