@@ -1,21 +1,28 @@
 use crate::utils::{TestNode, TestNodeBuilder, t1_account};
 use alloy::{
     consensus::Transaction,
-    primitives::{Address, B256, U256, aliases::U96},
+    primitives::{Address, B256, Bytes, TxKind, U256, aliases::U96},
     providers::Provider,
+    signers::SignerSync,
     sol_types::SolEvent,
 };
+use alloy_eips::Encodable2718;
 use alloy_network::ReceiptResponse;
-use reth_e2e_test_utils::wallet::{TestAccount, Wallet};
+use reth_e2e_test_utils::wallet::{TestAccount, Wallet, test_signer};
 use reth_node_api::BuiltPayload;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
-    IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
+    DEFAULT_FEE_TOKEN, IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory,
+    ITIPFeeAMM,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
 };
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoTransaction, TempoTxEnvelope,
+    transaction::{calc_gas_balance_spending, tempo_transaction::Call},
+};
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks
 async fn setup_token_manual<P>(
@@ -705,6 +712,86 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
     let (payment, non_payment) = count_transaction_types(&all_user_txs);
     assert_eq!(payment, 5);
     assert_eq!(non_payment, 3);
+
+    Ok(())
+}
+
+/// A 2D nonce CREATE also bumps the sender's protocol nonce, so a pending protocol nonce
+/// transaction from the same sender is mined first even when the CREATE pays a higher tip, and
+/// the CREATE lands in a later block at the next protocol nonce's address.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_block_building_2d_create_after_protocol_nonce_tx() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let provider = setup.node.rpc_provider();
+    let chain_id = provider.get_chain_id().await?;
+    let signer = test_signer(0);
+    let sender = signer.address();
+    let nonce = provider.get_transaction_count(sender).await?;
+
+    let sign = |tx: TempoTransaction| -> eyre::Result<Bytes> {
+        let signature = signer.sign_hash_sync(&tx.signature_hash())?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+        Ok(envelope.encoded_2718().into())
+    };
+    let protocol = sign(TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: 1,
+        max_fee_per_gas: 2 * TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 1_000_000,
+        calls: vec![Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    })?;
+    // Initcode returning 32 bytes of runtime code.
+    let create = sign(TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: 2 * TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 3_000_000,
+        calls: vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::from_static(&[
+                0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
+            ]),
+        }],
+        nonce_key: U256::ONE,
+        nonce: 0,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    })?;
+    let protocol_hash = setup.node.inject_tx(protocol).await?;
+    let create_hash = setup.node.inject_tx(create).await?;
+
+    let user_txs = drained_user_txs(&mut setup.node).await?;
+    assert_eq!(user_txs.len(), 2);
+
+    let protocol_receipt = setup
+        .node
+        .transaction_receipt(protocol_hash)
+        .await?
+        .expect("protocol nonce tx mined");
+    let create_receipt = setup
+        .node
+        .transaction_receipt(create_hash)
+        .await?
+        .expect("2D CREATE tx mined");
+    assert!(protocol_receipt.status());
+    assert!(create_receipt.status());
+    assert!(protocol_receipt.block_number() < create_receipt.block_number());
+    assert_eq!(provider.get_transaction_count(sender).await?, nonce + 2);
+    assert_eq!(
+        provider.get_code_at(sender.create(nonce + 1)).await?.len(),
+        32
+    );
 
     Ok(())
 }
