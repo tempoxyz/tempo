@@ -99,7 +99,8 @@ impl BestTransactionsPrewarming {
                 let Some(tx) = ctx.best_txs.next() else {
                     if ctx.prewarm.parallel {
                         let seq = ctx.reorder.reserve();
-                        ctx.reorder.complete(seq, None, &ctx.transactions_tx);
+                        ctx.reorder
+                            .complete(seq, ReorderSlot::Item(None), &ctx.transactions_tx);
                     } else {
                         let _ = ctx.transactions_tx.send(None);
                     }
@@ -127,9 +128,15 @@ impl BestTransactionsPrewarming {
                 }
 
                 scope.spawn(move |_| {
+                    // Releases the reserved slot if the job unwinds, so one panicking prewarm
+                    // job cannot stall every later transaction behind it.
+                    let mut slot_guard = ReorderSlotGuard {
+                        seq: parallel_seq,
+                        commands_tx: commands_tx.clone(),
+                    };
                     let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
-                    let command = match parallel_seq {
-                        Some(seq) => BestTransactionsCommand::Prewarmed { seq, tx },
+                    let command = match slot_guard.seq.take() {
+                        Some(seq) => BestTransactionsCommand::Prewarmed { seq, tx: Some(tx) },
                         None => BestTransactionsCommand::Advance,
                     };
                     let _ = commands_tx.send(command);
@@ -149,7 +156,11 @@ impl BestTransactionsPrewarming {
                         advance(&mut ctx);
                     }
                     BestTransactionsCommand::Prewarmed { seq, tx } => {
-                        ctx.reorder.complete(seq, Some(tx), &ctx.transactions_tx);
+                        let slot = match tx {
+                            Some(tx) => ReorderSlot::Item(Some(tx)),
+                            None => ReorderSlot::Skipped,
+                        };
+                        ctx.reorder.complete(seq, slot, &ctx.transactions_tx);
                         advance(&mut ctx);
                     }
                     BestTransactionsCommand::Invalid(invalid) => {
@@ -356,7 +367,33 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 struct ReorderBuffer {
     next_reserved: u64,
     next_forwarded: u64,
-    completed: BTreeMap<u64, Option<PrewarmedTransaction>>,
+    completed: BTreeMap<u64, ReorderSlot>,
+}
+
+/// What fills a reserved [`ReorderBuffer`] position.
+#[derive(Debug)]
+enum ReorderSlot {
+    /// Forwarded to the builder: a prewarmed transaction, or `None` when the source was empty.
+    Item(Option<PrewarmedTransaction>),
+    /// The prewarm job unwound; the position is passed over and its transaction dropped.
+    Skipped,
+}
+
+/// Sends [`BestTransactionsCommand::Prewarmed`] without a transaction for a reserved position
+/// if dropped before the job takes `seq`, which happens only when the job unwinds.
+struct ReorderSlotGuard {
+    seq: Option<u64>,
+    commands_tx: Sender<BestTransactionsCommand>,
+}
+
+impl Drop for ReorderSlotGuard {
+    fn drop(&mut self) {
+        if let Some(seq) = self.seq.take() {
+            let _ = self
+                .commands_tx
+                .send(BestTransactionsCommand::Prewarmed { seq, tx: None });
+        }
+    }
 }
 
 impl ReorderBuffer {
@@ -367,17 +404,19 @@ impl ReorderBuffer {
         seq
     }
 
-    /// Records the item at `seq` and forwards every item that is now next in order.
+    /// Records the slot at `seq` and forwards every item that is now next in order.
     fn complete(
         &mut self,
         seq: u64,
-        item: Option<PrewarmedTransaction>,
+        slot: ReorderSlot,
         transactions_tx: &Sender<Option<PrewarmedTransaction>>,
     ) {
-        self.completed.insert(seq, item);
-        while let Some(item) = self.completed.remove(&self.next_forwarded) {
+        self.completed.insert(seq, slot);
+        while let Some(slot) = self.completed.remove(&self.next_forwarded) {
             self.next_forwarded += 1;
-            let _ = transactions_tx.send(item);
+            if let ReorderSlot::Item(item) = slot {
+                let _ = transactions_tx.send(item);
+            }
         }
     }
 }
@@ -504,10 +543,10 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
-    /// A parallel prewarm job finished the transaction reserved at `seq`.
+    /// A parallel prewarm job finished the transaction reserved at `seq`, or unwound (`None`).
     Prewarmed {
         seq: u64,
-        tx: PrewarmedTransaction,
+        tx: Option<PrewarmedTransaction>,
     },
     Invalid(InvalidTransaction),
     NoUpdates,
@@ -910,24 +949,24 @@ mod tests {
         let seqs = (0..4).map(|_| reorder.reserve()).collect::<Vec<_>>();
 
         // The last two jobs finish first, so nothing can be forwarded yet.
-        reorder.complete(seqs[3], None, &transactions_tx);
+        reorder.complete(seqs[3], ReorderSlot::Item(None), &transactions_tx);
         reorder.complete(
             seqs[2],
-            Some(PrewarmedTransaction::without_replay(txs[2].clone())),
+            ReorderSlot::Item(Some(PrewarmedTransaction::without_replay(txs[2].clone()))),
             &transactions_tx,
         );
         assert!(transactions_rx.try_recv().is_err());
 
         reorder.complete(
             seqs[1],
-            Some(PrewarmedTransaction::without_replay(txs[1].clone())),
+            ReorderSlot::Item(Some(PrewarmedTransaction::without_replay(txs[1].clone()))),
             &transactions_tx,
         );
         assert!(transactions_rx.try_recv().is_err());
 
         reorder.complete(
             seqs[0],
-            Some(PrewarmedTransaction::without_replay(txs[0].clone())),
+            ReorderSlot::Item(Some(PrewarmedTransaction::without_replay(txs[0].clone()))),
             &transactions_tx,
         );
         let forwarded = transactions_rx
@@ -943,6 +982,52 @@ mod tests {
                 None
             ]
         );
+    }
+
+    #[test]
+    fn reorder_buffer_passes_over_skipped_slots() {
+        let sender = Address::random();
+        let txs = (0..2)
+            .map(|nonce| test_tx(sender, nonce))
+            .collect::<Vec<_>>();
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let mut reorder = ReorderBuffer::default();
+        let seqs = (0..3).map(|_| reorder.reserve()).collect::<Vec<_>>();
+
+        reorder.complete(
+            seqs[2],
+            ReorderSlot::Item(Some(PrewarmedTransaction::without_replay(txs[1].clone()))),
+            &transactions_tx,
+        );
+        reorder.complete(
+            seqs[0],
+            ReorderSlot::Item(Some(PrewarmedTransaction::without_replay(txs[0].clone()))),
+            &transactions_tx,
+        );
+        reorder.complete(seqs[1], ReorderSlot::Skipped, &transactions_tx);
+
+        let forwarded = transactions_rx
+            .try_iter()
+            .map(|item| item.map(|tx| *tx.tx.hash()))
+            .collect::<Vec<_>>();
+        assert_eq!(forwarded, vec![Some(*txs[0].hash()), Some(*txs[1].hash())]);
+    }
+
+    #[test]
+    fn reorder_slot_guard_releases_slot_when_job_unwinds() {
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ReorderSlotGuard {
+                seq: Some(7),
+                commands_tx,
+            };
+            panic!("prewarm job panicked");
+        }));
+        assert!(result.is_err());
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(BestTransactionsCommand::Prewarmed { seq: 7, tx: None })
+        ));
     }
 
     #[test]
