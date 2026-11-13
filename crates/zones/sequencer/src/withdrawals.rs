@@ -54,6 +54,10 @@ use zone_primitives::constants::{MAX_UNPROCESSED_DEPOSITS, WITHDRAWAL_BOUNCEBACK
 
 const PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// First delay before re-running a cycle that left known withdrawal work unfinished. It doubles
+/// on each further unfinished cycle, up to the fallback poll interval.
+const PENDING_WORK_RETRY_DELAY: Duration = Duration::from_millis(50);
+
 fn bound_l1_fees(fees: Eip1559Estimation) -> Eip1559Estimation {
     let max_fee_per_gas = fees.max_fee_per_gas.min(crate::TEMPO_L1_MAX_FEE_PER_GAS);
     Eip1559Estimation {
@@ -131,7 +135,8 @@ impl Default for SharedWithdrawalStore {
 pub struct WithdrawalProcessorConfig {
     /// ZonePortal contract address on Tempo L1.
     pub portal_address: Address,
-    /// Fallback timeout for checking the withdrawal queue if no notification arrives.
+    /// Fallback timeout for checking the withdrawal queue if no notification arrives. Also caps
+    /// the retry backoff while a cycle leaves known work unfinished.
     pub fallback_poll_interval: Duration,
     /// Address whose lane-2 nonces order withdrawal processing transactions.
     pub sequencer_address: Address,
@@ -381,13 +386,17 @@ impl WithdrawalProcessor {
     /// Run the processor loop. This method never returns under normal operation.
     ///
     /// Waits for a notification from the batch submitter (or a fallback timeout) before
-    /// checking the L1 withdrawal queue. Returns only when `shutdown` fires; the
+    /// checking the L1 withdrawal queue. A cycle that fails or leaves known work unfinished is
+    /// retried after [`PENDING_WORK_RETRY_DELAY`], doubling up to the fallback timeout, instead of
+    /// waiting the full fallback timeout. Returns only when `shutdown` fires; the
     /// token is observed at the wait boundary so an in-flight processing cycle completes
     /// first.
     #[instrument(skip_all, fields(portal = %self.config.portal_address))]
     pub async fn run(&self, shutdown: &sync::CancellationToken) {
         info!("Withdrawal processor started");
 
+        let fallback = self.config.fallback_poll_interval;
+        let mut retry_delay: Option<Duration> = None;
         loop {
             tokio::select! {
                 biased;
@@ -398,14 +407,23 @@ impl WithdrawalProcessor {
                 _ = self.notify.notified() => {
                     debug!("Woken by batch submission notification");
                 }
-                _ = tokio::time::sleep(self.config.fallback_poll_interval) => {
-                    debug!("Fallback poll interval elapsed");
+                _ = tokio::time::sleep(retry_delay.unwrap_or(fallback)) => {
+                    debug!(?retry_delay, "Withdrawal processor wait elapsed");
                 }
             }
 
-            if let Err(e) = self.process_queue(shutdown).await {
-                error!(error = %e, "Withdrawal processing cycle failed");
-            }
+            let pending = match self.process_queue(shutdown).await {
+                Ok(pending) => pending,
+                Err(e) => {
+                    error!(error = %e, "Withdrawal processing cycle failed");
+                    true
+                }
+            };
+            retry_delay = pending.then(|| {
+                retry_delay
+                    .map_or(PENDING_WORK_RETRY_DELAY, |delay| delay * 2)
+                    .min(fallback)
+            });
 
             if shutdown.is_cancelled() {
                 debug!("Withdrawal processor stopped after draining submitted transactions");
@@ -465,20 +483,25 @@ impl WithdrawalProcessor {
     /// and trims withdrawals the portal has already consumed
     /// ([`find_processed_offset`]), so a crash, timeout, or restart mid-slot
     /// resumes exactly where the portal is.
+    ///
+    /// Returns `true` when known work is left that the next cycle should retry soon: an L1 read
+    /// that lags the batch receipt, a head that advanced mid-cycle, or a failed transaction.
+    /// Returns `false` when the queue is drained or waits on another event (a store refill, zone
+    /// deposit progress, an unpause, or shutdown).
     #[instrument(skip_all)]
-    async fn process_queue(&self, shutdown: &sync::CancellationToken) -> eyre::Result<()> {
+    async fn process_queue(&self, shutdown: &sync::CancellationToken) -> eyre::Result<bool> {
         if shutdown.is_cancelled() {
-            return Ok(());
+            return Ok(false);
         }
 
         if self.portal.paused().call().await? {
             debug!("Portal is paused; withdrawal processor is idle");
-            return Ok(());
+            return Ok(false);
         }
         // loop through all the slots
         loop {
             if shutdown.is_cancelled() {
-                return Ok(());
+                return Ok(false);
             }
 
             let (head, tail): (U256, U256) = self
@@ -497,7 +520,7 @@ impl WithdrawalProcessor {
                     tail = tail_val,
                     "Inconsistent withdrawal queue bounds"
                 );
-                return Ok(());
+                return Ok(false);
             }
             self.store.lock().remove_before(head_val);
             let StoreSnapshot {
@@ -511,8 +534,18 @@ impl WithdrawalProcessor {
             self.record_queue_metrics(head_val, tail_val, store_batch_count);
 
             if head_val == tail_val {
-                debug!("Withdrawal queue empty, nothing to process");
-                return Ok(());
+                // The store is filled from batch receipts, which can come from an L1 node ahead of
+                // the one serving this read. A cached slot at or past the tail means a stale read.
+                let stale = store_last_slot.is_some_and(|last| last >= tail_val);
+                if stale {
+                    debug!(
+                        tail = tail_val,
+                        store_last_slot, "L1 read lags a submitted withdrawal slot; retrying soon"
+                    );
+                } else {
+                    debug!("Withdrawal queue empty, nothing to process");
+                }
+                return Ok(stale);
             }
 
             let pending_slots = tail_val - head_val;
@@ -538,7 +571,7 @@ impl WithdrawalProcessor {
                         next_store_slot,
                         "No withdrawal data in store for current head slot"
                     );
-                    return Ok(());
+                    return Ok(false);
                 }
             };
 
@@ -568,7 +601,7 @@ impl WithdrawalProcessor {
                     slot = head_val,
                     "Head slot already consumed; skipping cycle"
                 );
-                return Ok(());
+                return Ok(true);
             }
 
             let Some(offset) = find_processed_offset(&withdrawals, slot_hash) else {
@@ -579,7 +612,7 @@ impl WithdrawalProcessor {
                     "Store data does not match the head slot's on-chain hash; requesting repair"
                 );
                 self.repair_notify.notify_one();
-                return Ok(());
+                return Ok(false);
             };
 
             if offset > 0 {
@@ -600,7 +633,7 @@ impl WithdrawalProcessor {
                     "Head slot fully processed but head not advanced"
                 );
                 self.store.lock().remove_batch(head_val);
-                return Ok(());
+                return Ok(true);
             }
 
             let (deposit_count, last_processed_deposit_number): (u64, u64) = self
@@ -618,7 +651,7 @@ impl WithdrawalProcessor {
                     last_processed_deposit_number,
                     "Portal deposit backlog leaves no withdrawal bounce-back headroom"
                 );
-                return Ok(());
+                return Ok(false);
             }
             // Public deposits cannot consume the reserved suffix. Restricting each submission to
             // that reserve prevents a public deposit landing after this read from racing the
@@ -646,7 +679,7 @@ impl WithdrawalProcessor {
             );
             let slot_started_at = Instant::now();
             if shutdown.is_cancelled() {
-                return Ok(());
+                return Ok(false);
             }
             let outcome = self
                 .submit_and_confirm_batches(
@@ -683,10 +716,10 @@ impl WithdrawalProcessor {
                 }
                 SubmitOutcome::Retry => {
                     // A lower nonce may have succeeded, changing every later batch's expected
-                    // queue suffix. The next poll reconciles the slot before retrying.
-                    return Ok(());
+                    // queue suffix. The next cycle reconciles the slot before retrying.
+                    return Ok(true);
                 }
-                SubmitOutcome::Cancelled => return Ok(()),
+                SubmitOutcome::Cancelled => return Ok(false),
             }
         }
     }
@@ -1435,11 +1468,15 @@ mod tests {
             repair_notify.clone(),
         );
 
-        processor
+        let pending = processor
             .process_queue(&sync::CancellationToken::new())
             .await
             .unwrap();
 
+        assert!(
+            !pending,
+            "the store refill notifies the processor when it lands"
+        );
         timeout(Duration::from_millis(50), repair_notify.notified())
             .await
             .expect("missing head slot should request a page refill");
@@ -1457,7 +1494,7 @@ mod tests {
         let shutdown = sync::CancellationToken::new();
         shutdown.cancel();
 
-        processor.process_queue(&shutdown).await.unwrap();
+        assert!(!processor.process_queue(&shutdown).await.unwrap());
 
         assert!(l1.read_q().is_empty());
     }
@@ -1544,11 +1581,12 @@ mod tests {
         let repair_notify = Arc::new(Notify::new());
         let processor = test_processor(l1.clone(), store, repair_notify.clone());
 
-        processor
+        let pending = processor
             .process_queue(&sync::CancellationToken::new())
             .await
             .unwrap();
 
+        assert!(!pending);
         timeout(Duration::from_millis(50), repair_notify.notified())
             .await
             .expect("mismatched slot hash should request a page refill");
@@ -1576,11 +1614,15 @@ mod tests {
         let repair_notify = Arc::new(Notify::new());
         let processor = test_processor(l1.clone(), store.clone(), repair_notify.clone());
 
-        processor
+        let pending = processor
             .process_queue(&sync::CancellationToken::new())
             .await
             .unwrap();
 
+        assert!(
+            pending,
+            "the advanced head should be re-read without the fallback wait"
+        );
         // No repair requested and the batch stays in the store.
         assert!(
             timeout(Duration::from_millis(50), repair_notify.notified())
@@ -1602,16 +1644,114 @@ mod tests {
             repair_notify.clone(),
         );
 
-        processor
+        let pending = processor
             .process_queue(&sync::CancellationToken::new())
             .await
             .unwrap();
 
+        assert!(!pending);
         assert!(l1.read_q().is_empty());
         assert!(
             timeout(Duration::from_millis(50), repair_notify.notified())
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn process_queue_is_idle_when_queue_and_store_are_empty() {
+        let l1 = Asserter::new();
+        l1.push_success(&abi_encode_u64(0));
+        l1.push_success(&abi_encode_multicall(vec![
+            abi_encode_u64(5),
+            abi_encode_u64(5),
+        ]));
+        let processor = test_processor(
+            l1.clone(),
+            SharedWithdrawalStore::new(),
+            Arc::new(Notify::new()),
+        );
+
+        let pending = processor
+            .process_queue(&sync::CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(!pending);
+        assert!(l1.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn process_queue_retries_soon_when_l1_read_lags_submitted_slot() {
+        let l1 = Asserter::new();
+        l1.push_success(&abi_encode_u64(0));
+        // The batch receipt enqueued slot 5, but this read still sees the queue before it.
+        l1.push_success(&abi_encode_multicall(vec![
+            abi_encode_u64(5),
+            abi_encode_u64(5),
+        ]));
+        let store = SharedWithdrawalStore::new();
+        store
+            .lock()
+            .add_batch(5, vec![test_withdrawal(Address::with_last_byte(0x42), 100)]);
+        let processor = test_processor(l1.clone(), store.clone(), Arc::new(Notify::new()));
+
+        let pending = processor
+            .process_queue(&sync::CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(pending);
+        assert!(store.lock().has_batch(5));
+        assert!(l1.read_q().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_retries_lagging_l1_read_before_the_fallback_interval() {
+        let l1 = Asserter::new();
+        for _ in 0..2 {
+            l1.push_success(&abi_encode_u64(0));
+            l1.push_success(&abi_encode_multicall(vec![
+                abi_encode_u64(5),
+                abi_encode_u64(5),
+            ]));
+            // Sequencer balance metrics read after each cycle.
+            l1.push_failure_msg("metrics unavailable");
+        }
+        let store = SharedWithdrawalStore::new();
+        store
+            .lock()
+            .add_batch(5, vec![test_withdrawal(Address::with_last_byte(0x42), 100)]);
+        let fallback = Duration::from_secs(60);
+        let notify = Arc::new(Notify::new());
+        let processor = WithdrawalProcessor::new(
+            WithdrawalProcessorConfig {
+                portal_address: address!("0x7069DeC4E64Fd07334A0933eDe836C17259c9B23"),
+                fallback_poll_interval: fallback,
+                sequencer_address: Address::repeat_byte(0x77),
+                batch_limits: WithdrawalBatchLimits::default(),
+            },
+            mock_provider(l1.clone()),
+            store,
+            notify.clone(),
+            Arc::new(Notify::new()),
+        );
+        let shutdown = sync::CancellationToken::new();
+        notify.notify_one();
+
+        let started = tokio::time::Instant::now();
+        let ((), elapsed) = tokio::join!(processor.run(&shutdown), async {
+            while !l1.read_q().is_empty() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let elapsed = started.elapsed();
+            shutdown.cancel();
+            elapsed
+        });
+
+        assert!(
+            elapsed >= PENDING_WORK_RETRY_DELAY && elapsed < fallback,
+            "second cycle ran after {elapsed:?}"
         );
     }
 }
