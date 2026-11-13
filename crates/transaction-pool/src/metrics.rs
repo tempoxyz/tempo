@@ -96,12 +96,6 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Number of transactions evicted due to invalidation events.
     pub transactions_invalidated: Counter,
 
-    /// Number of transactions re-validated due to transfer policy updates.
-    pub transfer_policy_revalidated: Counter,
-
-    /// Number of transactions re-validated due to quote token updates.
-    pub quote_token_revalidated: Counter,
-
     /// Number of removed transactions waiting to be revalidated and re-added.
     pub revalidation_queue_size: Gauge,
 

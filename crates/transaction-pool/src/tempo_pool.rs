@@ -43,7 +43,7 @@ use tempo_precompiles::{
     error::Result as TempoPrecompileResult,
     storage::{Handler, StorageActions},
     tip20::TIP20Token,
-    tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
+    tip403_registry::{AuthRole, REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::{Block, TempoHeader};
 use tokio::sync::mpsc;
@@ -181,10 +181,13 @@ where
     ///    2c. **Key-authorization witness burns**: AA transactions with a witness-bearing
     ///    inline key authorization whose `(account, witness)` has been manually burned
     /// 3. **Validator token changes**: Transactions that would fail due to insufficient
-    ///    liquidity in the new (user_token, validator_token) AMM pool
+    ///    liquidity in the new (user_token, validator_token) AMM pool. Transactions paying in a
+    ///    token whose quote token changed get the same liquidity re-check.
     /// 4. **Fee payer balance changes**: Transactions whose fee payer no longer has enough
     ///    balance in the resolved fee token after a TIP20 transfer
     /// 5. **Fee token pauses**: Transactions using a token paused in the committed block
+    /// 6. **Fee token transfer policy changes**: Transactions whose fee payer is no longer
+    ///    authorized to pay fees under the fee token's new transfer policy
     ///
     /// All checks are combined into one scan to avoid iterating the pool multiple times
     /// per block.
@@ -213,13 +216,15 @@ where
         }
 
         // Fetch state provider if any check needs on-chain reads:
-        // - validator token changes (liquidity check)
-        // - blacklist/whitelist (policy check)
+        // - validator or quote token changes (liquidity check)
+        // - blacklist/whitelist and transfer policy changes (policy check)
         // - fee payer balance changes (balance check)
         // - spending limit spends (remaining limit check)
         let mut state_provider = if !updates.validator_token_changes.is_empty()
+            || !updates.quote_token_updates.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
+            || !updates.transfer_policy_updates.is_empty()
             || !updates.fee_balance_changes.is_empty()
             || !updates.spending_limit_spends.is_empty()
         {
@@ -294,7 +299,17 @@ where
         let mut unwhitelisted_count = 0;
         let mut insolvent_fee_payer_count = 0;
         let mut paused_token_count = 0;
+        let mut transfer_policy_count = 0;
         let has_paused_tokens = !updates.paused_tokens.is_empty();
+        let has_quote_token_updates = !updates.quote_token_updates.is_empty();
+        // Liquidity is only re-checked when admission checks it.
+        let check_liquidity = !self
+            .protocol_pool
+            .validator()
+            .validator()
+            .disable_fee_amm_check;
+        let has_transfer_policy_updates = !updates.transfer_policy_updates.is_empty();
+        let mut fee_payer_authorized_cache: HashMap<(Address, Address), bool> = HashMap::default();
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
@@ -410,7 +425,18 @@ where
             // Prevents mass eviction because it only:
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
-            if has_active_validator_token_changes && let Some(ref provider) = state_provider {
+            //
+            // A quote token change can remove the route through the old quote token, so
+            // transactions paying in that token get the same re-check. The AMM cache already
+            // dropped the stale quote token in `on_new_state`.
+            if check_liquidity
+                && (has_active_validator_token_changes
+                    || has_quote_token_updates
+                        && updates
+                            .quote_token_updates
+                            .contains(&tx.transaction.effective_fee_token()))
+                && let Some(ref provider) = state_provider
+            {
                 let user_token = tx.transaction.effective_fee_token();
                 let cost = tx.transaction.fee_token_cost();
 
@@ -459,6 +485,33 @@ where
                             insolvent_fee_payer_count += 1;
                             continue;
                         }
+                    }
+                }
+            }
+
+            // Check 3c: Fee token transfer policy changes.
+            // The policy only gates fee collection from the fee payer, so checking that
+            // authorization is enough; the rest of the transaction's validity is unaffected.
+            // Zero-fee transactions skip fee collection and its policy authorization.
+            if has_transfer_policy_updates
+                && !tx.transaction.fee_token_cost().is_zero()
+                && let Some(ref mut provider) = state_provider
+            {
+                let fee_token = tx.transaction.effective_fee_token();
+                if updates.transfer_policy_updates.contains(&fee_token) {
+                    let fee_payer = tx
+                        .transaction
+                        .fee_payer()
+                        .unwrap_or_else(|_| tx.transaction.sender());
+                    let authorized = *fee_payer_authorized_cache
+                        .entry((fee_token, fee_payer))
+                        .or_insert_with(|| {
+                            is_fee_payer_authorized(provider, fee_token, fee_payer, spec)
+                        });
+                    if !authorized {
+                        to_remove.push(*tx.hash());
+                        transfer_policy_count += 1;
+                        continue;
                     }
                 }
             }
@@ -586,6 +639,7 @@ where
             unwhitelisted_count,
             insolvent_fee_payer_count,
             paused_token_count,
+            transfer_policy_count,
             "Evicting invalidated or expired transactions"
         );
         self.remove_transactions(to_remove)
@@ -1639,6 +1693,34 @@ fn get_recipient_policy_ids(
     })
 }
 
+/// Returns whether `fee_payer` may pay fees in `fee_token` under the token's current transfer
+/// policy, matching the authorization `TipFeeManager::collect_fee_pre_tx` enforces.
+///
+/// Read errors count as authorized, so a failed read never evicts.
+fn is_fee_payer_authorized(
+    provider: &mut impl StateProvider,
+    fee_token: Address,
+    fee_payer: Address,
+    spec: TempoHardfork,
+) -> bool {
+    provider
+        .with_read_only_storage_ctx(
+            spec,
+            StorageActions::disabled(),
+            || -> TempoPrecompileResult<bool> {
+                let token = TIP20Token::from_address(fee_token)?;
+                // TIP-1042: T8 fee collection exempts the fee manager recipient.
+                if spec.is_t8() {
+                    let policy_id = token.transfer_policy_id()?;
+                    TIP403Registry::new().is_authorized_as(policy_id, fee_payer, AuthRole::sender())
+                } else {
+                    token.is_transfer_authorized(fee_payer, TIP_FEE_MANAGER_ADDRESS)
+                }
+            },
+        )
+        .unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1682,7 +1764,7 @@ mod tests {
             AccountKeychain, AuthorizedKey, SpendingLimitState, StoredSignatureType,
         },
         tip20::slots as tip20_slots,
-        tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
+        tip403_registry::{ALLOW_ALL_POLICY_ID, CompoundPolicyData, PolicyData, TIP403Registry},
     };
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
@@ -1815,6 +1897,12 @@ mod tests {
     fn create_test_pool(
         provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
     ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
+        create_test_pool_from(create_test_validator(provider))
+    }
+
+    fn create_test_validator(
+        provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
+    ) -> TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
         let inner = EthTransactionValidatorBuilder::new(
             provider.clone(),
             TempoEvmConfig::new(provider.chain_spec()),
@@ -1824,13 +1912,17 @@ mod tests {
         .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-        let validator = TempoTransactionValidator::new(
+        TempoTransactionValidator::new(
             inner,
             crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
             crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             amm_cache,
-        );
+        )
+    }
 
+    fn create_test_pool_from(
+        validator: TempoTransactionValidator<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+    ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
         let (executor, task) = TransactionValidationTaskExecutor::new(validator);
         // Async tests validate through the pool; synchronous ones only insert validated outcomes.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -3017,6 +3109,142 @@ mod tests {
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert!(evicted.is_empty());
         assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn transfer_policy_update_preserves_admitted_zero_fee_transaction() {
+        let provider = create_provider_with_tip();
+        let tx = TxBuilder::eip1559(Address::random())
+            .max_fee(0)
+            .max_priority_fee(0)
+            .build_eip1559();
+        provider.add_account(tx.sender(), ExtendedAccount::new(tx.nonce(), U256::ZERO));
+        set_transfer_policy(&provider, PATH_USD_ADDRESS, REJECT_ALL_POLICY_ID);
+
+        // Full admission skips fee collection, including the rejecting transfer policy.
+        let validator = create_test_validator(provider)
+            .with_minimum_fee_cap(0)
+            .with_disable_fee_amm_check(true);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx.clone())
+            .await;
+        assert!(outcome.is_valid(), "zero-fee admission failed: {outcome:?}");
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            TempoTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default().with_disabled_protocol_base_fee(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        pool.add_validated_transaction(TransactionOrigin::External, outcome)
+            .unwrap();
+        assert!(pool.get(tx.hash()).is_some());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.transfer_policy_updates.insert(PATH_USD_ADDRESS);
+        assert!(pool.evict_invalidated_transactions(&updates).is_empty());
+        assert!(pool.get(tx.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn transfer_policy_update_evicts_only_unauthorized_fee_payers() {
+        let rejecting_token = address!("20C0000000000000000000000000000000000002");
+        let allowing_token = address!("20C0000000000000000000000000000000000003");
+        let provider = create_provider_with_tip();
+        set_transfer_policy(&provider, rejecting_token, REJECT_ALL_POLICY_ID);
+        set_transfer_policy(&provider, allowing_token, ALLOW_ALL_POLICY_ID);
+        let pool = create_test_pool(provider);
+
+        let rejected = TxBuilder::aa(Address::random()).build();
+        rejected.set_resolved_fee_token(ResolvedFeeToken::Selected(rejecting_token));
+        let allowed = TxBuilder::aa(Address::random()).build();
+        allowed.set_resolved_fee_token(ResolvedFeeToken::Selected(allowing_token));
+        add_validated(&pool, rejected.clone());
+        add_validated(&pool, allowed.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.transfer_policy_updates.insert(rejecting_token);
+        updates.transfer_policy_updates.insert(allowing_token);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*rejected.hash()]);
+        assert!(pool.get(allowed.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn quote_token_update_rechecks_liquidity_for_its_token_only() {
+        let updated_token = address!("20C0000000000000000000000000000000000002");
+        let other_token = address!("20C0000000000000000000000000000000000003");
+        let pool = create_test_pool(create_provider_with_tip());
+
+        // Neither token has an AMM pool, so both would fail a liquidity check.
+        let affected = TxBuilder::aa(Address::random()).build();
+        affected.set_resolved_fee_token(ResolvedFeeToken::Selected(updated_token));
+        let unaffected = TxBuilder::aa(Address::random()).build();
+        unaffected.set_resolved_fee_token(ResolvedFeeToken::Selected(other_token));
+        add_validated(&pool, affected.clone());
+        add_validated(&pool, unaffected.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.quote_token_updates.insert(updated_token);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*affected.hash()]);
+        assert!(pool.get(unaffected.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn quote_token_update_skips_liquidity_without_fee_amm_check() {
+        let fee_token = address!("20C0000000000000000000000000000000000002");
+        let pool = create_test_pool_from(
+            create_test_validator(create_provider_with_tip()).with_disable_fee_amm_check(true),
+        );
+
+        // The token has no AMM pool, which admission ignores on this pool.
+        let tx = TxBuilder::aa(Address::random()).build();
+        tx.set_resolved_fee_token(ResolvedFeeToken::Selected(fee_token));
+        add_validated(&pool, tx.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.quote_token_updates.insert(fee_token);
+
+        assert!(pool.evict_invalidated_transactions(&updates).is_empty());
+        assert!(pool.get(tx.hash()).is_some());
+    }
+
+    #[test_case::test_case(TempoHardfork::T7, false; "pre_t8_checks_fee_manager_recipient")]
+    #[test_case::test_case(TempoHardfork::T8, true; "t8_exempts_fee_manager_recipient")]
+    fn fee_payer_authorization_follows_fee_collection_rules(spec: TempoHardfork, authorized: bool) {
+        let fee_token = address!("20C0000000000000000000000000000000000002");
+        let fee_payer = Address::random();
+        let policy_id = 5;
+        let provider = create_provider_with_tip();
+        set_transfer_policy(&provider, fee_token, policy_id);
+        // The whitelist allows the fee payer but not the fee manager.
+        provider
+            .setup_storage(spec, || {
+                let mut registry = TIP403Registry::new();
+                registry.policy_records[policy_id].base.write(PolicyData {
+                    policy_type: ITIP403Registry::PolicyType::WHITELIST as u8,
+                    admin: Address::random(),
+                })?;
+                registry.policy_set[policy_id][fee_payer].write(true)
+            })
+            .unwrap();
+
+        let mut state = provider.latest().unwrap();
+        assert_eq!(
+            is_fee_payer_authorized(&mut state, fee_token, fee_payer, spec),
+            authorized
+        );
+        // Read errors count as authorized, so an unlisted payer shows the policy was read.
+        assert!(!is_fee_payer_authorized(
+            &mut state,
+            fee_token,
+            Address::random(),
+            spec
+        ));
     }
 
     #[tokio::test]

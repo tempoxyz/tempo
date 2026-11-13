@@ -76,12 +76,12 @@ pub struct TempoPoolUpdates {
     /// Fee tokens paused by this block.
     pub paused_tokens: AddressSet,
     /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
-    /// Pending transactions using these tokens as fee tokens need to be re-validated
-    /// because the new policy may forbid the fee payer or fee manager.
+    /// Pending transactions using these tokens as fee tokens are evicted if the new policy
+    /// forbids their fee payer from paying fees.
     pub transfer_policy_updates: AddressSet,
     /// Tokens whose `quoteToken` was updated via `completeQuoteTokenUpdate()`.
-    /// Pending transactions paying in these tokens need to be re-validated because the new
-    /// quote token may invalidate the old route.
+    /// Pending transactions paying in these tokens get their fee liquidity re-checked because
+    /// the new quote token may invalidate the old route.
     pub quote_token_updates: AddressSet,
     /// Fee token balance changes keyed by token.
     ///
@@ -257,6 +257,8 @@ impl TempoPoolUpdates {
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
             || !self.paused_tokens.is_empty()
+            || !self.transfer_policy_updates.is_empty()
+            || !self.quote_token_updates.is_empty()
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
     }
@@ -781,54 +783,6 @@ where
             }
         }
 
-        // 4. Handle potentially invalidating updates
-        // When a cached value changes of a token (transfer policy, or quote token) changes,
-        // pending transactions using that token may become invalid. We need to remove them
-        // and re-add so they go through full validation against the updated state.
-        for (updated, counter, reason) in [
-            (
-                &updates.transfer_policy_updates,
-                &metrics.transfer_policy_revalidated,
-                "transfer policy update",
-            ),
-            (
-                &updates.quote_token_updates,
-                &metrics.quote_token_revalidated,
-                "quote token update",
-            ),
-        ] {
-            if updated.is_empty() {
-                continue;
-            }
-
-            let hashes: Vec<TxHash> = {
-                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                all_txs
-                    .iter()
-                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| {
-                        tx.transaction
-                            .resolved_fee_token()
-                            .is_some_and(|t| updated.contains(&t))
-                    })
-                    .map(|tx| *tx.hash())
-                    .collect()
-            };
-            if !hashes.is_empty() {
-                let removed_txs = pool.remove_transactions(hashes);
-                let count = removed_txs.len();
-
-                for tx in &removed_txs {
-                    removed_this_iteration.insert(*tx.hash());
-                }
-
-                counter.increment(count as u64);
-
-                debug!(target: "txpool", count, reason, "Queued transactions for revalidation");
-                revalidate_txs.extend(removed_txs);
-            }
-        }
-
         revalidation_queue.remove_mined(tip.transaction_hashes());
         let dropped = revalidation_queue.extend(revalidate_txs);
         if dropped > 0 {
@@ -836,7 +790,7 @@ where
             debug!(target: "txpool", dropped, "Revalidation queue full, dropped transactions");
         }
 
-        // 5. Evict expired and invalidated transactions in one pool traversal.
+        // 4. Evict expired and invalidated transactions in one pool traversal.
         let invalidation_start = Instant::now();
         debug!(
             target: "txpool",
@@ -873,7 +827,7 @@ where
             .expired_eviction_duration_seconds
             .record(invalidation_start.elapsed());
 
-        // 6. Evict stale pending transactions (must happen after AA pool promotions in step 1)
+        // 5. Evict stale pending transactions (must happen after AA pool promotions in step 1)
         // Only runs once per interval (~30 min) to avoid overhead on every block.
         // Transactions pending across two consecutive snapshots are considered stale.
         if pending_staleness.should_check(tip_timestamp) {
