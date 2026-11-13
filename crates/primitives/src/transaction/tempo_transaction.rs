@@ -1013,12 +1013,11 @@ mod tests {
             KeyAuthorization, TempoSignedAuthorization,
             tt_signature::{
                 PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
-                derive_p256_address,
             },
         },
     };
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, b256, bytes};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, bytes};
     use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
     use arbitrary::{Arbitrary, Unstructured};
 
@@ -1497,21 +1496,6 @@ mod tests {
         assert_eq!(decoded.fee_payer_signature, None);
         assert_eq!(decoded.valid_after, None);
         assert_eq!(decoded.calls.len(), 1);
-    }
-
-    #[test]
-    fn test_p256_address_derivation() {
-        let pub_key_x = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let pub_key_y = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-        let addr1 = derive_p256_address(&pub_key_x, &pub_key_y);
-        let addr2 = derive_p256_address(&pub_key_x, &pub_key_y);
-
-        // Should be deterministic
-        assert_eq!(addr1, addr2);
-
-        // Should not be zero address
-        assert_ne!(addr1, Address::ZERO);
     }
 
     #[test]

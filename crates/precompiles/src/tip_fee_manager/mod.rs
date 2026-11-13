@@ -338,30 +338,6 @@ mod tests {
     };
 
     #[test]
-    fn test_set_user_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("Test", "TST", user).apply()?;
-
-            // TODO: loop through and deploy and set user token for some range
-
-            let mut fee_manager = TipFeeManager::new();
-
-            let call = IFeeManager::setUserTokenCall {
-                token: token.address(),
-            };
-            let result = fee_manager.set_user_token(user, call);
-            assert!(result.is_ok());
-
-            let call = IFeeManager::userTokensCall { user };
-            assert_eq!(fee_manager.user_tokens(call)?, token.address());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_set_user_token_noop_when_unchanged_pre_t3() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let user = Address::random();

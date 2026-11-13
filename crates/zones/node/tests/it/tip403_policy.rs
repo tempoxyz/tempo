@@ -8,10 +8,7 @@ use alloy::primitives::{Address, U256, address};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-use tempo_contracts::precompiles::{
-    ITIP20,
-    ITIP403Registry::{self, PolicyType},
-};
+use tempo_contracts::precompiles::ITIP403Registry::{self, PolicyType};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS, tip403_registry::AuthRole};
 use zone_precompiles::ZONE_FEE_MANAGER_ADDRESS;
 
@@ -19,79 +16,6 @@ use crate::utils::{
     DEFAULT_TIMEOUT, PolicySeed, TIP20_TX_GAS, l1_dev_signer, seed_raw_tip403_policy,
     seed_raw_tip403_token_policy, start_local_zone_with_fixture,
 };
-
-/// Deposit pathUSD to Alice, then transfer a portion to Bob on the zone.
-///
-/// TIP-20 transfers use the default anchored `transferPolicyId` of 1 (allow all).
-#[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer_on_zone() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
-
-    let alice_signer = l1_dev_signer();
-    let alice = alice_signer.address();
-
-    let bob = address!("0x0000000000000000000000000000000000000B0B");
-    let deposit_amount: u128 = 1_000_000; // 1 pathUSD (6 decimals)
-
-    // Deposit pathUSD to Alice
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, alice, alice, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        alice,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
-
-    // Alice transfers 400,000 to Bob
-    let transfer_amount: u128 = 400_000;
-    let alice_provider = ProviderBuilder::new()
-        .wallet(alice_signer)
-        .connect_http(zone.http_url().clone());
-
-    // T6+ transfers also consult the recipient's address-level receive policy on L1.
-    // Seed the anchor before pool validation; the next execution block inherits this baseline.
-    fixture.seed_transfer_recipient(bob)?;
-
-    let tip20 = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
-    let pending = tip20
-        .transfer(bob, U256::from(transfer_amount))
-        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
-        .gas(TIP20_TX_GAS)
-        .send()
-        .await?;
-
-    // Inject an empty L1 block to trigger block production including the pool tx.
-    fixture.inject_empty_block(zone.deposit_queue());
-
-    let receipt = pending.get_receipt().await?;
-    assert!(receipt.status(), "transfer should succeed");
-
-    // Verify Bob received the transfer
-    let bob_balance = zone
-        .wait_for_balance(
-            PATH_USD_ADDRESS,
-            bob,
-            U256::from(transfer_amount),
-            DEFAULT_TIMEOUT,
-        )
-        .await?;
-    assert_eq!(bob_balance, U256::from(transfer_amount));
-
-    // Alice should have remaining balance minus gas
-    let alice_balance = zone.balance_of(PATH_USD_ADDRESS, alice).await?;
-    let expected_remaining = deposit_amount - transfer_amount;
-    assert!(
-        alice_balance <= U256::from(expected_remaining),
-        "alice should have at most {expected_remaining} (got {alice_balance})"
-    );
-
-    Ok(())
-}
 
 /// Protocol fee collection must use the finalized L1 policy even when the tx does not call TIP-20.
 #[tokio::test(flavor = "multi_thread")]

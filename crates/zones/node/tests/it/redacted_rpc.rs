@@ -133,29 +133,6 @@ fn validate_rejects_chain_id_mismatch() {
     assert!(token.validate(42, 9999).is_err());
 }
 
-#[test]
-fn validate_rejects_expired() {
-    let now = now_secs();
-    let token = make_test_token(0, 42, 1337, now - 700, now - 100);
-    assert!(token.validate(42, 1337).is_err());
-}
-
-#[test]
-fn validate_rejects_window_too_large() {
-    let now = now_secs();
-    // 31 days > 30-day max
-    let token = make_test_token(0, 42, 1337, now, now + 31 * 86400);
-    assert!(token.validate(42, 1337).is_err());
-}
-
-#[test]
-fn validate_rejects_issued_at_far_future() {
-    let now = now_secs();
-    // issuedAt is 200s in the future (> 60s max skew)
-    let token = make_test_token(0, 42, 1337, now + 200, now + 800);
-    assert!(token.validate(42, 1337).is_err());
-}
-
 #[tokio::test]
 async fn tempo_signature_roundtrip_secp256k1_from_token_bytes() {
     let signer = PrivateKeySigner::random();

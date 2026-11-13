@@ -2211,74 +2211,73 @@ mod tests {
 
     #[test]
     fn test_add_validator_rejects_duplicate_ingress() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+        for (ingress, egress, other_egress) in [
+            ("192.168.1.1:8000", "192.168.1.1", "192.168.2.1"),
+            ("[2001:db8::1]:8000", "2001:db8::1", "2001:db8::2"),
+        ] {
+            let mut storage = HashMapStorageProvider::new(1);
+            let owner = Address::random();
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut vc = ValidatorConfigV2::new();
+                vc.initialize(owner)?;
 
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(
-                    Address::random(),
-                    "192.168.1.1:8000",
-                    "192.168.1.1",
-                    Address::random(),
-                ),
-            )?;
+                vc.storage.set_block_number(200);
+                vc.add_validator(
+                    owner,
+                    make_valid_add_call(Address::random(), ingress, egress, Address::random()),
+                )?;
 
-            vc.storage.set_block_number(201);
-            let result = vc.add_validator(
-                owner,
-                make_valid_add_call(
-                    Address::random(),
-                    "192.168.1.1:8000",
-                    "192.168.2.1",
-                    Address::random(),
-                ),
-            );
+                vc.storage.set_block_number(201);
+                let result = vc.add_validator(
+                    owner,
+                    make_valid_add_call(
+                        Address::random(),
+                        ingress,
+                        other_egress,
+                        Address::random(),
+                    ),
+                );
 
-            assert!(result.is_err());
-            Ok(())
-        })
+                assert!(result.is_err(), "{ingress}");
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
     fn test_ingress_reuse_after_deactivation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let v1 = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+        for (ingress, egress) in [
+            ("192.168.1.1:8000", "192.168.1.1"),
+            ("[2001:db8::1]:8000", "2001:db8::1"),
+        ] {
+            let mut storage = HashMapStorageProvider::new(1);
+            let owner = Address::random();
+            let v1 = Address::random();
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut vc = ValidatorConfigV2::new();
+                vc.initialize(owner)?;
 
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(v1, "192.168.1.1:8000", "192.168.1.1", v1),
-            )?;
+                vc.storage.set_block_number(200);
+                vc.add_validator(owner, make_valid_add_call(v1, ingress, egress, v1))?;
 
-            vc.storage.set_block_number(300);
-            vc.deactivate_validator(
-                owner,
-                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
-            )?;
+                vc.storage.set_block_number(300);
+                vc.deactivate_validator(
+                    owner,
+                    IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
+                )?;
 
-            // Should allow IP reuse after deactivation
-            vc.storage.set_block_number(400);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(
-                    Address::random(),
-                    "192.168.1.1:8000",
-                    "192.168.1.1",
-                    Address::random(),
-                ),
-            )?;
+                // Should allow IP reuse after deactivation
+                vc.storage.set_block_number(400);
+                vc.add_validator(
+                    owner,
+                    make_valid_add_call(Address::random(), ingress, egress, Address::random()),
+                )?;
 
-            Ok(())
-        })
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -2704,102 +2703,42 @@ mod tests {
     }
 
     #[test]
-    fn test_set_ip_addresses_ingress_only() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let validator = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
+    fn test_set_ip_addresses_changes_one_endpoint() -> eyre::Result<()> {
+        for (case, ingress, egress) in [
+            ("ingress only", "10.0.0.1:8000", "192.168.1.1"),
+            ("ingress port only", "192.168.1.1:8001", "192.168.1.1"),
+            ("egress only", "192.168.1.1:8000", "10.0.0.1"),
+        ] {
+            let mut storage = HashMapStorageProvider::new(1);
+            let owner = Address::random();
+            let validator = Address::random();
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut vc = ValidatorConfigV2::new();
+                vc.initialize(owner)?;
 
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
-            )?;
+                vc.storage.set_block_number(200);
+                vc.add_validator(
+                    owner,
+                    make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
+                )?;
 
-            // Change ingress only, keep egress the same
-            vc.set_ip_addresses(
-                owner,
-                IValidatorConfigV2::setIpAddressesCall {
-                    idx: 0,
-                    ingress: "10.0.0.1:8000".to_string(),
-                    egress: "192.168.1.1".to_string(),
-                },
-            )?;
+                vc.set_ip_addresses(
+                    owner,
+                    IValidatorConfigV2::setIpAddressesCall {
+                        idx: 0,
+                        ingress: ingress.to_string(),
+                        egress: egress.to_string(),
+                    },
+                )?;
 
-            let v = vc.validator_by_address(validator)?;
-            assert_eq!(v.ingress, "10.0.0.1:8000");
-            assert_eq!(v.egress, "192.168.1.1");
+                let v = vc.validator_by_address(validator)?;
+                assert_eq!(v.ingress, ingress, "{case}");
+                assert_eq!(v.egress, egress, "{case}");
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_ip_addresses_ingress_port_only() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let validator = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
-            )?;
-
-            // Change ingress only, keep egress the same
-            vc.set_ip_addresses(
-                owner,
-                IValidatorConfigV2::setIpAddressesCall {
-                    idx: 0,
-                    ingress: "192.168.1.1:8001".to_string(),
-                    egress: "192.168.1.1".to_string(),
-                },
-            )?;
-
-            let v = vc.validator_by_address(validator)?;
-            assert_eq!(v.ingress, "192.168.1.1:8001");
-            assert_eq!(v.egress, "192.168.1.1");
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_ip_addresses_egress_only() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let validator = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
-            )?;
-
-            // Change egress only, keep ingress the same
-            vc.set_ip_addresses(
-                owner,
-                IValidatorConfigV2::setIpAddressesCall {
-                    idx: 0,
-                    ingress: "192.168.1.1:8000".to_string(),
-                    egress: "10.0.0.1".to_string(),
-                },
-            )?;
-
-            let v = vc.validator_by_address(validator)?;
-            assert_eq!(v.ingress, "192.168.1.1:8000");
-            assert_eq!(v.egress, "10.0.0.1");
-
-            Ok(())
-        })
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -2832,37 +2771,6 @@ mod tests {
             );
 
             assert!(result.is_err());
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_ip_addresses_allows_same_ip_different_port() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let validator = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
-            )?;
-
-            vc.set_ip_addresses(
-                owner,
-                IValidatorConfigV2::setIpAddressesCall {
-                    idx: 0,
-                    ingress: "192.168.1.1:9000".to_string(),
-                    egress: "192.168.1.1".to_string(),
-                },
-            )?;
-
-            let v = vc.validator_by_address(validator)?;
-            assert_eq!(v.ingress, "192.168.1.1:9000");
-
             Ok(())
         })
     }
@@ -3044,79 +2952,6 @@ mod tests {
             vc.add_validator(
                 owner,
                 make_valid_add_call(v1, "[::ffff:192.168.1.1]:8000", "::ffff:192.168.1.1", v1),
-            )?;
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_add_validator_rejects_duplicate_ingress_ipv6() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(
-                    Address::random(),
-                    "[2001:db8::1]:8000",
-                    "2001:db8::1",
-                    Address::random(),
-                ),
-            )?;
-
-            // Try to add another validator with same IPv6 IP (different port)
-            vc.storage.set_block_number(201);
-            let result = vc.add_validator(
-                owner,
-                make_valid_add_call(
-                    Address::random(),
-                    "[2001:db8::1]:8000",
-                    "2001:db8::2",
-                    Address::random(),
-                ),
-            );
-
-            assert!(result.is_err());
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_ipv6_reuse_after_deactivation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        let v1 = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            vc.storage.set_block_number(200);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(v1, "[2001:db8::1]:8000", "2001:db8::1", v1),
-            )?;
-
-            vc.storage.set_block_number(300);
-            vc.deactivate_validator(
-                owner,
-                IValidatorConfigV2::deactivateValidatorCall { idx: 0 },
-            )?;
-
-            // Should allow IPv6 reuse after deactivation
-            vc.storage.set_block_number(400);
-            vc.add_validator(
-                owner,
-                make_valid_add_call(
-                    Address::random(),
-                    "[2001:db8::1]:8000",
-                    "2001:db8::1",
-                    Address::random(),
-                ),
             )?;
 
             Ok(())
