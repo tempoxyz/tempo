@@ -275,9 +275,7 @@ impl TempoInvalidTransaction {
             | Self::InvalidP256Signature
             | Self::InvalidWebAuthnSignature { .. }
             | Self::AccessKeyRecoveryFailed
-            | Self::AccessKeyCannotAuthorizeOtherKeys
             | Self::KeyAuthorizationSignatureRecoveryFailed
-            | Self::KeyAuthorizationNotSignedByRoot { .. }
             | Self::KeychainUserAddressMismatch { .. }
             | Self::KeyAuthorizationChainIdMismatch { .. }
             | Self::ValueTransferNotAllowed
@@ -303,7 +301,10 @@ impl TempoInvalidTransaction {
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation
-            | Self::RootKeyRetired { .. } => false,
+            | Self::RootKeyRetired { .. }
+            // From T6 these depend on whether the signing key is an active admin key.
+            | Self::AccessKeyCannotAuthorizeOtherKeys
+            | Self::KeyAuthorizationNotSignedByRoot { .. } => false,
 
             Self::ConfigurableAccount(error) => match error {
                 ConfigurableAccountError::AccountMismatch { .. }
@@ -541,6 +542,21 @@ mod tests {
     #[test]
     fn test_expiring_nonce_replay_is_not_bad() {
         assert!(!TempoInvalidTransaction::ExpiringNonceReplay.is_bad_transaction());
+    }
+
+    #[test]
+    fn test_admin_key_dependent_errors_are_not_bad() {
+        let cases = [
+            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys,
+            TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                expected: Address::repeat_byte(0x01),
+                actual: Address::repeat_byte(0x02),
+            },
+        ];
+
+        for err in cases {
+            assert!(!err.is_bad_transaction(), "{err} should not be bad");
+        }
     }
 
     #[test]
