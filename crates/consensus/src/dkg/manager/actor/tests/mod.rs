@@ -416,6 +416,66 @@ fn duplicate_and_late_acks_do_not_penalize_peers() {
 }
 
 #[test]
+fn messages_from_nonparticipants_are_rejected_before_decoding() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 3, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let mut harness = Harness::builder(context.child("actor"), "nonparticipant_messages")
+            .initial_state(state.clone())
+            .identity(keys[0].clone())
+            .build()
+            .await;
+        let (mut actor, _mailbox) = harness.init().await.unwrap();
+        let mut storage = actor
+            .storage
+            .take()
+            .unwrap()
+            .init_verified(state.clone())
+            .await;
+        let outsider = PrivateKey::from_seed(u64::MAX).public_key();
+        assert!(round.dealers().position(&outsider).is_none());
+        assert!(round.players().position(&outsider).is_none());
+        let mut sender = harness.sender().clone();
+
+        // The payloads are not decodable: reaching the decoder would fail
+        // with a decoding error instead.
+        let result = actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                None,
+                None,
+                outsider.clone(),
+                vec![Message::ACK_TAG, u8::MAX].into(),
+            )
+            .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "received an ACK from a non-player"
+        );
+        assert_eq!(harness.blocker.peers(), vec![outsider.clone()]);
+
+        let result = actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                None,
+                None,
+                outsider.clone(),
+                vec![Message::DEALER_TAG, u8::MAX].into(),
+            )
+            .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "received a dealing from a non-dealer"
+        );
+        assert_eq!(harness.blocker.peers(), vec![outsider.clone(), outsider]);
+    });
+}
+
+#[test]
 fn local_share_storage_failures_panic_and_allow_recovery() {
     // Fail opening the dealing's journal section, syncing the dealing, or
     // syncing the ACK after the dealing has already been persisted.

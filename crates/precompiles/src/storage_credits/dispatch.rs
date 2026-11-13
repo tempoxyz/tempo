@@ -37,7 +37,7 @@ mod tests {
     use super::*;
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes, with_storage},
     };
     use alloy::sol_types::{SolCall, SolInterface};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -130,8 +130,7 @@ mod tests {
             .expect("setMode ABI calldata must contain the enum word") = 3;
 
         for spec in [TempoHardfork::T10, TempoHardfork::T11] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            with_storage(spec, || -> eyre::Result<()> {
                 let output = StorageCredits::new().call(&calldata, caller);
                 assert!(output.is_err());
                 if spec.is_t11() {

@@ -124,11 +124,7 @@ fn sign_dex_calls(
 ) -> Recovered<TempoTxEnvelope> {
     let calls = inputs
         .into_iter()
-        .map(|input| tempo_primitives::transaction::Call {
-            to: alloy_primitives::TxKind::Call(STABLECOIN_DEX_ADDRESS),
-            value: U256::ZERO,
-            input,
-        })
+        .map(|input| tempo_primitives::transaction::Call::new(STABLECOIN_DEX_ADDRESS, input))
         .collect();
     // Reuse the common single-call signer shape by constructing the multi-call tx locally.
     let tx = TempoTransaction {

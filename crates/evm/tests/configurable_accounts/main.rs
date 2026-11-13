@@ -1,7 +1,7 @@
 //! Signed transaction integration fixtures for the T14 account-leaf protocol.
 use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2930::AccessList;
-use alloy_primitives::{Address, B256, TxKind, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
@@ -111,22 +111,19 @@ impl Fixture {
     }
 
     fn getter(&self) -> Call {
-        Call {
-            to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
-            value: U256::ZERO,
-            input: IConfigurableAccount::getConfigCommitmentCall {
+        Call::new(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            IConfigurableAccount::getConfigCommitmentCall {
                 account: self.account,
             }
-            .abi_encode()
-            .into(),
-        }
+            .abi_encode(),
+        )
     }
 
     fn rotation(current: &ConfigurableAccountConfig, next: &ConfigurableAccountConfig) -> Call {
-        Call {
-            to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
-            value: U256::ZERO,
-            input: IConfigurableAccount::updateConfigCall {
+        Call::new(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            IConfigurableAccount::updateConfigCall {
                 current: IConfigurableAccount::ConfigurableAccountConfig {
                     salt: current.salt,
                     version: current.version,
@@ -136,9 +133,8 @@ impl Fixture {
                 threshold: next.threshold,
                 owners: abi_owners(next),
             }
-            .abi_encode()
-            .into(),
-        }
+            .abi_encode(),
+        )
     }
 
     /// The configuration `upgradeAccount` commits for this account: the upgrade salt at version 1.
@@ -159,16 +155,14 @@ impl Fixture {
 
     /// An `upgradeAccount` call that migrates the sender to `config`.
     fn upgrade(config: &ConfigurableAccountConfig) -> Call {
-        Call {
-            to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
-            value: U256::ZERO,
-            input: IConfigurableAccount::upgradeAccountCall {
+        Call::new(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            IConfigurableAccount::upgradeAccountCall {
                 threshold: config.threshold,
                 owners: abi_owners(config),
             }
-            .abi_encode()
-            .into(),
-        }
+            .abi_encode(),
+        )
     }
 
     /// An AA transaction signed by the account's root key (a primitive signature).
@@ -284,11 +278,7 @@ impl Fixture {
             &address,
             AccountInfo::default().with_code(Bytecode::new_legacy(code.into())),
         );
-        Call {
-            to: TxKind::Call(address),
-            value: U256::ZERO,
-            input: Default::default(),
-        }
+        Call::new(address, Bytes::new())
     }
 }
 

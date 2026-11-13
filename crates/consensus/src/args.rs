@@ -724,6 +724,7 @@ mod tests {
     use super::*;
     use reth_ethereum::chainspec::ForkCondition;
     use tempo_chainspec::TempoHardfork;
+    use test_case::test_case;
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -790,15 +791,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deprecated_proposal_timing_flags_parse() {
-        for flag in [
-            "--consensus.time-to-prepare-proposal-transactions",
-            "--consensus.minimum-time-before-propose",
-            "--consensus.time-to-build-proposal",
-        ] {
-            parse(&["--dev", flag, "1ms"]);
-        }
+    #[test_case("--consensus.time-to-prepare-proposal-transactions")]
+    #[test_case("--consensus.minimum-time-before-propose")]
+    #[test_case("--consensus.time-to-build-proposal")]
+    fn deprecated_proposal_timing_flags_parse(flag: &str) {
+        parse(&["--dev", flag, "1ms"]);
     }
 
     #[test]

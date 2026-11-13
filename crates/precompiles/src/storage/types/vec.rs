@@ -1440,29 +1440,6 @@ mod tests {
     }
 
     // TODO(rusowsky): Implement and test multi-slot support
-    // fn test_multi_slot_array() {
-    //     #[derive(Storable)]
-    //     struct MultiSlotStruct {
-    //         field1: U256, // slot 0
-    //         field2: U256, // slot 1
-    //         field3: U256, // slot 2
-    //     }
-
-    //     let (mut storage, address) = setup_storage();
-    //     // MIGRATION TODO: This test needs to be migrated to StorageCtx::enter pattern
-
-    //     let len_slot = U256::from(2700);
-
-    //     let data: Vec<MultiSlotStruct> = vec![MultiSlotStruct {
-    //         field1: U256::ONE,
-    //         field2: U256::from(2),
-    //         field3: U256::from(3),
-    //     }];
-
-    //     data.store(storage, len_slot, 0).unwrap();
-
-    //     let data_start = calc_data_slot(len_slot);
-    // }
 
     // -- VEC HANDLER TESTS --------------------------------------------------------
     // Tests that verify VecHandler API methods
