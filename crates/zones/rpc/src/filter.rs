@@ -247,6 +247,15 @@ pub fn scope_filter_for_caller(
 ) -> Result<RequestedTopics, JsonRpcError> {
     scope_filter(filter);
     if filter.topics[0].len() == 1 && filter.topics[0].contains(&B256::ZERO) {
+        // Nothing whitelisted was requested: drop every caller-chosen value so the backend
+        // query matches no log and its work depends on none of them.
+        filter.address = FilterSet::from(Address::ZERO);
+        filter.topics = [
+            FilterSet::from(B256::ZERO),
+            FilterSet::default(),
+            FilterSet::default(),
+            FilterSet::default(),
+        ];
         return Ok(RequestedTopics::default());
     }
 
@@ -845,6 +854,23 @@ mod tests {
         filter.topics[0] = FilterSet::from(bogus);
         scope_filter(&mut filter);
         assert_eq!(filter.topics[0], FilterSet::from(B256::ZERO));
+    }
+
+    #[test]
+    fn scope_filter_for_caller_drops_caller_values_when_nothing_is_whitelisted() {
+        let caller = Address::with_last_byte(1);
+        let other_topic = Address::with_last_byte(2).into_word();
+        let mut filter = Filter::default().address(Address::with_last_byte(9));
+        filter.topics[0] = FilterSet::from(B256::with_last_byte(0xaa));
+        filter.topics[1] = FilterSet::from(other_topic);
+        filter.topics[2] = FilterSet::from(other_topic);
+        filter.topics[3] = FilterSet::from(other_topic);
+
+        scope_filter_for_caller(&mut filter, &caller).unwrap();
+
+        assert_eq!(filter.address, FilterSet::from(Address::ZERO));
+        assert_eq!(filter.topics[0], FilterSet::from(B256::ZERO));
+        assert!(filter.topics[1..].iter().all(FilterSet::is_empty));
     }
 
     #[test]
