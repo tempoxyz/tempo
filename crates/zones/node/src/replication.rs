@@ -17,9 +17,6 @@ use zone_l1::TempoStateExt as _;
 use zone_p2p::{BackfillCommand, BackfillRequest, EncodedBlock, P2pCommand, P2pEvent, PeerTip};
 use zone_sequencer::{ProofCollectorHandle, SettlementManager, StoredBlockProof};
 
-/// Deepest CBOR nesting accepted in a peer witness. Honest witnesses nest only a few levels.
-const MAX_WITNESS_CBOR_DEPTH: usize = 32;
-
 /// A decoded block and the optional witness supplied by its peer.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PeerBlock {
@@ -425,8 +422,9 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
             }
         }
         // serde must only see the bytes the walk checked.
-        let checked = &input[..depth_check.position()];
-        let mut deserializer = minicbor_serde::Deserializer::from(minicbor::Decoder::new(checked));
+        let mut deserializer = minicbor_serde::Deserializer::from(minicbor::Decoder::new(
+            &input[..depth_check.position()],
+        ));
         let proof = serde::Deserialize::deserialize(&mut deserializer)?;
         input = &input[deserializer.decoder().position()..];
         Some(proof)
@@ -450,6 +448,9 @@ const BACKFILL_PAGE_SIZE: u64 = 64;
 /// one request outstanding per peer, so manifest size bounds the live queue depth; the
 /// headroom absorbs requests arriving before the server task starts.
 pub(crate) const BACKFILL_SERVE_QUEUE_CAPACITY: usize = 128;
+
+/// Deepest CBOR nesting accepted in a peer witness. Honest witnesses nest only a few levels.
+const MAX_WITNESS_CBOR_DEPTH: usize = 32;
 
 fn serve_backfill_page<P>(
     provider: &P,
@@ -598,9 +599,12 @@ pub(crate) async fn collect_follower_settlement_signatures(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        },
+        thread,
     };
 
     use futures::{StreamExt as _, stream};
@@ -845,7 +849,7 @@ mod tests {
                 &[0x00],
             ]
             .concat();
-            let err = std::thread::Builder::new()
+            let err = thread::Builder::new()
                 .stack_size(256 * 1024)
                 .spawn(move || decode_peer_block(&encoded).unwrap_err().to_string())
                 .unwrap()
@@ -868,7 +872,7 @@ mod tests {
             &[0x00, 0xff],
         ]
         .concat();
-        let err = std::thread::Builder::new()
+        let err = thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(move || decode_peer_block(&early_break).unwrap_err().to_string())
             .unwrap()
