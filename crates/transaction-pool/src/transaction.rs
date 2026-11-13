@@ -870,7 +870,6 @@ impl PoolTransactionError for TempoPoolTransactionError {
                         err,
                         HandlerError::InvalidChainId { .. }
                             | HandlerError::MissingChainId
-                            | HandlerError::IntrinsicGasTooLow { .. }
                             | HandlerError::NonceOverflow
                             | HandlerError::TxGasLimitGreaterThanCap { .. }
                             | HandlerError::CreateInitCodeSizeLimit { .. }
@@ -1737,6 +1736,14 @@ mod tests {
                 TempoPoolTransactionError::AddressCheck {
                     address: Address::repeat_byte(0x20),
                 },
+                false,
+            ),
+            // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
+            (
+                TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow {
+                    got: 21_000,
+                    required: 271_000,
+                }),
                 false,
             ),
             (TempoPoolTransactionError::SubblockNonceKey, true),

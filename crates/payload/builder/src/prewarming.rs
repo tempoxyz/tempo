@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -68,6 +68,7 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
+                        reorder: ReorderBuffer::default(),
                     },
                 );
             });
@@ -96,7 +97,12 @@ impl BestTransactionsPrewarming {
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
+                    if ctx.prewarm.parallel {
+                        let seq = ctx.reorder.reserve();
+                        ctx.reorder.complete(seq, None, &ctx.transactions_tx);
+                    } else {
+                        let _ = ctx.transactions_tx.send(None);
+                    }
                     return;
                 };
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
@@ -107,14 +113,14 @@ impl BestTransactionsPrewarming {
                     None
                 };
 
-                let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
-                // Only parallel jobs send their result; in sequential mode the transaction is
-                // forwarded below before its prewarm job runs.
-                let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
+                // Parallel jobs hand their result back to the coordinator, which forwards it in
+                // source order. In sequential mode the transaction is forwarded here before its
+                // prewarm job runs.
+                let parallel_seq = ctx.prewarm.parallel.then(|| ctx.reorder.reserve());
 
-                if !parallel {
+                if parallel_seq.is_none() {
                     let _ = ctx
                         .transactions_tx
                         .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
@@ -122,10 +128,11 @@ impl BestTransactionsPrewarming {
 
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(pool, prewarm, tx, expiring_nonce_offset);
-                    if let Some(transactions_tx) = transactions_tx {
-                        let _ = transactions_tx.send(Some(tx));
-                    }
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    let command = match parallel_seq {
+                        Some(seq) => BestTransactionsCommand::Prewarmed { seq, tx },
+                        None => BestTransactionsCommand::Advance,
+                    };
+                    let _ = commands_tx.send(command);
                 });
             };
 
@@ -139,6 +146,10 @@ impl BestTransactionsPrewarming {
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
+                        advance(&mut ctx);
+                    }
+                    BestTransactionsCommand::Prewarmed { seq, tx } => {
+                        ctx.reorder.complete(seq, Some(tx), &ctx.transactions_tx);
                         advance(&mut ctx);
                     }
                     BestTransactionsCommand::Invalid(invalid) => {
@@ -333,6 +344,42 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    reorder: ReorderBuffer,
+}
+
+/// Forwards parallel prewarm results in the order their transactions left the source.
+///
+/// Parallel prewarm jobs finish in any order. Forwarding them as they finish would let a
+/// sender's later nonce reach the builder before an earlier one, which then fails execution and
+/// gets the sender's remaining transactions marked invalid.
+#[derive(Debug, Default)]
+struct ReorderBuffer {
+    next_reserved: u64,
+    next_forwarded: u64,
+    completed: BTreeMap<u64, Option<PrewarmedTransaction>>,
+}
+
+impl ReorderBuffer {
+    /// Reserves the position of the next item taken from the source.
+    fn reserve(&mut self) -> u64 {
+        let seq = self.next_reserved;
+        self.next_reserved += 1;
+        seq
+    }
+
+    /// Records the item at `seq` and forwards every item that is now next in order.
+    fn complete(
+        &mut self,
+        seq: u64,
+        item: Option<PrewarmedTransaction>,
+        transactions_tx: &Sender<Option<PrewarmedTransaction>>,
+    ) {
+        self.completed.insert(seq, item);
+        while let Some(item) = self.completed.remove(&self.next_forwarded) {
+            self.next_forwarded += 1;
+            let _ = transactions_tx.send(item);
+        }
+    }
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -457,6 +504,11 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
+    /// A parallel prewarm job finished the transaction reserved at `seq`.
+    Prewarmed {
+        seq: u64,
+        tx: PrewarmedTransaction,
+    },
     Invalid(InvalidTransaction),
     NoUpdates,
     SkipBlobs(bool),
@@ -820,6 +872,77 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn parallel_source_ordering_is_unchanged() {
+        let sender = Address::random();
+        let executor = TaskExecutor::test();
+        let txs = (0..executor.prewarming_pool().current_num_threads() * 8)
+            .map(|nonce| test_tx(sender, nonce as u64))
+            .collect::<Vec<_>>();
+        let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+
+        let context = prewarming_context(executor.clone(), true);
+        let mut prewarming = TestPrewarming {
+            prewarming: Some(BestTransactionsPrewarming::new(
+                context,
+                TestBestTransactions::new(txs, log),
+            )),
+            executor,
+        };
+        let actual = (0..expected.len())
+            .map(|_| *prewarming.next().expect("transaction").tx.hash())
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn reorder_buffer_forwards_out_of_order_results_in_source_order() {
+        let sender = Address::random();
+        let txs = (0..3)
+            .map(|nonce| test_tx(sender, nonce))
+            .collect::<Vec<_>>();
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let mut reorder = ReorderBuffer::default();
+        let seqs = (0..4).map(|_| reorder.reserve()).collect::<Vec<_>>();
+
+        // The last two jobs finish first, so nothing can be forwarded yet.
+        reorder.complete(seqs[3], None, &transactions_tx);
+        reorder.complete(
+            seqs[2],
+            Some(PrewarmedTransaction::without_replay(txs[2].clone())),
+            &transactions_tx,
+        );
+        assert!(transactions_rx.try_recv().is_err());
+
+        reorder.complete(
+            seqs[1],
+            Some(PrewarmedTransaction::without_replay(txs[1].clone())),
+            &transactions_tx,
+        );
+        assert!(transactions_rx.try_recv().is_err());
+
+        reorder.complete(
+            seqs[0],
+            Some(PrewarmedTransaction::without_replay(txs[0].clone())),
+            &transactions_tx,
+        );
+        let forwarded = transactions_rx
+            .try_iter()
+            .map(|item| item.map(|tx| *tx.tx.hash()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            forwarded,
+            vec![
+                Some(*txs[0].hash()),
+                Some(*txs[1].hash()),
+                Some(*txs[2].hash()),
+                None
+            ]
+        );
     }
 
     #[test]
