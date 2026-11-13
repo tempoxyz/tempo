@@ -740,6 +740,7 @@ mod tests {
         tip20::TIP20Error,
     };
     use tempo_primitives::test_utils::actors;
+    use test_case::test_case;
 
     /// Creates a USD user token and validator token owned by `admin`, applying `mints` to both.
     fn create_token_pair(admin: Address, mints: &[(Address, U256)]) -> Result<(Address, Address)> {
@@ -987,37 +988,31 @@ mod tests {
     }
 
     /// Test execute_fee_swap executes swap immediately, updates reserves and rounds consistently
-    #[test]
-    fn test_execute_fee_swap() -> eyre::Result<()> {
+    #[test_case(1_000, 100)]
+    #[test_case(100_000_000_000, 10_000_000_000)]
+    fn test_execute_fee_swap(liquidity: u64, amount_in: u64) -> eyre::Result<()> {
         let admin = Address::random();
-        let unit = uint!(10_U256).pow(U256::from(6));
-        // (pool liquidity, amount in)
-        for (liquidity, amount_in) in [
-            (uint!(1000_U256), uint!(100_U256)),
-            (uint!(100000_U256) * unit, uint!(10000_U256) * unit),
-        ] {
-            let mut storage = HashMapStorageProvider::new(1);
-            StorageCtx::enter(&mut storage, || {
-                let (user_token, validator_token) = create_token_pair(admin, &[])?;
-                let mut amm = TipFeeManager::new();
-                let pool_id =
-                    setup_pool_with_liquidity(&mut amm, user_token, validator_token, liquidity)?;
+        let (liquidity, amount_in) = (U256::from(liquidity), U256::from(amount_in));
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let (user_token, validator_token) = create_token_pair(admin, &[])?;
+            let mut amm = TipFeeManager::new();
+            let pool_id =
+                setup_pool_with_liquidity(&mut amm, user_token, validator_token, liquidity)?;
 
-                // e.g. 100 * 9970 / 10000 = 99
-                let expected_out = (amount_in * M) / SCALE;
-                let amount_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
-                assert_eq!(amount_out, expected_out);
+            // e.g. 100 * 9970 / 10000 = 99
+            let expected_out = (amount_in * M) / SCALE;
+            let amount_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
+            assert_eq!(amount_out, expected_out);
 
-                let pool = amm.pools[pool_id].read()?;
-                assert_eq!(U256::from(pool.reserve_user_token), liquidity + amount_in);
-                assert_eq!(
-                    U256::from(pool.reserve_validator_token),
-                    liquidity - expected_out
-                );
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-        Ok(())
+            let pool = amm.pools[pool_id].read()?;
+            assert_eq!(U256::from(pool.reserve_user_token), liquidity + amount_in);
+            assert_eq!(
+                U256::from(pool.reserve_validator_token),
+                liquidity - expected_out
+            );
+            Ok::<_, eyre::Report>(())
+        })
     }
 
     /// Test execute_fee_swap fails with insufficient liquidity

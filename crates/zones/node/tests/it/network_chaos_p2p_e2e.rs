@@ -14,6 +14,7 @@ use alloy::{
 use alloy_network::ReceiptResponse as _;
 use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZONE_TOKEN_ADDRESS, ZonePortal};
+use test_case::test_case;
 
 use crate::utils::{
     P2pChaosNetwork, RealP2pCluster, ZoneAccount, assert_same_block, batch_count, poll_until,
@@ -63,14 +64,6 @@ enum ExpectedDuringFault {
     WaitForIncomingLeader,
     ContinueIfActivated,
     ContinueAndSettle,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct LeadershipFaultCase {
-    disconnected_nodes: &'static [usize],
-    planes: FaultPlanes,
-    timing: FaultTiming,
-    expected: ExpectedDuringFault,
 }
 
 async fn start_cluster(
@@ -300,25 +293,26 @@ async fn assert_batch_history_is_canonical(
 async fn disconnect_leadership_case(
     network: &P2pChaosNetwork,
     l1_proxies: &[crate::utils::TcpChaosProxy; 3],
-    case: LeadershipFaultCase,
+    disconnected_nodes: &[usize],
+    planes: FaultPlanes,
 ) -> eyre::Result<[u64; 3]> {
     let accepted_before_outage =
         std::array::from_fn(|index| l1_proxies[index].accepted_connections());
 
-    if case.planes.disconnects_l1() {
-        for &index in case.disconnected_nodes {
+    if planes.disconnects_l1() {
+        for &index in disconnected_nodes {
             l1_proxies[index].disconnect();
         }
-        for &index in case.disconnected_nodes {
+        for &index in disconnected_nodes {
             l1_proxies[index]
                 .wait_for_no_connections(NETWORK_TIMEOUT)
                 .await?;
         }
     }
-    if case.planes.disconnects_p2p() {
-        network.disconnect_nodes(case.disconnected_nodes);
+    if planes.disconnects_p2p() {
+        network.disconnect_nodes(disconnected_nodes);
         network
-            .wait_for_nodes_disconnected(case.disconnected_nodes, NETWORK_TIMEOUT)
+            .wait_for_nodes_disconnected(disconnected_nodes, NETWORK_TIMEOUT)
             .await?;
     }
 
@@ -329,22 +323,23 @@ async fn resume_leadership_case(
     network: &P2pChaosNetwork,
     l1_proxies: &[crate::utils::TcpChaosProxy; 3],
     accepted_before_outage: [u64; 3],
-    case: LeadershipFaultCase,
+    disconnected_nodes: &[usize],
+    planes: FaultPlanes,
 ) -> eyre::Result<()> {
     // Restore the P2P mesh first. An outgoing leader may produce its remaining pre-activation
     // blocks as soon as L1 returns, and those live broadcasts must not be lost while peers are
     // still reconnecting.
-    if case.planes.disconnects_p2p() {
-        network.resume_nodes(case.disconnected_nodes);
+    if planes.disconnects_p2p() {
+        network.resume_nodes(disconnected_nodes);
         network
-            .wait_for_nodes_connected(case.disconnected_nodes, NETWORK_TIMEOUT)
+            .wait_for_nodes_connected(disconnected_nodes, NETWORK_TIMEOUT)
             .await?;
     }
-    if case.planes.disconnects_l1() {
-        for &index in case.disconnected_nodes {
+    if planes.disconnects_l1() {
+        for &index in disconnected_nodes {
             l1_proxies[index].resume();
         }
-        for &index in case.disconnected_nodes {
+        for &index in disconnected_nodes {
             l1_proxies[index]
                 .wait_for_connections_after(accepted_before_outage[index], 1, NETWORK_TIMEOUT)
                 .await?;
@@ -695,7 +690,33 @@ async fn assert_stable_b_leadership(cluster: &RealP2pCluster, baseline: u64) -> 
     Ok(next_height)
 }
 
-async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()> {
+// B stays connected to the quorum but cannot observe L1 when the finalized A→B transition occurs.
+// Once its L1 link returns, it replays the missed transition and assumes leadership.
+#[test_case(&[INCOMING_LEADER], FaultPlanes::L1, FaultTiming::BeforeHandoff, ExpectedDuringFault::WaitForIncomingLeader)]
+// B observes the finalized A→B transition on L1 while isolated from the quorum. Restoring its P2P
+// links lets it backfill, satisfy the promotion barrier, and assume leadership.
+#[test_case(&[INCOMING_LEADER], FaultPlanes::P2p, FaultTiming::BeforeHandoff, ExpectedDuringFault::WaitForIncomingLeader)]
+// B is isolated from both L1 and the P2P quorum during the finalized A→B transition. Restoring
+// both planes lets it replay L1, recover the canonical tip, and assume leadership.
+#[test_case(&[INCOMING_LEADER], FaultPlanes::Both, FaultTiming::BeforeHandoff, ExpectedDuringFault::WaitForIncomingLeader)]
+// C loses both network planes while healthy A and B rotate leadership. The remaining 2-of-3 quorum
+// must hand off and settle under B before C reconnects and converges.
+#[test_case(&[FOLLOWER], FaultPlanes::Both, FaultTiming::BeforeHandoff, ExpectedDuringFault::ContinueAndSettle)]
+// B and C lose both network planes before the handoff. A must fence at the activation boundary,
+// then the full cluster must recover and settle under B after reconnection.
+#[test_case(&[INCOMING_LEADER, FOLLOWER], FaultPlanes::Both, FaultTiming::BeforeHandoff, ExpectedDuringFault::WaitForIncomingLeader)]
+// A loses both network planes before it can consume the handoff activation block. If B and C have
+// already crossed the activation boundary they continue with quorum; otherwise they recover and
+// settle under B after A reconnects.
+#[test_case(&[OUTGOING_LEADER], FaultPlanes::Both, FaultTiming::OutgoingLeaderBeforeActivation, ExpectedDuringFault::ContinueIfActivated)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_leadership_fault(
+    disconnected_nodes: &[usize],
+    planes: FaultPlanes,
+    timing: FaultTiming,
+    expected: ExpectedDuringFault,
+) -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
     let (cluster, network, l1_proxies) = start_cluster(4).await?;
     let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
     eyre::ensure!(
@@ -703,10 +724,12 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
         "test requires a 2-of-3 settlement quorum"
     );
     let baseline = synchronized_head(&cluster).await?;
-    let (expected_epoch, accepted_before_outage) = match case.timing {
+    let (expected_epoch, accepted_before_outage) = match timing {
         FaultTiming::BeforeHandoff => {
-            let accepted = disconnect_leadership_case(&network, &l1_proxies, case).await?;
-            if case.planes.disconnects_p2p() && case.disconnected_nodes.contains(&INCOMING_LEADER) {
+            let accepted =
+                disconnect_leadership_case(&network, &l1_proxies, disconnected_nodes, planes)
+                    .await?;
+            if planes.disconnects_p2p() && disconnected_nodes.contains(&INCOMING_LEADER) {
                 wait_for_p2p_lag(&cluster, OUTGOING_LEADER, INCOMING_LEADER).await?;
             }
             let epoch = rotate_leadership(&cluster, INCOMING_LEADER).await?;
@@ -714,8 +737,7 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
         }
         FaultTiming::OutgoingLeaderBeforeActivation => {
             eyre::ensure!(
-                case.disconnected_nodes == [OUTGOING_LEADER]
-                    && matches!(case.planes, FaultPlanes::Both),
+                disconnected_nodes == [OUTGOING_LEADER] && matches!(planes, FaultPlanes::Both),
                 "pre-activation outgoing-leader timing requires disconnecting A from both planes"
             );
 
@@ -736,7 +758,9 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
             .await?;
             let (epoch, activation_tempo_block) =
                 submit_leadership_rotation_direct(&cluster, INCOMING_LEADER).await?;
-            let accepted = disconnect_leadership_case(&network, &l1_proxies, case).await?;
+            let accepted =
+                disconnect_leadership_case(&network, &l1_proxies, disconnected_nodes, planes)
+                    .await?;
             l1_proxies[OUTGOING_LEADER].pause_upstream_to_client(false);
 
             let isolated_a_tempo_block =
@@ -755,7 +779,7 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
 
     let healthy_nodes: Vec<_> = [OUTGOING_LEADER, INCOMING_LEADER, FOLLOWER]
         .into_iter()
-        .filter(|index| !case.disconnected_nodes.contains(index))
+        .filter(|index| !disconnected_nodes.contains(index))
         .collect();
     wait_for_leadership_epoch(
         &cluster,
@@ -765,7 +789,7 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
     )
     .await?;
 
-    let settled_during_outage = match case.expected {
+    let settled_during_outage = match expected {
         ExpectedDuringFault::WaitForIncomingLeader => {
             let activation_tempo_block =
                 activation_anchor_for_epoch(&cluster, &portal, expected_epoch).await?;
@@ -773,8 +797,8 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
                 &cluster,
                 &portal,
                 &healthy_nodes,
-                case.disconnected_nodes,
-                case.planes,
+                disconnected_nodes,
+                planes,
                 expected_epoch,
                 activation_tempo_block,
             )
@@ -789,8 +813,8 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
                         &portal,
                         baseline,
                         &healthy_nodes,
-                        if case.planes.disconnects_p2p() {
-                            case.disconnected_nodes
+                        if planes.disconnects_p2p() {
+                            disconnected_nodes
                         } else {
                             &[]
                         },
@@ -807,8 +831,8 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
                 &portal,
                 baseline,
                 &healthy_nodes,
-                if case.planes.disconnects_p2p() {
-                    case.disconnected_nodes
+                if planes.disconnects_p2p() {
+                    disconnected_nodes
                 } else {
                     &[]
                 },
@@ -817,7 +841,14 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
         ),
     };
 
-    resume_leadership_case(&network, &l1_proxies, accepted_before_outage, case).await?;
+    resume_leadership_case(
+        &network,
+        &l1_proxies,
+        accepted_before_outage,
+        disconnected_nodes,
+        planes,
+    )
+    .await?;
     wait_for_leadership_epoch(
         &cluster,
         &[OUTGOING_LEADER, INCOMING_LEADER, FOLLOWER],
@@ -836,71 +867,6 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
         assert_batch_history_is_canonical(&cluster, &portal).await?;
     }
     Ok(())
-}
-
-macro_rules! leadership_fault_tests {
-    ($($(#[$doc:meta])* $test_name:ident => $case:expr),+ $(,)?) => {
-        $(
-            $(#[$doc])*
-            #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-            async fn $test_name() -> eyre::Result<()> {
-                reth_tracing::init_test_tracing();
-                run_leadership_fault_case($case).await
-            }
-        )+
-    };
-}
-
-leadership_fault_tests! {
-    /// B stays connected to the quorum but cannot observe L1 when the finalized A→B transition
-    /// occurs. Once its L1 link returns, it replays the missed transition and assumes leadership.
-    test_incoming_leader_recovers_after_l1_disconnect => LeadershipFaultCase {
-        disconnected_nodes: &[INCOMING_LEADER],
-        planes: FaultPlanes::L1,
-        timing: FaultTiming::BeforeHandoff,
-        expected: ExpectedDuringFault::WaitForIncomingLeader,
-    },
-    /// B observes the finalized A→B transition on L1 while isolated from the quorum. Restoring its
-    /// P2P links lets it backfill, satisfy the promotion barrier, and assume leadership.
-    test_incoming_leader_recovers_after_p2p_disconnect => LeadershipFaultCase {
-        disconnected_nodes: &[INCOMING_LEADER],
-        planes: FaultPlanes::P2p,
-        timing: FaultTiming::BeforeHandoff,
-        expected: ExpectedDuringFault::WaitForIncomingLeader,
-    },
-    /// B is isolated from both L1 and the P2P quorum during the finalized A→B transition.
-    /// Restoring both planes lets it replay L1, recover the canonical tip, and assume leadership.
-    test_incoming_leader_recovers_after_l1_and_p2p_disconnect => LeadershipFaultCase {
-        disconnected_nodes: &[INCOMING_LEADER],
-        planes: FaultPlanes::Both,
-        timing: FaultTiming::BeforeHandoff,
-        expected: ExpectedDuringFault::WaitForIncomingLeader,
-    },
-    /// C loses both network planes while healthy A and B rotate leadership. The remaining 2-of-3
-    /// quorum must hand off and settle under B before C reconnects and converges.
-    test_handoff_and_settlement_continue_while_follower_is_disconnected => LeadershipFaultCase {
-        disconnected_nodes: &[FOLLOWER],
-        planes: FaultPlanes::Both,
-        timing: FaultTiming::BeforeHandoff,
-        expected: ExpectedDuringFault::ContinueAndSettle,
-    },
-    /// B and C lose both network planes before the handoff. A must fence at the activation
-    /// boundary, then the full cluster must recover and settle under B after reconnection.
-    test_handoff_waits_when_incoming_leader_and_follower_are_disconnected => LeadershipFaultCase {
-        disconnected_nodes: &[INCOMING_LEADER, FOLLOWER],
-        planes: FaultPlanes::Both,
-        timing: FaultTiming::BeforeHandoff,
-        expected: ExpectedDuringFault::WaitForIncomingLeader,
-    },
-    /// A loses both network planes before it can consume the handoff activation block. If B and C
-    /// have already crossed the activation boundary they continue with quorum; otherwise they
-    /// recover and settle under B after A reconnects.
-    test_handoff_waits_when_outgoing_leader_disconnects_before_activation => LeadershipFaultCase {
-        disconnected_nodes: &[OUTGOING_LEADER],
-        planes: FaultPlanes::Both,
-        timing: FaultTiming::OutgoingLeaderBeforeActivation,
-        expected: ExpectedDuringFault::ContinueIfActivated,
-    },
 }
 
 /// B is P2P-isolated during an A→B handoff and retains a withdrawal in its local pool. After

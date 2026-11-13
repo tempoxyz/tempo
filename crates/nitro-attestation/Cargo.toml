@@ -32,3 +32,4 @@ aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
+test-case.workspace = true

@@ -1688,6 +1688,7 @@ mod tests {
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
+    use test_case::test_case;
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
@@ -5181,36 +5182,32 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3() -> eyre::Result<()> {
+    #[test_case(TempoHardfork::T2, 1)]
+    #[test_case(TempoHardfork::T3, 0)]
+    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3(
+        hardfork: TempoHardfork,
+        expected_sloads: u64,
+    ) -> eyre::Result<()> {
         let (account, token) = (Address::random(), Address::random());
 
-        for (hardfork, expected_sloads) in [(TempoHardfork::T2, 1_u64), (TempoHardfork::T3, 0)] {
-            with_storage(hardfork, || {
-                let mut keychain = AccountKeychain::new();
-                let _ = keychain.initialize();
+        with_storage(hardfork, || {
+            let mut keychain = AccountKeychain::new();
+            let _ = keychain.initialize();
 
-                let sloads_before = StorageCtx.counter_sload();
-                assert_eq!(
-                    keychain.get_remaining_limit(getRemainingLimitCall {
-                        account,
-                        keyId: Address::ZERO,
-                        token,
-                    })?,
-                    U256::ZERO
-                );
+            let sloads_before = StorageCtx.counter_sload();
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: Address::ZERO,
+                    token,
+                })?,
+                U256::ZERO
+            );
 
-                assert_eq!(
-                    StorageCtx.counter_sload() - sloads_before,
-                    expected_sloads,
-                    "{hardfork:?} should perform the expected number of storage reads for zero key_id"
-                );
+            assert_eq!(StorageCtx.counter_sload() - sloads_before, expected_sloads);
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]

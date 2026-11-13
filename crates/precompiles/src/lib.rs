@@ -370,6 +370,7 @@ mod tests {
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+    use test_case::test_case;
 
     struct TestTypes;
 
@@ -1067,26 +1068,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_zone_verifier_registered_at_t13_only() {
+    #[test_case(TempoHardfork::T10 => false)]
+    #[test_case(TempoHardfork::T11 => false)]
+    #[test_case(TempoHardfork::T12 => false)]
+    #[test_case(TempoHardfork::T13 => true)]
+    fn test_zone_verifier_registered_at_t13_only(spec: TempoHardfork) -> bool {
         let activation = SYSTEM_PRECOMPILES
             .iter()
             .find_map(|(address, fork)| (*address == ZONE_VERIFIER_ADDRESS).then_some(*fork))
             .expect("ZoneVerifier must be listed in SYSTEM_PRECOMPILES");
         assert_eq!(activation, TempoHardfork::T13);
 
-        for (spec, active) in [
-            (TempoHardfork::T10, false),
-            (TempoHardfork::T11, false),
-            (TempoHardfork::T12, false),
-            (TempoHardfork::T13, true),
-        ] {
-            assert_eq!(
-                test_tempo_precompiles(spec).contains(&ZONE_VERIFIER_ADDRESS),
-                active,
-                "unexpected native ZoneVerifier activation at {spec:?}"
-            );
-        }
+        test_tempo_precompiles(spec).contains(&ZONE_VERIFIER_ADDRESS)
     }
 
     #[test]
@@ -1102,35 +1095,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_p256verify_availability_across_t1c_boundary() {
-        let has_p256 = |spec: TempoHardfork| -> bool {
-            // P256VERIFY lives at address 0x100 (256), added in Osaka
-            let p256_addr = Address::from_word(U256::from(256).into());
+    // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
+    #[test_case(TempoHardfork::Genesis => false)]
+    #[test_case(TempoHardfork::T0 => false)]
+    #[test_case(TempoHardfork::T1 => false)]
+    #[test_case(TempoHardfork::T1A => false)]
+    #[test_case(TempoHardfork::T1B => false)]
+    // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
+    #[test_case(TempoHardfork::T1C => true)]
+    #[test_case(TempoHardfork::T2 => true)]
+    fn test_p256verify_availability_across_t1c_boundary(spec: TempoHardfork) -> bool {
+        // P256VERIFY lives at address 0x100 (256), added in Osaka
+        let p256_addr = Address::from_word(U256::from(256).into());
 
-            test_tempo_precompiles(spec).contains(&p256_addr)
-        };
-
-        // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
-        for spec in [
-            TempoHardfork::Genesis,
-            TempoHardfork::T0,
-            TempoHardfork::T1,
-            TempoHardfork::T1A,
-            TempoHardfork::T1B,
-        ] {
-            assert!(
-                !has_p256(spec),
-                "P256VERIFY should NOT be available at {spec:?} (pre-T1C)"
-            );
-        }
-
-        // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
-        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
-            assert!(
-                has_p256(spec),
-                "P256VERIFY should be available at {spec:?} (T1C+)"
-            );
-        }
+        test_tempo_precompiles(spec).contains(&p256_addr)
     }
 }
