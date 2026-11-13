@@ -106,18 +106,18 @@ where
                         .is_none_or(|&balance| balance >= fee)
             })
     }
-}
 
-impl<I> Iterator for StateAwareBestTransactions<I>
-where
-    I: BestTransactions,
-    I::Item: StateAwarePoolTransaction,
-{
-    type Item = I::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Returns the next transaction whose fee payer can still pay, like [`Iterator::next`], but
+    /// takes every candidate from the inner iterator through `next`.
+    ///
+    /// The search ends as soon as `next` returns `None`, so the caller decides how long a run of
+    /// skipped transactions may go on for.
+    pub fn next_with(
+        &mut self,
+        mut next: impl FnMut(&mut I) -> Option<I::Item>,
+    ) -> Option<I::Item> {
         loop {
-            let tx = self.inner.next()?;
+            let tx = next(&mut self.inner)?;
             let best_tx = tx.best_transaction();
 
             let Some(key) = best_tx.transaction.fee_balance_slot() else {
@@ -141,6 +141,18 @@ where
 
             return Some(tx);
         }
+    }
+}
+
+impl<I> Iterator for StateAwareBestTransactions<I>
+where
+    I: BestTransactions,
+    I::Item: StateAwarePoolTransaction,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_with(I::next)
     }
 }
 
@@ -202,6 +214,32 @@ mod tests {
                 .insert((token, slot), fee - U256::ONE);
         }
         best.next().is_some()
+    }
+
+    #[test]
+    fn next_with_ends_a_run_of_skipped_transactions() {
+        let txs = (0..10).map(|_| protocol_tx(0, 1)).collect::<Vec<_>>();
+        let mut best =
+            StateAwareBestTransactions::new(protocol_best_transactions(txs.clone()), &[]);
+        // No fee payer can pay, so every candidate is skipped.
+        for tx in &txs {
+            best.decreased_balances
+                .insert(tx.transaction.fee_balance_slot().unwrap(), U256::ZERO);
+        }
+
+        let mut polls = 0;
+        let next = best.next_with(|inner| {
+            polls += 1;
+            if polls > 3 { None } else { inner.next() }
+        });
+
+        assert!(next.is_none());
+        assert_eq!(polls, 4);
+        assert_eq!(
+            best.inner.count(),
+            7,
+            "the search must stop where `next` did"
+        );
     }
 
     #[test]
