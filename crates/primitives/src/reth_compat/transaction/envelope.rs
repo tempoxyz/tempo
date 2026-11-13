@@ -2,13 +2,16 @@ use crate::transaction::envelope::TempoTxEnvelope;
 
 impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
     fn size(&self) -> usize {
-        match self {
-            Self::Legacy(tx) => tx.size(),
-            Self::Eip2930(tx) => tx.size(),
-            Self::Eip1559(tx) => tx.size(),
-            Self::Eip7702(tx) => tx.size(),
-            Self::AA(tx) => tx.size(),
-        }
+        // `AASigned` is stored inline, so every variant occupies `size_of::<Self>()`. Charge that
+        // plus the variant's heap, otherwise size-based memory budgets undercount small variants.
+        let (size, inline) = match self {
+            Self::Legacy(tx) => (tx.size(), size_of_val(tx)),
+            Self::Eip2930(tx) => (tx.size(), size_of_val(tx)),
+            Self::Eip1559(tx) => (tx.size(), size_of_val(tx)),
+            Self::Eip7702(tx) => (tx.size(), size_of_val(tx)),
+            Self::AA(tx) => (tx.size(), size_of_val(tx)),
+        };
+        size_of::<Self>() + size.saturating_sub(inline)
     }
 }
 
@@ -224,6 +227,34 @@ mod codec {
                 let (decoded, _) = <TempoTxEnvelope as Compact>::from_compact(&compact, len);
                 prop_assert_eq!(decoded, envelope);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{TempoSignature, TempoTransaction};
+    use alloy_consensus::{SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+    use alloy_primitives::Signature;
+    use reth_primitives_traits::InMemorySize;
+
+    #[test]
+    fn size_covers_inline_enum() {
+        let sig = Signature::test_signature();
+        let txs = [
+            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(sig)),
+            TempoTxEnvelope::Eip2930(TxEip2930::default().into_signed(sig)),
+            TempoTxEnvelope::Eip1559(TxEip1559::default().into_signed(sig)),
+            TempoTxEnvelope::Eip7702(TxEip7702::default().into_signed(sig)),
+            TempoTxEnvelope::AA(TempoTransaction::default().into_signed(TempoSignature::default())),
+        ];
+        for tx in txs {
+            assert!(
+                tx.size() >= size_of::<TempoTxEnvelope>(),
+                "{:?}",
+                tx.tx_type()
+            );
         }
     }
 }

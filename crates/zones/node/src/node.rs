@@ -18,8 +18,8 @@ use crate::{
     },
     rpc::{
         NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
-        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_zone_rpc_module, rpc_connection_config,
-        start_redacted_rpc,
+        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_get_code_module,
+        operator_zone_rpc_module, rpc_connection_config, start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
     shadow_prover::RpcFollowerShadowProver,
@@ -830,6 +830,12 @@ where
             provider.clone(),
         );
         let portal_address = self.portal_address;
+        let get_code_l1_state = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            self.l1_state_cache.clone(),
+            l1_provider.clone(),
+            tokio::runtime::Handle::current(),
+        );
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
@@ -881,6 +887,14 @@ where
                 container
                     .modules
                     .merge_configured(operator_zone_api.into_rpc())?;
+                // Only on transports that serve the eth namespace, like the methods they replace.
+                container.modules.add_or_replace_if_module_configured(
+                    reth_rpc_builder::RethRpcModule::Eth,
+                    operator_get_code_module(
+                        container.registry.eth_api().clone(),
+                        get_code_l1_state,
+                    )?,
+                )?;
                 container.modules.merge_configured(
                     NodeZoneDebugApi::new(container.registry.eth_api().clone(), debug_l1_provider)
                         .into_rpc(),
@@ -2091,7 +2105,7 @@ where
             price_bump_config: pool_config.price_bumps,
             pending_limit: pool_config.pending_limit,
             queued_limit: pool_config.queued_limit,
-            max_txs_per_sender: pool_config.max_account_slots,
+            max_txs_per_authority: pool_config.max_account_slots,
             ..Default::default()
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);

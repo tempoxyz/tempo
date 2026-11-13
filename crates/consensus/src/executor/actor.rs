@@ -42,7 +42,8 @@
 //! stops at the finalized tip and lets the finalization pipeline deliver
 //! finalized history.
 //!
-//! Requests from several rounds can be pending at once, one per round. They
+//! Requests from several rounds can be pending at once, one per round and
+//! candidate. They
 //! share one engine slot. Whenever the slot is free it goes to the newest
 //! request whose walk has a block ready to probe; a request for a round
 //! finality has passed is dropped. A missing parent is first looked up
@@ -56,7 +57,9 @@
 //! delivers its ancestor.
 //!
 //! Requesters that go away are dropped without a verdict, and a request for
-//! the same round replaces the pending one.
+//! the same round and candidate replaces the pending one. Requests for
+//! different candidates in the same round (an equivocating leader) are kept
+//! side by side, so one cannot cancel the other.
 //!
 //! # Execution failures
 //!
@@ -200,14 +203,14 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// concern.
     pending_build: Option<(Round, Span, Box<Build>)>,
 
-    /// Verifications waiting for the slot, by round: fresh candidates, walks
+    /// Verifications waiting for the slot, by round and candidate: fresh candidates, walks
     /// waiting for a subscribed ancestor or for finalization, and walks with
     /// a fetched ancestor in hand. Parent subscriptions live in the fetch
     /// pool; canceled requests are reaped when the queue is reconciled.
     /// A request stays until it has a verdict, fails, is found canceled,
     /// its round falls at or below the network finalized round, or a request
-    /// for the same round replaces it.
-    queued_verifications: BTreeMap<Round, Verification>,
+    /// for the same round and candidate replaces it.
+    queued_verifications: BTreeMap<VerificationKey, Verification>,
     /// The verification holding the engine slot: the one whose cursor is in
     /// flight, about to be probed, or whose parent is being looked up
     /// locally. Handed out by [`Self::update_verifications`] to the newest
@@ -497,13 +500,13 @@ where
                     }
                 }
 
-                (round, event) = poll_fn(|cx| match &mut self.active_verification {
+                (key, event) = poll_fn(|cx| match &mut self.active_verification {
                     Some(active) => active
                         .poll_event(cx)
-                        .map(|event| (active.round, event)),
+                        .map(|event| (active.key(), event)),
                     None => Poll::Pending,
                 }) => {
-                    self.handle_verification_event(round, event);
+                    self.handle_verification_event(key, event);
                 }
 
                 completion = self.parent_fetches.next_completed() => {
@@ -610,8 +613,8 @@ where
                 // An ACCEPTED answer is logged by the handlers and ends the
                 // verification or stops the convergence walk.
                 let _logged = match owner {
-                    WalkOwner::Verification(round) => {
-                        self.handle_verification_delivered(round, digest, status, duration)
+                    WalkOwner::Verification(key) => {
+                        self.handle_verification_delivered(key, digest, status, duration)
                     }
                     WalkOwner::Convergence => self.handle_convergence_delivered(digest, status),
                 };
@@ -661,10 +664,10 @@ where
     /// Interprets an engine answer for the active verification. Cursors
     /// overtaken by finality reprobe the target; historical targets are
     /// dropped by [`Self::prune_finalized`] before another delivery.
-    #[instrument(skip_all, fields(%round, %digest), err(level = Level::WARN))]
+    #[instrument(skip_all, fields(round = %key.round, %digest), err(level = Level::WARN))]
     fn handle_verification_delivered(
         &mut self,
-        round: Round,
+        key: VerificationKey,
         digest: Digest,
         status: PayloadStatusEnum,
         duration: Duration,
@@ -672,7 +675,7 @@ where
         let Some(active) = &mut self.active_verification else {
             return Ok(());
         };
-        if active.round != round || !active.walk.awaits(digest) {
+        if active.key() != key || !active.walk.awaits(digest) {
             return Ok(());
         }
         active.duration += duration;
@@ -681,7 +684,7 @@ where
         if walk.conflicts_with_finality(finalized_height, finalized_digest) {
             // A finality conflict is not an execution-invalid verdict
             // that certification may cache. Close the request instead.
-            self.remove_verification(round);
+            self.remove_verification(key);
             return Ok(());
         }
         if walk.below_finality(finalized_height) {
@@ -718,11 +721,11 @@ where
                 return Ok(());
             }
             PayloadStatusEnum::Accepted => {
-                self.remove_verification(round);
+                self.remove_verification(key);
                 bail!("payload was accepted without execution while verifying block");
             }
         };
-        self.remove_verification(round)
+        self.remove_verification(key)
             .expect("the active verification was found above")
             .respond(verdict);
         Ok(())
@@ -1329,15 +1332,17 @@ where
         }
     }
 
-    /// Queues a verification. Verifications from different rounds wait side
-    /// by side; one for the same round replaces the pending one, whether that
-    /// one is queued or active.
+    /// Queues a verification. Verifications from different rounds, or for
+    /// different candidates in the same round, wait side by side; one for the
+    /// same round and candidate replaces the pending one, whether that one is
+    /// queued or active.
     fn queue_verification(&mut self, verification: Verification) {
-        let round = verification.round;
-        if self.remove_verification(round).is_some() {
-            debug!(%round, "verification replaced a pending one for the same round");
+        let key = verification.key();
+        if self.remove_verification(key).is_some() {
+            let VerificationKey { round, digest } = key;
+            debug!(%round, %digest, "verification replaced a pending one for the same candidate");
         }
-        self.queued_verifications.insert(round, verification);
+        self.queued_verifications.insert(key, verification);
     }
 
     /// Records a finalized tip, which also selects the finalized block as the
@@ -1436,13 +1441,14 @@ where
         }
 
         // Discard canceled requests before selecting a walk to probe.
-        self.queued_verifications.retain(|round, queued| {
-            let is_cancelled = queued.is_canceled();
-            if is_cancelled {
-                debug!(%round, "dropping verification whose requester went away");
-            }
-            !is_cancelled
-        });
+        self.queued_verifications
+            .retain(|VerificationKey { round, .. }, queued| {
+                let is_cancelled = queued.is_canceled();
+                if is_cancelled {
+                    debug!(%round, "dropping verification whose requester went away");
+                }
+                !is_cancelled
+            });
         if let Some(active) = &self.active_verification
             && !matches!(
                 active.walk.step,
@@ -1458,20 +1464,20 @@ where
                 step = active.walk.step.name(),
                 "active verification has to wait; back into the queue"
             );
-            self.queued_verifications.insert(active.round, active);
+            self.queued_verifications.insert(active.key(), active);
         }
         if self.active_verification.is_none()
-            && let Some(round) = self
+            && let Some(key @ VerificationKey { round, .. }) = self
                 .queued_verifications
                 .iter()
                 .rev()
                 .find(|(_, queued)| matches!(queued.walk.step, WalkStep::Probe))
-                .map(|(round, _)| *round)
+                .map(|(key, _)| *key)
         {
             let next = self
                 .queued_verifications
-                .remove(&round)
-                .expect("the round was found above");
+                .remove(&key)
+                .expect("the key was found above");
             debug!(
                 %round,
                 target = %next.walk.target.digest(),
@@ -1562,15 +1568,15 @@ where
     }
 
     /// A requester's cancellation or the active walk's local lookup woke the actor.
-    #[instrument(skip_all, fields(%round))]
-    fn handle_verification_event(&mut self, round: Round, event: VerificationEvent) {
+    #[instrument(skip_all, fields(round = %key.round, digest = %key.digest))]
+    fn handle_verification_event(&mut self, key: VerificationKey, event: VerificationEvent) {
         match event {
             VerificationEvent::Canceled => {
                 debug!("the verification's requester went away");
-                self.remove_verification(round);
+                self.remove_verification(key);
             }
             VerificationEvent::ParentLookedUp(block) => {
-                self.handle_parent_lookup(WalkOwner::Verification(round), block);
+                self.handle_parent_lookup(WalkOwner::Verification(key), block);
             }
         }
     }
@@ -1579,12 +1585,9 @@ where
     /// subscription for the missing parent.
     fn handle_parent_lookup(&mut self, owner: WalkOwner, block: Option<Digested<Block>>) {
         let walk = match owner {
-            WalkOwner::Verification(round) => match &mut self.active_verification {
-                Some(active) if active.round == round => Some(&mut active.walk),
-                _ => self
-                    .queued_verifications
-                    .get_mut(&round)
-                    .map(|v| &mut v.walk),
+            WalkOwner::Verification(key) => match &mut self.active_verification {
+                Some(active) if active.key() == key => Some(&mut active.walk),
+                _ => self.queued_verifications.get_mut(&key).map(|v| &mut v.walk),
             },
             WalkOwner::Convergence => self.convergence.as_mut(),
         };
@@ -1606,12 +1609,9 @@ where
     #[instrument(skip_all, fields(%owner))]
     fn handle_parent_fetched(&mut self, owner: WalkOwner, block: Option<Digested<Block>>) {
         let walk = match owner {
-            WalkOwner::Verification(round) => match &mut self.active_verification {
-                Some(active) if active.round == round => Some(&mut active.walk),
-                _ => self
-                    .queued_verifications
-                    .get_mut(&round)
-                    .map(|v| &mut v.walk),
+            WalkOwner::Verification(key) => match &mut self.active_verification {
+                Some(active) if active.key() == key => Some(&mut active.walk),
+                _ => self.queued_verifications.get_mut(&key).map(|v| &mut v.walk),
             },
             WalkOwner::Convergence => self.convergence.as_mut(),
         };
@@ -1624,9 +1624,9 @@ where
             return;
         }
         match owner {
-            WalkOwner::Verification(round) => {
+            WalkOwner::Verification(key @ VerificationKey { round, .. }) => {
                 warn!(%round, "marshal gave up on the verification's ancestor; failing the request");
-                self.remove_verification(round);
+                self.remove_verification(key);
             }
             WalkOwner::Convergence => {
                 warn!("marshal gave up on the ancestor; retrying the fetch");
@@ -1643,10 +1643,10 @@ where
     }
 
     /// Drops the verification, wherever it sits; its channel closes.
-    fn remove_verification(&mut self, round: Round) -> Option<Verification> {
+    fn remove_verification(&mut self, key: VerificationKey) -> Option<Verification> {
         match &self.active_verification {
-            Some(active) if active.round == round => self.active_verification.take(),
-            _ => self.queued_verifications.remove(&round),
+            Some(active) if active.key() == key => self.active_verification.take(),
+            _ => self.queued_verifications.remove(&key),
         }
     }
 
@@ -1722,7 +1722,7 @@ where
             let block = active.walk.probe();
             let fut = execute_delivery(
                 self.execution_node.clone(),
-                WalkOwner::Verification(active.round),
+                WalkOwner::Verification(active.key()),
                 active.walk.cause.clone(),
                 block,
             );
@@ -1919,7 +1919,8 @@ impl Future for PendingNotarizedBlock {
 /// canceled queued requests, and pools parent subscriptions. It stays until
 /// the candidate has a verdict, the request fails or is canceled, its round
 /// falls at or below the network finalized round, its target falls below the
-/// network finalized height, or a request for the same round replaces it.
+/// network finalized height, or a request for the same round and candidate
+/// replaces it.
 struct Verification {
     round: Round,
     /// The walk toward the candidate, which is its target.
@@ -1944,6 +1945,14 @@ impl Verification {
             walk: AncestryWalk::new(cause, candidate),
             response,
             duration: Duration::ZERO,
+        }
+    }
+
+    /// Identifies the request: its round and candidate.
+    fn key(&self) -> VerificationKey {
+        VerificationKey {
+            round: self.round,
+            digest: self.walk.target.digest(),
         }
     }
 
@@ -2072,18 +2081,32 @@ impl WalkStep {
     }
 }
 
+/// Identifies a verification request by its round and candidate. Keying by
+/// round alone would let a second candidate for the same round (an
+/// equivocating leader) cancel the first.
+///
+/// Ordered by round first, so the newest round sorts last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct VerificationKey {
+    round: Round,
+    /// The candidate block's digest.
+    digest: Digest,
+}
+
 /// Which walk a delivery belongs to.
 #[derive(Clone, Copy, Debug)]
 enum WalkOwner {
-    /// The verification queued under this round.
-    Verification(Round),
+    /// The verification queued under this round and candidate.
+    Verification(VerificationKey),
     Convergence,
 }
 
 impl std::fmt::Display for WalkOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Verification(round) => write!(f, "verification {round}"),
+            Self::Verification(VerificationKey { round, digest }) => {
+                write!(f, "verification {round} {digest}")
+            }
             Self::Convergence => f.write_str("convergence"),
         }
     }
