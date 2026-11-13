@@ -5,25 +5,19 @@ use alloy_sol_types::{SolCall, SolInterface};
 use evm2::precompiles::PrecompileHalt;
 use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
 use tempo_precompiles::{
-    storage::{StorageCtx, StorageKey},
+    PATH_USD_ADDRESS,
     test_util::TIP20Setup,
     zone_factory::portal::{self, ZonePortalStorage},
 };
-use zone_primitives::constants::TEMPO_STATE_ADDRESS;
+use test_case::test_case;
 
 use crate::{
-    tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
-    test_utils::{
-        MockL1Reader, PrecompileResult, PrecompileStatus, TestContext, TestPrecompiles,
-        call_precompile, test_context, test_precompiles, test_storage_provider,
-    },
+    test_utils::{PrecompileResult, PrecompileStatus, WITHDRAWAL_TX_HASH, ZoneEnv, ZoneSpec},
     tx_context,
 };
 
-const GAS: u64 = 10_000_000;
 const ANCHOR: u64 = 42;
 const TEST_MAX_TEMPO_GAS_RATE: u128 = 1_000_000_000_000_000_000;
-const TX_HASH: B256 = B256::repeat_byte(0x42);
 const PORTAL: Address = Address::repeat_byte(0x77);
 const ALICE: Address = Address::with_last_byte(0xa1);
 const BOB: Address = Address::with_last_byte(0xb2);
@@ -31,224 +25,70 @@ const SEQUENCER: Address = Address::with_last_byte(0xc3);
 const FEE_PAYER: Address = Address::with_last_byte(0xd4);
 const GATEWAY: Address = Address::with_last_byte(0xe5);
 
-struct Harness {
-    ctx: TestContext,
-    precompile: TestPrecompiles,
-    l1: MockL1Reader,
-    token: Address,
+fn spec() -> ZoneSpec {
+    ZoneSpec {
+        portal: PORTAL,
+        sequencer: SEQUENCER,
+        tempo_block: ANCHOR,
+        max_tempo_gas_rate: TEST_MAX_TEMPO_GAS_RATE,
+        tokens: vec![
+            TIP20Setup::path_usd(ALICE)
+                .with_issuer(ALICE)
+                .with_issuer(ZONE_OUTBOX_ADDRESS)
+                .with_mint(ALICE, U256::from(1_000_000u64))
+                .with_mint(FEE_PAYER, U256::from(1_000_000u64))
+                .with_approval(ALICE, ZONE_OUTBOX_ADDRESS, U256::MAX)
+                .with_approval(FEE_PAYER, ZONE_OUTBOX_ADDRESS, U256::MAX),
+        ],
+        ..Default::default()
+    }
 }
 
-impl Harness {
-    fn new() -> eyre::Result<Self> {
-        let mut ctx = test_context();
-        let token = tempo_precompiles::PATH_USD_ADDRESS;
-        let l1 = MockL1Reader::default();
-        l1.insert(
-            PORTAL,
-            SEQUENCER.mapping_slot(portal::slots::ROLE),
-            ANCHOR,
-            U256::from(u8::from(Role::Sequencer)),
-        );
-        l1.insert(
-            PORTAL,
-            token.mapping_slot(portal::slots::TOKEN_CONFIGS),
-            ANCHOR,
-            U256::ONE,
-        );
-        l1.insert(
-            PORTAL,
-            portal::slots::MAX_TEMPO_GAS_RATE,
-            ANCHOR,
-            U256::from(TEST_MAX_TEMPO_GAS_RATE),
-        );
-        {
-            let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
-            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                StorageCtx::default().sstore(
-                    TEMPO_STATE_ADDRESS,
-                    TEMPO_BLOCK_NUMBER_SLOT,
-                    U256::from(ANCHOR),
-                )?;
+/// A pathUSD withdrawal with a zero memo and ALICE as the zone fallback recipient.
+fn withdrawal(amount: u128, to: Address, gas_limit: u64) -> ZoneOutboxAbi::requestWithdrawalCall {
+    ZoneOutboxAbi::requestWithdrawalCall {
+        token: PATH_USD_ADDRESS,
+        to,
+        amount,
+        memo: B256::ZERO,
+        gasLimit: gas_limit,
+        zoneFallbackRecipient: ALICE,
+        data: Bytes::new(),
+        revealTo: Bytes::new(),
+    }
+}
 
-                ZoneOutbox::new().initialize()?;
-                TIP20Setup::path_usd(ALICE)
-                    .with_issuer(ALICE)
-                    .with_issuer(ZONE_OUTBOX_ADDRESS)
-                    .with_mint(ALICE, U256::from(1_000_000u64))
-                    .with_mint(FEE_PAYER, U256::from(1_000_000u64))
-                    .with_approval(ALICE, ZONE_OUTBOX_ADDRESS, U256::MAX)
-                    .with_approval(FEE_PAYER, ZONE_OUTBOX_ADDRESS, U256::MAX)
-                    .apply()?;
-                Ok(())
-            })?;
+fn last_fallback_nonce(env: &mut ZoneEnv) -> eyre::Result<u64> {
+    let output = env.call(
+        Address::ZERO,
+        ZONE_OUTBOX_ADDRESS,
+        ZoneOutboxAbi::lastFallbackNonceCall {}.abi_encode(),
+    )?;
+    Ok(ZoneOutboxAbi::lastFallbackNonceCall::abi_decode_returns(
+        &output.bytes,
+    )?)
+}
+
+fn set_gas_rate(env: &mut ZoneEnv, rate: u128) -> PrecompileResult {
+    env.call(
+        SEQUENCER,
+        ZONE_OUTBOX_ADDRESS,
+        ZoneOutboxAbi::setTempoGasRateCall {
+            _tempoGasRate: rate,
         }
+        .abi_encode(),
+    )
+}
 
-        let precompile = test_precompiles(&ctx, L1State::new(l1.clone(), PORTAL));
-
-        Ok(Self {
-            ctx,
-            precompile,
-            l1,
-            token,
-        })
-    }
-
-    #[rustfmt::skip]
-    fn call_inner(&mut self, caller: Address, fee_payer: Address, data: impl AsRef<[u8]>, with_context: bool, is_static: bool) -> PrecompileResult {
-        let _guard = with_context.then(|| tx_context::set_current_transaction(TX_HASH, fee_payer));
-        call_precompile(
-            &mut self.ctx, &mut self.precompile, caller, data.as_ref(), GAS, is_static, ZONE_OUTBOX_ADDRESS, ZONE_OUTBOX_ADDRESS
-        )
-    }
-
-    fn call_without_hash(&mut self, caller: Address, data: impl AsRef<[u8]>) -> PrecompileResult {
-        self.call_inner(caller, caller, data, false, false)
-    }
-
-    fn call(&mut self, caller: Address, data: impl AsRef<[u8]>) -> PrecompileResult {
-        self.call_inner(caller, caller, data, true, false)
-    }
-
-    fn call_with_fee_payer(
-        &mut self,
-        caller: Address,
-        fee_payer: Address,
-        data: impl AsRef<[u8]>,
-    ) -> PrecompileResult {
-        self.call_inner(caller, fee_payer, data, true, false)
-    }
-
-    fn call_static(&mut self, caller: Address, data: impl AsRef<[u8]>) -> PrecompileResult {
-        self.call_inner(caller, caller, data, false, true)
-    }
-
-    fn pending(&mut self) -> eyre::Result<Vec<ZoneOutboxAbi::PendingWithdrawal>> {
-        let output = self.call(
-            SEQUENCER,
-            ZoneOutboxAbi::getPendingWithdrawalsCall {}.abi_encode(),
-        )?;
-        Ok(ZoneOutboxAbi::getPendingWithdrawalsCall::abi_decode_returns(&output.bytes)?)
-    }
-
-    fn last_fallback_nonce(&mut self) -> eyre::Result<u64> {
-        let output = self.call(
-            Address::ZERO,
-            ZoneOutboxAbi::lastFallbackNonceCall {}.abi_encode(),
-        )?;
-        Ok(ZoneOutboxAbi::lastFallbackNonceCall::abi_decode_returns(
-            &output.bytes,
-        )?)
-    }
-
-    fn request(&mut self, amount: u128, to: Address, memo: B256) -> PrecompileResult {
-        self.request_with_gas(amount, to, memo, 0)
-    }
-
-    fn request_with_gas(
-        &mut self,
-        amount: u128,
-        to: Address,
-        memo: B256,
-        gas_limit: u64,
-    ) -> PrecompileResult {
-        self.request_custom(ZoneOutboxAbi::requestWithdrawalCall {
-            token: self.token,
-            to,
-            amount,
-            memo,
-            gasLimit: gas_limit,
-            zoneFallbackRecipient: ALICE,
-            data: Bytes::new(),
-            revealTo: Bytes::new(),
-        })
-    }
-
-    fn request_custom(&mut self, call: ZoneOutboxAbi::requestWithdrawalCall) -> PrecompileResult {
-        self.call(ALICE, call.abi_encode())
-    }
-
-    fn set_gas_rate(&mut self, rate: u128) -> PrecompileResult {
-        self.call(
-            SEQUENCER,
-            ZoneOutboxAbi::setTempoGasRateCall {
-                _tempoGasRate: rate,
-            }
-            .abi_encode(),
-        )
-    }
-
-    fn set_max_withdrawals(&mut self, max: u32) -> PrecompileResult {
-        self.call(
-            SEQUENCER,
-            ZoneOutboxAbi::setMaxWithdrawalsPerBlockCall {
-                _maxWithdrawalsPerBlock: max,
-            }
-            .abi_encode(),
-        )
-    }
-
-    fn set_max_tempo_gas_rate(&self, max: u128) {
-        self.l1.insert(
-            PORTAL,
-            portal::slots::MAX_TEMPO_GAS_RATE,
-            ANCHOR,
-            U256::from(max),
-        );
-    }
-
-    fn set_modes(&self, access_enforced: bool, gateway_enforced: bool) {
-        let modes =
-            U256::from(u8::from(access_enforced)) | (U256::from(u8::from(gateway_enforced)) << 8);
-        self.l1
-            .insert(PORTAL, portal::slots::IS_ACCESS_ENFORCED, ANCHOR, modes);
-    }
-
-    fn set_role(&self, account: Address, role: Role) {
-        self.l1.insert(
-            PORTAL,
-            account.mapping_slot(portal::slots::ROLE),
-            ANCHOR,
-            U256::from(u8::from(role)),
-        );
-    }
-
-    fn set_token_enabled(&self, enabled: bool) {
-        self.l1.insert(
-            PORTAL,
-            self.token.mapping_slot(portal::slots::TOKEN_CONFIGS),
-            ANCHOR,
-            U256::from(u8::from(enabled)),
-        );
-    }
-
-    fn set_pause_expiry(&self, expiry: u64) {
-        self.l1.insert(
-            PORTAL,
-            portal::slots::PAUSE_EXPIRY,
-            ANCHOR,
-            U256::from(expiry) << 64,
-        );
-    }
-
-    fn balance_of(&mut self, account: Address) -> eyre::Result<U256> {
-        let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Token::from_address(self.token).expect("initialized token");
-            Ok(token.balance_of(ITIP20::balanceOfCall { account })?)
-        })
-    }
-
-    fn finalize(&mut self, count: usize) -> PrecompileResult {
-        self.call(
-            Address::ZERO,
-            ZoneOutboxAbi::finalizeWithdrawalBatchCall {
-                count: U256::from(count),
-                blockNumber: 0,
-                encryptedSenders: vec![Bytes::new(); count],
-            }
-            .abi_encode(),
-        )
-    }
+fn set_max_withdrawals(env: &mut ZoneEnv, max: u32) -> PrecompileResult {
+    env.call(
+        SEQUENCER,
+        ZONE_OUTBOX_ADDRESS,
+        ZoneOutboxAbi::setMaxWithdrawalsPerBlockCall {
+            _maxWithdrawalsPerBlock: max,
+        }
+        .abi_encode(),
+    )
 }
 
 fn assert_revert(result: PrecompileResult, error: impl SolInterface) {
@@ -271,95 +111,62 @@ fn role_binding_order_matches_solidity_role_enum() {
     );
 }
 
-#[test]
-fn request_withdrawal_stores_fields_and_fifo_order() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.request(500, ALICE, B256::repeat_byte(1))?;
-    harness.request(300, BOB, B256::repeat_byte(2))?;
+#[test_case(ZoneOutboxAbi::pendingWithdrawalsCountCall {}.abi_encode())]
+#[test_case(ZoneOutboxAbi::getPendingWithdrawalsCall {}.abi_encode())]
+fn pending_withdrawal_getters_require_sequencer_or_system(calldata: Vec<u8>) -> eyre::Result<()> {
+    let mut env = spec().apply()?;
+    assert_revert(
+        env.call(ALICE, ZONE_OUTBOX_ADDRESS, &calldata),
+        ZoneOutboxError::only_sequencer(),
+    );
 
-    let pending = harness.pending()?;
-    assert_eq!(pending.len(), 2);
-    assert_eq!(pending[0].sender, ALICE);
-    assert_eq!(pending[0].txHash, TX_HASH);
-    assert_eq!(pending[0].to, ALICE);
-    assert_eq!(pending[0].amount, 500);
-    assert_eq!(pending[1].to, BOB);
-    assert_eq!(pending[1].amount, 300);
-    Ok(())
-}
-
-#[test]
-fn pending_withdrawal_getters_require_sequencer_or_system() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-
-    for calldata in [
-        ZoneOutboxAbi::pendingWithdrawalsCountCall {}.abi_encode(),
-        ZoneOutboxAbi::getPendingWithdrawalsCall {}.abi_encode(),
-    ] {
-        assert_revert(
-            harness.call(ALICE, calldata.clone()),
-            ZoneOutboxError::only_sequencer(),
-        );
-
-        assert!(harness.call(SEQUENCER, calldata.clone())?.is_success());
-        assert!(harness.call(Address::ZERO, calldata)?.is_success());
-    }
+    assert!(
+        env.call(SEQUENCER, ZONE_OUTBOX_ADDRESS, &calldata)?
+            .is_success()
+    );
+    assert!(
+        env.call(Address::ZERO, ZONE_OUTBOX_ADDRESS, calldata)?
+            .is_success()
+    );
 
     Ok(())
 }
 
 #[test]
 fn outbox_reads_injected_l1_state_at_tempo_checkpoint() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.set_gas_rate(1)?;
-    harness.request(1, BOB, B256::ZERO)?;
+    let mut env = spec().apply()?;
+    set_gas_rate(&mut env, 1)?;
+    env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
 
     let portal = ZonePortalStorage::new(PORTAL);
-    assert_eq!(harness.l1.storage_requests().len(), 6);
-    assert!(harness.l1.storage_requests().contains(&(
+    assert_eq!(env.l1.storage_requests().len(), 6);
+    assert!(env.l1.storage_requests().contains(&(
         PORTAL,
         portal::slots::PAUSE_EXPIRY.into(),
         ANCHOR
     )));
-    assert_eq!(harness.l1.request_count(ANCHOR, &portal.role[SEQUENCER]), 1);
+    assert_eq!(env.l1.request_count(ANCHOR, &portal.role[SEQUENCER]), 1);
+    assert_eq!(env.l1.request_count(ANCHOR, &portal.max_tempo_gas_rate), 1);
     assert_eq!(
-        harness.l1.request_count(ANCHOR, &portal.max_tempo_gas_rate),
+        env.l1
+            .request_count(ANCHOR, &portal.token_configs[PATH_USD_ADDRESS].enabled),
         1
     );
-    assert_eq!(
-        harness
-            .l1
-            .request_count(ANCHOR, &portal.token_configs[harness.token].enabled),
-        1
-    );
-    assert_eq!(
-        harness.l1.request_count(ANCHOR, &portal.is_access_enforced),
-        2
-    );
+    assert_eq!(env.l1.request_count(ANCHOR, &portal.is_access_enforced), 2);
     Ok(())
 }
 
 #[test]
 fn request_withdrawal_rejects_missing_transaction_hash() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let token = harness.token;
-    let result = harness.call_without_hash(
+    let mut env = spec().apply()?;
+    let result = env.call(
         ALICE,
-        ZoneOutboxAbi::requestWithdrawalCall {
-            token,
-            to: BOB,
-            amount: 1,
-            memo: B256::ZERO,
-            gasLimit: 0,
-            zoneFallbackRecipient: ALICE,
-            data: Bytes::new(),
-            revealTo: Bytes::new(),
-        }
-        .abi_encode(),
+        ZONE_OUTBOX_ADDRESS,
+        withdrawal(1, BOB, 0).abi_encode(),
     );
     assert_revert(result, ZoneOutboxError::invalid_current_tx_hash());
     assert!(
-        harness.l1.storage_requests().is_empty(),
+        env.l1.storage_requests().is_empty(),
         "missing transaction context must be rejected before portal reads"
     );
     Ok(())
@@ -367,167 +174,179 @@ fn request_withdrawal_rejects_missing_transaction_hash() -> eyre::Result<()> {
 
 #[test]
 fn request_withdrawal_rejects_unknown_token_before_portal_read() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let result = harness.request_custom(ZoneOutboxAbi::requestWithdrawalCall {
-        token: address!("0x20c000000000000000000000000000000000ffff"),
-        to: BOB,
-        amount: 1,
-        memo: B256::ZERO,
-        gasLimit: 0,
-        zoneFallbackRecipient: ALICE,
-        data: Bytes::new(),
-        revealTo: Bytes::new(),
-    });
+    let mut env = spec().apply()?;
+    let result = env.request_withdrawal(
+        ALICE,
+        ZoneOutboxAbi::requestWithdrawalCall {
+            token: address!("0x20c000000000000000000000000000000000ffff"),
+            ..withdrawal(1, BOB, 0)
+        },
+    );
     assert_revert(result, TIP20Error::uninitialized());
     assert!(
-        harness.l1.storage_requests().is_empty(),
+        env.l1.storage_requests().is_empty(),
         "unknown tokens must be rejected before portal reads"
     );
     Ok(())
 }
 
-#[test]
-fn request_withdrawal_rejects_portal_disabled_token_before_state_mutation() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.set_token_enabled(false);
-    let balance_before = harness.balance_of(ALICE)?;
+#[test_case(false, ZonePortalError::token_not_enabled())]
+#[test_case(true, ZonePortalError::portal_is_paused())]
+fn request_withdrawal_rejects_disabled_token_and_active_pause_before_state_mutation(
+    paused: bool,
+    error: ZonePortalError,
+) -> eyre::Result<()> {
+    let mut env = spec().apply()?;
+    env.ctx.block.timestamp = U256::from(100);
+    env.write_portal(ANCHOR, |portal| {
+        if paused {
+            portal.pause_expiry.write(200)
+        } else {
+            portal.token_configs[PATH_USD_ADDRESS].enabled.write(false)
+        }
+    });
+    let balance_before = env.balance(PATH_USD_ADDRESS, ALICE);
 
-    assert_revert(
-        harness.request(1, BOB, B256::ZERO),
-        ZonePortalError::token_not_enabled(),
-    );
-    assert_eq!(harness.balance_of(ALICE)?, balance_before);
-    assert!(harness.pending()?.is_empty());
-    assert_eq!(harness.last_fallback_nonce()?, 0);
-    Ok(())
-}
-
-#[test]
-fn request_withdrawal_rejects_active_portal_pause_before_state_mutation() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.ctx.block.timestamp = U256::from(100);
-    harness.set_pause_expiry(200);
-    let balance_before = harness.balance_of(ALICE)?;
-
-    assert_revert(
-        harness.request(1, BOB, B256::ZERO),
-        ZonePortalError::portal_is_paused(),
-    );
-    assert_eq!(harness.balance_of(ALICE)?, balance_before);
-    assert!(harness.pending()?.is_empty());
-    assert_eq!(harness.last_fallback_nonce()?, 0);
+    assert_revert(env.request_withdrawal(ALICE, withdrawal(1, BOB, 0)), error);
+    assert_eq!(env.balance(PATH_USD_ADDRESS, ALICE), balance_before);
+    assert!(env.pending_withdrawals().is_empty());
+    assert_eq!(last_fallback_nonce(&mut env)?, 0);
     Ok(())
 }
 
 #[test]
 fn request_withdrawal_enforces_all_access_and_gateway_mode_combinations() -> eyre::Result<()> {
+    let set_role = |env: &ZoneEnv, account: Address, role: Role| {
+        env.write_portal(ANCHOR, |portal| portal.role[account].write(u8::from(role)));
+    };
+
     // Open access, open gateway: plain and callback withdrawals accept arbitrary recipients.
-    let mut open_open = Harness::new()?;
-    open_open.set_modes(false, false);
-    open_open.request(1, BOB, B256::ZERO)?;
-    open_open.request_with_gas(1, GATEWAY, B256::ZERO, 1)?;
+    let mut open_open = spec().apply()?;
+    open_open.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    open_open.request_withdrawal(ALICE, withdrawal(1, GATEWAY, 1))?;
 
     // Closed access, open gateway: plain recipients need the Account role, while callback
     // recipients remain unrestricted.
-    let mut closed_open = Harness::new()?;
-    closed_open.set_modes(true, false);
-    let balance_before = closed_open.balance_of(ALICE)?;
+    let mut closed_open = ZoneSpec {
+        access_enforced: true,
+        ..spec()
+    }
+    .apply()?;
+    let balance_before = closed_open.balance(PATH_USD_ADDRESS, ALICE);
     assert_revert(
-        closed_open.request(1, BOB, B256::ZERO),
+        closed_open.request_withdrawal(ALICE, withdrawal(1, BOB, 0)),
         ZonePortalError::account_not_allowed(BOB),
     );
-    assert_eq!(closed_open.balance_of(ALICE)?, balance_before);
-    assert!(closed_open.pending()?.is_empty());
-    closed_open.set_role(BOB, Role::Account);
-    closed_open.request(1, BOB, B256::ZERO)?;
-    closed_open.request_with_gas(1, FEE_PAYER, B256::ZERO, 1)?;
+    assert_eq!(closed_open.balance(PATH_USD_ADDRESS, ALICE), balance_before);
+    assert!(closed_open.pending_withdrawals().is_empty());
+    set_role(&closed_open, BOB, Role::Account);
+    closed_open.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    closed_open.request_withdrawal(ALICE, withdrawal(1, FEE_PAYER, 1))?;
 
     // Open access, enforced gateway: arbitrary plain recipients remain valid, but registered
     // gateways require callback gas and callback targets must have the CallbackGateway role.
-    let mut open_enforced = Harness::new()?;
-    open_enforced.set_modes(false, true);
-    open_enforced.set_role(GATEWAY, Role::CallbackGateway);
-    open_enforced.request(1, BOB, B256::ZERO)?;
-    let pending_before = open_enforced.pending()?.len();
-    let balance_before = open_enforced.balance_of(ALICE)?;
+    let mut open_enforced = ZoneSpec {
+        gateway_enforced: true,
+        ..spec()
+    }
+    .apply()?;
+    set_role(&open_enforced, GATEWAY, Role::CallbackGateway);
+    open_enforced.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    let pending_before = open_enforced.pending_withdrawals().len();
+    let balance_before = open_enforced.balance(PATH_USD_ADDRESS, ALICE);
     assert_revert(
-        open_enforced.request(1, GATEWAY, B256::ZERO),
+        open_enforced.request_withdrawal(ALICE, withdrawal(1, GATEWAY, 0)),
         ZonePortalError::invalid_callback_target(),
     );
     assert_revert(
-        open_enforced.request_with_gas(1, BOB, B256::ZERO, 1),
+        open_enforced.request_withdrawal(ALICE, withdrawal(1, BOB, 1)),
         ZonePortalError::invalid_callback_target(),
     );
-    assert_eq!(open_enforced.pending()?.len(), pending_before);
-    assert_eq!(open_enforced.balance_of(ALICE)?, balance_before);
-    open_enforced.request_with_gas(1, GATEWAY, B256::ZERO, 1)?;
+    assert_eq!(open_enforced.pending_withdrawals().len(), pending_before);
+    assert_eq!(
+        open_enforced.balance(PATH_USD_ADDRESS, ALICE),
+        balance_before
+    );
+    open_enforced.request_withdrawal(ALICE, withdrawal(1, GATEWAY, 1))?;
 
     // Closed access, enforced gateway: plain and callback paths enforce their distinct roles.
-    let mut closed_enforced = Harness::new()?;
-    closed_enforced.set_modes(true, true);
-    closed_enforced.set_role(BOB, Role::Account);
-    closed_enforced.set_role(GATEWAY, Role::CallbackGateway);
-    closed_enforced.request(1, BOB, B256::ZERO)?;
-    closed_enforced.request_with_gas(1, GATEWAY, B256::ZERO, 1)?;
-    let pending_before = closed_enforced.pending()?.len();
-    let balance_before = closed_enforced.balance_of(ALICE)?;
+    let mut closed_enforced = ZoneSpec {
+        access_enforced: true,
+        gateway_enforced: true,
+        ..spec()
+    }
+    .apply()?;
+    set_role(&closed_enforced, BOB, Role::Account);
+    set_role(&closed_enforced, GATEWAY, Role::CallbackGateway);
+    closed_enforced.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    closed_enforced.request_withdrawal(ALICE, withdrawal(1, GATEWAY, 1))?;
+    let pending_before = closed_enforced.pending_withdrawals().len();
+    let balance_before = closed_enforced.balance(PATH_USD_ADDRESS, ALICE);
     assert_revert(
-        closed_enforced.request(1, FEE_PAYER, B256::ZERO),
+        closed_enforced.request_withdrawal(ALICE, withdrawal(1, FEE_PAYER, 0)),
         ZonePortalError::account_not_allowed(FEE_PAYER),
     );
     assert_revert(
-        closed_enforced.request_with_gas(1, BOB, B256::ZERO, 1),
+        closed_enforced.request_withdrawal(ALICE, withdrawal(1, BOB, 1)),
         ZonePortalError::invalid_callback_target(),
     );
-    assert_eq!(closed_enforced.pending()?.len(), pending_before);
-    assert_eq!(closed_enforced.balance_of(ALICE)?, balance_before);
+    assert_eq!(closed_enforced.pending_withdrawals().len(), pending_before);
+    assert_eq!(
+        closed_enforced.balance(PATH_USD_ADDRESS, ALICE),
+        balance_before
+    );
     Ok(())
 }
 
 #[test]
 fn enqueue_bounce_back_is_inbox_only() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
+    let mut env = spec().apply()?;
     let call = ZoneOutboxAbi::enqueueDepositBounceBackCall {
-        token: harness.token,
+        token: PATH_USD_ADDRESS,
         amount: 100,
         tempoRefundRecipient: BOB,
     }
     .abi_encode();
 
     assert_revert(
-        harness.call(ALICE, &call),
+        env.call(ALICE, ZONE_OUTBOX_ADDRESS, &call),
         ZoneOutboxError::only_zone_inbox(),
     );
-    harness.call(ZONE_INBOX_ADDRESS, call)?;
-    let pending = harness.pending()?;
+    env.call(ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, call)?;
+    let pending = env.pending_withdrawals();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].sender, Address::ZERO);
     assert_eq!(pending[0].fallbackNonce, 0);
-    assert_eq!(harness.last_fallback_nonce()?, 0);
+    assert_eq!(last_fallback_nonce(&mut env)?, 0);
 
-    harness.request(1, BOB, B256::ZERO)?;
-    assert_eq!(harness.pending()?[1].fallbackNonce, 1);
-    assert_eq!(harness.last_fallback_nonce()?, 1);
+    env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    assert_eq!(env.pending_withdrawals()[1].fallbackNonce, 1);
+    assert_eq!(last_fallback_nonce(&mut env)?, 1);
     Ok(())
 }
 
 #[test]
-fn finalize_empty_queue_returns_zero() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let output = harness.finalize(0)?;
-    assert_eq!(
-        ZoneOutboxAbi::finalizeWithdrawalBatchCall::abi_decode_returns(&output.bytes)?,
-        B256::ZERO
-    );
-    Ok(())
-}
+fn withdrawals_queue_in_fifo_order_and_finalize_to_their_queue_hash() -> eyre::Result<()> {
+    let mut env = spec().apply()?;
+    for (memo, amount, to) in [(1, 500, ALICE), (2, 300, BOB)] {
+        env.request_withdrawal(
+            ALICE,
+            ZoneOutboxAbi::requestWithdrawalCall {
+                memo: B256::repeat_byte(memo),
+                ..withdrawal(amount, to, 0)
+            },
+        )?;
+    }
 
-#[test]
-fn finalize_withdrawals_match_queue_hash_and_have_unique_sender_tags() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.request(100, ALICE, B256::repeat_byte(1))?;
-    harness.request(200, BOB, B256::repeat_byte(2))?;
-    let pending = harness.pending()?;
+    let pending = env.pending_withdrawals();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].sender, ALICE);
+    assert_eq!(pending[0].txHash, WITHDRAWAL_TX_HASH);
+    assert_eq!(pending[0].to, ALICE);
+    assert_eq!(pending[0].amount, 500);
+    assert_eq!(pending[1].to, BOB);
+    assert_eq!(pending[1].amount, 300);
+
     let expected: Vec<Withdrawal> = pending
         .iter()
         .map(|pending| Withdrawal {
@@ -546,46 +365,73 @@ fn finalize_withdrawals_match_queue_hash_and_have_unique_sender_tags() -> eyre::
             encryptedSender: Bytes::new(),
         })
         .collect();
-
-    let output = harness.finalize(2)?;
+    let output = env.finalize_batch(2)?;
     assert_eq!(
         ZoneOutboxAbi::finalizeWithdrawalBatchCall::abi_decode_returns(&output.bytes)?,
         Withdrawal::queue_hash(&expected)
     );
     assert_ne!(expected[0].senderTag, expected[1].senderTag);
-    assert!(harness.pending()?.is_empty());
+    assert!(env.pending_withdrawals().is_empty());
     Ok(())
 }
 
 #[test]
-fn finalize_rejects_wrong_count_and_non_system_caller() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.request(100, ALICE, B256::ZERO)?;
-    assert_revert(
-        harness.finalize(0),
-        ZoneOutboxError::invalid_withdrawal_count(U256::ZERO, U256::ONE),
+fn finalize_validates_count_caller_and_encrypted_senders() -> eyre::Result<()> {
+    let mut env = spec().apply()?;
+    let output = env.finalize_batch(0)?;
+    assert_eq!(
+        ZoneOutboxAbi::finalizeWithdrawalBatchCall::abi_decode_returns(&output.bytes)?,
+        B256::ZERO
     );
 
-    let result = harness.call(
-        SEQUENCER,
+    env.request_withdrawal(ALICE, withdrawal(100, ALICE, 0))?;
+    assert_revert(
+        env.finalize_batch(0),
+        ZoneOutboxError::invalid_withdrawal_count(U256::ZERO, U256::ONE),
+    );
+    let finalize = |encrypted_senders| {
         ZoneOutboxAbi::finalizeWithdrawalBatchCall {
             count: U256::ONE,
             blockNumber: 0,
-            encryptedSenders: vec![Bytes::new()],
+            encryptedSenders: encrypted_senders,
         }
-        .abi_encode(),
+        .abi_encode()
+    };
+    assert_revert(
+        env.call(SEQUENCER, ZONE_OUTBOX_ADDRESS, finalize(vec![Bytes::new()])),
+        ZoneOutboxError::only_sequencer(),
     );
-    assert_revert(result, ZoneOutboxError::only_sequencer());
+    assert_revert(
+        env.call(Address::ZERO, ZONE_OUTBOX_ADDRESS, finalize(Vec::new())),
+        ZoneOutboxError::invalid_encrypted_sender_count(U256::ZERO, U256::ONE),
+    );
+    assert_revert(
+        env.call(
+            Address::ZERO,
+            ZONE_OUTBOX_ADDRESS,
+            finalize(vec![Bytes::from(vec![1])]),
+        ),
+        ZoneOutboxError::invalid_encrypted_sender_length(U256::ONE, U256::ZERO),
+    );
     Ok(())
 }
 
 #[test]
 fn fee_rate_and_gas_limit_validation_match_reference() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.set_gas_rate(3)?;
+    let mut env = spec().apply()?;
+    assert_revert(
+        env.call(
+            ALICE,
+            ZONE_OUTBOX_ADDRESS,
+            ZoneOutboxAbi::setTempoGasRateCall { _tempoGasRate: 1 }.abi_encode(),
+        ),
+        ZoneOutboxError::only_sequencer(),
+    );
+    set_gas_rate(&mut env, 3)?;
 
-    let output = harness.call(
+    let output = env.call(
         ALICE,
+        ZONE_OUTBOX_ADDRESS,
         ZoneOutboxAbi::calculateWithdrawalFeeCall { gasLimit: 7 }.abi_encode(),
     )?;
     assert_eq!(
@@ -594,8 +440,9 @@ fn fee_rate_and_gas_limit_validation_match_reference() -> eyre::Result<()> {
     );
 
     assert_revert(
-        harness.call(
+        env.call(
             ALICE,
+            ZONE_OUTBOX_ADDRESS,
             ZoneOutboxAbi::calculateWithdrawalFeeCall {
                 gasLimit: MAX_WITHDRAWAL_GAS_LIMIT + 1,
             }
@@ -604,212 +451,146 @@ fn fee_rate_and_gas_limit_validation_match_reference() -> eyre::Result<()> {
         ZoneOutboxError::gas_limit_too_high(),
     );
     assert_revert(
-        harness.set_gas_rate(TEST_MAX_TEMPO_GAS_RATE + 1),
+        set_gas_rate(&mut env, TEST_MAX_TEMPO_GAS_RATE + 1),
         ZoneOutboxError::gas_fee_rate_too_high(),
     );
-    harness.set_max_tempo_gas_rate(5);
+    env.write_portal(ANCHOR, |portal| portal.max_tempo_gas_rate.write(5));
     assert_revert(
-        harness.set_gas_rate(6),
+        set_gas_rate(&mut env, 6),
         ZoneOutboxError::gas_fee_rate_too_high(),
     );
-    harness.set_gas_rate(5)?;
-    harness.set_max_tempo_gas_rate(0);
+    set_gas_rate(&mut env, 5)?;
+    env.write_portal(ANCHOR, |portal| portal.max_tempo_gas_rate.write(0));
     assert_revert(
-        harness.set_gas_rate(1),
+        set_gas_rate(&mut env, 1),
         ZoneOutboxError::gas_fee_rate_too_high(),
     );
-    harness.set_gas_rate(0)?;
+    set_gas_rate(&mut env, 0)?;
     Ok(())
 }
 
 #[test]
-fn setting_tempo_gas_rate_requires_a_sequencer() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let result = harness.call(
-        ALICE,
-        ZoneOutboxAbi::setTempoGasRateCall { _tempoGasRate: 1 }.abi_encode(),
-    );
-    assert_revert(result, ZoneOutboxError::only_sequencer());
-    Ok(())
-}
-
-#[test]
-fn callback_and_reveal_boundaries_are_enforced() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let token = harness.token;
+fn request_rejects_invalid_parameters_without_mutating_state() -> eyre::Result<()> {
+    let mut env = spec().apply()?;
     let base = |data: Bytes, reveal_to: Bytes| ZoneOutboxAbi::requestWithdrawalCall {
-        token,
-        to: BOB,
-        amount: 1,
-        memo: B256::ZERO,
-        gasLimit: 0,
-        zoneFallbackRecipient: ALICE,
         data,
         revealTo: reveal_to,
+        ..withdrawal(1, BOB, 0)
     };
 
-    harness.request_custom(base(
-        Bytes::from(vec![0; MAX_CALLBACK_DATA_SIZE]),
-        Bytes::new(),
-    ))?;
-    assert_revert(
-        harness.request_custom(base(
-            Bytes::from(vec![0; MAX_CALLBACK_DATA_SIZE + 1]),
+    for (call, error) in [
+        (
+            withdrawal(0, BOB, 0),
+            ZoneOutboxError::zero_amount_withdrawal(),
+        ),
+        (
+            ZoneOutboxAbi::requestWithdrawalCall {
+                zoneFallbackRecipient: Address::ZERO,
+                ..withdrawal(1, BOB, 0)
+            },
+            ZoneOutboxError::invalid_fallback_recipient(),
+        ),
+        (
+            base(vec![0; MAX_CALLBACK_DATA_SIZE + 1].into(), Bytes::new()),
+            ZoneOutboxError::callback_data_too_large(),
+        ),
+        (
+            base(Bytes::new(), vec![2; 32].into()),
+            ZoneOutboxError::invalid_reveal_to(),
+        ),
+        (
+            base(Bytes::new(), vec![4; 33].into()),
+            ZoneOutboxError::invalid_reveal_to(),
+        ),
+    ] {
+        assert_revert(env.request_withdrawal(ALICE, call), error);
+    }
+    assert!(env.pending_withdrawals().is_empty());
+    assert_eq!(last_fallback_nonce(&mut env)?, 0);
+
+    env.request_withdrawal(
+        ALICE,
+        base(vec![0; MAX_CALLBACK_DATA_SIZE].into(), Bytes::new()),
+    )?;
+    env.request_withdrawal(
+        ALICE,
+        base(
             Bytes::new(),
-        )),
-        ZoneOutboxError::callback_data_too_large(),
-    );
-    assert_revert(
-        harness.request_custom(base(Bytes::new(), Bytes::from(vec![2; 32]))),
-        ZoneOutboxError::invalid_reveal_to(),
-    );
-    assert_revert(
-        harness.request_custom(base(Bytes::new(), Bytes::from(vec![4; 33]))),
-        ZoneOutboxError::invalid_reveal_to(),
-    );
-
-    let valid = alloy_primitives::bytes!(
-        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-    );
-    harness.request_custom(base(Bytes::new(), valid))?;
+            alloy_primitives::bytes!(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            ),
+        ),
+    )?;
     Ok(())
 }
 
 #[test]
-fn request_rejects_zero_fallback_recipient() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let token = harness.token;
-    assert_revert(
-        harness.request_custom(ZoneOutboxAbi::requestWithdrawalCall {
-            token,
-            to: BOB,
-            amount: 1,
-            memo: B256::ZERO,
-            gasLimit: 0,
-            zoneFallbackRecipient: Address::ZERO,
-            data: Bytes::new(),
-            revealTo: Bytes::new(),
-        }),
-        ZoneOutboxError::invalid_fallback_recipient(),
-    );
-    Ok(())
-}
-
-#[test]
-fn request_rejects_zero_amount_without_mutating_state() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    assert_revert(
-        harness.request(0, BOB, B256::ZERO),
-        ZoneOutboxError::zero_amount_withdrawal(),
-    );
-    assert!(harness.pending()?.is_empty());
-    assert_eq!(harness.last_fallback_nonce()?, 0);
-    Ok(())
-}
-
-#[test]
-fn request_burns_amount_plus_fee_and_rejects_insufficient_funds() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.set_gas_rate(2)?;
-    let before = harness.balance_of(ALICE)?;
+fn request_charges_fee_to_effective_fee_payer_and_rejects_insufficient_funds() -> eyre::Result<()> {
+    let mut env = spec().apply()?;
+    set_gas_rate(&mut env, 2)?;
+    let sender_before = env.balance(PATH_USD_ADDRESS, ALICE);
+    let fee_payer_before = env.balance(PATH_USD_ADDRESS, FEE_PAYER);
     let fee = u128::from(WITHDRAWAL_BASE_GAS) * 2;
-    harness.request(100, BOB, B256::ZERO)?;
-    assert_eq!(harness.balance_of(ALICE)?, before - U256::from(100 + fee));
 
-    let result = harness.request(u128::MAX, BOB, B256::ZERO);
+    env.request_withdrawal(ALICE, withdrawal(100, BOB, 0))?;
+    assert_eq!(
+        env.balance(PATH_USD_ADDRESS, ALICE),
+        sender_before - U256::from(100 + fee)
+    );
+
+    {
+        let _tx = tx_context::set_current_transaction(WITHDRAWAL_TX_HASH, FEE_PAYER);
+        env.call(
+            ALICE,
+            ZONE_OUTBOX_ADDRESS,
+            withdrawal(100, BOB, 0).abi_encode(),
+        )?;
+    }
+    assert_eq!(
+        env.balance(PATH_USD_ADDRESS, ALICE),
+        sender_before - U256::from(200 + fee)
+    );
+    assert_eq!(
+        env.balance(PATH_USD_ADDRESS, FEE_PAYER),
+        fee_payer_before - U256::from(fee)
+    );
+
+    let result = env.request_withdrawal(ALICE, withdrawal(u128::MAX, BOB, 0));
     assert!(result.expect("precompile result").is_revert());
     Ok(())
 }
 
 #[test]
-fn request_charges_withdrawal_fee_to_effective_fee_payer() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.set_gas_rate(2)?;
-    let sender_before = harness.balance_of(ALICE)?;
-    let fee_payer_before = harness.balance_of(FEE_PAYER)?;
-    let fee = u128::from(WITHDRAWAL_BASE_GAS) * 2;
-    let token = harness.token;
-
-    harness.call_with_fee_payer(
-        ALICE,
-        FEE_PAYER,
-        ZoneOutboxAbi::requestWithdrawalCall {
-            token,
-            to: BOB,
-            amount: 100,
-            memo: B256::ZERO,
-            gasLimit: 0,
-            zoneFallbackRecipient: ALICE,
-            data: Bytes::new(),
-            revealTo: Bytes::new(),
-        }
-        .abi_encode(),
-    )?;
-
-    assert_eq!(harness.balance_of(ALICE)?, sender_before - U256::from(100));
-    assert_eq!(
-        harness.balance_of(FEE_PAYER)?,
-        fee_payer_before - U256::from(fee)
-    );
-    Ok(())
-}
-
-#[test]
-fn encrypted_sender_count_and_length_are_validated() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.request(1, BOB, B256::ZERO)?;
-    assert_revert(
-        harness.call(
-            Address::ZERO,
-            ZoneOutboxAbi::finalizeWithdrawalBatchCall {
-                count: U256::ONE,
-                blockNumber: 0,
-                encryptedSenders: Vec::new(),
-            }
-            .abi_encode(),
-        ),
-        ZoneOutboxError::invalid_encrypted_sender_count(U256::ZERO, U256::ONE),
-    );
-    assert_revert(
-        harness.call(
-            Address::ZERO,
-            ZoneOutboxAbi::finalizeWithdrawalBatchCall {
-                count: U256::ONE,
-                blockNumber: 0,
-                encryptedSenders: vec![Bytes::from(vec![1])],
-            }
-            .abi_encode(),
-        ),
-        ZoneOutboxError::invalid_encrypted_sender_length(U256::ONE, U256::ZERO),
-    );
-    Ok(())
-}
-
-#[test]
 fn indices_last_batch_and_timestamp_advance_across_batches() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.ctx.block.timestamp = U256::from(123);
-    harness.request(1, BOB, B256::ZERO)?;
-    harness.finalize(1)?;
-    harness.request(2, BOB, B256::ZERO)?;
+    let mut env = spec().apply()?;
+    env.ctx.block.timestamp = U256::from(123);
+    env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    env.finalize_batch(1)?;
+    env.request_withdrawal(ALICE, withdrawal(2, BOB, 0))?;
     let second_hash = ZoneOutboxAbi::finalizeWithdrawalBatchCall::abi_decode_returns(
-        &harness.finalize(1)?.bytes,
+        &env.finalize_batch(1)?.bytes,
     )?;
 
-    let next = harness.call(
+    let next = env.call(
         Address::ZERO,
+        ZONE_OUTBOX_ADDRESS,
         ZoneOutboxAbi::nextWithdrawalIndexCall {}.abi_encode(),
     )?;
     assert_eq!(
         ZoneOutboxAbi::nextWithdrawalIndexCall::abi_decode_returns(&next.bytes)?,
         2
     );
-    let batch = harness.call(Address::ZERO, ZoneOutboxAbi::lastBatchCall {}.abi_encode())?;
+    let batch = env.call(
+        Address::ZERO,
+        ZONE_OUTBOX_ADDRESS,
+        ZoneOutboxAbi::lastBatchCall {}.abi_encode(),
+    )?;
     let batch = ZoneOutboxAbi::lastBatchCall::abi_decode_returns(&batch.bytes)?;
     assert_eq!(batch.withdrawalBatchIndex, 2);
     assert_eq!(batch.withdrawalQueueHash, second_hash);
-    let timestamp = harness.call(
+    let timestamp = env.call(
         Address::ZERO,
+        ZONE_OUTBOX_ADDRESS,
         ZoneOutboxAbi::lastFinalizedTimestampCall {}.abi_encode(),
     )?;
     assert_eq!(
@@ -821,57 +602,36 @@ fn indices_last_batch_and_timestamp_advance_across_batches() -> eyre::Result<()>
 
 #[test]
 fn per_block_cap_is_unlimited_resettable_and_updateable() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.set_max_withdrawals(0)?;
+    let mut env = spec().apply()?;
+    set_max_withdrawals(&mut env, 0)?;
     for _ in 0..3 {
-        harness.request(1, BOB, B256::ZERO)?;
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
     }
 
-    harness.set_max_withdrawals(1)?;
-    harness.request(1, BOB, B256::ZERO)?;
+    set_max_withdrawals(&mut env, 1)?;
+    env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
     assert_revert(
-        harness.request(1, BOB, B256::ZERO),
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0)),
         ZoneOutboxError::too_many_withdrawals_this_block(),
     );
-    harness.ctx.block.number = U256::ONE;
-    harness.request(1, BOB, B256::ZERO)?;
+    env.ctx.block.number = U256::ONE;
+    env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
     assert_revert(
-        harness.request(1, BOB, B256::ZERO),
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0)),
         ZoneOutboxError::too_many_withdrawals_this_block(),
     );
-    harness.set_max_withdrawals(2)?;
-    harness.request(1, BOB, B256::ZERO)?;
-    Ok(())
-}
-
-#[test]
-fn many_withdrawals_finalize_and_clear_pending_state() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    for i in 0..20u64 {
-        harness.request(1, BOB, B256::from(U256::from(i)))?;
-    }
-    harness.finalize(20)?;
-    assert!(harness.pending()?.is_empty());
+    set_max_withdrawals(&mut env, 2)?;
+    env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
     Ok(())
 }
 
 #[test]
 fn static_mutation_halts_without_changing_state() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let token = harness.token;
-    let output = harness.call_static(
+    let mut env = spec().apply()?;
+    let output = env.static_call(
         ALICE,
-        ZoneOutboxAbi::requestWithdrawalCall {
-            token,
-            to: BOB,
-            amount: 1,
-            memo: B256::ZERO,
-            gasLimit: 0,
-            zoneFallbackRecipient: ALICE,
-            data: Bytes::new(),
-            revealTo: Bytes::new(),
-        }
-        .abi_encode(),
+        ZONE_OUTBOX_ADDRESS,
+        withdrawal(1, BOB, 0).abi_encode(),
     )?;
     assert_eq!(
         output.status,
@@ -881,18 +641,18 @@ fn static_mutation_halts_without_changing_state() -> eyre::Result<()> {
     );
     assert!(output.bytes.is_empty());
     assert!(
-        harness.l1.storage_requests().is_empty(),
+        env.l1.storage_requests().is_empty(),
         "static mutation must reach dispatch without portal reads"
     );
-    assert!(harness.pending()?.is_empty());
+    assert!(env.pending_withdrawals().is_empty());
     Ok(())
 }
 
 #[test]
 fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    harness.request(1, BOB, B256::ZERO)?;
-    let nonce = harness.pending()?[0].fallbackNonce;
+    let mut env = spec().apply()?;
+    env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    let nonce = env.pending_withdrawals()[0].fallbackNonce;
     assert_eq!(nonce, 1);
 
     let calldata = ZoneOutboxAbi::consumeFallbackRecipientCall {
@@ -900,12 +660,13 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     }
     .abi_encode();
     assert_revert(
-        harness.call(ALICE, &calldata),
+        env.call(ALICE, ZONE_OUTBOX_ADDRESS, &calldata),
         ZoneOutboxError::only_zone_inbox(),
     );
     assert_revert(
-        harness.call(
+        env.call(
             ZONE_INBOX_ADDRESS,
+            ZONE_OUTBOX_ADDRESS,
             ZoneOutboxAbi::consumeFallbackRecipientCall {
                 fallbackNonce: nonce + 1,
             }
@@ -913,7 +674,7 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
         ),
         ZoneOutboxError::invalid_fallback_recipient(),
     );
-    let output = harness.call_static(ZONE_INBOX_ADDRESS, &calldata)?;
+    let output = env.static_call(ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, &calldata)?;
     assert_eq!(
         output.status,
         PrecompileStatus::Halt(PrecompileHalt::Other(
@@ -923,13 +684,13 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     assert!(output.bytes.is_empty());
 
     // The failed static call must not consume the mapping entry.
-    let output = harness.call(ZONE_INBOX_ADDRESS, &calldata)?;
+    let output = env.call(ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, &calldata)?;
     assert_eq!(
         ZoneOutboxAbi::consumeFallbackRecipientCall::abi_decode_returns(&output.bytes)?,
         ALICE
     );
     assert_revert(
-        harness.call(ZONE_INBOX_ADDRESS, calldata),
+        env.call(ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, calldata),
         ZoneOutboxError::invalid_fallback_recipient(),
     );
     Ok(())

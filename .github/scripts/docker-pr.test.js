@@ -88,7 +88,7 @@ for (const event of ['pull_request', 'merge_group', 'fork']) {
     const outputs = {};
     const summary = { addHeading() { return this; }, addTable() { return this; }, async write() {} };
     const result = vm.runInNewContext(`(async () => {${script}\n})()`, {
-      process: { env: { PR_NUMBER: '', BRANCH_NAME: 'feature', BUILD_TAG: 'network-e2e-42-1' } },
+      process: { env: { PR_NUMBER: '', BRANCH_NAME: 'feature', BUILD_TAG: 'ci-42-1' } },
       context: { payload, sha: merge, repo: { owner: 'tempoxyz', repo: 'tempo' } },
       core: { setOutput: (key, value) => { outputs[key] = value; }, summary },
     });
@@ -99,7 +99,7 @@ for (const event of ['pull_request', 'merge_group', 'fork']) {
       const expected = event === 'pull_request' ? head : merge;
       assert.equal(outputs.sha, expected);
       assert.equal(outputs.short_sha, expected.slice(0, 7));
-      assert.equal(outputs.image_tag, 'network-e2e-42-1');
+      assert.equal(outputs.image_tag, 'ci-42-1');
       const dispatch = fs.readFileSync(path.join(__dirname, '../workflows/network-e2e.yml'), 'utf8');
       const tagGuard = dispatch.split('\n').find(line => line.includes('[[ "$IMAGE_TAG" =~'));
       assert.ok(tagGuard);

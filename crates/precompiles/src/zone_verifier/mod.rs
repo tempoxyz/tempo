@@ -61,20 +61,6 @@ impl ZoneVerifier {
         self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS.at(hardfork))
     }
 
-    /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
-    ///
-    /// This Rust-only observer entry point uses the AWS root and requires a `StorageCtx`
-    /// supplying the trusted parent-chain ID, current timestamp and gas budget. It does not
-    /// activate T13 or change the measurements used by the on-chain entry point.
-    pub fn verify_with_pcrs(
-        &self,
-        portal: Address,
-        call: IZoneVerifier::verifyCall,
-        approved_pcrs: [[u8; 48]; 3],
-    ) -> Result<bool> {
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, Some(approved_pcrs))
-    }
-
     fn verify_with_policy(
         &self,
         portal: Address,
@@ -230,7 +216,10 @@ pub enum PolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::with_storage,
+    };
     use alloy::{
         primitives::{Bytes, b256},
         sol_types::SolCall,
@@ -238,6 +227,7 @@ mod tests {
     use tempo_contracts::zones::{
         BlockTransition, DepositQueueTransition, TokenEnablementTransition,
     };
+    use test_case::test_case;
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -392,8 +382,7 @@ mod tests {
 
     #[test]
     fn no_proof_requires_canonical_portal_and_empty_proof() {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T13, || {
             let verifier = ZoneVerifier::new();
             let mut candidate = call();
             candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
@@ -410,32 +399,23 @@ mod tests {
         });
     }
 
-    #[test]
-    fn future_skew_boundary_is_inclusive() {
+    #[test_case(MAX_FUTURE_SKEW_MILLIS => true)]
+    #[test_case(MAX_FUTURE_SKEW_MILLIS + 1 => false)]
+    fn future_skew_boundary_is_inclusive(skew: u64) -> bool {
         let call = call();
         let portal = portal_address(call.zoneId);
         let commitment = batch_commitment(1, &call);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {
-            for (skew, expected) in [
-                (MAX_FUTURE_SKEW_MILLIS, true),
-                (MAX_FUTURE_SKEW_MILLIS + 1, false),
-            ] {
-                let (proof, root, pcrs) = attestation::tests::fixture_at(
-                    commitment.as_ref(),
-                    BLOCK_TIMESTAMP * 1_000 + skew,
-                );
-                let mut candidate = call.clone();
-                candidate.proof = proof.into();
-                assert_eq!(
-                    ZoneVerifier::new()
-                        .verify_with_policy(portal, candidate, &root, Some(pcrs))
-                        .unwrap(),
-                    expected
-                );
-            }
-        });
+            let (proof, root, pcrs) =
+                attestation::tests::fixture_at(commitment.as_ref(), BLOCK_TIMESTAMP * 1_000 + skew);
+            let mut candidate = call.clone();
+            candidate.proof = proof.into();
+            ZoneVerifier::new()
+                .verify_with_policy(portal, candidate, &root, Some(pcrs))
+                .unwrap()
+        })
     }
 
     #[test]
@@ -461,12 +441,6 @@ mod tests {
                         &root,
                         APPROVED_PCRS.at(TempoHardfork::T12)
                     )
-                    .unwrap()
-            );
-            // The public observer API must still reject a synthetic, non-AWS trust root.
-            assert!(
-                !verifier
-                    .verify_with_pcrs(portal, call.clone(), pcrs)
                     .unwrap()
             );
             assert!(!verifier.verify(portal, call).unwrap());

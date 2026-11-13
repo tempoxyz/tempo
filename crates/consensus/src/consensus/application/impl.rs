@@ -8,7 +8,7 @@ use std::{
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
@@ -298,7 +298,8 @@ impl Inner {
 
     /// Returns whether T15 is active at `timestamp`, in seconds. From T15,
     /// execution checks the DKG outcome of a boundary block against the
-    /// parent state, and consensus compares only the ceremony output.
+    /// parent state, consensus compares only the ceremony output, and the
+    /// outcome must take up all of the block's extra data.
     fn is_t15(&self, timestamp: u64) -> bool {
         self.parent_state
             .node
@@ -352,9 +353,13 @@ impl Inner {
         );
 
         if self.is_boundary(block.height()) {
-            let proposed_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
-                block.header().extra_data().as_ref(),
-            ))
+            let mut extra_data = commonware_codec::Copying(block.header().extra_data().as_ref());
+            // From T15, the outcome must take up all of the extra data.
+            let proposed_outcome = if self.is_t15(block.header().timestamp()) {
+                OnchainDkgOutcome::decode(extra_data)
+            } else {
+                OnchainDkgOutcome::read(&mut extra_data)
+            }
             .wrap_err(
                 "failed decoding extra data header as DKG ceremony \
                     outcome; cannot verify end of epoch block",
@@ -366,7 +371,7 @@ impl Inner {
             let bytes = block.header().extra_data().clone();
             let dealer = match self
                 .dkg_manager
-                .verify_dealer_log(round.epoch(), bytes)
+                .verify_dealer_log(round.epoch(), block.header().timestamp(), bytes)
                 .await
             {
                 Ok(dealer) => dealer.ok_or_eyre("invalid DKG dealer log")?,

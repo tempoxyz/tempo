@@ -68,6 +68,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      attestations: write
     secrets: inherit # zizmor: ignore[secrets-inherit]
     with:
       production_image_verify_only: ${{ needs.resolve.outputs.dry_run == 'true' }}

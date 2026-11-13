@@ -326,6 +326,7 @@ impl TipFeeManager {
 mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
+    use test_case::test_case;
 
     use super::*;
     use crate::{
@@ -336,30 +337,6 @@ mod tests {
         tip20::{ITIP20, TIP20Token},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
-
-    #[test]
-    fn test_set_user_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("Test", "TST", user).apply()?;
-
-            // TODO: loop through and deploy and set user token for some range
-
-            let mut fee_manager = TipFeeManager::new();
-
-            let call = IFeeManager::setUserTokenCall {
-                token: token.address(),
-            };
-            let result = fee_manager.set_user_token(user, call);
-            assert!(result.is_ok());
-
-            let call = IFeeManager::userTokensCall { user };
-            assert_eq!(fee_manager.user_tokens(call)?, token.address());
-
-            Ok(())
-        })
-    }
 
     #[test]
     fn test_set_user_token_noop_when_unchanged_pre_t3() -> eyre::Result<()> {
@@ -1276,76 +1253,69 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_collect_fee_post_tx_two_hop_compound_fee() -> eyre::Result<()> {
-        // TIP-1033 states two-hop fee math MUST apply M = 9970/10000 sequentially
-        // (amount_in, expected_out1, expected_out2):
-        let cases: &[(u128, u128, u128)] = &[
-            (123_456_789, 123_086_418, 122_717_158),
-            (987_654_123, 984_691_160, 981_737_086),
-            (456_321_789, 454_952_823, 453_587_964),
-        ];
+    // TIP-1033 states two-hop fee math MUST apply M = 9970/10000 sequentially.
+    #[test_case(123_456_789, 123_086_418, 122_717_158)]
+    #[test_case(987_654_123, 984_691_160, 981_737_086)]
+    #[test_case(456_321_789, 454_952_823, 453_587_964)]
+    fn test_collect_fee_post_tx_two_hop_compound_fee(
+        amount: u128,
+        expected_out1: u128,
+        expected_out2: u128,
+    ) -> eyre::Result<()> {
+        const COMBINED: U256 = uint!(99_400_900_U256); // M * M
+        const SCALE: U256 = uint!(100_000_000_U256); // SCALE * SCALE
+        let combined = U256::from(amount) * COMBINED / SCALE;
+        let sequential =
+            compute_amount_out(compute_amount_out(U256::from(amount)).unwrap()).unwrap();
+        assert_ne!(
+            sequential, combined,
+            "amount={amount}: pick another value for sequential to not match combined fee math"
+        );
 
-        let assert_sequential_diverges_from_combined = |amount: U256| {
-            const COMBINED: U256 = uint!(99_400_900_U256); // M * M
-            const SCALE: U256 = uint!(100_000_000_U256); // SCALE * SCALE
-            let combined = amount * COMBINED / SCALE;
+        with_two_hop_env(
+            TempoHardfork::T5,
+            false,
+            |fm, t, user, validator, _admin| {
+                // Reserves are deep enough that liquidity never bounds the result;
+                // any deviation in `collected_fees` is purely a fee-math bug.
+                let reserve = 10 * amount;
+                write_pool(fm, t.user, t.validator, 0)?;
+                write_pool(fm, t.user, t.hop, reserve)?;
+                write_pool(fm, t.hop, t.validator, reserve)?;
 
-            let sequential = compute_amount_out(compute_amount_out(amount).unwrap()).unwrap();
-            assert_ne!(
-                sequential, combined,
-                "amount={amount}: pick another value for sequential to not match combined fee math"
-            );
-        };
+                let amount_u = U256::from(amount);
+                fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
+                let credited =
+                    fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                let one_hop_amount = compute_amount_out(amount_u)?;
+                assert!(
+                    credited < one_hop_amount,
+                    "amount={amount}: two-hop credit ({credited}) should be less than one-hop credit ({one_hop_amount})",
+                );
 
-        for &(amount, expected_out1, expected_out2) in cases {
-            assert_sequential_diverges_from_combined(U256::from(amount));
+                assert_eq!(
+                    fm.collected_fees[validator][t.validator].read()?,
+                    U256::from(expected_out2),
+                    "amount={amount}: post-tx MUST accumulate sequential floor(floor(N*M)*M)",
+                );
 
-            with_two_hop_env(
-                TempoHardfork::T5,
-                false,
-                |fm, t, user, validator, _admin| {
-                    // Reserves are deep enough that liquidity never bounds the result;
-                    // any deviation in `collected_fees` is purely a fee-math bug.
-                    let reserve = 10 * amount;
-                    write_pool(fm, t.user, t.validator, 0)?;
-                    write_pool(fm, t.user, t.hop, reserve)?;
-                    write_pool(fm, t.hop, t.validator, reserve)?;
-
-                    let amount_u = U256::from(amount);
-                    fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
-                    let credited =
-                        fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
-                    let one_hop_amount = compute_amount_out(amount_u)?;
-                    assert!(
-                        credited < one_hop_amount,
-                        "amount={amount}: two-hop credit ({credited}) should be less than one-hop credit ({one_hop_amount})",
-                    );
-
-                    assert_eq!(
-                        fm.collected_fees[validator][t.validator].read()?,
-                        U256::from(expected_out2),
-                        "amount={amount}: post-tx MUST accumulate sequential floor(floor(N*M)*M)",
-                    );
-
-                    // pool1 (user, hop): user-side gained `amount`, hop-side lost `out1`.
-                    let p1 = fm.pools[fm.pool_id(t.user, t.hop)].read()?;
-                    assert_eq!(
-                        (p1.reserve_user_token, p1.reserve_validator_token),
-                        (reserve + amount, reserve - expected_out1),
-                        "amount={amount}: pool1 reserves must move by (amount, out1)",
-                    );
-                    // pool2 (hop, validator): hop-side gained `out1`, validator-side lost `out2`.
-                    let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
-                    assert_eq!(
-                        (p2.reserve_user_token, p2.reserve_validator_token),
-                        (reserve + expected_out1, reserve - expected_out2),
-                        "amount={amount}: pool2 reserves must move by (out1, out2)",
-                    );
-                    Ok(())
-                },
-            )?;
-        }
+                // pool1 (user, hop): user-side gained `amount`, hop-side lost `out1`.
+                let p1 = fm.pools[fm.pool_id(t.user, t.hop)].read()?;
+                assert_eq!(
+                    (p1.reserve_user_token, p1.reserve_validator_token),
+                    (reserve + amount, reserve - expected_out1),
+                    "amount={amount}: pool1 reserves must move by (amount, out1)",
+                );
+                // pool2 (hop, validator): hop-side gained `out1`, validator-side lost `out2`.
+                let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
+                assert_eq!(
+                    (p2.reserve_user_token, p2.reserve_validator_token),
+                    (reserve + expected_out1, reserve - expected_out2),
+                    "amount={amount}: pool2 reserves must move by (out1, out2)",
+                );
+                Ok(())
+            },
+        )?;
         Ok(())
     }
 
