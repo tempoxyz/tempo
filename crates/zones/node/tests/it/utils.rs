@@ -5017,6 +5017,21 @@ impl L1Fixture {
         FixtureBlock { header }
     }
 
+    /// Returns a fixture whose next block forks off `parent`, a block this fixture built.
+    ///
+    /// Each fork block's timestamp is past that of every block this fixture builds at the same
+    /// height, so the branches never share a block above `parent`. The fork seeds no L1 state
+    /// caches or enabled-token registries.
+    pub(crate) fn fork_of(&self, parent: &FixtureBlock) -> Self {
+        Self {
+            next_block_number: parent.header.inner.number + 1,
+            next_timestamp: self.next_timestamp + 1,
+            last_hash: parent.header.hash_slow(),
+            caches: Mutex::new(Vec::new()),
+            enabled_token_registries: Mutex::new(Vec::new()),
+        }
+    }
+
     /// Build the next L1 block at an explicit timestamp, preserving the parent hash chain.
     /// Hardfork tests use this to align L1 headers with activation.
     pub(crate) fn next_block_at(&mut self, timestamp: u64) -> FixtureBlock {

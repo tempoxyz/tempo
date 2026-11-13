@@ -8,12 +8,14 @@
 use std::{net::TcpListener, time::Duration};
 
 use alloy::primitives::{Address, B256, Bytes, U256, address};
-use alloy_consensus::Transaction;
+use alloy_consensus::{BlockHeader, Transaction};
 use alloy_eips::NumHash;
 use alloy_network::{ReceiptResponse, TransactionBuilder as _};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder};
-use alloy_rpc_types_eth::TransactionRequest;
+use alloy_rpc_types_eth::{BlockNumberOrTag, TransactionRequest};
 use alloy_sol_types::SolCall;
+use eyre::OptionExt as _;
+use reth_primitives_traits::SealedHeader;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::{
     precompiles::{ITIP20, ITIP403Registry::PolicyType, TIP_FEE_MANAGER_ADDRESS},
@@ -23,7 +25,7 @@ use tempo_contracts::{
     },
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
-use zone_l1::ChainTempoStateExt;
+use zone_l1::{ChainTempoStateExt, L1PortalEvents};
 use zone_primitives::constants::zone_chain_id;
 
 use crate::utils::{
@@ -562,6 +564,73 @@ async fn test_empty_l1_blocks_advance_zone() -> eyre::Result<()> {
 
     // Each L1 block advances tempoBlockNumber — wait for all 5
     zone.wait_for_tempo_block_number(5, DEFAULT_TIMEOUT).await?;
+
+    Ok(())
+}
+
+/// A finalized L1 never reorgs, so a zone offered a fork of L1 history it already consumed
+/// rejects the fork, keeps its chain, and keeps following the original branch.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_zone_rejects_fork_of_consumed_l1_history() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
+    let alice = address!("0x000000000000000000000000000000000000A11C");
+    let bob = address!("0x0000000000000000000000000000000000000B0B");
+    let amount = 1_000_000u128;
+
+    let parent = fixture.next_block();
+    fixture.enqueue(&parent, zone.deposit_queue(), vec![]);
+    fixture.deposit(&zone, alice, alice, amount).await?;
+    let provider = zone.provider();
+    let head = provider
+        .get_block_by_number(BlockNumberOrTag::Latest)
+        .await?
+        .ok_or_eyre("zone head missing")?
+        .header;
+
+    // The fork replaces the consumed deposit block with one crediting Bob, then extends it.
+    let mut fork = fixture.fork_of(&parent);
+    let bob_deposit = fork.make_deposit(PATH_USD_ADDRESS, bob, bob, amount);
+    let err = zone
+        .deposit_queue()
+        .try_enqueue_sealed(
+            SealedHeader::seal_slow(fork.next_block().header),
+            fork.portal_events_from_deposits(&[bob_deposit]),
+        )
+        .expect_err("a fork of consumed L1 history must be rejected");
+    assert!(
+        err.to_string()
+            .starts_with("conflicting finalized L1 block at height 2:"),
+        "{err}"
+    );
+    let err = zone
+        .deposit_queue()
+        .try_enqueue_sealed(
+            SealedHeader::seal_slow(fork.next_block().header),
+            L1PortalEvents::default(),
+        )
+        .expect_err("a block extending the fork must be rejected");
+    assert!(
+        err.to_string()
+            .starts_with("finalized L1 parent mismatch at height 3:"),
+        "{err}"
+    );
+
+    // The zone keeps its chain and builds on the original branch.
+    fixture.inject_empty_block(zone.deposit_queue());
+    zone.wait_for_block_number(head.number() + 1, DEFAULT_TIMEOUT)
+        .await?;
+    let next = provider
+        .get_block_by_number((head.number() + 1).into())
+        .await?
+        .ok_or_eyre("zone block above the fork point missing")?;
+    assert_eq!(next.header.parent_hash(), head.hash);
+    assert_eq!(zone.balance_of(PATH_USD_ADDRESS, bob).await?, U256::ZERO);
+    assert_eq!(
+        zone.balance_of(PATH_USD_ADDRESS, alice).await?,
+        U256::from(amount)
+    );
 
     Ok(())
 }
