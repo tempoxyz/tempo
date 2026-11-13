@@ -263,8 +263,37 @@ impl SigningShare {
         Ok(Self { inner })
     }
 
+    /// Writes the signing share to `path` as hex, readable and writable only
+    /// by the owner on unix.
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningShareError> {
-        std::fs::write(path, self.to_string()).map_err(SigningShareErrorKind::Write)?;
+        use std::io::Write as _;
+
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+
+            // Apply restrictive permissions atomically when creating a new share file.
+            options.mode(0o600);
+        }
+
+        let mut file = options
+            .open(path.as_ref())
+            .map_err(SigningShareErrorKind::Write)?;
+
+        // `mode` only applies on creation; also tighten an existing file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(SigningShareErrorKind::Write)?;
+        }
+
+        file.write_all(self.to_string().as_bytes())
+            .map_err(SigningShareErrorKind::Write)?;
         Ok(())
     }
 }
