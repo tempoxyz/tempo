@@ -1,7 +1,12 @@
 //! Test utilities for precompile dispatch testing
 
 pub mod abi_conformance;
+#[cfg(any(test, feature = "test-utils"))]
+mod calls;
 pub mod storage_conformance;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use calls::SetupCall;
 
 /// Resolves a contract artifact within a Foundry output directory.
 pub fn foundry_artifact_path(

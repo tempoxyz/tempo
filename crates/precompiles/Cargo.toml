@@ -41,6 +41,8 @@ scoped-tls = "1.0"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 antithesis_sdk = { workspace = true, optional = true }
+eyre = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -79,6 +81,8 @@ test-utils = [
     "tempo-primitives/test-utils",
 ]
 rpc = ["tempo-contracts/rpc"]
+# `TIP20Setup::apply_rpc`. alloy's provider is already a dependency through `rpc`.
+rpc-test-utils = ["test-utils", "rpc", "alloy/providers", "dep:eyre", "dep:futures"]
 serde = [
 	"dep:serde",
 	"alloy/serde",
