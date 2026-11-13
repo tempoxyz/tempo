@@ -232,11 +232,18 @@ impl BestTransactionsPrewarming {
                     "Generated replay for transaction"
                 );
 
-                Some(Box::new(StorageActionReplay {
-                    result: result.result,
-                    actions,
-                    expiring_nonce,
-                }))
+                let spec = evm.config_spec_id();
+                match StorageActionReplay::new(result, actions, expiring_nonce, spec) {
+                    Ok(replay) => Some(Box::new(replay)),
+                    Err(err) => {
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            "Failed to generate replay for transaction"
+                        );
+                        None
+                    }
+                }
             },
         );
 
@@ -652,11 +659,7 @@ mod tests {
             chain_id: 42431,
             fee_token: Some(token),
             gas_limit,
-            calls: vec![Call {
-                to: TxKind::Call(token),
-                value: U256::ZERO,
-                input: input.into(),
-            }],
+            calls: vec![Call::new(token, input)],
             nonce_key,
             valid_before: (nonce_key == U256::MAX).then_some(NonZeroU64::new(100).unwrap()),
             ..Default::default()
@@ -1094,11 +1097,7 @@ mod tests {
             chain_id: 42431,
             fee_token: Some(PATH_USD_ADDRESS),
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(PATH_USD_ADDRESS),
-                value: U256::ZERO,
-                input: input.into(),
-            }],
+            calls: vec![Call::new(PATH_USD_ADDRESS, input)],
             nonce_key: U256::ONE,
             ..Default::default()
         };

@@ -15,8 +15,8 @@ use alloy_network::ReceiptResponse as _;
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZONE_TOKEN_ADDRESS, ZonePortal};
 
 use crate::utils::{
-    P2pChaosNetwork, RealP2pCluster, ZoneAccount, batch_count, poll_until,
-    start_real_p2p_network_chaos_cluster,
+    P2pChaosNetwork, RealP2pCluster, ZoneAccount, assert_same_block, batch_count, poll_until,
+    start_real_p2p_network_chaos_cluster, wait_all_at,
 };
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -94,15 +94,15 @@ async fn start_cluster(
         .wait_for_block_number(1, NETWORK_TIMEOUT)
         .await?;
     let head = cluster.nodes[0].provider().get_block_number().await?;
-    cluster.wait_all_at(head, NETWORK_TIMEOUT).await?;
-    cluster.assert_same_block(head).await?;
+    wait_all_at(&cluster.nodes, head, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, head).await?;
     Ok(fixture)
 }
 
 async fn synchronized_head(cluster: &RealP2pCluster) -> eyre::Result<u64> {
     let head = cluster.nodes[0].provider().get_block_number().await?;
-    cluster.wait_all_at(head, NETWORK_TIMEOUT).await?;
-    cluster.assert_same_block(head).await?;
+    wait_all_at(&cluster.nodes, head, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, head).await?;
     Ok(head)
 }
 
@@ -292,8 +292,8 @@ async fn assert_batch_history_is_canonical(
         .try_into()
         .map_err(|_| eyre::eyre!("settled zone height does not fit in u64"))?;
     let settled_hash = portal.blockHash().block(block_id).call().await?;
-    cluster.wait_all_at(settled_height, NETWORK_TIMEOUT).await?;
-    let canonical = cluster.assert_same_block(settled_height).await?;
+    wait_all_at(&cluster.nodes, settled_height, NETWORK_TIMEOUT).await?;
+    let canonical = assert_same_block(&cluster.nodes, settled_height).await?;
     eyre::ensure!(
         settled_hash == canonical.hash,
         "Portal settled hash is not canonical at zone height {settled_height}"
@@ -676,11 +676,9 @@ async fn assert_stable_b_leadership(cluster: &RealP2pCluster, baseline: u64) -> 
         "B to recover and produce a canonical block",
     )
     .await?;
-    cluster
-        .wait_all_at(produced_height, NETWORK_TIMEOUT)
-        .await?;
+    wait_all_at(&cluster.nodes, produced_height, NETWORK_TIMEOUT).await?;
     let b_producer = cluster.attestation_signers[INCOMING_LEADER].address();
-    let header = cluster.assert_same_block(produced_height).await?;
+    let header = assert_same_block(&cluster.nodes, produced_height).await?;
     eyre::ensure!(
         header.beneficiary() == b_producer,
         "canonical recovery block {produced_height} was not produced by B"
@@ -692,8 +690,8 @@ async fn assert_stable_b_leadership(cluster: &RealP2pCluster, baseline: u64) -> 
     cluster.nodes[INCOMING_LEADER]
         .wait_for_block_number(next_height, NETWORK_TIMEOUT)
         .await?;
-    cluster.wait_all_at(next_height, NETWORK_TIMEOUT).await?;
-    let header = cluster.assert_same_block(next_height).await?;
+    wait_all_at(&cluster.nodes, next_height, NETWORK_TIMEOUT).await?;
+    let header = assert_same_block(&cluster.nodes, next_height).await?;
     eyre::ensure!(
         header.beneficiary() == b_producer,
         "B did not retain leadership after recovery at block {next_height}"
@@ -833,8 +831,8 @@ async fn run_leadership_fault_case(case: LeadershipFaultCase) -> eyre::Result<()
     .await?;
 
     if let Some(settled_height) = settled_during_outage {
-        cluster.wait_all_at(settled_height, NETWORK_TIMEOUT).await?;
-        cluster.assert_same_block(settled_height).await?;
+        wait_all_at(&cluster.nodes, settled_height, NETWORK_TIMEOUT).await?;
+        assert_same_block(&cluster.nodes, settled_height).await?;
     }
     let stable_height = assert_stable_b_leadership(&cluster, baseline).await?;
     if settled_during_outage.is_none() {
@@ -1033,10 +1031,8 @@ async fn test_handoff_recovers_across_settlement_boundary() -> eyre::Result<()> 
         boundary_height > baseline,
         "withdrawal was included before the leadership handoff"
     );
-    cluster
-        .wait_all_at(boundary_height, NETWORK_TIMEOUT)
-        .await?;
-    let boundary = cluster.assert_same_block(boundary_height).await?;
+    wait_all_at(&cluster.nodes, boundary_height, NETWORK_TIMEOUT).await?;
+    let boundary = assert_same_block(&cluster.nodes, boundary_height).await?;
     eyre::ensure!(
         boundary.beneficiary() == cluster.attestation_signers[1].address(),
         "withdrawal boundary block {boundary_height} was not produced under leader B"
@@ -1073,7 +1069,7 @@ async fn test_handoff_recovers_across_settlement_boundary() -> eyre::Result<()> 
         settled_height >= boundary_height,
         "settlement stopped before B's withdrawal boundary: {settled_height} < {boundary_height}"
     );
-    let header = cluster.assert_same_block(settled_height).await?;
+    let header = assert_same_block(&cluster.nodes, settled_height).await?;
     eyre::ensure!(
         header.beneficiary() == cluster.attestation_signers[1].address(),
         "post-handoff settlement at {settled_height} was not produced under leader B"
@@ -1113,8 +1109,8 @@ async fn assert_isolation_recovers(
     }
 
     network.resume_nodes(isolated);
-    cluster.wait_all_at(target, NETWORK_TIMEOUT).await?;
-    cluster.assert_same_block(target).await?;
+    wait_all_at(&cluster.nodes, target, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, target).await?;
     Ok(())
 }
 
@@ -1209,10 +1205,8 @@ async fn test_follower_mempool_transaction_propagates_after_reconnect() -> eyre:
     let inclusion_block = receipt
         .block_number
         .ok_or_else(|| eyre::eyre!("forwarded withdrawal receipt has no block number"))?;
-    cluster
-        .wait_all_at(inclusion_block, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(inclusion_block).await?;
+    wait_all_at(&cluster.nodes, inclusion_block, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, inclusion_block).await?;
     Ok(())
 }
 
@@ -1230,8 +1224,8 @@ async fn test_follower_keeps_up_with_high_p2p_latency() -> eyre::Result<()> {
     cluster.nodes[0]
         .wait_for_block_number(target, NETWORK_TIMEOUT)
         .await?;
-    cluster.wait_all_at(target, NETWORK_TIMEOUT).await?;
-    cluster.assert_same_block(target).await?;
+    wait_all_at(&cluster.nodes, target, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, target).await?;
     Ok(())
 }
 
@@ -1275,7 +1269,7 @@ async fn test_follower_keeps_up_with_high_l1_latency() -> eyre::Result<()> {
     cluster.nodes[1]
         .wait_for_tempo_block_number(target_anchor, NETWORK_TIMEOUT)
         .await?;
-    cluster.wait_all_at(target_head, NETWORK_TIMEOUT).await?;
-    cluster.assert_same_block(target_head).await?;
+    wait_all_at(&cluster.nodes, target_head, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, target_head).await?;
     Ok(())
 }

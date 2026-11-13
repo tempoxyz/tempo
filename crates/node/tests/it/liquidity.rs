@@ -121,15 +121,13 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     println!("Setting user's fee token preference...");
     let tx = TempoTransaction {
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        calls: vec![Call {
-            to: TIP_FEE_MANAGER_ADDRESS.into(),
-            value: U256::ZERO,
-            input: setUserTokenCall {
+        calls: vec![Call::new(
+            TIP_FEE_MANAGER_ADDRESS,
+            setUserTokenCall {
                 token: payment_token_addr,
             }
-            .abi_encode()
-            .into(),
-        }],
+            .abi_encode(),
+        )],
         chain_id: provider.get_chain_id().await?,
         max_fee_per_gas: provider.get_gas_price().await?,
         max_priority_fee_per_gas: provider.get_gas_price().await?,

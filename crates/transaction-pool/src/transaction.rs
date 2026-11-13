@@ -563,10 +563,27 @@ impl TempoPooledTransaction {
     /// key, or the key ID a primitive inline key authorization grants (TIP-1111: a migrated key ID
     /// only takes ConfigurableAccount grants, so its first commitment invalidates the grant).
     pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let [sender, authorities @ ..] = self.authorities();
+        let signed_by_access_key = self
+            .inner()
+            .as_aa()
+            .is_some_and(|tx| tx.signature().is_keychain());
+        sender
+            .filter(|_| !signed_by_access_key)
+            .into_iter()
+            .chain(authorities.into_iter().flatten())
+            .chain(self.primitive_granted_key())
+            .any(|authority| accounts.contains(&authority))
+    }
+
+    /// The accounts whose state changes can invalidate this transaction and that signed it or
+    /// chose to back it: the sender, the key authorization signer, a separate fee payer and the
+    /// access key, in that order. The same account can appear in more than one role.
+    pub(crate) fn authorities(&self) -> [Option<Address>; 4] {
+        let sender = Some(*self.sender_ref());
         let Some(tx) = self.inner().as_aa() else {
-            return accounts.contains(self.sender_ref());
+            return [sender, None, None, None];
         };
-        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
         // Recovery fails only for a transaction that validation already rejects.
         let grant_signer = tx
             .tx()
@@ -578,16 +595,21 @@ impl TempoPooledTransaction {
             .fee_payer_signature
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
-        let granted_key = tx
+        [sender, grant_signer, fee_payer, access_key]
+    }
+
+    /// The key ID a primitive inline key authorization grants, or `None` without one.
+    ///
+    /// Its state can invalidate the grant (TIP-1111), but only the grantor signs the grant, so
+    /// it is not one of [`Self::authorities`] and doesn't count toward per-authority limits.
+    pub(crate) fn primitive_granted_key(&self) -> Option<Address> {
+        self.inner()
+            .as_aa()?
             .tx()
             .key_authorization
             .as_ref()
             .filter(|authorization| authorization.key_type != SignatureType::ConfigurableAccount)
-            .map(|authorization| authorization.key_id);
-        [sender, grant_signer, fee_payer, access_key, granted_key]
-            .into_iter()
-            .flatten()
-            .any(|authority| accounts.contains(&authority))
+            .map(|authorization| authorization.key_id)
     }
 }
 
@@ -655,6 +677,14 @@ pub enum TempoPoolTransactionError {
         "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/errors/tx/ExceedsNonPaymentLimit for more"
     )]
     ExceedsNonPaymentLimit,
+
+    /// Canonical updates kept changing the pool while the transaction validated.
+    ///
+    /// Thrown during pool admission when a canonical update landed during every validation
+    /// attempt, so none validated the transaction against the state the pool is maintained
+    /// for. The transaction may be valid and can be submitted again.
+    #[error("Chain state changed during every validation attempt, please resubmit")]
+    StateChangedDuringValidation,
 
     /// An AA transaction's `valid_before` is too close to the current pool tip.
     ///
@@ -840,7 +870,6 @@ impl PoolTransactionError for TempoPoolTransactionError {
                         err,
                         HandlerError::InvalidChainId { .. }
                             | HandlerError::MissingChainId
-                            | HandlerError::IntrinsicGasTooLow { .. }
                             | HandlerError::NonceOverflow
                             | HandlerError::TxGasLimitGreaterThanCap { .. }
                             | HandlerError::CreateInitCodeSizeLimit { .. }
@@ -856,6 +885,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
+            | Self::StateChangedDuringValidation
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
@@ -1455,16 +1485,8 @@ mod tests {
 
         let aa = TxBuilder::aa(Address::random())
             .calls(vec![
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input: input.clone(),
-                },
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input,
-                },
+                Call::new(Address::random(), input.clone()),
+                Call::new(Address::random(), input),
             ])
             .build();
         let envelope_size = aa.inner().inner().size();
@@ -1716,6 +1738,14 @@ mod tests {
                 },
                 false,
             ),
+            // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
+            (
+                TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow {
+                    got: 21_000,
+                    required: 271_000,
+                }),
+                false,
+            ),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
                 TempoPoolTransactionError::Evm(HandlerError::external(
@@ -1832,11 +1862,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce,
             ..Default::default()
@@ -2091,6 +2117,8 @@ mod tests {
         let primitive = grant(SignatureType::Secp256k1);
         assert!(primitive.has_authority_in(&AddressSet::from_iter([key_id])));
         assert!(!primitive.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        // Only the grantor signs the grant, so its key ID isn't charged against pool limits.
+        assert!(!primitive.authorities().contains(&Some(key_id)));
         // A configurable grant's validity doesn't depend on its key ID's commitment value.
         let configurable = grant(SignatureType::ConfigurableAccount);
         assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));

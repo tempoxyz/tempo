@@ -1,6 +1,7 @@
 use crate::{
     AddressFilter,
     amm::AmmLiquidityCache,
+    metrics::ValidationMetrics,
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
@@ -29,6 +30,7 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
+    time::Instant,
 };
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
@@ -115,6 +117,12 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// Cached here so hot paths can resolve the active hardfork with a single atomic load
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
+    metrics: ValidationMetrics,
+    /// Advanced after what validation reads is refreshed for a canonical update and before the
+    /// pool is repaired for it. Validation reports each outcome with the value it read before
+    /// opening the state it validated against, and admission inserts, under the read lock, only
+    /// outcomes reported with the current value.
+    pub(crate) admission_epoch: RwLock<u64>,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -153,6 +161,8 @@ where
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+            metrics: ValidationMetrics::default(),
+            admission_epoch: RwLock::default(),
         }
     }
 
@@ -349,38 +359,74 @@ where
         Ok(())
     }
 
-    /// Validates a batch of transactions against the same state snapshot.
+    /// Validates `transactions` in order against the tip's state, passing each outcome to
+    /// `on_outcome` before validating the next, with the tag its transaction came with.
     ///
-    /// All transactions share the validator's tip-scoped [`StateCache`], so repeated state reads
-    /// are served from memory across transactions and across concurrent validation calls.
-    fn validate_batch<P: StateProvider>(
+    /// State is opened once, and again only after the admission epoch advances. The epoch passed
+    /// with an outcome is the one read before opening the state it was validated against. A
+    /// failure to open state passes an error outcome for every transaction left.
+    ///
+    /// Transactions validated against one state share an EVM and the validator's tip-scoped
+    /// [`StateCache`], so repeated state reads are served from memory across transactions and
+    /// across concurrent validation calls.
+    pub(crate) fn validate_each<TTag>(
         &self,
-        state_provider: P,
-        cached_state: Arc<StateCache>,
-        transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
-    ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let db = StateCacheDb::new(
-            &cached_state,
-            StateProviderDatabase::new(
-                (&state_provider as &dyn StateProvider).into_evm_state_provider(),
-            ),
-        );
-        let mut evm_env = self
-            .cached_evm_env
-            .read()
-            .clone()
-            .with_nonce_check_disabled();
-        evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
+        transactions: impl IntoIterator<Item = (TTag, TransactionOrigin, TempoPooledTransaction)>,
+        mut on_outcome: impl FnMut(TTag, u64, TransactionValidationOutcome<TempoPooledTransaction>),
+    ) {
+        let start = Instant::now();
+        let mut transactions = transactions.into_iter().peekable();
+        // Runs once per admission epoch: the state opened here serves the transactions that
+        // follow until the epoch advances.
+        while transactions.peek().is_some() {
+            // Not `read`, which would park behind an advance that waits on an admission's insert.
+            let admission_epoch = *self.admission_epoch.read_recursive();
+            let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    for (tag, _, transaction) in transactions {
+                        on_outcome(
+                            tag,
+                            admission_epoch,
+                            TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(err.clone()),
+                            ),
+                        );
+                    }
+                    break;
+                }
+            };
+            let db = StateCacheDb::new(
+                &cached_state,
+                StateProviderDatabase::new(
+                    (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+                ),
+            );
+            let mut evm_env = self
+                .cached_evm_env
+                .read()
+                .clone()
+                .with_nonce_check_disabled();
+            evm_env.version.features.remove(EvmFeatures::BASE_FEE_CHECK);
 
-        // Reuse the configured EVM and its loaded reads for the whole batch.
-        let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
-        evm.ext_mut().skip_valid_after_check = true;
-        evm.ext_mut().skip_liquidity_check = true;
+            // Reuse the configured EVM and its loaded reads for every transaction of this epoch.
+            let mut evm = self.inner.evm_config().evm_with_env(db, evm_env);
+            evm.ext_mut().skip_valid_after_check = true;
+            evm.ext_mut().skip_liquidity_check = true;
 
-        transactions
-            .into_iter()
-            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
-            .collect()
+            for (tag, origin, transaction) in transactions.by_ref() {
+                on_outcome(
+                    tag,
+                    admission_epoch,
+                    self.validate_one_with_evm(origin, transaction, &mut evm),
+                );
+                if *self.admission_epoch.read_recursive() != admission_epoch {
+                    break;
+                }
+            }
+        }
+        self.metrics.batch_duration_seconds.record(start.elapsed());
     }
 
     /// Returns the current tip's state provider and matching read cache.
@@ -778,20 +824,14 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
-
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            core::iter::once((origin, transaction)),
-        )
-        .pop()
-        .expect("validate_batch returns one outcome per transaction")
+        let mut outcomes = Vec::with_capacity(1);
+        self.validate_each(
+            core::iter::once(((), origin, transaction)),
+            |(), _, outcome| outcomes.push(outcome),
+        );
+        outcomes
+            .pop()
+            .expect("validate_each passes one outcome per transaction")
     }
 
     async fn validate_transactions(
@@ -799,19 +839,14 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|(_, tx)| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        self.validate_batch(state_provider, cached_state, transactions)
+        let mut outcomes = Vec::new();
+        self.validate_each(
+            transactions
+                .into_iter()
+                .map(|(origin, tx)| ((), origin, tx)),
+            |(), _, outcome| outcomes.push(outcome),
+        );
+        outcomes
     }
 
     async fn validate_transactions_with_origin(
@@ -819,23 +854,12 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
-
-        self.validate_batch(
-            state_provider,
-            cached_state,
-            transactions.into_iter().map(|tx| (origin, tx)),
-        )
+        let mut outcomes = Vec::new();
+        self.validate_each(
+            transactions.into_iter().map(|tx| ((), origin, tx)),
+            |(), _, outcome| outcomes.push(outcome),
+        );
+        outcomes
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
@@ -853,6 +877,10 @@ where
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
+
+        // Reth calls this before it updates its pool for the new tip, so the advance comes after
+        // everything refreshed above and before that repair.
+        *self.admission_epoch.write() += 1;
     }
 }
 
@@ -1237,16 +1265,8 @@ mod tests {
         let checked_address = Address::with_last_byte(0x42);
         let transaction = TxBuilder::aa(Address::random())
             .calls(vec![
-                Call {
-                    to: TxKind::Call(Address::with_last_byte(0x41)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
-                Call {
-                    to: TxKind::Call(checked_address),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
+                Call::new(Address::with_last_byte(0x41), Bytes::new()),
+                Call::new(checked_address, Bytes::new()),
             ])
             .build();
         let validator = setup_validator(&transaction, 1)
@@ -1487,18 +1507,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_fee_payer_signature_rejected() {
-        let calls: Vec<Call> = vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Default::default(),
-        }];
-
         let tx = TempoTransaction {
             chain_id: MODERATO.chain_id(),
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls,
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce: 0,
             fee_token: Some(PATH_USD_ADDRESS),
@@ -1541,11 +1555,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce: 0,
             fee_token: Some(PATH_USD_ADDRESS),
@@ -1715,11 +1725,7 @@ mod tests {
         // Helper to create AA tx with given gas limit
         let create_aa_tx = |gas_limit: u64| {
             let calls: Vec<Call> = (0..10)
-                .map(|i| Call {
-                    to: TxKind::Call(Address::repeat_byte(i as u8)),
-                    value: U256::ZERO,
-                    input: alloy_primitives::Bytes::from(vec![0x00; 100]),
-                })
+                .map(|i| Call::new(Address::repeat_byte(i as u8), vec![0x00; 100]))
                 .collect();
 
             let tx = TempoTransaction {
@@ -1796,18 +1802,13 @@ mod tests {
         // Helper to create AA transaction
         let create_aa_tx = |gas_limit: u64, nonce_key: U256, is_create: bool| {
             let calls: Vec<TxCall> = if is_create {
-                vec![TxCall {
-                    to: TxKind::Create,
-                    value: U256::ZERO,
-                    input: alloy_primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xF3]),
-                }]
+                vec![TxCall::new(
+                    TxKind::Create,
+                    vec![0x60, 0x00, 0x60, 0x00, 0xF3],
+                )]
             } else {
                 (0..10)
-                    .map(|i| TxCall {
-                        to: TxKind::Call(Address::repeat_byte(i as u8)),
-                        value: U256::ZERO,
-                        input: alloy_primitives::Bytes::from(vec![0x00; 100]),
-                    })
+                    .map(|i| TxCall::new(Address::repeat_byte(i as u8), vec![0x00; 100]))
                     .collect()
             };
 
@@ -1929,18 +1930,15 @@ mod tests {
 
         // Helper to create expiring nonce AA tx with given gas limit
         let create_expiring_nonce_tx = |gas_limit: u64| {
-            let calls: Vec<Call> = vec![Call {
-                to: TxKind::Call(Address::repeat_byte(1u8)),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
-            }];
-
             let tx = TempoTransaction {
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 20_000_000_000,
                 gas_limit,
-                calls,
+                calls: vec![Call::new(
+                    Address::repeat_byte(1u8),
+                    vec![0xd0, 0x9d, 0xe0, 0x8a], // increment()
+                )],
                 nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Expiring nonce
                 nonce: 0,
                 valid_before: Some(core::num::NonZeroU64::new(current_time + 25).unwrap()), // Valid for 25 seconds
@@ -1993,18 +1991,15 @@ mod tests {
 
         // Helper to create AA tx with a specific nonce_key and nonce
         let create_aa_tx = |gas_limit: u64, nonce_key: U256, nonce: u64| {
-            let calls: Vec<Call> = vec![Call {
-                to: TxKind::Call(Address::repeat_byte(1u8)),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
-            }];
-
             let tx = TempoTransaction {
                 chain_id: MODERATO.chain_id(),
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 20_000_000_000,
                 gas_limit,
-                calls,
+                calls: vec![Call::new(
+                    Address::repeat_byte(1u8),
+                    vec![0xd0, 0x9d, 0xe0, 0x8a], // increment()
+                )],
                 nonce_key,
                 nonce,
                 fee_token: Some(Address::with_last_byte(2)),
@@ -2458,11 +2453,10 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::with_last_byte(1)),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::new(),
-            }],
+            calls: vec![Call::new(
+                Address::with_last_byte(1),
+                alloy_primitives::Bytes::new(),
+            )],
             nonce_key: U256::ZERO,
             nonce: 0,
             fee_token: Some(Address::with_last_byte(2)),
@@ -2581,16 +2575,10 @@ mod tests {
 
         // Create an AA transaction with a CREATE call as the second call
         let calls = vec![
-            Call {
-                to: TxKind::Call(Address::random()), // First call is a regular call
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-            Call {
-                to: TxKind::Create, // Second call is a CREATE - should be rejected
-                value: U256::ZERO,
-                input: Default::default(),
-            },
+            // First call is a regular call
+            Call::new(Address::random(), Bytes::new()),
+            // Second call is a CREATE - should be rejected
+            Call::new(TxKind::Create, Bytes::new()),
         ];
 
         let transaction = TxBuilder::aa(Address::random())
@@ -2631,16 +2619,10 @@ mod tests {
 
         // Create an AA transaction with a CREATE call as the first call
         let calls = vec![
-            Call {
-                to: TxKind::Create, // First call is a CREATE - should be accepted
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-            Call {
-                to: TxKind::Call(Address::random()), // Second call is a regular call
-                value: U256::ZERO,
-                input: Default::default(),
-            },
+            // First call is a CREATE - should be accepted
+            Call::new(TxKind::Create, Bytes::new()),
+            // Second call is a regular call
+            Call::new(Address::random(), Bytes::new()),
         ];
 
         let transaction = TxBuilder::aa(Address::random())
@@ -2679,21 +2661,12 @@ mod tests {
 
         // calls = [CREATE, CALL, CREATE] -> should reject with CreateCallNotFirst
         let calls = vec![
-            Call {
-                to: TxKind::Create, // First call is a CREATE - ok
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-            Call {
-                to: TxKind::Call(Address::random()), // Second call is a regular call
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-            Call {
-                to: TxKind::Create, // Third call is a CREATE - should be rejected
-                value: U256::ZERO,
-                input: Default::default(),
-            },
+            // First call is a CREATE - ok
+            Call::new(TxKind::Create, Bytes::new()),
+            // Second call is a regular call
+            Call::new(Address::random(), Bytes::new()),
+            // Third call is a CREATE - should be rejected
+            Call::new(TxKind::Create, Bytes::new()),
         ];
 
         let transaction = TxBuilder::aa(Address::random())
@@ -2734,11 +2707,10 @@ mod tests {
             .as_secs();
 
         // Create an AA transaction with a CREATE call and a non-empty authorization list
-        let calls = vec![Call {
-            to: TxKind::Create, // CREATE call
-            value: U256::ZERO,
-            input: Default::default(),
-        }];
+        let calls = vec![
+            // CREATE call
+            Call::new(TxKind::Create, Bytes::new()),
+        ];
 
         // Create a single authorization entry
         let auth = Authorization {
@@ -2967,11 +2939,7 @@ mod tests {
             .as_secs();
 
         let calls: Vec<Call> = (0..MAX_AA_CALLS)
-            .map(|_| Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            })
+            .map(|_| Call::new(Address::random(), Bytes::new()))
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
@@ -3004,11 +2972,7 @@ mod tests {
             .as_secs();
 
         let calls: Vec<Call> = (0..MAX_AA_CALLS + 1)
-            .map(|_| Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            })
+            .map(|_| Call::new(Address::random(), Bytes::new()))
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
@@ -3043,16 +3007,13 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let calls = vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: vec![0u8; MAX_CALL_INPUT_SIZE].into(),
-        }];
-
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
-            .calls(calls)
+            .calls(vec![Call::new(
+                Address::random(),
+                vec![0u8; MAX_CALL_INPUT_SIZE],
+            )])
             .build();
         let validator = setup_validator(&transaction, current_time);
 
@@ -3078,16 +3039,13 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let calls = vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: vec![0u8; MAX_CALL_INPUT_SIZE + 1].into(),
-        }];
-
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
-            .calls(calls)
+            .calls(vec![Call::new(
+                Address::random(),
+                vec![0u8; MAX_CALL_INPUT_SIZE + 1],
+            )])
             .build();
         let validator = setup_validator(&transaction, current_time);
 
@@ -3384,11 +3342,7 @@ mod tests {
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 20_000_000_000,
                 gas_limit: 1_000_000,
-                calls: vec![Call {
-                    to: TxKind::Call(target),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(target, Bytes::new())],
                 nonce_key: U256::ZERO,
                 nonce: 0,
                 fee_token: Some(PATH_USD_ADDRESS),

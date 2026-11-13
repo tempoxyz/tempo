@@ -101,6 +101,18 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
         if let Some(resolved) = &key_authorization {
             estimate_request.key_authorization = resolved.clone();
         }
+        if request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER)
+            && request.gas_limit().is_none()
+            && (request.max_fee_per_gas().is_some() || request.max_priority_fee_per_gas().is_some())
+        {
+            // The sponsor pays the fees, so the estimate is unpriced: a priced one is capped by the
+            // sender's fee token balance. The inner filler then fills only the fees. Without fees
+            // the request is already unpriced and the inner filler estimates it concurrently.
+            let mut unpriced = estimate_request.clone();
+            unpriced.inner.max_fee_per_gas = None;
+            unpriced.inner.max_priority_fee_per_gas = None;
+            estimate_request.set_gas_limit(provider.estimate_gas(unpriced).await?);
+        }
         let gas = <GasFiller as TxFiller<TempoNetwork>>::prepare(
             &self.inner,
             provider,
@@ -118,8 +130,6 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
         fillable: Self::Fillable,
         tx: SendableTx<TempoNetwork>,
     ) -> TransportResult<SendableTx<TempoNetwork>> {
-        // Checked when filling rather than when preparing: `SponsorFiller` sets the marker when it
-        // fills, after this filler prepared in the same round.
         let fillable = fillable.with_fee_payer_access(tx.as_builder());
         let mut tx =
             <GasFiller as TxFiller<TempoNetwork>>::fill(&self.inner, fillable.gas, tx).await?;
@@ -267,15 +277,20 @@ enum KeyAuthorizationError {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Bytes, Signature};
+    use alloy_json_rpc::RequestPacket;
+    use alloy_primitives::{Bytes, Signature, U64};
     use alloy_provider::{ProviderBuilder, fillers::TxFiller, mock::Asserter};
+    use alloy_rpc_client::RpcClient;
     use alloy_rpc_types_eth::TransactionRequest;
+    use alloy_transport::mock::MockTransport;
     use tempo_primitives::{
         SignatureType, TempoTxType,
         transaction::{KeyAuthorization, PrimitiveSignature},
     };
+    use tower::ServiceExt;
 
     use super::*;
+    use crate::fillers::SponsorFiller;
 
     #[test]
     fn delegates_non_aa_status_to_the_inner_filler() {
@@ -332,6 +347,47 @@ mod tests {
             request_for_gas_estimation(&request).fee_payer_signature,
             Some(signature)
         );
+    }
+
+    #[tokio::test]
+    async fn estimates_sponsored_requests_unpriced() {
+        let asserter = Asserter::new();
+        asserter.push_success(&U64::from(21_000));
+        let transport = MockTransport::new(asserter).map_request(|packet: RequestPacket| {
+            let request = packet
+                .as_single()
+                .expect("expected a single estimate request");
+            assert_eq!(request.method(), "eth_estimateGas");
+            let params: serde_json::Value =
+                serde_json::from_str(request.params().unwrap().get()).unwrap();
+            let estimated = &params[0];
+            assert!(estimated.get("maxFeePerGas").is_none());
+            assert!(estimated.get("maxPriorityFeePerGas").is_none());
+            assert!(estimated.get("feePayerSignature").is_none());
+            packet
+        });
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .filler(SponsorFiller)
+            .filler(TempoGasFiller::default())
+            .connect_client(RpcClient::new(transport, true));
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(Address::repeat_byte(0x11)),
+                chain_id: Some(4217),
+                max_fee_per_gas: Some(2_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let filled = provider.fill(request).await.unwrap();
+        let filled = filled.as_builder().unwrap();
+
+        assert_eq!(filled.fee_payer_signature, Some(FEE_PAYER_SIGNATURE_MARKER));
+        assert_eq!(filled.gas_limit(), Some(21_000 + FEE_PAYER_ACCESS_GAS));
+        assert_eq!(filled.max_fee_per_gas(), Some(2_000_000_000));
+        assert_eq!(filled.max_priority_fee_per_gas(), Some(1_000_000_000));
     }
 
     #[tokio::test]

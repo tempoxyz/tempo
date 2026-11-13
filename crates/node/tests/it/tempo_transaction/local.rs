@@ -74,17 +74,15 @@ fn create_admin_key_authorization(
 }
 
 fn authorize_admin_key_call(key_id: Address, witness: B256) -> Call {
-    Call {
-        to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
-        value: U256::ZERO,
-        input: authorizeAdminKeyCall {
+    Call::new(
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        authorizeAdminKeyCall {
             keyId: key_id,
             signatureType: tempo_contracts::precompiles::IAccountKeychain::SignatureType::Secp256k1,
             witness,
         }
-        .abi_encode()
-        .into(),
-    }
+        .abi_encode(),
+    )
 }
 
 /// Single-node local test environment with direct node access.
@@ -221,11 +219,7 @@ impl super::types::TestEnv for Localnet {
             let tx = create_basic_aa_tx(
                 self.chain_id,
                 start_nonce + i,
-                vec![Call {
-                    to: recipient.into(),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                vec![Call::new(recipient, Bytes::new())],
                 300_000,
             );
 
@@ -734,11 +728,7 @@ async fn send_tx(
     let mut tx = create_basic_aa_tx(
         chain_id,
         nonce,
-        vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        vec![Call::new(recipient, Bytes::new())],
         2_000_000,
     );
     tx.nonce_key = U256::from(nonce_key);
@@ -964,11 +954,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         let mut tx = create_basic_aa_tx(
             chain_id,
             nonce_seq,
-            vec![Call {
-                to: recipient.into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            vec![Call::new(recipient, Bytes::new())],
             2_000_000,
         );
         tx.fee_token = None;
@@ -1311,11 +1297,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
         max_priority_fee_per_gas: 1_000_000_000u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 2_000_000,
-        calls: vec![Call {
-            to: Address::random().into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::random(), Bytes::new())],
         nonce_key: U256::from(123),
         nonce: 0,
         ..Default::default()
@@ -1480,13 +1462,10 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
     let mut burn_tx = create_basic_aa_tx(
         chain_id,
         0,
-        vec![Call {
-            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
-            value: U256::ZERO,
-            input: burnKeyAuthorizationWitnessCall { witness }
-                .abi_encode()
-                .into(),
-        }],
+        vec![Call::new(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            burnKeyAuthorizationWitnessCall { witness }.abi_encode(),
+        )],
         2_000_000,
     );
     burn_tx.nonce_key = U256::ONE;
@@ -1852,11 +1831,10 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     let mut revoke_tx = create_basic_aa_tx(
         chain_id,
         0, // nonce 0 for this new nonce_key
-        vec![Call {
-            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
-            value: U256::ZERO,
-            input: revoke_call.abi_encode().into(),
-        }],
+        vec![Call::new(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            revoke_call.abi_encode(),
+        )],
         2_000_000,
     );
     revoke_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -2208,11 +2186,10 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     let mut update_tx = create_basic_aa_tx(
         chain_id,
         0, // nonce 0 for this new nonce_key
-        vec![Call {
-            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
-            value: U256::ZERO,
-            input: update_limit_call.abi_encode().into(),
-        }],
+        vec![Call::new(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            update_limit_call.abi_encode(),
+        )],
         2_000_000,
     );
     update_tx.fee_token = Some(DEFAULT_FEE_TOKEN);

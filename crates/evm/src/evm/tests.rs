@@ -480,31 +480,21 @@ impl TxBuilder {
 
     /// Add a call to the identity precompile with the given input.
     fn call_identity(mut self, input: &[u8]) -> Self {
-        self.calls.push(Call {
-            to: TxKind::Call(IDENTITY_PRECOMPILE),
-            value: U256::ZERO,
-            input: Bytes::from(input.to_vec()),
-        });
+        self.calls
+            .push(Call::new(IDENTITY_PRECOMPILE, input.to_vec()));
         self
     }
 
     /// Add a call to a specific address.
     fn call(mut self, to: Address, input: &[u8]) -> Self {
-        self.calls.push(Call {
-            to: TxKind::Call(to),
-            value: U256::ZERO,
-            input: Bytes::from(input.to_vec()),
-        });
+        self.calls.push(Call::new(to, input.to_vec()));
         self
     }
 
     /// Add a create call with the given initcode.
     fn create(mut self, initcode: &[u8]) -> Self {
-        self.calls.push(Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::from(initcode.to_vec()),
-        });
+        self.calls
+            .push(Call::new(TxKind::Create, initcode.to_vec()));
         self
     }
 
@@ -4822,11 +4812,7 @@ fn test_fee_fallback_does_not_replace_explicit_token() -> eyre::Result<()> {
         max_priority_fee_per_gas: FEE_FALLBACK_GAS_PRICE,
         max_fee_per_gas: FEE_FALLBACK_GAS_PRICE,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: TxKind::Call(IDENTITY_PRECOMPILE),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        calls: vec![Call::new(IDENTITY_PRECOMPILE, Bytes::new())],
         ..Default::default()
     };
     let tx = Recovered::new_unchecked(
