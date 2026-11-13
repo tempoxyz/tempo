@@ -54,3 +54,8 @@ eyre.workspace = true
 metrics.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
 tracing.workspace = true
+
+[dev-dependencies]
+tempo-chainspec.workspace = true
+tempo-precompiles.workspace = true
+zone-precompiles = { workspace = true, features = ["std", "test-utils"] }

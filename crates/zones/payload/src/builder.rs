@@ -21,7 +21,8 @@ use reth_evm::{
     InternalBlockExecutionError, NextBlockEnvAttributes,
     database::StateProviderDatabase,
     execute::{
-        BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv, map_handler_error,
+        BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, ExecutorTx, GasOutput, WithTxEnv,
+        map_handler_error,
     },
 };
 use reth_metrics::{Metrics, metrics::Histogram};
@@ -50,7 +51,7 @@ use tracing::{error, info, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_evm::{ZoneEvm, ZoneEvmConfig};
 use zone_l1::{PreparedL1Block, TempoStateExt};
-use zone_precompiles::L1StateError;
+use zone_precompiles::{L1StateError, TIP403_REGISTRY_ADDRESS};
 use zone_primitives::constants::MAX_RLP_BLOCK_SIZE;
 
 use crate::{
@@ -320,11 +321,10 @@ where
             let mut unlisted = Vec::new();
             let outcome = execute_pool_transactions(
                 |tx, best_txs| {
-                    builder
-                        .execute_transaction_with_result_closure(tx, |result| {
-                            best_txs.on_new_result(result);
-                        })
-                        .map(|_| ())
+                    execute_pool_transaction(&mut builder, tx, |result| {
+                        best_txs.on_new_result(result);
+                    })
+                    .map(|_| ())
                 },
                 &mut best_txs,
                 &cancel,
@@ -632,6 +632,40 @@ where
     Ok(PoolExecutionOutcome::Complete)
 }
 
+/// Executes and commits a pool transaction, passing its result to `f` before the commit.
+///
+/// The EVM's accepted cache keeps the L1-mirrored TIP-403 registry slots a failed attempt read.
+/// Before T14, a transaction that finds them cached skips the host read that selects its L1 anchor
+/// for free and pays for the `TempoState` checkpoint instead (see `L1Storage::load`). A failed
+/// attempt's registry reads are therefore dropped, so the block's gas matches a replay of only
+/// its committed transactions.
+fn execute_pool_transaction<'a, B>(
+    builder: &mut B,
+    tx: impl ExecutorTx<B::Executor>,
+    f: impl FnOnce(&<B::Executor as BlockExecutor>::TransactionResultWithState),
+) -> Result<GasOutput, BlockExecutionError>
+where
+    B: BlockBuilder<Executor: BlockExecutor<Evm = ZoneEvm<'a>>>,
+{
+    let registry_reads = builder
+        .evm()
+        .state()
+        .overlay_db()
+        .cache
+        .storage
+        .get(&TIP403_REGISTRY_ADDRESS)
+        .cloned();
+    let result = builder.execute_transaction_with_result_closure(tx, f);
+    if result.is_err() {
+        let cache = &mut builder.evm_mut().state_mut().overlay_db_mut().cache.storage;
+        match registry_reads {
+            Some(reads) => cache.insert(TIP403_REGISTRY_ADDRESS, reads),
+            None => cache.remove(&TIP403_REGISTRY_ADDRESS),
+        };
+    }
+    result
+}
+
 fn is_l1_storage_unavailable(error: &(dyn Error + 'static)) -> bool {
     let mut current = Some(error);
     while let Some(error) = current {
@@ -921,18 +955,42 @@ pub fn build_advance_tempo_headers_tx(
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{Header, SignableTransaction, TxLegacy};
-    use alloy_primitives::{Address, B256, U256, address};
+    use alloy_consensus::{Header, Sealable as _, SignableTransaction, TxLegacy};
+    use alloy_primitives::{Address, B256, Bytes, Signature, U256, address};
     use alloy_sol_types::SolCall;
-    use reth_primitives_traits::{Recovered, SealedHeader};
+    use evm2::{
+        bytecode::Bytecode,
+        evm::{AccountInfo, InMemoryDB},
+    };
+    use reth_chainspec::EthChainSpec;
+    use reth_evm::{
+        BlockExecutionError, BlockExecutor, BlockExecutorFactory, ConfigureEvm,
+        InternalBlockExecutionError, execute::BlockBuilder,
+    };
+    use reth_primitives_traits::{Recovered, SealedBlock, SealedHeader};
     use reth_tasks::cancel::CancelOnDrop;
     use reth_transaction_pool::{
         BestTransactions, TransactionOrigin, ValidPoolTransaction,
         error::InvalidPoolTransactionError,
         identifier::{SenderId, TransactionId},
     };
-    use std::{collections::VecDeque, sync::Arc, time::Instant};
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Instant,
+    };
+    use tempo_chainspec::{gas_params, hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::ITIP20;
+    use tempo_evm::TempoEvmEnv;
+    use tempo_precompiles::{
+        DEFAULT_FEE_TOKEN, TIP403_REGISTRY_ADDRESS,
+        storage::StorageKey,
+        tip20::slots::{BALANCES, TRANSFER_POLICY_ID, TRANSFER_POLICY_ID_OFFSET},
+        tip403_registry::ALLOW_ALL_POLICY_ID,
+    };
     use tempo_primitives::{
         TempoAddressExt as _, TempoHeader, TempoTxEnvelope,
         transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
@@ -943,7 +1001,16 @@ mod tests {
         TransferAllowlist,
         abi::{self, DepositType, IZoneInbox},
     };
+    use zone_chainspec::ZoneChainSpec;
+    use zone_evm::ZoneEvmConfig;
     use zone_l1::PreparedL1Block;
+    use zone_precompiles::{
+        L1StateError, L1StorageReader, ZONE_FEE_MANAGER_ADDRESS,
+        tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
+        test_utils::MockL1Reader,
+        zone_fee_manager,
+    };
+    use zone_primitives::constants::{TEMPO_STATE_ADDRESS, ZONE_OUTBOX_ADDRESS, zone_chain_id};
 
     #[test]
     fn stringified_l1_unavailability_is_recognized() {
@@ -1198,6 +1265,159 @@ mod tests {
         assert_eq!(executed, 2);
         assert_eq!(best_txs.oversized_marked, 0);
         assert_eq!(unlisted, vec![left_out]);
+    }
+
+    /// Fails Tempo L1 storage reads outside the TIP-403 registry while `fail` is set.
+    #[derive(Clone, Default)]
+    struct FlakyL1Reader {
+        inner: MockL1Reader,
+        fail: Arc<AtomicBool>,
+    }
+
+    impl L1StorageReader for FlakyL1Reader {
+        fn read_l1_storage(
+            &self,
+            account: Address,
+            slot: B256,
+            block_number: u64,
+        ) -> Result<B256, L1StateError> {
+            if self.fail.load(Ordering::SeqCst) && account != TIP403_REGISTRY_ADDRESS {
+                return Err(L1StateError::StorageUnavailable {
+                    account,
+                    slot,
+                    block_number,
+                    reason: "RPC unavailable".into(),
+                });
+            }
+            self.inner.read_l1_storage(account, slot, block_number)
+        }
+
+        fn read_l1_commitment(
+            &self,
+            account: Address,
+            block_number: u64,
+        ) -> Result<B256, L1StateError> {
+            self.inner.read_l1_commitment(account, block_number)
+        }
+    }
+
+    /// A pool transaction that is skipped after reading the TIP-403 registry must not change the
+    /// gas, receipts or state of a later transaction: on T13 the builder must produce what a
+    /// replay of the committed transactions produces.
+    #[test]
+    fn skipped_pool_attempt_matches_replay_of_committed_transactions() {
+        let spec = TempoHardfork::T13;
+        let sender = Address::repeat_byte(0x01);
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 1).unwrap();
+        let chain_spec = Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
+        let chain_id = chain_spec.chain_id();
+        let advance_tempo = super::build_advance_tempo_tx_from_parts(
+            &TempoHeader {
+                inner: Header {
+                    number: 1,
+                    parent_hash: TempoHeader::default().hash_slow(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            chain_id,
+        );
+        let pool_tx = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(
+                TxLegacy {
+                    nonce: 1,
+                    gas_price: 20_000_000_000_000,
+                    gas_limit: 1_000_000,
+                    to: ZONE_OUTBOX_ADDRESS.into(),
+                    input: abi::IZoneOutbox::pendingWithdrawalsCountCall {}
+                        .abi_encode()
+                        .into(),
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            ),
+            sender,
+        );
+        let precompile =
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef])));
+
+        // Builds a block from `advanceTempo` and one attempt of `pool_tx` per entry of
+        // `attempts`, each failing on unavailable L1 storage when its entry is true.
+        let build = |attempts: &[bool]| {
+            let reader = FlakyL1Reader::default();
+            reader.inner.seed_active_sequencer(Address::ZERO, 1, sender);
+            let config = ZoneEvmConfig::new(chain_spec.clone(), reader.clone(), Address::ZERO);
+
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(&TEMPO_STATE_ADDRESS, AccountInfo::default());
+            db.insert_account_storage(
+                &TEMPO_STATE_ADDRESS,
+                &TEMPO_BLOCK_HASH,
+                &TempoHeader::default().hash_slow().into(),
+            );
+            db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
+            db.insert_account_info(&ZONE_FEE_MANAGER_ADDRESS, AccountInfo::default());
+            db.insert_account_storage(
+                &ZONE_FEE_MANAGER_ADDRESS,
+                &zone_fee_manager::slots::DEFAULT_FEE_TOKEN,
+                &U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice()),
+            );
+            db.insert_account_info(&sender, AccountInfo::default().with_nonce(1));
+            db.insert_account_info(&DEFAULT_FEE_TOKEN, precompile.clone());
+            db.insert_account_info(&TIP403_REGISTRY_ADDRESS, precompile.clone());
+            db.insert_account_storage(
+                &DEFAULT_FEE_TOKEN,
+                &TRANSFER_POLICY_ID,
+                &(U256::from(ALLOW_ALL_POLICY_ID) << (TRANSFER_POLICY_ID_OFFSET * 8)),
+            );
+            db.insert_account_storage(
+                &DEFAULT_FEE_TOKEN,
+                &sender.mapping_slot(BALANCES),
+                &U256::from(u64::MAX),
+            );
+
+            let mut env = TempoEvmEnv {
+                spec,
+                ..Default::default()
+            };
+            env.version = gas_params::version(evm2::SpecId::from(spec), spec, false);
+            gas_params::apply_zone(&mut env.version, spec);
+            env.version
+                .features
+                .remove(evm2::EvmFeatures::BALANCE_CHECK);
+            env.block.gas_limit = U256::from(30_000_000);
+
+            let parent = SealedHeader::<TempoHeader>::default();
+            let block = SealedBlock::default();
+            let evm = BlockExecutorFactory::evm_with_env(&config, db, env.clone());
+            let ctx = config.context_for_block(&block).unwrap();
+            let mut builder = config.create_block_builder(evm, env, &parent, ctx);
+            builder.execute_transaction(advance_tempo.clone()).unwrap();
+            for &fail in attempts {
+                reader.fail.store(fail, Ordering::SeqCst);
+                let result = super::execute_pool_transaction(&mut builder, pool_tx.clone(), |_| {});
+                match result {
+                    Err(BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
+                        ref error,
+                        ..
+                    })) => assert!(fail && super::is_l1_storage_unavailable(error)),
+                    Ok(_) => assert!(!fail),
+                    Err(error) => panic!("unexpected pool execution error: {error}"),
+                }
+            }
+            let receipts = builder.executor().receipts().to_vec();
+            (receipts, builder.into_executor().into_state())
+        };
+
+        let (built_receipts, built_state) = build(&[true, false]);
+        let (replayed_receipts, replayed_state) = build(&[false]);
+        assert_eq!(built_receipts.len(), 2);
+        assert_eq!(built_receipts, replayed_receipts);
+        assert_eq!(built_state, replayed_state);
     }
 
     /// Verify calldata for an internal withdrawal bounce-back followed by an
