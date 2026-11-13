@@ -1010,6 +1010,7 @@ mod tests {
             tt_signature::PrimitiveSignature,
         },
     };
+    use test_case::test_case;
 
     /// Arbitrary validity window (in seconds) used for expiring-nonce transactions in tests.
     const TEST_VALIDITY_WINDOW: u64 = 25;
@@ -2285,65 +2286,47 @@ mod tests {
         }
     }
 
+    #[test_case(TxBuilder::aa(Address::random()).max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1)).max_priority_fee(0).build())]
+    #[test_case(TxBuilder::eip1559(Address::random()).max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1)).max_priority_fee(0).build_eip1559())]
     #[tokio::test]
-    async fn test_fee_cap_below_floor_rejected() {
+    async fn test_fee_cap_below_floor_rejected(transaction: TempoPooledTransaction) {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        for transaction in [
-            TxBuilder::aa(Address::random())
-                .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1))
-                .max_priority_fee(0)
-                .build(),
-            TxBuilder::eip1559(Address::random())
-                .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1))
-                .max_priority_fee(0)
-                .build_eip1559(),
-        ] {
-            let validator = setup_validator(&transaction, current_time);
-            let outcome = validator
-                .validate_transaction(TransactionOrigin::External, transaction)
-                .await;
-            assert!(
-                matches!(
-                    outcome,
-                    TransactionValidationOutcome::Invalid(_, ref err)
-                        if matches!(err.downcast_other_ref::<TempoPoolTransactionError>(),
-                            Some(TempoPoolTransactionError::Evm(
-                                HandlerError::FeeCapLessThanBaseFee { .. }
-                            )))
-                ),
-                "expected floor rejection, got {outcome:?}"
-            );
-        }
+        let validator = setup_validator(&transaction, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert!(
+            matches!(
+                outcome,
+                TransactionValidationOutcome::Invalid(_, ref err)
+                    if matches!(err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::Evm(
+                            HandlerError::FeeCapLessThanBaseFee { .. }
+                        )))
+            ),
+            "expected floor rejection, got {outcome:?}"
+        );
     }
 
+    #[test_case(TxBuilder::aa(Address::random()).max_fee(0).max_priority_fee(0).build())]
+    #[test_case(TxBuilder::eip1559(Address::random()).max_fee(0).max_priority_fee(0).build_eip1559())]
     #[tokio::test]
-    async fn test_zero_fee_cap_with_custom_floor() {
+    async fn test_zero_fee_cap_with_custom_floor(transaction: TempoPooledTransaction) {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        for transaction in [
-            TxBuilder::aa(Address::random())
-                .max_fee(0)
-                .max_priority_fee(0)
-                .build(),
-            TxBuilder::eip1559(Address::random())
-                .max_fee(0)
-                .max_priority_fee(0)
-                .build_eip1559(),
-        ] {
-            let validator = setup_validator(&transaction, current_time).with_minimum_fee_cap(0);
-            let outcome = validator
-                .validate_transaction(TransactionOrigin::External, transaction)
-                .await;
-            assert!(
-                outcome.is_valid(),
-                "zero fee cap should be admitted with a zero floor: {outcome:?}"
-            );
-        }
+        let validator = setup_validator(&transaction, current_time).with_minimum_fee_cap(0);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert!(
+            outcome.is_valid(),
+            "zero fee cap should be admitted with a zero floor: {outcome:?}"
+        );
     }
 
     #[tokio::test]
@@ -3399,58 +3382,41 @@ mod tests {
         }
     }
 
-    #[test]
-    fn registered_handler_errors_keep_pool_classification() {
-        for (error, fatal) in [
-            (HandlerError::Fatal("injected fatal error".into()), true),
-            (
-                HandlerError::Database(DatabaseError::new(
-                    std::io::Error::other("injected database failure"),
-                    true,
-                )),
-                true,
-            ),
-            (
-                HandlerError::Database(DatabaseError::new(
-                    std::io::Error::other("injected input failure"),
-                    false,
-                )),
-                false,
-            ),
-            (
-                HandlerError::external(TempoInvalidTransaction::CallsValidation("custom policy")),
-                false,
-            ),
-        ] {
-            let tx = TxBuilder::eip1559(Address::repeat_byte(0x55)).build_eip1559();
-            let validator = setup_validator(&tx, 10);
-            let mut evm = build_tempo_evm(
-                TempoHardfork::T10,
-                MODERATO.chain_id(),
-                TempoBlockEnv::default(),
-                InMemoryDB::default(),
-                NoPrecompiles::default(),
-                TempoEvmExt::default(),
-            );
-            let expected = error.clone();
-            let mut registry = TxRegistry::new();
-            registry.register(2, |tx: &TempoTxEnv| Some(tx), handler(
-                move |request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| -> HandlerResult<()> {
-                    request.host.ext_mut().resolved_fee_token = Some(tempo_evm::ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
-                    request.host.ext_mut().key_expiry = Some(123);
-                    Err(error.clone())
-                },
-                |_, ()| -> HandlerResult<TxResult<TempoEvmTypes>> { panic!("pool validation must not execute calls") },
-            ));
-            evm.set_execution_config(
-                tempo_evm::tempo_execution_config(TempoHardfork::T10, MODERATO.chain_id()),
-                TempoHardfork::T10,
-                registry,
-                NoPrecompiles::default(),
-            );
-            let result = validator.validate_one_with_evm(TransactionOrigin::External, tx, &mut evm);
-            match result {
-                TransactionValidationOutcome::Error(_, error) if fatal => match expected {
+    #[test_case(HandlerError::Fatal("injected fatal error".into()) => true)]
+    #[test_case(HandlerError::Database(DatabaseError::new(std::io::Error::other("injected database failure"), true)) => true)]
+    #[test_case(HandlerError::Database(DatabaseError::new(std::io::Error::other("injected input failure"), false)) => false)]
+    #[test_case(HandlerError::external(TempoInvalidTransaction::CallsValidation("custom policy")) => false)]
+    fn registered_handler_errors_keep_pool_classification(error: HandlerError) -> bool {
+        let tx = TxBuilder::eip1559(Address::repeat_byte(0x55)).build_eip1559();
+        let validator = setup_validator(&tx, 10);
+        let mut evm = build_tempo_evm(
+            TempoHardfork::T10,
+            MODERATO.chain_id(),
+            TempoBlockEnv::default(),
+            InMemoryDB::default(),
+            NoPrecompiles::default(),
+            TempoEvmExt::default(),
+        );
+        let expected = error.clone();
+        let mut registry = TxRegistry::new();
+        registry.register(2, |tx: &TempoTxEnv| Some(tx), handler(
+            move |request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| -> HandlerResult<()> {
+                request.host.ext_mut().resolved_fee_token = Some(tempo_evm::ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
+                request.host.ext_mut().key_expiry = Some(123);
+                Err(error.clone())
+            },
+            |_, ()| -> HandlerResult<TxResult<TempoEvmTypes>> { panic!("pool validation must not execute calls") },
+        ));
+        evm.set_execution_config(
+            tempo_evm::tempo_execution_config(TempoHardfork::T10, MODERATO.chain_id()),
+            TempoHardfork::T10,
+            registry,
+            NoPrecompiles::default(),
+        );
+        let result = validator.validate_one_with_evm(TransactionOrigin::External, tx, &mut evm);
+        let fatal = match result {
+            TransactionValidationOutcome::Error(_, error) => {
+                match expected {
                     HandlerError::Fatal(expected) => {
                         assert_eq!(error.downcast_ref::<evm2::AnyError>(), Some(&expected));
                     }
@@ -3458,19 +3424,22 @@ mod tests {
                         assert_eq!(error.downcast_ref::<DatabaseError>(), Some(&expected));
                     }
                     _ => unreachable!("only fatal errors are classified as pool errors"),
-                },
-                TransactionValidationOutcome::Invalid(_, error) if !fatal => {
-                    let Some(TempoPoolTransactionError::Evm(error)) =
-                        error.downcast_other_ref::<TempoPoolTransactionError>()
-                    else {
-                        panic!("unexpected rejection: {error:?}");
-                    };
-                    assert_eq!(error, &expected);
                 }
-                result => panic!("unexpected classification: {result:?}"),
+                true
             }
-            assert_eq!(evm.ext().resolved_fee_token, None);
-            assert_eq!(evm.ext().key_expiry, None);
-        }
+            TransactionValidationOutcome::Invalid(_, error) => {
+                let Some(TempoPoolTransactionError::Evm(error)) =
+                    error.downcast_other_ref::<TempoPoolTransactionError>()
+                else {
+                    panic!("unexpected rejection: {error:?}");
+                };
+                assert_eq!(error, &expected);
+                false
+            }
+            result => panic!("unexpected classification: {result:?}"),
+        };
+        assert_eq!(evm.ext().resolved_fee_token, None);
+        assert_eq!(evm.ext().key_expiry, None);
+        fatal
     }
 }

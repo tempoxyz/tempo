@@ -1029,6 +1029,7 @@ mod tests {
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, bytes};
     use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
     use arbitrary::{Arbitrary, Unstructured};
+    use test_case::{test_case, test_matrix};
 
     fn create_call(to: TxKind) -> Call {
         Call::new(to, Bytes::new())
@@ -1130,39 +1131,29 @@ mod tests {
         NonZeroU64::new(value).expect("test timestamp must be non-zero")
     }
 
-    #[test]
-    fn arbitrary_timestamp_boundaries() {
-        // With default preceding fields, bytes 97 and 98 select valid_after and
-        // valid_before respectively. End just after Some's tag to exercise the
-        // exhausted-input case that aborted the envelope proptest.
-        for field_offset in [97, 98] {
-            for value in [
-                None,
-                Some(0u64),
-                Some(1),
-                Some(u64::MAX - 1),
-                Some(u64::MAX),
-            ] {
-                let mut input = vec![0; field_offset];
-                input.push(1);
-                if let Some(value) = value {
-                    input.extend_from_slice(&value.to_le_bytes());
-                }
-                let tx = TempoTransaction::arbitrary(&mut Unstructured::new(&input)).unwrap();
-                let expected = value.and_then(NonZeroU64::new);
-                if field_offset == 97 {
-                    assert_eq!(tx.valid_after, expected);
-                } else {
-                    assert_eq!(tx.valid_before, expected);
-                }
-                tx.validate().unwrap();
-
-                let encoded = alloy_rlp::encode(&tx);
-                let mut remaining = encoded.as_slice();
-                assert_eq!(TempoTransaction::decode(&mut remaining).unwrap(), tx);
-                assert!(remaining.is_empty());
-            }
+    // With default preceding fields, bytes 97 and 98 select valid_after and
+    // valid_before respectively. End just after Some's tag to exercise the
+    // exhausted-input case that aborted the envelope proptest.
+    #[test_matrix([97, 98], [None, Some(0), Some(1), Some(u64::MAX - 1), Some(u64::MAX)])]
+    fn arbitrary_timestamp_boundaries(field_offset: usize, value: Option<u64>) {
+        let mut input = vec![0; field_offset];
+        input.push(1);
+        if let Some(value) = value {
+            input.extend_from_slice(&value.to_le_bytes());
         }
+        let tx = TempoTransaction::arbitrary(&mut Unstructured::new(&input)).unwrap();
+        let expected = value.and_then(NonZeroU64::new);
+        if field_offset == 97 {
+            assert_eq!(tx.valid_after, expected);
+        } else {
+            assert_eq!(tx.valid_before, expected);
+        }
+        tx.validate().unwrap();
+
+        let encoded = alloy_rlp::encode(&tx);
+        let mut remaining = encoded.as_slice();
+        assert_eq!(TempoTransaction::decode(&mut remaining).unwrap(), tx);
+        assert!(remaining.is_empty());
     }
 
     fn rlp_item_end(encoded: &[u8], start: usize) -> usize {
@@ -1243,37 +1234,29 @@ mod tests {
         assert!(tx5.validate().is_err());
     }
 
-    #[test]
-    fn test_is_valid_at() {
-        for (after, before, timestamp, expected) in [
-            (0, 0, 0, true),
-            (0, 0, u64::MAX, true),
-            (50, 0, 49, false),
-            (50, 0, 50, true),
-            (50, 0, u64::MAX, true),
-            (0, 100, 0, true),
-            (0, 100, 99, true),
-            (0, 100, 100, false),
-            (50, 100, 49, false),
-            (50, 100, 50, true),
-            (50, 100, 99, true),
-            (50, 100, 100, false),
-            (50, 50, 50, false),
-            (100, 50, 75, false),
-            (u64::MAX, 0, u64::MAX, true),
-            (0, u64::MAX, u64::MAX, false),
-        ] {
-            let tx = TempoTransaction {
-                valid_after: NonZeroU64::new(after),
-                valid_before: NonZeroU64::new(before),
-                ..Default::default()
-            };
-            assert_eq!(
-                tx.is_valid_at(timestamp),
-                expected,
-                "after={after}, before={before}, timestamp={timestamp}"
-            );
-        }
+    #[test_case(0, 0, 0 => true)]
+    #[test_case(0, 0, u64::MAX => true)]
+    #[test_case(50, 0, 49 => false)]
+    #[test_case(50, 0, 50 => true)]
+    #[test_case(50, 0, u64::MAX => true)]
+    #[test_case(0, 100, 0 => true)]
+    #[test_case(0, 100, 99 => true)]
+    #[test_case(0, 100, 100 => false)]
+    #[test_case(50, 100, 49 => false)]
+    #[test_case(50, 100, 50 => true)]
+    #[test_case(50, 100, 99 => true)]
+    #[test_case(50, 100, 100 => false)]
+    #[test_case(50, 50, 50 => false)]
+    #[test_case(100, 50, 75 => false)]
+    #[test_case(u64::MAX, 0, u64::MAX => true)]
+    #[test_case(0, u64::MAX, u64::MAX => false)]
+    fn test_is_valid_at(after: u64, before: u64, timestamp: u64) -> bool {
+        let tx = TempoTransaction {
+            valid_after: NonZeroU64::new(after),
+            valid_before: NonZeroU64::new(before),
+            ..Default::default()
+        };
+        tx.is_valid_at(timestamp)
     }
 
     #[test]
@@ -2360,6 +2343,7 @@ mod compact_tests {
     use alloy_eips::{eip2930::AccessListItem, eip7702::Authorization};
     use alloy_primitives::{Signature, U256, address, bytes, hex};
     use reth_codecs::Compact;
+    use test_case::test_case;
 
     /// Ensures backwards compatibility of compact bitflags.
     ///
@@ -2466,25 +2450,17 @@ mod compact_tests {
         assert_eq!(decoded, tx);
     }
 
-    #[test]
-    fn signature_type_compact_roundtrip() {
-        for (variant, expected_byte) in [
-            (SignatureType::Secp256k1, 0x00u8),
-            (SignatureType::P256, 0x01),
-            (SignatureType::WebAuthn, 0x02),
-            (SignatureType::ConfigurableAccount, 0x03),
-        ] {
-            let mut buf = vec![];
-            let len = variant.to_compact(&mut buf);
-            assert_eq!(
-                buf,
-                [expected_byte],
-                "SignatureType::{variant:?} compact encoding changed"
-            );
-            assert_eq!(len, 1);
+    #[test_case(SignatureType::Secp256k1, 0x00)]
+    #[test_case(SignatureType::P256, 0x01)]
+    #[test_case(SignatureType::WebAuthn, 0x02)]
+    #[test_case(SignatureType::ConfigurableAccount, 0x03)]
+    fn signature_type_compact_roundtrip(variant: SignatureType, expected_byte: u8) {
+        let mut buf = vec![];
+        let len = variant.to_compact(&mut buf);
+        assert_eq!(buf, [expected_byte]);
+        assert_eq!(len, 1);
 
-            let (decoded, _) = SignatureType::from_compact(&[expected_byte], 1);
-            assert_eq!(decoded, variant);
-        }
+        let (decoded, _) = SignatureType::from_compact(&[expected_byte], 1);
+        assert_eq!(decoded, variant);
     }
 }

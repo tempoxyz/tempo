@@ -9,6 +9,7 @@ use tempo_precompiles::{
     test_util::TIP20Setup,
     zone_factory::portal::{self, ZonePortalStorage},
 };
+use test_case::test_case;
 
 use crate::{
     test_utils::{PrecompileResult, PrecompileStatus, WITHDRAWAL_TX_HASH, ZoneEnv, ZoneSpec},
@@ -110,28 +111,23 @@ fn role_binding_order_matches_solidity_role_enum() {
     );
 }
 
-#[test]
-fn pending_withdrawal_getters_require_sequencer_or_system() -> eyre::Result<()> {
+#[test_case(ZoneOutboxAbi::pendingWithdrawalsCountCall {}.abi_encode())]
+#[test_case(ZoneOutboxAbi::getPendingWithdrawalsCall {}.abi_encode())]
+fn pending_withdrawal_getters_require_sequencer_or_system(calldata: Vec<u8>) -> eyre::Result<()> {
     let mut env = spec().apply()?;
+    assert_revert(
+        env.call(ALICE, ZONE_OUTBOX_ADDRESS, &calldata),
+        ZoneOutboxError::only_sequencer(),
+    );
 
-    for calldata in [
-        ZoneOutboxAbi::pendingWithdrawalsCountCall {}.abi_encode(),
-        ZoneOutboxAbi::getPendingWithdrawalsCall {}.abi_encode(),
-    ] {
-        assert_revert(
-            env.call(ALICE, ZONE_OUTBOX_ADDRESS, &calldata),
-            ZoneOutboxError::only_sequencer(),
-        );
-
-        assert!(
-            env.call(SEQUENCER, ZONE_OUTBOX_ADDRESS, &calldata)?
-                .is_success()
-        );
-        assert!(
-            env.call(Address::ZERO, ZONE_OUTBOX_ADDRESS, calldata)?
-                .is_success()
-        );
-    }
+    assert!(
+        env.call(SEQUENCER, ZONE_OUTBOX_ADDRESS, &calldata)?
+            .is_success()
+    );
+    assert!(
+        env.call(Address::ZERO, ZONE_OUTBOX_ADDRESS, calldata)?
+            .is_success()
+    );
 
     Ok(())
 }
@@ -194,29 +190,27 @@ fn request_withdrawal_rejects_unknown_token_before_portal_read() -> eyre::Result
     Ok(())
 }
 
-#[test]
-fn request_withdrawal_rejects_disabled_token_and_active_pause_before_state_mutation()
--> eyre::Result<()> {
-    for (paused, error) in [
-        (false, ZonePortalError::token_not_enabled()),
-        (true, ZonePortalError::portal_is_paused()),
-    ] {
-        let mut env = spec().apply()?;
-        env.ctx.block.timestamp = U256::from(100);
-        env.write_portal(ANCHOR, |portal| {
-            if paused {
-                portal.pause_expiry.write(200)
-            } else {
-                portal.token_configs[PATH_USD_ADDRESS].enabled.write(false)
-            }
-        });
-        let balance_before = env.balance(PATH_USD_ADDRESS, ALICE);
+#[test_case(false, ZonePortalError::token_not_enabled())]
+#[test_case(true, ZonePortalError::portal_is_paused())]
+fn request_withdrawal_rejects_disabled_token_and_active_pause_before_state_mutation(
+    paused: bool,
+    error: ZonePortalError,
+) -> eyre::Result<()> {
+    let mut env = spec().apply()?;
+    env.ctx.block.timestamp = U256::from(100);
+    env.write_portal(ANCHOR, |portal| {
+        if paused {
+            portal.pause_expiry.write(200)
+        } else {
+            portal.token_configs[PATH_USD_ADDRESS].enabled.write(false)
+        }
+    });
+    let balance_before = env.balance(PATH_USD_ADDRESS, ALICE);
 
-        assert_revert(env.request_withdrawal(ALICE, withdrawal(1, BOB, 0)), error);
-        assert_eq!(env.balance(PATH_USD_ADDRESS, ALICE), balance_before);
-        assert!(env.pending_withdrawals().is_empty());
-        assert_eq!(last_fallback_nonce(&mut env)?, 0);
-    }
+    assert_revert(env.request_withdrawal(ALICE, withdrawal(1, BOB, 0)), error);
+    assert_eq!(env.balance(PATH_USD_ADDRESS, ALICE), balance_before);
+    assert!(env.pending_withdrawals().is_empty());
+    assert_eq!(last_fallback_nonce(&mut env)?, 0);
     Ok(())
 }
 

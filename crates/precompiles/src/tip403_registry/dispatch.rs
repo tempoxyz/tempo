@@ -93,6 +93,7 @@ mod tests {
         ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
     };
     use tempo_primitives::test_utils::actors;
+    use test_case::test_case;
 
     /// Dispatches `call` from `sender`, unwrapping the success and its decoded return value.
     fn dispatch_call<C: SolCall>(
@@ -335,23 +336,19 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_special_policy_ids() -> eyre::Result<()> {
+    // Policy 0 always denies, policy 1 always allows
+    #[test_case(0 => false)]
+    #[test_case(1 => true)]
+    fn test_special_policy_ids(policy_id: u64) -> bool {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-
-            // Policy 0 always denies, policy 1 always allows
-            for (policy_id, expected) in [(0, false), (1, true)] {
-                let call = ITIP403Registry::isAuthorizedCall {
-                    policyId: policy_id,
-                    user,
-                };
-                assert_eq!(dispatch_call(&mut registry, Address::ZERO, call), expected);
-            }
-
-            Ok(())
+            let call = ITIP403Registry::isAuthorizedCall {
+                policyId: policy_id,
+                user,
+            };
+            dispatch_call(&mut registry, Address::ZERO, call)
         })
     }
 

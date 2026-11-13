@@ -1053,6 +1053,7 @@ mod tests {
         PATH_USD_ADDRESS, SYSTEM_PRECOMPILES, TIP403_REGISTRY_ADDRESS,
     };
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag, test_utils::actors};
+    use test_case::test_case;
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
@@ -1208,35 +1209,33 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_policy_data_builtin_policies_boundary() -> eyre::Result<()> {
-        for (hardfork, expect_allow_all_type) in [
-            // Pre-T2: reads uninitialized storage → both builtins decode as WHITELIST
-            (TempoHardfork::T1C, ITIP403Registry::PolicyType::WHITELIST),
-            // T2: virtual builtins return correct types
-            (TempoHardfork::T2, ITIP403Registry::PolicyType::BLACKLIST),
-        ] {
-            with_storage(hardfork, || {
-                let registry = TIP403Registry::new();
+    // Pre-T2: reads uninitialized storage → both builtins decode as WHITELIST
+    #[test_case(TempoHardfork::T1C, ITIP403Registry::PolicyType::WHITELIST)]
+    // T2: virtual builtins return correct types
+    #[test_case(TempoHardfork::T2, ITIP403Registry::PolicyType::BLACKLIST)]
+    fn test_policy_data_builtin_policies_boundary(
+        hardfork: TempoHardfork,
+        expect_allow_all_type: ITIP403Registry::PolicyType,
+    ) -> Result<()> {
+        with_storage(hardfork, || {
+            let registry = TIP403Registry::new();
 
-                // reject-all → WHITELIST on every fork (coincides with default storage)
-                let reject = registry.policy_data(ITIP403Registry::policyDataCall {
-                    policyId: REJECT_ALL_POLICY_ID,
-                })?;
-                assert_eq!(reject.policyType, ITIP403Registry::PolicyType::WHITELIST);
-                assert_eq!(reject.admin, Address::ZERO);
-
-                // allow-all → WHITELIST pre-T2 (wrong), BLACKLIST from T2 (correct)
-                let allow = registry.policy_data(ITIP403Registry::policyDataCall {
-                    policyId: ALLOW_ALL_POLICY_ID,
-                })?;
-                assert_eq!(allow.policyType, expect_allow_all_type);
-                assert_eq!(allow.admin, Address::ZERO);
-
-                Ok::<_, TempoPrecompileError>(())
+            // reject-all → WHITELIST on every fork (coincides with default storage)
+            let reject = registry.policy_data(ITIP403Registry::policyDataCall {
+                policyId: REJECT_ALL_POLICY_ID,
             })?;
-        }
-        Ok(())
+            assert_eq!(reject.policyType, ITIP403Registry::PolicyType::WHITELIST);
+            assert_eq!(reject.admin, Address::ZERO);
+
+            // allow-all → WHITELIST pre-T2 (wrong), BLACKLIST from T2 (correct)
+            let allow = registry.policy_data(ITIP403Registry::policyDataCall {
+                policyId: ALLOW_ALL_POLICY_ID,
+            })?;
+            assert_eq!(allow.policyType, expect_allow_all_type);
+            assert_eq!(allow.admin, Address::ZERO);
+
+            Ok::<_, TempoPrecompileError>(())
+        })
     }
 
     #[test]

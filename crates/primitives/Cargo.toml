@@ -60,6 +60,7 @@ sha2.workspace = true
 arbitrary.workspace = true
 reth-codecs.workspace = true
 proptest.workspace = true
+test-case.workspace = true
 proptest-arbitrary-interop.workspace = true
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
 alloy-primitives = { workspace = true, features = [

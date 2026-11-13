@@ -52,6 +52,7 @@ mod tests {
     use crate::test_utils::{test_context, test_storage_provider};
     use aes_gcm::aead::{Aead, Payload};
     use tempo_precompiles::storage::PrecompileStorageProvider;
+    use test_case::test_case;
 
     fn encrypt(plaintext: &[u8], aad: &[u8]) -> ([u8; 32], [u8; 12], Vec<u8>, [u8; 16]) {
         let key = [0x42u8; 32];
@@ -75,38 +76,34 @@ mod tests {
         (key, nonce_bytes, encrypted, tag)
     }
 
-    #[test]
-    fn test_aes_gcm_decrypt_charges_gas() {
-        let zone_aad = b"zone-inbox-v1".as_slice();
-        let large_aad = [0xA5; 128];
-        // (case, plaintext, encryption AAD, decryption AAD, expected valid)
-        type Case<'a> = (&'a str, &'a [u8], &'a [u8], &'a [u8], bool);
-        let cases: [Case<'_>; 6] = [
-            ("roundtrip without aad", b"hello world test", &[], &[], true),
-            ("empty plaintext", b"", &[], &[], true),
-            ("with aad", b"hello world test", zone_aad, zone_aad, true),
-            ("aad bytes charged", b"", &large_aad, &large_aad, true),
-            ("wrong aad", b"secret data", b"correct", b"wrong", false),
-            ("missing aad", b"secret data", zone_aad, &[], false),
-        ];
-        for (case, plaintext, encrypt_aad, decrypt_aad, expected_valid) in cases {
-            let (key, nonce, ciphertext, tag) = encrypt(plaintext, encrypt_aad);
-            let expected_gas = AES_GCM_BASE_GAS
-                + AES_GCM_PER_BYTE_GAS * (ciphertext.len() + decrypt_aad.len()) as u64;
-            let expected_plaintext: &[u8] = if expected_valid { plaintext } else { &[] };
+    #[test_case(b"hello world test", &[], &[] => true)]
+    #[test_case(b"", &[], &[] => true)]
+    #[test_case(b"hello world test", b"zone-inbox-v1", b"zone-inbox-v1" => true)]
+    // AAD bytes are charged.
+    #[test_case(b"", &[0xA5; 128], &[0xA5; 128] => true)]
+    #[test_case(b"secret data", b"correct", b"wrong" => false)]
+    #[test_case(b"secret data", b"zone-inbox-v1", &[] => false)]
+    fn test_aes_gcm_decrypt_charges_gas(
+        plaintext: &[u8],
+        encrypt_aad: &[u8],
+        decrypt_aad: &[u8],
+    ) -> bool {
+        let (key, nonce, ciphertext, tag) = encrypt(plaintext, encrypt_aad);
+        let expected_gas =
+            AES_GCM_BASE_GAS + AES_GCM_PER_BYTE_GAS * (ciphertext.len() + decrypt_aad.len()) as u64;
 
-            let mut ctx = test_context();
-            let mut storage = test_storage_provider(&mut ctx, u64::MAX, true);
-            let gas_before = storage.gas_used();
-            let (decrypted, valid) = StorageCtx::enter(&mut storage, || {
-                charge_gas(ciphertext.len(), decrypt_aad.len()).expect("charge native gas");
-                decrypt(&key, &nonce, &ciphertext, decrypt_aad, &tag)
-            });
+        let mut ctx = test_context();
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, true);
+        let gas_before = storage.gas_used();
+        let (decrypted, valid) = StorageCtx::enter(&mut storage, || {
+            charge_gas(ciphertext.len(), decrypt_aad.len()).expect("charge native gas");
+            decrypt(&key, &nonce, &ciphertext, decrypt_aad, &tag)
+        });
 
-            assert_eq!(valid, expected_valid, "{case}");
-            assert_eq!(decrypted, expected_plaintext, "{case}");
-            assert_eq!(storage.gas_used() - gas_before, expected_gas, "{case}");
-        }
+        let expected_plaintext: &[u8] = if valid { plaintext } else { &[] };
+        assert_eq!(decrypted, expected_plaintext);
+        assert_eq!(storage.gas_used() - gas_before, expected_gas);
+        valid
     }
 
     #[test]
