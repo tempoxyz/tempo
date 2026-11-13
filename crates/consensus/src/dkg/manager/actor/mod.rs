@@ -74,16 +74,21 @@ pub(crate) enum Message {
     Ack(PlayerAck<PublicKey>),
 }
 
+impl Message {
+    const DEALER_TAG: u8 = 0;
+    const ACK_TAG: u8 = 1;
+}
+
 impl Write for Message {
     fn write(&self, writer: &mut impl BufMut) {
         match self {
             Self::Dealer(pub_msg, priv_msg) => {
-                0u8.write(writer);
+                Self::DEALER_TAG.write(writer);
                 pub_msg.write(writer);
                 priv_msg.write(writer);
             }
             Self::Ack(ack) => {
-                1u8.write(writer);
+                Self::ACK_TAG.write(writer);
                 ack.write(writer);
             }
         }
@@ -108,12 +113,12 @@ impl Read for Message {
     ) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(reader)?;
         match tag {
-            0 => {
+            Self::DEALER_TAG => {
                 let pub_msg = DealerPubMsg::read_cfg(reader, cfg)?;
                 let priv_msg = DealerPrivMsg::read(reader)?;
                 Ok(Self::Dealer(pub_msg, priv_msg))
             }
-            1 => {
+            Self::ACK_TAG => {
                 let ack = PlayerAck::read(reader)?;
                 Ok(Self::Ack(ack))
             }
@@ -1002,6 +1007,27 @@ where
     where
         TStorageContext: commonware_runtime::Metrics + Clock + Storage,
     {
+        // Reading a dealing decompresses BLS points, so check the sender first.
+        match message.as_ref().first().copied() {
+            Some(Message::DEALER_TAG) if round.dealers().position(&from).is_none() => {
+                commonware_p2p::block!(
+                    self.config.blocker,
+                    from.clone(),
+                    "DKG dealing from a non-dealer"
+                );
+                bail!("received a dealing from a non-dealer");
+            }
+            Some(Message::ACK_TAG) if round.players().position(&from).is_none() => {
+                commonware_p2p::block!(
+                    self.config.blocker,
+                    from.clone(),
+                    "DKG ACK from a non-player"
+                );
+                bail!("received an ACK from a non-player");
+            }
+            _ => {}
+        }
+
         let msg = Message::decode_cfg(message, &NZU32!(round.players().len() as u32))
             .inspect_err(|error| {
                 commonware_p2p::block!(self.config.blocker, from.clone(), %error, "failed decoding DKG message");
