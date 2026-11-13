@@ -1776,7 +1776,7 @@ pub(crate) mod tests {
         AccountKeychainError, AccountKeychainEvent, IAccountKeychain, IReceivePolicyGuard,
         ReceivePolicyGuardEvent, UnknownFunctionSelector,
     };
-    use tempo_primitives::test_utils::{actors, amounts};
+    use tempo_primitives::test_utils::{actors, amounts, signers};
 
     #[test]
     fn test_mint_authorizes_zone_credits_as_recipients_from_t13() -> eyre::Result<()> {
@@ -4329,10 +4329,11 @@ pub(crate) mod tests {
         impl PermitFixture {
             fn new() -> Self {
                 let [admin, spender] = actors();
+                let [signer] = signers();
                 Self {
                     storage: setup_t2_storage(),
                     admin,
-                    signer: PrivateKeySigner::random(),
+                    signer,
                     spender,
                 }
             }

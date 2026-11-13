@@ -14812,6 +14812,7 @@ dependencies = [
  "derive_more",
  "evm2",
  "eyre",
+ "futures",
  "itertools 0.14.0",
  "keccak-const",
  "minicbor",
