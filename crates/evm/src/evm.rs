@@ -262,7 +262,10 @@ mod runtime_tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
-        test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
+        test_util::{
+            KeychainSetup, TIP20Setup, set_empty_compound_transfer_policy,
+            set_empty_receive_policies,
+        },
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
             amm::{Pool, PoolKey, compute_amount_out},
@@ -1684,26 +1687,17 @@ mod runtime_tests {
                         .with_role(MULTICALL3_ADDRESS, BURN_AT_ROLE)
                         .with_mint(holder, U256::from(balance))
                         .apply()?;
-                    let mut keychain = AccountKeychain::initialized()?;
-                    keychain.set_tx_origin(holder)?;
-                    keychain.authorize_key(
-                        holder,
-                        key.address(),
-                        IAccountKeychain::SignatureType::Secp256k1,
-                        IAccountKeychain::KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: true,
-                            limits: vec![IAccountKeychain::TokenLimit {
-                                token: token.address(),
-                                amount: U256::from(100),
-                                period: 0,
-                            }],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                        None,
-                    )?;
-                    keychain.set_transaction_key(key.address())?;
+                    KeychainSetup::new(holder)
+                        .key(
+                            key.address(),
+                            IAccountKeychain::KeyRestrictions::unrestricted().limit(
+                                token.address(),
+                                U256::from(100),
+                                0,
+                            ),
+                        )
+                        .acting_as(key.address())
+                        .apply()?;
                     Ok(token.address())
                 })?;
             evm.state_mut().commit_transaction();

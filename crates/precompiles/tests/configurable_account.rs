@@ -611,13 +611,7 @@ fn committed_parent_requires_protocol_marker_to_authorize_keys(committed: bool, 
             parent,
             key,
             SignatureType::Secp256k1,
-            KeyRestrictions {
-                expiry: u64::MAX,
-                enforceLimits: false,
-                limits: vec![],
-                allowAnyCalls: true,
-                allowedCalls: vec![],
-            },
+            KeyRestrictions::unrestricted(),
             None,
         );
         let expected = if committed && !code.is_empty() && code != CONFIGURABLE_ACCOUNT_CODE {
