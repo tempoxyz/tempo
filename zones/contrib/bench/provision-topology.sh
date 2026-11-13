@@ -588,7 +588,7 @@ provision_up() {
     local run_key="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
     local neobank_preset="${ZONES_BENCH_NEOBANK_PRESET:-full-journey}"
     case "$neobank_preset" in
-        encrypted-deposit|private-withdrawal|full-journey|full-journey-pathusd-fees|slippage-bounce|swapped-lifecycle|swapped-redemption) ;;
+        cold-accounts|encrypted-deposit|private-withdrawal|full-journey|full-journey-pathusd-fees|slippage-bounce|swapped-lifecycle|swapped-redemption) ;;
         *) die "unsupported neobank preset for provisioning: $neobank_preset" ;;
     esac
 
@@ -708,7 +708,7 @@ provision_up() {
         || die "ZONES_BENCH_WITHDRAWAL_MAX_BATCH_GAS cannot exceed ZONES_BENCH_L1_GENERAL_GAS_LIMIT"
     local planned_singleton_withdrawal_gas=0
     case "$neobank_preset" in
-        encrypted-deposit) ;;
+        encrypted-deposit|cold-accounts) ;;
         # The untimed Earn warmup always uses the 10M protocol maximum.
         *) planned_singleton_withdrawal_gas=$((500000 + 1750000 + 10000000)) ;;
     esac

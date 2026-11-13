@@ -17,21 +17,12 @@ pub(crate) struct StatelessSparseTrie {
 }
 
 impl StatelessSparseTrie {
-    /// Construct and validate a sparse trie from a flat witness node pool.
+    /// Construct and validate a sparse trie rooted at `state_root` from witness
+    /// nodes indexed by [`index_witness_nodes`].
     pub(crate) fn new(
         state_root: B256,
-        node_pool: &[Bytes],
+        nodes: &B256Map<Bytes>,
     ) -> Result<Self, StatelessSparseTrieError> {
-        // This is the flat-witness indexing step from `StatelessSparseTrie`.
-        let mut nodes = B256Map::default();
-
-        for node in node_pool {
-            let node_hash = keccak256(node);
-            if nodes.insert(node_hash, node.clone()).is_some() {
-                return Err(StatelessSparseTrieError::DuplicateNodeHash { node_hash });
-            }
-        }
-
         let mut inner = SparseStateTrie::new();
         if state_root == EMPTY_ROOT_HASH {
             inner.set_accounts_trie(RevealableSparseTrie::revealed_empty());
@@ -42,7 +33,7 @@ impl StatelessSparseTrie {
         }
 
         guarded(|| {
-            let multiproof = DecodedMultiProofV2::from_witness(state_root, &nodes)
+            let multiproof = DecodedMultiProofV2::from_witness(state_root, nodes)
                 .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?;
             inner
                 .reveal_decoded_multiproof_v2(multiproof)
@@ -241,6 +232,21 @@ fn decode_storage_value(
 
 fn decode_hashed_account(value: &[u8]) -> Result<TrieAccount, StatelessSparseTrieError> {
     alloy_rlp::decode_exact(value).map_err(|_| StatelessSparseTrieError::InvalidSparseTrie)
+}
+
+/// Index a flat witness node pool by node hash, rejecting duplicate nodes.
+pub(crate) fn index_witness_nodes(
+    node_pool: &[Bytes],
+) -> Result<B256Map<Bytes>, StatelessSparseTrieError> {
+    // This is the flat-witness indexing step from `StatelessSparseTrie`.
+    let mut nodes = B256Map::default();
+    for node in node_pool {
+        let node_hash = keccak256(node);
+        if nodes.insert(node_hash, node.clone()).is_some() {
+            return Err(StatelessSparseTrieError::DuplicateNodeHash { node_hash });
+        }
+    }
+    Ok(nodes)
 }
 
 /// The pinned Reth helper assumes internally consistent paths in a few places.

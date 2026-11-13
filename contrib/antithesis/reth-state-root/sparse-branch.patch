@@ -53,7 +53,7 @@
 +    }
 +    let (depth, has_parent, target, state, revealed, leaf) =
 +        if let Some((parent_idx, depth)) = parent {
-+            let branch = arena[parent_idx].branch_ref();
++            let branch = branch_data(arena, parent_idx);
 +            let mut revealed = TrieMask::default();
 +            let mut leaf = TrieMask::default();
 +            for (nibble, child) in branch.child_iter() {
@@ -83,9 +83,9 @@
 +    unsafe { antithesis_sparse_proof_target(depth, has_parent, target, state, revealed, leaf) };
 +}
 
- /// Compacts an arena by BFS-copying all reachable nodes into a fresh arena, dropping
- /// unreachable (pruned) slots. Parents are stored before children for cache-friendly top-down
-@@ -360,6 +434,11 @@
+ /// Returns the branch data for a branch or extension node.
+ fn branch_data(arena: &NodeArena, idx: Index) -> &ArenaSparseNodeBranch {
+@@ -419,6 +493,11 @@
              // If the path hits a blinded node, request a proof regardless of update type.
              if matches!(find_result, SeekResult::Blinded) {
                  let logical_len = self.buffers.cursor.head_logical_branch_path_len(&self.arena);
@@ -97,13 +97,13 @@
                  self.required_proofs.push((
                      idx,
                      ArenaRequiredProof { key, parent: ProofV2TargetParent::new(logical_len) },
-@@ -1110,6 +1189,31 @@
+@@ -1186,6 +1265,31 @@
              rlp_buf.clear();
              let rlp_node = BranchNodeRef::new(rlp_node_buf, state_mask).rlp(rlp_buf);
 
 +            {
 +                // Observe live arena handles, not model keys or persistence hash/tree masks.
-+                let branch = arena[head_idx].branch_ref();
++                let branch = branch_data(arena, head_idx);
 +                let mut revealed_mask = TrieMask::default();
 +                let mut leaf_mask = TrieMask::default();
 +                for (nibble, child) in branch.child_iter() {
@@ -129,7 +129,7 @@
              let rlp_node = if short_key.is_empty() {
                  rlp_node
              } else {
-@@ -1569,6 +1673,11 @@
+@@ -1669,6 +1773,11 @@
                          let mut sibling_path = cursor.parent_logical_branch_path(arena);
                          sibling_path.push_unchecked(sibling_nibble);
                          trace!(target: TRACE_TARGET, ?full_path, ?sibling_path, "Removal would collapse branch onto blinded sibling, requesting proof");
@@ -141,7 +141,7 @@
                          return (
                              RemoveLeafResult::NeedsProof {
                                  key,
-@@ -1696,6 +1805,11 @@
+@@ -1796,6 +1905,11 @@
          let mut sibling_path = cursor.parent_logical_branch_path(arena);
          sibling_path.push_unchecked(sibling_nibble);
 
@@ -153,7 +153,7 @@
          Some(ArenaRequiredProof {
              key: Self::nibbles_to_padded_b256(&sibling_path),
              parent: ProofV2TargetParent::new(
-@@ -2627,6 +2741,11 @@
+@@ -2808,6 +2922,11 @@
                      let logical_len = cursor.head_logical_branch_path_len(&self.upper_arena);
                      let parent = ProofV2TargetParent::new(logical_len);
                      trace!(target: TRACE_TARGET, ?key, ?parent, "Update hit blinded node, requesting proof");

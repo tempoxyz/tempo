@@ -128,16 +128,62 @@ class PinnedSparseTrieTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), self.module.PATCHED)
 
     def test_only_observation_additions_and_encoding_hook_unchanged(self):
-        # Removing the new observer and its four calls exactly recovers the old patch's digest.
+        # Removing the proof observer and its four calls preserves the encoding-only hook.
         old = self.patched
         start = old.index("/// Observes a proof target")
-        end = old.index("/// Compacts an arena", start)
+        end = old.index("/// Returns the branch data", start)
         old = old[:start] + old[end:]
         old, count = re.subn(
             r"(?m)^ +antithesis_observe_proof_target\(\n.*?^ +\);\n", "", old, flags=re.S
         )
         self.assertEqual(count, 4)
         self.assertEqual(hashlib.sha256(old.encode()).hexdigest(), self.module.LEGACY_PATCHED)
+
+    def test_observation_only_patch_preserves_all_upstream_behaviour(self):
+        stripped = self.patched[self.patched.index("mod branch_child_idx;"):]
+        start = stripped.index("/// Observes a proof target")
+        end = stripped.index("/// Returns the branch data", start)
+        stripped = stripped[:start] + stripped[end:]
+        stripped, count = re.subn(
+            r"(?m)^ +antithesis_observe_proof_target\(\n.*?^ +\);\n", "", stripped, flags=re.S
+        )
+        self.assertEqual(count, 4)
+        start = stripped.index("            {\n                // Observe live arena handles")
+        end = stripped.index("            let rlp_node = if short_key.is_empty()", start)
+        stripped = stripped[:start] + stripped[end:]
+        self.assertEqual(stripped.encode(), self.pristine)
+        # The new upstream removal path requests only the blinded sibling's proof.
+        self.assertIn("if let RemoveLeafResult::NeedsProof { proof_key, parent, .. } = result", stripped)
+        self.assertNotIn("self.required_proofs.push((idx, ArenaRequiredProof { key, parent }));", stripped)
+
+    def test_parent_and_encoding_observers_resolve_explicit_extensions(self):
+        start = self.patched.index("fn antithesis_observe_proof_target(")
+        end = self.patched.index("/// Returns the branch data", start)
+        self.assertIn("let branch = branch_data(arena, parent_idx);", self.patched[start:end])
+        start = self.patched.index("// Observe live arena handles")
+        end = self.patched.index("sometimes_each!", start)
+        self.assertIn("let branch = branch_data(arena, head_idx);", self.patched[start:end])
+        self.assertIn("cursor.head_logical_branch_path_len(arena)", self.patched[start:end])
+
+    def test_reject_embedded_leaf_revert_without_changing_checkout(self):
+        # A reverted duplicate proof request cannot pass the new pristine-source guard.
+        source = self.pristine.replace(
+            b"if let RemoveLeafResult::NeedsProof { proof_key, parent, .. } = result",
+            b"if let RemoveLeafResult::NeedsProof { key, proof_key, parent } = result",
+        ).replace(
+            b".push((idx, ArenaRequiredProof { key: proof_key, parent }));",
+            b".push((idx, ArenaRequiredProof { key: proof_key, parent }));\n"
+            b"                        self.required_proofs.push((idx, ArenaRequiredProof { key, parent }));",
+        )
+        self.assertNotEqual(source, self.pristine)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "checkouts/reth/pinned" / self.module.SOURCE
+            target.parent.mkdir(parents=True)
+            target.write_bytes(source)
+            with patch.object(self.module.subprocess, "check_output", return_value=self.module.REVISION + "\n"):
+                with self.assertRaisesRegex(RuntimeError, "does not match pinned SHA256"):
+                    self.module.apply(Path(directory) / "checkouts")
+            self.assertEqual(target.read_bytes(), source)
 
     def test_all_four_proof_origins_use_local_parent(self):
         subtrie_start = self.patched.index("    fn update_leaves(&mut self, sorted_updates:")
@@ -168,7 +214,7 @@ class PinnedSparseTrieTests(unittest.TestCase):
     def test_actual_legacy_cache_upgrade(self):
         old = self.patched
         start = old.index("/// Observes a proof target")
-        end = old.index("/// Compacts an arena", start)
+        end = old.index("/// Returns the branch data", start)
         old = old[:start] + old[end:]
         old = re.sub(r"(?m)^ +antithesis_observe_proof_target\(\n.*?^ +\);\n", "", old, flags=re.S)
         with tempfile.TemporaryDirectory() as directory:
@@ -184,8 +230,12 @@ class PinnedSparseTrieTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "rustc is needed for the executable ABI/mask contract")
     def test_rust_observer_contract(self):
         start = self.patched.index("fn antithesis_observe_proof_target(")
-        end = self.patched.index("/// Compacts an arena", start)
+        end = self.patched.index("/// Returns the branch data", start)
         helper = self.patched[start:end]
+        # Compile the real upstream extension-aware parent accessor as well.
+        start = self.patched.index("fn branch_data(")
+        end = self.patched.index("/// Returns the mutable branch data", start)
+        helper += self.patched[start:end]
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "observer.rs"
             binary = Path(directory) / "observer-tests"
@@ -210,16 +260,26 @@ struct Nibbles(Vec<u8>);
 impl Nibbles { fn get_unchecked(&self, index: usize) -> u8 { self.0[index] } }
 struct BranchChild(Option<Index>);
 impl BranchChild { fn revealed_index(&self) -> Option<Index> { self.0 } }
-struct Branch { state_mask: TrieMask, children: Vec<(u8, BranchChild)> }
-impl Branch {
+struct ArenaSparseNodeBranch { state_mask: TrieMask, children: Vec<(u8, BranchChild)> }
+impl ArenaSparseNodeBranch {
     fn child_iter(&self) -> impl Iterator<Item = (u8, &BranchChild)> {
         self.children.iter().map(|(n, c)| (*n, c))
     }
 }
 struct Subtrie { arena: NodeArena, root: Index }
-enum ArenaSparseNode { Branch(Branch), Leaf {}, Subtrie(Subtrie), EmptyRoot, TakenSubtrie }
+enum ArenaSparseNode {
+    Branch(ArenaSparseNodeBranch), Extension { child: Index }, Leaf {},
+    Subtrie(Subtrie), EmptyRoot, TakenSubtrie,
+}
+fn branch_idx(arena: &NodeArena, idx: Index) -> Option<Index> {
+    match &arena[idx] {
+        ArenaSparseNode::Branch(_) => Some(idx),
+        ArenaSparseNode::Extension { child, .. } => Some(*child),
+        _ => None,
+    }
+}
 impl ArenaSparseNode {
-    fn branch_ref(&self) -> &Branch {
+    fn branch_ref(&self) -> &ArenaSparseNodeBranch {
         match self { Self::Branch(branch) => branch, _ => panic!("not a branch") }
     }
 }
@@ -240,27 +300,40 @@ fn actual_helper_masks_depth_target_and_no_parent_abi() {
         ArenaSparseNode::EmptyRoot,
         ArenaSparseNode::Leaf {},
         wrap(wrap(ArenaSparseNode::Leaf {})),
-        wrap(ArenaSparseNode::Branch(Branch { state_mask: TrieMask(3), children: vec![] })),
+        wrap(ArenaSparseNode::Branch(ArenaSparseNodeBranch { state_mask: TrieMask(3), children: vec![] })),
         ArenaSparseNode::TakenSubtrie,
+        ArenaSparseNode::Branch(ArenaSparseNodeBranch { state_mask: TrieMask(3), children: vec![] }),
+        ArenaSparseNode::Extension { child: 5 },
+        ArenaSparseNode::Subtrie(Subtrie {
+            arena: vec![
+                ArenaSparseNode::Extension { child: 1 },
+                ArenaSparseNode::Branch(ArenaSparseNodeBranch { state_mask: TrieMask(3), children: vec![] }),
+            ],
+            root: 0,
+        }),
     ];
     let mut state = TrieMask::default();
     let children = (0..16).map(|n| {
         state.set_bit(n);
-        let handle = match n { 2 => Some(1), 4 => Some(2), 7 => Some(3), 9 => Some(0), 12 => Some(4), _ => None };
+        let handle = match n { 2 => Some(1), 4 => Some(2), 6 => Some(6), 7 => Some(3), 8 => Some(7), 9 => Some(0), 12 => Some(4), _ => None };
         (n, BranchChild(handle))
     }).collect();
-    arena.push(ArenaSparseNode::Branch(Branch { state_mask: state, children }));
+    arena.push(ArenaSparseNode::Branch(ArenaSparseNodeBranch { state_mask: state, children }));
     let path = Nibbles(vec![3, 2, 1, 0, 15, 8, 6, 5]);
-    // Absolute logical branch depth includes a compressed short key; target is path[depth].
-    antithesis_observe_proof_target(&arena, Some((5, 7)), &path);
+    // Absolute logical branch depth includes an extension key; target is path[depth].
+    antithesis_observe_proof_target(&arena, Some((8, 7)), &path);
     // A revealed root branch is a real parent, not a blinded/no-parent root.
-    antithesis_observe_proof_target(&arena, Some((5, 0)), &path);
-    let revealed = (1 << 2) | (1 << 4) | (1 << 7) | (1 << 9) | (1 << 12);
+    antithesis_observe_proof_target(&arena, Some((8, 0)), &path);
+    // A cursor entry can name an extension, but the shape belongs to its backing branch.
+    arena.push(ArenaSparseNode::Extension { child: 8 });
+    antithesis_observe_proof_target(&arena, Some((9, 7)), &path);
+    let revealed = (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12);
     let leaves = (1 << 2) | (1 << 4);
     assert_eq!(*EVENTS.lock().unwrap(), vec![
         (0, false, 0, 0, 0, 0),
         (7, true, 5, u16::MAX, revealed, leaves),
         (0, true, 3, u16::MAX, revealed, leaves),
+        (7, true, 5, u16::MAX, revealed, leaves),
     ]);
 }
 '''

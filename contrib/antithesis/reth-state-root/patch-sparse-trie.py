@@ -7,12 +7,12 @@ import subprocess
 import sys
 import tempfile
 
-REVISION = "5d0dd5f6a88feb3c30a021f8f9c1b115e31d762b"
+REVISION = "4f58052785aed2f716faa2126ed57c3790cc0233"
 SOURCE = Path("crates/trie/sparse/src/arena/mod.rs")
-PRISTINE = "74bb12dde3684e8aab826bc31e0a13a2f2774431f45ee3b8a03f76e1e8e16656"
-PATCHED = "baaa3b1589cda8ae334d926c49fa09d77232ec6abb8719cb5a7766840f38876e"
-# Docker/Cargo caches may contain the original encoding-only observation hook.
-LEGACY_PATCHED = "6a40b91b8c587a394983f3f0fcf84a8638b50d2033083754afe66c124ca1dd60"
+PRISTINE = "dfa6c2118863f6517f5bcc8783cb16e0a7f24a2269742108dd6fd6950fe48c0d"
+PATCHED = "81c81398234421f726e8e672230d58fb71fe1b2fb7d062b293c93d580f1c9a2d"
+# Docker/Cargo caches may contain the encoding-only observation hook at this revision.
+LEGACY_PATCHED = "9a86698317c2997b338f6e00b6c414b130615a299176a5ea78e7ac4cd3b617e4"
 
 
 def apply(checkouts):
