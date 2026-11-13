@@ -9,7 +9,8 @@ use std::{iter, str::FromStr};
 /// Addresses checked against every address a transaction names.
 ///
 /// These are the recovered sender, the fee payer, every direct call target, the delegate and
-/// recovered authority of every EIP-7702 or Tempo authorization, and every access list entry.
+/// recovered authority of every EIP-7702 or Tempo authorization, every access list entry, and
+/// every configured owner of a configurable account signing the transaction or its key grant.
 /// Keychain-signed Tempo authorizations are skipped by execution from T0, so only their
 /// delegate is checked.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -43,8 +44,10 @@ impl AddressFilter {
     /// Checks the addresses the transaction names without signature recovery.
     ///
     /// These are the recovered sender, every direct call target, every EIP-7702 or Tempo
-    /// authorization delegate, and every access list entry. Fee payer and authorization
-    /// authorities need signature recovery and are checked by [`Self::check_recovered`].
+    /// authorization delegate, every access list entry, and every configured owner of a
+    /// configurable account signing directly, as a keychain access key or as an inline key grant.
+    /// Fee payer and authorization authorities need signature recovery and are checked by
+    /// [`Self::check_recovered`].
     pub fn check(
         &self,
         transaction: &TempoPooledTransaction,
@@ -69,13 +72,21 @@ impl AddressFilter {
             .access_list()
             .into_iter()
             .flat_map(|list| list.iter().map(|item| item.address));
+        // Validation rejects an approval whose signer is not a configured owner, so this covers
+        // every approving owner without recovering a signature.
+        let configurable_owners = inner
+            .as_aa()
+            .into_iter()
+            .flat_map(|aa| aa.configurable_account_signatures())
+            .flat_map(|signature| signature.config().owners.iter().map(|owner| owner.owner));
 
         self.find_match(
             iter::once(*transaction.sender_ref())
                 .chain(call_targets)
                 .chain(eip7702_delegates)
                 .chain(tempo_delegates)
-                .chain(access_list),
+                .chain(access_list)
+                .chain(configurable_owners),
         )
     }
 
@@ -164,14 +175,18 @@ mod tests {
         eip2930::{AccessList, AccessListItem},
         eip7702::Authorization,
     };
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
     use tempo_primitives::{
         TempoTxEnvelope,
-        transaction::{TempoSignedAuthorization, tempo_transaction::Call},
+        transaction::{
+            ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+            KeyAuthorization, KeychainSignature, PrimitiveSignature, SignatureType, TempoSignature,
+            TempoSignedAuthorization, TempoTransaction, tempo_transaction::Call,
+        },
     };
 
     fn authorization(delegate: Address) -> Authorization {
@@ -180,6 +195,35 @@ mod tests {
             nonce: 0,
             address: delegate,
         }
+    }
+
+    /// A one-owner configurable account signature. The pool filter reads only its config, so
+    /// the approval need not verify.
+    fn configurable_signature(owner: Address) -> ConfigurableAccountSignature {
+        let config = ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner { owner, weight: 1 }],
+        };
+        let account = config.derive_account().expect("config should be valid");
+        ConfigurableAccountSignature::try_new(
+            account,
+            config,
+            vec![PrimitiveSignature::Secp256k1(Signature::test_signature())],
+        )
+        .expect("signature should be well formed")
+    }
+
+    fn pooled_aa(
+        tx: TempoTransaction,
+        signature: TempoSignature,
+        sender: Address,
+    ) -> TempoPooledTransaction {
+        TempoPooledTransaction::new(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(tx.into_signed(signature)),
+            sender,
+        ))
     }
 
     fn assert_address_check(result: Result<(), TempoPoolTransactionError>, expected: Address) {
@@ -221,16 +265,8 @@ mod tests {
         let later_target = Address::with_last_byte(5);
         let transaction = TxBuilder::aa(sender)
             .calls(vec![
-                Call {
-                    to: TxKind::Call(first_target),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
-                Call {
-                    to: TxKind::Call(later_target),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
+                Call::new(first_target, Bytes::new()),
+                Call::new(later_target, Bytes::new()),
             ])
             .build();
         let filter = AddressFilter::new([later_target]);
@@ -276,6 +312,58 @@ mod tests {
             filter.check_recovered(&transaction, &[Address::with_last_byte(15), authority]),
             authority,
         );
+    }
+
+    #[test]
+    fn checks_configurable_account_owners() {
+        let owner = Address::with_last_byte(22);
+        let TempoTxEnvelope::AA(signed) = TxBuilder::aa(Address::with_last_byte(23))
+            .build()
+            .inner()
+            .clone()
+            .into_inner()
+        else {
+            panic!("expected AA transaction");
+        };
+        let tx = signed.tx().clone();
+
+        let direct = configurable_signature(owner);
+        let direct_sender = direct.account();
+        let direct = pooled_aa(
+            tx.clone(),
+            TempoSignature::ConfigurableAccount(direct),
+            direct_sender,
+        );
+
+        let user = Address::with_last_byte(24);
+        let keychain = pooled_aa(
+            tx.clone(),
+            TempoSignature::Keychain(KeychainSignature::new(user, configurable_signature(owner))),
+            user,
+        );
+
+        let mut granting_tx = tx;
+        granting_tx.key_authorization = Some(
+            KeyAuthorization::unrestricted(
+                1,
+                SignatureType::Secp256k1,
+                Address::with_last_byte(25),
+            )
+            .into_signed(configurable_signature(owner)),
+        );
+        let granting = pooled_aa(
+            granting_tx,
+            Signature::test_signature().into(),
+            Address::with_last_byte(26),
+        );
+
+        let filter = AddressFilter::new([owner]);
+        let unrelated = AddressFilter::new([Address::with_last_byte(27)]);
+        for transaction in [direct, keychain, granting] {
+            assert_address_check(filter.check(&transaction), owner);
+            assert!(filter.check_recovered(&transaction, &[]).is_ok());
+            assert!(unrelated.check(&transaction).is_ok());
+        }
     }
 
     #[test]
@@ -327,16 +415,8 @@ mod tests {
     fn ignores_unlisted_addresses_and_create_calls() {
         let transaction = TxBuilder::aa(Address::with_last_byte(6))
             .calls(vec![
-                Call {
-                    to: TxKind::Create,
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
-                Call {
-                    to: TxKind::Call(Address::with_last_byte(7)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
+                Call::new(TxKind::Create, Bytes::new()),
+                Call::new(Address::with_last_byte(7), Bytes::new()),
             ])
             .build();
         let filter = AddressFilter::new([Address::with_last_byte(8)]);

@@ -3,9 +3,9 @@ use reth_node_core::args::{
     DefaultRpcServerArgs, DefaultTraceValues, DefaultTxPoolValues, GasPriceOracleArgs,
 };
 
-/// Match Tempo's per-account pool capacity so independent expiring-nonce
-/// transactions from one Zone account are not constrained by Reth's default.
-const MAX_ACCOUNT_SLOTS: usize = 150_000;
+/// Pooled transactions per account, as on Tempo. The same value caps the 2D nonce pool per
+/// authority.
+const MAX_ACCOUNT_SLOTS: usize = 64;
 
 pub(crate) fn init_defaults() {
     DefaultTxPoolValues::default()

@@ -4,6 +4,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
 };
 use reth_e2e_test_utils::wallet::test_signer;
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX};
 
@@ -38,9 +39,7 @@ async fn test_createx() -> eyre::Result<()> {
         .deployCreate(init_code)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(5_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Verify deployed contract has the expected runtime code

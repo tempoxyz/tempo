@@ -14,7 +14,7 @@ use crate::utils::{
 };
 
 // Imports for real-L1 tests
-use crate::utils::{L1TestNode, ZoneAccount, ZoneTestNode, spawn_sequencer};
+use crate::utils::{L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode, spawn_sequencer};
 use alloy::primitives::B256;
 use alloy_provider::Provider;
 use tempo_alloy::rpc::TempoCallBuilderExt;
@@ -191,10 +191,6 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
 
     Ok(())
 }
-
-/// Longer timeout for real L1 tests — the L1 dev node produces blocks every
-/// 250ms and the L1Subscriber needs to connect, backfill, and subscribe.
-const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Full TokenEnabled pipeline with a real in-process L1 node:
 ///
