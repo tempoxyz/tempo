@@ -534,6 +534,9 @@ impl RevalidationQueue {
 
     /// Drops queued transactions that a block included, which would only fail revalidation.
     fn remove_mined<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
+        if self.txs.is_empty() {
+            return;
+        }
         for hash in hashes {
             self.txs.remove(hash);
         }
