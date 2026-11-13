@@ -1299,174 +1299,89 @@ mod tests {
     }
 
     #[test]
-    fn test_t1c_reserve_pool_liquidity() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, uint!(10000000_U256))])?;
-
-            let mut amm = TipFeeManager::new();
-            let pool_id = setup_pool_with_liquidity(
-                &mut amm,
-                user_token,
-                validator_token,
-                uint!(100000_U256),
-            )?;
-
-            let amount_out: u128 = compute_amount_out(uint!(10000_U256))?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
-
-            assert_eq!(
-                amm.pending_fee_swap_reservation[pool_id].t_read()?,
-                amount_out
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t1c_burn_respects_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+    fn test_burn_respects_reservation_from_t1c() -> eyre::Result<()> {
         let [admin, recipient] = actors();
 
-        StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, uint!(100000000_U256))])?;
+        for spec in [TempoHardfork::T1B, TempoHardfork::T1C] {
+            with_storage(spec, || {
+                let (user_token, validator_token) =
+                    create_token_pair(admin, &[(admin, uint!(100000000_U256))])?;
 
-            let mut amm = TipFeeManager::new();
-            let liquidity = amm.mint(
-                admin,
-                user_token,
-                validator_token,
-                uint!(100000_U256),
-                admin,
-            )?;
+                let mut amm = TipFeeManager::new();
+                let liquidity = amm.mint(
+                    admin,
+                    user_token,
+                    validator_token,
+                    uint!(100000_U256),
+                    admin,
+                )?;
+                let pool_id = amm.pool_id(user_token, validator_token);
 
-            let pool_id = amm.pool_id(user_token, validator_token);
-            let pool = amm.pools[pool_id].read()?;
+                // A small reservation leaves room for a partial burn
+                let amount_out: u128 = compute_amount_out(uint!(1000_U256))?.try_into().unwrap();
+                amm.reserve_pool_liquidity(pool_id, amount_out)?;
+                assert_eq!(
+                    amm.pending_fee_swap_reservation[pool_id].t_read()?,
+                    amount_out
+                );
+                let small_burn = liquidity / uint!(10_U256);
+                amm.burn(admin, user_token, validator_token, small_burn, recipient)?;
 
-            // Reserve most of the validator token liquidity
-            let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
-            let amount_out: u128 = compute_amount_out(reserve_amount)?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
+                // Reserve most of the validator token liquidity
+                let pool = amm.pools[pool_id].read()?;
+                let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
+                let amount_out: u128 = compute_amount_out(reserve_amount)?.try_into().unwrap();
+                amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
-            let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
-            assert_eq!(result, Err(TIPFeeAMMError::insufficient_liquidity().into()));
+                let result = amm.burn(
+                    admin,
+                    user_token,
+                    validator_token,
+                    liquidity - small_burn,
+                    recipient,
+                );
+                if spec.is_t1c() {
+                    assert_eq!(result, Err(TIPFeeAMMError::insufficient_liquidity().into()));
+                } else {
+                    // Pre-T1C burns ignore the reservation
+                    assert!(result.is_ok(), "{result:?}");
+                }
 
-            Ok(())
-        })
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
-    fn test_t1c_partial_burn_with_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let [admin, recipient] = actors();
-
-        StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, uint!(100000000_U256))])?;
-
-            let mut amm = TipFeeManager::new();
-            let liquidity = amm.mint(
-                admin,
-                user_token,
-                validator_token,
-                uint!(100000_U256),
-                admin,
-            )?;
-
-            let pool_id = amm.pool_id(user_token, validator_token);
-            let amount_out: u128 = compute_amount_out(uint!(1000_U256))?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
-
-            let small_burn = liquidity / uint!(10_U256);
-            assert!(
-                amm.burn(admin, user_token, validator_token, small_burn, recipient)
-                    .is_ok()
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t1c_rebalance_swap_respects_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+    fn test_rebalance_swap_with_reservation() -> eyre::Result<()> {
         let [admin, to] = actors();
 
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = uint!(100000000_U256);
-            let mut amm = TipFeeManager::new();
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, mint_amount), (amm.address, mint_amount)])?;
+        for spec in [TempoHardfork::T1B, TempoHardfork::T1C] {
+            with_storage(spec, || {
+                let mint_amount = uint!(100000000_U256);
+                let mut amm = TipFeeManager::new();
+                let (user_token, validator_token) =
+                    create_token_pair(admin, &[(admin, mint_amount), (amm.address, mint_amount)])?;
 
-            let pool_id = setup_pool_with_liquidity(
-                &mut amm,
-                user_token,
-                validator_token,
-                uint!(100000_U256),
-            )?;
+                let pool_id = setup_pool_with_liquidity(
+                    &mut amm,
+                    user_token,
+                    validator_token,
+                    uint!(100000_U256),
+                )?;
 
-            let amount_out: u128 = compute_amount_out(uint!(50000_U256))?.try_into().unwrap();
-            amm.reserve_pool_liquidity(pool_id, amount_out)?;
+                let amount_out: u128 = compute_amount_out(uint!(50000_U256))?.try_into().unwrap();
+                amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
-            amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
-            let pool = amm.pools[pool_id].read()?;
-            let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
-            assert!(pool.reserve_validator_token >= reserved);
+                amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
+                let pool = amm.pools[pool_id].read()?;
+                let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
+                assert!(pool.reserve_validator_token >= reserved, "{spec:?}");
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1c_rebalance_swap_skips_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
-        let [admin, to] = actors();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = uint!(100000000_U256);
-            let mut amm = TipFeeManager::new();
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, mint_amount), (amm.address, mint_amount)])?;
-
-            setup_pool_with_liquidity(&mut amm, user_token, validator_token, uint!(100000_U256))?;
-            assert!(
-                amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)
-                    .is_ok()
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1c_no_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
-        let [admin, recipient] = actors();
-
-        StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, uint!(100000000_U256))])?;
-
-            let mut amm = TipFeeManager::new();
-            let liquidity = amm.mint(
-                admin,
-                user_token,
-                validator_token,
-                uint!(100000_U256),
-                admin,
-            )?;
-
-            assert!(
-                amm.burn(admin, user_token, validator_token, liquidity, recipient)
-                    .is_ok()
-            );
-
-            Ok(())
-        })
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
     }
 }

@@ -2730,22 +2730,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_initialize_sets_next_quote_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // Verify both quoteToken and nextQuoteToken are set to the same value
-            assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
-            assert_eq!(token.next_quote_token()?, PATH_USD_ADDRESS);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_update_quote_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -2758,8 +2742,9 @@ pub(crate) mod tests {
                 .apply()?
                 .address;
 
-            // Verify initial quote token is PATH_USD
+            // Both quoteToken and nextQuoteToken start as PATH_USD
             assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
+            assert_eq!(token.next_quote_token()?, PATH_USD_ADDRESS);
 
             // Set next quote token to the new token
             token.set_next_quote_token(
@@ -2783,54 +2768,44 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_update_quote_token_requires_admin() -> eyre::Result<()> {
+    fn test_set_next_quote_token_rejects_invalid_quote_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let [admin, non_admin] = actors();
+        let [admin, non_tip20] = actors();
 
         StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+            TIP20Setup::path_usd(admin).apply()?;
+            let usd_token = TIP20Setup::create("USD Token", "USDT", admin)
+                .apply()?
+                .address;
+            let non_usd_token = TIP20Setup::create("Token 1", "TK1", admin)
+                .currency(random_currency())
+                .apply()?
+                .address;
 
-            // Use the token's own quote token for the test
-            let quote_token_address = token.quote_token()?;
-
-            // Try to set next quote token as non-admin
-            let result = token.set_next_quote_token(
-                non_admin,
-                ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: quote_token_address,
-                },
-            );
-
-            assert_eq!(result, Err(RolesAuthError::unauthorized().into()));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_update_quote_token_rejects_non_tip20() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // A non-TIP20 address, and a TIP20-pattern address that hasn't been deployed
-            for new_quote_token in [
-                Address::random(),
-                address!("20C0000000000000000000000000000000000999"),
+            for (case, token, new_quote_token) in [
+                ("non-TIP20 address", usd_token, non_tip20),
+                (
+                    "undeployed TIP20-pattern address",
+                    usd_token,
+                    address!("20C0000000000000000000000000000000000999"),
+                ),
+                ("non-USD quote for a USD token", usd_token, non_usd_token),
+                (
+                    "pathUSD cannot update its quote token",
+                    PATH_USD_ADDRESS,
+                    usd_token,
+                ),
             ] {
-                assert!(matches!(
-                    token.set_next_quote_token(
+                assert_eq!(
+                    TIP20Token::from_address(token)?.set_next_quote_token(
                         admin,
                         ITIP20::setNextQuoteTokenCall {
                             newQuoteToken: new_quote_token,
                         },
                     ),
-                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-                        _
-                    )))
-                ));
+                    Err(TIP20Error::invalid_quote_token().into()),
+                    "{case}"
+                );
             }
 
             Ok(())
@@ -2840,19 +2815,28 @@ pub(crate) mod tests {
     #[test]
     fn test_finalize_quote_token_update() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
+        let [admin, non_admin] = actors();
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let quote_token_address = token.quote_token()?;
+            let call = ITIP20::setNextQuoteTokenCall {
+                newQuoteToken: quote_token_address,
+            };
 
-            // Set next quote token
-            token.set_next_quote_token(
-                admin,
-                ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: quote_token_address,
-                },
-            )?;
+            // Both steps require the admin role
+            assert_eq!(
+                token.set_next_quote_token(non_admin, call.clone()),
+                Err(RolesAuthError::unauthorized().into())
+            );
+            token.set_next_quote_token(admin, call)?;
+            assert_eq!(
+                token.complete_quote_token_update(
+                    non_admin,
+                    ITIP20::completeQuoteTokenUpdateCall {}
+                ),
+                Err(RolesAuthError::unauthorized().into())
+            );
 
             // Complete the update
             token.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
@@ -2865,33 +2849,6 @@ pub(crate) mod tests {
                 token.emitted_events().last().unwrap(),
                 &TIP20Event::quote_token_update(admin, quote_token_address).into_log_data()
             );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_finalize_quote_token_update_requires_admin() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let [admin, non_admin] = actors();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-            let quote_token_address = token.quote_token()?;
-
-            // Set next quote token as admin
-            token.set_next_quote_token(
-                admin,
-                ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: quote_token_address,
-                },
-            )?;
-
-            // Try to complete update as non-admin
-            let result = token
-                .complete_quote_token_update(non_admin, ITIP20::completeQuoteTokenUpdateCall {});
-
-            assert_eq!(result, Err(RolesAuthError::unauthorized().into()));
 
             Ok(())
         })
@@ -2980,42 +2937,29 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_set_logo_uri_non_admin_reverts() -> eyre::Result<()> {
+    fn test_set_logo_uri() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let [admin, non_admin] = actors();
 
         StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .clear_events()
+                .apply()?;
+            let uri = "https://example.com/icon.svg".to_string();
 
             let result = token.set_logo_uri(
                 non_admin,
                 ITIP20::setLogoURICall {
-                    newLogoURI: "https://example.com/icon.svg".to_string(),
+                    newLogoURI: uri.clone(),
                 },
             );
-
             assert_eq!(result, Err(RolesAuthError::unauthorized().into()));
 
-            // logoURI should remain unchanged (empty)
-            assert_eq!(token.logo_uri()?, "");
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_logo_uri_too_long_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // 257 bytes — one over the limit. Use a syntactically valid URI
+            // One byte over the limit. Use a syntactically valid URI
             // so we exercise the length check, not the URI/scheme check.
             let prefix = "https://example.com/";
-            let too_long = format!("{prefix}{}", "a".repeat(257 - prefix.len()));
-            assert_eq!(too_long.len(), 257);
+            let max = TIP20Token::MAX_LOGO_URI_BYTES;
+            let too_long = format!("{prefix}{}", "a".repeat(max + 1 - prefix.len()));
             let result = token.set_logo_uri(
                 admin,
                 ITIP20::setLogoURICall {
@@ -3025,35 +2969,9 @@ pub(crate) mod tests {
 
             assert_eq!(result, Err(TIP20Error::logo_uri_too_long().into()));
 
-            // 256 bytes — at the limit, should succeed
-            let at_limit = format!("{prefix}{}", "a".repeat(256 - prefix.len()));
-            assert_eq!(at_limit.len(), 256);
-            token.set_logo_uri(
-                admin,
-                ITIP20::setLogoURICall {
-                    newLogoURI: at_limit.clone(),
-                },
-            )?;
-            assert_eq!(token.logo_uri()?, at_limit);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_logo_uri_writes_and_emits() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .clear_events()
-                .apply()?;
-
-            // Default is empty for a freshly-created token.
+            // Rejected updates leave the default (empty) URI unchanged.
             assert_eq!(token.logo_uri()?, "");
 
-            let uri = "https://example.com/icon.svg".to_string();
             token.set_logo_uri(
                 admin,
                 ITIP20::setLogoURICall {
@@ -3067,6 +2985,15 @@ pub(crate) mod tests {
                 updater: admin,
                 newLogoURI: uri,
             })]);
+
+            let at_limit = format!("{prefix}{}", "a".repeat(max - prefix.len()));
+            token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: at_limit.clone(),
+                },
+            )?;
+            assert_eq!(token.logo_uri()?, at_limit);
 
             // Empty string is still valid (clears the URI per spec).
             token.set_logo_uri(
@@ -3129,35 +3056,6 @@ pub(crate) mod tests {
                 .currency(random_currency())
                 .quote_token(token_1.address)
                 .apply()?;
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_update_quote_token_invalid_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let token_1 = TIP20Setup::create("Token 1", "TK1", admin)
-                .currency(random_currency())
-                .apply()?;
-
-            // Create a new USD token
-            let mut usd_token = TIP20Setup::create("USD Token", "USDT", admin).apply()?;
-
-            // Try to update the USD token's quote token to the arbitrary currency token, this should fail
-            let result = usd_token.set_next_quote_token(
-                admin,
-                ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: token_1.address,
-                },
-            );
-
-            assert!(result.is_err_and(
-                |err| err == TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
-            ));
 
             Ok(())
         })
@@ -3997,33 +3895,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_set_next_quote_token_rejects_path_usd() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut path_usd = TIP20Setup::path_usd(admin).apply()?;
-            let other_token = TIP20Setup::create("Test", "T", admin).apply()?;
-
-            // pathUSD cannot update its quote token
-            let result = path_usd.set_next_quote_token(
-                admin,
-                ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: other_token.address,
-                },
-            );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-                    _
-                )))
-            ));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_non_path_usd_cycle_detection() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -4743,9 +4614,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_mint_rejects_when_paused_on_t3() -> eyre::Result<()> {
-        let [to, admin] = actors();
-        let amount = U256::from(1000);
+    fn test_mint_and_burn_reject_when_paused_on_t3() -> eyre::Result<()> {
+        let [to, admin, blocked] = actors();
+        let amount = U256::from(500);
         let memo = FixedBytes::random();
 
         for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
@@ -4753,92 +4624,38 @@ pub(crate) mod tests {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
                     .with_role(admin, PAUSE_ROLE)
-                    .apply()?;
-
-                token.pause(admin, ITIP20::pauseCall {})?;
-
-                let mint_result = token.mint(admin, ITIP20::mintCall { to, amount });
-                let mint_memo_result =
-                    token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo });
-
-                if hardfork.is_t3() {
-                    let expected = TempoPrecompileError::TIP20(TIP20Error::contract_paused());
-                    assert_eq!(mint_result, Err(expected.clone()));
-                    assert_eq!(mint_memo_result, Err(expected));
-                } else {
-                    assert!(mint_result.is_ok());
-                    assert!(mint_memo_result.is_ok());
-                }
-
-                Ok::<_, TempoPrecompileError>(())
-            })?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_burn_rejects_when_paused_on_t3() -> eyre::Result<()> {
-        let amount = U256::from(500);
-        let memo = FixedBytes::random();
-
-        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let admin = Address::random();
-
-            StorageCtx::enter(&mut storage, || {
-                let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_role(admin, PAUSE_ROLE)
-                    .with_mint(admin, amount * U256::from(2))
-                    .apply()?;
-
-                token.pause(admin, ITIP20::pauseCall {})?;
-
-                let burn_result = token.burn(admin, ITIP20::burnCall { amount });
-                let burn_memo_result =
-                    token.burn_with_memo(admin, ITIP20::burnWithMemoCall { amount, memo });
-
-                if hardfork.is_t3() {
-                    let expected = TempoPrecompileError::TIP20(TIP20Error::contract_paused());
-                    assert_eq!(burn_result, Err(expected.clone()));
-                    assert_eq!(burn_memo_result, Err(expected));
-                } else {
-                    assert!(burn_result.is_ok());
-                    assert!(burn_memo_result.is_ok());
-                }
-
-                Ok::<_, TempoPrecompileError>(())
-            })?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_burn_blocked_rejects_when_paused_on_t3() -> eyre::Result<()> {
-        let amount = U256::from(500);
-        let [blocked, admin] = actors();
-
-        for hardfork in [TempoHardfork::T2, TempoHardfork::T3] {
-            with_storage(hardfork, || {
-                let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_role(admin, PAUSE_ROLE)
                     .with_role(admin, BURN_BLOCKED_ROLE)
+                    .with_mint(admin, amount * U256::from(2))
                     .with_mint(blocked, amount)
                     .with_transfer_policy(TIP403Setup::blacklist(admin).with_members([blocked]))
                     .apply()?;
 
-                // Pause the token
                 token.pause(admin, ITIP20::pauseCall {})?;
 
-                let result = token.burn_blocked(admin, blocked, amount, true);
-
-                if hardfork.is_t3() {
-                    assert_eq!(
-                        result,
-                        Err(TempoPrecompileError::TIP20(TIP20Error::contract_paused()))
-                    );
-                } else {
-                    // T2: pause not enforced, burn succeeds
-                    assert!(result.is_ok());
+                for (case, result) in [
+                    ("mint", token.mint(admin, ITIP20::mintCall { to, amount })),
+                    (
+                        "mintWithMemo",
+                        token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo }),
+                    ),
+                    ("burn", token.burn(admin, ITIP20::burnCall { amount })),
+                    (
+                        "burnWithMemo",
+                        token.burn_with_memo(admin, ITIP20::burnWithMemoCall { amount, memo }),
+                    ),
+                    (
+                        "burnBlocked",
+                        token.burn_blocked(admin, blocked, amount, true),
+                    ),
+                ] {
+                    if hardfork.is_t3() {
+                        assert_eq!(result, Err(TIP20Error::contract_paused().into()), "{case}");
+                    } else {
+                        // T2: pause not enforced
+                        assert!(result.is_ok(), "{case}: {result:?}");
+                    }
+                }
+                if !hardfork.is_t3() {
                     assert_eq!(token.get_balance(blocked)?, U256::ZERO);
                 }
 

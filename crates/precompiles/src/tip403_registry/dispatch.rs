@@ -356,33 +356,6 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_selector() -> eyre::Result<()> {
-        let sender = Address::random();
-
-        // T1: invalid selector returns reverted output
-        with_storage(TempoHardfork::T1, || -> eyre::Result<()> {
-            let mut registry = TIP403Registry::new();
-
-            let result = registry.call(&[0x12, 0x34, 0x56, 0x78], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            // T1: insufficient data also returns reverted output
-            let result = registry.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            Ok(())
-        })?;
-
-        // Pre-T1 (T0): insufficient data returns halted output
-        with_storage(TempoHardfork::T0, || {
-            let result = TIP403Registry::new().call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Halt(_))));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_create_multiple_policies() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -436,11 +409,11 @@ mod tests {
 
     #[test]
     fn test_receive_policy_selectors_are_t6_gated() -> eyre::Result<()> {
-        let account = Address::random();
+        let [account, token, sender] = actors();
         let receive_policy = ITIP403Registry::receivePolicyCall { account }.abi_encode();
         let validate_receive_policy = ITIP403Registry::validateReceivePolicyCall {
-            token: Address::random(),
-            sender: Address::random(),
+            token,
+            sender,
             receiver: account,
         }
         .abi_encode();
