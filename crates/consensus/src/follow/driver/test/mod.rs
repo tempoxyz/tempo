@@ -1765,3 +1765,55 @@ fn startup_rejects_a_boundary_outcome_past_the_epoch_after_the_tip() {
         );
     });
 }
+
+#[test_traced]
+fn startup_rejects_a_marshal_boundary_past_the_epoch_after_the_tip() {
+    deterministic::Runner::timed(Duration::from_secs(10)).start(|mut context| async move {
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let trusted = dkg_fixture(&mut context, Epoch::new(5));
+        let attacker = dkg_fixture(&mut context, Epoch::new(1));
+        let skipped = dkg_fixture(&mut context, Epoch::new(7));
+        // The tip sits in epoch 3 by height but claims epoch 0, below the trusted
+        // identity's epoch, so startup does not verify it.
+        let tip_height = Height::new(3 * EPOCH_LENGTH.get() + 1);
+        let execution_boundary = strategy.last(Epoch::zero()).unwrap();
+        let consensus_boundary = strategy.last(Epoch::new(2)).unwrap();
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(tip_height.get());
+        provider.add_header(&make_block(
+            execution_boundary.get(),
+            Some(&attacker.outcome),
+        ));
+        let marshal = StubMarshal::default();
+        marshal.add_block(make_block(consensus_boundary.get(), Some(&skipped.outcome)));
+        let schemes = SchemeProvider::new();
+        let (actor, _mailbox) = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: schemes.clone(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 5,
+                    identity: *trusted.outcome.network_identity(),
+                },
+                last_finalized_height: tip_height,
+                finalized_tip: Some((
+                    tip_height,
+                    make_finalization(
+                        &make_block(tip_height.get(), None),
+                        Epoch::zero(),
+                        &attacker.schemes,
+                    ),
+                )),
+                partition_prefix: "test".into(),
+                marshal,
+                epoch_strategy: strategy,
+            },
+        )
+        .await
+        .unwrap();
+
+        actor.start().await.unwrap();
+        assert!(schemes.scoped(Epoch::new(7)).is_none());
+    });
+}

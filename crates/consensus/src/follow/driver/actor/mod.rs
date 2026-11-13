@@ -1,4 +1,5 @@
 use alloy_consensus::BlockHeader as _;
+use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Epochable as _, Heightable as _, marshal,
     simplex::types::Activity,
@@ -7,7 +8,7 @@ use commonware_consensus::{
 use commonware_cryptography::Digested;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -226,11 +227,33 @@ where
                 return Ok(());
             };
 
+            let extra_data = boundary_block.inner().header().extra_data();
+            let claimed_epoch =
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                    .wrap_err_with(|| {
+                        format!(
+                            "the boundary block at height `{last_consensus_boundary}` \
+                            contained no or a malformed DKG outcome"
+                        )
+                    })?
+                    .epoch();
+            ensure!(
+                claimed_epoch == previous.next(),
+                "the boundary block at height `{last_consensus_boundary}` contains an outcome for \
+                 epoch `{claimed_epoch}`, expected the next epoch `{}`",
+                previous.next(),
+            );
+            crate::startup::ensure_outcome_within_tip_epoch(
+                claimed_epoch,
+                self.config.finalized_tip.as_ref().map(|(_, tip)| tip),
+            )
+            .wrap_err_with(|| {
+                format!("the boundary block at height `{last_consensus_boundary}`")
+            })?;
+
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(
-                    boundary_block.inner().header().extra_data().as_ref(),
-                )
+                .decode_dkg_outcome_and_register_boundary(extra_data.as_ref())
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
