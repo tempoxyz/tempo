@@ -198,9 +198,12 @@ pub fn spawn_settlement_prover<P: ZoneSequencerProvider>(
             let result = validate_candidate(&context, &job, &proofs, &metrics)
                 .instrument(span)
                 .await;
-            metrics
-                .validation_duration_seconds
-                .record(started.elapsed().as_secs_f64());
+            let validation_duration_seconds = if result.is_ok() {
+                &metrics.validation_duration_seconds_success
+            } else {
+                &metrics.validation_duration_seconds_failure
+            };
+            validation_duration_seconds.record(started.elapsed().as_secs_f64());
             let response = match result {
                 Ok((stats, proof)) => {
                     metrics.validation_success_total.increment(1);
@@ -557,9 +560,12 @@ async fn verify_remotely(
     };
     let started = Instant::now();
     let stream = remote.connect().await;
-    metrics
-        .spf_remote_connect_duration_seconds
-        .record(started.elapsed().as_secs_f64());
+    let connect_duration_seconds = if stream.is_ok() {
+        &metrics.spf_remote_connect_duration_seconds_success
+    } else {
+        &metrics.spf_remote_connect_duration_seconds_failure
+    };
+    connect_duration_seconds.record(started.elapsed().as_secs_f64());
     let stream = stream.wrap_err_with(|| format!("connect to remote prover at {address}"))?;
 
     let first_read_at = Arc::new(OnceLock::new());
