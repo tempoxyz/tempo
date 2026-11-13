@@ -4,6 +4,7 @@ use tempo_precompiles::{
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tip20::slots as tip20_slots,
 };
+use tempo_primitives::TempoEvmKind;
 
 #[test_case::test_case(TempoHardfork::T1, false, 0)]
 #[test_case::test_case(TempoHardfork::T7, false, 0)]
@@ -521,6 +522,79 @@ impl DynDatabase for FailingStorageDb {
 
 fn injected_database_error(fatal: bool) -> DatabaseError {
     DatabaseError::new(std::io::Error::other("injected database failure"), fatal)
+}
+
+/// Serves the sender as absent and fails every other account read.
+struct SenderOnlyDb {
+    error: DatabaseError,
+}
+
+impl DynDatabase for SenderOnlyDb {
+    fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, DatabaseError> {
+        if *address == SIGNER {
+            Ok(None)
+        } else {
+            Err(self.error.clone())
+        }
+    }
+
+    fn get_code_by_hash(&mut self, _hash: &B256) -> Result<Bytecode, DatabaseError> {
+        Ok(Bytecode::default())
+    }
+
+    fn get_storage(&mut self, _address: &Address, _key: &U256) -> Result<U256, DatabaseError> {
+        Ok(U256::ZERO)
+    }
+
+    fn get_block_hash(&mut self, _number: &U256) -> Result<B256, DatabaseError> {
+        Ok(B256::ZERO)
+    }
+}
+
+#[test_case::test_case(TempoEvmKind::L1)]
+#[test_case::test_case(TempoEvmKind::Zone)]
+fn t14_gas_limit_below_intrinsic_rejected_before_fee_payer_load(kind: TempoEvmKind) {
+    let transaction = |gas_limit| TempoTransaction {
+        chain_id: 1,
+        gas_limit,
+        fee_token: Some(PATH_USD_ADDRESS),
+        fee_payer_signature: Some(Signature::test_signature()),
+        calls: vec![Call::new(Address::repeat_byte(0xaa), Bytes::new())],
+        ..Default::default()
+    };
+    let (regular, state, _) =
+        intrinsic(TempoHardfork::T14, transaction(1), secp256k1_signature()).unwrap();
+    let expected = injected_database_error(false);
+    let transact = |gas_limit| {
+        let mut evm = build_tempo_evm(
+            TempoHardfork::T14,
+            1,
+            TempoBlockEnv::default(),
+            SenderOnlyDb {
+                error: expected.clone(),
+            },
+            NoPrecompiles::default(),
+            TempoEvmExt::new(kind, TempoFeeManager::new()),
+        );
+        let env = aa_env(transaction(gas_limit), secp256k1_signature());
+        evm.transact(&Recovered::new_unchecked(env, SIGNER))
+            .map(|_| ())
+    };
+
+    // Rejected without reading the fee payer.
+    assert!(
+        matches!(
+            transact(1),
+            Err(HandlerError::IntrinsicGasTooLow { got: 1, required })
+                if required == regular + state
+        ),
+        "expected intrinsic gas rejection"
+    );
+    // A sufficient gas limit reaches the fee payer read.
+    match transact(1_000_000) {
+        Err(HandlerError::Database(error)) => assert_eq!(error, expected),
+        result => panic!("expected fee payer read failure, got {result:?}"),
+    }
 }
 
 #[test_case::test_case(false, U256::ONE, None)]

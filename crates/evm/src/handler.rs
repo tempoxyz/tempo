@@ -1490,18 +1490,28 @@ fn prepare_aa(
     if spec.is_t14() {
         warm_aa_accounts(request.host, caller, tx);
     }
-    let (configurable_gas, configurable_state_gas) =
-        configurable_account::validate_state(request.host, request.envelope, spec)?;
 
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
+    let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
+    // The state checks below only add gas, but load accounts that each read Tempo L1 on a zone:
+    // reject a gas limit below the gas known without them first.
+    if spec.is_t14() {
+        validate_intrinsic_gas(
+            tx.gas_limit,
+            intrinsic.saturating_add(nonce_gas),
+            initial_state_gas.saturating_add(nonce_state_gas),
+        )?;
+        validate_floor_gas(tx.gas_limit, floor_gas)?;
+    }
+    let (configurable_gas, configurable_state_gas) =
+        configurable_account::validate_state(request.host, request.envelope, spec)?;
     if spec.is_t14() {
         warm_beneficiary(request.host);
     }
     intrinsic = intrinsic.saturating_add(configurable_gas);
     initial_state_gas = initial_state_gas.saturating_add(configurable_state_gas);
-    let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
     // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions

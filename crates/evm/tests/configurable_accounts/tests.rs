@@ -2039,7 +2039,16 @@ fn retired_root_error_order_and_access_gas() {
         rejection(&mut f, &tx, account),
         TempoInvalidTransaction::SelfSponsoredFeePayer
     );
-    // Nonce, intrinsic gas and balance errors come after, with or without a commitment.
+    // A gas limit below the gas known without account state comes before every role check.
+    let mut tx = aa_tx(3, vec![f.getter()]);
+    tx.gas_limit = 1;
+    let signed = f.sign_primitive(tx);
+    let error = handler_rejection(&mut f, &signed, account);
+    assert!(
+        matches!(error, HandlerError::IntrinsicGasTooLow { got: 1, .. }),
+        "{error:?}"
+    );
+    // Nonce and balance errors come after, with or without a commitment.
     let mut fresh = Fixture::with_parent(false);
     let mut fresh_rejection = |label: &str, edit: fn(&mut TempoTransaction)| {
         let mut tx = aa_tx(3, vec![f.getter()]);
@@ -2058,11 +2067,6 @@ fn retired_root_error_order_and_access_gas() {
             expected: 3,
             got: 99
         }
-    );
-    let error = fresh_rejection("intrinsic gas", |tx| tx.gas_limit = 1);
-    assert!(
-        matches!(error, HandlerError::IntrinsicGasTooLow { got: 1, .. }),
-        "{error:?}"
     );
     let error = fresh_rejection("balance", |tx| {
         tx.max_fee_per_gas = 1_000_000_000_000;
