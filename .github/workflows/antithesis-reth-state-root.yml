@@ -49,6 +49,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test pinned sparse dependency patch guards
+        run: python3 -B contrib/antithesis/reth-state-root/test_patch_sparse_trie.py
+
+      - name: Select standalone coverage test toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --no-self-update
+          echo "RUSTUP_TOOLCHAIN=1.96.0" >> "$GITHUB_ENV"
+
+      - name: Test generated sparse coverage and optimized instrumentation
+        run: python3 -B contrib/antithesis/reth-state-root/test_sparse_buckets.py
+
       - name: Resolve tags
         id: tags
         env:
@@ -84,6 +95,49 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.image_tags }}
 
+      - name: Smoke-test runtime coverage from the immutable workload
+        timeout-minutes: 7
+        env:
+          DIGEST: ${{ inputs.workload_digest || steps.image.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          image="$REGISTRY/tempo-reth-state-root-antithesis@$DIGEST"
+          docker pull "$image"
+          bytes=$(docker run --rm --network none --entrypoint stat "$image" -c %s /usr/local/bin/reth-state-root-antithesis)
+          echo "Instrumented workload executable: $bytes bytes (limit 1073741824)"
+          test "$bytes" -le 1073741824
+          smoke="$RUNNER_TEMP/reth-state-root-smoke"
+          mkdir -p "$smoke"
+          container="reth-state-root-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true; cat "$smoke/server.stdout" "$smoke/runtime.log" 2>/dev/null || true' EXIT
+          # Persist and prune during the smoke round so later updates need blinded proofs.
+          # Isolate server stderr: merging concurrent stdout can corrupt diagnostic lines.
+          # Variables in the single-quoted script expand in the container, not on the runner.
+          # shellcheck disable=SC2016
+          timeout --signal=TERM --kill-after=15s 300s docker run --rm --init \
+            --name "$container" --network none \
+            --mount "type=bind,src=$smoke,dst=/smoke" \
+            -e ANTITHESIS_SDK_LOCAL_OUTPUT=/smoke/guidance.jsonl \
+            -e SMOKE_CONFIG='{"rounds":1,"blocks":16,"updates":64,"accounts":256,"persistence_threshold":0,"num_state_masking_blocks":0,"memory_block_buffer_target":0,"datadir":"/tmp/state","timeout_secs":30}' \
+            --entrypoint /bin/bash "$image" -ceu '
+              reth-state-root-antithesis serve "$SMOKE_CONFIG" > /smoke/server.stdout 2> /smoke/runtime.log &
+              server=$!
+              trap "kill $server 2>/dev/null || true" EXIT
+              # Keep command-process catalogue events out of the server-only SDK output.
+              for _ in {1..4}; do
+                env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands first_genesis
+              done
+              # Flush is an acknowledgement barrier; later root tasks prune old arena nodes.
+              env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands eventually_persisted
+              # Twelve remaining blocks plus one request to retire the completed round.
+              for _ in {1..13}; do
+                env -u ANTITHESIS_SDK_LOCAL_OUTPUT reth-state-root-commands first_genesis
+              done
+              wait "$server"
+            ' 2>&1 | tee "$smoke/commands.log"
+          python3 -B contrib/antithesis/reth-state-root/validate_sparse_smoke.py \
+            "$smoke/guidance.jsonl" "$smoke/runtime.log"
+
       - name: Prepare digest-paired configuration
         env:
           DIGEST: ${{ inputs.workload_digest || steps.image.outputs.digest }}
@@ -96,6 +150,20 @@ jobs:
           # Digest only: Antithesis turns a tag@digest reference into a file name, which a long
           # branch tag pushes past the 255-byte limit, and the workload image is silently dropped.
           printf 'RETH_STATE_ROOT_IMAGE=%s/tempo-reth-state-root-antithesis@%s\n' "$REGISTRY" "$DIGEST" > "$dir/.env"
+
+      - name: Validate Compose setup and test commands
+        timeout-minutes: 4
+        env:
+          SNOUTY_CONTAINER_ENGINE: docker
+        run: |
+          tools="$RUNNER_TEMP/snouty-0.10.0"
+          mkdir -p "$tools"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            https://github.com/antithesishq/snouty/releases/download/v0.10.0/snouty-x86_64-unknown-linux-musl.tar.xz \
+            -o "$tools/snouty.tar.xz"
+          echo "d9a2cfe404cbbd82a5658dffaed3fddffb80773498b4eaac7bedb0d22cf1b7bc  $tools/snouty.tar.xz" | sha256sum -c -
+          tar -xJf "$tools/snouty.tar.xz" -C "$tools" --strip-components=1
+          "$tools/snouty" validate "$RUNNER_TEMP/antithesis-reth-state-root-config" --timeout 2m
 
       - name: Build and push config image
         id: config
@@ -123,4 +191,4 @@ jobs:
             echo "Tag: \`$TAG\`"
             echo "Workload: \`$REGISTRY/tempo-reth-state-root-antithesis@$IMAGE_DIGEST\`"
             echo "Config: \`$REGISTRY/tempo-reth-state-root-antithesis-config@$CONFIG_DIGEST\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -28,6 +28,7 @@ mod lifecycle;
 mod model;
 mod persistence;
 mod proof;
+mod sparse_guidance;
 
 use alloy_primitives::{keccak256, B256, U256};
 use antithesis_instrumentation as _;
@@ -48,7 +49,6 @@ use model::{apply, root, write_updates, Model};
 use rand_09::Rng;
 use reth_db::{init_db, DatabaseEnv};
 use reth_db_api::{cursor::DbCursorRO, tables, transaction::DbTx};
-use reth_engine_tree::tree::TreeConfig;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{
     providers::LatestStateProviderRef, test_utils::MockNodeTypesWithDB, AccountReader,
@@ -113,7 +113,6 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let tree = TreeConfig::default();
         Self {
             rounds: None,
             datadir: Some(PathBuf::from("/data/reth-state-root")),
@@ -122,9 +121,10 @@ impl Default for Config {
             accounts: 256,
             proof_workers: 2,
             timeout_secs: 60,
-            persistence_threshold: tree.persistence_threshold(),
-            num_state_masking_blocks: tree.num_state_masking_blocks(),
-            memory_block_buffer_target: None,
+            // Small windows mask and prune state every few blocks.
+            persistence_threshold: 5,
+            num_state_masking_blocks: 2,
+            memory_block_buffer_target: Some(0),
         }
     }
 }

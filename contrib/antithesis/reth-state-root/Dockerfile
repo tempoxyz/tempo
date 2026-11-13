@@ -2,7 +2,7 @@
 FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS builder
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y clang libclang-dev pkg-config libssl-dev \
+    && apt-get install --no-install-recommends -y clang libclang-dev pkg-config libssl-dev python3 \
     && rm -rf /var/lib/apt/lists/*
 # Match the regular Tempo Docker builders; keep installation cached across source changes.
 RUN cargo install sccache --version 0.14.0 --locked
@@ -31,7 +31,11 @@ RUN --mount=type=cache,id=antithesis-reth-state-root-cargo-registry,target=/usr/
     --mount=type=cache,id=antithesis-reth-state-root-cargo-git,target=/usr/local/cargo/git,sharing=private \
     --mount=type=cache,id=antithesis-reth-state-root-sccache,target=/sccache,sharing=private \
     --mount=type=cache,id=antithesis-reth-state-root-target,target=/work/target,sharing=private \
-    touch contrib/antithesis/reth-state-root/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
+    python3 -B contrib/antithesis/reth-state-root/generate_sparse_buckets.py --check \
+    && cargo fetch --locked \
+    && python3 contrib/antithesis/reth-state-root/patch-sparse-trie.py /usr/local/cargo/git/checkouts \
+    && cargo clean -p reth-trie-sparse --profile antithesis --target x86_64-unknown-linux-gnu \
+    && touch contrib/antithesis/reth-state-root/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
       contrib/antithesis/trie-shapes/src/bin/reth-state-root-commands/main.rs \
     && cargo build --locked --profile antithesis -p reth-state-root-antithesis \
       --features reth-state-root-antithesis/fuzz --bin reth-state-root-antithesis \
@@ -40,6 +44,10 @@ RUN --mount=type=cache,id=antithesis-reth-state-root-cargo-registry,target=/usr/
     && sccache --show-stats \
     && mkdir /out \
     && cp target/x86_64-unknown-linux-gnu/antithesis/reth-state-root-antithesis /out/ \
+    && bytes=$(stat -c %s /out/reth-state-root-antithesis) \
+    && echo "Instrumented workload executable: $bytes bytes (limit 1073741824)" \
+    && test "$bytes" -le 1073741824 \
+    && python3 -B contrib/antithesis/reth-state-root/verify_sparse_symbols.py /out/reth-state-root-antithesis \
     && nm /out/reth-state-root-antithesis | grep ' T antithesis_load_libvoidstar$' \
     && readelf -SW /out/reth-state-root-antithesis | grep __sancov_guards \
     && readelf -SW /out/reth-state-root-antithesis | grep __sancov_pcs \
