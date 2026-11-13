@@ -7,7 +7,7 @@ use commonware_consensus::{
 use commonware_cryptography::Digested;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -101,6 +101,18 @@ where
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
             )
         })?;
+    // `verify_finalized_tip` skips a tip older than the trusted identity, so
+    // start no later than the tip's next epoch: reaching the identity epoch
+    // then requires crossing every boundary up to it.
+    if let Some((_, tip)) = tip {
+        let tip_epoch = tip.proposal.round.epoch();
+        ensure!(
+            outcome.epoch() <= tip_epoch.next(),
+            "the last boundary (`{startup_execution_boundary}`) outcome is for epoch `{}`, \
+             past the epoch after the finalized tip's epoch `{tip_epoch}`",
+            outcome.epoch,
+        );
+    }
 
     let actor = Driver {
         context: ContextCell::new(context),
