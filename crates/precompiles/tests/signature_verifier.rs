@@ -167,13 +167,7 @@ fn storage_at(
                     account,
                     key_id,
                     stored_type,
-                    KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: Vec::new(),
-                        allowAnyCalls: true,
-                        allowedCalls: Vec::new(),
-                    },
+                    KeyRestrictions::unrestricted(),
                     None,
                 )
                 .unwrap(),

@@ -18,7 +18,10 @@ use evm2::{
 };
 use proptest::prelude::*;
 use tempo_contracts::precompiles::{AccountKeychainError, IFeeManager};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, test_util::TIP20Setup};
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    test_util::{KeychainSetup, TIP20Setup},
+};
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction,
     subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
@@ -1767,33 +1770,18 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
     let mut evm = test_evm(TempoHardfork::T3);
 
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        let mut keychain = AccountKeychain::initialized().expect("keychain initialized");
-        keychain
-            .set_transaction_key(Address::ZERO)
-            .expect("root key setup succeeds");
-        keychain
-            .set_tx_origin(caller)
-            .expect("tx.origin setup succeeds");
-        keychain
-            .authorize_key(
-                caller,
+        KeychainSetup::new(caller)
+            .key(
                 access_key,
-                PrecompileSignatureType::Secp256k1,
-                KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: false,
-                    allowedCalls: vec![PrecompileCallScope {
-                        target,
-                        selectorRules: vec![PrecompileSelectorRule {
-                            selector: CALL_SCOPE_SELECTOR.into(),
-                            recipients: vec![],
-                        }],
+                KeyRestrictions::unrestricted().allowed_calls(vec![PrecompileCallScope {
+                    target,
+                    selectorRules: vec![PrecompileSelectorRule {
+                        selector: CALL_SCOPE_SELECTOR.into(),
+                        recipients: vec![],
                     }],
-                },
-                None,
+                }]),
             )
+            .apply()
             .expect("access key authorization succeeds");
     });
 
@@ -1883,33 +1871,18 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
     let mut evm = test_evm(TempoHardfork::T3);
 
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        let mut keychain = AccountKeychain::initialized().expect("keychain initialized");
-        keychain
-            .set_transaction_key(Address::ZERO)
-            .expect("root key setup succeeds");
-        keychain
-            .set_tx_origin(caller)
-            .expect("tx.origin setup succeeds");
-        keychain
-            .authorize_key(
-                caller,
+        KeychainSetup::new(caller)
+            .key(
                 access_key,
-                PrecompileSignatureType::Secp256k1,
-                KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: false,
-                    allowedCalls: vec![PrecompileCallScope {
-                        target,
-                        selectorRules: vec![PrecompileSelectorRule {
-                            selector: ALLOWED_SELECTOR.into(),
-                            recipients: vec![],
-                        }],
+                KeyRestrictions::unrestricted().allowed_calls(vec![PrecompileCallScope {
+                    target,
+                    selectorRules: vec![PrecompileSelectorRule {
+                        selector: ALLOWED_SELECTOR.into(),
+                        recipients: vec![],
                     }],
-                },
-                None,
+                }]),
             )
+            .apply()
             .expect("access key authorization succeeds");
     });
 
@@ -2763,13 +2736,7 @@ mod keychain {
                     user,
                     access_key,
                     PrecompileSignatureType::Secp256k1,
-                    KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    KeyRestrictions::unrestricted(),
                     None,
                 )
                 .unwrap();

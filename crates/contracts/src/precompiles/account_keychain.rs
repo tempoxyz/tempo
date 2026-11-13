@@ -1,5 +1,8 @@
 #![allow(clippy::too_many_arguments)]
 
+use alloc::vec::Vec;
+use alloy_primitives::{Address, U256};
+
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
     authorizeAdminKeyCall, authorizeKey_0Call as legacyAuthorizeKeyCall,
@@ -236,5 +239,50 @@ crate::sol! {
         error InvalidKeyAuthorizationWitness();
         error KeyAuthorizationWitnessAlreadyBurned();
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
+    }
+}
+
+impl IAccountKeychain::KeyRestrictions {
+    /// Restrictions of a key that never expires, has no spending limits and may call any target.
+    pub fn unrestricted() -> Self {
+        Self {
+            expiry: u64::MAX,
+            enforceLimits: false,
+            limits: Vec::new(),
+            allowAnyCalls: true,
+            allowedCalls: Vec::new(),
+        }
+    }
+
+    /// Sets the Unix timestamp at which the key expires.
+    pub fn expiry(mut self, expiry: u64) -> Self {
+        self.expiry = expiry;
+        self
+    }
+
+    /// Enforces spending limits without adding any, so the key can spend nothing until a limit
+    /// is set.
+    pub fn enforce_limits(mut self) -> Self {
+        self.enforceLimits = true;
+        self
+    }
+
+    /// Enforces spending limits and allows the key to spend `amount` of `token` per `period`
+    /// seconds. A zero `period` makes it a one-time limit.
+    pub fn limit(mut self, token: Address, amount: U256, period: u64) -> Self {
+        self.enforceLimits = true;
+        self.limits.push(IAccountKeychain::TokenLimit {
+            token,
+            amount,
+            period,
+        });
+        self
+    }
+
+    /// Restricts the key's calls to `scopes`. An empty list denies every call.
+    pub fn allowed_calls(mut self, scopes: Vec<IAccountKeychain::CallScope>) -> Self {
+        self.allowAnyCalls = false;
+        self.allowedCalls = scopes;
+        self
     }
 }
