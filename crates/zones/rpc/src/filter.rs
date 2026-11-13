@@ -217,15 +217,42 @@ pub fn scope_filter(filter: &mut Filter) {
     }
 }
 
-/// Scopes a user-supplied filter to whitelisted event topics and requires the
-/// authenticated caller to appear in an eligible indexed topic before backend
-/// log retrieval.
-pub fn scope_filter_for_caller(filter: &mut Filter, caller: &Address) -> Result<(), JsonRpcError> {
+/// Topic constraints a caller asked for, held back from the backend query and applied only to
+/// logs the caller is allowed to see.
+#[derive(Debug, Clone, Default)]
+pub struct RequestedTopics {
+    topics: [FilterSet<B256>; 4],
+}
+
+impl RequestedTopics {
+    /// Returns `true` if the log matches every requested topic position.
+    pub fn matches(&self, log: &Log) -> bool {
+        let topics = log.topics();
+        self.topics.iter().enumerate().all(|(i, wanted)| {
+            wanted.is_empty() || topics.get(i).is_some_and(|topic| wanted.contains(topic))
+        })
+    }
+}
+
+/// Scopes a user-supplied filter to whitelisted event topics and the authenticated caller's own
+/// indexed topic before backend log retrieval.
+///
+/// The backend filter keeps only server-derived constraints (whitelisted topic0, enabled token
+/// addresses and the caller's position), so the backend's work, including its per-block bloom
+/// checks, never depends on other values the caller picked. Those are returned as
+/// [`RequestedTopics`] and must be applied after visibility filtering.
+pub fn scope_filter_for_caller(
+    filter: &mut Filter,
+    caller: &Address,
+) -> Result<RequestedTopics, JsonRpcError> {
     scope_filter(filter);
     if filter.topics[0].len() == 1 && filter.topics[0].contains(&B256::ZERO) {
-        return Ok(());
+        return Ok(RequestedTopics::default());
     }
 
+    let requested = RequestedTopics {
+        topics: filter.topics.clone(),
+    };
     let caller_word = caller.into_word();
     if filter.topics[1].contains(&caller_word) {
         let topic0 = filter.topics[0]
@@ -234,9 +261,13 @@ pub fn scope_filter_for_caller(filter: &mut Filter, caller: &Address) -> Result<
             .filter(|topic| *topic != TRANSFER_BLOCKED_TOPIC)
             .collect::<Vec<_>>();
         if !topic0.is_empty() {
-            filter.topics[0] = FilterSet::from(topic0);
-            filter.topics[1] = FilterSet::from(caller_word);
-            return Ok(());
+            filter.topics = [
+                FilterSet::from(topic0),
+                FilterSet::from(caller_word),
+                FilterSet::default(),
+                FilterSet::default(),
+            ];
+            return Ok(requested);
         }
     }
 
@@ -247,13 +278,32 @@ pub fn scope_filter_for_caller(filter: &mut Filter, caller: &Address) -> Result<
             .filter(|topic| TWO_PARTY_TOPICS.contains(topic))
             .collect::<Vec<_>>();
         if !topic0.is_empty() {
-            filter.topics[0] = FilterSet::from(topic0);
-            filter.topics[2] = FilterSet::from(caller_word);
-            return Ok(());
+            filter.topics = [
+                FilterSet::from(topic0),
+                FilterSet::default(),
+                FilterSet::from(caller_word),
+                FilterSet::default(),
+            ];
+            return Ok(requested);
         }
     }
 
     Err(JsonRpcError::invalid_params(CALLER_SCOPED_FILTER_ERROR))
+}
+
+/// Filters backend logs to those the caller requested and is allowed to see, renumbering the
+/// `log_index` via [`LogOrderingRedactor`].
+pub fn filter_requested_logs(
+    logs: Vec<Log>,
+    caller: &Address,
+    requested: &RequestedTopics,
+) -> Vec<Log> {
+    filter_logs(
+        logs.into_iter()
+            .filter(|log| requested.matches(log))
+            .collect(),
+        caller,
+    )
 }
 
 #[cfg(test)]
@@ -818,12 +868,24 @@ mod tests {
         filter.topics[1] = FilterSet::from(vec![caller_topic, other_topic]);
         filter.topics[2] = FilterSet::from(other_topic);
 
-        scope_filter_for_caller(&mut filter, &caller).unwrap();
+        let requested = scope_filter_for_caller(&mut filter, &caller).unwrap();
 
         assert!(!filter.topics[0].contains(&TRANSFER_BLOCKED_TOPIC));
         assert_eq!(filter.topics[0].len(), WHITELISTED_TOPICS.len() - 1);
         assert_eq!(filter.topics[1], FilterSet::from(caller_topic));
-        assert_eq!(filter.topics[2], FilterSet::from(other_topic));
+        assert!(filter.topics[2].is_empty());
+        assert!(filter.topics[3].is_empty());
+
+        let token = Address::with_last_byte(9);
+        let third_topic = Address::with_last_byte(3).into_word();
+        assert!(requested.matches(&make_log(
+            token,
+            vec![TRANSFER_TOPIC, caller_topic, other_topic]
+        )));
+        assert!(!requested.matches(&make_log(
+            token,
+            vec![TRANSFER_TOPIC, caller_topic, third_topic]
+        )));
     }
 
     #[test]
@@ -838,14 +900,26 @@ mod tests {
         filter.topics[1] = FilterSet::from(other_topic);
         filter.topics[2] = FilterSet::from(vec![caller_topic, other.into_word()]);
 
-        scope_filter_for_caller(&mut filter, &caller).unwrap();
+        let requested = scope_filter_for_caller(&mut filter, &caller).unwrap();
 
         assert_eq!(
             filter.topics[0],
             FilterSet::from(vec![TRANSFER_TOPIC, TRANSFER_BLOCKED_TOPIC])
         );
-        assert_eq!(filter.topics[1], FilterSet::from(other_topic));
+        assert!(filter.topics[1].is_empty());
         assert_eq!(filter.topics[2], FilterSet::from(caller_topic));
+        assert!(filter.topics[3].is_empty());
+
+        let token = Address::with_last_byte(9);
+        let third_topic = Address::with_last_byte(3).into_word();
+        assert!(requested.matches(&make_log(
+            token,
+            vec![TRANSFER_TOPIC, other_topic, caller_topic]
+        )));
+        assert!(!requested.matches(&make_log(
+            token,
+            vec![TRANSFER_TOPIC, third_topic, caller_topic]
+        )));
     }
 
     #[test]
