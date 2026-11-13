@@ -2298,7 +2298,10 @@ mod tests {
             )) => cmd,
             other => panic!("expected Info, got `{other:?}`"),
         };
-        let err = info.run().await.unwrap_err();
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), info.run())
+            .await
+            .unwrap()
+            .unwrap_err();
         handle.stop().unwrap();
 
         assert_eq!(
