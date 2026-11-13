@@ -249,6 +249,7 @@ mod tests {
     use reth_primitives_traits::{RecoveredBlock, SealedBlock};
     use std::sync::Arc;
     use tempo_primitives::{Block, Header, TempoHeader, TempoTransaction, transaction::Call};
+    use test_case::test_case;
 
     fn arb_address() -> impl Strategy<Value = Address> {
         any::<[u8; 20]>().prop_map(Address::from)
@@ -492,11 +493,7 @@ mod tests {
     fn aa_tx(input: Bytes) -> TempoTxEnvelope {
         TempoTxEnvelope::AA(
             TempoTransaction {
-                calls: vec![Call {
-                    to: Address::ZERO.into(),
-                    value: U256::ZERO,
-                    input,
-                }],
+                calls: vec![Call::new(Address::ZERO, input)],
                 ..Default::default()
             }
             .into_signed(Signature::test_signature().into()),
@@ -558,52 +555,50 @@ mod tests {
         }
     }
 
-    #[test]
-    fn finish_encodes_header_boundaries_without_moving_payload() {
-        // Exercise exact list-payload lengths independently of transaction encoding. Empty RLP
-        // strings (0x80) are valid list elements, but are deliberately not full transactions here.
-        let cases: &[(usize, &[u8])] = &[
-            (0, &[0xc0]),
-            (1, &[0xc1]),
-            (54, &[0xf6]),
-            (55, &[0xf7]),
-            (56, &[0xf8, 0x38]),
-            (57, &[0xf8, 0x39]),
-            (255, &[0xf8, 0xff]),
-            (256, &[0xf9, 0x01, 0x00]),
-            (257, &[0xf9, 0x01, 0x01]),
-            (65_535, &[0xf9, 0xff, 0xff]),
-            (65_536, &[0xfa, 0x01, 0x00, 0x00]),
-            (65_537, &[0xfa, 0x01, 0x00, 0x01]),
-            (16_777_215, &[0xfa, 0xff, 0xff, 0xff]),
-            (16_777_216, &[0xfb, 0x01, 0x00, 0x00, 0x00]),
-            (16_777_217, &[0xfb, 0x01, 0x00, 0x00, 0x01]),
-        ];
-        for &(payload_len, expected_header) in cases {
-            // Vec -> Bytes uses different ownership representations with and without spare capacity.
-            for spare_capacity in [0, 32] {
-                let mut builder = EncodedBlockTransactionsBuilder::default();
-                builder
-                    .buffer
-                    .resize(MAX_LIST_HEADER_LEN + payload_len, 0x80);
-                builder.buffer = builder.buffer.into_boxed_slice().into_vec();
-                builder.buffer.reserve_exact(spare_capacity);
-                let payload_ptr = builder.buffer[MAX_LIST_HEADER_LEN..].as_ptr();
+    // Exercise exact list-payload lengths independently of transaction encoding. Empty RLP
+    // strings (0x80) are valid list elements, but are deliberately not full transactions here.
+    #[test_case(0, &[0xc0])]
+    #[test_case(1, &[0xc1])]
+    #[test_case(54, &[0xf6])]
+    #[test_case(55, &[0xf7])]
+    #[test_case(56, &[0xf8, 0x38])]
+    #[test_case(57, &[0xf8, 0x39])]
+    #[test_case(255, &[0xf8, 0xff])]
+    #[test_case(256, &[0xf9, 0x01, 0x00])]
+    #[test_case(257, &[0xf9, 0x01, 0x01])]
+    #[test_case(65_535, &[0xf9, 0xff, 0xff])]
+    #[test_case(65_536, &[0xfa, 0x01, 0x00, 0x00])]
+    #[test_case(65_537, &[0xfa, 0x01, 0x00, 0x01])]
+    #[test_case(16_777_215, &[0xfa, 0xff, 0xff, 0xff])]
+    #[test_case(16_777_216, &[0xfb, 0x01, 0x00, 0x00, 0x00])]
+    #[test_case(16_777_217, &[0xfb, 0x01, 0x00, 0x00, 0x01])]
+    fn finish_encodes_header_boundaries_without_moving_payload(
+        payload_len: usize,
+        expected_header: &[u8],
+    ) {
+        // Vec -> Bytes uses different ownership representations with and without spare capacity.
+        for spare_capacity in [0, 32] {
+            let mut builder = EncodedBlockTransactionsBuilder::default();
+            builder
+                .buffer
+                .resize(MAX_LIST_HEADER_LEN + payload_len, 0x80);
+            builder.buffer = builder.buffer.into_boxed_slice().into_vec();
+            builder.buffer.reserve_exact(spare_capacity);
+            let payload_ptr = builder.buffer[MAX_LIST_HEADER_LEN..].as_ptr();
 
-                let encoded = builder.finish();
-                assert_eq!(encoded.transaction_count, 0);
-                assert_eq!(&encoded.rlp[..expected_header.len()], expected_header);
-                let payload = &encoded.rlp[expected_header.len()..];
-                assert_eq!(payload.len(), payload_len);
-                assert!(payload.iter().all(|&byte| byte == 0x80));
-                assert_eq!(payload.as_ptr(), payload_ptr, "finish moved the payload");
+            let encoded = builder.finish();
+            assert_eq!(encoded.transaction_count, 0);
+            assert_eq!(&encoded.rlp[..expected_header.len()], expected_header);
+            let payload = &encoded.rlp[expected_header.len()..];
+            assert_eq!(payload.len(), payload_len);
+            assert!(payload.iter().all(|&byte| byte == 0x80));
+            assert_eq!(payload.as_ptr(), payload_ptr, "finish moved the payload");
 
-                // The finished view owns the allocation after the builder and other handles drop.
-                let cloned = encoded.clone();
-                drop(encoded);
-                assert_eq!(cloned.rlp.len(), expected_header.len() + payload_len);
-                assert_eq!(&cloned.rlp[..expected_header.len()], expected_header);
-            }
+            // The finished view owns the allocation after the builder and other handles drop.
+            let cloned = encoded.clone();
+            drop(encoded);
+            assert_eq!(cloned.rlp.len(), expected_header.len() + payload_len);
+            assert_eq!(&cloned.rlp[..expected_header.len()], expected_header);
         }
     }
 

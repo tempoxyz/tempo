@@ -347,6 +347,7 @@ mod tests {
     use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_contracts::zones::ZonePortal;
     use tempo_primitives::TempoHeader;
+    use test_case::test_case;
 
     const BLOCK: u64 = 100;
     const HASH: B256 = B256::repeat_byte(0x10);
@@ -484,40 +485,32 @@ mod tests {
         assert_eq!(evidence.portal_events().count(), 0);
     }
 
-    #[test]
-    fn acquisition_rpc_codes_are_retryable_without_message_matching() {
-        for (code, message, retryable) in [
-            (-32001, "block not found", true),
-            (-32001, "block not found: canonical hash 0x1234", true),
-            (-32001, "transaction not found", true),
-            (-32001, "historical state pruned", true),
-            (-32001, "", true),
-            (-32002, "no healthy upstreams available", true),
-            (-32002, "", true),
-            (-32603, "internal eth error", true),
-            (-32603, "", true),
-            (-32000, "invalid input", false),
-            (-32600, "invalid request", false),
-            (-32601, "method not found", false),
-            (-32602, "block not found", false),
-            (-32004, "method not supported", false),
-            (3, "execution reverted", false),
-            (-32005, "rate limit", true),
-            (429, "too many requests", true),
-        ] {
-            let payload = serde_json::from_value(serde_json::json!({
-                "code": code, "message": message,
-            }))
-            .unwrap();
-            assert_eq!(
-                matches!(
-                    classify_rpc_error(RpcError::ErrorResp(payload)),
-                    AttemptError::Retry(_)
-                ),
-                retryable,
-                "{code}: {message}"
-            );
-        }
+    #[test_case(-32001, "block not found" => matches AttemptError::Retry(_))]
+    #[test_case(-32001, "block not found: canonical hash 0x1234" => matches AttemptError::Retry(_))]
+    #[test_case(-32001, "transaction not found" => matches AttemptError::Retry(_))]
+    #[test_case(-32001, "historical state pruned" => matches AttemptError::Retry(_))]
+    #[test_case(-32001, "" => matches AttemptError::Retry(_))]
+    #[test_case(-32002, "no healthy upstreams available" => matches AttemptError::Retry(_))]
+    #[test_case(-32002, "" => matches AttemptError::Retry(_))]
+    #[test_case(-32603, "internal eth error" => matches AttemptError::Retry(_))]
+    #[test_case(-32603, "" => matches AttemptError::Retry(_))]
+    #[test_case(-32000, "invalid input" => matches AttemptError::Disable(_))]
+    #[test_case(-32600, "invalid request" => matches AttemptError::Disable(_))]
+    #[test_case(-32601, "method not found" => matches AttemptError::Disable(_))]
+    #[test_case(-32602, "block not found" => matches AttemptError::Disable(_))]
+    #[test_case(-32004, "method not supported" => matches AttemptError::Disable(_))]
+    #[test_case(3, "execution reverted" => matches AttemptError::Disable(_))]
+    #[test_case(-32005, "rate limit" => matches AttemptError::Retry(_))]
+    #[test_case(429, "too many requests" => matches AttemptError::Retry(_))]
+    fn acquisition_rpc_codes_are_retryable_without_message_matching(
+        code: i64,
+        message: &str,
+    ) -> AttemptError {
+        let payload = serde_json::from_value(serde_json::json!({
+            "code": code, "message": message,
+        }))
+        .unwrap();
+        classify_rpc_error(RpcError::ErrorResp(payload))
     }
 
     #[test]
