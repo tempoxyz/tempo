@@ -40,8 +40,8 @@ const _: () = assert!(REQUEST_TIMEOUT.as_secs() > 2 * WS_KEEPALIVE_INTERVAL.as_s
 /// `ClientBuilder` or `ProviderBuilder`.
 ///
 /// The transport is chosen from the URL scheme, like alloy's `connect_with_config`. Unlike it,
-/// each WebSocket connect and reconnect attempt fails after [`WS_CONNECT_TIMEOUT`], and each
-/// request fails with a transport error after [`REQUEST_TIMEOUT`] instead of waiting forever.
+/// each WebSocket connect and reconnect attempt fails after 10s, and each request fails with a
+/// transport error after 30s instead of waiting forever.
 #[derive(Debug, Clone)]
 pub struct L1Connect {
     url: String,
