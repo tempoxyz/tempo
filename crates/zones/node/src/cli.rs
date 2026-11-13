@@ -6,7 +6,7 @@ use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
-use eyre::OkOrEyre as _;
+use eyre::OptionExt as _;
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_runner::CliRunner;
 use reth_ethereum::cli::{Cli, ExtendedCommand};
