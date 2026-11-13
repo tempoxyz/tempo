@@ -1306,6 +1306,7 @@ mod tests {
         KeyAuthorization, KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
         TempoSignature, TempoTransaction, tempo_transaction::Call,
     };
+    use test_case::test_case;
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
 
@@ -1455,22 +1456,15 @@ mod tests {
         assert!(keychain(&large) >= keychain(&small) + extra_heap);
     }
 
-    #[test]
-    fn size_is_stable_across_tx_env_caching() {
-        let transactions = [
-            eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])),
-            TxBuilder::aa(Address::random())
-                .access_list(large_access_list())
-                .build(),
-        ];
-        for transaction in transactions {
-            let size = transaction.size();
-            assert!(transaction.cached_tx_env().is_none());
-            let _ = transaction.tx_env();
-            assert!(transaction.cached_tx_env().is_some());
-            assert_eq!(transaction.size(), size);
-            assert_eq!(transaction.with_discarded_caches().size(), size);
-        }
+    #[test_case(eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])))]
+    #[test_case(TxBuilder::aa(Address::random()).access_list(large_access_list()).build())]
+    fn size_is_stable_across_tx_env_caching(transaction: TempoPooledTransaction) {
+        let size = transaction.size();
+        assert!(transaction.cached_tx_env().is_none());
+        let _ = transaction.tx_env();
+        assert!(transaction.cached_tx_env().is_some());
+        assert_eq!(transaction.size(), size);
+        assert_eq!(transaction.with_discarded_caches().size(), size);
     }
 
     #[test]
@@ -1668,129 +1662,30 @@ mod tests {
         assert_eq!(slot1, slot2);
     }
 
-    #[test]
-    fn test_is_bad_transaction() {
-        let cases: &[(TempoPoolTransactionError, bool)] = &[
-            (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
-            (
-                TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore {
-                    valid_before: 100,
-                    min_allowed: 200,
-                }),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter {
-                    valid_after: 200,
-                    max_allowed: 100,
-                }),
-                false,
-            ),
-            (TempoPoolTransactionError::Keychain("test error"), false),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::NonceManagerError("nonce error".to_string()),
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenNotTip20 {
-                        address: Address::repeat_byte(0x20),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                        address: Address::repeat_byte(0x20),
-                        currency: "EUR".to_string(),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenPaused {
-                        address: Address::repeat_byte(0x20),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::AccessKeyExpired {
-                    expiry: 100,
-                    min_allowed: 200,
-                },
-                false,
-            ),
-            (
-                TempoPoolTransactionError::KeyAuthorizationExpired {
-                    expiry: 100,
-                    min_allowed: 200,
-                },
-                false,
-            ),
-            (
-                TempoPoolTransactionError::AddressCheck {
-                    address: Address::repeat_byte(0x20),
-                },
-                false,
-            ),
-            // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
-            (
-                TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow {
-                    got: 21_000,
-                    required: 271_000,
-                }),
-                false,
-            ),
-            (TempoPoolTransactionError::SubblockNonceKey, true),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::CallsValidation("calls error"),
-                )),
-                true,
-            ),
-        ];
-
-        for (err, expected) in cases {
-            assert_eq!(
-                err.is_bad_transaction(),
-                *expected,
-                "Unexpected is_bad_transaction() for: {err}"
-            );
-        }
+    #[test_case(TempoPoolTransactionError::ExceedsNonPaymentLimit => false)]
+    #[test_case(TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore { valid_before: 100, min_allowed: 200 }) => false)]
+    #[test_case(TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter { valid_after: 200, max_allowed: 100 }) => false)]
+    #[test_case(TempoPoolTransactionError::Keychain("test error") => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::NonceManagerError("nonce error".to_string()))) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenNotTip20 { address: Address::repeat_byte(0x20) })) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenNotUsdCurrency { address: Address::repeat_byte(0x20), currency: "EUR".to_string() })) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenPaused { address: Address::repeat_byte(0x20) })) => false)]
+    #[test_case(TempoPoolTransactionError::AccessKeyExpired { expiry: 100, min_allowed: 200 } => false)]
+    #[test_case(TempoPoolTransactionError::KeyAuthorizationExpired { expiry: 100, min_allowed: 200 } => false)]
+    #[test_case(TempoPoolTransactionError::AddressCheck { address: Address::repeat_byte(0x20) } => false)]
+    // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow { got: 21_000, required: 271_000 }) => false)]
+    #[test_case(TempoPoolTransactionError::SubblockNonceKey => true)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::CallsValidation("calls error"))) => true)]
+    fn test_is_bad_transaction(err: TempoPoolTransactionError) -> bool {
+        err.is_bad_transaction()
     }
 
-    #[test]
-    fn test_requires_nonce_check() {
-        let cases: &[(TempoPooledTransaction, bool, &str)] = &[
-            (
-                TxBuilder::eip1559(Address::random())
-                    .gas_limit(21000)
-                    .build_eip1559(),
-                true,
-                "Non-AA should require nonce check",
-            ),
-            (
-                TxBuilder::aa(Address::random()).build(),
-                true,
-                "AA with nonce_key=0 should require nonce check",
-            ),
-            (
-                TxBuilder::aa(Address::random())
-                    .nonce_key(U256::ONE)
-                    .build(),
-                false,
-                "AA with nonce_key > 0 should NOT require nonce check",
-            ),
-        ];
-
-        for (tx, expected, msg) in cases {
-            assert_eq!(tx.requires_nonce_check(), *expected, "{msg}");
-        }
+    #[test_case(TxBuilder::eip1559(Address::random()).gas_limit(21000).build_eip1559() => true)]
+    #[test_case(TxBuilder::aa(Address::random()).build() => true)]
+    #[test_case(TxBuilder::aa(Address::random()).nonce_key(U256::ONE).build() => false)]
+    fn test_requires_nonce_check(tx: TempoPooledTransaction) -> bool {
+        tx.requires_nonce_check()
     }
 
     #[test]

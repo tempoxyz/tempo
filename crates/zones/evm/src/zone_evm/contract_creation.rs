@@ -87,6 +87,7 @@ mod tests {
         TempoTxEnvelope,
         transaction::{Call, TempoSignature, TempoTransaction},
     };
+    use test_case::test_case;
     use zone_precompiles::{
         ZONE_FEE_MANAGER_ADDRESS, ZonePrecompiles, test_utils::MockL1Reader as TestL1,
         zone_fee_manager,
@@ -234,47 +235,39 @@ mod tests {
         assert!(validate_transaction(tx.inner(), &[caller]).is_ok());
     }
 
-    #[test]
-    fn runtime_create_opcodes_are_disabled_for_unlisted_deployers() {
+    // PUSH0 PUSH0 PUSH0 CREATE STOP
+    #[test_case(bytes!("0x5f5f5ff000"); "create")]
+    // PUSH0 PUSH0 PUSH0 PUSH0 CREATE2 STOP
+    #[test_case(bytes!("0x5f5f5f5ff500"); "create2")]
+    fn runtime_create_opcodes_are_disabled_for_unlisted_deployers(bytecode: Bytes) {
         let (contract, caller) = (Address::repeat_byte(0x10), Address::repeat_byte(0x20));
-        for bytecode in [
-            // PUSH0 PUSH0 PUSH0 CREATE STOP
-            bytes!("0x5f5f5ff000"),
-            // PUSH0 PUSH0 PUSH0 PUSH0 CREATE2 STOP
-            bytes!("0x5f5f5f5ff500"),
-        ] {
-            let mut evm = evm_with_contract(contract, &bytecode);
-            let result = evm
-                .transact(&call_tx(caller, contract))
-                .expect("transaction should execute")
-                .discard();
-            assert_eq!(result.stop, InstrStop::NotActivated);
-        }
+        let mut evm = evm_with_contract(contract, &bytecode);
+        let result = evm
+            .transact(&call_tx(caller, contract))
+            .expect("transaction should execute")
+            .discard();
+        assert_eq!(result.stop, InstrStop::NotActivated);
     }
 
-    #[test]
-    fn allowlisted_deployer_can_execute_create_and_create2() {
+    // CREATE, then return the created address.
+    #[test_case(bytes!("0x5f5f5ff05f5260205ff3"); "create")]
+    // CREATE2, then return the created address.
+    #[test_case(bytes!("0x5f5f5f5ff55f5260205ff3"); "create2")]
+    fn allowlisted_deployer_can_execute_create_and_create2(bytecode: Bytes) {
         let caller = Address::repeat_byte(0x20);
-        for bytecode in [
-            // CREATE, then return the created address.
-            bytes!("0x5f5f5ff05f5260205ff3"),
-            // CREATE2, then return the created address.
-            bytes!("0x5f5f5f5ff55f5260205ff3"),
-        ] {
-            let mut evm = evm_with_contract(TEST_DEPLOYER, &bytecode);
-            enable_test_deployer(&mut evm);
-            let result = evm
-                .transact(&call_tx(caller, TEST_DEPLOYER))
-                .expect("allowlisted deployment should execute")
-                .detach();
-            assert!(
-                result.result.status,
-                "allowlisted deployment should succeed"
-            );
-            let created = Address::from_slice(&result.result.output[12..]);
-            assert_ne!(created, Address::ZERO);
-            assert!(result.pending_state.account_info(&created).is_some());
-        }
+        let mut evm = evm_with_contract(TEST_DEPLOYER, &bytecode);
+        enable_test_deployer(&mut evm);
+        let result = evm
+            .transact(&call_tx(caller, TEST_DEPLOYER))
+            .expect("allowlisted deployment should execute")
+            .detach();
+        assert!(
+            result.result.status,
+            "allowlisted deployment should succeed"
+        );
+        let created = Address::from_slice(&result.result.output[12..]);
+        assert_ne!(created, Address::ZERO);
+        assert!(result.pending_state.account_info(&created).is_some());
     }
 
     #[test]

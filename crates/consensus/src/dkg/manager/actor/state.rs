@@ -1240,6 +1240,7 @@ mod tests {
     use futures::FutureExt as _;
     use rand::SeedableRng as _;
     use std::panic::AssertUnwindSafe;
+    use test_case::test_case;
 
     fn make_test_state(rng: &mut impl rand_core::CryptoRng, epoch: u64) -> State {
         let mut keys: Vec<_> = (0..3)
@@ -1365,52 +1366,48 @@ mod tests {
         });
     }
 
-    #[test]
-    fn metadata_write_failures_panic() {
-        for (operation, expected) in [
-            ("initialize", "failed to persist initial DKG state"),
-            ("set_state", "failed to persist DKG state"),
-            ("prune", "failed to prune DKG state metadata"),
-        ] {
-            deterministic::Runner::default().start(|mut context| async move {
-                let unverified = builder()
-                    .partition_prefix("metadata_write_failure")
-                    .init_unverified(context.child("storage"))
-                    .await
-                    .unwrap();
-                let state = make_test_state(&mut context, 1);
-                let faults = context.storage_fault_config();
-                let write = async {
-                    if operation == "initialize" {
-                        faults.write().sync_rate = Some(probability!(1.0));
-                        unverified.init_verified(state).await;
+    #[test_case("initialize", "failed to persist initial DKG state")]
+    #[test_case("set_state", "failed to persist DKG state")]
+    #[test_case("prune", "failed to prune DKG state metadata")]
+    fn metadata_write_failures_panic(operation: &str, expected: &str) {
+        deterministic::Runner::default().start(|mut context| async move {
+            let unverified = builder()
+                .partition_prefix("metadata_write_failure")
+                .init_unverified(context.child("storage"))
+                .await
+                .unwrap();
+            let state = make_test_state(&mut context, 1);
+            let faults = context.storage_fault_config();
+            let write = async {
+                if operation == "initialize" {
+                    faults.write().sync_rate = Some(probability!(1.0));
+                    unverified.init_verified(state).await;
+                } else {
+                    let mut storage = unverified.init_verified(state.clone()).await;
+                    faults.write().sync_rate = Some(probability!(1.0));
+                    if operation == "set_state" {
+                        storage
+                            .set_state(State {
+                                epoch: state.epoch.next(),
+                                ..state
+                            })
+                            .await;
                     } else {
-                        let mut storage = unverified.init_verified(state.clone()).await;
-                        faults.write().sync_rate = Some(probability!(1.0));
-                        if operation == "set_state" {
-                            storage
-                                .set_state(State {
-                                    epoch: state.epoch.next(),
-                                    ..state
-                                })
-                                .await;
-                        } else {
-                            storage.prune(state.epoch.next()).await;
-                        }
+                        storage.prune(state.epoch.next()).await;
                     }
-                };
-                let panic = AssertUnwindSafe(write)
-                    .catch_unwind()
-                    .await
-                    .expect_err("metadata write failures must panic");
-                let message = panic
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| panic.downcast_ref::<&str>().copied())
-                    .expect("panic must have an error message");
-                assert!(message.starts_with(expected), "unexpected panic: {message}");
-            });
-        }
+                }
+            };
+            let panic = AssertUnwindSafe(write)
+                .catch_unwind()
+                .await
+                .expect_err("metadata write failures must panic");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .expect("panic must have an error message");
+            assert!(message.starts_with(expected), "unexpected panic: {message}");
+        });
     }
 
     #[test]

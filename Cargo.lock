@@ -14217,6 +14217,7 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-hardfork",
  "tempo-primitives",
+ "test-case",
 ]
 
 [[package]]
@@ -14288,6 +14289,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-telemetry-util",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
@@ -14623,6 +14625,7 @@ dependencies = [
  "minicbor-serde",
  "serde",
  "serde_with",
+ "test-case",
  "x509-cert",
 ]
 
@@ -14766,6 +14769,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-transaction-pool",
+ "test-case",
  "tokio",
  "tracing",
 ]
@@ -14832,6 +14836,7 @@ dependencies = [
  "tempo-nitro-attestation",
  "tempo-precompiles-macros",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tracing",
  "x509-cert",
@@ -14883,6 +14888,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempo-contracts",
+ "test-case",
  "tracing-subscriber",
 ]
 
@@ -17279,6 +17285,7 @@ dependencies = [
  "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -17317,6 +17324,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "zone-chainspec",
@@ -17565,6 +17573,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-precompiles-macros",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "zone-primitives",
 ]
@@ -17604,6 +17613,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-nitro-attestation",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
@@ -17641,6 +17651,7 @@ dependencies = [
  "tempo-alloy",
  "tempo-contracts",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",

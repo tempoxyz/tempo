@@ -1925,6 +1925,7 @@ mod tests {
     use super::*;
     use crate::{STABLECOIN_DEX_ADDRESS, test_util::with_storage};
     use proptest::prelude::*;
+    use test_case::test_case;
 
     fn setup_test_tokens(
         admin: Address,
@@ -2157,23 +2158,15 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_calculate_quote_amount_rounding() {
-        // (amount, tick, floor, ceil) with price = PRICE_SCALE + tick
-        for (amount, tick, floor, ceil) in [
-            (100u128, 1i16, 100, 101),      // 100.001
-            (999, 5, 999, 1000),            // 999.04995
-            (100_000, 0, 100_000, 100_000), // exact division stays exact
-        ] {
-            assert_eq!(
-                base_to_quote(amount, tick, RoundingDirection::Down).unwrap(),
-                floor
-            );
-            assert_eq!(
-                base_to_quote(amount, tick, RoundingDirection::Up).unwrap(),
-                ceil
-            );
-        }
+    // (floor, ceil) with price = PRICE_SCALE + tick
+    #[test_case(100, 1 => (100, 101))] // 100.001
+    #[test_case(999, 5 => (999, 1000))] // 999.04995
+    #[test_case(100_000, 0 => (100_000, 100_000))] // exact division stays exact
+    fn test_calculate_quote_amount_rounding(amount: u128, tick: i16) -> (u128, u128) {
+        (
+            base_to_quote(amount, tick, RoundingDirection::Down).unwrap(),
+            base_to_quote(amount, tick, RoundingDirection::Up).unwrap(),
+        )
     }
 
     #[test]
@@ -2463,91 +2456,90 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_place_order_rests_in_book() -> eyre::Result<()> {
-        for (is_bid, tick, flip_tick) in [
-            (true, 100i16, None),
-            (false, 50, None),
-            (true, 100, Some(200i16)),
-        ] {
-            let mut storage = HashMapStorageProvider::new(1);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::initialized()?;
+    #[test_case(true, 100, None)]
+    #[test_case(false, 50, None)]
+    #[test_case(true, 100, Some(200))]
+    fn test_place_order_rests_in_book(
+        is_bid: bool,
+        tick: i16,
+        flip_tick: Option<i16>,
+    ) -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
-                let [alice, admin] = actors();
-                let escrow = if is_bid {
-                    (MIN_ORDER_AMOUNT * u128::from(orderbook::tick_to_price(tick)))
-                        / u128::from(orderbook::PRICE_SCALE)
-                } else {
-                    MIN_ORDER_AMOUNT
-                };
+            let [alice, admin] = actors();
+            let escrow = if is_bid {
+                (MIN_ORDER_AMOUNT * u128::from(orderbook::tick_to_price(tick)))
+                    / u128::from(orderbook::PRICE_SCALE)
+            } else {
+                MIN_ORDER_AMOUNT
+            };
 
-                let (base_token, quote_token) =
-                    setup_test_tokens(admin, alice, exchange.address, escrow)?;
-                exchange.create_pair(base_token)?;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
 
-                let order_id = match flip_tick {
-                    Some(flip_tick) => exchange.place_flip(
-                        alice,
-                        base_token,
-                        MIN_ORDER_AMOUNT,
-                        is_bid,
-                        tick,
-                        flip_tick,
-                        false,
-                    )?,
-                    None => exchange.place(alice, base_token, MIN_ORDER_AMOUNT, is_bid, tick)?,
-                };
+            let order_id = match flip_tick {
+                Some(flip_tick) => exchange.place_flip(
+                    alice,
+                    base_token,
+                    MIN_ORDER_AMOUNT,
+                    is_bid,
+                    tick,
+                    flip_tick,
+                    false,
+                )?,
+                None => exchange.place(alice, base_token, MIN_ORDER_AMOUNT, is_bid, tick)?,
+            };
 
-                assert_eq!(order_id, 1);
-                assert_eq!(exchange.next_order_id()?, 2);
+            assert_eq!(order_id, 1);
+            assert_eq!(exchange.next_order_id()?, 2);
 
-                // Verify the order was stored correctly
-                let stored_order = exchange.orders[order_id].read()?;
-                assert_eq!(stored_order.maker(), alice);
-                assert_eq!(stored_order.amount(), MIN_ORDER_AMOUNT);
-                assert_eq!(stored_order.remaining(), MIN_ORDER_AMOUNT);
-                assert_eq!(stored_order.tick(), tick);
-                assert_eq!(stored_order.is_bid(), is_bid);
-                assert_eq!(stored_order.is_flip(), flip_tick.is_some());
-                if let Some(flip_tick) = flip_tick {
-                    assert_eq!(stored_order.flip_tick(), flip_tick);
-                }
+            // Verify the order was stored correctly
+            let stored_order = exchange.orders[order_id].read()?;
+            assert_eq!(stored_order.maker(), alice);
+            assert_eq!(stored_order.amount(), MIN_ORDER_AMOUNT);
+            assert_eq!(stored_order.remaining(), MIN_ORDER_AMOUNT);
+            assert_eq!(stored_order.tick(), tick);
+            assert_eq!(stored_order.is_bid(), is_bid);
+            assert_eq!(stored_order.is_flip(), flip_tick.is_some());
+            if let Some(flip_tick) = flip_tick {
+                assert_eq!(stored_order.flip_tick(), flip_tick);
+            }
 
-                // Verify the order is immediately active in the orderbook
-                let book_key = compute_book_key(base_token, quote_token);
-                let level = exchange.books[book_key]
-                    .tick_level_handler(tick, is_bid)
-                    .read()?;
-                assert_eq!(level.links.head, order_id);
-                assert_eq!(level.links.tail, order_id);
-                assert_eq!(level.total_liquidity, MIN_ORDER_AMOUNT);
-                let book = exchange.books[book_key].read()?;
-                let best_tick = if is_bid {
-                    book.best_bid_tick
-                } else {
-                    book.best_ask_tick
-                };
-                assert_eq!(best_tick, tick);
+            // Verify the order is immediately active in the orderbook
+            let book_key = compute_book_key(base_token, quote_token);
+            let level = exchange.books[book_key]
+                .tick_level_handler(tick, is_bid)
+                .read()?;
+            assert_eq!(level.links.head, order_id);
+            assert_eq!(level.links.tail, order_id);
+            assert_eq!(level.total_liquidity, MIN_ORDER_AMOUNT);
+            let book = exchange.books[book_key].read()?;
+            let best_tick = if is_bid {
+                book.best_bid_tick
+            } else {
+                book.best_ask_tick
+            };
+            assert_eq!(best_tick, tick);
 
-                // Verify all of alice's escrow moved to the exchange
-                let escrow_token =
-                    TIP20Token::from_address(if is_bid { quote_token } else { base_token })?;
-                assert_eq!(
-                    escrow_token.balance_of(ITIP20::balanceOfCall { account: alice })?,
-                    U256::ZERO
-                );
-                assert_eq!(
-                    escrow_token.balance_of(ITIP20::balanceOfCall {
-                        account: exchange.address
-                    })?,
-                    U256::from(escrow)
-                );
+            // Verify all of alice's escrow moved to the exchange
+            let escrow_token =
+                TIP20Token::from_address(if is_bid { quote_token } else { base_token })?;
+            assert_eq!(
+                escrow_token.balance_of(ITIP20::balanceOfCall { account: alice })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                escrow_token.balance_of(ITIP20::balanceOfCall {
+                    account: exchange.address
+                })?,
+                U256::from(escrow)
+            );
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// TIP-1030: at the `place_flip` precompile entrypoint, `flip_tick == tick`
@@ -3539,68 +3531,66 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_swap_multi_hop_transitory_balances() -> eyre::Result<()> {
-        for exact_in in [true, false] {
-            let mut storage = HashMapStorageProvider::new(1);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::initialized()?;
+    #[test_case(true)]
+    #[test_case(false)]
+    fn test_swap_multi_hop_transitory_balances(exact_in: bool) -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
-                let [admin, alice, bob] = actors();
-                let (path_usd, usdc, eurc) = setup_sibling_books(&mut exchange, admin, alice, bob)?;
+            let [admin, alice, bob] = actors();
+            let (path_usd, usdc, eurc) = setup_sibling_books(&mut exchange, admin, alice, bob)?;
 
-                let bob_usdc_before = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
-                let bob_eurc_before = eurc.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_usdc_before = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let bob_eurc_before = eurc.balance_of(ITIP20::balanceOfCall { account: bob })?;
 
-                // Execute multi-hop swap: USDC -> pathUSD -> EURC
-                let (usdc_in, eurc_out) = if exact_in {
-                    let amount_out = exchange.swap_exact_amount_in(
-                        bob,
-                        usdc.address(),
-                        eurc.address(),
-                        MIN_ORDER_AMOUNT,
-                        0,
-                    )?;
-                    (MIN_ORDER_AMOUNT, amount_out)
-                } else {
-                    let amount_in = exchange.swap_exact_amount_out(
-                        bob,
-                        usdc.address(),
-                        eurc.address(),
-                        90,
-                        u128::MAX,
-                    )?;
-                    (amount_in, 90)
-                };
-
-                // Verify bob spent USDC and received EURC
-                assert_eq!(
-                    bob_usdc_before - usdc.balance_of(ITIP20::balanceOfCall { account: bob })?,
-                    U256::from(usdc_in),
-                    "Bob should have spent amount_in USDC"
-                );
-                assert_eq!(
-                    eurc.balance_of(ITIP20::balanceOfCall { account: bob })? - bob_eurc_before,
-                    U256::from(eurc_out),
-                    "Bob should have received amount_out EURC"
-                );
-
-                // Verify bob has ZERO pathUSD (intermediate token should be transitory)
-                assert_eq!(
-                    path_usd.balance_of(ITIP20::balanceOfCall { account: bob })?,
-                    U256::ZERO,
-                    "Bob should have ZERO pathUSD in wallet (transitory)"
-                );
-                assert_eq!(
-                    exchange.balance_of(bob, path_usd.address())?,
+            // Execute multi-hop swap: USDC -> pathUSD -> EURC
+            let (usdc_in, eurc_out) = if exact_in {
+                let amount_out = exchange.swap_exact_amount_in(
+                    bob,
+                    usdc.address(),
+                    eurc.address(),
+                    MIN_ORDER_AMOUNT,
                     0,
-                    "Bob should have ZERO pathUSD on exchange (transitory)"
-                );
+                )?;
+                (MIN_ORDER_AMOUNT, amount_out)
+            } else {
+                let amount_in = exchange.swap_exact_amount_out(
+                    bob,
+                    usdc.address(),
+                    eurc.address(),
+                    90,
+                    u128::MAX,
+                )?;
+                (amount_in, 90)
+            };
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-        Ok(())
+            // Verify bob spent USDC and received EURC
+            assert_eq!(
+                bob_usdc_before - usdc.balance_of(ITIP20::balanceOfCall { account: bob })?,
+                U256::from(usdc_in),
+                "Bob should have spent amount_in USDC"
+            );
+            assert_eq!(
+                eurc.balance_of(ITIP20::balanceOfCall { account: bob })? - bob_eurc_before,
+                U256::from(eurc_out),
+                "Bob should have received amount_out EURC"
+            );
+
+            // Verify bob has ZERO pathUSD (intermediate token should be transitory)
+            assert_eq!(
+                path_usd.balance_of(ITIP20::balanceOfCall { account: bob })?,
+                U256::ZERO,
+                "Bob should have ZERO pathUSD in wallet (transitory)"
+            );
+            assert_eq!(
+                exchange.balance_of(bob, path_usd.address())?,
+                0,
+                "Bob should have ZERO pathUSD on exchange (transitory)"
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
@@ -4155,42 +4145,40 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_place_auto_creates_pair() -> eyre::Result<()> {
-        for flip in [false, true] {
-            let mut storage = HashMapStorageProvider::new(1);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::initialized()?;
-                let [admin, user] = actors();
+    #[test_case(false)]
+    #[test_case(true)]
+    fn test_place_auto_creates_pair(flip: bool) -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::initialized()?;
+            let [admin, user] = actors();
 
-                let (base_token, quote_token) =
-                    setup_test_tokens(admin, user, exchange.address, 100_000_000)?;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, user, exchange.address, 100_000_000)?;
 
-                // Before placing the order, verify pair doesn't exist
-                let book_key = compute_book_key(base_token, quote_token);
-                assert!(exchange.books[book_key].read()?.base.is_zero());
+            // Before placing the order, verify pair doesn't exist
+            let book_key = compute_book_key(base_token, quote_token);
+            assert!(exchange.books[book_key].read()?.base.is_zero());
 
-                // Place an order which should also create the pair
-                if flip {
-                    exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10, false)?;
-                } else {
-                    exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
-                }
-                assert_eq!(exchange.books[book_key].read()?.base, base_token);
+            // Place an order which should also create the pair
+            if flip {
+                exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10, false)?;
+            } else {
+                exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
+            }
+            assert_eq!(exchange.books[book_key].read()?.base, base_token);
 
-                // Verify PairCreated event was emitted (along with OrderPlaced/FlipOrderPlaced)
-                let events = exchange.emitted_events();
-                assert_eq!(events.len(), 2);
-                assert_eq!(
-                    events[0],
-                    StablecoinDEXEvents::pair_created(book_key, base_token, quote_token)
-                        .into_log_data()
-                );
+            // Verify PairCreated event was emitted (along with OrderPlaced/FlipOrderPlaced)
+            let events = exchange.emitted_events();
+            assert_eq!(events.len(), 2);
+            assert_eq!(
+                events[0],
+                StablecoinDEXEvents::pair_created(book_key, base_token, quote_token)
+                    .into_log_data()
+            );
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
@@ -4420,46 +4408,44 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_place_when_payout_token_blacklisted() -> eyre::Result<()> {
+    #[test_case(true)]
+    #[test_case(false)]
+    fn test_place_when_payout_token_blacklisted(is_bid: bool) -> eyre::Result<()> {
         // Bids pay out base and asks pay out quote: blacklisting alice on that token rejects
         // both place and placeFlip.
-        for is_bid in [true, false] {
-            let mut storage = HashMapStorageProvider::new(1);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::initialized()?;
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
-                let [alice, admin] = actors();
+            let [alice, admin] = actors();
 
-                let (base_addr, quote_addr) =
-                    setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
 
-                TIP20Setup::config(if is_bid { base_addr } else { quote_addr })
-                    .with_transfer_policy(TIP403Setup::blacklist(admin).with_members([alice]))
-                    .apply()?;
+            TIP20Setup::config(if is_bid { base_addr } else { quote_addr })
+                .with_transfer_policy(TIP403Setup::blacklist(admin).with_members([alice]))
+                .apply()?;
 
-                exchange.create_pair(base_addr)?;
+            exchange.create_pair(base_addr)?;
 
-                let (tick, flip_tick) = if is_bid { (0, 100) } else { (100, 0) };
-                for result in [
-                    exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, is_bid, 0),
-                    exchange.place_flip(
-                        alice,
-                        base_addr,
-                        MIN_ORDER_AMOUNT,
-                        is_bid,
-                        tick,
-                        flip_tick,
-                        false,
-                    ),
-                ] {
-                    assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
-                }
+            let (tick, flip_tick) = if is_bid { (0, 100) } else { (100, 0) };
+            for result in [
+                exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, is_bid, 0),
+                exchange.place_flip(
+                    alice,
+                    base_addr,
+                    MIN_ORDER_AMOUNT,
+                    is_bid,
+                    tick,
+                    flip_tick,
+                    false,
+                ),
+            ] {
+                assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
+            }
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
@@ -5102,12 +5088,25 @@ mod tests {
         Ok(())
     }
 
-    /// Shared helper for paused-token order placement tests across T3 (no enforcement) and T4
-    /// (rejection). For bids and asks, pauses either the escrow or non-escrow side of the pair
-    /// and asserts whether placing succeeds based on the pause side, internal balance, and active
-    /// hardfork. Places a flip order with `internal_balance_only = flip_internal_only` when given,
-    /// otherwise a plain order.
-    fn assert_paused_token_order(
+    /// Paused-token order placement across T3 (no enforcement) and T4 (rejection). For bids and
+    /// asks, pauses either the escrow or non-escrow side of the pair and asserts whether placing
+    /// succeeds based on the pause side, internal balance, and active hardfork. Places a flip
+    /// order with `internal_balance_only = flip_internal_only` when given, otherwise a plain order.
+    // Full internal balance uses the internal-only path pre-T4, but T4 still rejects
+    // paused-token orders.
+    #[test_case(true, MIN_ORDER_AMOUNT, None)]
+    #[test_case(true, MIN_ORDER_AMOUNT, Some(true))]
+    // Partial internal balance: the fallback transferFrom hits the paused escrow token and
+    // fails on both T3 and T4 without consuming the partial balance.
+    #[test_case(true, MIN_ORDER_AMOUNT - 1, None)]
+    #[test_case(true, MIN_ORDER_AMOUNT - 1, Some(false))]
+    // place and non-internal-only place_flip (transferFrom path, escrow is unpaused so this
+    // succeeds pre-T4)
+    #[test_case(false, 0, None)]
+    #[test_case(false, 0, Some(false))]
+    // place_flip internal-only (requires escrow internal balance)
+    #[test_case(false, MIN_ORDER_AMOUNT, Some(true))]
+    fn test_place_orders_on_paused_token(
         pause_escrow_side: bool,
         internal_balance_amount: u128,
         flip_internal_only: Option<bool>,
@@ -5186,30 +5185,6 @@ mod tests {
             }
         }
         Ok(())
-    }
-
-    #[test]
-    fn test_place_orders_on_paused_token_respects_internal_balance_path() -> eyre::Result<()> {
-        // Full internal balance uses the internal-only path pre-T4, but T4 still rejects
-        // paused-token orders.
-        assert_paused_token_order(true, MIN_ORDER_AMOUNT, None)?;
-        assert_paused_token_order(true, MIN_ORDER_AMOUNT, Some(true))?;
-
-        // Partial internal balance: the fallback transferFrom hits the paused escrow token and
-        // fails on both T3 and T4 without consuming the partial balance.
-        assert_paused_token_order(true, MIN_ORDER_AMOUNT - 1, None)?;
-        assert_paused_token_order(true, MIN_ORDER_AMOUNT - 1, Some(false))
-    }
-
-    #[test]
-    fn test_place_orders_on_paused_non_escrow_token_blocked_on_t4() -> eyre::Result<()> {
-        // place and non-internal-only place_flip (transferFrom path, escrow is unpaused so this
-        // succeeds pre-T4)
-        assert_paused_token_order(false, 0, None)?;
-        assert_paused_token_order(false, 0, Some(false))?;
-
-        // place_flip internal-only (requires escrow internal balance)
-        assert_paused_token_order(false, MIN_ORDER_AMOUNT, Some(true))
     }
 
     #[test]
