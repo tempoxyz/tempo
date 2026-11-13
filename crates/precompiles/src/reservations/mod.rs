@@ -502,8 +502,13 @@ impl Reservations {
             | Placement::Dispute { .. } => None,
         };
         // Card holds count against the owner's spend window for the issuer, and a merchant's hold
-        // against its merchant mandate too; a stand-in approval counts without the check.
+        // against its merchant mandate too; a stand-in approval counts without the check. A direct
+        // hold, through no card, counts against the owner's window and daily limits for its payee,
+        // so a mandate to a payee paid directly is bound by them as a card is.
         let (merchant, window_end, day_end) = match placement {
+            Placement::Plain | Placement::Line { .. } => {
+                Cards::new().count_window(owner, payee, B256::ZERO, call.amount, true)?
+            }
             Placement::Card { issuer, .. } | Placement::CardLine { issuer, .. } => {
                 Cards::new().count_window(owner, issuer, B256::ZERO, call.amount, true)?
             }
@@ -586,7 +591,7 @@ impl Reservations {
         };
         record_spend(&mut auth, spend, held);
         self.authorizations[owner][call.id].write(auth)?;
-        follow_card(&auth, 0)?;
+        follow_card(owner, &auth, 0)?;
         self.emit_event(ReservationsEvent::hold_placed(
             owner,
             call.id,
@@ -676,11 +681,21 @@ impl Reservations {
         let decrease = previous.saturating_sub(call.amount);
         if call.amount > previous {
             let increase = call.amount - previous;
-            // A card hold grows only while its card is active and within its limit.
+            // A card hold grows only while its card is active and within its limit; a direct hold
+            // only within the windows it counted in.
             if auth.card_line != 0 {
                 Cards::new().ensure_may_grow(
                     auth.card_line,
                     auth.merchant,
+                    auth.window_end,
+                    auth.day_end,
+                    increase,
+                    committed + increase,
+                )?;
+            } else if auth.window_end != 0 || auth.day_end != 0 {
+                Cards::new().ensure_window_may_grow(
+                    owner,
+                    auth.payee,
                     auth.window_end,
                     auth.day_end,
                     increase,
@@ -738,7 +753,7 @@ impl Reservations {
         auth.held = held;
         settle_limit(owner, &mut auth)?;
         self.authorizations[owner][call.id].write(auth)?;
-        follow_card(&auth, committed)?;
+        follow_card(owner, &auth, committed)?;
         self.emit_event(ReservationsEvent::hold_adjusted(
             owner,
             call.id,
@@ -864,7 +879,7 @@ impl Reservations {
             .checked_add(amount)
             .ok_or_else(ReservationsError::invalid_amount)?;
         self.authorizations[owner][call.id].write(auth)?;
-        follow_card(&auth, committed)?;
+        follow_card(owner, &auth, committed)?;
         self.emit_event(ReservationsEvent::charged(
             owner,
             call.id,
@@ -939,7 +954,7 @@ impl Reservations {
         auth.refunded = refunded;
         settle_limit(call.owner, &mut auth)?;
         self.authorizations[call.owner][call.id].write(auth)?;
-        follow_card(&auth, committed)?;
+        follow_card(call.owner, &auth, committed)?;
         self.emit_event(ReservationsEvent::refunded(
             call.owner,
             call.id,
@@ -1095,7 +1110,7 @@ impl Reservations {
             auth.refunded += credited;
             settle_limit(owner, &mut auth)?;
             self.authorizations[owner][id].write(auth)?;
-            follow_card(&auth, committed)?;
+            follow_card(owner, &auth, committed)?;
             dispute.state = DISPUTE_WON;
             (rest, 0)
         } else {
@@ -1676,7 +1691,7 @@ impl Reservations {
         auth.captured = captured;
         settle_limit(owner, &mut auth)?;
         self.authorizations[owner][id].write(auth)?;
-        follow_card(&auth, committed)?;
+        follow_card(owner, &auth, committed)?;
         self.emit_event(ReservationsEvent::hold_captured(
             owner, id, auth.token, amount, debt,
         ))
@@ -1883,7 +1898,7 @@ impl Reservations {
         } else {
             self.authorizations[owner][id].write(auth)?;
         }
-        follow_card(&auth, committed)?;
+        follow_card(owner, &auth, committed)?;
         self.emit_event(ReservationsEvent::hold_released(owner, id, auth.token))
     }
 
@@ -2112,10 +2127,21 @@ fn record_spend(auth: &mut Authorization, spend: Option<LimitSpend>, amount: u12
     auth.counted = U96::try_from(counted).unwrap_or(U96::MAX);
 }
 
-/// Moves the card line of `auth`, if any, from the authorization's earlier committed amount
-/// `before` to what it commits now.
-fn follow_card(auth: &Authorization, before: u128) -> Result<()> {
+/// Moves the card line of `owner`'s `auth`, if any, or the windows a direct hold counted in, from
+/// the authorization's earlier committed amount `before` to what it commits now.
+fn follow_card(owner: Address, auth: &Authorization, before: u128) -> Result<()> {
     if auth.card_line == 0 {
+        if auth.window_end == 0 && auth.day_end == 0 {
+            return Ok(());
+        }
+        Cards::new().follow_window(
+            owner,
+            auth.payee,
+            auth.window_end,
+            auth.day_end,
+            before,
+            auth.committed(),
+        )?;
         return Ok(());
     }
     Cards::new().follow_commitment(
@@ -5311,6 +5337,45 @@ mod tests {
                     .unwrap_err(),
                 CardsError::unauthorized().into()
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_daily_limits_bound_direct_holds_net_of_refunds() -> eyre::Result<()> {
+        // A direct hold, through no card, counts against the owner's limits for its payee.
+        let end = (NOW + 3_600) as u32;
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let (owner, payee) = (f.owner, f.payee);
+            cards.set_daily_limits(
+                owner,
+                ICards::setDailyLimitsCall {
+                    issuer: payee,
+                    firstEnd: end,
+                    limit: 150,
+                    perPurchase: 100,
+                },
+            )?;
+            let committed =
+                |cards: &Cards| -> Result<u64> { Ok(cards.daily_limits(owner, payee)?.committed) };
+            let over = || CardsError::window_limit_exceeded().into();
+
+            assert_eq!(f.hold(B256::random(), 120).unwrap_err(), over());
+            let first = B256::random();
+            f.hold(first, 90)?;
+            assert_eq!(f.hold(B256::random(), 70).unwrap_err(), over());
+            assert_eq!(f.adjust(first, 101).unwrap_err(), over());
+            f.capture(first, 90)?;
+            f.refund(payee, first, 30)?;
+            assert_eq!(committed(&cards)?, 60);
+            let second = B256::random();
+            f.hold(second, 70)?;
+            assert_eq!(committed(&cards)?, 130);
+            f.reservations.release(owner, second)?;
+            assert_eq!(committed(&cards)?, 60);
             Ok(())
         })
     }

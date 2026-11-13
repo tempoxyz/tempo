@@ -96,7 +96,7 @@ struct Payout {
 
 /// An owner's calendar-month window on one issuer's card holds, in one slot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-struct Window {
+pub(crate) struct Window {
     limit: U96,
     /// What card holds counted in the current period commit now.
     committed: U96,
@@ -216,6 +216,34 @@ impl Cards {
         self.ensure_within_limit(line, amount)?;
         let owner = self.lines[line].owner.read()?;
         let issuer = self.lines[line].payee.read()?;
+        let window =
+            self.ensure_window_may_grow(owner, issuer, window_end, day_end, amount, total)?;
+        if merchant != 0 {
+            let mandate = merchant_rolled(self.merchants[merchant].read()?, window.period_end);
+            if mandate.revoked {
+                return Err(CardsError::merchant_revoked().into());
+            }
+            if window_end == mandate.period_end && exceeds(mandate.committed, amount, mandate.limit)
+            {
+                return Err(CardsError::window_limit_exceeded().into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks that `owner`'s window and daily limits for `issuer` let an authorization commit
+    /// `amount` more, to `total`, while the periods it counted in (`window_end`, `day_end`) are
+    /// current, and returns the rolled window. Called before a card hold grows, and by
+    /// `IReservations.adjust` before a direct hold that counted in them grows.
+    pub(crate) fn ensure_window_may_grow(
+        &self,
+        owner: Address,
+        issuer: Address,
+        window_end: u32,
+        day_end: u32,
+        amount: u128,
+        total: u128,
+    ) -> Result<Window> {
         let day = day_rolled(self.daily[owner][issuer].read()?, self.now());
         if day.period_end != 0
             && (passes(0, total, day.per_purchase)
@@ -230,17 +258,7 @@ impl Cards {
         {
             return Err(CardsError::window_limit_exceeded().into());
         }
-        if merchant != 0 {
-            let mandate = merchant_rolled(self.merchants[merchant].read()?, window.period_end);
-            if mandate.revoked {
-                return Err(CardsError::merchant_revoked().into());
-            }
-            if window_end == mandate.period_end && exceeds(mandate.committed, amount, mandate.limit)
-            {
-                return Err(CardsError::window_limit_exceeded().into());
-            }
-        }
-        Ok(())
+        Ok(window)
     }
 
     /// Moves `line`'s committed counter by an authorization's change of committed amount, from
@@ -267,6 +285,34 @@ impl Cards {
         let owner = self.lines[line].owner.read()?;
         self.note_activity(owner)?;
         let issuer = self.lines[line].payee.read()?;
+        let window = self.follow_window(owner, issuer, window_end, day_end, before, after)?;
+        if merchant != 0 {
+            let stored = self.merchants[merchant].read()?;
+            let mut mandate = merchant_rolled(stored, window.period_end);
+            if window_end == mandate.period_end {
+                mandate.committed = moved(mandate.committed, before, after)?;
+            }
+            if mandate != stored {
+                self.merchants[merchant].write(mandate)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Moves `owner`'s window and day counters for `issuer` by an authorization's change of
+    /// committed amount, from `before` to `after`, while the periods it counted in (`window_end`,
+    /// `day_end`) are current, and returns the rolled window. Called for card holds through
+    /// [`Self::follow_commitment`], and by the reservations precompile for direct holds that
+    /// counted in them.
+    pub(crate) fn follow_window(
+        &mut self,
+        owner: Address,
+        issuer: Address,
+        window_end: u32,
+        day_end: u32,
+        before: u128,
+        after: u128,
+    ) -> Result<Window> {
         let stored = self.windows[owner][issuer].read()?;
         let mut window = rolled(stored, self.now());
         if window.period_end != 0 && window_end == window.period_end {
@@ -286,17 +332,7 @@ impl Cards {
                 self.daily[owner][issuer].write(day)?;
             }
         }
-        if merchant != 0 {
-            let stored = self.merchants[merchant].read()?;
-            let mut mandate = merchant_rolled(stored, window.period_end);
-            if window_end == mandate.period_end {
-                mandate.committed = moved(mandate.committed, before, after)?;
-            }
-            if mandate != stored {
-                self.merchants[merchant].write(mandate)?;
-            }
-        }
-        Ok(())
+        Ok(window)
     }
 
     /// Checks that a card hold of `amount` by `owner` through `issuer`'s card fits its spend window
