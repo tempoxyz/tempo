@@ -5,7 +5,8 @@
 //! The seed covers only values drawn through these fixtures, not `Address::random()` and the like.
 
 use alloc::vec::Vec;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
+use alloy_signer_local::PrivateKeySigner;
 use core::cell::RefCell;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::sync::Once;
@@ -62,4 +63,22 @@ pub fn amounts<const N: usize>() -> [U256; N] {
     });
     amounts.sort_unstable_by(|a, b| b.cmp(a));
     amounts
+}
+
+/// Returns `N` random signers from the test RNG.
+pub fn signers<const N: usize>() -> [PrivateKeySigner; N] {
+    signers_vec(N).try_into().unwrap()
+}
+
+/// Returns `n` random signers from the test RNG.
+pub fn signers_vec(n: usize) -> Vec<PrivateKeySigner> {
+    with_rng(|rng| {
+        (0..n)
+            .map(|_| {
+                // A random 32-byte scalar is zero or above the curve order with probability ~2^-128.
+                PrivateKeySigner::from_bytes(&B256::from(rng.random::<[u8; 32]>()))
+                    .expect("random bytes are a valid secp256k1 key")
+            })
+            .collect()
+    })
 }

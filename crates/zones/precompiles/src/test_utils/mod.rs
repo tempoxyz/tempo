@@ -7,3 +7,7 @@ pub use l1_reader::MockL1Reader;
 mod local;
 #[cfg(test)]
 pub(crate) use local::*;
+#[cfg(test)]
+mod zone;
+#[cfg(test)]
+pub(crate) use zone::{WITHDRAWAL_TX_HASH, ZoneEnv, ZoneSpec};

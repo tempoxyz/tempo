@@ -126,6 +126,7 @@ reth-trie-common = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 serde = { workspace = true, features = ["alloc", "derive"] }
 sha2 = { workspace = true, default-features = true }
+tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
@@ -204,4 +205,5 @@ test-utils = [
   "zone-chainspec/test-utils",
   "zone-node/test-utils",
   "zone-precompiles/test-utils",
+  "tempo-alloy/test-utils",
 ]

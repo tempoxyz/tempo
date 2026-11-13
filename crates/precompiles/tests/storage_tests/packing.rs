@@ -824,8 +824,7 @@ fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
     ]);
 
     // -- Pre-T4: SLOAD is performed, so unused bytes retain the garbage --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-    StorageCtx::enter(&mut storage, || {
+    with_storage(TempoHardfork::T0, || {
         // Pre-fill the slot with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
         StorageCtx.reset_counters();
@@ -846,8 +845,7 @@ fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
     })?;
 
     // -- T4: SLOAD is skipped, so unused bytes are zero (not garbage) --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-    StorageCtx::enter(&mut storage, || {
+    with_storage(TempoHardfork::T4, || {
         // Pre-fill the slot with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
         StorageCtx.reset_counters();
@@ -878,9 +876,7 @@ fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
 #[test]
 fn test_t4_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
     let address = Address::random();
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-
-    StorageCtx::enter(&mut storage, || {
+    with_storage(TempoHardfork::T4, || {
         let base_slot = U256::from(100);
 
         // Store the full struct with known neighbor values
@@ -950,8 +946,7 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
     };
 
     // -- Pre-T4: SLOADs are performed for each packed slot --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-    StorageCtx::enter(&mut storage, || {
+    with_storage(TempoHardfork::T0, || {
         // Pre-fill both slots with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
         U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).write(garbage)?;
@@ -979,8 +974,7 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
     })?;
 
     // -- T4: SLOADs are skipped for both packed slots --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-    StorageCtx::enter(&mut storage, || {
+    with_storage(TempoHardfork::T4, || {
         // Pre-fill both slots with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
         U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).write(garbage)?;
@@ -1013,9 +1007,7 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
 #[test]
 fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
     let address = Address::random();
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-
-    StorageCtx::enter(&mut storage, || {
+    with_storage(TempoHardfork::T4, || {
         let base_slot = U256::from(200);
 
         let original = PackedThreeSlot {
