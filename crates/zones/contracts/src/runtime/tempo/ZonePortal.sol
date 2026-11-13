@@ -1244,8 +1244,15 @@ contract ZonePortal is IZonePortal {
         if (success) {
             emit DepositBounceBack(withdrawal.to, _token, refundAmount, collectedFee);
         } else {
-            refunds[_token][withdrawal.to] += refundAmount;
-            emit DepositBounceBackPending(withdrawal.to, _token, refundAmount, collectedFee);
+            // claimRefund keys by msg.sender: park a virtual recipient's refund under its master.
+            address refundOwner = withdrawal.to;
+            try StdPrecompiles.ADDRESS_REGISTRY.resolveRecipient(refundOwner) returns (
+                address resolved
+            ) {
+                refundOwner = resolved;
+            } catch { }
+            refunds[_token][refundOwner] += refundAmount;
+            emit DepositBounceBackPending(refundOwner, _token, refundAmount, collectedFee);
         }
     }
 
