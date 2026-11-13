@@ -610,7 +610,6 @@ where
                 state_nonce,
                 transaction,
                 propagate,
-                authorities,
                 ..
             } => {
                 let transaction = transaction.into_transaction();
@@ -622,8 +621,9 @@ where
                     propagate,
                     timestamp: Instant::now(),
                     origin,
-                    authority_ids: authorities
-                        .map(|auths| self.reth_pool.inner().get_sender_ids(auths)),
+                    // Only Reth's pool reads these, for its EIP-7702 delegation limits, and it holds
+                    // no transactions here. The 2D pool doesn't cap authorization authorities.
+                    authority_ids: None,
                 };
 
                 // Get the active Tempo hardfork for expiring nonce handling
