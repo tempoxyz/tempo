@@ -269,7 +269,7 @@ impl SigningShare {
         use std::io::Write as _;
 
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create(true);
 
         #[cfg(unix)]
         {
@@ -283,7 +283,8 @@ impl SigningShare {
             .open(path.as_ref())
             .map_err(SigningShareErrorKind::Write)?;
 
-        // `mode` only applies on creation; also tighten an existing file.
+        // `mode` only applies on creation; also tighten an existing file
+        // before discarding its contents, so a failed chmod leaves it intact.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -291,6 +292,8 @@ impl SigningShare {
             file.set_permissions(std::fs::Permissions::from_mode(0o600))
                 .map_err(SigningShareErrorKind::Write)?;
         }
+
+        file.set_len(0).map_err(SigningShareErrorKind::Write)?;
 
         file.write_all(self.to_string().as_bytes())
             .map_err(SigningShareErrorKind::Write)?;
