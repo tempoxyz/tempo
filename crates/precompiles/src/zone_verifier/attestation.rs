@@ -38,7 +38,8 @@ pub(super) fn verify_attestation_with_root(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::test_util::with_storage;
+
     use base64::Engine;
     use minicbor::Encoder;
     use p384::ecdsa::{DerSignature, Signature, SigningKey, signature::Signer};
@@ -76,8 +77,7 @@ pub(super) mod tests {
     }
 
     fn verify_production_document_at(document: &[u8], timestamp: u64) -> Option<NitroAttestation> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T13, || {
             verify_attestation_with_root(document, timestamp, AWS_NITRO_ROOT_DER).unwrap()
         })
     }
@@ -235,8 +235,7 @@ pub(super) mod tests {
             )
         );
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T13, || {
             let verified = verify_attestation_with_root(
                 &document,
                 PRODUCTION_FIXTURE_TIME,

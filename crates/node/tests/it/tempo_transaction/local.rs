@@ -17,10 +17,7 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use eyre::{OptionExt, WrapErr};
-use p256::{
-    ecdsa::{SigningKey, signature::Signer},
-    elliptic_curve::rand_core::OsRng,
-};
+use p256::ecdsa::signature::Signer;
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
@@ -47,7 +44,9 @@ use tempo_primitives::{
     transaction::{
         KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
-        tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
+        tt_signature::{
+            KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature, p256_keypair,
+        },
     },
 };
 
@@ -914,26 +913,10 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     // Generate the correct P256 key pair for WebAuthn
-    let correct_signing_key = SigningKey::random(&mut OsRng);
-    let correct_verifying_key = correct_signing_key.verifying_key();
-
-    // Extract correct public key coordinates
-    let correct_encoded_point = correct_verifying_key.to_encoded_point(false);
-    let correct_pub_key_x =
-        alloy::primitives::B256::from_slice(correct_encoded_point.x().unwrap().as_ref());
-    let correct_pub_key_y =
-        alloy::primitives::B256::from_slice(correct_encoded_point.y().unwrap().as_ref());
+    let (correct_signing_key, correct_pub_key_x, correct_pub_key_y, _) = p256_keypair();
 
     // Generate a different (wrong) P256 key pair
-    let wrong_signing_key = SigningKey::random(&mut OsRng);
-    let wrong_verifying_key = wrong_signing_key.verifying_key();
-
-    // Extract wrong public key coordinates
-    let wrong_encoded_point = wrong_verifying_key.to_encoded_point(false);
-    let wrong_pub_key_x =
-        alloy::primitives::B256::from_slice(wrong_encoded_point.x().unwrap().as_ref());
-    let wrong_pub_key_y =
-        alloy::primitives::B256::from_slice(wrong_encoded_point.y().unwrap().as_ref());
+    let (wrong_signing_key, wrong_pub_key_x, wrong_pub_key_y, _) = p256_keypair();
 
     // Use TEST_MNEMONIC account for provider wallet
     let funder_signer = test_signer(0);
@@ -1706,8 +1689,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     // Generate an access key for the attack
-    let (access_key_signing, access_pub_x, access_pub_y, access_key_addr) =
-        generate_p256_access_key();
+    let (access_key_signing, access_pub_x, access_pub_y, access_key_addr) = p256_keypair();
 
     println!("Access key address: {access_key_addr}");
 
@@ -2056,8 +2038,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     // Generate an access key for the attack
-    let (access_key_signing, access_pub_x, access_pub_y, access_key_addr) =
-        generate_p256_access_key();
+    let (access_key_signing, access_pub_x, access_pub_y, access_key_addr) = p256_keypair();
 
     println!("Access key address: {access_key_addr}");
 
@@ -2327,7 +2308,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     // Shared access keys, same key authorized on both accounts
     let secp_access_signer = alloy::signers::local::PrivateKeySigner::random();
     let secp_access_addr = secp_access_signer.address();
-    let (p256_access_signer, pub_x, pub_y, p256_access_addr) = generate_p256_access_key();
+    let (p256_access_signer, pub_x, pub_y, p256_access_addr) = p256_keypair();
 
     let mut nonce_alice = provider.get_transaction_count(alice_addr).await?;
 
@@ -2468,7 +2449,7 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
         .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
-    let (access_key_signing, pub_x, pub_y, access_key_addr) = generate_p256_access_key();
+    let (access_key_signing, pub_x, pub_y, access_key_addr) = p256_keypair();
 
     let mut nonce = provider.get_transaction_count(root_addr).await?;
 

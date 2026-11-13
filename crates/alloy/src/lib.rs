@@ -22,6 +22,9 @@ pub mod fillers;
 /// Relay transport for fee payer / sponsor support.
 pub mod transport;
 
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
+
 #[doc(inline)]
 pub use tempo_primitives as primitives;
 

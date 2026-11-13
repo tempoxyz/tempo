@@ -22,6 +22,7 @@ use tempo_alloy::{
     TempoNetwork,
     contracts::{MULTICALL3_ADDRESS, Multicall3},
     rpc::TempoTransactionReceipt,
+    test_utils::CallBuilderExt,
 };
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
@@ -55,18 +56,14 @@ fn burn_at_is_unavailable_before_t12() {
             .grantRole(BURN_AT_ROLE, admin)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
         let receipt = token
             .mint(admin, U256::from(10))
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
 
@@ -75,9 +72,7 @@ fn burn_at_is_unavailable_before_t12() {
             .burnAt(admin, U256::ONE)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(!receipt.status());
         assert_no_burn_events(receipt.logs(), address);
@@ -101,9 +96,7 @@ fn burn_at_permissions_policy_and_protected_balances() {
             .mint(holder, U256::from(100))
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
         assert_eq!(
@@ -116,9 +109,7 @@ fn burn_at_permissions_policy_and_protected_balances() {
             .burnAt(holder, U256::ONE)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(!receipt.status());
         assert_no_burn_events(receipt.logs(), address);
@@ -126,18 +117,14 @@ fn burn_at_permissions_policy_and_protected_balances() {
             .grantRole(BURN_BLOCKED_ROLE, admin)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
         let receipt = token
             .burnAt(holder, U256::ONE)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(!receipt.status());
         assert_no_burn_events(receipt.logs(), address);
@@ -146,9 +133,7 @@ fn burn_at_permissions_policy_and_protected_balances() {
                 .grantRole(role, admin)
                 .gas(GAS)
                 .gas_price(GAS_PRICE)
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             assert!(receipt.status());
         }
@@ -159,18 +144,14 @@ fn burn_at_permissions_policy_and_protected_balances() {
                 .changeTransferPolicyId(policy)
                 .gas(GAS)
                 .gas_price(GAS_PRICE)
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             assert!(receipt.status());
             let receipt = token
                 .burnAt(holder, U256::from(20))
                 .gas(GAS)
                 .gas_price(GAS_PRICE)
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             assert!(receipt.status());
             assert_burn_events(receipt.logs(), address, admin, holder, U256::from(20));
@@ -182,9 +163,7 @@ fn burn_at_permissions_policy_and_protected_balances() {
             .burnAt(holder, U256::ZERO)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(zero.status());
         assert_burn_events(zero.logs(), address, admin, holder, U256::ZERO);
@@ -192,29 +171,18 @@ fn burn_at_permissions_policy_and_protected_balances() {
             .burnAt(holder, remaining + U256::ONE)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(!receipt.status());
         assert_no_burn_events(receipt.logs(), address);
 
-        let receipt = token
-            .pause()
-            .gas(GAS)
-            .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = token.pause().gas(GAS).gas_price(GAS_PRICE).mined().await?;
         assert!(receipt.status());
         let receipt = token
             .burnAt(holder, U256::ONE)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(!receipt.status());
         assert_no_burn_events(receipt.logs(), address);
@@ -222,9 +190,7 @@ fn burn_at_permissions_policy_and_protected_balances() {
             .unpause()
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
 
@@ -242,9 +208,7 @@ fn burn_at_permissions_policy_and_protected_balances() {
                 .burnAt(from, U256::ZERO)
                 .gas(GAS)
                 .gas_price(GAS_PRICE)
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             assert!(!receipt.status());
             assert_no_burn_events(receipt.logs(), address);
@@ -252,9 +216,7 @@ fn burn_at_permissions_policy_and_protected_balances() {
                 .burnBlocked(from, U256::ZERO)
                 .gas(GAS)
                 .gas_price(GAS_PRICE)
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             assert!(!receipt.status());
             assert_no_burn_events(receipt.logs(), address);
@@ -263,18 +225,14 @@ fn burn_at_permissions_policy_and_protected_balances() {
             .revokeRole(BURN_AT_ROLE, admin)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
         let receipt = token
             .burnAt(holder, U256::ONE)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(!receipt.status());
         assert_no_burn_events(receipt.logs(), address);
@@ -300,9 +258,7 @@ fn burn_at_bridge_enforces_access_key_limits_and_rolls_back() {
             .mint(holder, U256::from(40))
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
 
@@ -312,9 +268,7 @@ fn burn_at_bridge_enforces_access_key_limits_and_rolls_back() {
             .grantRole(BURN_AT_ROLE, MULTICALL3_ADDRESS)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
         let key = PrivateKeySigner::random();
@@ -343,9 +297,7 @@ fn burn_at_bridge_enforces_access_key_limits_and_rolls_back() {
             )
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
 
@@ -387,9 +339,7 @@ fn burn_at_bridge_enforces_access_key_limits_and_rolls_back() {
             .nonce(provider.get_transaction_count(holder).await?)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(receipt.status());
         let receipt = send_access_key_calls(&aa_provider, holder, &key, vec![burn(81)]).await?;

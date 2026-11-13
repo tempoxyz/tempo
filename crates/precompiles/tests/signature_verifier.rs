@@ -140,8 +140,7 @@ fn storage_at(
 ) -> HashMapStorageProvider {
     let mut storage = HashMapStorageProvider::new_with_spec(1, T13);
     StorageCtx::enter(&mut storage, || {
-        let mut keychain = AccountKeychain::new();
-        keychain.initialize().unwrap();
+        let mut keychain = AccountKeychain::initialized().unwrap();
         if let Some(Grant {
             stored_type,
             admin: true,

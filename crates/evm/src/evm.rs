@@ -1643,8 +1643,7 @@ mod runtime_tests {
                         .with_role(MULTICALL3_ADDRESS, BURN_AT_ROLE)
                         .with_mint(holder, U256::from(balance))
                         .apply()?;
-                    let mut keychain = AccountKeychain::new();
-                    keychain.initialize()?;
+                    let mut keychain = AccountKeychain::initialized()?;
                     keychain.set_tx_origin(holder)?;
                     keychain.authorize_key(
                         holder,

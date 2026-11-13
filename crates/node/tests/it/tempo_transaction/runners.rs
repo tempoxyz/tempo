@@ -27,7 +27,7 @@ use tempo_primitives::{
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
-            normalize_p256_s,
+            normalize_p256_s, p256_keypair,
         },
     },
 };
@@ -1066,9 +1066,8 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
         KeySetup::UnauthorizedKey => {
             assert!(matches!(test_case.expected, ExpectedOutcome::Rejection));
             // Authorize one key, then sign tx with a different (never-authorized) key
-            let (_auth_signing, auth_pub_x, auth_pub_y, auth_addr) = generate_p256_access_key();
-            let (unauth_signing, unauth_pub_x, unauth_pub_y, _unauth_addr) =
-                generate_p256_access_key();
+            let (_auth_signing, auth_pub_x, auth_pub_y, auth_addr) = p256_keypair();
+            let (unauth_signing, unauth_pub_x, unauth_pub_y, _unauth_addr) = p256_keypair();
 
             let mock_sig = match test_case.key_type {
                 KeyType::P256 => create_mock_p256_sig(auth_pub_x, auth_pub_y),
@@ -1142,9 +1141,8 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                 }
                 _ => {
                     // P256 / WebAuthn path (existing logic)
-                    let (another_key, pub_x_3, pub_y_3, addr_3) = generate_p256_access_key();
-                    let (wrong_signer_key, wrong_pub_x, wrong_pub_y, _) =
-                        generate_p256_access_key();
+                    let (another_key, pub_x_3, pub_y_3, addr_3) = p256_keypair();
+                    let (wrong_signer_key, wrong_pub_x, wrong_pub_y, _) = p256_keypair();
 
                     let auth_message_hash =
                         KeyAuthorization::unrestricted(chain_id, SignatureType::P256, addr_3)
@@ -1222,7 +1220,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             }
         }
         KeyType::P256 | KeyType::WebAuthn => {
-            let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
+            let (signing_key, pub_key_x, pub_key_y, signer_addr) = p256_keypair();
             if !test_case.fee_payer {
                 let _ = env.fund_account(signer_addr).await?;
             }
@@ -1361,8 +1359,7 @@ async fn run_raw_access_key_case<E: TestEnv>(
             Ok(())
         }
         KeyType::P256 | KeyType::WebAuthn => {
-            let (access_signing_key, access_pub_x, access_pub_y, access_key_addr) =
-                generate_p256_access_key();
+            let (access_signing_key, access_pub_x, access_pub_y, access_key_addr) = p256_keypair();
             let mock_sig = match test_case.key_type {
                 KeyType::P256 => create_mock_p256_sig(access_pub_x, access_pub_y),
                 KeyType::WebAuthn => create_mock_webauthn_sig(access_pub_x, access_pub_y),
@@ -1395,7 +1392,7 @@ async fn run_raw_access_key_case<E: TestEnv>(
                         .await?;
 
                     // Now key1 tries to authorize key2 (unauthorized)
-                    let (_, pub_x_2, pub_y_2, access_addr_2) = generate_p256_access_key();
+                    let (_, pub_x_2, pub_y_2, access_addr_2) = p256_keypair();
                     let mock_sig_2 = match test_case.key_type {
                         KeyType::P256 => create_mock_p256_sig(pub_x_2, pub_y_2),
                         KeyType::WebAuthn => create_mock_webauthn_sig(pub_x_2, pub_y_2),
@@ -1512,7 +1509,7 @@ pub(super) async fn run_send_case<E: TestEnv>(
         let transfer_amount = resolve_send_amounts(test_case, funded);
 
         let (access_signing_key, access_pub_key_x, access_pub_key_y, access_key_addr) =
-            generate_p256_access_key();
+            p256_keypair();
         let access_signature = match test_case.key_type {
             KeyType::P256 => create_mock_p256_sig(access_pub_key_x, access_pub_key_y),
             KeyType::WebAuthn => create_mock_webauthn_sig(access_pub_key_x, access_pub_key_y),
@@ -1645,7 +1642,7 @@ pub(super) async fn run_send_case<E: TestEnv>(
             .await?;
         }
         KeyType::P256 | KeyType::WebAuthn => {
-            let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
+            let (signing_key, pub_key_x, pub_key_y, signer_addr) = p256_keypair();
             let funded = env.fund_account(signer_addr).await?;
             let transfer_amount = resolve_send_amounts(test_case, funded);
 
@@ -1752,7 +1749,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
     }
 
     let tx_hash = if uses_p256 {
-        let (signing_key, pub_key_x, pub_key_y, signer_addr) = generate_p256_access_key();
+        let (signing_key, pub_key_x, pub_key_y, signer_addr) = p256_keypair();
 
         // In the E2E fill flow, P256/WebAuthn signers use a fee payer
         // to cover gas (the fee_payer flag on FillTestCase is not checked
@@ -2029,14 +2026,14 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
     let auth1_signed = TempoSignedAuthorization::new_unchecked(auth1, sig1.into());
 
     // Authority 2: P256
-    let (auth2_key, pub2_x, pub2_y, auth2_addr) = generate_p256_access_key();
+    let (auth2_key, pub2_x, pub2_y, auth2_addr) = p256_keypair();
     let (auth2, sig_hash2) = build_authorization(chain_id, delegate_address);
     let inner2 = sign_p256_primitive(sig_hash2, &auth2_key, pub2_x, pub2_y)?;
     let auth2_signed =
         TempoSignedAuthorization::new_unchecked(auth2, TempoSignature::Primitive(inner2));
 
     // Authority 3: WebAuthn
-    let (auth3_key, pub3_x, pub3_y, auth3_addr) = generate_p256_access_key();
+    let (auth3_key, pub3_x, pub3_y, auth3_addr) = p256_keypair();
     let (auth3, sig_hash3) = build_authorization(chain_id, delegate_address);
     let inner3 =
         sign_webauthn_primitive(sig_hash3, &auth3_key, pub3_x, pub3_y, "https://example.com")?;
@@ -2207,9 +2204,9 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
     let root_addr = root_signer.address();
     let funded = env.fund_account(root_addr).await?;
 
-    let (never_signing, never_pub_x, never_pub_y, never_addr) = generate_p256_access_key();
-    let (short_signing, short_pub_x, short_pub_y, short_addr) = generate_p256_access_key();
-    let (_past_signing, past_pub_x, past_pub_y, past_addr) = generate_p256_access_key();
+    let (never_signing, never_pub_x, never_pub_y, never_addr) = p256_keypair();
+    let (short_signing, short_pub_x, short_pub_y, short_addr) = p256_keypair();
+    let (_past_signing, past_pub_x, past_pub_y, past_addr) = p256_keypair();
 
     let mut nonce = env.provider().get_transaction_count(root_addr).await?;
     // Use a small fraction to leave room for gas across multiple operations
@@ -2386,7 +2383,7 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
 pub(super) async fn run_send_negative_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
     println!("\n=== Send negative scenario ===\n");
 
-    let (_signing_key, _pub_key_x, _pub_key_y, signer_addr) = generate_p256_access_key();
+    let (_signing_key, _pub_key_x, _pub_key_y, signer_addr) = p256_keypair();
     let _ = env.fund_account(signer_addr).await?;
     let _chain_id = env.chain_id();
 

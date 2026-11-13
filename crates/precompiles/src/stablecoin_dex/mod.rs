@@ -72,6 +72,14 @@ impl StablecoinDEX {
         self.__initialize()
     }
 
+    /// Creates and initializes the precompile, for tests that don't exercise initialization.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialized() -> Result<Self> {
+        let mut this = Self::new();
+        this.initialize()?;
+        Ok(this)
+    }
+
     /// Read next order ID (always at least 1)
     fn next_order_id(&self) -> Result<u128> {
         Ok(self.next_order_id.read()?.max(1))
@@ -1915,7 +1923,7 @@ mod tests {
     use tempo_primitives::test_utils::{actors, actors_vec};
 
     use super::*;
-    use crate::STABLECOIN_DEX_ADDRESS;
+    use crate::{STABLECOIN_DEX_ADDRESS, test_util::with_storage};
     use proptest::prelude::*;
 
     fn setup_test_tokens(
@@ -1941,10 +1949,8 @@ mod tests {
 
     #[test]
     fn test_t8_book_index_state_is_one_based() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T8, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, user] = actors();
             let (base, quote) = setup_test_tokens(admin, user, exchange.address, 0)?;
@@ -1970,8 +1976,7 @@ mod tests {
         let amount = MIN_ORDER_AMOUNT;
 
         let (base, quote, book_key, first_order) = StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
             let (base, quote) = setup_test_tokens(admin, maker, exchange.address, amount * 4)?;
             let book_key = exchange.create_pair(base)?;
             let first_order = exchange.place(maker, base, amount, true, tick)?;
@@ -2093,26 +2098,20 @@ mod tests {
 
     #[test]
     fn test_t8_book_index_rejects_uninitialized_book_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T8, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let book_key = B256::random();
             exchange.book_keys.push(book_key)?;
 
-            assert!(matches!(
+            assert_eq!(
                 exchange.book_key_index(book_key),
-                Err(TempoPrecompileError::StablecoinDEX(
-                    StablecoinDEXError::PairDoesNotExist(_)
-                ))
-            ));
-            assert!(matches!(
+                Err(StablecoinDEXError::pair_does_not_exist().into())
+            );
+            assert_eq!(
                 exchange.set_book_index(0),
-                Err(TempoPrecompileError::StablecoinDEX(
-                    StablecoinDEXError::PairDoesNotExist(_)
-                ))
-            ));
+                Err(StablecoinDEXError::pair_does_not_exist().into())
+            );
 
             Ok(())
         })
@@ -2181,8 +2180,7 @@ mod tests {
     fn test_settlement_rounding_favors_protocol() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
 
@@ -2242,8 +2240,7 @@ mod tests {
     fn test_cancellation_refund_equals_escrow_for_bid_orders() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
 
@@ -2291,10 +2288,8 @@ mod tests {
 
     #[test]
     fn test_dex_storage_credits_cancel_then_reuse_t7() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T7, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -2321,10 +2316,8 @@ mod tests {
 
     #[test]
     fn test_dex_storage_credits_non_tail_cancel_credits_order_maker_t7() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T7, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -2360,10 +2353,8 @@ mod tests {
 
     #[test]
     fn test_dex_storage_credits_non_tail_fill_credits_order_maker_t7() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T7, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, taker, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -2403,10 +2394,8 @@ mod tests {
 
     #[test]
     fn test_dex_storage_credits_tail_cancel_credits_predecessor_next_t7() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T7, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -2446,8 +2435,7 @@ mod tests {
     fn test_place_below_minimum_amount() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let below_minimum = MIN_ORDER_AMOUNT - 1;
@@ -2484,8 +2472,7 @@ mod tests {
         ] {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                let mut exchange = StablecoinDEX::initialized()?;
 
                 let [alice, admin] = actors();
                 let escrow = if is_bid {
@@ -2568,10 +2555,8 @@ mod tests {
     #[test]
     fn test_place_flip_same_tick_per_hardfork() -> eyre::Result<()> {
         for spec in [TempoHardfork::T4, TempoHardfork::T5] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+            with_storage(spec, || {
+                let mut exchange = StablecoinDEX::initialized()?;
 
                 let [alice, admin] = actors();
                 let tick = 100i16;
@@ -2616,10 +2601,8 @@ mod tests {
     /// security boundary so we pin the behavior here too.
     #[test]
     fn test_place_flip_wrong_side_still_rejected_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T5, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let tick = 100i16;
@@ -2678,10 +2661,8 @@ mod tests {
     /// the backrunning case the spec flags under MEV implications.
     #[test]
     fn test_flip_same_tick_locked_book_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T5, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -2813,8 +2794,7 @@ mod tests {
     fn test_withdraw() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let tick = 100i16;
@@ -2859,8 +2839,7 @@ mod tests {
     fn test_withdraw_insufficient_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
 
@@ -2884,8 +2863,7 @@ mod tests {
     fn test_quote_swap_exact_amount_out() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let amount_out = 500_000u128;
@@ -2914,8 +2892,7 @@ mod tests {
     fn test_quote_swap_exact_amount_in() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let amount_in = 500_000u128;
@@ -2945,8 +2922,7 @@ mod tests {
     fn test_quote_swap_exact_amount_out_base_for_quote() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let amount_out = 500_000u128;
@@ -2978,8 +2954,7 @@ mod tests {
     fn test_quote_exact_out_bid_positive_tick_no_underflow() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
 
@@ -3013,8 +2988,7 @@ mod tests {
     fn test_swap_exact_amount_out() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let amount_out = 500_000u128;
@@ -3056,8 +3030,7 @@ mod tests {
     fn test_swap_exact_amount_in() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let amount_in = 500_000u128;
@@ -3099,8 +3072,7 @@ mod tests {
     fn test_flip_order_execution() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -3148,10 +3120,8 @@ mod tests {
     /// just this case.
     #[test]
     fn test_flip_same_tick_execution_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T5, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -3210,8 +3180,7 @@ mod tests {
     /// subsequent `cancel(orderId)` targets the flipped order.
     #[test]
     fn test_flip_in_place_keeps_order_id_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T5, || {
             let FlipOrderTestCtx {
                 mut exchange,
                 alice,
@@ -3292,8 +3261,7 @@ mod tests {
     /// `getOrder(orderId)` and `cancel(orderId)` would observe stale state.
     #[test]
     fn test_flip_in_place_failure_no_orphan_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T5, || {
             let FlipOrderTestCtx {
                 mut exchange,
                 alice,
@@ -3361,8 +3329,7 @@ mod tests {
     fn test_pair_created() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, alice] = actors();
             let (base_token, quote_token) =
@@ -3411,8 +3378,7 @@ mod tests {
     fn test_find_path_to_root() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let exchange = StablecoinDEX::initialized()?;
 
             let admin = Address::random();
 
@@ -3439,8 +3405,7 @@ mod tests {
     fn test_find_trade_path_same_token_errors() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let exchange = StablecoinDEX::initialized()?;
 
             let [admin, user] = actors();
 
@@ -3461,8 +3426,7 @@ mod tests {
     fn test_find_trade_path_direct_pair() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, user] = actors();
 
@@ -3486,8 +3450,7 @@ mod tests {
     fn test_find_trade_path_two_hop_siblings() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let admin = Address::random();
 
@@ -3547,8 +3510,7 @@ mod tests {
     fn test_quote_multi_hop() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, alice, bob] = actors();
             let (_, usdc, eurc) = setup_sibling_books(&mut exchange, admin, alice, bob)?;
@@ -3582,8 +3544,7 @@ mod tests {
         for exact_in in [true, false] {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                let mut exchange = StablecoinDEX::initialized()?;
 
                 let [admin, alice, bob] = actors();
                 let (path_usd, usdc, eurc) = setup_sibling_books(&mut exchange, admin, alice, bob)?;
@@ -3653,14 +3614,13 @@ mod tests {
                 .currency("EUR")
                 .apply()?;
 
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             // Test: create_pair should reject non-USD token (EUR token has EUR currency)
-            assert!(matches!(
+            assert_eq!(
                 exchange.create_pair(token_0.address()),
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
-            ));
+                Err(TIP20Error::invalid_currency().into())
+            );
 
             Ok(())
         })
@@ -3673,17 +3633,14 @@ mod tests {
             let admin = Address::random();
             let _path_usd = TIP20Setup::path_usd(admin).apply()?;
 
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             // Test: create_pair should reject non-TIP20 address (random address without TIP20 prefix)
             let non_tip20_address = Address::random();
-            assert!(matches!(
+            assert_eq!(
                 exchange.create_pair(non_tip20_address),
-                Err(TempoPrecompileError::StablecoinDEX(
-                    StablecoinDEXError::InvalidBaseToken(_)
-                ))
-            ));
+                Err(StablecoinDEXError::invalid_base_token().into())
+            );
 
             Ok(())
         })
@@ -3693,8 +3650,7 @@ mod tests {
     fn test_max_in_check() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
 
@@ -3735,8 +3691,7 @@ mod tests {
     fn test_exact_out_bid_side() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
 
@@ -3776,8 +3731,7 @@ mod tests {
     fn test_exact_in_ask_side() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
 
@@ -3809,10 +3763,8 @@ mod tests {
     /// differed from `order.is_bid()` in a historically corrupted DEX book.
     #[test]
     fn test_exact_in_moderato_corrupted_book_uses_order_is_bid() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T11, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [maker, taker, admin] = actors();
             let (base, quote) =
@@ -3870,8 +3822,7 @@ mod tests {
         // Test that fill_order properly clears the prev pointer when advancing to the next order
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, carol, admin] = actors();
 
@@ -3926,8 +3877,7 @@ mod tests {
     fn test_best_tick_updates_on_fill() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -4002,8 +3952,7 @@ mod tests {
     fn test_best_tick_updates_on_cancel() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -4084,8 +4033,7 @@ mod tests {
     fn test_place() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
 
@@ -4094,12 +4042,10 @@ mod tests {
             exchange.create_pair(base_token)?;
 
             // Test invalid tick spacing
-            assert!(matches!(
+            assert_eq!(
                 exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, 15),
-                Err(TempoPrecompileError::StablecoinDEX(
-                    StablecoinDEXError::InvalidTick(_)
-                ))
-            ));
+                Err(StablecoinDEXError::invalid_tick().into())
+            );
 
             // Test valid tick spacing
             exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, -20)?;
@@ -4112,8 +4058,7 @@ mod tests {
     fn test_place_flip_checks() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
 
@@ -4122,20 +4067,16 @@ mod tests {
             exchange.create_pair(base_token)?;
 
             // Test invalid tick spacing
-            assert!(matches!(
+            assert_eq!(
                 exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 15, 25, false),
-                Err(TempoPrecompileError::StablecoinDEX(
-                    StablecoinDEXError::InvalidTick(_)
-                ))
-            ));
+                Err(StablecoinDEXError::invalid_tick().into())
+            );
 
             // Test valid tick spacing with invalid flip tick spacing
-            assert!(matches!(
+            assert_eq!(
                 exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 20, 25, false),
-                Err(TempoPrecompileError::StablecoinDEX(
-                    StablecoinDEXError::InvalidFlipTick(_)
-                ))
-            ));
+                Err(StablecoinDEXError::invalid_flip_tick().into())
+            );
 
             exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 20, 30, false)?;
 
@@ -4147,8 +4088,7 @@ mod tests {
     fn test_find_trade_path_rejects_non_tip20() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let exchange = StablecoinDEX::initialized()?;
 
             let [admin, user] = actors();
 
@@ -4156,13 +4096,9 @@ mod tests {
                 setup_test_tokens(admin, user, exchange.address, MIN_ORDER_AMOUNT)?;
 
             let non_tip20_address = Address::random();
-            assert!(
-                matches!(
-                    exchange.find_trade_path(non_tip20_address, quote_token),
-                    Err(TempoPrecompileError::StablecoinDEX(
-                        StablecoinDEXError::InvalidToken(_)
-                    ))
-                ),
+            assert_eq!(
+                exchange.find_trade_path(non_tip20_address, quote_token),
+                Err(StablecoinDEXError::invalid_token().into()),
                 "Should return InvalidToken error for non-TIP20 token"
             );
 
@@ -4174,8 +4110,7 @@ mod tests {
     fn test_quote_exact_in_handles_both_directions() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -4225,8 +4160,7 @@ mod tests {
         for flip in [false, true] {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                let mut exchange = StablecoinDEX::initialized()?;
                 let [admin, user] = actors();
 
                 let (base_token, quote_token) =
@@ -4263,8 +4197,7 @@ mod tests {
     fn test_decrement_balance_preserves_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, alice] = actors();
 
@@ -4290,8 +4223,7 @@ mod tests {
     fn test_blacklisted_user_cannot_use_internal_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
 
@@ -4330,13 +4262,7 @@ mod tests {
 
             // Attempt to place order using internal balance - should fail
             let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, 0);
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-                ),
-                "Expected PolicyForbids error, got: {result:?}"
-            );
+            assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
             Ok(())
@@ -4347,8 +4273,7 @@ mod tests {
     fn test_cancel_stale_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
 
@@ -4362,12 +4287,10 @@ mod tests {
             let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
 
             // Alice is still authorized, so the order is not stale
-            assert!(matches!(
+            assert_eq!(
                 exchange.cancel_stale_order(order_id),
-                Err(TempoPrecompileError::StablecoinDEX(
-                    StablecoinDEXError::OrderNotStale(_)
-                ))
-            ));
+                Err(StablecoinDEXError::order_not_stale().into())
+            );
 
             TIP403Registry::new().modify_policy_blacklist(
                 admin,
@@ -4403,8 +4326,7 @@ mod tests {
 
             let (order_id, base_token, invalid_policy_id) =
                 StorageCtx::enter(&mut storage, || {
-                    let mut exchange = StablecoinDEX::new();
-                    exchange.initialize()?;
+                    let mut exchange = StablecoinDEX::initialized()?;
 
                     let mut base = TIP20Setup::create("USDC", "USDC", admin)
                         .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
@@ -4467,10 +4389,8 @@ mod tests {
     #[test]
     fn test_cancel_stale_order_recipient_blacklisted_on_payout_token() -> eyre::Result<()> {
         for spec in [TempoHardfork::T3, TempoHardfork::T4] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+            with_storage(spec, || {
+                let mut exchange = StablecoinDEX::initialized()?;
 
                 let [alice, admin] = actors();
 
@@ -4491,12 +4411,7 @@ mod tests {
                     assert_eq!(exchange.balance_of(alice, base_addr)?, MIN_ORDER_AMOUNT);
                 } else {
                     // Pre-T4: recipient check on payout token is not performed, order is not stale
-                    assert!(matches!(
-                        result,
-                        Err(TempoPrecompileError::StablecoinDEX(
-                            StablecoinDEXError::OrderNotStale(_)
-                        ))
-                    ));
+                    assert_eq!(result, Err(StablecoinDEXError::order_not_stale().into()));
                 }
 
                 Ok::<_, eyre::Report>(())
@@ -4512,8 +4427,7 @@ mod tests {
         for is_bid in [true, false] {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                let mut exchange = StablecoinDEX::initialized()?;
 
                 let [alice, admin] = actors();
 
@@ -4539,10 +4453,7 @@ mod tests {
                         false,
                     ),
                 ] {
-                    assert!(matches!(
-                        result,
-                        Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-                    ));
+                    assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
                 }
 
                 Ok::<_, eyre::Report>(())
@@ -4553,10 +4464,8 @@ mod tests {
 
     #[test]
     fn test_compound_policy_non_escrow_token_direction() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T2, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
 
@@ -4590,11 +4499,9 @@ mod tests {
                 exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
 
             for res in [res_ask, res_flip] {
-                assert!(
-                    matches!(
-                        res.unwrap_err(),
-                        TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
-                    ),
+                assert_eq!(
+                    res,
+                    Err(TIP20Error::policy_forbids().into()),
                     "Order should fail: alice cannot receive quote token (non-escrow) per compound policy"
                 );
             }
@@ -4606,8 +4513,7 @@ mod tests {
     fn test_swap_exact_amount_out_rounding() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, bob, admin] = actors();
             let tick = 10;
@@ -4672,8 +4578,7 @@ mod tests {
     fn test_get_order_validates_maker_and_order_id() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, alice] = actors();
             let tick = 100i16;
@@ -4725,8 +4630,7 @@ mod tests {
 
     /// Sets up a [`StablecoinDEX`] with a flip bid order ready to be filled.
     fn setup_flip_order_test() -> eyre::Result<FlipOrderTestCtx> {
-        let mut exchange = StablecoinDEX::new();
-        exchange.initialize()?;
+        let mut exchange = StablecoinDEX::initialized()?;
 
         let [alice, bob, admin] = actors();
         let amount = MIN_ORDER_AMOUNT;
@@ -4762,8 +4666,7 @@ mod tests {
     fn test_flip_order_fill_ignores_business_logic_error() -> eyre::Result<()> {
         // Business logic errors during flip are silently ignored (always).
         for spec in [TempoHardfork::T1, TempoHardfork::T1A, TempoHardfork::T2] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(spec, || {
                 let FlipOrderTestCtx {
                     mut exchange,
                     alice,
@@ -4815,8 +4718,7 @@ mod tests {
     fn test_flip_order_fill_reverts_on_system_error_post_t1a() -> eyre::Result<()> {
         // System errors during flip propagate only on T1A+. Pre-T1A all errors are ignored.
         for spec in [TempoHardfork::T1, TempoHardfork::T1A, TempoHardfork::T2] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(spec, || {
                 let FlipOrderTestCtx {
                     mut exchange,
                     alice,
@@ -4873,8 +4775,7 @@ mod tests {
     fn test_orderbook_invariants_after_all_orders_filled() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             // Verify initial next_order_id is 1
             assert_eq!(exchange.next_order_id()?, 1);
@@ -4986,8 +4887,7 @@ mod tests {
     fn test_orderbook_invariants_after_all_orders_cancelled() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [alice, admin] = actors();
             let amount = MIN_ORDER_AMOUNT;
@@ -5063,8 +4963,7 @@ mod tests {
     fn test_sub_balance_errors_on_underflow() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [user, admin] = actors();
 
@@ -5097,8 +4996,7 @@ mod tests {
         //
         // All specs are T1A+ so system errors propagate and the swap itself fails.
         for spec in [TempoHardfork::T1A, TempoHardfork::T1C] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(spec, || {
                 let FlipOrderTestCtx {
                     mut exchange,
                     alice,
@@ -5158,10 +5056,8 @@ mod tests {
     #[test]
     fn test_swap_paused_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
         for spec in [TempoHardfork::T2, TempoHardfork::T3] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+            with_storage(spec, || {
+                let mut exchange = StablecoinDEX::initialized()?;
 
                 let [alice, bob, admin] = actors();
                 let amount_in = 500_000u128;
@@ -5218,10 +5114,8 @@ mod tests {
     ) -> eyre::Result<()> {
         for is_bid in [false, true] {
             for spec in [TempoHardfork::T3, TempoHardfork::T4] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-                StorageCtx::enter(&mut storage, || {
-                    let mut exchange = StablecoinDEX::new();
-                    exchange.initialize()?;
+                with_storage(spec, || {
+                    let mut exchange = StablecoinDEX::initialized()?;
 
                     let [alice, admin] = actors();
                     let amount = MIN_ORDER_AMOUNT;
@@ -5321,10 +5215,8 @@ mod tests {
     #[test]
     fn test_swap_paused_intermediate_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
         for spec in [TempoHardfork::T2, TempoHardfork::T3] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+            with_storage(spec, || {
+                let mut exchange = StablecoinDEX::initialized()?;
 
                 let [admin, alice, bob] = actors();
                 let (mut path_usd, usdc, eurc) =
@@ -5392,10 +5284,8 @@ mod tests {
         maker_is_bid: bool,
         body: impl FnOnce(&mut StablecoinDEX, Address, Address, Address) -> eyre::Result<R>,
     ) -> eyre::Result<R> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(spec, || {
+            let mut exchange = StablecoinDEX::initialized()?;
             let [admin, taker] = actors();
             let makers = actors_vec(book.len());
 
@@ -5430,10 +5320,8 @@ mod tests {
     fn with_fragmented_two_hop_books<R>(
         body: impl FnOnce(&mut StablecoinDEX, Address, Address, Address) -> eyre::Result<R>,
     ) -> eyre::Result<R> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T12, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, taker] = actors();
             let makers: [Address; 4] = actors();
@@ -5543,10 +5431,8 @@ mod tests {
 
     #[test]
     fn test_quote_matches_swap_t12_state_side_effects() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T12, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, maker_1, maker_2, taker] = actors();
             let tick = 10;
@@ -5755,10 +5641,8 @@ mod tests {
 
     #[test]
     fn test_quote_matches_swap_t12_flip_order_read_only_advance() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+        with_storage(TempoHardfork::T12, || {
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let [admin, maker_flip, maker_next, taker] = actors();
             let tick = 10;

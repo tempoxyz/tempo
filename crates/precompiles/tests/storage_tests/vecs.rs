@@ -9,8 +9,7 @@ fn test_vec_overwrite_unpacked_cleans_tail() -> error::Result<()> {
     let address = Address::random();
     let len_slot = U256::ONE;
     for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(hardfork, || {
             let mut handler = VecHandler::<U256>::new(len_slot, address);
 
             // Seed 5 unpacked elements (U256, T::SLOTS = 1), then shrink to 2.
@@ -44,8 +43,7 @@ fn test_vec_overwrite_packed_cleans_tail() -> error::Result<()> {
     let address = Address::random();
     let len_slot = U256::ONE;
     for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(hardfork, || {
             let mut handler = VecHandler::<u64>::new(len_slot, address);
 
             // 9 u64 values -> ceil(9 * 8 / 32) = 3 slots; shrink to 3 -> 1 slot.
@@ -75,8 +73,7 @@ fn test_vec_overwrite_packed_cleans_tail() -> error::Result<()> {
 fn test_t5_vec_push_skips_cleanup() -> error::Result<()> {
     let address = Address::random();
     let len_slot = U256::ONE;
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-    StorageCtx::enter(&mut storage, || {
+    with_storage(TempoHardfork::T5, || {
         let mut handler = VecHandler::<String>::new(len_slot, address);
         handler.write(vec!["1".to_string(), "2".to_string(), "3".to_string()])?;
 
