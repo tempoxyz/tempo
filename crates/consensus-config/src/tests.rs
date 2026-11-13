@@ -260,3 +260,22 @@ fn signing_share_write_to_file_is_owner_only() {
         signing_share
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn signing_share_write_to_file_replaces_existing_file() {
+    use std::io::Read as _;
+
+    let signing_share = SigningShare::try_from_hex(SIGNING_SHARE).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("signing.share");
+    std::fs::write(&path, "old contents").unwrap();
+
+    let mut stale_reader = std::fs::File::open(&path).unwrap();
+    signing_share.write_to_file(&path).unwrap();
+
+    let mut stale = String::new();
+    stale_reader.read_to_string(&mut stale).unwrap();
+    assert_eq!(stale, "old contents");
+    assert_eq!(SigningShare::read_from_file(&path).unwrap(), signing_share);
+}
