@@ -37,6 +37,8 @@ use tempo_contracts::precompiles::{
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
+use crate::expiring_nonces::{ExpiringNonce, ExpiringNonceSets, staged_key};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
     /// Start of block system transactions.
@@ -163,6 +165,8 @@ pub struct TempoTxResult {
     is_payment: bool,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
+    /// Replay-protection entry recorded in the expiring nonce set once the transaction commits.
+    expiring_nonce: Option<ExpiringNonce>,
 }
 
 impl Clone for TempoTxResult {
@@ -175,12 +179,17 @@ impl Clone for TempoTxResult {
             is_system_tx: self.is_system_tx,
             is_payment: self.is_payment,
             block_gas_used: self.block_gas_used,
+            expiring_nonce: self.expiring_nonce,
         }
     }
 }
 
 impl TempoTxResult {
     /// Creates a new [`TempoTxResult`] from a precomputed result and state.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the result fields replay synthesizes"
+    )]
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
         execution_context: ExecutionContext,
@@ -189,6 +198,7 @@ impl TempoTxResult {
         is_system_tx: bool,
         is_payment: bool,
         block_gas_used: u64,
+        expiring_nonce: Option<ExpiringNonce>,
     ) -> Self {
         Self {
             inner: EthTransactionResultWithState::new(
@@ -206,6 +216,7 @@ impl TempoTxResult {
             is_system_tx,
             is_payment,
             block_gas_used,
+            expiring_nonce,
         }
     }
 
@@ -272,6 +283,17 @@ pub struct TempoBlockExecutor<'a> {
     /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
     block_gas_used: u64,
+
+    /// Snapshots the block's expiring nonce set is derived from and stored in.
+    expiring_nonce_sets: ExpiringNonceSets,
+    /// Parent whose expiring nonce set the block's set is derived from.
+    parent_hash: B256,
+    /// The block's hash; its expiring nonce set is only stored when this is known.
+    block_hash: Option<B256>,
+    /// Replay-protection entries of the committed expiring nonce transactions.
+    expiring_nonces: Vec<ExpiringNonce>,
+    /// Hashes of the committed expiring nonce transactions, which key a payload's staged set.
+    expiring_nonce_tx_hashes: Vec<B256>,
 }
 
 impl<'a> TempoBlockExecutor<'a> {
@@ -279,6 +301,7 @@ impl<'a> TempoBlockExecutor<'a> {
         evm: TempoEvm<'a>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
+        expiring_nonce_sets: ExpiringNonceSets,
     ) -> Self {
         let block_gas_limit = evm.block().gas_limit.saturating_to::<u64>();
         let prague_active =
@@ -289,6 +312,7 @@ impl<'a> TempoBlockExecutor<'a> {
             evm.block().number.saturating_to::<u64>(),
         );
         let extra_data = ctx.inner.extra_data.clone();
+        let parent_hash = ctx.inner.parent_hash;
         let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
         inner.set_spec_id(spec_id);
         Self {
@@ -302,6 +326,11 @@ impl<'a> TempoBlockExecutor<'a> {
             inner,
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
+            expiring_nonce_sets,
+            parent_hash,
+            block_hash: ctx.block_hash,
+            expiring_nonces: Vec::new(),
+            expiring_nonce_tx_hashes: Vec::new(),
         }
     }
 
@@ -732,8 +761,14 @@ impl<'a> TempoBlockExecutor<'a> {
         block_gas_used: u64,
         is_payment: bool,
         execution_context: ExecutionContext,
+        tx_hash: B256,
+        expiring_nonce: Option<ExpiringNonce>,
     ) {
         self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
+        if let Some(expiring_nonce) = expiring_nonce {
+            self.expiring_nonces.push(expiring_nonce);
+            self.expiring_nonce_tx_hashes.push(tx_hash);
+        }
 
         self.section = next_section;
 
@@ -887,6 +922,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
+        let expiring_nonce =
+            ExpiringNonce::from_tx(original, *recovered.signer(), self.evm().config_spec_id());
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
@@ -910,6 +947,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             is_system_tx,
             is_payment,
             block_gas_used,
+            expiring_nonce,
         })
     }
 
@@ -925,6 +963,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             is_system_tx,
             is_payment,
             block_gas_used,
+            expiring_nonce,
         } = output;
 
         // The result may have been produced by another executor (e.g. a BAL worker) whose
@@ -932,7 +971,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let next_section = self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
 
         let gas_output = self.inner.commit_transaction(inner)?;
-        self.record_committed_tx(next_section, block_gas_used, is_payment, execution_context);
+        self.record_committed_tx(
+            next_section,
+            block_gas_used,
+            is_payment,
+            execution_context,
+            tx_hash,
+            expiring_nonce,
+        );
 
         Ok(gas_output)
     }
@@ -950,6 +996,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let is_payment = self.is_payment(original);
+        let expiring_nonce =
+            ExpiringNonce::from_tx(original, *recovered.signer(), self.evm().config_spec_id());
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (section, non_shared_gas_left, non_payment_gas_left) = (
             self.section,
@@ -994,7 +1042,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             };
         };
         if let Some(Ok((next_section, block_gas_used))) = validated {
-            self.record_committed_tx(next_section, block_gas_used, is_payment, execution_context);
+            self.record_committed_tx(
+                next_section,
+                block_gas_used,
+                is_payment,
+                execution_context,
+                tx_hash,
+                expiring_nonce,
+            );
         }
         Ok(Some(gas_output))
     }
@@ -1011,6 +1066,12 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         self.set_post_execution_block_access_index();
         self.apply_current_committee_system_call()?;
+
+        let expiring_nonce_sets = self.expiring_nonce_sets.clone();
+        let (parent_hash, block_hash) = (self.parent_hash, self.block_hash);
+        let expiring_nonces = std::mem::take(&mut self.expiring_nonces);
+        let expiring_nonce_tx_hashes = std::mem::take(&mut self.expiring_nonce_tx_hashes);
+        let timestamp = self.evm().block().timestamp.saturating_to::<u64>();
 
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
@@ -1041,6 +1102,18 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // block header semantics.
         if use_regular_gas {
             output.result.gas_used = block_gas_used;
+        }
+
+        // Shadow mode: the ring already enforced replay protection. A payload being built has no
+        // hash yet, so its set is staged until `TempoBlockAssembler` assembles it.
+        if let Some(set) = expiring_nonce_sets.derive(parent_hash, timestamp, &expiring_nonces) {
+            match block_hash {
+                Some(block_hash) => expiring_nonce_sets.insert(block_hash, set),
+                None => expiring_nonce_sets.stage(
+                    staged_key(parent_hash, timestamp, &expiring_nonce_tx_hashes),
+                    set,
+                ),
+            }
         }
         Ok((output, block_access_list))
     }
@@ -1895,6 +1968,7 @@ mod tests {
             is_system_tx,
             is_payment: false,
             block_gas_used,
+            expiring_nonce: None,
         }
     }
 
@@ -2361,6 +2435,7 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 21000,
+            expiring_nonce: None,
         };
 
         let gas_output = executor.commit_transaction(output).unwrap();
@@ -2504,6 +2579,7 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: 21_000,
+                expiring_nonce: None,
             })
             .unwrap();
 
@@ -2634,6 +2710,7 @@ mod tests {
                             is_system_tx: false,
                             is_payment: false,
                             block_gas_used: 21_000,
+                            expiring_nonce: None,
                         })
                         .unwrap();
                 }
@@ -2682,6 +2759,7 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 21000,
+            expiring_nonce: None,
         };
 
         let gas_output = executor.commit_transaction(output).unwrap();
@@ -2724,6 +2802,7 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 21000,
+            expiring_nonce: None,
         };
         executor.commit_transaction(output1).unwrap();
 
@@ -2750,6 +2829,7 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 50000,
+            expiring_nonce: None,
         };
         executor.commit_transaction(output2).unwrap();
 
@@ -2794,6 +2874,7 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: 21000,
+                expiring_nonce: None,
             })
             .unwrap();
 
@@ -2837,6 +2918,7 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 50_000,
+            expiring_nonce: None,
         };
         executor.commit_transaction(output).unwrap();
 
@@ -2886,6 +2968,7 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 200_000,
+            expiring_nonce: None,
         };
         executor.commit_transaction(output).unwrap();
 
@@ -2939,6 +3022,7 @@ mod tests {
             is_system_tx: false,
             is_payment: false,
             block_gas_used: 200_000,
+            expiring_nonce: None,
         };
         executor.commit_transaction(output).unwrap();
 
@@ -3528,6 +3612,7 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: regular_gas,
+                expiring_nonce: None,
             })
             .unwrap();
 
@@ -3578,6 +3663,7 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: 100_000,
+                expiring_nonce: None,
             })
             .unwrap();
 
@@ -3629,6 +3715,7 @@ mod tests {
                 is_system_tx: false,
                 is_payment: false,
                 block_gas_used: cumulative,
+                expiring_nonce: None,
             })
             .unwrap();
 

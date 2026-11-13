@@ -13,6 +13,7 @@ mod context;
 mod engine;
 pub mod error;
 pub mod evm;
+pub mod expiring_nonces;
 mod fee_manager;
 mod handler;
 mod instructions;
@@ -124,6 +125,12 @@ impl TempoEvmConfig {
         &self.chain_spec
     }
 
+    /// Returns the expiring nonce set snapshots that block execution and payload assembly
+    /// maintain. The node seeds and repairs them from the canonical chain.
+    pub const fn expiring_nonce_sets(&self) -> &expiring_nonces::ExpiringNonceSets {
+        &self.block_assembler.expiring_nonce_sets
+    }
+
     /// Returns the moderato EVM config.
     pub fn moderato() -> Self {
         Self::new(Arc::new(TempoChainSpec::moderato()))
@@ -168,7 +175,12 @@ impl BlockExecutorFactory for TempoEvmConfig {
     where
         Self: 'a,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        TempoBlockExecutor::new(
+            evm,
+            ctx,
+            self.chain_spec(),
+            self.expiring_nonce_sets().clone(),
+        )
     }
 
     fn evm_factory(&self) -> &Self::EvmFactory {
@@ -328,6 +340,7 @@ impl ConfigureEvm for TempoEvmConfig {
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
             consensus_context: block.header().consensus_context,
+            block_hash: Some(block.hash()),
         })
     }
 
@@ -352,6 +365,7 @@ impl ConfigureEvm for TempoEvmConfig {
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
             consensus_context: attributes.consensus_context,
+            block_hash: None,
         })
     }
 }

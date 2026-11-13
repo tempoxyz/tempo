@@ -145,9 +145,10 @@ impl TestExecutorBuilder {
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
             consensus_context: None,
+            block_hash: None,
         };
 
-        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec, Default::default());
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {
