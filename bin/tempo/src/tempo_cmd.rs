@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::{
     fs::{File, OpenOptions},
     io::Write as _,
@@ -1132,30 +1132,25 @@ fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
 
 /// Opens `path` for writing a signing key, readable and writable only by its owner on Unix.
 ///
-/// Fails if `path` exists unless `force` is set. With `force`, an existing regular file has its
-/// permissions restricted and is then truncated; other targets such as `/dev/stdout` are opened
-/// as they are.
+/// Fails if `path` exists unless `force` is set. With `force`, an existing regular file is
+/// replaced by a new one; symlinks and other targets such as `/dev/stdout` are written in place.
 fn create_signing_key_file(path: &Path, force: bool) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    options
-        .write(true)
-        .create_new(!force)
-        .create(force)
-        .truncate(false);
-    #[cfg(unix)]
-    options.mode(0o600);
-
-    let file = options.open(path)?;
-
-    // `mode` only applies when the file is created. Restricting before truncating keeps the old
-    // contents if the caller may write the file but not change its mode.
-    if force && file.metadata()?.is_file() {
-        #[cfg(unix)]
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        file.set_len(0)?;
+    if force {
+        match std::fs::symlink_metadata(path) {
+            // Replacing the file rather than overwriting it keeps descriptors opened while it had
+            // looser permissions from reading the new key.
+            Ok(metadata) if metadata.is_file() => std::fs::remove_file(path)?,
+            Ok(_) => return OpenOptions::new().write(true).truncate(true).open(path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
     }
 
-    Ok(file)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)
 }
 
 #[derive(Debug, clap::Args)]
@@ -1714,6 +1709,8 @@ mod tests {
     use jsonrpsee::{RpcModule, server::ServerBuilder, types::ErrorObjectOwned};
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
     use std::sync::Mutex;
     use tempo_chainspec::spec::TempoChainSpecParser;
 
@@ -1746,17 +1743,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn create_signing_key_file_force_restricts_existing_file() {
+    fn create_signing_key_file_force_replaces_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("signing.key");
-        std::fs::write(&path, b"existing contents").unwrap();
+        std::fs::write(&path, b"old key").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut held = File::open(&path).unwrap();
 
-        create_signing_key_file(&path, true).unwrap();
+        create_signing_key_file(&path, true)
+            .unwrap()
+            .write_all(b"new key")
+            .unwrap();
 
-        let metadata = path.metadata().unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        assert_eq!(metadata.len(), 0);
+        let mut held_contents = String::new();
+        std::io::Read::read_to_string(&mut held, &mut held_contents).unwrap();
+        assert_eq!(held_contents, "old key");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new key");
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[cfg(unix)]
