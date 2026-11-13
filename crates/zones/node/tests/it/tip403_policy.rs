@@ -27,15 +27,7 @@ async fn test_l1_blacklisted_sender_cannot_pay_for_empty_transaction() -> eyre::
     let alice = alice_signer.address();
 
     let deposit_amount = 1_000_000u128;
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, alice, alice, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        alice,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture.deposit(&zone, alice, alice, deposit_amount).await?;
     let anchor = zone.wait_for_tempo_block_number(1, DEFAULT_TIMEOUT).await?;
 
     const BLACKLIST_POLICY_ID: u64 = 42;

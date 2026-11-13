@@ -51,7 +51,8 @@ const CONTRACT_DEPLOYMENT_TX_GAS_LIMIT: u64 = 30_000_000;
 const SETUP_CALL_GAS_LIMIT: u64 = 5_000_000;
 const MIN_GAS_HEADROOM_PERCENT: u64 = 15;
 const E2E_TIMEOUT: Duration = Duration::from_secs(90);
-const BOUNCE_TIMEOUT: Duration = Duration::from_secs(180);
+/// Under nextest's 3-minute kill, so a stalled bounce reports the wait that failed.
+const BOUNCE_TIMEOUT: Duration = Duration::from_secs(150);
 
 alloy_sol_types::sol! {
     enum EarnFlow {
@@ -466,7 +467,7 @@ impl EarnZoneFixture {
                 .await?;
         }
 
-        let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal).await?;
+        let zone = ZoneTestNode::start_from_l1(&l1, portal).await?;
         setup.finish().await?;
 
         let fees = FeeConfig {

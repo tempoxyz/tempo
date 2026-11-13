@@ -1,9 +1,6 @@
 //! Demo Flow 3: Cross-Zone Transfer
 
-use crate::utils::{
-    L1_TIMEOUT, L1TestNode, WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode,
-    spawn_sequencer,
-};
+use crate::utils::{Network, WithdrawalArgs, ZoneCreationConfig};
 use alloy::primitives::U256;
 use tempo_contracts::zones::ZONE_TOKEN_ADDRESS;
 use tempo_precompiles::PATH_USD_ADDRESS;
@@ -32,76 +29,32 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 async fn test_cross_zone_send() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // --- Step 1: Start L1 ---
-    let l1 = L1TestNode::start().await?;
-
-    // Separate sequencer keys for each zone to avoid L1 nonce conflicts
-    let seq_a_signer = l1.signer_at(2);
-    let seq_b_signer = l1.signer_at(3);
-
-    // Bob is a separate user (mnemonic index 4)
-    let bob_signer = l1.signer_at(4);
-    let bob_address = bob_signer.address();
+    // --- Steps 1-3: L1, both zones with their own sequencer keys, and the router ---
+    let net = Network::builder()
+        .zone(ZoneCreationConfig::open())
+        .zone(ZoneCreationConfig::open())
+        .accounts(2, 2_000_000)
+        .start()
+        .await?;
+    let l1 = net.l1();
+    let [zone_a, zone_b] = net.zones();
+    let [alice, bob] = net.accounts();
+    let bob_address = bob.address();
     let refund_burner = l1.signer_at(5).address();
-
-    // --- Step 2: Deploy L1 infrastructure ---
-    let factory = l1.native_zone_factory().await?;
-    let portal_a = l1
-        .create_zone_with_admin_sequencer_and_config(
-            factory,
-            l1.dev_address(),
-            seq_a_signer.address(),
-            ZoneCreationConfig::open(),
-        )
-        .await?;
-    let portal_b = l1
-        .create_zone_with_admin_sequencer_and_config(
-            factory,
-            l1.dev_address(),
-            seq_b_signer.address(),
-            ZoneCreationConfig::open(),
-        )
-        .await?;
-    let encryption_key_a = k256::SecretKey::from(seq_a_signer.credential());
-    l1.set_sequencer_encryption_key_with_signer(portal_a, &encryption_key_a, seq_a_signer.clone())
-        .await?;
-    let encryption_key_b = k256::SecretKey::from(seq_b_signer.credential());
-    l1.set_sequencer_encryption_key_with_signer(portal_b, &encryption_key_b, seq_b_signer.clone())
-        .await?;
-    let router = l1.deploy_router(factory).await?;
-
-    // --- Step 3: Start both zone nodes ---
-    let zone_a = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_a,
-        vec![encryption_key_a],
-    )
-    .await?;
-    let zone_b = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_b,
-        vec![encryption_key_b],
-    )
-    .await?;
-
-    zone_a.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
-    zone_b.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+    let (portal_a, portal_b) = (zone_a.portal_address(), zone_b.portal_address());
+    let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
     zone_a.assert_access_enforced(false).await?;
     zone_b.assert_access_enforced(false).await?;
     zone_a.assert_gateway_open(true).await?;
     zone_b.assert_gateway_open(true).await?;
 
     // --- Step 4: Alice deposits into zone_a ---
-    let mut alice = ZoneAccount::from_l1_and_zone(&l1, &zone_a, portal_a);
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD
-    l1.fund_user(alice.address(), deposit_amount * 2).await?;
-    alice.deposit(deposit_amount, L1_TIMEOUT, &zone_a).await?;
+    zone_a.deposit(alice, deposit_amount).await?;
 
     // --- Step 5: Spawn sequencers for both zones ---
-    let _seq_a = spawn_sequencer(&l1, &zone_a, portal_a, seq_a_signer.clone()).await;
-    let _seq_b = spawn_sequencer(&l1, &zone_b, portal_b, seq_b_signer.clone()).await;
+    let _seq_a = zone_a.spawn_sequencer().await;
+    let _seq_b = zone_b.spawn_sequencer().await;
 
     // Verify Bob starts with zero on zone_b
     let bob_before = zone_b.balance_of(ZONE_TOKEN_ADDRESS, bob_address).await?;
@@ -116,7 +69,7 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
 
     // Use the cross_zone_via_router helper but with Bob as the recipient
     let args = WithdrawalArgs::cross_zone_via_router(
-        &l1,
+        l1,
         cross_amount,
         router,
         portal_b,
@@ -125,7 +78,7 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
         refund_burner, // Tempo refund target if Zone B later bounces the deposit
     )
     .await?;
-    alice.withdraw_with(args).await?;
+    zone_a.account(alice).withdraw_with(args).await?;
     let callback_succeeded = l1
         .wait_for_withdrawal_processed_status(
             portal_a,

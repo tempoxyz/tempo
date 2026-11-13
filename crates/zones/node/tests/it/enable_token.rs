@@ -14,7 +14,7 @@ use crate::utils::{
 };
 
 // Imports for real-L1 tests
-use crate::utils::{L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode, spawn_sequencer};
+use crate::utils::{L1_TIMEOUT, Network, ZoneCreationConfig};
 use alloy::primitives::B256;
 use alloy_provider::Provider;
 use tempo_alloy::rpc::TempoCallBuilderExt;
@@ -194,20 +194,18 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
 
 /// Full TokenEnabled pipeline with a real in-process L1 node:
 ///
-///  1. Start L1 dev node.
+///  1. Start L1 dev node and a zone, funding the user with pathUSD (for L2 gas).
 ///  2. Create a second TIP-20 token ("AlphaUSD" / "aUSD") on L1.
 ///  3. Mint AlphaUSD to the dev account.
-///  4. Create a zone through the native ZoneFactory.
-///  5. Start zone node connected to L1.
-///  6. Enable AlphaUSD on the portal (emits `TokenEnabled` event) — must
+///  4. Enable AlphaUSD on the portal (emits `TokenEnabled` event) — must
 ///     happen AFTER zone startup so the live L1 subscriber picks it up
 ///     (events in blocks ≤ genesis are not backfilled).
-///  7. Wait for the zone to finalize past the `enableToken` L1 block.
-///  8. Fund user with pathUSD (for L2 gas) and AlphaUSD on L1.
-///  9. Deposit pathUSD first (for L2 gas), then deposit AlphaUSD.
-/// 10. Verify AlphaUSD balance on L2.
-/// 11. Spawn sequencer, withdraw AlphaUSD back to L1.
-/// 12. Wait for the withdrawal to be processed on L1.
+///  5. Wait for the zone to finalize past the `enableToken` L1 block.
+///  6. Fund user with AlphaUSD on L1.
+///  7. Deposit pathUSD first (for L2 gas), then deposit AlphaUSD.
+///  8. Verify AlphaUSD balance on L2.
+///  9. Spawn sequencer, withdraw AlphaUSD back to L1 and wait for the withdrawal to be
+///     processed on L1.
 ///
 /// ```text
 ///  L1 (TokenEnabled + deposit)          Zone L2
@@ -222,8 +220,17 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
 async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // --- Step 1: Start L1 ---
-    let l1 = L1TestNode::start().await?;
+    // --- Step 1: Start L1 and a zone, funding the user with pathUSD for L2 gas ---
+    let pathusd_gas_amount: u128 = 5_000_000; // 5 pathUSD for L2 gas
+    let net = Network::builder()
+        .zone(ZoneCreationConfig::closed(Vec::new()))
+        .accounts(1, pathusd_gas_amount * 2)
+        .start()
+        .await?;
+    let l1 = net.l1();
+    let [zone] = net.zones();
+    let [user] = net.accounts();
+    let portal_address = zone.portal_address();
 
     // --- Step 2: Create AlphaUSD on L1 ---
     let alpha_salt = B256::with_last_byte(0x63);
@@ -234,13 +241,7 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     l1.mint_tip20(l1_alpha_usd, l1.dev_address(), mint_amount)
         .await?;
 
-    // --- Step 4: Deploy L1 infrastructure and create a zone ---
-    let portal_address = l1.deploy_zone().await?;
-
-    // --- Step 5: Start zone node connected to L1 ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-
-    // --- Step 6: Enable AlphaUSD on the portal ---
+    // --- Step 4: Enable AlphaUSD on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
     // TokenEnabled event from a live block (events in blocks <= genesis are not
     // backfilled).
@@ -248,69 +249,47 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
         .await?;
     let enable_block = l1.provider().get_block_number().await?;
 
-    // --- Step 7: Wait for the zone to finalize past the enableToken block ---
+    // --- Step 5: Wait for the zone to finalize past the enableToken block ---
     zone.wait_for_l2_tempo_finalized(enable_block, L1_TIMEOUT)
         .await?;
 
-    // --- Step 8: Fund user account on L1 ---
-    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    let pathusd_gas_amount: u128 = 5_000_000; // 5 pathUSD for L2 gas
+    // --- Step 6: Fund user account with AlphaUSD on L1 ---
     let alpha_deposit_amount: u128 = 2_000_000; // 2 AlphaUSD
-
-    l1.fund_user(account.address(), pathusd_gas_amount * 2)
-        .await?;
-    l1.fund_user_token(l1_alpha_usd, account.address(), alpha_deposit_amount * 2)
+    l1.fund_user_token(l1_alpha_usd, user.address(), alpha_deposit_amount * 2)
         .await?;
 
-    // --- Step 9: Deposit pathUSD (gas) then AlphaUSD ---
-    account
-        .deposit(pathusd_gas_amount, L1_TIMEOUT, &zone)
-        .await?;
+    // --- Step 7: Deposit pathUSD (gas) then AlphaUSD ---
+    zone.deposit(user, pathusd_gas_amount).await?;
 
     // The L2 token address is deterministic — same factory sender + salt means
     // l1_alpha_usd == l2_alpha_usd.
     let l2_alpha_usd = l1_alpha_usd;
 
-    let alpha_minted = account
+    let alpha_minted = zone
+        .account(user)
         .deposit_token(
             l1_alpha_usd,
             l2_alpha_usd,
             alpha_deposit_amount,
             L1_TIMEOUT,
-            &zone,
+            zone,
         )
         .await?;
 
-    // --- Step 10: Verify AlphaUSD balance on L2 ---
+    // --- Step 8: Verify AlphaUSD balance on L2 ---
     assert_eq!(
         alpha_minted,
         U256::from(alpha_deposit_amount),
         "AlphaUSD minted balance should equal deposit amount"
     );
 
-    // --- Step 11: Spawn sequencer and withdraw AlphaUSD ---
-    let _sequencer_handle = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-    let withdrawal_timeout = std::time::Duration::from_secs(60);
-
+    // --- Step 9: Spawn sequencer and withdraw AlphaUSD, waiting for L1 processing ---
+    let _sequencer_handle = zone.spawn_sequencer().await;
     let alpha_withdrawal: u128 = 1_000_000; // 1 AlphaUSD
-    let alpha_balance_before = l1.balance_of(l1_alpha_usd, account.address()).await?;
-    account
-        .withdraw_token(l2_alpha_usd, alpha_withdrawal)
-        .await?;
-
-    // --- Step 12: Wait for the withdrawal to be processed on L1 ---
-    l1.wait_for_withdrawal_on_l1_token(
-        portal_address,
-        l1_alpha_usd,
-        account.address(),
-        alpha_balance_before,
-        alpha_withdrawal,
-        withdrawal_timeout,
-    )
-    .await?;
+    zone.withdraw(user, l2_alpha_usd, alpha_withdrawal).await?;
 
     // Verify the L2 AlphaUSD balance decreased
-    let final_alpha = zone.balance_of(l2_alpha_usd, account.address()).await?;
+    let final_alpha = zone.balance_of(l2_alpha_usd, user.address()).await?;
     assert!(
         final_alpha <= U256::from(alpha_deposit_amount - alpha_withdrawal),
         "L2 AlphaUSD balance should decrease by at least the withdrawal amount (got {final_alpha})"

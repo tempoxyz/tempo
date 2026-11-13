@@ -129,18 +129,20 @@ template (`crates/node/assets/zone-dev-genesis.json`, via `zone_node::genesis`):
 
 - **`ZoneTestNode`** — In-process zone L2 node with RPC endpoint. Fields are
   private; use `http_url()`, `deposit_queue()`, `l1_state_cache()` getters.
-  Constructed via `start_local()`, `start_from_l1()`, or `start()`.
+  Constructed via `start_local()`, `start_from_l1()`, or `launch(ZoneLaunch { .. })`.
 - **`L1TestNode`** — In-process Tempo L1 dev node. Fields are private; use
   `http_url()` and `ws_url()` getters. Constructed via `start()`.
+- **`Network`** — A dev L1 with zones and funded accounts:
+  `Network::builder().zone(config).accounts(n, fund).start()`. Each `Zone` derefs
+  to its `ZoneTestNode`, settles with its own sequencer key, and exposes `deposit`
+  and `withdraw` (which wait for the resulting balance), `portal_as_admin()` and
+  `spawn_sequencer()`.
 - **`L1Fixture`** — Synthetic L1 block builder maintaining hash chain continuity.
 - **`FixtureBlock`** — Clonable L1 block for multi-zone broadcast.
 - **`poll_until`** — Generic async condition poller with timeout.
 
 ## Known Issues / Improvements
 
-- **Chain ID collisions:** `start_local()` hardcodes `chain_id = 1337`. Tests
-  running in parallel can collide. Use `start_local_with_chain_id()` with unique
-  IDs, or switch `start_local()` to pick random chain IDs.
 - **Slot 7 partial patch:** `start_from_l1()` only patches `tempoBlockNumber` in
   the packed slot 7. Should also patch `tempoGasLimit`, `tempoGasUsed`, and
   `tempoTimestamp` from the anchor header for full consistency.

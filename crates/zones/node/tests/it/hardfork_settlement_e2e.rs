@@ -37,14 +37,17 @@ use zone_spf::{
 };
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, L1TestNode, TcpChaosProxy, ZoneAccount, ZoneTestNode, now_secs, poll_until,
-    signer_at,
+    DEFAULT_TIMEOUT, L1TestNode, TcpChaosProxy, ZoneAccount, ZoneGenesis, ZoneL1, ZoneLaunch,
+    ZoneTestNode, build_l1_anchored_genesis, now_secs, poll_until, signer_at,
 };
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let activation = now_secs() + 30;
+    // Leave time for the T12 setup below, measured at under 12s on a loaded host. The zone's L1
+    // link is paused from then until activation, which stays under 20s so outstanding HTTP
+    // requests remain within their normal timeout.
+    let activation = now_secs() + 20;
     let mut portal_address = Address::ZERO;
     let l1 = L1TestNode::start_with(|cfg| {
         let mut genesis = cfg.chain.genesis().clone();
@@ -72,13 +75,19 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     // HTTP polling retains pending block-filter changes while responses are paused, without
     // WebSocket keepalive timeouts obscuring the hardfork coordination under test.
     let proxy = TcpChaosProxy::start(TcpChaosProxy::upstream_addr(l1.http_url())?).await?;
-    let (zone, spec) = ZoneTestNode::start_from_l1_with_t13(
-        l1.http_url(),
-        &proxy.proxy_url(l1.http_url())?,
-        portal_address,
-        activation,
-    )
+    let mut genesis =
+        build_l1_anchored_genesis(l1.http_url(), portal_address, BlockNumberOrTag::Latest).await?;
+    set_tempo_fork(&mut genesis, TempoHardfork::T13, activation);
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        l1: ZoneL1::Portal {
+            url: proxy.proxy_url(l1.http_url())?.to_string(),
+            portal_address,
+        },
+        genesis: ZoneGenesis::Custom(genesis),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
+    let spec = zone.chain_spec();
     let provider = zone.provider();
     let inbox = IZoneInbox::new(ZONE_INBOX_ADDRESS, &provider);
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
@@ -122,11 +131,6 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         U256::ZERO
     );
 
-    // Limit the pause so outstanding HTTP requests remain within their normal timeout.
-    tokio::time::sleep(Duration::from_secs(
-        activation.saturating_sub(now_secs() + 20),
-    ))
-    .await;
     proxy.pause_upstream_to_client(true);
     let l1_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(l1.dev_signer())

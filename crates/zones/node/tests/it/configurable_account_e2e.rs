@@ -46,10 +46,10 @@ use crate::{
     },
     hardfork_settlement_e2e::batch_witness,
     utils::{
-        DEFAULT_POLL, L1_TIMEOUT, L1TestNode, RedactedRpcL1TestCtx, WITHDRAWAL_TX_GAS, ZoneAccount,
-        ZoneTestNode, assert_same_block, build_token_with_signature, now_secs, poll_until,
-        signer_at, spawn_sequencer, start_real_p2p_cluster, start_zone_with_redacted_rpc_l1,
-        wait_all_at,
+        ClusterConfig, DEFAULT_POLL, L1_TIMEOUT, L1TestNode, RedactedRpcL1TestCtx,
+        WITHDRAWAL_TX_GAS, ZoneAccount, ZoneTestNode, assert_same_block,
+        build_token_with_signature, now_secs, poll_until, signer_at, spawn_sequencer,
+        start_real_p2p_cluster, start_zone_with_redacted_rpc_l1, wait_all_at,
     },
 };
 
@@ -647,7 +647,7 @@ async fn test_batch_with_a_changed_account_proves(change: Change) -> eyre::Resul
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_followers_replay_a_tempo_change() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let cluster = start_real_p2p_cluster(4).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig::default()).await?;
     let l1 = &cluster.l1;
     let tempo = tempo_chain(l1).await?;
     let chains = try_join_all(

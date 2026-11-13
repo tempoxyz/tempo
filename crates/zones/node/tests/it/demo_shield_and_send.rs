@@ -1,4 +1,4 @@
-use crate::utils::{L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode};
+use crate::utils::{L1_TIMEOUT, Network, ZoneCreationConfig};
 use alloy::{primitives::U256, providers::ProviderBuilder};
 use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::{precompiles::ITIP20, zones::ZONE_TOKEN_ADDRESS};
@@ -28,22 +28,19 @@ use tempo_contracts::{precompiles::ITIP20, zones::ZONE_TOKEN_ADDRESS};
 async fn test_shield_and_send() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // --- Step 1: Start L1 ---
-    let l1 = L1TestNode::start().await?;
-
-    // --- Step 2: Deploy L1 infrastructure and create a zone ---
-    let portal_address = l1.deploy_zone().await?;
-
-    // --- Step 3: Start zone node connected to L1 ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+    // --- Steps 1-3: Start L1 and a zone connected to it ---
+    let net = Network::builder()
+        .zone(ZoneCreationConfig::closed(Vec::new()))
+        .accounts(2, 2_000_000)
+        .start()
+        .await?;
+    let l1 = net.l1();
+    let [zone] = net.zones();
+    let [alice, bob] = net.accounts();
 
     // --- Step 4: Alice deposits 1 pathUSD (shield) ---
-    let mut alice = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD (6 decimals)
-    l1.fund_user(alice.address(), deposit_amount * 2).await?;
-
-    let alice_balance = alice.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
+    let alice_balance = zone.deposit(alice, deposit_amount).await?;
     assert_eq!(
         alice_balance,
         U256::from(deposit_amount),
@@ -51,8 +48,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
     );
 
     // --- Step 5: Alice transfers 0.5 pathUSD to Bob on L2 ---
-    // Bob is derived from mnemonic index 2 (Alice is index 1 via user_signer)
-    let bob_address = l1.signer_at(2).address();
+    let bob_address = bob.address();
 
     // Verify Bob starts with zero
     let bob_balance_before = zone.balance_of(ZONE_TOKEN_ADDRESS, bob_address).await?;
@@ -65,9 +61,8 @@ async fn test_shield_and_send() -> eyre::Result<()> {
     // Alice transfers on L2 using the TIP-20 transfer function
     let transfer_amount: u128 = 500_000; // 0.5 pathUSD
     {
-        let alice_signer = l1.user_signer();
         let alice_l2_provider = ProviderBuilder::new()
-            .wallet(alice_signer)
+            .wallet(alice.clone())
             .connect_http(zone.http_url().clone());
 
         let zone_token = ITIP20::new(ZONE_TOKEN_ADDRESS, &alice_l2_provider);
@@ -84,7 +79,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
             "L2 transfer must be rejected as unauthorized before the opt-in"
         );
         let opt_in_block = l1
-            .set_transfers_enabled_on_portal(portal_address, true)
+            .set_transfers_enabled_on_portal(zone.portal_address(), true)
             .await?;
         zone.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
             .await?;
