@@ -1138,8 +1138,8 @@ fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
 /// Fails if `path` exists unless `force` is set. With `force`, an existing regular file is
 /// atomically replaced by a new file owned by the caller, so the old key stays in place if writing
 /// fails and descriptors opened on the old file can't read the new key. Where the file can't be
-/// replaced (a bind mount, or a directory the caller can't write) it is overwritten in place, as
-/// are other targets; see [`create_signing_key_file`].
+/// replaced (a bind mount, or a read-only directory or one the caller can't write) it is
+/// overwritten in place, as are other targets; see [`create_signing_key_file`].
 fn write_signing_key_file(
     path: &Path,
     force: bool,
@@ -1217,7 +1217,9 @@ fn sync_dir(dir: &Path) -> eyre::Result<()> {
 fn is_unreplaceable(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
-        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ResourceBusy
+        std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::ReadOnlyFilesystem
+            | std::io::ErrorKind::ResourceBusy
     )
 }
 
