@@ -678,6 +678,14 @@ pub enum TempoPoolTransactionError {
     )]
     ExceedsNonPaymentLimit,
 
+    /// Canonical updates kept changing the pool while the transaction validated.
+    ///
+    /// Thrown during pool admission when a canonical update landed during every validation
+    /// attempt, so none validated the transaction against the state the pool is maintained
+    /// for. The transaction may be valid and can be submitted again.
+    #[error("Chain state changed during every validation attempt, please resubmit")]
+    StateChangedDuringValidation,
+
     /// An AA transaction's `valid_before` is too close to the current pool tip.
     ///
     /// Thrown during pool admission when `valid_before` is less than or equal to
@@ -862,7 +870,6 @@ impl PoolTransactionError for TempoPoolTransactionError {
                         err,
                         HandlerError::InvalidChainId { .. }
                             | HandlerError::MissingChainId
-                            | HandlerError::IntrinsicGasTooLow { .. }
                             | HandlerError::NonceOverflow
                             | HandlerError::TxGasLimitGreaterThanCap { .. }
                             | HandlerError::CreateInitCodeSizeLimit { .. }
@@ -878,6 +885,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
+            | Self::StateChangedDuringValidation
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
@@ -1477,16 +1485,8 @@ mod tests {
 
         let aa = TxBuilder::aa(Address::random())
             .calls(vec![
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input: input.clone(),
-                },
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input,
-                },
+                Call::new(Address::random(), input.clone()),
+                Call::new(Address::random(), input),
             ])
             .build();
         let envelope_size = aa.inner().inner().size();
@@ -1738,6 +1738,14 @@ mod tests {
                 },
                 false,
             ),
+            // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
+            (
+                TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow {
+                    got: 21_000,
+                    required: 271_000,
+                }),
+                false,
+            ),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
                 TempoPoolTransactionError::Evm(HandlerError::external(
@@ -1854,11 +1862,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce,
             ..Default::default()

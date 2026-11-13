@@ -2328,10 +2328,10 @@ mod tests {
             let submissions = Arc::new(Mutex::new(Vec::new()));
             let mut module = RpcModule::new(requests.clone());
             module
-                .register_method("eth_chainId", |_, _, _| "0xa5bf")
+                .register_method("eth_chainId", |_, _| "0xa5bf")
                 .unwrap();
             module
-                .register_method("eth_call", move |params, requests, _| {
+                .register_method("eth_call", move |params, requests| {
                     let (tx, block) = params.parse::<(TransactionRequest, String)>()?;
                     let response = if tx.to == Some(VALIDATOR_CONFIG_V2_ADDRESS.into()) {
                         IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator)
@@ -2345,7 +2345,7 @@ mod tests {
             for method in ["eth_sendTransaction", "eth_sendRawTransaction"] {
                 let submissions = submissions.clone();
                 module
-                    .register_method(method, move |_, _, _| {
+                    .register_method(method, move |_, _| {
                         submissions.lock().unwrap().push(method);
                         Ok::<_, ErrorObjectOwned>(B256::ZERO)
                     })

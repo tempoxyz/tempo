@@ -1323,11 +1323,7 @@ mod runtime_tests {
                             max_priority_fee_per_gas: u128::from(gas_price),
                             max_fee_per_gas: u128::from(gas_price),
                             gas_limit,
-                            calls: vec![Call {
-                                to: TxKind::Call(PATH_USD_ADDRESS),
-                                value: U256::ZERO,
-                                input: calldata,
-                            }],
+                            calls: vec![Call::new(PATH_USD_ADDRESS, calldata)],
                             nonce_key,
                             nonce,
                             ..Default::default()
@@ -1647,8 +1643,7 @@ mod runtime_tests {
                         .with_role(MULTICALL3_ADDRESS, BURN_AT_ROLE)
                         .with_mint(holder, U256::from(balance))
                         .apply()?;
-                    let mut keychain = AccountKeychain::new();
-                    keychain.initialize()?;
+                    let mut keychain = AccountKeychain::initialized()?;
                     keychain.set_tx_origin(holder)?;
                     keychain.authorize_key(
                         holder,
@@ -1709,11 +1704,7 @@ mod runtime_tests {
                 fee_token: Some(PATH_USD_ADDRESS),
                 gas_limit: 1_000_000,
                 nonce: self.nonce,
-                calls: vec![Call {
-                    to: TxKind::Call(MULTICALL3_ADDRESS),
-                    value: U256::ZERO,
-                    input: data,
-                }],
+                calls: vec![Call::new(MULTICALL3_ADDRESS, data)],
                 ..Default::default()
             };
             let signature = self.key.sign_hash_sync(&KeychainSignature::signing_hash(

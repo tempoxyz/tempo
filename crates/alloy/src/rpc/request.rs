@@ -710,11 +710,10 @@ mod tests {
             max_priority_fee_per_gas: 1000000,
             fee_token: None,
             access_list: Default::default(),
-            calls: vec![Call {
-                to: address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into(),
-                value: Default::default(),
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(
+                address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D"),
+                Bytes::new(),
+            )],
             tempo_authorization_list: vec![],
             nonce_key: TEMPO_EXPIRING_NONCE_KEY,
             key_authorization: None,
@@ -789,11 +788,10 @@ mod tests {
             max_priority_fee_per_gas: 1000000,
             fee_token: None,
             access_list: Default::default(),
-            calls: vec![Call {
-                to: address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into(),
-                value: Default::default(),
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(
+                address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D"),
+                Bytes::new(),
+            )],
             tempo_authorization_list: vec![],
             nonce_key: Default::default(),
             key_authorization: None,
@@ -832,11 +830,7 @@ mod tests {
 
     #[test]
     fn test_set_calls_and_push_call() {
-        let call = Call {
-            to: Address::repeat_byte(0x11).into(),
-            value: U256::ZERO,
-            input: Bytes::from(vec![0xaa]),
-        };
+        let call = Call::new(Address::repeat_byte(0x11), vec![0xaa]);
 
         let mut request = TempoTransactionRequest::default();
         request.set_calls(vec![call.clone()]);
@@ -847,11 +841,7 @@ mod tests {
 
     #[test]
     fn test_call_builder() {
-        let call = Call {
-            to: Address::repeat_byte(0x11).into(),
-            value: U256::ZERO,
-            input: Bytes::from(vec![0xaa]),
-        };
+        let call = Call::new(Address::repeat_byte(0x11), vec![0xaa]);
 
         let request = TempoTransactionRequest::default()
             .with_calls(vec![call.clone()])
@@ -894,11 +884,7 @@ mod tests {
         };
 
         // Regression: single-call AA round-trip must not duplicate the call + preserve.
-        let call = vec![Call {
-            to: Address::repeat_byte(0x11).into(),
-            value: U256::ZERO,
-            input: Bytes::from(vec![0xaa]),
-        }];
+        let call = vec![Call::new(Address::repeat_byte(0x11), vec![0xaa])];
         let mut original = base.clone();
         original.calls = call.clone();
 
@@ -912,16 +898,8 @@ mod tests {
 
         // Regression: multi-call AA round-trip must preserve exact call list.
         let batch = vec![
-            Call {
-                to: Address::repeat_byte(0x11).into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xaa]),
-            },
-            Call {
-                to: Address::repeat_byte(0x22).into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xbb]),
-            },
+            Call::new(Address::repeat_byte(0x11), vec![0xaa]),
+            Call::new(Address::repeat_byte(0x22), vec![0xbb]),
         ];
         let mut original = base;
         original.calls = batch.clone();

@@ -382,11 +382,11 @@ jobs:
               core.setFailed(msg);
               return;
             }
-            const zonesUsage = '**Usage:** `derek bench zones [prover=true|false] [preset=full-journey|private-withdrawal|swapped-lifecycle|swapped-redemption] [tempo-hardfork=HARDFORK] [tps=N] [accounts=N] [recipient-mode=existing|random] [l1-latency-ms=N] [state-bloat-mib=N] [baseline=REF] [feature=REF] [slack]`';
+            const zonesUsage = '**Usage:** `derek bench zones [prover=true|false] [preset=full-journey|private-withdrawal|swapped-lifecycle|swapped-redemption|cold-accounts] [tempo-hardfork=HARDFORK] [tps=N] [accounts=N] [recipient-mode=existing|random] [l1-latency-ms=N] [state-bloat-mib=N] [baseline=REF] [feature=REF] [slack]`';
             // Workload overrides, forwarded to the Zone benchmark only when given.
             const zoneWorkloadArgs = ['tempo-hardfork', 'tps', 'accounts', 'recipient-mode', 'l1-latency-ms', 'state-bloat-mib'];
             const zoneArgs = new Set(['mode', 'prover', 'preset', 'baseline', 'feature', 'slack', 'no-slack', ...zoneWorkloadArgs]);
-            const zonePresets = ['full-journey', 'private-withdrawal', 'swapped-lifecycle', 'swapped-redemption'];
+            const zonePresets = ['full-journey', 'private-withdrawal', 'swapped-lifecycle', 'swapped-redemption', 'cold-accounts'];
             let zonesError = '';
             if (mode === 'zones') {
               const unsupported = [...provided].filter(key => !zoneArgs.has(key));

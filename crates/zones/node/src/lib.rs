@@ -28,7 +28,10 @@ pub mod version;
 pub mod state_bloat;
 
 pub use consensus::ZoneConsensus;
-pub use deposit_allowlist::{DepositAllowlist, DepositAllowlistAdmin, DepositAllowlistError};
+pub use deposit_allowlist::{
+    DepositAllowlist, DepositAllowlistAdmin, DepositAllowlistError, DepositAllowlistSnapshot,
+    SequencerAllowlistStatus,
+};
 pub use engine::{EngineExit, ProductionPermit, ZoneEngine};
 pub use node::{
     ZoneExecutorBuilder, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,

@@ -45,6 +45,9 @@ modular-bitfield = { version = "0.13.1", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
+# `test-utils` RNG; rand 0.9 to match the dev-dependency below.
+rand = { version = "0.9", optional = true }
+alloy-signer-local = { workspace = true, optional = true }
 
 # Cryptography
 aws-lc-rs = { workspace = true, optional = true }
@@ -76,6 +79,9 @@ rand = "0.9"
 [features]
 default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
 test-utils = [
+	"std",
+	"dep:rand",
+	"dep:alloy-signer-local",
 	"reth-codecs?/test-utils",
 	"reth-db-api?/test-utils",
 	"reth-ethereum-primitives?/test-utils",
@@ -116,7 +122,7 @@ serde = [
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
 	"p256/serde",
-	"rand/serde",
+	"rand?/serde",
 	"tracing-subscriber/serde",
 	"tempo-contracts/serde",
 ]

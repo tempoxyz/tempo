@@ -3,6 +3,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{DepositPayload, ZonePortal},
@@ -67,9 +68,7 @@ async fn test_l1_deposit_mints_on_zone() -> eyre::Result<()> {
     let l1_token = ITIP20::new(l1_token_address, &l1_provider);
     l1_token
         .approve(portal_address, U256::from(deposit_amount))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let recipient = depositor;
@@ -111,9 +110,7 @@ async fn test_l1_deposit_mints_on_zone() -> eyre::Result<()> {
             },
             depositor,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     assert!(deposit_receipt.status(), "L1 deposit tx failed");
 

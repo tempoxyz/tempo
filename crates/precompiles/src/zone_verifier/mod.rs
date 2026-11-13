@@ -230,7 +230,10 @@ pub enum PolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::with_storage,
+    };
     use alloy::{
         primitives::{Bytes, b256},
         sol_types::SolCall,
@@ -392,8 +395,7 @@ mod tests {
 
     #[test]
     fn no_proof_requires_canonical_portal_and_empty_proof() {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T13, || {
             let verifier = ZoneVerifier::new();
             let mut candidate = call();
             candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
