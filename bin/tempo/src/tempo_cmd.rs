@@ -1132,12 +1132,28 @@ fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
 
 /// Opens `path` for writing a signing key, readable and writable only by its owner on Unix.
 ///
-/// Fails if `path` exists unless `force` is set. With `force`, an existing regular file (or the
-/// target of a symlink) keeps its inode and owner, has its permissions restricted and is then
-/// truncated; other targets such as `/dev/stdout` are written as they are. Descriptors opened
-/// before the permissions were restricted can still read the new key, so rotating a key that may
-/// have been exposed should write to a new path.
+/// Fails if `path` exists unless `force` is set. With `force`, an existing regular file is
+/// replaced by a new one owned by the caller. If it can't be removed (a bind mount, or a directory
+/// the caller can't write), it is overwritten in place instead, as is the target of a symlink:
+/// its permissions are restricted and it is then truncated. Pipes and devices such as
+/// `/dev/stdout` are written as they are.
 fn create_signing_key_file(path: &Path, force: bool) -> std::io::Result<File> {
+    if force && std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        // Replacing the file keeps descriptors opened while it had looser permissions from reading
+        // the new key.
+        match std::fs::remove_file(path) {
+            Err(err)
+                if !matches!(
+                    err.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ResourceBusy
+                ) =>
+            {
+                return Err(err);
+            }
+            _ => {}
+        }
+    }
+
     let mut options = OpenOptions::new();
     options
         .write(true)
@@ -1759,6 +1775,25 @@ mod tests {
         let metadata = path.metadata().unwrap();
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         assert_eq!(metadata.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_force_hides_new_key_from_held_descriptors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        std::fs::write(&path, b"old key").unwrap();
+        let mut held = File::open(&path).unwrap();
+
+        create_signing_key_file(&path, true)
+            .unwrap()
+            .write_all(b"new key")
+            .unwrap();
+
+        let mut held_contents = String::new();
+        std::io::Read::read_to_string(&mut held, &mut held_contents).unwrap();
+        assert_eq!(held_contents, "old key");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new key");
     }
 
     #[cfg(unix)]
