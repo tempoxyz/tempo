@@ -28,35 +28,30 @@ use zone_evm::ZoneEvmConfig;
 use zone_l1::{PreparedL1Block, state::L1StateProvider};
 use zone_precompiles::{L1StateError, L1StorageReader};
 
-/// Most Tempo commitment fetches in flight while prewarming one Zone block.
+/// Most Tempo commitment fetches in flight per Zone block.
 const MAX_COMMITMENT_FETCHES: usize = 64;
 
-/// Longest wait for one prewarm commitment fetch, so a stalled Tempo RPC cannot leave a fetch task
-/// behind per Zone block.
+/// Longest wait per commitment fetch, so a stalled Tempo RPC can't hold up the fetch task.
 const COMMITMENT_FETCH_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Most commitment misses queued for fetching; later misses are left to canonical execution.
-const MAX_QUEUED_COMMITMENT_FETCHES: usize = 1024;
+/// Most queued commitment misses; later misses are left to canonical execution.
+const MAX_QUEUED_FETCHES: usize = 1024;
 
-/// Most pool transactions simulated ahead of the builder. Pool execution starts only after
-/// `advanceTempo`, so this is how much the pool warms while it runs.
+/// Most pool txs simulated ahead of the builder, i.e. what warms while `advanceTempo` runs.
 const POOL_LOOKAHEAD: usize = 128;
 
 /// One disposable simulation.
 enum Simulation {
     /// A single-deposit `advanceTempo`, run through the Zone block executor.
     Deposit(Box<PreparedL1Block>),
-    /// A pool transaction, run on the bare EVM: the Zone block executor rejects anything before the
-    /// block's `advanceTempo`, which would end the simulation before any account is read.
+    /// A pool tx on the bare EVM, since the Zone executor rejects txs before `advanceTempo`.
     Pool(BestTransaction),
 }
 
 /// Immutable canonical inputs used to construct isolated prewarming workers.
 pub(crate) struct PrewarmingExecutionContext<Provider> {
     task_executor: TaskExecutor,
-    /// Stops the block's commitment fetch task once the context, and with it every simulation, is
-    /// gone.
-    fetches: AbortHandle,
+    fetch_task: AbortHandle,
     provider: Provider,
     evm_config: ZoneEvmConfig<L1StoragePrewarmer>,
     parent_header: SealedHeader<TempoHeader>,
@@ -80,11 +75,11 @@ where
     ) -> Arc<Self> {
         let (reader, fetch_task) =
             L1StoragePrewarmer::new(evm_config.l1_reader().clone(), l1_block_number);
-        let (fetches, registration) = AbortHandle::new_pair();
+        let (abort, registration) = AbortHandle::new_pair();
         task_executor.spawn_task(Abortable::new(fetch_task, registration).map(drop));
         Arc::new(Self {
             task_executor,
-            fetches,
+            fetch_task: abort,
             provider,
             evm_config: evm_config.with_l1_reader(reader),
             parent_header,
@@ -118,9 +113,8 @@ where
         handle
     }
 
-    /// Wraps the builder's pool iterator so each transaction is simulated before the builder takes
-    /// it, while their gas limits fit in `gas`. Dropping the returned iterator cancels its queued
-    /// simulations.
+    /// Wraps the builder's pool iterator to simulate each tx, within `gas`, before it's taken.
+    /// Dropping the iterator cancels its queued simulations.
     pub(crate) fn lookahead<I: BestTransactions<Item = BestTransaction>>(
         self: &Arc<Self>,
         inner: I,
@@ -130,9 +124,7 @@ where
         PoolLookahead::new(
             inner,
             gas,
-            Box::new(move |transaction| {
-                context.spawn(&prewarming.0, Simulation::Pool(transaction.clone()))
-            }),
+            Box::new(move |tx| context.spawn(&prewarming.0, Simulation::Pool(tx.clone()))),
         )
     }
 
@@ -143,8 +135,7 @@ where
             if !abort.is_aborted()
                 && let Err(error) = context.simulate(simulation)
             {
-                // Failures are expected (queue-hash checks, parent-state nonces); reads before
-                // the failure have already warmed the cache.
+                // Expected (queue-hash checks, parent-state nonces); earlier reads still warmed.
                 trace!(target: "zone::payload", %error, "Prewarm simulation failed");
             }
         });
@@ -164,22 +155,18 @@ where
         worker.apply_pre_execution_changes()?;
         match simulation {
             Simulation::Deposit(partial) => {
-                // Queue-hash validation may fail, but preceding reads have already warmed the
-                // shared cache.
+                // Queue-hash validation may fail, but earlier reads already warmed the cache.
                 worker.executor_mut().execute_transaction_without_commit(
                     build_advance_tempo_tx_owned(*partial, self.chain_id),
                 )?;
             }
-            Simulation::Pool(transaction) => {
-                let transaction = transaction.to_consensus();
-                let signer = transaction.signer();
-                // A reverted transaction still warmed whatever it read.
+            Simulation::Pool(tx) => {
+                let tx = tx.to_consensus();
+                let signer = tx.signer();
+                // A reverted tx still warmed whatever it read.
                 let _ = worker
                     .evm_mut()
-                    .transact(&Recovered::new_unchecked(
-                        TempoTxEnv::from(transaction),
-                        signer,
-                    ))?
+                    .transact(&Recovered::new_unchecked(TempoTxEnv::from(tx), signer))?
                     .discard();
             }
         }
@@ -189,7 +176,7 @@ where
 
 impl<Provider> Drop for PrewarmingExecutionContext<Provider> {
     fn drop(&mut self) {
-        self.fetches.abort();
+        self.fetch_task.abort();
     }
 }
 
@@ -209,43 +196,40 @@ impl Drop for Prewarming {
     }
 }
 
-/// Pool transactions in the inner iterator's order, each simulated up to [`POOL_LOOKAHEAD`]
-/// transactions before it is yielded while their gas limits fit in the block's gas.
+/// Yields `inner`'s txs in order, simulating each up to [`POOL_LOOKAHEAD`] txs ahead.
 pub(crate) struct PoolLookahead<I> {
     inner: I,
-    /// Taken from `inner` and already simulated, in order.
     buffer: VecDeque<BestTransaction>,
-    /// Gas left for simulations.
-    gas: u64,
+    gas_left: u64,
     simulate: Box<dyn FnMut(&BestTransaction) + Send>,
 }
 
 impl<I: BestTransactions<Item = BestTransaction>> PoolLookahead<I> {
     pub(crate) fn new(
         inner: I,
-        gas: u64,
+        gas_left: u64,
         simulate: Box<dyn FnMut(&BestTransaction) + Send>,
     ) -> Self {
         let mut lookahead = Self {
             inner,
             buffer: VecDeque::with_capacity(POOL_LOOKAHEAD),
-            gas,
+            gas_left,
             simulate,
         };
         lookahead.fill();
         lookahead
     }
 
-    /// Tops the buffer up from `inner`, which also picks up transactions that entered the pool.
+    /// Tops the buffer up from `inner`, which also yields txs that entered the pool.
     fn fill(&mut self) {
         while self.buffer.len() < POOL_LOOKAHEAD
-            && let Some(transaction) = self.inner.next()
+            && let Some(tx) = self.inner.next()
         {
-            if let Some(gas) = self.gas.checked_sub(transaction.gas_limit()) {
-                self.gas = gas;
-                (self.simulate)(&transaction);
+            if let Some(gas_left) = self.gas_left.checked_sub(tx.gas_limit()) {
+                self.gas_left = gas_left;
+                (self.simulate)(&tx);
             }
-            self.buffer.push_back(transaction);
+            self.buffer.push_back(tx);
         }
     }
 }
@@ -261,9 +245,8 @@ impl<I: BestTransactions<Item = BestTransaction>> Iterator for PoolLookahead<I> 
 
 impl<I: BestTransactions<Item = BestTransaction>> BestTransactions for PoolLookahead<I> {
     fn mark_invalid(&mut self, invalid: &Self::Item, kind: InvalidPoolTransactionError) {
-        // `inner` skips the rest of the invalid transaction's nonce lane, where non-AA
-        // transactions share nonce key 0, except for expiring-nonce transactions, which are
-        // independent. Drop that lane's transactions already taken from it too.
+        // `inner` skips the rest of a non-expiring tx's nonce lane (non-AA txs use key 0), so drop
+        // the lane's buffered txs too.
         if !invalid.transaction.is_expiring_nonce() {
             let lane = |tx: &BestTransaction| {
                 (tx.sender(), tx.transaction.nonce_key().unwrap_or_default())
@@ -283,10 +266,8 @@ impl<I: BestTransactions<Item = BestTransaction>> BestTransactions for PoolLooka
     }
 }
 
-/// A [`L1StorageReader`], used for simulations, that never blocks on a Tempo L1 commitment read.
-///
-/// Storage reads pass through unchanged. Cached commitments are returned as is.
-/// Misses are queued for a parallel fetch and read as zero, like an unconfigured account.
+/// An [`L1StorageReader`] for simulations that never blocks on a commitment: misses are queued for
+/// a parallel fetch and read as zero, like an unconfigured account.
 #[derive(Clone)]
 struct L1StoragePrewarmer {
     provider: L1StateProvider,
@@ -326,16 +307,13 @@ impl L1StorageReader for L1StoragePrewarmer {
 }
 
 impl L1StoragePrewarmer {
-    /// Returns a reader whose commitment misses are fetched at `l1_block_number`, and the task
-    /// that fetches each missed account once, up to [`MAX_COMMITMENT_FETCHES`] at a time.
-    ///
-    /// The task ends once every clone of the reader is dropped and its fetches finish, or when
-    /// aborted.
+    /// Returns a reader and its task, which fetches each missed account once at `l1_block_number`
+    /// and ends once every reader clone is dropped.
     fn new(
         provider: L1StateProvider,
         l1_block_number: u64,
     ) -> (Self, impl Future<Output = ()> + Send + 'static) {
-        let (fetches, mut accounts) = mpsc::channel(MAX_QUEUED_COMMITMENT_FETCHES);
+        let (fetches, mut accounts) = mpsc::channel(MAX_QUEUED_FETCHES);
         let reader = Self {
             provider: provider.clone(),
             l1_block_number,
@@ -348,19 +326,10 @@ impl L1StoragePrewarmer {
                 .filter(move |account| ready(fetched.insert(*account)))
                 .for_each_concurrent(MAX_COMMITMENT_FETCHES, |account| async move {
                     // A failed fetch is retried by canonical execution on its own cache miss.
-                    match tokio::time::timeout(
-                        COMMITMENT_FETCH_TIMEOUT,
-                        provider.read_l1_commitment_async(account, l1_block_number),
-                    )
-                    .await
-                    {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(error)) => {
-                            debug!(target: "zone::payload", %account, %error, "Commitment prewarm fetch failed");
-                        }
-                        Err(_) => {
-                            debug!(target: "zone::payload", %account, "Commitment prewarm fetch timed out");
-                        }
+                    let fetch = provider.read_l1_commitment_async(account, l1_block_number);
+                    let result = tokio::time::timeout(COMMITMENT_FETCH_TIMEOUT, fetch).await;
+                    if !matches!(result, Ok(Ok(_))) {
+                        debug!(target: "zone::payload", %account, ?result, "Prewarm fetch failed");
                     }
                 })
                 .await;
@@ -392,10 +361,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn prewarm_reader_serves_cache_and_sends_misses() {
+    async fn prewarm_reader_serves_cache_and_queues_misses() {
         // The mock has no answers, so any RPC would fail the reads below.
         let provider = provider(Asserter::new());
-        let (cached, fresh) = (Address::repeat_byte(1), Address::repeat_byte(2));
+        let (cached, fresh, dropped) = (
+            Address::repeat_byte(1),
+            Address::repeat_byte(2),
+            Address::repeat_byte(6),
+        );
         let (slot, value, commitment) = (
             B256::repeat_byte(3),
             B256::repeat_byte(4),
@@ -406,7 +379,8 @@ mod tests {
             cache.set_commitment(cached, TEMPO_BLOCK, commitment);
             cache.set(cached, slot, TEMPO_BLOCK - 1, value);
         }
-        let (fetches, mut sent) = mpsc::channel(8);
+        // Room for two misses: the third is dropped.
+        let (fetches, mut sent) = mpsc::channel(2);
         let reader = L1StoragePrewarmer {
             provider,
             l1_block_number: TEMPO_BLOCK,
@@ -419,6 +393,7 @@ mod tests {
                 reader.read_l1_commitment(cached, TEMPO_BLOCK - 1),
                 reader.read_l1_commitment(fresh, TEMPO_BLOCK - 1),
                 reader.read_l1_commitment(fresh, TEMPO_BLOCK - 1),
+                reader.read_l1_commitment(dropped, TEMPO_BLOCK - 1),
                 reader.read_l1_storage(cached, slot, TEMPO_BLOCK - 1),
             )
         })
@@ -427,13 +402,18 @@ mod tests {
 
         assert_eq!(
             reads,
-            (Ok(commitment), Ok(B256::ZERO), Ok(B256::ZERO), Ok(value))
+            (
+                Ok(commitment),
+                Ok(B256::ZERO),
+                Ok(B256::ZERO),
+                Ok(B256::ZERO),
+                Ok(value)
+            )
         );
-        let mut misses = Vec::new();
-        while let Some(account) = sent.recv().await {
-            misses.push(account);
-        }
-        assert_eq!(misses, vec![fresh, fresh]);
+        assert_eq!(
+            std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>(),
+            [fresh, fresh]
+        );
     }
 
     #[tokio::test]
@@ -464,29 +444,5 @@ mod tests {
         let mut cache = provider.cache().lock();
         assert_eq!(cache.get_commitment(failed, TEMPO_BLOCK), None);
         assert_eq!(cache.get_commitment(fetched, TEMPO_BLOCK), Some(commitment));
-    }
-
-    #[tokio::test]
-    async fn prewarm_reader_drops_misses_when_queue_is_full() {
-        let (fetches, mut sent) = mpsc::channel(1);
-        let reader = L1StoragePrewarmer {
-            provider: provider(Asserter::new()),
-            l1_block_number: TEMPO_BLOCK,
-            fetches,
-        };
-        let (first, second) = (Address::repeat_byte(1), Address::repeat_byte(2));
-
-        assert_eq!(
-            reader.read_l1_commitment(first, TEMPO_BLOCK),
-            Ok(B256::ZERO)
-        );
-        assert_eq!(
-            reader.read_l1_commitment(second, TEMPO_BLOCK),
-            Ok(B256::ZERO)
-        );
-        drop(reader);
-
-        assert_eq!(sent.recv().await, Some(first));
-        assert_eq!(sent.recv().await, None);
     }
 }

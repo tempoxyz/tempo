@@ -269,8 +269,7 @@ where
         })?;
 
         // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency).
-        let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
-        let (prewarming, pool_transactions) = match tempo_import {
+        let (prewarming, pool_txs) = match tempo_import {
             TempoImport::Full(prepared) => {
                 let context = PrewarmingExecutionContext::new(
                     self.task_executor.clone(),
@@ -316,12 +315,13 @@ where
             })?;
         drop(prewarming);
 
-        if let Some(pool_transactions) = pool_transactions {
+        if let Some(pool_txs) = pool_txs {
             // Execute pool transactions until either all of them fit or their packed RLP bytes reach
             // the size budget
             // The block executor owns gas-capacity accounting.
+            let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
             // Zones resolve fee tokens without a fallback list.
-            let mut best_txs = StateAwareBestTransactions::new(pool_transactions, &[]);
+            let mut best_txs = StateAwareBestTransactions::new(pool_txs, &[]);
             let mut unlisted = Vec::new();
             let outcome = execute_pool_transactions(
                 |tx, best_txs| {
@@ -337,7 +337,7 @@ where
                 self.transfer_allowlist.as_deref(),
                 &mut unlisted,
             );
-            // Stop prewarming transactions that can no longer reach this block.
+            // Stop prewarming txs that can no longer make this block.
             drop(best_txs);
             if !unlisted.is_empty() {
                 // Otherwise every later build would check and skip them again. Removal locks the
@@ -1086,8 +1086,7 @@ mod tests {
         })
     }
 
-    /// The lookahead simulates transactions before yielding them in order, and drops buffered
-    /// transactions from an invalid transaction's lane.
+    /// The lookahead simulates txs before yielding them in order, and drops an invalid tx's lane.
     #[test]
     fn pool_lookahead_simulates_ahead_and_drops_invalid_lanes() {
         let txs: Vec<_> = (0..3)
@@ -1110,7 +1109,7 @@ mod tests {
         let first = lookahead.next().unwrap();
         assert_eq!(first.hash(), txs[0].hash());
         assert_eq!(lookahead.next().unwrap().hash(), txs[1].hash());
-        // The last transaction shares the sender, so it leaves the buffer with the invalid one.
+        // The last tx shares the invalid tx's sender, so it's dropped.
         lookahead.mark_invalid(
             &first,
             InvalidPoolTransactionError::OversizedData { size: 1, limit: 0 },
@@ -1118,10 +1117,9 @@ mod tests {
         assert!(lookahead.next().is_none());
     }
 
-    /// The lookahead simulates only what fits its gas, and an invalid expiring-nonce transaction
-    /// keeps the sender's other expiring-nonce transactions.
+    /// The lookahead caps simulated gas; an invalid expiring-nonce tx keeps its sender's others.
     #[test]
-    fn pool_lookahead_caps_simulated_gas_and_keeps_expiring_nonce_transactions() {
+    fn pool_lookahead_caps_gas_and_keeps_expiring_nonce_txs() {
         let expiring = |gas_limit| {
             let tx = TempoTransaction {
                 gas_limit,
