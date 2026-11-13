@@ -2648,6 +2648,8 @@ impl L1TestNode {
                 c.dev.finality_depth = std::num::NonZeroUsize::MIN;
                 // Witness collection must prove older L1 checkpoints during catch-up.
                 c.rpc.rpc_eth_proof_window = 100_000;
+                // Fixtures submit their setup transactions back to back from one signer.
+                c.txpool.max_account_slots = usize::MAX;
                 c
             });
 

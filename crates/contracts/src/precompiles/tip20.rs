@@ -13,7 +13,7 @@ pub const USD_CURRENCY: &str = "USD";
 pub const ISO4217_CODES: &[&str] = &[
     "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT",
     "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BOV", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD",
-    "CAD", "CDF", "CHE", "CHF", "CHW", "CLP", "CLF", "CNY", "COP", "COU", "CRC", "CUP", "CVE",
+    "CAD", "CDF", "CHE", "CHF", "CHW", "CLF", "CLP", "CNY", "COP", "COU", "CRC", "CUP", "CVE",
     "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL",
     "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD", "HNL", "HRK", "HTG", "HUF", "IDR", "ILS",
     "INR", "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KMF", "KPW", "KRW",
@@ -447,5 +447,22 @@ mod test {
             trailing.push(0);
             assert!(PaymentSlots::classify(&trailing).is_none());
         }
+    }
+
+    #[test]
+    fn test_iso4217_codes_sorted_and_recognized() {
+        // `is_iso4217_currency` binary-searches the table, so it must be strictly sorted
+        for pair in ISO4217_CODES.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{} must sort before {}",
+                pair[0],
+                pair[1]
+            );
+        }
+        for code in ISO4217_CODES {
+            assert!(is_iso4217_currency(code), "{code} must be recognized");
+        }
+        assert!(!is_iso4217_currency("ABC"));
     }
 }
