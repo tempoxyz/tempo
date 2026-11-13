@@ -29,6 +29,14 @@ generation, proof verification, and signature verification. No running zone is
 needed. These constructor-seeded fixtures are restricted to chain 1337 and must
 never hold real funds.
 
+The portal still authenticates each batch's Tempo anchor: it reads the anchor
+block's hash from EIP-2935 and reverts with `InvalidTempoBlockNumber` when the
+hash is zero. Both settlement fixtures anchor to `block.number - offset`, where
+the offset is a constructor argument. The helper sets it from
+`TXGEN_ZONE_ANCHOR_OFFSET` (default 1, the previous block). Nodes whose history
+contract only answers for older blocks, such as nodes with deferred execution,
+need a larger offset.
+
 Each operation transfers one pathUSD base unit. Setup funds withdrawal escrow
 for the requested transaction count and approves deposits. Fees and bounce-back
 reserves are zero; withdrawals have no callbacks. The fixed synthetic payload has
@@ -59,6 +67,17 @@ This fixture settles atomically within each operation; the sizing window spreads
 load across portal state and does not introduce a settlement delay. Real capacity
 planning also needs actual settlement latency and workload composition.
 
+## Zone -> zone
+
+`presets/zone-to-zone.yml` and `zone-to-zone-hot.yml` route zone A withdrawals into zone B
+through withdrawal callbacks, using `ZoneToZoneFixture.sol`: `CallbackPortalFixture` (this
+portal fixture with configurable messenger, access mode and roles), `ZoneMessengerFixture` (the
+shared ZoneMessenger rejects portals the ZoneFactory did not create, so this copy relays for
+fixture portals), `ZoneToZoneGatewayFixture` (deposits the callback amount into zone B and, for
+closed source zones, returns one unit to zone A) and `ZoneToZoneSettlementFixture`. The portals
+still run the production runtime, including callback delivery, bounce-backs and the closed-access
+return-deposit check. The preset file header lists the knobs and limits.
+
 ## Rebuild
 
 The artifacts use solc 0.8.30, optimizer 200 runs, Cancun EVM:
@@ -70,6 +89,12 @@ forge build --root contrib/bench/txgen/zones --contracts . \
 for contract in PortalFixture SettlementFixture; do
   jq '{abi, bytecode: {object: .bytecode.object}}' \
     ".bench-tmp/zones-out/PortalFixture.sol/$contract.json" \
+    > "contrib/bench/txgen/zones/$contract.json"
+done
+for contract in CallbackPortalFixture ZoneMessengerFixture ZoneToZoneGatewayFixture \
+  ZoneToZoneSettlementFixture; do
+  jq '{abi, bytecode: {object: .bytecode.object}}' \
+    ".bench-tmp/zones-out/ZoneToZoneFixture.sol/$contract.json" \
     > "contrib/bench/txgen/zones/$contract.json"
 done
 jq '.abi | map(select(.name == "deposit" or .name == "processWithdrawals"))' \

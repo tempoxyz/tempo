@@ -19,6 +19,7 @@ use k256::{
     AffinePoint, ProjectivePoint, PublicKey, Scalar, SecretKey,
     elliptic_curve::{PrimeField, sec1::ToEncodedPoint},
 };
+use sha2::{Digest, Sha256};
 use tempo_contracts::zones::{ChaumPedersenProof, DepositPayload, Withdrawal};
 
 use crate::{
@@ -584,8 +585,6 @@ fn deterministic_cp_nonce(
 
 /// HMAC-SHA256 implementation matching ZoneInbox._hmacSha256.
 pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-
     // Pad/hash key to 64 bytes
     let mut key_block = [0u8; 64];
     if key.len() > 64 {
@@ -703,7 +702,8 @@ mod tests {
     };
     use crate::test_utils::{EncryptedDepositFixture, assert_cp_proof_valid};
     use alloy_primitives::{Address, B256, U256};
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
+    use k256::{AffinePoint, ProjectivePoint, Scalar, elliptic_curve::sec1::ToEncodedPoint};
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn forced_encryption_binds_operation_context_and_fresh_randomness() {
@@ -839,8 +839,6 @@ mod tests {
 
     #[test]
     fn test_authenticated_withdrawal_roundtrip() {
-        use sha2::{Digest, Sha256};
-
         let privkey_bytes: [u8; 32] = Sha256::digest(b"authenticated-withdrawal-key").into();
         let privkey = k256::SecretKey::from_slice(&privkey_bytes).unwrap();
         let pubkey = privkey.public_key();
@@ -860,8 +858,6 @@ mod tests {
 
     #[test]
     fn test_authenticated_withdrawal_deterministic_roundtrip_and_withdrawal_uniqueness() {
-        use sha2::{Digest, Sha256};
-
         let reveal_key_bytes: [u8; 32] =
             Sha256::digest(b"authenticated-withdrawal-reveal-key").into();
         let reveal_key = k256::SecretKey::from_slice(&reveal_key_bytes).unwrap();
@@ -915,8 +911,6 @@ mod tests {
 
     #[test]
     fn test_authenticated_withdrawal_deterministic_changes_by_zone() {
-        use sha2::{Digest, Sha256};
-
         let reveal_key_bytes: [u8; 32] =
             Sha256::digest(b"authenticated-withdrawal-zone-reveal-key").into();
         let reveal_key = k256::SecretKey::from_slice(&reveal_key_bytes).unwrap();
@@ -955,7 +949,6 @@ mod tests {
     fn test_ecies_decrypt_wrong_key() {
         let f = EncryptedDepositFixture::new();
         let wrong_key = {
-            use sha2::{Digest, Sha256};
             let bytes: [u8; 32] = Sha256::digest(b"wrong-sequencer-key").into();
             k256::SecretKey::from_slice(&bytes).unwrap()
         };
@@ -1132,7 +1125,6 @@ mod tests {
         // Encrypt a 63-byte plaintext (wrong length — should be 64)
         let short_plaintext = [0u8; 63];
         let aes_key = {
-            use k256::{AffinePoint, ProjectivePoint, Scalar};
             let seq_scalar: Scalar = *f.seq_key.to_nonzero_scalar();
             let shared = AffinePoint::from(ProjectivePoint::from(f.eph_pub) * seq_scalar);
             let (ss_x, _) = super::compressed_x_and_parity(&shared);
@@ -1187,8 +1179,6 @@ mod tests {
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
-        use sha2::{Digest, Sha256};
-
         let seq_bytes: [u8; 32] = Sha256::digest(b"roundtrip-sequencer-key").into();
         let seq_key = k256::SecretKey::from_slice(&seq_bytes).expect("valid key");
         let seq_scalar: k256::Scalar = *seq_key.to_nonzero_scalar();

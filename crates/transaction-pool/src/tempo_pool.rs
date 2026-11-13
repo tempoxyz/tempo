@@ -5,8 +5,9 @@
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
+    metrics::AdmissionMetrics,
     ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
@@ -29,11 +30,13 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
+    pool::AddedTransaction,
+    validate::TransactionValidatorError,
 };
-use revm::database::BundleAccount;
-use std::{sync::Arc, time::Instant};
+use reth_trie_common::bundle_state::BundleAccount;
+use std::{mem, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
-use tempo_evm::TempoEvmConfig;
+use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
@@ -43,7 +46,15 @@ use tempo_precompiles::{
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::{Block, TempoHeader};
-use tempo_revm::TempoStateAccess;
+use tokio::sync::mpsc;
+
+/// Validations of a transaction before admission rejects it because the admission epoch advanced
+/// during each of them.
+///
+/// A single canonical update advances it at most four times (the validator's head refresh, two
+/// in pool maintenance and a zone's authority revalidation), so a rejection takes advances from
+/// at least three canonical updates during one admission.
+const ADMISSION_ATTEMPTS: usize = 10;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -65,6 +76,8 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Admission metrics.
+    admission_metrics: AdmissionMetrics,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -86,6 +99,7 @@ where
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            admission_metrics: AdmissionMetrics::default(),
         }
     }
 }
@@ -96,12 +110,44 @@ where
         + 'static,
     EvmConfig: ConfigureTempoPoolEvm,
 {
+    /// Sends admissions that are validating now back to validation before they insert.
+    ///
+    /// Call before repairing the pool for a canonical update, and after refreshing what
+    /// validation reads besides chain state. An admission that validated earlier would otherwise
+    /// insert a transaction that repair would have removed. Reth's canonical update needs no
+    /// call: the validator advances the epoch when its head is refreshed.
+    pub(crate) fn advance_admission_epoch(&self) {
+        *self
+            .protocol_pool
+            .validator()
+            .validator()
+            .admission_epoch
+            .write() += 1;
+    }
+
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
         self.protocol_pool
             .validator()
             .validator()
             .amm_liquidity_cache()
+    }
+
+    /// Returns the best transactions whose time bounds and keychain key expiry permit inclusion
+    /// at `timestamp`.
+    ///
+    /// AA transactions outside their validity window or signed with a keychain key that has
+    /// expired by `timestamp`, and their nonce-dependent successors, are skipped for this
+    /// iterator only. Future-valid transactions remain in the pool for later blocks. Apply this
+    /// filter before prewarming so skipped transactions are never prewarmed.
+    pub fn best_transactions_for_block(
+        &self,
+        attributes: BestTransactionsAttributes,
+        timestamp: u64,
+    ) -> impl BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
+    + use<Client, EvmConfig> {
+        self.best_transactions_with_attributes(attributes)
+            .filter_transactions(move |tx| tx.transaction.is_includable_at(timestamp))
     }
 
     /// Returns the configured client
@@ -256,6 +302,10 @@ where
 
         for tx in transactions {
             if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Pool maintenance evicts a transaction past its valid_before or key expiry"
+                );
                 to_remove.push(*tx.hash());
                 continue;
             }
@@ -581,15 +631,29 @@ where
                     let hardfork = self.protocol_pool.validator().validator().active_hardfork();
 
                     let tx = Arc::new(tx);
-                    let added =
-                        self.aa_2d_pool
-                            .write()
-                            .add_transaction(tx, state_nonce, hardfork)?;
+                    let (added, mut discarded) = {
+                        let mut aa_2d_pool = self.aa_2d_pool.write();
+                        let mut added = aa_2d_pool.add_transaction(tx, state_nonce, hardfork)?;
+                        // Taken so `notify_event_listeners` doesn't report them a second time.
+                        let discarded = match &mut added {
+                            AddedTransaction::Pending(pending) => {
+                                std::mem::take(&mut pending.discarded)
+                            }
+                            AddedTransaction::Parked { .. } => aa_2d_pool.discard(),
+                        };
+                        (added, discarded)
+                    };
                     let hash = *added.hash();
+                    if discarded.iter().any(|tx| *tx.hash() == hash) {
+                        // The insert's own events are skipped, so the transaction it replaced is
+                        // reported as discarded instead.
+                        discarded.extend(added.replaced().cloned());
+                        self.protocol_pool
+                            .inner()
+                            .notify_on_transaction_updates(Vec::new(), discarded);
+                        return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
+                    }
                     if let Some(pending) = added.as_pending() {
-                        if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
-                            return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
-                        }
                         self.protocol_pool
                             .inner()
                             .on_new_pending_transaction(pending);
@@ -598,6 +662,13 @@ where
                     let state = added.transaction_state();
                     // notify regular event listeners from the protocol pool
                     self.protocol_pool.inner().notify_event_listeners(&added);
+                    // Sent after the insert's events so a promoted transaction that was evicted
+                    // again ends as discarded.
+                    if !discarded.is_empty() {
+                        self.protocol_pool
+                            .inner()
+                            .notify_on_transaction_updates(Vec::new(), discarded);
+                    }
                     self.protocol_pool
                         .inner()
                         .on_new_transaction(added.into_new_transaction_event());
@@ -639,6 +710,7 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            admission_metrics: self.admission_metrics.clone(),
         }
     }
 }
@@ -650,6 +722,70 @@ impl<Client, EvmConfig> std::fmt::Debug for TempoTransactionPool<Client, EvmConf
             .field("protocol_pool", &"Pool<...>")
             .field("aa_2d_nonce_pool", &"AA2dPool<...>")
             .finish_non_exhaustive()
+    }
+}
+
+impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
+where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+    TempoPooledTransaction: reth_transaction_pool::EthPoolTransaction,
+{
+    /// Validates again, against the latest state, every pooled transaction with an authority in
+    /// `accounts` (its sender unless an access key signs, key authorization signer, separate fee
+    /// payer or access key), or every pooled transaction when `accounts` is `None`. Invalid
+    /// transactions leave the pool. Valid ones stay where they are, so their subscribers and the
+    /// payload iterators that already yielded them see no change. A transaction whose validation
+    /// fails, such as on a state read error, stays pooled unchanged.
+    ///
+    /// Returns `false` when any validation failed, so the caller can retry those transactions.
+    ///
+    /// For chains whose configuration commitments mirror another chain's, where a block's own
+    /// state changes do not show which commitments changed.
+    pub async fn revalidate_authorities(&self, accounts: Option<&AddressSet>) -> bool {
+        if accounts.is_some_and(AddressSet::is_empty) {
+            return true;
+        }
+        // An admission that validated before the change would insert after this scan.
+        self.advance_admission_epoch();
+        let transactions: Vec<_> = self
+            .all_transactions()
+            .iter()
+            .filter(|tx| accounts.is_none_or(|accounts| tx.transaction.has_authority_in(accounts)))
+            .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+            .collect();
+        if transactions.is_empty() {
+            return true;
+        }
+        let total = transactions.len();
+        let mut failed = 0;
+        let mut invalid = Vec::new();
+        for outcome in self
+            .protocol_pool
+            .validator()
+            .validate_transactions(transactions)
+            .await
+        {
+            match outcome {
+                TransactionValidationOutcome::Invalid(tx, _) => invalid.push(*tx.hash()),
+                TransactionValidationOutcome::Error(..) => failed += 1,
+                TransactionValidationOutcome::Valid { .. } => {}
+            }
+        }
+        let invalid_count = invalid.len();
+        // Removing a transaction that left the pool during validation, such as one mined since,
+        // does nothing.
+        self.remove_transactions(invalid);
+        tracing::debug!(
+            target: "txpool",
+            total,
+            invalid = invalid_count,
+            failed,
+            "Revalidated transactions of changed authorities"
+        );
+        failed == 0
     }
 }
 
@@ -686,12 +822,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<TransactionEvents> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        let res = self.add_validated_transaction(origin, tx)?;
+        let res = self.add_transaction(origin, transaction).await?;
         self.transaction_event_listener(res.hash)
             .ok_or_else(|| PoolError::new(res.hash, PoolErrorKind::DiscardedOnInsert))
     }
@@ -701,12 +832,10 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        let tx = self
-            .protocol_pool
-            .validator()
-            .validate_transaction(origin, transaction)
-            .await;
-        self.add_validated_transaction(origin, tx)
+        self.add_transactions_with_origins(vec![(origin, transaction)])
+            .await
+            .pop()
+            .expect("one result per transaction")
     }
 
     async fn add_transactions(
@@ -714,25 +843,10 @@ where
         origin: TransactionOrigin,
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transactions.is_empty() {
-            return Vec::new();
-        }
-
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|tx| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions(origin, transactions)
-                .await;
-        }
-
-        self.protocol_pool
-            .validator()
-            .validate_transactions_with_origin(origin, transactions)
-            .await
-            .into_iter()
-            .map(|outcome| self.add_validated_transaction(origin, outcome))
-            .collect()
+        self.add_transactions_with_origins(
+            transactions.into_iter().map(|tx| (origin, tx)).collect(),
+        )
+        .await
     }
 
     async fn add_transactions_with_origins(
@@ -743,27 +857,86 @@ where
             return Vec::new();
         }
 
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions_with_origins(transactions)
-                .await;
-        }
-
+        self.admission_metrics
+            .batch_size
+            .record(transactions.len() as f64);
+        let validator = self.protocol_pool.validator();
         let origins = transactions
             .iter()
             .map(|(origin, _)| *origin)
             .collect::<Vec<_>>();
+        // Kept for a transaction the validation tasks shut down before validating.
+        let mut results = transactions
+            .iter()
+            .map(|(_, tx)| {
+                Err(PoolError::other(
+                    *tx.hash(),
+                    TransactionValidatorError::ValidationServiceUnreachable,
+                ))
+            })
+            .collect::<Vec<_>>();
 
-        self.protocol_pool
-            .validator()
-            .validate_transactions(transactions)
-            .await
+        // The transactions to validate, each with the index of its result.
+        let mut pending = transactions
             .into_iter()
-            .zip(origins)
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
+            .enumerate()
+            .map(|(index, (origin, transaction))| (index, origin, transaction))
+            .collect::<Vec<_>>();
+        for attempt in 1..=ADMISSION_ATTEMPTS {
+            let (sender, mut validated) = mpsc::unbounded_channel();
+            let start = Instant::now();
+            let job = {
+                let validator = Arc::clone(&validator.validator);
+                let pending = mem::take(&mut pending);
+                Box::pin(async move {
+                    validator.validate_each(pending, |index, epoch, outcome| {
+                        // Fails only if this admission was dropped.
+                        let _ = sender.send((index, epoch, outcome));
+                    })
+                })
+            };
+            if validator.to_validation_task.send(job).await.is_err() {
+                break;
+            }
+
+            // Insert each transaction as soon as it is validated, so an epoch has to last
+            // through one validation, not the batch's.
+            while let Some((index, validated_in, outcome)) = validated.recv().await {
+                // An advance takes the write lock before the pool is repaired, so either this
+                // sees the advance or the repair sees what is inserted under this guard.
+                let epoch = validator.validator().admission_epoch.read();
+                results[index] = match outcome {
+                    TransactionValidationOutcome::Valid { transaction, .. }
+                        if validated_in != *epoch =>
+                    {
+                        let transaction = transaction.transaction();
+                        pending.push((index, origins[index], transaction.with_discarded_caches()));
+                        // Stands if this was the last attempt.
+                        Err(PoolError::other(
+                            *transaction.hash(),
+                            TempoPoolTransactionError::StateChangedDuringValidation,
+                        ))
+                    }
+                    // Only a valid transaction inserts: the rest is forwarded whatever the
+                    // epoch.
+                    outcome => self.add_validated_transaction(origins[index], outcome),
+                };
+            }
+            self.admission_metrics
+                .validation_duration_seconds
+                .record(start.elapsed());
+
+            if pending.is_empty() {
+                break;
+            }
+            let stale = pending.len() as u64;
+            if attempt < ADMISSION_ATTEMPTS {
+                self.admission_metrics.revalidated.increment(stale);
+            } else {
+                self.admission_metrics.rejected.increment(stale);
+            }
+        }
+        results
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -1323,11 +1496,15 @@ where
         // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
         // keep ordering its eviction sets against a stale base fee once the fee starts moving.
         let pending_basefee = update.pending_block_base_fee;
+        // Reth refreshes the validator's head, which advances the admission epoch, before it
+        // prunes mined transactions and moves sender nonces.
         self.protocol_pool.on_canonical_state_change(update);
         self.aa_2d_pool.write().set_base_fee(pending_basefee);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
+        // Moves sender nonces as a canonical update does.
+        self.advance_admission_epoch();
         self.protocol_pool.update_accounts(accounts)
     }
 
@@ -1470,26 +1647,35 @@ mod tests {
         txs.iter().map(|tx| *tx.hash()).collect()
     }
 
-    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
+    use crate::{
+        test_utils::{MockProviderStorageExt, TxBuilder, wrap_valid_tx},
+        transaction::KeychainSubject,
+        tt_2d_pool::AA2dPoolConfig,
+    };
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use reth_primitives_traits::Recovered;
+    use futures::{FutureExt, StreamExt};
+    use reth_primitives_traits::{
+        InMemorySize, Recovered, SealedBlock, transaction::error::InvalidTransactionError,
+    };
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
-        PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
+        AllTransactionsEvents, FullTransactionEvent, PoolConfig, PoolUpdateKind, SubPoolLimit,
+        TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
         blobstore::InMemoryBlobStore,
+        error::InvalidPoolTransactionError,
         validate::{EthTransactionValidatorBuilder, ValidTransaction},
     };
     use tempo_chainspec::{
         TempoChainSpec,
         hardfork::TempoHardfork,
-        spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP},
+        spec::{DEV, MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_contracts::precompiles::ITIP403Registry;
-    use tempo_evm::TempoEvmConfig;
+    use tempo_evm::{ResolvedFeeToken, TempoEvmConfig};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         account_keychain::{
@@ -1499,10 +1685,11 @@ mod tests {
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
     use tempo_primitives::{
-        Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
-        transaction::{KeyAuthorization, PrimitiveSignature, SignatureType},
+        Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
+        transaction::{
+            KeyAuthorization, PrimitiveSignature, SignatureType, tempo_transaction::Call,
+        },
     };
-    use tempo_revm::ResolvedFeeToken;
 
     fn provider_with_spending_limit(
         account: Address,
@@ -1628,10 +1815,13 @@ mod tests {
     fn create_test_pool(
         provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
     ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(provider.chain_spec()),
+        )
+        .with_custom_tx_type(TempoTxType::AA as u8)
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -1641,7 +1831,11 @@ mod tests {
             amm_cache,
         );
 
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let (executor, task) = TransactionValidationTaskExecutor::new(validator);
+        // Async tests validate through the pool; synchronous ones only insert validated outcomes.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(task.run());
+        }
         let protocol_pool = Pool::new(
             executor,
             TempoTipOrdering::default(),
@@ -1686,10 +1880,276 @@ mod tests {
         provider
     }
 
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[test_case::test_case(U256::MAX; "expiring")]
+    fn best_transactions_for_block_validity_boundaries(nonce_key: U256) {
+        let pool = create_test_pool(
+            create_provider_with_tip().with_chain_spec(Arc::unwrap_or_clone(DEV.clone())),
+        );
+        let tx = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .valid_after(50)
+            .valid_before(100)
+            .build();
+        let hash = *tx.hash();
+        add_validated(&pool, tx);
+
+        for (timestamp, eligible) in [
+            (49, false),
+            (50, true),
+            (99, true),
+            (100, false),
+            (101, false),
+        ] {
+            let hashes: Vec<_> = pool
+                .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), timestamp)
+                .without_updates()
+                .map(|tx| *tx.hash())
+                .collect();
+            assert_eq!(
+                hashes,
+                if eligible { vec![hash] } else { vec![] },
+                "timestamp {timestamp}"
+            );
+            assert!(
+                pool.get(&hash).is_some(),
+                "filtering must not evict transactions"
+            );
+        }
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    #[test_case::test_case(U256::MAX; "expiring")]
+    fn best_transactions_for_block_key_expiry_boundary(nonce_key: U256) {
+        let pool = create_test_pool(
+            create_provider_with_tip().with_chain_spec(Arc::unwrap_or_clone(DEV.clone())),
+        );
+        let tx = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .valid_before(200)
+            .build();
+        tx.set_key_expiry(Some(100));
+        let hash = *tx.hash();
+        add_validated(&pool, tx);
+
+        for (timestamp, eligible) in [(99, true), (100, false), (101, false)] {
+            let hashes: Vec<_> = pool
+                .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), timestamp)
+                .without_updates()
+                .map(|tx| *tx.hash())
+                .collect();
+            assert_eq!(
+                hashes,
+                if eligible { vec![hash] } else { vec![] },
+                "timestamp {timestamp}"
+            );
+            assert!(
+                pool.get(&hash).is_some(),
+                "filtering must not evict transactions"
+            );
+        }
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    fn best_transactions_for_block_missing_bounds(nonce_key: U256) {
+        let pool = create_test_pool(create_provider_with_tip());
+        let unbounded = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .build();
+        let future = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .valid_after(50)
+            .build();
+        let expiring = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .valid_before(100)
+            .build();
+        let eip1559 = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let unbounded_hash = *unbounded.hash();
+        let future_hash = *future.hash();
+        let expiring_hash = *expiring.hash();
+        let eip1559_hash = *eip1559.hash();
+        for tx in [unbounded, future, expiring, eip1559] {
+            add_validated(&pool, tx);
+        }
+
+        for (timestamp, expected) in [
+            (0, vec![unbounded_hash, expiring_hash, eip1559_hash]),
+            (
+                50,
+                vec![unbounded_hash, future_hash, expiring_hash, eip1559_hash],
+            ),
+            (100, vec![unbounded_hash, future_hash, eip1559_hash]),
+            (u64::MAX, vec![unbounded_hash, future_hash, eip1559_hash]),
+        ] {
+            let mut hashes: Vec<_> = pool
+                .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), timestamp)
+                .without_updates()
+                .map(|tx| *tx.hash())
+                .collect();
+            let mut expected = expected;
+            hashes.sort();
+            expected.sort();
+            assert_eq!(hashes, expected, "timestamp {timestamp}");
+        }
+    }
+
+    #[test_case::test_case(U256::ZERO, 0, false; "future_protocol_head")]
+    #[test_case::test_case(U256::ZERO, 1, false; "future_protocol_successor")]
+    #[test_case::test_case(U256::ONE, 0, false; "future_2d_head")]
+    #[test_case::test_case(U256::ONE, 1, false; "future_2d_successor")]
+    #[test_case::test_case(U256::ZERO, 0, true; "expired_protocol_head")]
+    #[test_case::test_case(U256::ZERO, 1, true; "expired_protocol_successor")]
+    #[test_case::test_case(U256::ONE, 0, true; "expired_2d_head")]
+    #[test_case::test_case(U256::ONE, 1, true; "expired_2d_successor")]
+    fn best_transactions_for_block_preserves_dependencies(
+        nonce_key: U256,
+        ineligible_nonce: u64,
+        expired: bool,
+    ) {
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let mut sequence = Vec::new();
+        for nonce in 0..3 {
+            let mut tx = TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .max_priority_fee(10 + u128::from(nonce));
+            if nonce == ineligible_nonce {
+                tx = if expired {
+                    tx.valid_before(50)
+                } else {
+                    tx.valid_after(50)
+                };
+            }
+            sequence.push(tx.build());
+        }
+        // These share either the sender or the nonce key, but none depend on the skipped tx.
+        let other_sender = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .max_priority_fee(3)
+            .build();
+        let other_lane = TxBuilder::aa(sender)
+            .nonce_key(U256::from(2))
+            .max_priority_fee(2)
+            .build();
+        let other_pool = TxBuilder::aa(sender)
+            .nonce_key(if nonce_key.is_zero() {
+                U256::ONE
+            } else {
+                U256::ZERO
+            })
+            .max_priority_fee(1)
+            .build();
+        let mut expected: Vec<_> = sequence
+            .iter()
+            .take(usize::try_from(ineligible_nonce).unwrap())
+            .map(|tx| *tx.hash())
+            .collect();
+        expected.extend([*other_sender.hash(), *other_lane.hash(), *other_pool.hash()]);
+        let all_hashes: Vec<_> = sequence
+            .iter()
+            .map(|tx| *tx.hash())
+            .chain([*other_sender.hash(), *other_lane.hash(), *other_pool.hash()])
+            .collect();
+        for tx in sequence
+            .into_iter()
+            .chain([other_sender, other_lane, other_pool])
+        {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: U256::MAX,
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(tx, None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .unwrap();
+        }
+        let timestamp = if expired { 50 } else { 49 };
+        let hashes: Vec<_> = pool
+            .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), timestamp)
+            .without_updates()
+            .map(|tx| *tx.hash())
+            .collect();
+        assert_eq!(hashes, expected);
+        assert_eq!(pool.pool_size().total, all_hashes.len());
+
+        // A new block iterator can select the whole sequence when the time bound permits it.
+        let timestamp = if expired { 49 } else { 50 };
+        let hashes: Vec<_> = pool
+            .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), timestamp)
+            .without_updates()
+            .map(|tx| *tx.hash())
+            .collect();
+        assert_eq!(hashes, all_hashes);
+    }
+
+    #[test_case::test_case(U256::ZERO; "protocol")]
+    #[test_case::test_case(U256::ONE; "2d")]
+    fn best_transactions_for_block_filters_live_updates(nonce_key: U256) {
+        let pool = create_test_pool(create_provider_with_tip());
+        let mut best =
+            pool.best_transactions_for_block(BestTransactionsAttributes::base_fee(0), 49);
+        let future = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .valid_after(50)
+            .max_priority_fee(2)
+            .build();
+        let eligible = TxBuilder::aa(Address::random())
+            .nonce_key(nonce_key)
+            .max_priority_fee(1)
+            .build();
+        let hash = *eligible.hash();
+        for tx in [future, eligible] {
+            add_validated(&pool, tx);
+        }
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(hash));
+        assert!(best.next().is_none());
+        assert_eq!(pool.pool_size().total, 2);
+    }
+
+    #[test]
+    fn best_transactions_for_block_expiring_nonces_are_independent() {
+        let pool = create_test_pool(
+            create_provider_with_tip().with_chain_spec(Arc::unwrap_or_clone(DEV.clone())),
+        );
+        let sender = Address::random();
+        let future = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .valid_after(50)
+            .valid_before(100)
+            .max_priority_fee(3)
+            .build();
+        let expired = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .valid_before(49)
+            .max_priority_fee(2)
+            .build();
+        let eligible = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .valid_before(100)
+            .max_priority_fee(1)
+            .build();
+        let hash = *eligible.hash();
+        for tx in [future, expired, eligible] {
+            add_validated(&pool, tx);
+        }
+        let hashes: Vec<_> = pool
+            .best_transactions_for_block(BestTransactionsAttributes::base_fee(0), 49)
+            .without_updates()
+            .map(|tx| *tx.hash())
+            .collect();
+        assert_eq!(hashes, vec![hash]);
+        assert_eq!(pool.pool_size().total, 3);
+    }
+
     #[test]
     fn pending_transactions_by_address_and_nonce_key() {
-        use crate::test_utils::{TxBuilder, wrap_valid_tx};
-
         let pool = create_test_pool(create_provider_with_tip());
         let sender = Address::random();
         let nonce_key = U256::from(7);
@@ -1733,9 +2193,6 @@ mod tests {
 
     #[test]
     fn canonical_state_change_refreshes_aa_2d_base_fee() {
-        use reth_primitives_traits::SealedBlock;
-        use reth_transaction_pool::PoolUpdateKind;
-
         let pool = create_test_pool(create_provider_with_tip());
         let initial_base_fee = pool.aa_2d_pool.read().base_fee();
 
@@ -1891,7 +2348,304 @@ mod tests {
         )
     }
 
-    fn sponsored_implicit_fee_transaction(sender: Address) -> (TempoPooledTransaction, Address) {
+    /// A pool whose state admits the returned protocol transaction.
+    fn pool_with_valid_transaction() -> (
+        MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        TempoPooledTransaction,
+    ) {
+        let pooled = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let sender = pooled.sender();
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), U256::ZERO));
+        set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, U256::from(u64::MAX));
+        (provider.clone(), create_test_pool(provider), pooled)
+    }
+
+    /// Polls `admission` until it waits on a validation, then lets the validation task finish
+    /// that validation against the current state.
+    async fn run_validation(admission: &mut (impl Future + Unpin)) {
+        assert!(futures::poll!(&mut *admission).is_pending());
+        tokio::task::yield_now().await;
+    }
+
+    /// Moves the sender's nonce past `pooled`, so validation rejects it from now on.
+    fn mine_sender_nonce(
+        provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        pooled: &TempoPooledTransaction,
+    ) {
+        provider.add_account(
+            pooled.sender(),
+            ExtendedAccount::new(pooled.nonce() + 1, U256::ZERO),
+        );
+    }
+
+    /// Asserts that `admission`, whose first validation passed before
+    /// [`mine_sender_nonce`], validates `pooled` again and never inserts it.
+    async fn assert_validated_again(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        pooled: &TempoPooledTransaction,
+        admission: impl Future<Output = PoolResult<AddedTransactionOutcome>>,
+    ) {
+        let mut pending = pool.pending_transactions_listener();
+        let err = admission
+            .await
+            .expect_err("the second validation rejects the transaction");
+        assert!(pending.try_recv().is_err());
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::NonceNotConsistent { tx: 0, state: 1 }
+            ))
+        ));
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn admission_validates_again_after_canonical_state_change_during_validation() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        mine_sender_nonce(&provider, &pooled);
+        let new_tip = SealedBlock::seal_slow(Block {
+            header: TempoHeader {
+                inner: Header {
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        pool.on_canonical_state_change(CanonicalStateUpdate {
+            new_tip: &new_tip,
+            pending_block_base_fee: pool.block_info().pending_basefee,
+            pending_block_blob_fee: None,
+            changed_accounts: Vec::new(),
+            mined_transactions: Vec::new(),
+            update_kind: PoolUpdateKind::Commit,
+        });
+
+        assert_validated_again(&pool, &pooled, admission).await;
+    }
+
+    #[tokio::test]
+    async fn admission_validates_again_after_authority_revalidation_during_validation() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        mine_sender_nonce(&provider, &pooled);
+        assert!(pool.revalidate_authorities(None).await);
+
+        assert_validated_again(&pool, &pooled, admission).await;
+    }
+
+    #[tokio::test]
+    async fn admission_inserts_after_epoch_advances_before_validation_starts() {
+        let (_, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        // The transaction waits for the validation task, which has not run yet.
+        assert!(futures::poll!(&mut admission).is_pending());
+        pool.advance_admission_epoch();
+        tokio::task::yield_now().await;
+
+        let std::task::Poll::Ready(added) = futures::poll!(&mut admission) else {
+            panic!("admission waits on another validation");
+        };
+        assert_eq!(
+            added.expect("the only validation stands").hash,
+            *pooled.hash()
+        );
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_after_epoch_advances_during_every_attempt() {
+        let (_, pool, pooled) = pool_with_valid_transaction();
+        let admission = pool.add_transaction(TransactionOrigin::External, pooled.clone());
+        tokio::pin!(admission);
+        for _ in 0..ADMISSION_ATTEMPTS {
+            run_validation(&mut admission).await;
+            pool.advance_admission_epoch();
+        }
+
+        let mut pending = pool.pending_transactions_listener();
+        let err = admission
+            .await
+            .expect_err("no validation held for a whole epoch");
+        assert!(pending.try_recv().is_err());
+        let PoolErrorKind::Other(err) = err.kind else {
+            panic!("unexpected error {err:?}");
+        };
+        assert!(matches!(
+            err.downcast_ref(),
+            Some(TempoPoolTransactionError::StateChangedDuringValidation)
+        ));
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn admission_validates_batch_again_one_transaction_at_a_time() {
+        let sender = Address::random();
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(0, U256::ZERO));
+        set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, U256::from(u64::MAX));
+        let pool = create_test_pool(provider.clone());
+        let mined = TxBuilder::aa(sender).build();
+        let unfunded = TxBuilder::aa(Address::random()).build();
+        let kept = TxBuilder::aa(sender).nonce(1).build();
+
+        let admission = pool.add_transactions(
+            TransactionOrigin::External,
+            vec![mined.clone(), unfunded, kept.clone()],
+        );
+        tokio::pin!(admission);
+        run_validation(&mut admission).await;
+        mine_sender_nonce(&provider, &mined);
+        pool.advance_admission_epoch();
+        run_validation(&mut admission).await;
+
+        let std::task::Poll::Ready(results) = futures::poll!(&mut admission) else {
+            panic!("admission waits on a third validation");
+        };
+        let [mined_result, unfunded_result, kept_result] =
+            <[_; 3]>::try_from(results).expect("one result per transaction");
+        assert!(matches!(
+            mined_result
+                .expect_err("the second validation rejects it")
+                .kind,
+            PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::NonceNotConsistent { tx: 0, state: 1 }
+            ))
+        ));
+        assert!(matches!(
+            unfunded_result
+                .expect_err("the first validation rejects it")
+                .kind,
+            PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::InsufficientFunds(_)
+            ))
+        ));
+        assert_eq!(
+            kept_result.expect("the second validation stands").hash,
+            *kept.hash()
+        );
+        assert!(pool.get(mined.hash()).is_none());
+        assert!(pool.get(kept.hash()).is_some());
+    }
+
+    #[test]
+    fn validation_opens_state_again_after_epoch_advances_within_batch() {
+        let (provider, pool, pooled) = pool_with_valid_transaction();
+        let mut outcomes = Vec::new();
+        pool.protocol_pool.validator().validator().validate_each(
+            (0..3).map(|position| {
+                if position == 1 {
+                    mine_sender_nonce(&provider, &pooled);
+                    pool.advance_admission_epoch();
+                }
+                ((), TransactionOrigin::External, pooled.clone())
+            }),
+            |(), epoch, outcome| outcomes.push((epoch, outcome)),
+        );
+
+        // The first two validated against the state opened before the advance and the third
+        // against the state opened after it.
+        let [first, second, third] =
+            <[_; 3]>::try_from(outcomes).expect("one outcome per transaction");
+        for (epoch, outcome) in [first, second] {
+            assert_eq!(epoch, 0);
+            assert!(outcome.is_valid(), "unexpected outcome {outcome:?}");
+        }
+        let (1, TransactionValidationOutcome::Invalid(_, err)) = third else {
+            panic!("unexpected outcome {third:?}");
+        };
+        assert!(matches!(
+            err,
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::NonceNotConsistent {
+                tx: 0,
+                state: 1
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn revalidate_authorities_revalidates_only_listed_authorities() {
+        let (sender, other) = (Address::random(), Address::random());
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        let other_pooled = crate::test_utils::TxBuilder::aa(other).build();
+        let provider = create_provider_with_tip();
+        let pool = create_test_pool(provider.clone());
+        add_validated(&pool, pooled.clone());
+        add_validated(&pool, other_pooled.clone());
+        // Both senders' nonces move past their transactions, so revalidation rejects them.
+        provider.add_account(
+            sender,
+            ExtendedAccount::new(pooled.nonce() + 1, *pooled.cost()),
+        );
+        provider.add_account(
+            other,
+            ExtendedAccount::new(other_pooled.nonce() + 1, *other_pooled.cost()),
+        );
+
+        assert!(
+            pool.revalidate_authorities(Some(&AddressSet::from_iter([Address::random()])))
+                .await
+        );
+        assert!(pool.get(pooled.hash()).is_some());
+        assert!(
+            pool.revalidate_authorities(Some(&AddressSet::from_iter([sender])))
+                .await
+        );
+        assert!(pool.get(pooled.hash()).is_none());
+        assert!(pool.get(other_pooled.hash()).is_some());
+        assert!(pool.revalidate_authorities(None).await);
+        assert!(pool.get(other_pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn revalidate_authorities_keeps_transactions_whose_validation_fails() {
+        let sender = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        let provider = create_provider_with_tip();
+        let pool = create_test_pool(provider.clone());
+        add_validated(&pool, pooled.clone());
+        // A completed validation would reject the transaction, but without a best block the
+        // validator cannot open the latest state.
+        provider.add_account(
+            sender,
+            ExtendedAccount::new(pooled.nonce() + 1, *pooled.cost()),
+        );
+        provider.headers.lock().clear();
+
+        assert!(!pool.revalidate_authorities(None).await);
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn revalidate_authorities_leaves_valid_transactions_in_place() {
+        let pooled = crate::test_utils::TxBuilder::eip1559(Address::random()).build_eip1559();
+        let sender = pooled.sender();
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), U256::ZERO));
+        set_fee_token_balance(&provider, PATH_USD_ADDRESS, sender, U256::from(u64::MAX));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+        let before = pool.get(pooled.hash()).expect("transaction is pooled");
+
+        assert!(pool.revalidate_authorities(None).await);
+        let after = pool
+            .get(pooled.hash())
+            .expect("valid transaction stays pooled");
+        assert!(Arc::ptr_eq(&before, &after));
+    }
+
+    #[tokio::test]
+    async fn implicit_fee_transaction_eviction_on_user_token_changes() {
+        let sender = Address::random();
         let fee_payer_signer = loop {
             let signer = PrivateKeySigner::random();
             if signer.address() != sender {
@@ -1899,12 +2653,8 @@ mod tests {
             }
         };
         let fee_payer = fee_payer_signer.address();
-        let envelope = crate::test_utils::TxBuilder::aa(sender)
-            .build()
-            .inner()
-            .clone()
-            .into_inner();
-        let TempoTxEnvelope::AA(mut signed) = envelope else {
+        let sender_paid = crate::test_utils::TxBuilder::aa(sender).build();
+        let TempoTxEnvelope::AA(mut signed) = sender_paid.inner().clone().into_inner() else {
             panic!("expected AA transaction");
         };
         let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
@@ -1913,72 +2663,31 @@ mod tests {
                 .sign_hash_sync(&fee_payer_hash)
                 .expect("fee payer signing should succeed"),
         );
+        let sponsored = TempoPooledTransaction::new(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(signed),
+            sender,
+        ));
 
-        (
-            TempoPooledTransaction::new(Recovered::new_unchecked(
-                TempoTxEnvelope::AA(signed),
-                sender,
-            )),
-            fee_payer,
-        )
-    }
+        for (case, pooled, changed, evicts) in [
+            ("sponsored, fee payer changes", &sponsored, fee_payer, true),
+            ("sponsored, sender changes", &sponsored, sender, false),
+            ("sender-paid, sender changes", &sender_paid, sender, true),
+        ] {
+            assert_eq!(pooled.inner().fee_token(), None, "{case}");
 
-    #[tokio::test]
-    async fn evicts_sponsored_implicit_fee_transaction_when_fee_payer_user_token_changes() {
-        let sender = Address::random();
-        let (pooled, fee_payer) = sponsored_implicit_fee_transaction(sender);
-        assert_eq!(pooled.inner().fee_token(), None);
-        assert_ne!(fee_payer, sender);
+            let provider = create_provider_with_tip();
+            provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+            let pool = create_test_pool(provider);
+            add_validated(&pool, pooled.clone());
 
-        let provider = create_provider_with_tip();
-        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
-        let pool = create_test_pool(provider);
-        add_validated(&pool, pooled.clone());
+            let mut updates = crate::maintain::TempoPoolUpdates::new();
+            updates.user_token_changes.insert(changed);
 
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.user_token_changes.insert(fee_payer);
-
-        let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
-        assert!(pool.get(pooled.hash()).is_none());
-    }
-
-    #[tokio::test]
-    async fn keeps_sponsored_implicit_fee_transaction_when_sender_user_token_changes() {
-        let sender = Address::random();
-        let (pooled, fee_payer) = sponsored_implicit_fee_transaction(sender);
-        assert_eq!(pooled.inner().fee_token(), None);
-        assert_ne!(fee_payer, sender);
-
-        let provider = create_provider_with_tip();
-        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
-        let pool = create_test_pool(provider);
-        add_validated(&pool, pooled.clone());
-
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.user_token_changes.insert(sender);
-
-        assert!(pool.evict_invalidated_transactions(&updates).is_empty());
-        assert!(pool.get(pooled.hash()).is_some());
-    }
-
-    #[tokio::test]
-    async fn evicts_sender_paid_implicit_fee_transaction_when_sender_user_token_changes() {
-        let sender = Address::random();
-        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
-        assert_eq!(pooled.inner().fee_token(), None);
-
-        let provider = create_provider_with_tip();
-        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
-        let pool = create_test_pool(provider);
-        add_validated(&pool, pooled.clone());
-
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.user_token_changes.insert(sender);
-
-        let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
-        assert!(pool.get(pooled.hash()).is_none());
+            let evicted = pool.evict_invalidated_transactions(&updates);
+            let expected = if evicts { vec![*pooled.hash()] } else { vec![] };
+            assert_eq!(tx_hashes(&evicted), expected, "{case}");
+            assert_eq!(pool.get(pooled.hash()).is_some(), !evicts, "{case}");
+        }
     }
 
     #[tokio::test]
@@ -2045,47 +2754,13 @@ mod tests {
             sender,
         ));
 
-        let provider = MockEthProvider::<TempoPrimitives>::new()
-            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        let provider = create_provider_with_tip();
         provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
-        provider.add_block(
-            B256::random(),
-            Block {
-                header: TempoHeader {
-                    inner: Header {
-                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
 
         let initial_balance = pooled.fee_token_cost() + U256::ONE;
         set_fee_token_balance(&provider, PATH_USD_ADDRESS, fee_payer, initial_balance);
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
-        let amm_cache =
-            AmmLiquidityCache::new(provider.clone()).expect("failed to setup AmmLiquidityCache");
-        let validator = TempoTransactionValidator::new(
-            inner,
-            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
-            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
-            amm_cache,
-        );
-
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
-            executor,
-            TempoTipOrdering::default(),
-            InMemoryBlobStore::default(),
-            PoolConfig::default(),
-        );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+        let pool = create_test_pool(provider.clone());
 
         pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
         let validated = TransactionValidationOutcome::Valid {
@@ -2122,81 +2797,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blacklist_eviction_uses_resolved_fee_token() {
+    async fn policy_eviction_uses_resolved_fee_token() {
         let sender = Address::random();
         let resolved_fee_token = address!("20C0000000000000000000000000000000000002");
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+
+        assert_eq!(pooled.inner().fee_token(), None);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
+
         let policy_id = 7;
-        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        let mut blacklist = crate::maintain::TempoPoolUpdates::new();
+        blacklist.blacklist_additions.push((policy_id, sender));
+        let mut whitelist = crate::maintain::TempoPoolUpdates::new();
+        whitelist.whitelist_removals.push((policy_id, sender));
 
-        assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
+        for (case, updates) in [
+            ("blacklist addition", blacklist),
+            ("whitelist removal", whitelist),
+        ] {
+            let provider = create_provider_with_tip();
+            provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+            set_transfer_policy(&provider, resolved_fee_token, policy_id);
 
-        let provider = MockEthProvider::<TempoPrimitives>::new()
-            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
-        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
-        provider.add_block(
-            B256::random(),
-            Block {
-                header: TempoHeader {
-                    inner: Header {
-                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        set_transfer_policy(&provider, resolved_fee_token, policy_id);
+            let pool = create_test_pool(provider);
+            add_validated(&pool, pooled.clone());
 
-        let pool = create_test_pool(provider);
-        add_validated(&pool, pooled.clone());
-
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.blacklist_additions.push((policy_id, sender));
-
-        let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
-        assert!(pool.get(pooled.hash()).is_none());
-    }
-
-    #[tokio::test]
-    async fn whitelist_eviction_uses_resolved_fee_token() {
-        let sender = Address::random();
-        let resolved_fee_token = address!("20C0000000000000000000000000000000000002");
-        let policy_id = 9;
-        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
-
-        assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
-
-        let provider = MockEthProvider::<TempoPrimitives>::new()
-            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
-        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
-        provider.add_block(
-            B256::random(),
-            Block {
-                header: TempoHeader {
-                    inner: Header {
-                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-        set_transfer_policy(&provider, resolved_fee_token, policy_id);
-
-        let pool = create_test_pool(provider);
-        add_validated(&pool, pooled.clone());
-
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.whitelist_removals.push((policy_id, sender));
-
-        let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
-        assert!(pool.get(pooled.hash()).is_none());
+            let evicted = pool.evict_invalidated_transactions(&updates);
+            assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()], "{case}");
+            assert!(pool.get(pooled.hash()).is_none(), "{case}");
+        }
     }
 
     #[tokio::test]
@@ -2268,186 +2897,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evicts_transactions_with_burned_key_authorization_witness() {
+    async fn evicts_transactions_with_invalidated_key_authorization() {
         let sender = Address::random();
-        let burned_witness = B256::random();
-        let other_witness = B256::random();
-
-        let key_authorization = |witness| {
-            KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, Address::random())
-                .with_witness(witness)
-                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()))
-        };
-
-        let matching = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(0)
-            .key_authorization(key_authorization(burned_witness))
-            .build();
-        let untouched = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(1)
-            .key_authorization(key_authorization(other_witness))
-            .build();
-
-        let provider = MockEthProvider::<TempoPrimitives>::new()
-            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
-        provider.add_account(sender, ExtendedAccount::new(matching.nonce(), U256::MAX));
-        provider.add_block(
-            B256::random(),
-            Block {
-                header: TempoHeader {
-                    inner: Header {
-                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
-        let amm_cache =
-            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-        let validator = TempoTransactionValidator::new(
-            inner,
-            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
-            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
-            amm_cache,
-        );
-
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
-            executor,
-            TempoTipOrdering::default(),
-            InMemoryBlobStore::default(),
-            PoolConfig::default(),
-        );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
-
-        for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
-        }
-
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates
-            .key_authorization_witness_burns
-            .entry(sender)
-            .or_default()
-            .insert(burned_witness);
-
-        let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(tx_hashes(&evicted), vec![*matching.hash()]);
-        assert!(pool.get(matching.hash()).is_none());
-        assert!(pool.get(untouched.hash()).is_some());
-    }
-
-    #[tokio::test]
-    async fn evicts_transactions_with_revoked_key_authorization_signer() {
-        let sender = Address::random();
-        let admin_signer = PrivateKeySigner::random();
-        let admin_key = alloy_signer::Signer::address(&admin_signer);
-        let other_signer = PrivateKeySigner::random();
-
-        let key_authorization = |signer: &PrivateKeySigner| {
-            let authorization =
-                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, Address::random())
-                    .with_account(sender);
-            let signature = signer
-                .sign_hash_sync(&authorization.signature_hash())
-                .expect("key authorization signing should succeed");
-            authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
-        };
-
-        let matching = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(0)
-            .key_authorization(key_authorization(&admin_signer))
-            .build();
-        let untouched = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(1)
-            .key_authorization(key_authorization(&other_signer))
-            .build();
-
-        let provider = MockEthProvider::<TempoPrimitives>::new()
-            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
-        provider.add_account(sender, ExtendedAccount::new(matching.nonce(), U256::MAX));
-        provider.add_block(
-            B256::random(),
-            Block {
-                header: TempoHeader {
-                    inner: Header {
-                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
-
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
-        let amm_cache =
-            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-        let validator = TempoTransactionValidator::new(
-            inner,
-            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
-            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
-            amm_cache,
-        );
-
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
-            executor,
-            TempoTipOrdering::default(),
-            InMemoryBlobStore::default(),
-            PoolConfig::default(),
-        );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
-
-        for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
-        }
-
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates.revoked_keys.insert(sender, admin_key);
-
-        let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(tx_hashes(&evicted), vec![*matching.hash()]);
-        assert!(pool.get(matching.hash()).is_none());
-        assert!(pool.get(untouched.hash()).is_some());
-    }
-
-    #[tokio::test]
-    async fn evicts_transactions_with_stale_key_authorization_target() {
-        let sender = Address::random();
-        let signer = PrivateKeySigner::random();
-        let target_key = Address::random();
-        let other_key = Address::random();
-
-        let key_authorization = |key_id| {
+        let sign = |signer: &PrivateKeySigner, key_id| {
             let authorization =
                 KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, key_id)
                     .with_account(sender);
@@ -2456,77 +2908,73 @@ mod tests {
                 .expect("key authorization signing should succeed");
             authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
         };
+        let with_witness = |witness| {
+            KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, Address::random())
+                .with_witness(witness)
+                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()))
+        };
 
-        let matching = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(0)
-            .key_authorization(key_authorization(target_key))
-            .build();
-        let untouched = crate::test_utils::TxBuilder::aa(sender)
-            .nonce(1)
-            .key_authorization(key_authorization(other_key))
-            .build();
+        let burned_witness = B256::random();
+        let mut witness_burn = crate::maintain::TempoPoolUpdates::new();
+        witness_burn
+            .key_authorization_witness_burns
+            .entry(sender)
+            .or_default()
+            .insert(burned_witness);
 
-        let provider = MockEthProvider::<TempoPrimitives>::new()
-            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
-        provider.add_account(sender, ExtendedAccount::new(matching.nonce(), U256::MAX));
-        provider.add_block(
-            B256::random(),
-            Block {
-                header: TempoHeader {
-                    inner: Header {
-                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let admin_signer = PrivateKeySigner::random();
+        let mut revoked_signer = crate::maintain::TempoPoolUpdates::new();
+        revoked_signer
+            .revoked_keys
+            .insert(sender, alloy_signer::Signer::address(&admin_signer));
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
-        let amm_cache =
-            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-        let validator = TempoTransactionValidator::new(
-            inner,
-            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
-            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
-            amm_cache,
-        );
-
-        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
-        let protocol_pool = Pool::new(
-            executor,
-            TempoTipOrdering::default(),
-            InMemoryBlobStore::default(),
-            PoolConfig::default(),
-        );
-        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
-
-        for pooled in [&matching, &untouched] {
-            let validated = TransactionValidationOutcome::Valid {
-                balance: *pooled.cost(),
-                state_nonce: pooled.nonce(),
-                bytecode_hash: None,
-                transaction: ValidTransaction::new(pooled.clone(), None),
-                propagate: true,
-                authorities: None,
-            };
-            pool.add_validated_transaction(TransactionOrigin::External, validated)
-                .expect("transaction should be admitted");
-        }
-
-        let mut updates = crate::maintain::TempoPoolUpdates::new();
-        updates
+        let signer = PrivateKeySigner::random();
+        let target_key = Address::random();
+        let mut stale_target = crate::maintain::TempoPoolUpdates::new();
+        stale_target
             .key_authorization_target_changes
             .insert(sender, target_key);
 
-        let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(tx_hashes(&evicted), vec![*matching.hash()]);
-        assert!(pool.get(matching.hash()).is_none());
-        assert!(pool.get(untouched.hash()).is_some());
+        for (case, matching, untouched, updates) in [
+            (
+                "burned witness",
+                with_witness(burned_witness),
+                with_witness(B256::random()),
+                witness_burn,
+            ),
+            (
+                "revoked signer",
+                sign(&admin_signer, Address::random()),
+                sign(&PrivateKeySigner::random(), Address::random()),
+                revoked_signer,
+            ),
+            (
+                "stale target",
+                sign(&signer, target_key),
+                sign(&signer, Address::random()),
+                stale_target,
+            ),
+        ] {
+            let matching = crate::test_utils::TxBuilder::aa(sender)
+                .nonce(0)
+                .key_authorization(matching)
+                .build();
+            let untouched = crate::test_utils::TxBuilder::aa(sender)
+                .nonce(1)
+                .key_authorization(untouched)
+                .build();
+
+            let provider = create_provider_with_tip();
+            provider.add_account(sender, ExtendedAccount::new(matching.nonce(), U256::MAX));
+            let pool = create_test_pool(provider);
+            add_validated(&pool, matching.clone());
+            add_validated(&pool, untouched.clone());
+
+            let evicted = pool.evict_invalidated_transactions(&updates);
+            assert_eq!(tx_hashes(&evicted), vec![*matching.hash()], "{case}");
+            assert!(pool.get(matching.hash()).is_none(), "{case}");
+            assert!(pool.get(untouched.hash()).is_some(), "{case}");
+        }
     }
 
     /// Eviction must match sub-policy IDs against compound policies.
@@ -2989,5 +3437,149 @@ mod tests {
             10,
             TempoHardfork::T3,
         ));
+    }
+
+    #[test]
+    fn aa_2d_queued_eviction_rejects_self_and_emits_discarded() {
+        let pool = create_test_pool(create_provider_with_tip());
+        *pool.aa_2d_pool.write() = AA2dPool::new(AA2dPoolConfig {
+            queued_limit: SubPoolLimit {
+                max_txs: 1,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        });
+        let mut events = pool.all_transactions_event_listener();
+        let add_queued = |priority_fee| {
+            let tx = TxBuilder::aa(Address::random())
+                .nonce_key(U256::ONE)
+                .nonce(1)
+                .max_priority_fee(priority_fee)
+                .build();
+            add_aa_2d(&pool, tx)
+        };
+
+        let (queued, result) = add_queued(2_000_000_000);
+        assert!(result.is_ok());
+        let (self_evicted, result) = add_queued(1_000_000_000);
+        assert!(matches!(
+            result.unwrap_err().kind,
+            PoolErrorKind::DiscardedOnInsert
+        ));
+        let (displacing, result) = add_queued(3_000_000_000);
+        assert!(result.is_ok());
+
+        assert!(!pool.contains(&queued));
+        assert!(!pool.contains(&self_evicted));
+        assert!(pool.contains(&displacing));
+        assert_eq!(discarded_hashes(&mut events), [self_evicted, queued]);
+    }
+
+    #[test]
+    fn aa_2d_promoted_then_evicted_transaction_ends_discarded() {
+        let pool = create_test_pool(create_provider_with_tip());
+        *pool.aa_2d_pool.write() = AA2dPool::new(AA2dPoolConfig {
+            pending_limit: SubPoolLimit {
+                max_txs: 1,
+                max_size: usize::MAX,
+            },
+            ..Default::default()
+        });
+        let mut events = pool.all_transactions_event_listener();
+        let sender = Address::random();
+        let lane_tx = |nonce, priority_fee| {
+            TxBuilder::aa(sender)
+                .nonce_key(U256::ONE)
+                .nonce(nonce)
+                .max_priority_fee(priority_fee)
+                .build()
+        };
+
+        let (promoted, result) = add_aa_2d(&pool, lane_tx(1, 1_000_000_000));
+        assert!(result.is_ok());
+        // Filling the gap promotes the queued transaction, which the pending limit then evicts.
+        let (head, result) = add_aa_2d(&pool, lane_tx(0, 3_000_000_000));
+        assert!(result.is_ok());
+        assert!(pool.contains(&head));
+        assert!(!pool.contains(&promoted));
+
+        let last_event = std::iter::from_fn(|| events.next().now_or_never().flatten())
+            .filter(|event| {
+                matches!(
+                    event,
+                    FullTransactionEvent::Pending(hash)
+                        | FullTransactionEvent::Queued(hash, _)
+                        | FullTransactionEvent::Discarded(hash)
+                        if *hash == promoted
+                )
+            })
+            .last();
+        assert!(
+            matches!(last_event, Some(FullTransactionEvent::Discarded(hash)) if hash == promoted)
+        );
+    }
+
+    #[test]
+    fn aa_2d_self_evicted_replacement_discards_replaced_transaction() {
+        let sender = Address::random();
+        let lane_tx = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(1);
+        let replaced = lane_tx.clone().build();
+        let pool = create_test_pool(create_provider_with_tip());
+        *pool.aa_2d_pool.write() = AA2dPool::new(AA2dPoolConfig {
+            queued_limit: SubPoolLimit {
+                max_txs: usize::MAX,
+                max_size: replaced.size(),
+            },
+            ..Default::default()
+        });
+        let mut events = pool.all_transactions_event_listener();
+
+        let (replaced, result) = add_aa_2d(&pool, replaced);
+        assert!(result.is_ok());
+        // A larger replacement pushes the queued subpool over its size limit and evicts itself.
+        let replacement = lane_tx
+            .max_fee(40_000_000_000)
+            .max_priority_fee(2_000_000_000)
+            .calls(vec![Call::new(Address::random(), vec![0; 256])])
+            .build();
+        let (replacement, result) = add_aa_2d(&pool, replacement);
+        assert!(matches!(
+            result.unwrap_err().kind,
+            PoolErrorKind::DiscardedOnInsert
+        ));
+
+        assert!(!pool.contains(&replaced));
+        assert!(!pool.contains(&replacement));
+        assert_eq!(discarded_hashes(&mut events), [replacement, replaced]);
+    }
+
+    /// Adds `tx` with an on-chain nonce of 0 and returns its hash with the insert result.
+    fn add_aa_2d(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        tx: TempoPooledTransaction,
+    ) -> (TxHash, PoolResult<AddedTransactionOutcome>) {
+        let hash = *tx.hash();
+        let outcome = TransactionValidationOutcome::Valid {
+            balance: *tx.cost(),
+            state_nonce: 0,
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(tx, None),
+            propagate: true,
+            authorities: None,
+        };
+        (
+            hash,
+            pool.add_validated_transaction(TransactionOrigin::External, outcome),
+        )
+    }
+
+    /// Returns the hashes of the `Discarded` events received so far, in order.
+    fn discarded_hashes(events: &mut AllTransactionsEvents<TempoPooledTransaction>) -> Vec<TxHash> {
+        std::iter::from_fn(|| events.next().now_or_never().flatten())
+            .filter_map(|event| match event {
+                FullTransactionEvent::Discarded(hash) => Some(hash),
+                _ => None,
+            })
+            .collect()
     }
 }

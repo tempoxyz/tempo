@@ -6,8 +6,11 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use reth_e2e_test_utils::wallet::test_signer;
-use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_alloy::test_utils::CallBuilderExt;
+use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20, ITIPFeeAMM};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::amm::PoolKey,
+};
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use crate::utils::{PendingTransactionBuilderExt, setup_test_token};
@@ -33,8 +36,6 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let payment_token_addr = *payment_token.address();
 
     // Get validator token address (default fee token from genesis)
-    use tempo_contracts::precompiles::ITIPFeeAMM;
-    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
     let validator_token_addr = DEFAULT_FEE_TOKEN;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
@@ -47,17 +48,13 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // Mint validator tokens for liquidity
     validator_token
         .mint(sender_address, liquidity_amount)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Mint payment tokens for liquidity
     payment_token
         .mint(sender_address, liquidity_amount)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Create pool by minting liquidity with both tokens (balanced pool)
@@ -69,15 +66,12 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
             liquidity_amount,
             sender_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     println!("FeeAMM pool created. Now draining liquidity...");
 
     // Get user's LP token balance
-    use tempo_precompiles::tip_fee_manager::amm::PoolKey;
     let pool_key = PoolKey::new(payment_token_addr, validator_token_addr);
     let pool_id = pool_key.get_id();
 
@@ -95,9 +89,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
             lp_balance,
             sender_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     println!("Pool drained. Verifying insufficient liquidity...");
@@ -112,9 +104,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let additional_tokens = U256::from(100_000_000_000_000u64);
     payment_token
         .mint(sender_address, additional_tokens)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Now set the user's fee token to our custom payment token (not USDC)
@@ -122,15 +112,13 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     println!("Setting user's fee token preference...");
     let tx = TempoTransaction {
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        calls: vec![Call {
-            to: TIP_FEE_MANAGER_ADDRESS.into(),
-            value: U256::ZERO,
-            input: setUserTokenCall {
+        calls: vec![Call::new(
+            TIP_FEE_MANAGER_ADDRESS,
+            setUserTokenCall {
                 token: payment_token_addr,
             }
-            .abi_encode()
-            .into(),
-        }],
+            .abi_encode(),
+        )],
         chain_id: provider.get_chain_id().await?,
         max_fee_per_gas: provider.get_gas_price().await?,
         max_priority_fee_per_gas: provider.get_gas_price().await?,

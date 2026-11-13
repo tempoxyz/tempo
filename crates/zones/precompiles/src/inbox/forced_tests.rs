@@ -3,19 +3,66 @@ use crate::{
     ecies,
     forced_exit_storage::ForcedExitPortalStorage,
     inbox::forced::{ForcedExitResult, OBSERVED},
+    test_utils::{PrecompileOutput, PrecompileResult, test_precompiles, test_storage_provider},
 };
 use alloy_sol_types::SolEvent;
 use exithatch::{
     ForcedExitAuthorization, ForcedExitReason as Reason, MAX_SIGNATURE_SIZE, test_utils::*,
 };
 use proptest::{prelude::*, sample::Index};
-use revm::{context_interface::JournalTr, precompile::PrecompileOutput};
+use tempo_primitives::TempoHeader;
 
 const ROOT: Address = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
 const PARENT_CHAIN: u64 = 42431;
 const ZONE_KEY: [u8; 32] = [0x33; 32];
 
+const GAS: u64 = 30_000_000;
+
 type Entry = (QueuedDeposit, Option<DecryptionData>);
+
+/// The inbox test Zone at T13, with `SEQUENCER` active on the portal at the first child block.
+type Harness = ZoneEnv;
+
+fn new_harness() -> eyre::Result<Harness> {
+    let env = spec().apply()?;
+    env.l1.seed_active_sequencer(PORTAL, 1, SEQUENCER);
+    Ok(env)
+}
+
+fn call_inbox(h: &mut Harness, caller: Address, calldata: &[u8], gas: u64) -> PrecompileResult {
+    call_precompile(
+        &mut h.ctx,
+        &mut h.precompiles,
+        caller,
+        calldata,
+        gas,
+        false,
+        ZONE_INBOX_ADDRESS,
+        ZONE_INBOX_ADDRESS,
+    )
+}
+
+fn finalize_withdrawals(h: &mut Harness, count: usize, gas: u64) -> PrecompileResult {
+    let call = IZoneOutbox::finalizeWithdrawalBatchCall {
+        blockNumber: h.ctx.block.number.to::<u64>(),
+        count: U256::from(count),
+        encryptedSenders: vec![Bytes::new(); count],
+    };
+    call_precompile(
+        &mut h.ctx,
+        &mut h.precompiles,
+        Address::ZERO,
+        &call.abi_encode(),
+        gas,
+        false,
+        ZONE_OUTBOX_ADDRESS,
+        ZONE_OUTBOX_ADDRESS,
+    )
+}
+
+fn fallback_recipient(h: &mut Harness, nonce: u64) -> eyre::Result<Address> {
+    with_zone(h, || Ok(ZoneOutbox::new().fallback_recipient(nonce)?))
+}
 
 fn zone_chain_id() -> u64 {
     zone_primitives::constants::zone_chain_id(PARENT_CHAIN, 1).unwrap()
@@ -24,9 +71,7 @@ fn zone_chain_id() -> u64 {
 /// Rebuild both precompiles with a fresh L1 anchor, as a new zone block would.
 fn reload(h: &mut Harness) {
     h.l1_state = L1State::new(h.l1.clone(), PORTAL);
-    let env = test_env(&h.ctx);
-    h.precompile = ZoneInbox::create(h.l1_state.clone(), &env);
-    h.outbox_precompile = crate::create_outbox_precompile(h.l1_state.clone(), &env);
+    h.precompiles = test_precompiles(&h.ctx, h.l1_state.clone());
 }
 
 fn set_spec(h: &mut Harness, spec: TempoHardfork) {
@@ -44,8 +89,8 @@ fn activate(h: &Harness, block: u64, version: u64) -> eyre::Result<()> {
 }
 
 fn active_harness() -> eyre::Result<Harness> {
-    let mut h = Harness::new()?;
-    h.ctx.cfg.chain_id = zone_chain_id();
+    let mut h = new_harness()?;
+    h.ctx.cfg.chain_id = Some(zone_chain_id());
     set_spec(&mut h, TempoHardfork::T15);
     activate(&h, 1, 1)?;
     Ok(h)
@@ -305,10 +350,10 @@ fn execute_raw(
     };
     reload(h);
     OBSERVED.with(|observed| observed.borrow_mut().clear());
-    let logs_before = h.ctx.journaled_state.logs().len();
-    let output = h.call_with_gas(Address::ZERO, call.abi_encode(), gas)?;
+    let logs_before = h.ctx.logs().len();
+    let output = call_inbox(h, Address::ZERO, &call.abi_encode(), gas)?;
     let observed = OBSERVED.with(|observed| observed.take());
-    let events = h.ctx.journaled_state.logs()[logs_before..]
+    let events = h.ctx.logs()[logs_before..]
         .iter()
         .filter_map(|log| ForcedExitProcessed::decode_log(log).ok())
         .inspect(|log| assert_eq!(log.address, ZONE_INBOX_ADDRESS))
@@ -382,7 +427,7 @@ fn consumed(h: &mut Harness, nonce: u64) -> eyre::Result<bool> {
 }
 
 fn root_balance(h: &mut Harness) -> eyre::Result<u128> {
-    Ok(h.balance(PATH_USD_ADDRESS, ROOT)?.to::<u128>())
+    Ok(h.balance(PATH_USD_ADDRESS, ROOT).to::<u128>())
 }
 
 /// Everything a reverted transition must leave untouched.
@@ -399,9 +444,9 @@ struct Snapshot {
 }
 
 fn snapshot(h: &mut Harness) -> eyre::Result<Snapshot> {
-    let logs = h.ctx.journaled_state.logs().to_vec();
-    let root_balance = h.balance(PATH_USD_ADDRESS, ROOT)?;
-    let pending = h.pending_withdrawals()?.len();
+    let logs = h.ctx.logs().to_vec();
+    let root_balance = h.balance(PATH_USD_ADDRESS, ROOT);
+    let pending = h.pending_withdrawals().len();
     with_zone(h, || {
         let inbox = ZoneInbox::new();
         Ok(Snapshot {
@@ -470,7 +515,7 @@ fn forced_exit_accepts_earlier_admission_but_rejects_future_height() -> eyre::Re
         if admission_block == 0 {
             assert_eq!(executed.results, [ForcedExitResult::Exited { amount: 42 }]);
             assert_eq!(root_balance(&mut h)?, 0);
-            assert_eq!(h.pending_withdrawals()?.len(), 1);
+            assert_eq!(h.pending_withdrawals().len(), 1);
         } else {
             assert!(executed.output.is_revert());
             assert_eq!(snapshot(&mut h)?, before);
@@ -499,7 +544,7 @@ fn l1_token_pause_rejects_admitted_requests_without_blocking_inbox() -> eyre::Re
         assert!(h.l1.requested(1, &pause_slot));
         assert!(!h.l1.requested(0, &pause_slot));
         assert!(consumed(&mut h, 1)? && consumed(&mut h, 2)?);
-        let pending = h.pending_withdrawals()?;
+        let pending = h.pending_withdrawals();
         if paused {
             let rejected = ForcedExitResult::Rejected(Reason::PolicyRejected);
             assert_eq!(executed.results, [rejected.clone(), rejected]);
@@ -544,9 +589,9 @@ fn forced_full_balance_replay_and_empty_finalize_with_exact_commitment() -> eyre
     );
     assert!(consumed(&mut h, 7)? && consumed(&mut h, 8)?);
     assert_eq!(root_balance(&mut h)?, 0);
-    let pending = h.pending_withdrawals()?;
+    let pending = h.pending_withdrawals();
     assert_eq!(pending.len(), 1);
-    assert_eq!(h.fallback_recipient(pending[0].fallbackNonce)?, ROOT);
+    assert_eq!(fallback_recipient(&mut h, pending[0].fallbackNonce)?, ROOT);
     let withdrawal = tempo_contracts::zones::Withdrawal {
         token: PATH_USD_ADDRESS,
         senderTag: tempo_contracts::zones::Withdrawal::sender_tag(
@@ -562,21 +607,7 @@ fn forced_full_balance_replay_and_empty_finalize_with_exact_commitment() -> eyre
         callbackData: Bytes::new(),
         encryptedSender: Bytes::new(),
     };
-    let call = IZoneOutbox::finalizeWithdrawalBatchCall {
-        blockNumber: h.ctx.block.inner.number.to::<u64>(),
-        count: U256::from(1),
-        encryptedSenders: vec![Bytes::new()],
-    };
-    let finalized = call_precompile(
-        &mut h.ctx,
-        &h.outbox_precompile,
-        Address::ZERO,
-        &call.abi_encode(),
-        GAS,
-        false,
-        ZONE_OUTBOX_ADDRESS,
-        ZONE_OUTBOX_ADDRESS,
-    )?;
+    let finalized = finalize_withdrawals(&mut h, 1, GAS)?;
     assert!(finalized.is_success());
     assert_eq!(
         IZoneOutbox::finalizeWithdrawalBatchCall::abi_decode_returns(&finalized.bytes)?,
@@ -676,17 +707,14 @@ fn rejected_requests_are_classified_and_never_stall_the_inbox() -> eyre::Result<
         assert!(!consumed_by(&mut h, Address::ZERO, 1)?, "{case:?}");
         assert!(consumed(&mut h, 2)?, "{case:?}");
         // A rejection allocates no fallback nonce and moves no funds.
-        let pending = h.pending_withdrawals()?;
+        let pending = h.pending_withdrawals();
         assert_eq!(pending.len(), 1, "{case:?}");
         assert_eq!((pending[0].to, pending[0].amount), (BOB, 42), "{case:?}");
         assert_eq!(pending[0].fallbackNonce, 1, "{case:?}");
         assert_eq!(pending[0].txHash, keccak256(payload(&auth(2))), "{case:?}");
-        assert_eq!(h.fallback_recipient(1)?, ROOT, "{case:?}");
+        assert_eq!(fallback_recipient(&mut h, 1)?, ROOT, "{case:?}");
         assert_eq!(root_balance(&mut h)?, 0, "{case:?}");
-        assert_eq!(
-            h.balance(PATH_USD_ADDRESS, ZONE_OUTBOX_ADDRESS)?,
-            U256::ZERO
-        );
+        assert_eq!(h.balance(PATH_USD_ADDRESS, ZONE_OUTBOX_ADDRESS), U256::ZERO);
         with_zone(&mut h, || {
             assert_eq!(
                 TIP20Token::from_address(PATH_USD_ADDRESS)?.total_supply()?,
@@ -752,14 +780,14 @@ fn forced_balance_boundaries_and_classification_order() -> eyre::Result<()> {
             "{amount}"
         );
         assert!(consumed(&mut h, 1)?);
-        let pending = h.pending_withdrawals()?;
+        let pending = h.pending_withdrawals();
         if matches!(expected, ForcedExitResult::Exited { .. }) {
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].amount, amount.to::<u128>());
-            assert_eq!(h.balance(PATH_USD_ADDRESS, ROOT)?, U256::ZERO);
+            assert_eq!(h.balance(PATH_USD_ADDRESS, ROOT), U256::ZERO);
         } else {
             assert!(pending.is_empty());
-            assert_eq!(h.balance(PATH_USD_ADDRESS, ROOT)?, amount);
+            assert_eq!(h.balance(PATH_USD_ADDRESS, ROOT), amount);
         }
     }
     Ok(())
@@ -768,11 +796,11 @@ fn forced_balance_boundaries_and_classification_order() -> eyre::Result<()> {
 #[test]
 fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
     const REQUESTS: u64 = 210 / 14; // ZonePortal.FORCED_EXIT_ADMISSION_WEIGHT
-    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T15);
     let mut h = active_harness()?;
-    h.ctx.cfg.gas_params = gas_params.clone();
     let enabled_tokens = (1..=8).map(maximum_metadata_token).collect::<Vec<_>>();
-    h.set_token_enablements(&enabled_tokens);
+    for enabled in &enabled_tokens {
+        h.queue_token_enablement(enabled);
+    }
     // Maximum-size WebAuthn roots: the largest admitted ciphertext and the most expensive
     // supported signature, measured rather than estimated.
     let (_, entries) = funded_requests(&mut h, REQUESTS, true)?;
@@ -781,12 +809,12 @@ fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
         executed.results,
         vec![ForcedExitResult::Exited { amount: 1 }; REQUESTS as usize]
     );
-    assert_eq!(h.pending_withdrawals()?.len(), REQUESTS as usize);
+    assert_eq!(h.pending_withdrawals().len(), REQUESTS as usize);
     // Add a separate full transition for the 20 reserved refund entries, at the same gas
     // schedule. This overcounts header/cursor work rather than hiding it. Also charge every
     // request its full debit bound on top of the debit it actually ran.
     let gas_bound = executed.output.gas_used
-        + failed_deposit_gas(20, 0, Some(gas_params))?
+        + failed_deposit_gas_at(TempoHardfork::T15, 20, 0)?
         + REQUESTS * crate::outbox::FORCED_EXIT_DEBIT_GAS;
     eprintln!(
         "{REQUESTS} max-size WebAuthn forced exits + 8 token initializations + 20 refund bound: \
@@ -797,21 +825,7 @@ fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
         gas_bound <= 225_000_000,
         "forced inbox workload exceeds system budget: {gas_bound}"
     );
-    let finalize = IZoneOutbox::finalizeWithdrawalBatchCall {
-        blockNumber: h.ctx.block.inner.number.to::<u64>(),
-        count: U256::from(REQUESTS),
-        encryptedSenders: vec![Bytes::new(); REQUESTS as usize],
-    };
-    let result = call_precompile(
-        &mut h.ctx,
-        &h.outbox_precompile,
-        Address::ZERO,
-        &finalize.abi_encode(),
-        u64::MAX,
-        false,
-        ZONE_OUTBOX_ADDRESS,
-        ZONE_OUTBOX_ADDRESS,
-    )?;
+    let result = finalize_withdrawals(&mut h, REQUESTS as usize, u64::MAX)?;
     assert!(result.is_success());
     eprintln!(
         "{REQUESTS} ordinary withdrawals finalization: {} gas",
@@ -826,14 +840,12 @@ fn maximum_forced_exit_workload_fits_system_gas_budget() -> eyre::Result<()> {
 #[test]
 fn forced_exit_costs_less_than_the_deposits_it_displaces() -> eyre::Result<()> {
     const DISPLACED_DEPOSITS: usize = 14; // ZonePortal.FORCED_EXIT_ADMISSION_WEIGHT
-    let gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T15);
     let mut h = active_harness()?;
-    h.ctx.cfg.gas_params = gas_params.clone();
     let (_, entries) = funded_requests(&mut h, 1, true)?;
     let executed = execute_with(&mut h, entries, Vec::new(), u64::MAX)?;
     assert_eq!(executed.results, [ForcedExitResult::Exited { amount: 1 }]);
     let forced = executed.output.gas_used + crate::outbox::FORCED_EXIT_DEBIT_GAS;
-    let displaced = failed_deposit_gas(DISPLACED_DEPOSITS, 0, Some(gas_params))?;
+    let displaced = failed_deposit_gas_at(TempoHardfork::T15, DISPLACED_DEPOSITS, 0)?;
     eprintln!("1 max-size WebAuthn forced exit + debit bound: {forced} gas");
     eprintln!("{DISPLACED_DEPOSITS} failed deposits: {displaced} gas");
     assert!(
@@ -852,7 +864,7 @@ fn forced_exit_keeps_nonce_consumed_through_pending_credit_recovery() -> eyre::R
         execute(&mut h, vec![entry])?.results,
         [ForcedExitResult::Exited { amount: 17 }]
     );
-    let nonce = h.pending_withdrawals()?[0].fallbackNonce;
+    let nonce = h.pending_withdrawals()[0].fallbackNonce;
     let mut encoded_nonce = [0; 20];
     encoded_nonce[12..].copy_from_slice(&nonce.to_be_bytes());
     with_zone(&mut h, || {
@@ -884,12 +896,12 @@ fn forced_exit_keeps_nonce_consumed_through_pending_credit_recovery() -> eyre::R
         )?;
         Ok(())
     })?;
-    assert_eq!(h.fallback_recipient(nonce)?, Address::ZERO);
+    assert_eq!(fallback_recipient(&mut h, nonce)?, Address::ZERO);
     assert_eq!(root_balance(&mut h)?, 0);
     let claim = IZoneInbox::claimRefundCall {
         token: PATH_USD_ADDRESS,
     };
-    assert!(h.call(ROOT, claim.abi_encode())?.is_success());
+    assert!(call_inbox(&mut h, ROOT, &claim.abi_encode(), GAS)?.is_success());
     assert_eq!(root_balance(&mut h)?, 17);
     assert!(consumed(&mut h, 1)?);
     Ok(())
@@ -912,7 +924,7 @@ fn forced_authorization_nonce_is_shared_across_tokens() -> eyre::Result<()> {
         ]
     );
     assert!(consumed(&mut h, 1)?);
-    assert!(h.pending_withdrawals()?.is_empty());
+    assert!(h.pending_withdrawals().is_empty());
     Ok(())
 }
 
@@ -929,12 +941,15 @@ fn admitted_forced_workload_preserves_ordinary_capacity() -> eyre::Result<()> {
             vec![ForcedExitResult::Exited { amount: 1 }; REQUESTS as usize],
             "ordinary slots used={used}"
         );
-        let pending = h.pending_withdrawals()?;
+        let pending = h.pending_withdrawals();
         assert_eq!(pending.len(), REQUESTS as usize);
         for (i, account) in accounts.iter().enumerate() {
-            assert_eq!(h.balance(PATH_USD_ADDRESS, *account)?, U256::ZERO);
+            assert_eq!(h.balance(PATH_USD_ADDRESS, *account), U256::ZERO);
             assert_eq!(pending[i].amount, 1);
-            assert_eq!(h.fallback_recipient(pending[i].fallbackNonce)?, *account);
+            assert_eq!(
+                fallback_recipient(&mut h, pending[i].fallbackNonce)?,
+                *account
+            );
             assert!(consumed_by(&mut h, *account, i as u64 + 1)?);
         }
         with_zone(&mut h, || {
@@ -1013,7 +1028,7 @@ fn reverting_debit_is_debit_failed_and_never_stalls_the_inbox() -> eyre::Result<
     assert_eq!(after.supply, before.supply + U256::from(5));
     assert_eq!(after.pending, 0);
     assert!(consumed(&mut h, 1)?);
-    assert_eq!(h.balance(PATH_USD_ADDRESS, BOB)?, U256::from(5));
+    assert_eq!(h.balance(PATH_USD_ADDRESS, BOB), U256::from(5));
     Ok(())
 }
 
@@ -1079,7 +1094,7 @@ fn inactive_forced_entries_are_not_activated_and_advance_the_inbox() -> eyre::Re
             assert_eq!(after.supply, before.supply, "{case}");
             assert_eq!(after.pending, 0, "{case}");
             assert_eq!(after.nonces, before.nonces, "{case}");
-            assert_eq!(h.fallback_recipient(1)?, Address::ZERO, "{case}");
+            assert_eq!(fallback_recipient(&mut h, 1)?, Address::ZERO, "{case}");
         }
     }
     Ok(())
@@ -1099,7 +1114,7 @@ fn not_activated_entry_consumes_one_unverified_decryption() -> eyre::Result<()> 
         executed.results,
         [ForcedExitResult::Rejected(Reason::NotActivated)]
     );
-    assert_eq!(h.balance(PATH_USD_ADDRESS, BOB)?, U256::from(5));
+    assert_eq!(h.balance(PATH_USD_ADDRESS, BOB), U256::from(5));
     assert_eq!(root_balance(&mut h)?, 42);
 
     let mut missing = request(&mut h, 2, &payload(&auth(2)))?;
@@ -1115,7 +1130,9 @@ fn not_activated_entry_consumes_one_unverified_decryption() -> eyre::Result<()> 
 #[test]
 fn mixed_batch_executes_forced_exits_in_queue_order() -> eyre::Result<()> {
     let mut h = active_harness()?;
-    h.seed_fallback_recipient(7, ROOT)?;
+    with_zone(&mut h, || {
+        Ok(ZoneOutbox::new().seed_fallback_recipient(7, ROOT)?)
+    })?;
     let entries = vec![
         deposit(&mut h, ROOT, 900)?,
         request(&mut h, 1, &payload(&auth(1)))?,
@@ -1131,11 +1148,11 @@ fn mixed_batch_executes_forced_exits_in_queue_order() -> eyre::Result<()> {
             ForcedExitResult::Exited { amount: 321 },
         ]
     );
-    let pending = h.pending_withdrawals()?;
+    let pending = h.pending_withdrawals();
     let amounts = pending.iter().map(|p| p.amount).collect::<Vec<_>>();
     assert_eq!(amounts, [900, 321]);
     assert_eq!(root_balance(&mut h)?, 0);
-    assert_eq!(h.fallback_recipient(7)?, Address::ZERO);
+    assert_eq!(fallback_recipient(&mut h, 7)?, Address::ZERO);
     assert!(consumed(&mut h, 1)? && consumed(&mut h, 2)?);
     Ok(())
 }
@@ -1149,7 +1166,7 @@ fn replay_is_rejected_across_batches_and_after_bounce_back() -> eyre::Result<()>
         execute(&mut h, vec![first])?.results,
         [ForcedExitResult::Exited { amount: 42 }]
     );
-    let fallback_nonce = h.pending_withdrawals()?[0].fallbackNonce;
+    let fallback_nonce = h.pending_withdrawals()[0].fallbackNonce;
 
     // Next Tempo block: the L1 withdrawal bounces, crediting the root again, and the same
     // authorization is replayed (re-encrypted, so the queue entry itself is new).
@@ -1167,7 +1184,7 @@ fn replay_is_rejected_across_batches_and_after_bounce_back() -> eyre::Result<()>
             ForcedExitResult::Exited { amount: 42 },
         ]
     );
-    let pending = h.pending_withdrawals()?;
+    let pending = h.pending_withdrawals();
     assert_eq!(pending.len(), 2);
     assert_eq!(pending[1].amount, 42);
     assert_eq!(pending[1].txHash, keccak256(payload(&auth(2))));
@@ -1203,7 +1220,7 @@ fn malleated_root_signature_cannot_exit_twice() -> eyre::Result<()> {
                 ForcedExitResult::Rejected(Reason::NonceAlreadyConsumed),
             ]
         );
-        let pending = h.pending_withdrawals()?;
+        let pending = h.pending_withdrawals();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].txHash, keccak256(&malleated));
     }
@@ -1277,7 +1294,7 @@ fn bad_plaintext_is_isolated(mutation: PlaintextMutation) -> eyre::Result<()> {
         );
         assert!(!consumed(&mut h, 1)?, "{mutation:?}");
     }
-    let pending = h.pending_withdrawals()?;
+    let pending = h.pending_withdrawals();
     assert_eq!(pending.len(), 1, "{mutation:?}");
     assert_eq!(
         root_balance(&mut h)? + pending[0].amount,

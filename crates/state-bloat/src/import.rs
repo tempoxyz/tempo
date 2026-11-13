@@ -38,7 +38,9 @@ use reth_provider::{
 };
 use reth_tasks::Runtime;
 use reth_trie::{IntermediateStateRootState, StateRootProgress};
-use reth_trie_db::DatabaseStateRoot;
+use reth_trie_db::{
+    DatabaseHashedCursorFactory, DatabaseStateRoot, DatabaseTrieCursorFactory, PackedKeyAdapter,
+};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tracing::info;
 
@@ -324,7 +326,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         provider_rw.insert_account_for_hashing(
             accounts_seen
                 .iter()
-                .map(|(addr, account)| (*addr, Some(*account))),
+                .map(|(addr, account)| (*addr, Some(account.clone()))),
         )?;
 
         storage_changeset_worker
@@ -351,9 +353,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Incrementally compute the merkle root over all hashed accounts/storages.
         let state_root = {
-            use reth_trie_db::{
-                DatabaseHashedCursorFactory, DatabaseTrieCursorFactory, PackedKeyAdapter,
-            };
             type DbStateRoot<'a, TX> = reth_trie::StateRoot<
                 DatabaseTrieCursorFactory<&'a TX, PackedKeyAdapter>,
                 DatabaseHashedCursorFactory<&'a TX>,

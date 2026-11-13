@@ -6,9 +6,9 @@ use alloy_primitives::Address;
 use alloy_rpc_types_eth::simulate::SimulatedBlock;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use parking_lot::Mutex;
-use reth_ethereum::evm::revm::database::StateProviderDatabase;
+use reth_evm::database::StateProviderDatabase;
 use reth_primitives_traits::AlloyBlockHeader as _;
-use reth_provider::ChainSpecProvider;
+use reth_provider::{ChainSpecProvider, StateProvider as _};
 use reth_rpc_eth_api::{RpcBlock, helpers::EthCall};
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing;
@@ -119,7 +119,6 @@ fn extract_tip20_targets(
     addrs
 }
 
-#[async_trait::async_trait]
 impl<EthApi> TempoSimulateApiServer for TempoSimulate<EthApi>
 where
     EthApi: EthCall<NetworkTypes = TempoNetwork>,
@@ -158,7 +157,7 @@ where
                 .flat_map(|call| &call.logs)
                 .filter(|log| {
                     log.address().is_tip20()
-                        && log.topics().first() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
+                        && log.topic0() == Some(&ITIP20::Transfer::SIGNATURE_HASH)
                 })
                 .map(|log| log.address()),
         );
@@ -219,7 +218,7 @@ where
                 let _permit = permit;
                 let state = this.state_at_block_id(block).await?;
                 let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
-                let mut db = StateProviderDatabase::new(state);
+                let mut db = StateProviderDatabase::new(state.into_evm_state_provider());
 
                 let resolved =
                     db.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {

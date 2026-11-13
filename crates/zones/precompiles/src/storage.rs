@@ -2,20 +2,21 @@
 //! and the L1-backed `TempoState` precompile.
 
 use alloc::{
-    rc::Rc,
     string::{String, ToString},
+    sync::Arc,
 };
-use core::{
-    cell::{Cell, RefCell},
-    fmt,
-};
+use core::fmt;
 
 use alloy_primitives::{Address, B256, U256, map::HashSet};
-use revm::{
-    context::result::AnyError,
-    interpreter::gas::{COLD_SLOAD_COST, WARM_STORAGE_READ_COST},
-    precompile::PrecompileError,
+use evm2::{
+    AnyError,
+    interpreter::gas::{
+        COLD_SLOAD_COST as EVM2_COLD_SLOAD_COST,
+        WARM_STORAGE_READ_COST as EVM2_WARM_STORAGE_READ_COST,
+    },
+    precompiles::PrecompileError,
 };
+use parking_lot::Mutex;
 use tempo_precompiles::{
     error::TempoPrecompileError, storage::vec::VecHandler,
     zone_factory::ZonePortalStorage as ZonePortal,
@@ -23,6 +24,9 @@ use tempo_precompiles::{
 use thiserror::Error;
 
 use crate::tempo_state::TempoState;
+
+const COLD_SLOAD_COST: u64 = EVM2_COLD_SLOAD_COST as u64;
+const WARM_STORAGE_READ_COST: u64 = EVM2_WARM_STORAGE_READ_COST as u64;
 
 pub(crate) use tempo_precompiles::storage::*;
 
@@ -36,6 +40,16 @@ pub trait L1StorageReader: Clone + Send + Sync + 'static {
         &self,
         account: Address,
         slot: B256,
+        block_number: u64,
+    ) -> core::result::Result<B256, L1StateError>;
+
+    /// Reads the TIP-1108 configuration commitment of `account` at `block_number` on Tempo L1,
+    /// or zero when the account has none, without gas accounting.
+    ///
+    /// Like [`Self::read_l1_storage`], this is a raw provider hook: callers choose the anchor.
+    fn read_l1_commitment(
+        &self,
+        account: Address,
         block_number: u64,
     ) -> core::result::Result<B256, L1StateError>;
 }
@@ -63,14 +77,18 @@ pub trait L1StorageReader: Clone + Send + Sync + 'static {
 /// for each EVM execution context; it must not be shared across independent EVMs.
 #[derive(Clone)]
 pub struct L1State<P> {
-    /// Tempo block number selected for the current transaction attempt.
-    anchor: Rc<Cell<Option<u64>>>,
+    /// Committed Zone checkpoint captured from the EVM overlay at transaction entry.
+    /// This is a fallback for database reads, not a selected L1 view.
+    initial_anchor: Arc<Mutex<Option<U256>>>,
+    /// Tempo block number selected for the current transaction attempt, and whether the attempt
+    /// charged the `TempoState` checkpoint read (unmetered host loads can also select the anchor).
+    anchor: Arc<Mutex<Option<(u64, bool)>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
     /// Used for cold/warm gas accounting. Unlike REVM's journal, this access set is not rolled back
     /// when a subcall reverts, preserving charges for potentially incurred L1 fetch work and
     /// simplifying the accounting model.
-    access_set: Rc<RefCell<HashSet<(Address, B256)>>>,
+    access_set: Arc<Mutex<HashSet<(Address, B256)>>>,
     /// Underlying cache/RPC-backed reader for storage at an explicit Tempo block number.
     provider: P,
     /// ZonePortal read through the L1 provider by explicit storage operations.
@@ -81,22 +99,36 @@ impl<P> L1State<P> {
     /// Creates execution-local L1 state backed by `provider` for `portal_address`.
     pub fn new(provider: P, portal_address: Address) -> Self {
         Self {
-            anchor: Rc::new(Cell::new(None)),
-            access_set: Rc::new(RefCell::new(HashSet::default())),
+            initial_anchor: Arc::new(Mutex::new(None)),
+            anchor: Arc::new(Mutex::new(None)),
+            access_set: Arc::new(Mutex::new(HashSet::default())),
             provider,
             portal_address,
         }
     }
 
+    /// Starts a transaction at the checkpoint visible through the EVM's accepted overlay.
+    /// The first L1 read or a validated advancement still selects the transaction's L1 view.
+    pub fn begin_transaction(&self, initial_anchor: U256) {
+        self.reset_transaction_state();
+        *self.initial_anchor.lock() = Some(initial_anchor);
+    }
+
     /// Clears bookkeeping after the current transaction attempt completes.
     pub fn reset_transaction_state(&self) {
-        self.anchor.set(None);
-        self.access_set.borrow_mut().clear();
+        *self.initial_anchor.lock() = None;
+        *self.anchor.lock() = None;
+        self.access_set.lock().clear();
+    }
+
+    /// Returns the committed checkpoint captured at transaction entry, if any.
+    pub fn initial_anchor(&self) -> Option<U256> {
+        *self.initial_anchor.lock()
     }
 
     /// Returns the anchor selected for the current transaction, if any.
     pub fn get_anchor(&self) -> Option<u64> {
-        self.anchor.get()
+        self.anchor.lock().map(|(anchor, _)| anchor)
     }
 
     /// Returns the configured ZonePortal address.
@@ -105,13 +137,14 @@ impl<P> L1State<P> {
     }
 
     fn set_anchor(&self, new: u64) -> Result<(), L1StateError> {
-        match self.get_anchor() {
+        let mut anchor = self.anchor.lock();
+        match *anchor {
             None => {
-                self.anchor.set(Some(new));
+                *anchor = Some((new, false));
                 Ok(())
             }
-            Some(current) if current == new => Ok(()),
-            Some(current) => Err(L1StateError::AnchorConflict { current, new }),
+            Some((current, _)) if current == new => Ok(()),
+            Some((current, _)) => Err(L1StateError::AnchorConflict { current, new }),
         }
     }
 
@@ -122,11 +155,15 @@ impl<P> L1State<P> {
     pub fn advance_anchor(&self, from: u64, to: u64) -> Result<(), L1StateError> {
         if to <= from {
             return Err(L1StateError::AdvanceTempoConflict { from, to });
-        } else if let Some(current) = self.get_anchor() {
+        }
+
+        let mut anchor = self.anchor.lock();
+        if let Some((current, _)) = *anchor {
             return Err(L1StateError::AnchorConflict { current, new: to });
         }
 
-        self.anchor.set(Some(to));
+        // `finalizeTempo` charged the checkpoint read, and an earlier selection fails above.
+        *anchor = Some((to, true));
         Ok(())
     }
 }
@@ -147,6 +184,19 @@ impl<P: L1StorageReader> L1State<P> {
         self.provider.read_l1_storage(account, slot, block_number)
     }
 
+    /// Reads the TIP-1108 commitment of `account` without gas metering, after selecting or
+    /// validating `block_number` as this transaction's anchor.
+    ///
+    /// The EVM database overlay uses this path because the EVM already charges the account load.
+    pub fn read_l1_commitment_unmetered(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        self.set_anchor(block_number)?;
+        self.provider.read_l1_commitment(account, block_number)
+    }
+
     /// Reads L1 storage, with gas metering, after selecting or validating `block_number` as this
     /// transaction's anchor.
     fn read_l1_storage(
@@ -156,7 +206,7 @@ impl<P: L1StorageReader> L1State<P> {
         block_number: u64,
     ) -> tempo_precompiles::Result<B256> {
         let key = (account, slot);
-        let gas_cost = if self.access_set.borrow().contains(&key) {
+        let gas_cost = if self.access_set.lock().contains(&key) {
             WARM_STORAGE_READ_COST
         } else {
             COLD_SLOAD_COST
@@ -165,7 +215,7 @@ impl<P: L1StorageReader> L1State<P> {
         let value = self
             .read_l1_storage_unmetered(account, slot, block_number)
             .map_err(|err| TempoPrecompileError::Fatal(err.to_string()))?;
-        self.access_set.borrow_mut().insert(key);
+        self.access_set.lock().insert(key);
         Ok(value)
     }
 
@@ -217,7 +267,7 @@ impl<P> fmt::Debug for L1State<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("L1State")
             .field("anchor", &self.get_anchor())
-            .field("warm_l1_slots", &self.access_set.borrow().len())
+            .field("warm_l1_slots", &self.access_set.lock().len())
             .field("portal_address", &self.portal_address)
             .finish_non_exhaustive()
     }
@@ -236,6 +286,18 @@ pub enum L1StateError {
         /// Requested storage slot.
         slot: B256,
         /// Tempo block number at which storage was requested.
+        block_number: u64,
+        /// Provider failure diagnostic.
+        reason: String,
+    },
+    /// The underlying L1 provider could not resolve an account's commitment at the requested
+    /// block. Its message shares the prefix of [`Self::StorageUnavailable`], which identifies L1
+    /// unavailability once precompile storage stringifies the error.
+    #[error("Tempo L1 storage unavailable account={account} block={block_number}: {reason}")]
+    AccountUnavailable {
+        /// Tempo account whose commitment was requested.
+        account: Address,
+        /// Tempo block number at which the account was requested.
         block_number: u64,
         /// Provider failure diagnostic.
         reason: String,
@@ -259,15 +321,18 @@ pub enum L1StateError {
 }
 
 impl L1StateError {
-    /// Returns whether this is an underlying storage-provider failure.
-    pub const fn is_storage_unavailable(&self) -> bool {
-        matches!(self, Self::StorageUnavailable { .. })
+    /// Returns whether this is an underlying provider failure for storage or an account.
+    pub const fn is_unavailable(&self) -> bool {
+        matches!(
+            self,
+            Self::StorageUnavailable { .. } | Self::AccountUnavailable { .. }
+        )
     }
 }
 
 impl From<L1StateError> for PrecompileError {
     fn from(error: L1StateError) -> Self {
-        Self::FatalAny(AnyError::new(error))
+        Self::Fatal(AnyError::new(error))
     }
 }
 
@@ -285,9 +350,19 @@ struct L1Storage<'a, P> {
 
 impl<P: L1StorageReader> StorageOps for L1Storage<'_, P> {
     fn load(&self, slot: U256) -> tempo_precompiles::Result<U256> {
-        let anchor = match self.l1.get_anchor() {
-            Some(anchor) => anchor,
-            None => TempoState::new().tempo_block_number.read()?,
+        let is_t14 = StorageCtx::default().spec().is_t14();
+        let selected = *self.l1.anchor.lock();
+        let anchor = match selected {
+            Some((anchor, charged)) if charged || !is_t14 => anchor,
+            // From T14, charge the checkpoint once per attempt even if a host load selected it.
+            _ => {
+                let checkpoint = TempoState::new().tempo_block_number.read()?;
+                let anchor = selected.map_or(checkpoint, |(anchor, _)| anchor);
+                if is_t14 {
+                    *self.l1.anchor.lock() = Some((anchor, true));
+                }
+                anchor
+            }
         };
         self.l1
             .read_l1_storage(self.account, slot.into(), anchor)
@@ -308,6 +383,28 @@ mod tests {
 
     fn read(l1: &L1State<MockL1Reader>, anchor: u64) -> Result<B256, L1StateError> {
         l1.read_l1_storage_unmetered(Address::ZERO, B256::ZERO, anchor)
+    }
+
+    #[test]
+    fn commitment_reads_select_the_anchor() {
+        let reader = MockL1Reader::default();
+        let l1 = L1State::new(reader.clone(), Address::ZERO);
+        let account = Address::repeat_byte(1);
+        reader.insert_commitment(account, 10, B256::repeat_byte(0xaa));
+
+        assert_eq!(
+            l1.read_l1_commitment_unmetered(account, 10),
+            Ok(B256::repeat_byte(0xaa))
+        );
+        assert_eq!(l1.get_anchor(), Some(10));
+        assert_eq!(
+            l1.read_l1_commitment_unmetered(account, 11),
+            Err(L1StateError::AnchorConflict {
+                current: 10,
+                new: 11
+            })
+        );
+        assert_eq!(reader.commitment_requests(), [(account, 10)]);
     }
 
     #[test]

@@ -27,6 +27,8 @@ use alloy_sol_types::{SolEvent, SolEventInterface, SolValue};
 use alloy_transport::Authorization;
 use futures::{Stream, StreamExt, TryStreamExt as _};
 use parking_lot::Mutex;
+// TODO: Remove this import and feature-only dependency after updating Reth's feature forwarding.
+use reth_evm as _;
 use reth_primitives_traits::SealedHeader;
 use reth_storage_api::StateProviderFactory;
 use std::{pin::Pin, sync::Arc};
@@ -98,9 +100,8 @@ pub use pause::{
 pub use queue::DepositQueue;
 pub use state::L1StateCache;
 pub use subscriber::{
-    AuthenticatedPortalLogs, FinalizedBatchSubmission, FinalizedTarget, L1BlockTracker,
-    L1Subscriber, L1SubscriberConfig, L1SubscriberError, LeadershipSink, MAX_L1_LOOKAHEAD_BLOCKS,
-    extract_finalized_batch_submissions, verify_receipts_against_header,
+    AuthenticatedPortalLogs, FinalizedTarget, L1BlockTracker, L1Subscriber, L1SubscriberConfig,
+    L1SubscriberError, LeadershipSink, MAX_L1_LOOKAHEAD_BLOCKS, verify_receipts_against_header,
 };
 
 #[cfg(test)]

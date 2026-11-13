@@ -44,8 +44,8 @@ use reth_provider::{
 use reth_static_file_types::{ChangesetOffset, SegmentHeader};
 use reth_storage_api::{DBProvider, StateRootProvider};
 use reth_trie::{HashedPostState, HashedStorage, hashed_cursor::zero_destroyed_account_storage};
+use reth_trie_common::bundle_state::{AccountStatus, BundleAccount};
 use reth_trie_db::DatabaseHashedCursorFactory;
-use revm::database::{AccountStatus, BundleAccount};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tracing::{info, warn};
@@ -344,6 +344,7 @@ fn genesis_account_replacement(
         nonce: genesis_account.nonce.unwrap_or_default(),
         balance: genesis_account.balance,
         bytecode_hash: bytecode.as_ref().map(|(hash, _)| *hash),
+        extension: genesis_account.extension.clone(),
     };
     let storage = genesis_storage_entries(genesis_account);
     let mut hashed_storage = storage
@@ -373,11 +374,12 @@ where
     P: DBProvider,
 {
     let mut hashed_state = HashedPostState::default()
-        .with_accounts(
-            replacements
-                .iter()
-                .map(|replacement| (replacement.hashed_address, Some(replacement.account))),
-        )
+        .with_accounts(replacements.iter().map(|replacement| {
+            (
+                replacement.hashed_address,
+                Some(replacement.account.clone()),
+            )
+        }))
         .with_storages(replacements.iter().map(|replacement| {
             let storage = HashedStorage {
                 storage: replacement
@@ -873,7 +875,7 @@ where
         if let Some((hash, bytecode)) = &replacement.bytecode {
             tx.put::<tables::Bytecodes>(*hash, bytecode.clone())?;
         }
-        tx.put::<tables::HashedAccounts>(replacement.hashed_address, replacement.account)?;
+        tx.put::<tables::HashedAccounts>(replacement.hashed_address, replacement.account.clone())?;
     }
 
     Ok(())
@@ -927,7 +929,11 @@ mod tests {
         providers::{StaticFileProvider, StaticFileProviderRWRefMut},
     };
     use reth_storage_api::{ChangeSetReader, NodePrimitivesProvider, StorageChangeSetReader};
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::mpsc,
+        time::Duration,
+    };
     use tempo_primitives::TempoPrimitives;
 
     #[derive(Clone)]
@@ -1059,8 +1065,6 @@ mod tests {
     /// re-rolls it via ASLR). Only the call under test runs on a watchdogged worker thread.
     #[test]
     fn replace_block_zero_static_changesets_does_not_self_deadlock() {
-        use std::{sync::mpsc, time::Duration};
-
         let iterations = 512;
         let (sender, receiver) = mpsc::channel();
 

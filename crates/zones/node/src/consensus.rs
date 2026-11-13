@@ -1,9 +1,9 @@
-use alloy_evm::block::BlockExecutionResult;
 use alloy_primitives::B256;
 use reth_chainspec::EthereumHardforks;
 use reth_consensus::{
     Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom, TransactionRoot,
 };
+use reth_execution_types::BlockExecutionResult;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_evm::consensus::TempoConsensus;

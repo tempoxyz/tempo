@@ -1,6 +1,6 @@
 //! Admission storage extension to Tempo's portal view.
 //!
-//! Tempo's pinned view ends at the T13 token cursor (slot 28). Keep its existing definition
+//! Tempo's pinned view ends at the T15 transfer opt-in (slot 28). Keep its existing definition
 //! authoritative for legacy fields; this view mirrors its final packed fields before TIP-1012. Reads
 //! must use `L1State::read_l1`, just like other authenticated portal reads.
 //!
@@ -22,6 +22,7 @@ pub struct ForcedExitPortalStorage {
     _legacy: [U256; 28],
     _last_processed_enabled_token_count: u64,
     _token_enablement_cursor_initialized: bool,
+    _transfers_enabled: bool,
     pub forced_exit_version: u64,
     pub forced_exit_count: u64,
     pub forced_exit_requests: Mapping<u64, ForcedExitAdmissionMetadata>,
@@ -67,7 +68,9 @@ mod tests {
         assert_eq!(portal.forced_exit_count.slot(), U256::from(28));
         assert_eq!(portal.forced_exit_requests.slot(), U256::from(29));
         assert_eq!(portal.forced_exit_version.slot(), U256::from(28));
-        assert_eq!(portal.forced_exit_version.ctx().packed_offset(), Some(9));
+        assert_eq!(portal._transfers_enabled.slot(), U256::from(28));
+        assert_eq!(portal._transfers_enabled.ctx().packed_offset(), Some(9));
+        assert_eq!(portal.forced_exit_version.ctx().packed_offset(), Some(10));
         // Mapping keys use standard Solidity ABI words; the value packs address + uint64.
         let mut key = [0u8; 64];
         key[31] = 1;
@@ -79,6 +82,6 @@ mod tests {
         let value = &portal.forced_exit_requests[1];
         assert_eq!(value.token.slot(), value.deposit_number.slot());
         assert_eq!(value.deposit_number.ctx().packed_offset(), Some(20));
-        assert_eq!(portal.forced_exit_count.ctx().packed_offset(), Some(17));
+        assert_eq!(portal.forced_exit_count.ctx().packed_offset(), Some(18));
     }
 }

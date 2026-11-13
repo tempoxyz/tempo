@@ -6,23 +6,22 @@ use alloy::{
 };
 use alloy_eips::BlockNumberOrTag;
 use alloy_rpc_types_eth::BlockId;
+use evm2::{bytecode::Bytecode, evm::AccountInfo};
 use eyre::{WrapErr as _, ensure, eyre};
-use reth_evm::{
-    Evm as _,
-    revm::{DatabaseCommit, context::JournalTr, state::AccountInfo},
-};
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{cli::TempoHardforkArgs, spec::TEMPO_T0_BASE_FEE};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::{CreateX, Multicall3, SafeDeployer},
-    zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal},
+    CREATEX_ADDRESS, SAFE_DEPLOYER_ADDRESS,
+    contracts::{CreateX, SafeDeployer},
+    zones::{
+        TEMPO_STATE_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
+        ZonePortal,
+    },
 };
 use tempo_evm::genesis::{
-    GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
-    ethereum_chain_config, genesis_account, genesis_evm_env, predeployed_contract,
-    with_genesis_storage,
+    GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, ethereum_chain_config,
+    genesis_account, genesis_evm_env, predeployed_contract, with_genesis_storage,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
@@ -70,6 +69,10 @@ pub(crate) struct GenerateZoneGenesis {
     )]
     pub(crate) tempo_portal: Option<Address>,
 
+    /// ZoneFactory that created `--tempo-portal`, used to find its ZoneCreated event.
+    #[arg(long, env = "ZONE_FACTORY", default_value_t = ZONE_FACTORY_ADDRESS)]
+    pub(crate) zone_factory: Address,
+
     /// Tempo L1 RPC URL used to inherit fork activations and optionally derive the anchor.
     #[arg(long, required_unless_present = "hardfork")]
     pub(crate) l1_rpc_url: Option<String>,
@@ -99,8 +102,6 @@ pub(crate) struct GenerateZoneGenesis {
     pub(crate) with_safe_deployer: bool,
 
     /// Include Arachnid CREATE2 factory in genesis.
-    /// The factory is always used internally to deploy Permit2; this flag
-    /// controls whether it remains in the final genesis state.
     #[arg(long)]
     pub(crate) with_create2_factory: bool,
 
@@ -130,7 +131,7 @@ impl GenerateZoneGenesis {
                 const_hex::decode(header_rlp).wrap_err("failed to decode hex string")?
             }
             (None, Some(portal), Some(provider)) => {
-                finalized_pre_creation_anchor(provider, portal, None)
+                finalized_pre_creation_anchor(provider, self.zone_factory, portal, None)
                     .await?
                     .rlp
             }
@@ -158,16 +159,21 @@ impl GenerateZoneGenesis {
         let timestamp = anchor.timestamp();
         let mut evm = setup_zone_evm(self.chain_id, self.gas_limit, &forks, timestamp)?;
 
-        evm.db_mut().insert_account_info(
-            DEPLOYER,
-            AccountInfo::from_balance(U256::from(1_000_000_000_000_000_000_000u128)),
+        evm.overlay_db_mut().insert_account_info(
+            &DEPLOYER,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000_000u128),
+                ..Default::default()
+            },
         );
 
         // Initialize all precompiles and deploy standard contracts to match the
         // L1 genesis setup. The zone EVM uses the same TempoEvmFactory, so all
         // precompiles must be initialized for user transactions to work correctly.
-        deploy_arachnid_create2_factory(&mut evm);
-        deploy_permit2(&mut evm)?;
+        // Zones omit Permit2 and Multicall3, which T15 removes from existing zones.
+        if self.with_create2_factory {
+            deploy_arachnid_create2_factory(&mut evm);
+        }
 
         with_genesis_storage(&mut evm, || {
             // Required for fee token transfer checks.
@@ -209,10 +215,7 @@ impl GenerateZoneGenesis {
             NativeZoneOutbox::new().initialize()
         })?;
 
-        let native_state = evm.ctx_mut().journaled_state.finalize();
-        evm.db_mut().commit(native_state);
-
-        let db = evm.db_mut();
+        let db = evm.overlay_db();
         for (name, addr) in [
             ("TempoState", TEMPO_STATE_ADDRESS),
             ("ZoneInbox", ZONE_INBOX_ADDRESS),
@@ -222,8 +225,13 @@ impl GenerateZoneGenesis {
                 .cache
                 .accounts
                 .get(&addr)
+                .and_then(Option::as_ref)
                 .ok_or_else(|| eyre!("{name} not found at {addr}"))?;
-            let has_code = account.info.code.as_ref().is_some_and(|c| !c.is_empty());
+            let has_code = db
+                .cache
+                .contracts
+                .get(&account.code_hash)
+                .is_some_and(|c| !c.is_empty());
             if !has_code {
                 return Err(eyre!("{name} has no code at {addr}"));
             }
@@ -234,12 +242,22 @@ impl GenerateZoneGenesis {
             .accounts
             .iter()
             .filter(|(addr, _)| **addr != DEPLOYER && **addr != TIP20_FACTORY_ADDRESS)
-            .filter(|(addr, _)| {
-                self.with_create2_factory || **addr != ARACHNID_CREATE2_FACTORY_ADDRESS
-            })
+            .filter_map(|(address, account)| account.as_ref().map(|account| (address, account)))
             .map(|(address, account)| {
-                let storage = account.storage.iter().map(|(key, val)| (*key, *val));
-                (*address, genesis_account(&account.info, storage))
+                let storage = db
+                    .cache
+                    .storage
+                    .get(address)
+                    .into_iter()
+                    .flat_map(|storage| storage.slots.iter())
+                    .map(|(key, val)| (*key, *val));
+                let mut account_genesis = genesis_account(account, storage);
+                account_genesis.code = db
+                    .cache
+                    .contracts
+                    .get(&account.code_hash)
+                    .map(Bytecode::original_bytes);
+                (*address, account_genesis)
             })
             .collect();
 
@@ -252,7 +270,6 @@ impl GenerateZoneGenesis {
 
         // Deploy standard utility contracts matching L1 genesis.
         for (address, code, enabled) in [
-            (MULTICALL3_ADDRESS, &Multicall3::DEPLOYED_BYTECODE, true),
             (
                 CREATEX_ADDRESS,
                 &CreateX::DEPLOYED_BYTECODE,
@@ -313,6 +330,7 @@ pub(crate) struct PreCreationAnchor {
 
 pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     provider: &P,
+    factory: Address,
     portal: Address,
     expected_creation_block: Option<u64>,
 ) -> eyre::Result<PreCreationAnchor> {
@@ -356,6 +374,7 @@ pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     // portal was deployed in exactly that block.
     let creation_block = find_zone_deployment_block(
         provider,
+        factory,
         zone_id,
         portal,
         expected_creation_block.unwrap_or(0),
@@ -423,6 +442,7 @@ pub(crate) async fn finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
 
 pub(crate) async fn wait_for_finalized_pre_creation_anchor<P: Provider<TempoNetwork>>(
     provider: &P,
+    factory: Address,
     portal: Address,
     creation_block: u64,
 ) -> eyre::Result<PreCreationAnchor> {
@@ -436,7 +456,8 @@ pub(crate) async fn wait_for_finalized_pre_creation_anchor<P: Provider<TempoNetw
             .wrap_err("failed to fetch finalized Tempo L1 block")?
             .ok_or_else(|| eyre!("Tempo L1 returned no finalized block"))?;
         if finalized.number() >= creation_block {
-            return finalized_pre_creation_anchor(provider, portal, Some(creation_block)).await;
+            return finalized_pre_creation_anchor(provider, factory, portal, Some(creation_block))
+                .await;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
@@ -454,10 +475,9 @@ fn setup_zone_evm(
     timestamp: u64,
 ) -> eyre::Result<GenesisEvm> {
     let mut env = genesis_evm_env(chain_id);
-    env.cfg_env.spec = forks.hardfork_at(timestamp)?;
-    env.block_env.inner.timestamp = U256::from(timestamp);
-    env.cfg_env.tx_gas_limit_cap = Some(u64::MAX);
-    env.block_env.inner.gas_limit = gas_limit;
+    env.spec = forks.hardfork_at(timestamp)?;
+    env.block_env.timestamp = U256::from(timestamp);
+    env.block_env.gas_limit = U256::from(gas_limit);
     Ok(create_genesis_evm(env))
 }
 
@@ -525,7 +545,7 @@ mod tests {
                 "--admin".to_owned(),
                 "0x1000000000000000000000000000000000000001".to_owned(),
                 "--hardfork".to_owned(),
-                TempoHardfork::latest().to_string(),
+                "T15".to_owned(),
             ];
             for (flag, timestamp) in [
                 ("--t12-time", t12),
@@ -593,7 +613,7 @@ mod tests {
                 &flag,
                 "12345",
                 "--hardfork",
-                &TempoHardfork::latest().to_string(),
+                "T15",
             ])
             .unwrap();
             let mut genesis = Genesis::default();
@@ -683,8 +703,8 @@ mod tests {
                 (u64::MAX, delayed),
             ] {
                 let evm = setup_zone_evm(1337, 30_000_000, &forks, timestamp).unwrap();
-                assert_eq!(evm.ctx().cfg.spec, expected);
-                assert_eq!(evm.ctx().block.inner.timestamp, U256::from(timestamp));
+                assert_eq!(evm.config_spec_id(), expected);
+                assert_eq!(evm.block().timestamp, U256::from(timestamp));
                 assert_eq!(spec.tempo_hardfork_at(timestamp), expected);
             }
         }

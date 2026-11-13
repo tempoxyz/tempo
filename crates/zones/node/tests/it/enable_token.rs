@@ -14,7 +14,7 @@ use crate::utils::{
 };
 
 // Imports for real-L1 tests
-use crate::utils::{L1TestNode, ZoneAccount, ZoneTestNode, spawn_sequencer};
+use crate::utils::{L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode, spawn_sequencer};
 use alloy::primitives::B256;
 use alloy_provider::Provider;
 use tempo_alloy::rpc::TempoCallBuilderExt;
@@ -118,7 +118,6 @@ async fn test_enable_token_and_deposit_same_block() -> eyre::Result<()> {
 /// The enabled token is used for direct fee collection. The regression assertion checks that pool
 /// admission accepts its anchored policy without requiring FeeAMM liquidity.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -147,7 +146,7 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
         DEFAULT_TIMEOUT,
     )
     .await?;
-    fixture.seed_no_receive_policy(recipient)?;
+    fixture.seed_transfer_recipient(recipient)?;
 
     let token = ITIP20::new(token_address, &provider);
     assert_eq!(
@@ -192,10 +191,6 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
 
     Ok(())
 }
-
-/// Longer timeout for real L1 tests — the L1 dev node produces blocks every
-/// 250ms and the L1Subscriber needs to connect, backfill, and subscribe.
-const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Full TokenEnabled pipeline with a real in-process L1 node:
 ///

@@ -33,7 +33,6 @@ impl<EthApi> TempoEthExt<EthApi> {
     }
 }
 
-#[async_trait::async_trait]
 impl<EthApi: RpcNodeCore> TempoEthExtApiServer for TempoEthExt<EthApi> {
     async fn transactions(
         &self,

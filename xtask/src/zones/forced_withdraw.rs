@@ -474,12 +474,12 @@ mod rpc_tests {
             timestamp_millis: 1_000_000,
         };
         let block = alloy_eips::BlockId::hash_canonical(header.hash);
-        rpc.register_method("eth_getBlockByNumber", move |_, _, _| {
+        rpc.register_method("eth_getBlockByNumber", move |_, _| {
             serde_json::to_value(&header).unwrap()
         })
         .unwrap();
         let calls = observed.clone();
-        rpc.register_method("eth_call", move |params, _, _| {
+        rpc.register_method("eth_call", move |params, _| {
             let params: Vec<Value> = params.parse()?;
             calls.lock().unwrap().calls.push(json!(params));
             let to: Address = serde_json::from_value(params[0]["to"].clone()).unwrap();
@@ -581,12 +581,12 @@ mod rpc_tests {
                 }),
             ),
         ] {
-            rpc.register_method(method, move |_, _, _| value.clone())
+            rpc.register_method(method, move |_, _| value.clone())
                 .unwrap();
         }
         for method in ["eth_sendRawTransactionSync", "eth_sendRawTransaction"] {
             let transactions = observed.clone();
-            rpc.register_method(method, move |params, _, _| {
+            rpc.register_method(method, move |params, _| {
                 let params: Vec<Value> = params.parse()?;
                 let raw: Bytes = serde_json::from_value(params[0].clone()).unwrap();
                 transactions.lock().unwrap().transactions.push(raw);

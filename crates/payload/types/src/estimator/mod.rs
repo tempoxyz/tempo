@@ -1,0 +1,462 @@
+//! Shared payload-work estimates and proposal pacing learned from finalized successors.
+
+mod build_plan;
+mod build_time;
+pub(crate) mod config;
+mod network;
+mod proposal;
+
+pub use config::{
+    DEFAULT_NETWORK_BUDGET, DEFAULT_NETWORK_RESERVE_PERCENTILE, DEFAULT_TARGET_BLOCK_TIME,
+};
+use config::{EstimatorConfig, NetworkReservation};
+pub use proposal::ProposalBudget;
+
+pub use build_plan::{BuildPlan, PayloadBudgetDecision};
+
+use std::{
+    fmt,
+    num::ParseFloatError,
+    str::FromStr,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::{Duration, Instant},
+};
+
+use crate::{ValidationLatencyEstimator, ValidationLatencyWorkload};
+use build_time::BuildTimeTracker;
+use network::NetworkTracker;
+
+/// Identifies a proposal by its own epoch and view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProposalKey {
+    /// Epoch in which this proposal was made.
+    pub epoch: u64,
+    /// View in which this proposal was made.
+    pub view: u64,
+}
+
+/// Clock readings and replay-adjusted elapsed time for a returned proposal.
+#[derive(Debug)]
+pub struct ProposalTiming {
+    /// Identity of the returned proposal, not its parent or child.
+    pub key: ProposalKey,
+    /// Unix milliseconds when the proposal window opened, on the header clock.
+    pub window_opened_millis: u64,
+    /// Unix milliseconds when the proposal was returned, on the same clock.
+    pub returned_millis: u64,
+    /// Return budget plus lateness past the replay-adjusted return target,
+    /// excluding timer overshoot.
+    pub elapsed: Duration,
+}
+
+/// Shared build and validation estimates with an adaptive proposal return budget.
+/// Network reservations follow finalized successors of this node's proposals.
+///
+/// Clones share state: feedback recorded on one is seen by every other.
+#[derive(Clone, Debug)]
+pub struct Estimator {
+    target_block_time: Duration,
+    overrun_tolerance: Option<Duration>,
+    state: Arc<Mutex<EstimatorState>>,
+}
+
+impl Estimator {
+    /// Creates an estimator without feedback.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config` is invalid. Call [`EstimatorConfig::validate`] beforehand to
+    /// handle invalid configuration without panicking.
+    pub fn new(config: EstimatorConfig) -> Self {
+        config.validate().expect("invalid estimator configuration");
+        Self {
+            target_block_time: config.target_block_time,
+            overrun_tolerance: match config.network_reservation_policy {
+                NetworkReservation::Adaptive {
+                    return_budget_overrun_tolerance,
+                    ..
+                } => Some(return_budget_overrun_tolerance),
+                NetworkReservation::Fixed => None,
+            },
+            state: Arc::new(Mutex::new(EstimatorState {
+                validation: ValidationLatencyEstimator::default(),
+                build_time: BuildTimeTracker::new(config.build_time_multiplier),
+                network: NetworkTracker::new(&config),
+                last_return_budget: None,
+            })),
+        }
+    }
+
+    /// Records successful local execution-layer verification, keyed by height.
+    pub fn on_block_verified(
+        &self,
+        height: u64,
+        workload: ValidationLatencyWorkload,
+        elapsed: Duration,
+    ) {
+        self.lock_state()
+            .validation
+            .observe(height, workload, elapsed);
+    }
+
+    /// Snapshots the current feedback for one paced payload build.
+    ///
+    /// `now` is the current monotonic time. Finished builds older than five
+    /// minutes at `now` no longer count; with none left, the plan uses the
+    /// configured multiplier and no dry build finish, as after startup.
+    pub fn build_plan(&self, now: Instant, build_budget: Duration) -> BuildPlan {
+        let state = self.lock_state();
+        BuildPlan::new(
+            build_budget,
+            state.build_time.multiplier(now),
+            state.build_time.dry_finish(now),
+            state.validation.estimate(),
+        )
+    }
+
+    /// Records a payload build that finished at `now`, the current monotonic
+    /// time, for the plans of later builds.
+    pub fn on_build_finished(&self, now: Instant, finished_build: FinishedBuild) {
+        self.lock_state().build_time.observe(now, finished_build);
+    }
+
+    /// Records an own proposal returned at monotonic `now` for a future network sample.
+    ///
+    /// `budget` must be the result of this proposal's `start_proposal` call.
+    /// Returns false when `timing.elapsed` exceeds that budget's sampling tolerance.
+    /// Timer overshoot is not part of elapsed work. Duplicate identities replace
+    /// earlier returns; unmatched returns expire after ten seconds, with at most
+    /// eight retained. Both millisecond readings use the header timestamp clock.
+    pub fn on_proposal_returned(
+        &self,
+        now: Instant,
+        budget: ProposalBudget,
+        timing: ProposalTiming,
+    ) -> bool {
+        if budget.overran(timing.elapsed) {
+            return false;
+        }
+        self.lock_state()
+            .network
+            .proposal_returned(now, budget.return_budget(), timing);
+        true
+    }
+
+    /// Observes a finalized child of `parent`, using its own `child` identity.
+    ///
+    /// The caller must guarantee finality. Unmatched parents are ignored; a
+    /// matched return is consumed even when discarded. Only consecutive views
+    /// in the same epoch count. Timestamps before the parent's return, and
+    /// samples longer than five seconds, are discarded as skew or stalls.
+    /// `now` is monotonic; `child_timestamp_millis` uses the header clock.
+    /// Returns true when a network sample was recorded.
+    pub fn on_child_block_finalized(
+        &self,
+        now: Instant,
+        parent: ProposalKey,
+        child: ProposalKey,
+        child_timestamp_millis: u64,
+    ) -> bool {
+        self.lock_state()
+            .network
+            .child_finalized(now, parent, child, child_timestamp_millis)
+    }
+
+    /// Returns the prepared proposal's pacing allowance, not a build timeout.
+    ///
+    /// Call exactly once per own proposal: each call moves the network reservation
+    /// by at most 100 ms. `now` is monotonic and expires old feedback; `preparation`
+    /// is time spent preparing before opening the header's proposal window.
+    /// Required payload work may overrun the returned allowance.
+    #[must_use]
+    pub fn start_proposal(&self, now: Instant, preparation: Duration) -> ProposalBudget {
+        let mut state = self.lock_state();
+        let network_reservation = state.network.reserve_for_proposal(now);
+        let budget = ProposalBudget::new(
+            self.target_block_time,
+            network_reservation,
+            preparation,
+            self.overrun_tolerance,
+        );
+        state.last_return_budget = Some(budget.return_budget());
+        budget
+    }
+
+    /// The build time multiplier at monotonic `now`, falling back to the configured
+    /// multiplier once all retained build samples have expired.
+    pub fn build_time_multiplier(&self, now: Instant) -> f64 {
+        self.lock_state().build_time.multiplier(now).get()
+    }
+
+    /// Snapshots pacing estimates and the last prepared proposal's allowances.
+    ///
+    /// `now` is monotonic. Build estimates fall back to their configured initial
+    /// values when all build samples have expired; while any remain, earlier
+    /// samples can still influence the smoothed estimates. Validation uses a
+    /// height-bounded window, not a time limit. Network feedback expires at `now`,
+    /// but the reservation and return budget remain those of the last proposal.
+    /// Reading a snapshot removes expired network feedback without advancing the
+    /// reservation. Before the first proposal, allowances use the network floor
+    /// without a preparation cap.
+    pub fn snapshot(&self, now: Instant) -> EstimatorSnapshot {
+        let mut state = self.lock_state();
+        let (network_reserve, network_target) = state.network.snapshot(now);
+        EstimatorSnapshot {
+            validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
+            build_time_multiplier: state.build_time.multiplier(now).get(),
+            dry_build_finish: state.build_time.dry_finish(now),
+            network_target,
+            network_reserve,
+            proposal_return_budget: state
+                .last_return_budget
+                .unwrap_or_else(|| self.target_block_time.saturating_sub(network_reserve)),
+        }
+    }
+
+    /// Locks the shared state, blocking while another clone holds it.
+    fn lock_state(&self) -> MutexGuard<'_, EstimatorState> {
+        // The state is plain data and remains usable after a poisoned update.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Ratio of a payload build's total replayable work to its work at the
+/// transaction cutoff, from 1.0 to 1.7 inclusive.
+///
+/// Parses from and displays as a decimal number such as `1.15`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BuildTimeMultiplier {
+    /// Fixed point, [`Self::SCALE`] units per 1.0, within [`Self::MIN`] to [`Self::MAX`].
+    scaled: u64,
+}
+
+impl BuildTimeMultiplier {
+    const SCALE: u64 = 1_000_000;
+    /// Builder work never shrinks after the transaction cutoff.
+    const MIN: Self = Self {
+        scaled: Self::SCALE,
+    };
+    /// Observed ratios above it are learned as it.
+    const MAX: Self = Self { scaled: 1_700_000 };
+    const DEFAULT: Self = Self { scaled: 1_150_000 };
+
+    /// Creates a multiplier, or returns why `multiplier` is outside 1.0 to 1.7.
+    pub fn new(multiplier: f64) -> Result<Self, Error> {
+        // `contains` is false for NaN and infinities too.
+        if !(Self::MIN.get()..=Self::MAX.get()).contains(&multiplier) {
+            return Err(Error::OutOfRange { multiplier });
+        }
+        Ok(Self {
+            scaled: (multiplier * Self::SCALE as f64).round() as u64,
+        })
+    }
+
+    /// The multiplier as a decimal number.
+    pub fn get(self) -> f64 {
+        self.scaled as f64 / Self::SCALE as f64
+    }
+
+    /// Creates a multiplier from fixed-point units, clamped to the valid range.
+    fn from_scaled_clamped(scaled: u64) -> Self {
+        Self {
+            scaled: scaled.clamp(Self::MIN.scaled, Self::MAX.scaled),
+        }
+    }
+
+    /// Multiplies `duration`, saturating at the largest `Duration` in nanoseconds.
+    fn apply(self, duration: Duration) -> Duration {
+        let nanos =
+            duration.as_nanos().saturating_mul(u128::from(self.scaled)) / u128::from(Self::SCALE);
+        Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+    }
+}
+
+impl Default for BuildTimeMultiplier {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl fmt::Display for BuildTimeMultiplier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
+impl FromStr for BuildTimeMultiplier {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::new(value.parse()?)
+    }
+}
+
+/// Why a [`BuildTimeMultiplier`] could not be created.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum Error {
+    /// The text is not a decimal number.
+    #[error("build time multiplier is not a number")]
+    Parse(#[from] ParseFloatError),
+    /// The multiplier is outside 1.0 to 1.7.
+    #[error("build time multiplier ({multiplier}) must be between 1 and 1.7")]
+    OutOfRange {
+        /// The rejected multiplier.
+        multiplier: f64,
+    },
+}
+
+/// Timings of a finished payload build.
+#[derive(Clone, Copy, Debug)]
+pub struct FinishedBuild {
+    validation_work_at_tx_cutoff: Duration,
+    validation_work: Duration,
+    idle_elapsed: Duration,
+}
+
+impl FinishedBuild {
+    /// Creates the timings of a finished build.
+    ///
+    /// `validation_work_at_tx_cutoff` is the replayable work done when pool
+    /// transaction execution stopped, `validation_work` the replayable work
+    /// done once the payload was finalized, so at least the former; neither
+    /// includes `idle_elapsed`, the time spent waiting for the pool to yield
+    /// more transactions. `idle_elapsed` is zero for a busy build, one that kept
+    /// executing transactions until its budget or a block limit stopped it, and
+    /// not zero for a dry build, one whose pool ran dry before its budget did.
+    pub fn new(
+        validation_work_at_tx_cutoff: Duration,
+        validation_work: Duration,
+        idle_elapsed: Duration,
+    ) -> Self {
+        debug_assert!(
+            validation_work >= validation_work_at_tx_cutoff,
+            "validation work shrank after the transaction cutoff"
+        );
+        Self {
+            validation_work_at_tx_cutoff,
+            validation_work,
+            idle_elapsed,
+        }
+    }
+}
+
+/// Pacing estimates and proposal allowances exposed for metrics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EstimatorSnapshot {
+    /// Recent P90 execution-layer validation time, if observed.
+    pub validation_latency_p90: Option<Duration>,
+    /// Build time multiplier in use.
+    pub build_time_multiplier: f64,
+    /// Finish a build that waited for transactions reserves.
+    pub dry_build_finish: Duration,
+    /// Unclamped adaptive network reservation target, or `None` in fixed mode
+    /// or without live network samples. During the first three samples it uses
+    /// the configured floor rather than the percentile; fast rise can lift it
+    /// to the smaller of the two newest samples even during that warm-up.
+    pub network_target: Option<Duration>,
+    /// Network reservation the most recent own proposal used, or the floor
+    /// before the first one.
+    pub network_reserve: Duration,
+    /// Last prepared return budget, including its preparation cap, or the
+    /// target interval less the network floor before the first proposal.
+    pub proposal_return_budget: Duration,
+}
+
+#[derive(Debug)]
+struct EstimatorState {
+    validation: ValidationLatencyEstimator,
+    build_time: BuildTimeTracker,
+    network: NetworkTracker,
+    /// Last prepared allowance, retained only for observability.
+    last_return_budget: Option<Duration>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_time_multiplier_accepts_valid_range_inclusive() {
+        for multiplier in [1.0, 1.15, 1.7] {
+            assert_eq!(
+                BuildTimeMultiplier::new(multiplier).unwrap().get(),
+                multiplier
+            );
+        }
+        assert_eq!(BuildTimeMultiplier::default().get(), 1.15);
+        assert_eq!("1.35".parse::<BuildTimeMultiplier>().unwrap().get(), 1.35);
+        assert_eq!(BuildTimeMultiplier::default().to_string(), "1.15");
+    }
+
+    #[test]
+    fn build_time_multiplier_rejects_values_outside_valid_range() {
+        for multiplier in [0.99, 1.71, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                BuildTimeMultiplier::new(multiplier),
+                Err(Error::OutOfRange { multiplier })
+            );
+        }
+        assert!(matches!(
+            BuildTimeMultiplier::new(f64::NAN),
+            Err(Error::OutOfRange { multiplier }) if multiplier.is_nan()
+        ));
+        assert!(matches!(
+            "fast".parse::<BuildTimeMultiplier>(),
+            Err(Error::Parse(_))
+        ));
+        assert_eq!(
+            Error::OutOfRange { multiplier: 2.0 }.to_string(),
+            "build time multiplier (2) must be between 1 and 1.7"
+        );
+    }
+
+    #[test]
+    fn build_time_multiplier_applies_and_clamps_fixed_point() {
+        let multiplier = BuildTimeMultiplier::new(1.35).unwrap();
+        assert_eq!(
+            multiplier.apply(Duration::from_millis(100)),
+            Duration::from_millis(135)
+        );
+        assert_eq!(
+            BuildTimeMultiplier::from_scaled_clamped(0),
+            BuildTimeMultiplier::MIN
+        );
+        assert_eq!(
+            BuildTimeMultiplier::from_scaled_clamped(u64::MAX),
+            BuildTimeMultiplier::MAX
+        );
+    }
+
+    #[test]
+    fn expired_builds_reset_plan_to_configured_values() {
+        let start = Instant::now();
+        let estimator = Estimator::new(EstimatorConfig::default());
+        estimator.on_build_finished(
+            start,
+            FinishedBuild::new(
+                Duration::from_millis(100),
+                Duration::from_millis(250),
+                Duration::ZERO,
+            ),
+        );
+        estimator.on_build_finished(
+            start,
+            FinishedBuild::new(
+                Duration::from_millis(1),
+                Duration::from_millis(30),
+                Duration::from_millis(1),
+            ),
+        );
+
+        let plan = estimator.build_plan(start + build_time::SAMPLE_TTL, Duration::MAX);
+        assert_eq!(plan.build_time_multiplier().get(), 1.3);
+        assert_eq!(plan.dry_finish(), build_time::DRY_FINISH_MAX_STEP);
+
+        let plan = estimator.build_plan(
+            start + build_time::SAMPLE_TTL + Duration::from_nanos(1),
+            Duration::MAX,
+        );
+        assert_eq!(plan.build_time_multiplier(), BuildTimeMultiplier::default());
+        assert_eq!(plan.dry_finish(), Duration::ZERO);
+    }
+}

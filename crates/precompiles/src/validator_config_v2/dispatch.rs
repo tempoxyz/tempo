@@ -3,7 +3,7 @@
 use super::*;
 use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfigV2;
 
 impl Precompile for ValidatorConfigV2 {
@@ -63,6 +63,8 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+    use commonware_codec::Encode;
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfigV2, IValidatorConfigV2::IValidatorConfigV2Calls, ValidatorConfigV2Error,
@@ -83,9 +85,8 @@ mod tests {
             let calldata = owner_call.abi_encode();
             let result = vc.call(&calldata, owner)?;
 
-            assert!(!result.is_revert(), "Pre-T2 call should not revert");
             assert!(
-                result.bytes.is_empty(),
+                result.bytes().is_empty(),
                 "Pre-T2 call should return empty bytes"
             );
 
@@ -101,13 +102,11 @@ mod tests {
             let calldata = IValidatorConfigV2::ownerCall {}.abi_encode();
             let result = vc.call(&calldata, owner)?;
 
-            assert!(!result.is_revert());
-            assert!(result.bytes.is_empty());
+            assert!(result.bytes().is_empty());
 
             // Even empty calldata should succeed
             let result = vc.call(&[], owner)?;
-            assert!(!result.is_revert());
-            assert!(result.bytes.is_empty());
+            assert!(result.bytes().is_empty());
 
             Ok(())
         })?;
@@ -128,8 +127,7 @@ mod tests {
             let calldata = IValidatorConfigV2::ownerCall {}.abi_encode();
             let result = vc.call(&calldata, owner)?;
 
-            assert!(!result.is_revert());
-            let decoded = Address::abi_decode(&result.bytes)?;
+            let decoded = Address::abi_decode(result.bytes())?;
             assert_eq!(decoded, owner);
 
             Ok(())
@@ -138,9 +136,6 @@ mod tests {
 
     #[test]
     fn test_add_validator_dispatch() -> eyre::Result<()> {
-        use commonware_codec::Encode;
-        use commonware_cryptography::{Signer, ed25519::PrivateKey};
-
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let owner = Address::random();
         let validator_addr = Address::random();
@@ -186,9 +181,7 @@ mod tests {
             };
             let calldata = add_call.abi_encode();
 
-            let result = vc.call(&calldata, owner)?;
-            assert!(!result.is_revert());
-
+            vc.call(&calldata, owner)?;
             assert_eq!(vc.validator_count()?, 1);
             let v = vc.validator_by_index(0)?;
             assert_eq!(v.validatorAddress, validator_addr);
@@ -220,28 +213,6 @@ mod tests {
 
             let result = vc.call(&calldata, non_owner);
             expect_precompile_revert(&result, ValidatorConfigV2Error::unauthorized());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let sender = Address::random();
-        let owner = Address::random();
-
-        // T2: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            let result = vc.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
-            assert!(result.is_revert());
-
-            // Insufficient calldata also returns reverted output
-            let result = vc.call(&[0x12, 0x34], sender)?;
-            assert!(result.is_revert());
 
             Ok(())
         })

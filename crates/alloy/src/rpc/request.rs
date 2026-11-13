@@ -11,6 +11,7 @@ use tempo_primitives::{
     transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
+use super::ConfigurableAccountSimulationSpec;
 use crate::TempoNetwork;
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
@@ -77,6 +78,15 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
 
+    /// Quorum for the outer sender, or the delegate named by keyId when using an access key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configurable_account_simulation: Option<ConfigurableAccountSimulationSpec>,
+
+    /// Independent parent or admin quorum authorizing the attached keyAuthorization; ignored
+    /// without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_authorization_simulation: Option<ConfigurableAccountSimulationSpec>,
+
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
     ///
@@ -116,6 +126,8 @@ impl TempoTransactionRequest {
             || self.key_id.is_some()
             || self.key_type.is_some()
             || self.key_data.is_some()
+            || self.configurable_account_simulation.is_some()
+            || self.key_authorization_simulation.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -458,6 +470,8 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            configurable_account_simulation: None,
+            key_authorization_simulation: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
@@ -696,11 +710,10 @@ mod tests {
             max_priority_fee_per_gas: 1000000,
             fee_token: None,
             access_list: Default::default(),
-            calls: vec![Call {
-                to: address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into(),
-                value: Default::default(),
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(
+                address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D"),
+                Bytes::new(),
+            )],
             tempo_authorization_list: vec![],
             nonce_key: TEMPO_EXPIRING_NONCE_KEY,
             key_authorization: None,
@@ -775,11 +788,10 @@ mod tests {
             max_priority_fee_per_gas: 1000000,
             fee_token: None,
             access_list: Default::default(),
-            calls: vec![Call {
-                to: address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into(),
-                value: Default::default(),
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(
+                address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D"),
+                Bytes::new(),
+            )],
             tempo_authorization_list: vec![],
             nonce_key: Default::default(),
             key_authorization: None,
@@ -818,11 +830,7 @@ mod tests {
 
     #[test]
     fn test_set_calls_and_push_call() {
-        let call = Call {
-            to: Address::repeat_byte(0x11).into(),
-            value: U256::ZERO,
-            input: Bytes::from(vec![0xaa]),
-        };
+        let call = Call::new(Address::repeat_byte(0x11), vec![0xaa]);
 
         let mut request = TempoTransactionRequest::default();
         request.set_calls(vec![call.clone()]);
@@ -833,11 +841,7 @@ mod tests {
 
     #[test]
     fn test_call_builder() {
-        let call = Call {
-            to: Address::repeat_byte(0x11).into(),
-            value: U256::ZERO,
-            input: Bytes::from(vec![0xaa]),
-        };
+        let call = Call::new(Address::repeat_byte(0x11), vec![0xaa]);
 
         let request = TempoTransactionRequest::default()
             .with_calls(vec![call.clone()])
@@ -880,11 +884,7 @@ mod tests {
         };
 
         // Regression: single-call AA round-trip must not duplicate the call + preserve.
-        let call = vec![Call {
-            to: Address::repeat_byte(0x11).into(),
-            value: U256::ZERO,
-            input: Bytes::from(vec![0xaa]),
-        }];
+        let call = vec![Call::new(Address::repeat_byte(0x11), vec![0xaa])];
         let mut original = base.clone();
         original.calls = call.clone();
 
@@ -898,16 +898,8 @@ mod tests {
 
         // Regression: multi-call AA round-trip must preserve exact call list.
         let batch = vec![
-            Call {
-                to: Address::repeat_byte(0x11).into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xaa]),
-            },
-            Call {
-                to: Address::repeat_byte(0x22).into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xbb]),
-            },
+            Call::new(Address::repeat_byte(0x11), vec![0xaa]),
+            Call::new(Address::repeat_byte(0x22), vec![0xbb]),
         ];
         let mut original = base;
         original.calls = batch.clone();

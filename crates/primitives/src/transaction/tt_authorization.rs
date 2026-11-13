@@ -1,11 +1,8 @@
+use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-#[cfg(feature = "evm")]
-use alloy_primitives::U256;
 use alloy_primitives::{Address, B256};
-use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
+use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult};
 use core::ops::Deref;
-#[cfg(feature = "evm")]
-use revm::context::transaction::AuthorizationTr;
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -77,6 +74,9 @@ impl TempoSignedAuthorization {
     ///
     /// Implementers should check that the authority has no code.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.is_or_wraps_configurable_account() {
+            return Err(RecoveryError::new());
+        }
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }
@@ -154,7 +154,11 @@ impl Encodable for TempoSignedAuthorization {
 
     fn length(&self) -> usize {
         let len = self.fields_len();
-        len + length_of_length(len)
+        Header {
+            list: true,
+            payload_length: len,
+        }
+        .length_with_payload()
     }
 }
 
@@ -285,23 +289,6 @@ impl Deref for RecoveredTempoAuthorization {
     }
 }
 
-#[cfg(feature = "evm")]
-impl AuthorizationTr for RecoveredTempoAuthorization {
-    fn chain_id(&self) -> U256 {
-        self.chain_id
-    }
-    fn address(&self) -> Address {
-        self.address
-    }
-    fn nonce(&self) -> u64 {
-        self.nonce
-    }
-
-    fn authority(&self) -> Option<Address> {
-        self.authority()
-    }
-}
-
 #[cfg(test)]
 pub mod tests {
 
@@ -323,8 +310,7 @@ pub mod tests {
         let signature = TempoSignature::default(); // Use secp256k1 test signature
         let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
 
-        let mut buf = Vec::new();
-        signed.encode(&mut buf);
+        let buf = alloy_rlp::encode(&signed);
 
         let decoded = TempoSignedAuthorization::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(buf.len(), signed.length());

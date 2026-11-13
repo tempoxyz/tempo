@@ -55,7 +55,7 @@ use alloy_rpc_types_eth::Filter;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
-use futures::{StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
 use parking_lot::RwLock;
 use reth_storage_api::BlockNumReader;
 use schnellru::{ByLength, LruMap};
@@ -530,7 +530,10 @@ impl BatchSubmitter {
                 if anchors_to_current_tip {
                     submission = submission.gas(SUBMIT_BATCH_GAS_LIMIT);
                 }
-                tokio::time::timeout(Duration::from_secs(30), submission.send_sync()).await
+                submission
+                    .send_sync()
+                    .timeout(Duration::from_secs(30))
+                    .await
             }
             SettlementAbi::T13 => {
                 let mut submission = self
@@ -554,7 +557,10 @@ impl BatchSubmitter {
                 if anchors_to_current_tip {
                     submission = submission.gas(SUBMIT_BATCH_GAS_LIMIT);
                 }
-                tokio::time::timeout(Duration::from_secs(30), submission.send_sync()).await
+                submission
+                    .send_sync()
+                    .timeout(Duration::from_secs(30))
+                    .await
             }
         }
         .map_err(|_| eyre::eyre!("submitBatch sync submission timed out after 30 seconds"))?
@@ -949,8 +955,6 @@ impl BatchSubmitter {
     /// `parent_hash` is validated against the hash of block `from`, ensuring the
     /// chain is rooted at the expected block.
     async fn fetch_ancestry_headers(&self, from: u64, to: u64) -> Result<Vec<Bytes>> {
-        use futures::stream;
-
         if to <= from {
             return Ok(Vec::new());
         }
@@ -1193,8 +1197,7 @@ impl BatchSubmitter {
                     LegacyBatchSubmitted::SIGNATURE_HASH,
                 ])
                 .topic2(index_topics.clone())
-                .from_block(lo)
-                .to_block(hi);
+                .select(lo..=hi);
             let events = self.l1_provider.get_logs(&filter).await?;
 
             for log in events {
@@ -3023,9 +3026,6 @@ mod tests {
 
     #[test]
     fn decode_batch_submitted_from_receipt_logs() {
-        use alloy_provider::ProviderBuilder;
-        use alloy_transport::mock::Asserter;
-
         let portal_address = address!("0x7069DeC4E64Fd07334A0933eDe836C17259c9B23");
         let provider = ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()
             .connect_mocked_client(Asserter::new())
@@ -3088,9 +3088,6 @@ mod tests {
 
     #[tokio::test]
     async fn finds_batch_events_by_logical_index_beyond_legacy_capacity() {
-        use alloy_provider::ProviderBuilder;
-        use alloy_transport::mock::Asserter;
-
         let portal_address = address!("0x7069DeC4E64Fd07334A0933eDe836C17259c9B23");
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()

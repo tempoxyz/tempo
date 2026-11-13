@@ -486,18 +486,20 @@ contract ForcedExitTest is BaseTest {
 
     function test_packedActivationAndRequestsPreserveProverFields() public {
         initializePortal();
-        uint256 cursor = uint256(7) | (uint256(1) << 64);
+        // Token cursor, cursor flag and transfer opt-in, all packed ahead of the forced-exit fields.
+        uint256 cursor = uint256(7) | (uint256(1) << 64) | (uint256(1) << 72);
         vm.store(address(portal), bytes32(uint256(28)), bytes32(cursor));
         vm.prank(admin);
         portal.activateForcedExits();
         request(384);
         assertEq(portal.lastProcessedEnabledTokenCount(), 7);
         assertTrue(portal.tokenEnablementCursorInitialized());
+        assertTrue(portal.transfersEnabled());
         assertEq(portal.forcedExitVersion(), 1);
         assertEq(portal.forcedExitCount(), 1);
         assertEq(
             uint256(vm.load(address(portal), bytes32(uint256(28)))),
-            cursor | (uint256(1) << 72) | (uint256(1) << 136)
+            cursor | (uint256(1) << 80) | (uint256(1) << 144)
         );
         bytes32 metadataSlot = keccak256(abi.encode(uint64(1), uint256(29)));
         assertEq(

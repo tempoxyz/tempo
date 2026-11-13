@@ -22,18 +22,20 @@ tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
 
+commonware-codec.workspace = true
+
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
+reth-consensus = { workspace = true, optional = true }
 reth-consensus-common.workspace = true
 reth-engine-tree.workspace = true
 reth-errors.workspace = true
 reth-evm.workspace = true
-reth-execution-types.workspace = true
+reth-evm-ethereum.workspace = true
 reth-metrics.workspace = true
 reth-payload-builder.workspace = true
 reth-payload-primitives.workspace = true
 reth-primitives-traits.workspace = true
-reth-revm.workspace = true
 reth-storage-api.workspace = true
 reth-tasks.workspace = true
 reth-transaction-pool.workspace = true
@@ -45,9 +47,12 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 
 metrics.workspace = true
+serde_json = { workspace = true, default-features = true, optional = true }
 tracing.workspace = true
 crossbeam-channel.workspace = true
 tokio.workspace = true
+
+antithesis_sdk = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -55,3 +60,10 @@ tempo-precompiles.workspace = true
 
 [features]
 trie-debug = ["reth-engine-tree/trie-debug"]
+fuzz = [
+	"dep:antithesis_sdk",
+	"antithesis_sdk/full",
+	"dep:reth-consensus",
+	"dep:serde_json",
+	"tempo-payload-types/fuzz",
+]

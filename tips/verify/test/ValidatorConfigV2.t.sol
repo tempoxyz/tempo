@@ -1303,7 +1303,7 @@ contract ValidatorConfigV2Test is TempoTest {
     }
 
     function test_endpointLength_rejectsOversizedInputs() public {
-        vm.skip(keccak256(bytes(vm.getEvmVersion())) != keccak256("t14"));
+        vm.skip(!_isT14OrLater());
         _initializeV2();
 
         // Leading zeroes make a 256-byte ingress that still parses as a socket address.
@@ -1317,8 +1317,9 @@ contract ValidatorConfigV2Test is TempoTest {
         IValidatorConfigV2.Validator memory before = validatorConfigV2.validatorByIndex(1);
 
         for (uint256 i; i < invalid.length; ++i) {
-            bytes memory expected =
-                abi.encodeWithSelector(IValidatorConfigV2.InvalidIp.selector, invalid[i]);
+            bytes memory expected = abi.encodeWithSelector(
+                IValidatorConfigV2.InvalidIp.selector, invalid[i], "IP address exceeds 255 bytes"
+            );
             // Endpoint validation must precede signature decoding for add and rotate.
             vm.expectRevert(expected);
             validatorConfigV2.addValidator(
@@ -1369,9 +1370,13 @@ contract ValidatorConfigV2Test is TempoTest {
         _initializeV2();
         string memory oversizedIngress =
             string.concat("192.168.1.2:", LibString.repeat("0", 242), "80");
-        if (keccak256(bytes(vm.getEvmVersion())) == keccak256("t14")) {
+        if (_isT14OrLater()) {
             vm.expectRevert(
-                abi.encodeWithSelector(IValidatorConfigV2.InvalidIp.selector, oversizedIngress)
+                abi.encodeWithSelector(
+                    IValidatorConfigV2.InvalidIp.selector,
+                    oversizedIngress,
+                    "IP address exceeds 255 bytes"
+                )
             );
             validatorConfigV2.setIpAddresses(1, oversizedIngress, egress2);
             assertEq(validatorConfigV2.validatorByIndex(1).ingress, "10.0.0.100:8000");

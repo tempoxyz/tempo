@@ -1,38 +1,37 @@
 use alloy::{
     consensus::Transaction,
+    network::ReceiptResponse,
     signers::{SignerSync, local::PrivateKeySigner},
+    sol_types::SolCall,
 };
 use alloy_eips::{Decodable2718, Encodable2718};
-use alloy_primitives::{Address, TxKind, U64, U256, address};
+use alloy_primitives::{Address, Bytes, U64, U256, address, hex};
 use reth_chainspec::EthChainSpec;
 use reth_e2e_test_utils::{node::Finality, wait::assert_holds_for, wallet::test_signer};
-use reth_ethereum::{
-    evm::revm::primitives::hex, pool::TransactionPool, primitives::SignerRecoverable,
-};
+use reth_ethereum::{pool::TransactionPool, primitives::SignerRecoverable};
 use reth_node_builder::BuiltPayload;
 use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionError};
 use reth_transaction_pool::{
     TransactionOrigin,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
 };
-use std::{num::NonZeroU64, time::Duration};
+use std::{num::NonZeroU64, sync::Arc, time::Duration};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
+use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, ITIPFeeAMM, OUSD_ADDRESS};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    tip_fee_manager::TipFeeManager,
+    tip20::{TIP20Token, slots},
+};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
 };
 
+use crate::utils::TestNodeBuilder;
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> eyre::Result<()> {
-    use alloy::{network::ReceiptResponse, primitives::Bytes, sol_types::SolCall};
-    use std::{sync::Arc, time::Duration};
-    use tempo_contracts::precompiles::{ITIP20, ITIPFeeAMM, OUSD_ADDRESS};
-    use tempo_precompiles::{
-        TIP_FEE_MANAGER_ADDRESS,
-        tip20::{TIP20Token, slots},
-    };
-
     let payer = PrivateKeySigner::random();
     let funder = test_signer(0);
     let price = TEMPO_T1_BASE_FEE as u128;
@@ -55,7 +54,7 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
     genesis["alloc"][format!("{inferred_token:#x}")]["storage"][format!("{slot:#066x}")] =
         format!("{:#066x}", fee * U256::from(4)).into();
     let mut ousd = genesis["alloc"][format!("{DEFAULT_FEE_TOKEN:#x}")].clone();
-    ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] = format!(
+    ousd["storage"][format!("{:#066x}", slots::QUOTE_TOKEN)] = format!(
         "{:#066x}",
         U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice())
     )
@@ -81,11 +80,7 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
             max_fee_per_gas: price,
             gas_limit,
             fee_token,
-            calls: vec![Call {
-                to: to.into(),
-                value: U256::ZERO,
-                input,
-            }],
+            calls: vec![Call::new(to, input)],
             ..Default::default()
         };
         let signature = signer.sign_hash_sync(&tx.signature_hash())?;
@@ -350,11 +345,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         max_priority_fee_per_gas: 74982851675,
         max_fee_per_gas: 74982851675,
         gas_limit: 1015288,
-        calls: vec![Call {
-            to: Address::random().into(),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::random(), alloy_primitives::Bytes::new())],
         ..Default::default()
     };
     let signer = PrivateKeySigner::random();
@@ -407,11 +398,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         valid_before: Some(
             NonZeroU64::new(tip_timestamp + 5).expect("tip timestamp + 5 must be non-zero"),
@@ -495,11 +482,7 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
         fee_token: Some(tempo_precompiles::DEFAULT_FEE_TOKEN),
         ..Default::default()
     };
@@ -540,9 +523,6 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 /// block producers (tracked via the AMM liquidity cache).
 #[tokio::test(flavor = "multi_thread")]
 async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
-    use crate::utils::TestNodeBuilder;
-    use alloy_primitives::address;
-
     reth_tracing::init_test_tracing();
 
     // Setup node with direct access
@@ -564,11 +544,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };
@@ -630,10 +606,6 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
 /// 5. The 9 non-whitelisted transactions are evicted; the whitelisted one survives
 #[tokio::test(flavor = "multi_thread")]
 async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
-    use alloy::sol_types::SolCall;
-    use tempo_contracts::precompiles::{ITIP20, ITIP403Registry};
-    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS};
-
     reth_tracing::init_test_tracing();
 
     // Two disconnected nodes — no tx propagation
@@ -664,50 +636,42 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
         gas_limit: 5_000_000,
         calls: vec![
             // Call 1: create a whitelist policy
-            Call {
-                to: TxKind::Call(TIP403_REGISTRY_ADDRESS),
-                value: U256::ZERO,
-                input: ITIP403Registry::createPolicyCall {
+            Call::new(
+                TIP403_REGISTRY_ADDRESS,
+                ITIP403Registry::createPolicyCall {
                     admin: admin_signer.address(),
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
                 }
-                .abi_encode()
-                .into(),
-            },
+                .abi_encode(),
+            ),
             // Call 2: whitelist the chosen sender
-            Call {
-                to: TxKind::Call(TIP403_REGISTRY_ADDRESS),
-                value: U256::ZERO,
-                input: ITIP403Registry::modifyPolicyWhitelistCall {
+            Call::new(
+                TIP403_REGISTRY_ADDRESS,
+                ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: new_policy_id,
                     account: whitelisted_addr,
                     allowed: true,
                 }
-                .abi_encode()
-                .into(),
-            },
+                .abi_encode(),
+            ),
             // Call 3: whitelist the fee manager (recipient of fee transfers)
-            Call {
-                to: TxKind::Call(TIP403_REGISTRY_ADDRESS),
-                value: U256::ZERO,
-                input: ITIP403Registry::modifyPolicyWhitelistCall {
+            Call::new(
+                TIP403_REGISTRY_ADDRESS,
+                ITIP403Registry::modifyPolicyWhitelistCall {
                     policyId: new_policy_id,
                     account: TIP_FEE_MANAGER_ADDRESS,
                     allowed: true,
                 }
-                .abi_encode()
-                .into(),
-            },
+                .abi_encode(),
+            ),
             // Call 4: change DEFAULT_FEE_TOKEN's transfer policy to the new whitelist
-            Call {
-                to: TxKind::Call(DEFAULT_FEE_TOKEN),
-                value: U256::ZERO,
-                input: ITIP20::changeTransferPolicyIdCall {
+            Call::new(
+                DEFAULT_FEE_TOKEN,
+                ITIP20::changeTransferPolicyIdCall {
                     newPolicyId: new_policy_id,
                 }
-                .abi_encode()
-                .into(),
-            },
+                .abi_encode(),
+            ),
         ],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
@@ -715,8 +679,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     let sig = admin_signer.sign_hash_sync(&policy_tx.signature_hash())?;
     let envelope: TempoTxEnvelope = policy_tx.into_signed(sig.into()).into();
-    let mut encoded = Vec::new();
-    envelope.encode_2718(&mut encoded);
+    let encoded = envelope.encoded_2718();
 
     node2.inject_tx(encoded.into()).await?;
     let policy_payload = node2.build_and_submit_payload().await?;
@@ -735,11 +698,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
             max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
             max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::ZERO),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
             fee_token: Some(DEFAULT_FEE_TOKEN),
             ..Default::default()
         };
@@ -764,11 +723,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };

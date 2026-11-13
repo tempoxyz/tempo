@@ -16,9 +16,12 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-dkg-onchain-artifacts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec", "serde"] }
 
 reth-ethereum-engine-primitives.workspace = true
+# Only to enable its `account-ext` feature.
+reth-evm.workspace = true
 reth-node-api.workspace = true
 reth-payload-primitives.workspace = true
 reth-primitives-traits.workspace = true
@@ -31,8 +34,15 @@ alloy-rpc-types-engine.workspace = true
 
 derive_more.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
+
+antithesis_sdk = { workspace = true, optional = true }
+serde_json = { workspace = true, default-features = true, optional = true }
 
 [dev-dependencies]
 tempo-primitives = { workspace = true, features = ["arbitrary", "reth-codec", "serde", "test-utils"] }
 serde_json.workspace = true
+
+[features]
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:serde_json"]

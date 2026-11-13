@@ -4,16 +4,17 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use alloy::genesis::Genesis;
 use alloy_consensus::{BlockHeader, Transaction};
+use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, U256, address, keccak256};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rlp::Decodable;
 use alloy_rpc_types_eth::{BlockId, BlockNumberOrTag};
-use alloy_sol_types::{SolCall, SolError};
+use alloy_sol_types::{SolCall, SolError, SolInterface};
 use reth_chainspec::EthChainSpec;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_contracts::{
-    precompiles::ITIP20,
+    precompiles::{ITIP20, IZoneFactory, initial_zone_factory_state},
     zones::{
         IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS,
         ZONE_OUTBOX_ADDRESS, ZonePortal,
@@ -24,6 +25,7 @@ use tempo_precompiles::{
     storage::{
         Handler, PrecompileStorageProvider, StorageCtx, StorageKey, hashmap::HashMapStorageProvider,
     },
+    zone_factory::{ZoneFactory, ZoneInfoStorageHandler, ZonePortalStorage, slots},
 };
 use tempo_primitives::TempoHeader;
 use zone_chainspec::test_utils::set_tempo_fork;
@@ -266,7 +268,15 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         ZonePortal::TokenEnablementCursorNotInitialized {}.abi_encode()
     );
 
-    let witness = recovery_witness(&l1, &zone, portal_address, 9, end).await?;
+    let witness = batch_witness(&l1, &zone, portal_address, 9, end).await?;
+    let (full, checkpoints) = witness.zone_blocks.split_last().unwrap();
+    assert!(matches!(full.tempo_import, TempoImport::Full { .. }));
+    assert!(full.transactions.is_empty());
+    assert!(
+        checkpoints
+            .iter()
+            .all(|block| matches!(block.tempo_import, TempoImport::CheckpointOnly { .. }))
+    );
     let config = SpfConfig::new(spec);
     let output = prove_zone_batch(&config, witness.clone())?;
     let head = provider.get_block_by_number(end.into()).await?.unwrap();
@@ -344,12 +354,6 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
 
 /// Predeploy a T12 portal whose mock verifier storage survives the canonical T13 runtime upgrade.
 fn init_migration_portal(genesis: &mut Genesis, activation: u64) -> eyre::Result<Address> {
-    use revm::state::Bytecode;
-    use tempo_contracts::precompiles::{IZoneFactory, initial_zone_factory_state};
-    use tempo_precompiles::zone_factory::{
-        ZoneFactory, ZoneInfoStorageHandler, ZonePortalStorage, slots,
-    };
-
     let signer = signer_at(0);
     let admin = signer_at(2).address();
     let user = signer_at(1).address();
@@ -373,7 +377,7 @@ fn init_migration_portal(genesis: &mut Genesis, activation: u64) -> eyre::Result
     storage.set_timestamp(U256::from(genesis.timestamp));
     for (&address, account) in &genesis.alloc {
         if let Some(code) = &account.code {
-            storage.set_code(address, Bytecode::new_legacy(code.clone()))?;
+            storage.set_code(address, code.clone())?;
         }
         if let Some(slots) = &account.storage {
             for (&slot, &value) in slots {
@@ -412,7 +416,12 @@ fn init_migration_portal(genesis: &mut Genesis, activation: u64) -> eyre::Result
         .write(verifier)?;
         Ok(created.portal)
     })?;
-    let (_, code) = storage.account_code(portal_address)?;
+    let code = storage
+        .get_account_info(portal_address)
+        .expect("factory created the portal account")
+        .code
+        .as_ref()
+        .expect("factory installed the portal code");
     genesis.alloc.entry(portal_address).or_default().code = Some(code.original_bytes());
     for (address, slot, value) in storage.into_storage() {
         genesis
@@ -443,8 +452,9 @@ fn batch_from_output(height: u64, tempo_number: u64, output: &BatchOutput) -> Ba
     }
 }
 
-/// Build a witness from actual execution and L1 Merkle proofs, without substituting synthetic state.
-async fn recovery_witness(
+/// Build the witness of Zone blocks `from..=to` from their production execution witnesses and L1
+/// Merkle proofs, without substituting synthetic state.
+pub(crate) async fn batch_witness(
     l1: &L1TestNode,
     zone: &ZoneTestNode,
     portal: Address,
@@ -478,7 +488,6 @@ async fn recovery_witness(
             .full()
             .await?
             .unwrap();
-        let txs = block.transactions.as_transactions().unwrap();
         let generated: ZoneExecutionWitness = provider
             .raw_request(
                 "debug_zoneExecutionWitness".into(),
@@ -491,41 +500,40 @@ async fn recovery_witness(
         for code in generated.execution_witness.codes {
             codes.insert(keccak256(&code), code);
         }
-        let is_full = txs[0]
-            .input()
-            .starts_with(&IZoneInbox::advanceTempoCall::SELECTOR);
-        let (import, header, finalization) = if is_full {
-            assert_eq!(number, to);
-            assert_eq!(txs.len(), 2);
-            let call = IZoneInbox::advanceTempoCall::abi_decode(txs[0].input())?;
-            let header = TempoHeader::decode(&mut call.header.as_ref())?;
-            let finalize = IZoneOutbox::finalizeWithdrawalBatchCall::abi_decode(txs[1].input())?;
-            (
-                TempoImport::Full {
-                    header_rlp: call.header,
-                    deposits: call.deposits,
-                    decryptions: call.decryptions,
-                    enabled_tokens: call.enabledTokens,
-                },
-                header,
-                Some(finalize.count),
-            )
-        } else {
-            assert_eq!(txs.len(), 1);
-            assert!(
-                generated.tempo_state.is_empty(),
-                "checkpoint must not read L1 state"
-            );
-            let call = IZoneInbox::advanceTempoHeadersCall::abi_decode(txs[0].input())?;
-            let header = TempoHeader::decode(&mut call.headers.last().unwrap().as_ref())?;
-            (
-                TempoImport::CheckpointOnly {
-                    headers_rlp: call.headers,
-                },
-                header,
-                None,
-            )
-        };
+        let mut import = None;
+        let mut finalization = None;
+        let mut transactions = Vec::new();
+        for tx in block.transactions.as_transactions().unwrap() {
+            let envelope = tx.inner.inner();
+            if !envelope.is_system_tx() {
+                transactions.push(Bytes::from(envelope.encoded_2718()));
+            } else if tx.to() == Some(ZONE_INBOX_ADDRESS) {
+                import = Some(match IZoneInbox::IZoneInboxCalls::abi_decode(tx.input())? {
+                    IZoneInbox::IZoneInboxCalls::advanceTempo(call) => TempoImport::Full {
+                        header_rlp: call.header,
+                        deposits: call.deposits,
+                        decryptions: call.decryptions,
+                        enabled_tokens: call.enabledTokens,
+                    },
+                    IZoneInbox::IZoneInboxCalls::advanceTempoHeaders(call) => {
+                        assert!(
+                            generated.tempo_state.is_empty(),
+                            "checkpoint must not read L1 state"
+                        );
+                        TempoImport::CheckpointOnly {
+                            headers_rlp: call.headers,
+                        }
+                    }
+                    _ => eyre::bail!("unexpected ZoneInbox call in Zone block {number}"),
+                });
+            } else {
+                finalization = Some(IZoneOutbox::finalizeWithdrawalBatchCall::abi_decode(
+                    tx.input(),
+                )?);
+            }
+        }
+        let import = import.unwrap();
+        final_header = TempoHeader::decode(&mut import.headers_rlp().last().unwrap().as_ref())?;
         for node in generated.tempo_state {
             tempo_nodes.insert(keccak256(&node), node);
         }
@@ -536,16 +544,23 @@ async fn recovery_witness(
             timestamp_millis_part: block.header.timestamp_millis_part,
             beneficiary: block.header.beneficiary(),
             tempo_import: import,
-            finalize_withdrawal_batch_count: finalization,
-            finalize_withdrawal_batch_encrypted_senders: vec![],
-            transactions: vec![],
+            finalize_withdrawal_batch_count: finalization.as_ref().map(|call| call.count),
+            finalize_withdrawal_batch_encrypted_senders: finalization
+                .map(|call| call.encryptedSenders)
+                .unwrap_or_default(),
+            transactions,
         });
-        final_header = header;
     }
     let zone_id = ZonePortal::new(portal, l1.provider())
         .zoneId()
         .call()
         .await?;
+    let withdrawal_batch_index = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &provider)
+        .lastBatch()
+        .block(BlockId::number(to))
+        .call()
+        .await?
+        .withdrawalBatchIndex;
     Ok(BatchWitness {
         public_inputs: PublicInputs {
             parent_chain_id: 1_337,
@@ -553,7 +568,7 @@ async fn recovery_witness(
             tempo_block_number: final_header.number(),
             anchor_block_number: final_header.number(),
             anchor_block_hash: alloy_consensus::Sealable::hash_slow(&final_header),
-            expected_withdrawal_batch_index: 3,
+            expected_withdrawal_batch_index: withdrawal_batch_index,
         },
         parent_header: parent.header.inner.into_consensus(),
         zone_blocks: blocks,

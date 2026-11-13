@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, ops::Deref};
 
 use alloy::{
-    network::EthereumWallet,
     primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
     rpc::client::RpcClient,
@@ -80,7 +79,7 @@ impl TempoTxSender<()> {
         signer: PrivateKeySigner,
     ) -> eyre::Result<TempoTxSender<impl Provider + Clone>> {
         let provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(signer.clone()))
+            .wallet(signer.clone())
             .connect_http(http_url);
         let chain_id = provider.get_chain_id().await?;
         let nonce = provider.get_transaction_count(signer.address()).await?;
@@ -92,7 +91,7 @@ impl TempoTxSender<()> {
         signer: PrivateKeySigner,
     ) -> eyre::Result<TempoTxSender<impl Provider + Clone>> {
         let provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(signer.clone()))
+            .wallet(signer.clone())
             .connect_http(http_url);
         let chain_id = provider.get_chain_id().await?;
         Ok(TempoTxSender::new(provider, chain_id, signer, 0))
@@ -127,10 +126,7 @@ impl<P: Provider> TempoTxSender<P> {
         to: Address,
         call: C,
     ) -> eyre::Result<Receipt> {
-        TempoCalls::new()
-            .push(to, call)
-            .send_with_receipt(self)
-            .await
+        TempoCalls::new().push(to, call).send(self).await
     }
 
     pub(crate) async fn fund_tip20(
@@ -149,9 +145,6 @@ impl<P: Provider> TempoTxSender<P> {
 pub(crate) struct TempoCalls {
     calls: Vec<Call>,
     gas_limit: u64,
-    fee_token: Option<Address>,
-    nonce_key: U256,
-    expect_existing_nonce: bool,
 }
 
 pub(crate) struct Receipt {
@@ -164,18 +157,11 @@ impl TempoCalls {
         Self {
             calls: Vec::new(),
             gas_limit: GAS_LIMIT,
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            nonce_key: U256::ZERO,
-            expect_existing_nonce: false,
         }
     }
 
     pub(crate) fn push<C: SolCall>(mut self, to: Address, call: C) -> Self {
-        self.calls.push(Call {
-            to: to.into(),
-            value: U256::ZERO,
-            input: call.abi_encode().into(),
-        });
+        self.calls.push(Call::new(to, call.abi_encode()));
         self
     }
 
@@ -187,24 +173,8 @@ impl TempoCalls {
     {
         self.calls.extend(values.into_iter().map(|value| {
             let (to, call) = f(value);
-            Call {
-                to: to.into(),
-                value: U256::ZERO,
-                input: call.abi_encode().into(),
-            }
+            Call::new(to, call.abi_encode())
         }));
-        self
-    }
-
-    #[expect(dead_code)]
-    pub(crate) fn fee_token(mut self, fee_token: Option<Address>) -> Self {
-        self.fee_token = fee_token;
-        self
-    }
-
-    #[expect(dead_code)]
-    pub(crate) fn nonce_key(mut self, nonce_key: U256) -> Self {
-        self.nonce_key = nonce_key;
         self
     }
 
@@ -213,28 +183,14 @@ impl TempoCalls {
         self
     }
 
-    #[expect(dead_code)]
-    pub(crate) fn expect_existing_nonce(mut self) -> Self {
-        self.expect_existing_nonce = true;
-        self
-    }
-
     pub(crate) async fn send<P: Provider>(
         self,
         sender: &mut TempoTxSender<P>,
     ) -> eyre::Result<Receipt> {
-        self.send_with_receipt(sender).await
-    }
-
-    pub(crate) async fn send_with_receipt<P: Provider>(
-        self,
-        sender: &mut TempoTxSender<P>,
-    ) -> eyre::Result<Receipt> {
-        let call_count = self.calls.len();
-        eyre::ensure!(call_count > 0, "cannot send TempoCalls with zero calls");
-        if self.expect_existing_nonce {
-            eyre::ensure!(sender.nonce > 0, "expected existing Tempo nonce");
-        }
+        eyre::ensure!(
+            !self.calls.is_empty(),
+            "cannot send TempoCalls with zero calls"
+        );
 
         let tx = TempoTransaction {
             chain_id: sender.chain_id,
@@ -242,9 +198,8 @@ impl TempoCalls {
             max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
             gas_limit: self.gas_limit,
             calls: self.calls,
-            nonce_key: self.nonce_key,
             nonce: sender.nonce,
-            fee_token: self.fee_token,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
             ..Default::default()
         };
         let signature = sender.signer.sign_hash_sync(&tx.signature_hash())?;

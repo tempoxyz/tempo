@@ -24,7 +24,7 @@ alloy = { workspace = true, features = [
   "rlp",
   "providers",
 ] }
-alloy-evm = { workspace = true, features = ["std"] }
+evm2 = { workspace = true, features = ["std"] }
 alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 
@@ -62,7 +62,7 @@ reth-static-file.workspace = true
 
 tempfile.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["genesis"] }
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-consensus.workspace = true
 tempo-node.workspace = true
@@ -76,8 +76,9 @@ serde_json.workspace = true
 [dev-dependencies]
 commonware-macros.workspace = true
 commonware-parallel.workspace = true
-jsonrpsee = { workspace = true, features = ["ws-client", "http-client"] }
-tempo-alloy.workspace = true
+alloy-provider = { workspace = true, features = ["pubsub", "reqwest"] }
+alloy-rpc-client = { workspace = true, features = ["ws-base"] }
+tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-eyre.workspace = true
 tempo-primitives.workspace = true
 tracing-subscriber.workspace = true

@@ -27,7 +27,7 @@ use tempo_primitives::{
     },
 };
 use zone_chainspec::test_utils::set_tempo_fork;
-use zone_node::rpc::auth::AuthContext;
+use zone_node::rpc::auth::{AuthContext, AuthSigner};
 use zone_precompiles::ZONE_FEE_MANAGER_ADDRESS;
 
 use crate::utils::{
@@ -297,7 +297,7 @@ async fn sponsored_transaction_settles_nonzero_base_fee() -> eyre::Result<()> {
             AuthContext {
                 caller: sender.address(),
                 expires_at: u64::MAX,
-                keychain_key_id: None,
+                signer: AuthSigner::Root,
             },
         )
         .await

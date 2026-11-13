@@ -25,12 +25,12 @@ tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["serde"] }
 tempo-primitives = { workspace = true, features = ["default"] }
-tempo-revm.workspace = true
 
 thiserror.workspace = true
 
 reth-chainspec.workspace = true
 reth-errors.workspace = true
+reth-execution-types.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true
@@ -39,9 +39,9 @@ reth-metrics.workspace = true
 reth-node-metrics.workspace = true
 reth-tracing.workspace = true
 reth-provider.workspace = true
-reth-revm.workspace = true
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
+reth-trie-common.workspace = true
 reth-network-api.workspace = true
 reth-rpc.workspace = true
 reth-rpc-api.workspace = true
@@ -54,15 +54,16 @@ reth-storage-api.workspace = true
 reth-storage-overlay.workspace = true
 
 alloy-serde.workspace = true
-alloy-evm.workspace = true
+evm2.workspace = true
 alloy-eips.workspace = true
 alloy-rlp.workspace = true
 alloy-rpc-types-admin.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
 alloy-primitives.workspace = true
+alloy-provider = { workspace = true, features = ["pubsub"] }
+alloy-rpc-client.workspace = true
 
-async-trait.workspace = true
 clap.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
@@ -84,10 +85,16 @@ serde_json.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 
+antithesis_sdk = { workspace = true, optional = true }
+
 [dev-dependencies]
+tempo-alloy = { workspace = true, features = ["test-utils"] }
+tempo-primitives = { workspace = true, features = ["test-utils"] }
+alloy-rpc-client = { workspace = true, features = ["ws-base"] }
+alloy-transport.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["rpc-test-utils"] }
 alloy-rpc-types-engine.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
 reth-e2e-test-utils.workspace = true
@@ -104,7 +111,7 @@ alloy-rlp.workspace = true
 rand_09.workspace = true
 futures.workspace = true
 test-case.workspace = true
-indexmap.workspace = true
+indexmap = { workspace = true, features = ["serde"] }
 insta.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2 = { workspace = true }
@@ -117,13 +124,19 @@ smolgen.workspace = true
 default = []
 asm-keccak = [
 	"alloy/asm-keccak",
-	"alloy-evm/asm-keccak",
+	"evm2/asm-keccak",
 	"alloy-primitives/asm-keccak",
 	"reth-node-core/asm-keccak",
 	"reth-node-ethereum/asm-keccak",
 	"tempo-alloy/asm-keccak",
+	"reth-ethereum/asm-keccak",
+	"reth-evm/asm-keccak",
 ]
-otlp = ["reth-ethereum/otlp", "reth-node-core/otlp"]
+otlp = [
+	"reth-ethereum/otlp",
+	"reth-node-core/otlp",
+	"reth-tracing/otlp",
+]
 js-tracer = [
 	"reth-ethereum/js-tracer",
 	"reth-node-builder/js-tracer",
@@ -136,7 +149,6 @@ jemalloc = [
 	"reth-ethereum/jemalloc",
 	"reth-node-core/jemalloc",
 	"reth-node-metrics/jemalloc",
-	"reth-provider/jemalloc",
 ]
 jemalloc-prof = [
 	"reth-ethereum/jemalloc-prof",
@@ -159,4 +171,13 @@ trie-debug = [
 	"reth-node-builder/trie-debug",
 	"reth-node-core/trie-debug",
 	"tempo-payload-builder/trie-debug",
+]
+# Native EVM2 JIT compilation; building requires LLVM.
+jit = ["tempo-evm/jit"]
+fuzz = [
+	"dep:antithesis_sdk",
+	"antithesis_sdk/full",
+	"tempo-payload-builder/fuzz",
+	"tempo-payload-types/fuzz",
+	"tempo-transaction-pool/fuzz",
 ]

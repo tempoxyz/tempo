@@ -1,5 +1,5 @@
 use alloy::{primitives::Address, sol_types::SolCall};
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IZoneVerifier;
 
 use crate::{Precompile, charge_input_cost, dispatch, view};
@@ -37,7 +37,8 @@ impl Precompile for ZoneVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::test_util::with_storage;
+
     use alloy::primitives::{B256, Bytes, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::{
@@ -74,8 +75,7 @@ mod tests {
 
     #[test]
     fn empty_and_oversized_proofs_return_false() {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T13, || {
             for call in [
                 call(Vec::new()),
                 call(vec![0; tempo_nitro_attestation::MAX_DOCUMENT_SIZE + 1]),
@@ -86,8 +86,7 @@ mod tests {
                         crate::zone_factory::portal_address(call.zoneId),
                     )
                     .unwrap();
-                assert!(output.is_success());
-                assert!(!IZoneVerifier::verifyCall::abi_decode_returns(&output.bytes).unwrap());
+                assert!(!IZoneVerifier::verifyCall::abi_decode_returns(output.bytes()).unwrap());
             }
         });
     }
@@ -103,19 +102,15 @@ mod tests {
         // length this must reach ABI decoding and revert; one extra byte must
         // take the oversized-input path and return false before decoding.
         calldata[4 + 16 * 32..4 + 17 * 32].fill(0xff);
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
-            assert!(
-                ZoneVerifier::new()
-                    .call(&calldata, portal)
-                    .unwrap()
-                    .is_revert()
-            );
+        with_storage(TempoHardfork::T13, || {
+            assert!(matches!(
+                ZoneVerifier::new().call(&calldata, portal),
+                Err(evm2::precompiles::PrecompileError::Revert(_))
+            ));
 
             calldata.push(0);
             let output = ZoneVerifier::new().call(&calldata, portal).unwrap();
-            assert!(output.is_success());
-            assert!(!IZoneVerifier::verifyCall::abi_decode_returns(&output.bytes).unwrap());
+            assert!(!IZoneVerifier::verifyCall::abi_decode_returns(output.bytes()).unwrap());
         });
     }
 
@@ -124,12 +119,12 @@ mod tests {
         let call = call(Vec::new());
         let mut calldata = call.abi_encode();
         calldata[..4].copy_from_slice(&[0xe5, 0x7a, 0x63, 0x66]);
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
-            let output = ZoneVerifier::new()
-                .call(&calldata, crate::zone_factory::portal_address(call.zoneId))
-                .unwrap();
-            assert!(output.is_revert());
+        with_storage(TempoHardfork::T13, || {
+            assert!(matches!(
+                ZoneVerifier::new()
+                    .call(&calldata, crate::zone_factory::portal_address(call.zoneId)),
+                Err(evm2::precompiles::PrecompileError::Revert(_))
+            ));
         });
     }
 }

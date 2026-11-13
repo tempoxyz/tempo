@@ -12,7 +12,14 @@ use alloy_provider::{
 use alloy_transport::TransportResult;
 use tempo_primitives::transaction::{FEE_PAYER_SIGNATURE_MARKER, SignedKeyAuthorization};
 
-use crate::{TempoNetwork, provider::TempoProviderExt, rpc::TempoTransactionRequest};
+use crate::{
+    TempoNetwork, accounts::authorization_accounts, provider::TempoProviderExt,
+    rpc::TempoTransactionRequest,
+};
+
+/// Gas that a fee payer signature adds from T14: one cold account access, equal to the cost the
+/// protocol charges for reading the fee payer's account.
+const FEE_PAYER_ACCESS_GAS: u64 = 2_600;
 
 /// Gas estimation for Tempo transactions.
 ///
@@ -30,6 +37,27 @@ pub struct TempoGasFiller {
 pub struct TempoGasFillable {
     gas: GasFillable,
     key_authorization: Option<Option<SignedKeyAuthorization>>,
+}
+
+impl TempoGasFillable {
+    /// Adds the fee payer access to the prepared gas limit when `request` carries the fee payer
+    /// marker and no gas limit.
+    ///
+    /// The marker is stripped for the estimate because a node before T14 rejects it. From T14 the
+    /// fee payer signature costs one cold account access that the estimate cannot see. The fork is
+    /// not known here, so the access is added at every fork: a node before T14 does not charge it
+    /// and the unused gas is refunded.
+    fn with_fee_payer_access(mut self, request: Option<&TempoTransactionRequest>) -> Self {
+        if let Some(request) = request
+            && request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER)
+            && request.gas_limit().is_none()
+        {
+            let (GasFillable::Legacy { gas_limit, .. } | GasFillable::Eip1559 { gas_limit, .. }) =
+                &mut self.gas;
+            *gas_limit = gas_limit.saturating_add(FEE_PAYER_ACCESS_GAS);
+        }
+        self
+    }
 }
 
 impl TxFiller<TempoNetwork> for TempoGasFiller {
@@ -73,6 +101,18 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
         if let Some(resolved) = &key_authorization {
             estimate_request.key_authorization = resolved.clone();
         }
+        if request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER)
+            && request.gas_limit().is_none()
+            && (request.max_fee_per_gas().is_some() || request.max_priority_fee_per_gas().is_some())
+        {
+            // The sponsor pays the fees, so the estimate is unpriced: a priced one is capped by the
+            // sender's fee token balance. The inner filler then fills only the fees. Without fees
+            // the request is already unpriced and the inner filler estimates it concurrently.
+            let mut unpriced = estimate_request.clone();
+            unpriced.inner.max_fee_per_gas = None;
+            unpriced.inner.max_priority_fee_per_gas = None;
+            estimate_request.set_gas_limit(provider.estimate_gas(unpriced).await?);
+        }
         let gas = <GasFiller as TxFiller<TempoNetwork>>::prepare(
             &self.inner,
             provider,
@@ -90,6 +130,7 @@ impl TxFiller<TempoNetwork> for TempoGasFiller {
         fillable: Self::Fillable,
         tx: SendableTx<TempoNetwork>,
     ) -> TransportResult<SendableTx<TempoNetwork>> {
+        let fillable = fillable.with_fee_payer_access(tx.as_builder());
         let mut tx =
             <GasFiller as TxFiller<TempoNetwork>>::fill(&self.inner, fillable.gas, tx).await?;
         if let Some(request) = tx.as_mut_builder()
@@ -181,7 +222,7 @@ fn validate_authorization(
     account: Address,
     signed: &SignedKeyAuthorization,
 ) -> Result<(), KeyAuthorizationError> {
-    let authorization = &signed.authorization;
+    let authorization = signed.authorization();
     if let Some(chain_id) = request.chain_id()
         && authorization.chain_id != chain_id
     {
@@ -190,12 +231,10 @@ fn validate_authorization(
             actual: authorization.chain_id,
         });
     }
-    if let Some(authorized_account) = authorization.account
-        && authorized_account != account
-    {
+    if let Some(actual) = authorization_accounts(signed).find(|authorized| *authorized != account) {
         return Err(KeyAuthorizationError::AuthorizationAccountMismatch {
             expected: account,
-            actual: authorized_account,
+            actual,
         });
     }
     if authorization
@@ -238,15 +277,20 @@ enum KeyAuthorizationError {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Bytes, Signature};
+    use alloy_json_rpc::RequestPacket;
+    use alloy_primitives::{Bytes, Signature, U64};
     use alloy_provider::{ProviderBuilder, fillers::TxFiller, mock::Asserter};
+    use alloy_rpc_client::RpcClient;
     use alloy_rpc_types_eth::TransactionRequest;
+    use alloy_transport::mock::MockTransport;
     use tempo_primitives::{
         SignatureType, TempoTxType,
         transaction::{KeyAuthorization, PrimitiveSignature},
     };
+    use tower::ServiceExt;
 
     use super::*;
+    use crate::fillers::SponsorFiller;
 
     #[test]
     fn delegates_non_aa_status_to_the_inner_filler() {
@@ -303,6 +347,47 @@ mod tests {
             request_for_gas_estimation(&request).fee_payer_signature,
             Some(signature)
         );
+    }
+
+    #[tokio::test]
+    async fn estimates_sponsored_requests_unpriced() {
+        let asserter = Asserter::new();
+        asserter.push_success(&U64::from(21_000));
+        let transport = MockTransport::new(asserter).map_request(|packet: RequestPacket| {
+            let request = packet
+                .as_single()
+                .expect("expected a single estimate request");
+            assert_eq!(request.method(), "eth_estimateGas");
+            let params: serde_json::Value =
+                serde_json::from_str(request.params().unwrap().get()).unwrap();
+            let estimated = &params[0];
+            assert!(estimated.get("maxFeePerGas").is_none());
+            assert!(estimated.get("maxPriorityFeePerGas").is_none());
+            assert!(estimated.get("feePayerSignature").is_none());
+            packet
+        });
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .filler(SponsorFiller)
+            .filler(TempoGasFiller::default())
+            .connect_client(RpcClient::new(transport, true));
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(Address::repeat_byte(0x11)),
+                chain_id: Some(4217),
+                max_fee_per_gas: Some(2_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let filled = provider.fill(request).await.unwrap();
+        let filled = filled.as_builder().unwrap();
+
+        assert_eq!(filled.fee_payer_signature, Some(FEE_PAYER_SIGNATURE_MARKER));
+        assert_eq!(filled.gas_limit(), Some(21_000 + FEE_PAYER_ACCESS_GAS));
+        assert_eq!(filled.max_fee_per_gas(), Some(2_000_000_000));
+        assert_eq!(filled.max_priority_fee_per_gas(), Some(1_000_000_000));
     }
 
     #[tokio::test]

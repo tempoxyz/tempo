@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
@@ -104,12 +104,11 @@ impl Precompile for StablecoinDEX {
 
 #[cfg(test)]
 mod tests {
-
     use crate::{
         Precompile,
         stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage, with_storage},
     };
     use alloy::{
         primitives::{Address, U256},
@@ -120,8 +119,7 @@ mod tests {
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity() -> eyre::Result<(StablecoinDEX, Address, Address, Address)> {
-        let mut exchange = StablecoinDEX::new();
-        exchange.initialize()?;
+        let mut exchange = StablecoinDEX::initialized()?;
 
         let admin = Address::random();
         let user = Address::random();
@@ -153,8 +151,7 @@ mod tests {
     fn test_place_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -167,10 +164,10 @@ mod tests {
             };
             let calldata = call.abi_encode();
 
-            // Should dispatch to place function (may fail due to business logic, but dispatch works)
+            // The selector dispatches and the intentionally incomplete setup is rejected by
+            // business logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })
@@ -180,8 +177,7 @@ mod tests {
     fn test_place_flip_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -195,10 +191,10 @@ mod tests {
             };
             let calldata = call.abi_encode();
 
-            // Should dispatch to place_flip function
+            // The selector dispatches and the intentionally incomplete setup is rejected by
+            // business logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })
@@ -208,8 +204,7 @@ mod tests {
     fn test_balance_of_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -230,8 +225,7 @@ mod tests {
     fn test_min_price() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::MIN_PRICECall {};
@@ -240,7 +234,7 @@ mod tests {
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
 
-            let output = result?.bytes;
+            let output = result?.into_bytes();
             let returned_value = u32::abi_decode(&output)?;
 
             assert_eq!(returned_value, 98_000, "MIN_PRICE should be 98_000");
@@ -252,8 +246,7 @@ mod tests {
     fn test_tick_spacing() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::TICK_SPACINGCall {};
@@ -262,7 +255,7 @@ mod tests {
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
 
-            let output = result?.bytes;
+            let output = result?.into_bytes();
             let returned_value = i16::abi_decode(&output)?;
 
             let expected = crate::stablecoin_dex::TICK_SPACING;
@@ -278,8 +271,7 @@ mod tests {
     fn test_max_price() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::MAX_PRICECall {};
@@ -288,7 +280,7 @@ mod tests {
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
 
-            let output = result?.bytes;
+            let output = result?.into_bytes();
             let returned_value = u32::abi_decode(&output)?;
 
             assert_eq!(returned_value, 102_000, "MAX_PRICE should be 102_000");
@@ -300,8 +292,7 @@ mod tests {
     fn test_create_pair_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let base = Address::repeat_byte(2u8);
@@ -309,10 +300,10 @@ mod tests {
             let call = IStablecoinDEX::createPairCall { base };
             let calldata = call.abi_encode();
 
-            // Should dispatch to create_pair function
+            // The selector dispatches and the intentionally invalid pair is rejected by business
+            // logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
             Ok(())
         })
     }
@@ -321,8 +312,7 @@ mod tests {
     fn test_withdraw_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -333,10 +323,9 @@ mod tests {
             };
             let calldata = call.abi_encode();
 
-            // Should dispatch to withdraw function
+            // The selector dispatches and the missing balance is rejected by business logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })
@@ -346,18 +335,16 @@ mod tests {
     fn test_cancel_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
 
             let call = IStablecoinDEX::cancelCall { orderId: 1u128 };
             let calldata = call.abi_encode();
 
-            // Should dispatch to cancel function
+            // The selector dispatches and the missing order is rejected by business logic.
             let result = exchange.call(&calldata, sender);
-            // Ok indicates successful dispatch (either success or TempoPrecompileError)
-            assert!(result.is_ok());
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
             Ok(())
         })
     }
@@ -466,8 +453,7 @@ mod tests {
 
     #[test]
     fn stablecoin_dex_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T8, || {
             let mut exchange = StablecoinDEX::new();
 
             let unsupported = check_selector_coverage(

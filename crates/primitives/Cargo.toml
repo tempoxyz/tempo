@@ -25,13 +25,12 @@ reth-ethereum-primitives = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
 reth-codecs = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
-
-# revm
-revm = { workspace = true, optional = true }
+# Only to enable its `account-ext` feature.
+reth-evm = { workspace = true, optional = true }
 
 # Alloy
 alloy-consensus = { workspace = true, features = ["k256"] }
-alloy-evm = { workspace = true, optional = true }
+evm2 = { workspace = true, optional = true }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -46,6 +45,9 @@ modular-bitfield = { version = "0.13.1", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 once_cell = { version = "1.21", default-features = false }
+# `test-utils` RNG; rand 0.9 to match the dev-dependency below.
+rand = { version = "0.9", optional = true }
+alloy-signer-local = { workspace = true, optional = true }
 
 # Cryptography
 aws-lc-rs = { workspace = true, optional = true }
@@ -77,15 +79,19 @@ rand = "0.9"
 [features]
 default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
 test-utils = [
+	"std",
+	"dep:rand",
+	"dep:alloy-signer-local",
 	"reth-codecs?/test-utils",
 	"reth-db-api?/test-utils",
 	"reth-ethereum-primitives?/test-utils",
 	"reth-primitives-traits?/test-utils",
+	"reth-evm?/test-utils",
 ]
 std = [
+	"evm2?/std",
 	"alloy-consensus/secp256k1",
 	"alloy-consensus/std",
-	"alloy-evm?/std",
 	"alloy-eips/std",
 	"alloy-primitives/std",
 	"alloy-rlp/std",
@@ -98,9 +104,6 @@ std = [
 	"p256/std",
 	"reth-ethereum-primitives?/std",
 	"reth-primitives-traits?/std",
-	"revm?/std",
-	"revm?/blst",
-	"revm?/c-kzg",
 	"serde/std",
 	"serde_json/std",
 	"sha2/std",
@@ -111,6 +114,7 @@ std = [
 reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits", "serde"]
 serde = [
 	"dep:alloy-serde",
+	"evm2?/serde",
 	"alloy-consensus/serde",
 	"reth-primitives-traits?/serde",
 	"reth-ethereum-primitives?/serde",
@@ -118,12 +122,11 @@ serde = [
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
 	"p256/serde",
-	"rand/serde",
+	"rand?/serde",
 	"tracing-subscriber/serde",
-	"revm?/serde",
 	"tempo-contracts/serde",
 ]
-evm = ["dep:alloy-evm", "dep:revm"]
+evm = ["dep:evm2"]
 reth-codec = [
 	"reth",
 	"serde",
@@ -149,13 +152,13 @@ arbitrary = [
 	"alloy-primitives/arbitrary",
 	"alloy-eips/arbitrary",
 	"commonware-cryptography/arbitrary",
+	"evm2?/arbitrary",
 	"reth-codecs?/arbitrary",
 	"alloy-serde?/arbitrary",
 	"reth-ethereum-primitives?/arbitrary",
 	"reth-primitives-traits?/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
-	"revm?/arbitrary",
 	"alloy-sol-types/arbitrary",
 ]
 rpc = [
@@ -163,5 +166,6 @@ rpc = [
 	"reth-ethereum-primitives/rpc",
 	"dep:alloy-rpc-types-eth",
 	"dep:reth-rpc-convert",
+	"dep:reth-evm",
 	"dep:alloy-network",
 ]

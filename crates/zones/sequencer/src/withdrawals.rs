@@ -38,7 +38,7 @@ use alloy_provider::{DynProvider, Provider};
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::Mutex;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
-use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
+use tempo_contracts::precompiles::{ITIP20, OUSD_ADDRESS, PATH_USD_ADDRESS};
 use tokio::sync::Notify;
 use tokio_util::sync;
 use tracing::{debug, error, info, instrument, warn};
@@ -412,13 +412,7 @@ impl WithdrawalProcessor {
                 return;
             }
 
-            if let Err(error) = self.update_sequencer_metrics().await {
-                warn!(
-                    %error,
-                    sequencer = %self.config.sequencer_address,
-                    "Failed to refresh sequencer PathUSD balance metric"
-                );
-            }
+            self.update_sequencer_metrics().await;
         }
     }
 
@@ -458,15 +452,45 @@ impl WithdrawalProcessor {
     }
 
     /// Update sequencer metrics from Tempo L1 state.
-    async fn update_sequencer_metrics(&self) -> eyre::Result<()> {
-        let balance = ITIP20::new(PATH_USD_ADDRESS, &self.provider)
-            .balanceOf(self.config.sequencer_address)
-            .call()
-            .await?;
-        self.sequencer_metrics
-            .pathusd_balance
-            .set(f64::from(balance));
-        Ok(())
+    ///
+    /// Reads every fee token balance in one Multicall3 call, so all gauges observe the same L1
+    /// state. Each read may fail on its own: a failed one (such as OUSD on an L1 before T13)
+    /// leaves the other gauges current and is logged by token name.
+    async fn update_sequencer_metrics(&self) {
+        let sequencer = self.config.sequencer_address;
+        let (pathusd, ousd) = match self
+            .provider
+            .multicall()
+            .add(ITIP20::new(PATH_USD_ADDRESS, &self.provider).balanceOf(sequencer))
+            .add(ITIP20::new(OUSD_ADDRESS, &self.provider).balanceOf(sequencer))
+            .try_aggregate(false)
+            .await
+        {
+            Ok(balances) => balances,
+            Err(error) => {
+                warn!(
+                    %error,
+                    %sequencer,
+                    "Failed to refresh sequencer fee token balance metrics"
+                );
+                return;
+            }
+        };
+
+        for (name, balance, gauge) in [
+            ("pathUSD", pathusd, &self.sequencer_metrics.pathusd_balance),
+            ("OUSD", ousd, &self.sequencer_metrics.ousd_balance),
+        ] {
+            match balance {
+                Ok(balance) => gauge.set(f64::from(balance)),
+                Err(failure) => warn!(
+                    ?failure,
+                    %sequencer,
+                    token = name,
+                    "Failed to refresh sequencer fee token balance metric"
+                ),
+            }
+        }
     }
 
     /// Drain the portal's withdrawal queue on Tempo L1, slot by slot, until the
@@ -770,16 +794,17 @@ impl WithdrawalProcessor {
                     .gas(batch.gas_limit);
 
                 in_flight.push(async move {
-                    let receipt =
-                        tokio::time::timeout(PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT, call.send_sync())
-                            .await
-                            .map_err(|_| {
-                                eyre::eyre!(
-                                    "processWithdrawals sync submission timed out after {} seconds",
-                                    PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT.as_secs()
-                                )
-                            })
-                            .and_then(|result| result.map_err(Into::into));
+                    let receipt = call
+                        .send_sync()
+                        .timeout(PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT)
+                        .await
+                        .map_err(|_| {
+                            eyre::eyre!(
+                                "processWithdrawals sync submission timed out after {} seconds",
+                                PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT.as_secs()
+                            )
+                        })
+                        .and_then(|result| result.map_err(Into::into));
                     (batch, nonce, remaining_queue, receipt)
                 });
                 submitted += 1;

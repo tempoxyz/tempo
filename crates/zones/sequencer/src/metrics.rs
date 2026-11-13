@@ -11,6 +11,8 @@ use reth_metrics::{
 pub(crate) struct SequencerMetrics {
     /// Current PathUSD balance of the sequencer account on Tempo L1, in base units.
     pub(crate) pathusd_balance: Gauge,
+    /// Current OUSD balance of the sequencer account on Tempo L1, in base units.
+    pub(crate) ousd_balance: Gauge,
 }
 
 /// Metrics emitted by the prover.
@@ -25,7 +27,12 @@ pub(crate) struct ProverMetrics {
     pub(crate) queue_duration_seconds: Histogram,
 
     /// End-to-end latency of a prover validation attempt in seconds.
-    pub(crate) validation_duration_seconds: Histogram,
+    #[metric(rename = "validation_duration_seconds", labels = [("outcome", "success")])]
+    pub(crate) validation_duration_seconds_success: Histogram,
+
+    /// End-to-end latency of a prover validation attempt in seconds.
+    #[metric(rename = "validation_duration_seconds", labels = [("outcome", "failure")])]
+    pub(crate) validation_duration_seconds_failure: Histogram,
 
     /// Time spent loading and decoding canonical Zone blocks.
     pub(crate) zone_inputs_duration_seconds: Histogram,
@@ -39,8 +46,13 @@ pub(crate) struct ProverMetrics {
     /// Time spent verifying a generated batch witness locally or remotely.
     pub(crate) spf_execution_duration_seconds: Histogram,
 
-    /// Time spent establishing a TCP connection to the remote prover.
-    pub(crate) spf_remote_connect_duration_seconds: Histogram,
+    /// Time spent establishing, or failing to establish, a TCP connection to the remote prover.
+    #[metric(rename = "spf_remote_connect_duration_seconds", labels = [("outcome", "success")])]
+    pub(crate) spf_remote_connect_duration_seconds_success: Histogram,
+
+    /// Time spent establishing, or failing to establish, a TCP connection to the remote prover.
+    #[metric(rename = "spf_remote_connect_duration_seconds", labels = [("outcome", "failure")])]
+    pub(crate) spf_remote_connect_duration_seconds_failure: Histogram,
 
     /// Time spent serializing and sending a request to the remote prover.
     pub(crate) spf_remote_request_send_duration_seconds: Histogram,

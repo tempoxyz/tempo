@@ -2,7 +2,7 @@ use crate::{
     Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch, mutate, view,
 };
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IAddressRegistry;
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
@@ -52,8 +52,7 @@ mod tests {
     use super::*;
     use crate::{
         address_registry::IAddressRegistry,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes, with_storage},
     };
     use alloy::sol_types::{SolCall, SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -61,8 +60,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T5, || {
             let mut registry = AddressRegistry::new();
 
             let unsupported = check_selector_coverage(
@@ -81,17 +79,17 @@ mod tests {
     #[test]
     fn test_is_implicitly_approved_selector_gated_pre_t5() -> eyre::Result<()> {
         // Pre-T5: the isImplicitlyApproved selector must be treated as unknown.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T4, || {
             let mut registry = AddressRegistry::new();
             let call = IAddressRegistry::isImplicitlyApprovedCall {
                 addr: Address::ZERO,
             };
-            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(result.is_revert());
+            let result = registry.call(&call.abi_encode(), Address::ZERO);
             assert!(
-                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&result.bytes)
-                    .is_ok()
+                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(revert_bytes(
+                    &result
+                ))
+                .is_ok()
             );
             Ok(())
         })
@@ -99,8 +97,7 @@ mod tests {
 
     #[test]
     fn test_is_implicitly_approved_precompile_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T5, || {
             let mut registry = AddressRegistry::new();
 
             // Listed precompile returns true.
@@ -108,16 +105,14 @@ mod tests {
                 addr: tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS,
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!result.is_revert());
-            assert!(bool::abi_decode(&result.bytes).unwrap());
+            assert!(bool::abi_decode(result.bytes()).unwrap());
 
             // Unlisted address returns false.
             let call = IAddressRegistry::isImplicitlyApprovedCall {
                 addr: Address::random(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!result.is_revert());
-            assert!(!bool::abi_decode(&result.bytes).unwrap());
+            assert!(!bool::abi_decode(result.bytes()).unwrap());
 
             Ok(())
         })
@@ -125,8 +120,7 @@ mod tests {
 
     #[test]
     fn test_get_master_precompile() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             let mut registry = AddressRegistry::new();
 
             // Unregistered masterId returns address(0)
@@ -134,8 +128,7 @@ mod tests {
                 masterId: Default::default(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!result.is_revert());
-            let addr = Address::abi_decode(&result.bytes).unwrap();
+            let addr = Address::abi_decode(result.bytes()).unwrap();
             assert_eq!(addr, Address::ZERO);
 
             Ok(())
@@ -144,8 +137,7 @@ mod tests {
 
     #[test]
     fn test_is_virtual_address_precompile() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             let mut registry = AddressRegistry::new();
 
             // Non-virtual
@@ -153,7 +145,7 @@ mod tests {
                 addr: Address::random(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(!bool::abi_decode(&result.bytes).unwrap());
+            assert!(!bool::abi_decode(result.bytes()).unwrap());
 
             // Virtual
             let mut bytes = [0u8; 20];
@@ -162,7 +154,7 @@ mod tests {
                 addr: Address::from(bytes),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(bool::abi_decode(&result.bytes).unwrap());
+            assert!(bool::abi_decode(result.bytes()).unwrap());
 
             Ok(())
         })

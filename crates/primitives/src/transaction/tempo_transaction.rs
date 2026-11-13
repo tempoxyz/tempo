@@ -40,6 +40,8 @@ pub enum SignatureType {
     Secp256k1 = 0,
     P256 = 1,
     WebAuthn = 2,
+    /// A configurable delegate authenticated by its primitive owner quorum (T14).
+    ConfigurableAccount = 3,
 }
 
 impl From<SignatureType> for u8 {
@@ -48,6 +50,7 @@ impl From<SignatureType> for u8 {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
+            SignatureType::ConfigurableAccount => 3,
         }
     }
 }
@@ -60,6 +63,7 @@ impl From<SignatureType> for AbiSignatureType {
             SignatureType::Secp256k1 => Self::Secp256k1,
             SignatureType::P256 => Self::P256,
             SignatureType::WebAuthn => Self::WebAuthn,
+            SignatureType::ConfigurableAccount => Self::ConfigurableAccount,
         }
     }
 }
@@ -72,6 +76,7 @@ impl TryFrom<AbiSignatureType> for SignatureType {
             AbiSignatureType::Secp256k1 => Ok(Self::Secp256k1),
             AbiSignatureType::P256 => Ok(Self::P256),
             AbiSignatureType::WebAuthn => Ok(Self::WebAuthn),
+            AbiSignatureType::ConfigurableAccount => Ok(Self::ConfigurableAccount),
             _ => Err(sig_type as u8),
         }
     }
@@ -94,6 +99,7 @@ impl alloy_rlp::Decodable for SignatureType {
             0 => Ok(Self::Secp256k1),
             1 => Ok(Self::P256),
             2 => Ok(Self::WebAuthn),
+            3 => Ok(Self::ConfigurableAccount),
             _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
         }
     }
@@ -127,6 +133,15 @@ pub struct Call {
 }
 
 impl Call {
+    /// Creates a call to `to` with `input` and zero value.
+    pub fn new(to: impl Into<TxKind>, input: impl Into<Bytes>) -> Self {
+        Self {
+            to: to.into(),
+            value: U256::ZERO,
+            input: input.into(),
+        }
+    }
+
     fn size(&self) -> usize {
         size_of::<Self>() + self.input.len()
     }
@@ -249,7 +264,7 @@ pub struct TempoTransaction {
 /// Validates the calls list structure for Tempo transactions.
 ///
 /// This is a shared validation function used by both `TempoTransaction::validate()`
-/// and the revm handler's `validate_env()` to ensure consistent validation.
+/// and the EVM2 transaction handler to ensure consistent validation.
 ///
 /// Rules:
 /// - Calls list must not be empty
@@ -1007,13 +1022,87 @@ mod tests {
             KeyAuthorization, TempoSignedAuthorization,
             tt_signature::{
                 PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
-                derive_p256_address,
             },
         },
     };
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, b256, bytes};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, bytes};
     use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
+    use arbitrary::{Arbitrary, Unstructured};
+
+    fn create_call(to: TxKind) -> Call {
+        Call::new(to, Bytes::new())
+    }
+
+    #[test]
+    fn test_validate_empty_calls_list() {
+        let result = validate_calls(&[], false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_single_call_ok() {
+        let calls = vec![create_call(TxKind::Call(Address::ZERO))];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_single_create_ok() {
+        let calls = vec![create_call(TxKind::Create)];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_with_authorization_list_fails() {
+        let calls = vec![create_call(TxKind::Create)];
+        let result = validate_calls(&calls, true); // has_authorization_list = true
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("CREATE"));
+    }
+
+    #[test]
+    fn test_validate_create_not_first_call_fails() {
+        let calls = vec![
+            create_call(TxKind::Call(Address::ZERO)),
+            create_call(TxKind::Create), // CREATE as second call - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_multiple_creates_fails() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Create), // Second CREATE - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_create_first_then_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Call(Address::ZERO)),
+            create_call(TxKind::Call(Address::random())),
+        ];
+        // No auth list, so CREATE is allowed
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_multiple_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Call(Address::ZERO)),
+            create_call(TxKind::Call(Address::random())),
+            create_call(TxKind::Call(Address::random())),
+        ];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
 
     proptest::proptest! {
         #[test]
@@ -1043,8 +1132,6 @@ mod tests {
 
     #[test]
     fn arbitrary_timestamp_boundaries() {
-        use arbitrary::{Arbitrary, Unstructured};
-
         // With default preceding fields, bytes 97 and 98 select valid_after and
         // valid_before respectively. End just after Some's tag to exercise the
         // exhausted-input case that aborted the envelope proptest.
@@ -1107,11 +1194,7 @@ mod tests {
     #[test]
     fn test_tempo_transaction_validation() {
         // Create a dummy call to satisfy validation
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Valid: valid_before > valid_after
         let tx1 = TempoTransaction {
@@ -1262,19 +1345,25 @@ mod tests {
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
-        assert_eq!(sig1.signature_type(), SignatureType::Secp256k1);
+        assert_eq!(
+            sig1.primitive_signature_type(),
+            Some(SignatureType::Secp256k1)
+        );
 
         // P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
         sig2_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
-        assert_eq!(sig2.signature_type(), SignatureType::P256);
+        assert_eq!(sig2.primitive_signature_type(), Some(SignatureType::P256));
 
         // WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig3_bytes.extend_from_slice(&[0u8; 200]);
         let sig3 = TempoSignature::from_bytes(&sig3_bytes).unwrap();
-        assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
+        assert_eq!(
+            sig3.primitive_signature_type(),
+            Some(SignatureType::WebAuthn)
+        );
     }
 
     #[test]
@@ -1303,8 +1392,7 @@ mod tests {
         };
 
         // Encode
-        let mut buf = Vec::new();
-        tx.encode(&mut buf);
+        let buf = alloy_rlp::encode(&tx);
 
         // Decode
         let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
@@ -1331,19 +1419,13 @@ mod tests {
 
     #[test]
     fn test_encode_for_fee_payer_service_uses_signature_placeholder_and_skips_fee_token() {
-        let call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::from(vec![1, 2, 3, 4]),
-        };
-
         let tx = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), vec![1, 2, 3, 4])],
             access_list: Default::default(),
             nonce_key: U256::ZERO,
             nonce: 1,
@@ -1398,8 +1480,7 @@ mod tests {
         };
 
         // Encode
-        let mut buf = Vec::new();
-        tx.encode(&mut buf);
+        let buf = alloy_rlp::encode(&tx);
 
         // Decode
         let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
@@ -1413,28 +1494,9 @@ mod tests {
     }
 
     #[test]
-    fn test_p256_address_derivation() {
-        let pub_key_x = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let pub_key_y = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-        let addr1 = derive_p256_address(&pub_key_x, &pub_key_y);
-        let addr2 = derive_p256_address(&pub_key_x, &pub_key_y);
-
-        // Should be deterministic
-        assert_eq!(addr1, addr2);
-
-        // Should not be zero address
-        assert_ne!(addr1, Address::ZERO);
-    }
-
-    #[test]
     fn test_nonce_system() {
         // Create a dummy call to satisfy validation
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Test 1: Protocol nonce (key 0)
         let tx1 = TempoTransaction {
@@ -1518,11 +1580,7 @@ mod tests {
     #[test]
     fn test_effective_gas_price() {
         // Create a dummy call to satisfy validation
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         let tx = TempoTransaction {
             max_priority_fee_per_gas: 1000000000,
@@ -1549,11 +1607,7 @@ mod tests {
         let token1 = Address::with_last_byte(2);
         let token2 = Address::with_last_byte(3);
 
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Transaction with fee_token = None
         let tx_no_token = TempoTransaction {
@@ -1627,11 +1681,7 @@ mod tests {
         // Verify that fee payer signature hash uses the magic byte 0x78
 
         let sender = Address::with_last_byte(1);
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         let tx = TempoTransaction {
             chain_id: 1,
@@ -1667,11 +1717,7 @@ mod tests {
         let token1 = Address::with_last_byte(2);
         let token2 = Address::with_last_byte(3);
 
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Transaction WITHOUT fee_payer, fee_token = None
         let tx_no_payer_no_token = TempoTransaction {
@@ -1729,11 +1775,7 @@ mod tests {
 
         let token = Address::with_last_byte(2);
 
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Transaction with fee_token
         let tx_with_token = TempoTransaction {
@@ -1760,11 +1802,9 @@ mod tests {
         };
 
         // Encode both transactions
-        let mut buf_with = Vec::new();
-        tx_with_token.encode(&mut buf_with);
+        let buf_with = alloy_rlp::encode(&tx_with_token);
 
-        let mut buf_without = Vec::new();
-        tx_without_token.encode(&mut buf_without);
+        let buf_without = alloy_rlp::encode(&tx_without_token);
 
         // The encoded bytes should be different lengths
         assert_ne!(
@@ -1793,11 +1833,7 @@ mod tests {
 
         let token = Address::with_last_byte(2);
 
-        let dummy_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(TxKind::Create, Bytes::new());
 
         // Scenario 1: No fee payer, no token
         let tx_no_payer_no_token = TempoTransaction {
@@ -1917,8 +1953,7 @@ mod tests {
         };
 
         // Encode the transaction
-        let mut buf_with = Vec::new();
-        tx_with.encode(&mut buf_with);
+        let buf_with = alloy_rlp::encode(&tx_with);
 
         // Decode it back
         let decoded_with = TempoTransaction::decode(&mut buf_with.as_slice()).unwrap();
@@ -1951,11 +1986,7 @@ mod tests {
     #[test]
     fn test_aa_signed_rlp_direct() {
         // Simple test for AASigned RLP encoding/decoding without key_authorization
-        let call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(TxKind::Create, Bytes::new());
 
         let tx = TempoTransaction {
             chain_id: 0,
@@ -1989,11 +2020,7 @@ mod tests {
     #[test]
     fn test_tempo_transaction_envelope_roundtrip_without_key_auth() {
         // Test that TempoTransaction in envelope works without key_authorization
-        let call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(TxKind::Create, Bytes::new());
 
         let tx = TempoTransaction {
             chain_id: 0,
@@ -2016,8 +2043,7 @@ mod tests {
         let envelope = TempoTxEnvelope::AA(signed);
 
         // Encode and decode the envelope
-        let mut buf = Vec::new();
-        envelope.encode_2718(&mut buf);
+        let buf = envelope.encoded_2718();
         let decoded = TempoTxEnvelope::decode_2718(&mut buf.as_slice())
             .expect("Should decode envelope successfully");
 
@@ -2115,11 +2141,7 @@ mod tests {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             access_list: Default::default(),
             nonce_key: U256::ZERO,
             nonce: 1,
@@ -2130,8 +2152,7 @@ mod tests {
             tempo_authorization_list: vec![],
         };
 
-        let mut encoded = Vec::new();
-        tx.encode(&mut encoded);
+        let encoded = alloy_rlp::encode(&tx);
 
         let (signature_start, signature_end) = transaction_field_bounds(&encoded, 11);
         let (authorization_list_start, authorization_list_end) =
@@ -2178,16 +2199,8 @@ mod tests {
 
     #[test]
     fn test_create_must_be_first_call() {
-        let create_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
-        let call_call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let create_call = Call::new(TxKind::Create, Bytes::new());
+        let call_call = Call::new(Address::random(), Bytes::new());
 
         // Valid: CREATE as first call
         let tx_valid = TempoTransaction {
@@ -2207,11 +2220,7 @@ mod tests {
 
     #[test]
     fn test_only_one_create_allowed() {
-        let create_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let create_call = Call::new(TxKind::Create, Bytes::new());
 
         // Valid: Single CREATE
         let tx_valid = TempoTransaction {
@@ -2236,11 +2245,7 @@ mod tests {
 
     #[test]
     fn test_create_forbidden_with_auth_list() {
-        let create_call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let create_call = Call::new(TxKind::Create, Bytes::new());
 
         let signed_auth = TempoSignedAuthorization::new_unchecked(
             Authorization {
@@ -2266,11 +2271,7 @@ mod tests {
     #[test]
     fn test_create_validation_allows_call_only_batch() {
         // A batch with only CALL operations should be valid
-        let call1 = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call1 = Call::new(Address::random(), Bytes::new());
         let call2 = Call {
             to: TxKind::Call(Address::random()),
             value: U256::random(),
@@ -2307,11 +2308,7 @@ mod tests {
 
     #[test]
     fn test_validate_does_not_check_expiring_nonce_constraints() {
-        let dummy_call = Call {
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let dummy_call = Call::new(Address::ZERO, Bytes::new());
 
         // Transaction with expiring nonce key but nonce != 0 should pass validate()
         // (expiring nonce constraints are hardfork-dependent and checked elsewhere)
@@ -2411,11 +2408,7 @@ mod compact_tests {
                     value: U256::from(1000u64),
                     input: bytes!("cafe"),
                 },
-                Call {
-                    to: TxKind::Create,
-                    value: U256::ZERO,
-                    input: bytes!("6080604052"),
-                },
+                Call::new(TxKind::Create, bytes!("6080604052")),
             ],
             access_list: AccessList(vec![AccessListItem {
                 address: Address::with_last_byte(1),
@@ -2479,6 +2472,7 @@ mod compact_tests {
             (SignatureType::Secp256k1, 0x00u8),
             (SignatureType::P256, 0x01),
             (SignatureType::WebAuthn, 0x02),
+            (SignatureType::ConfigurableAccount, 0x03),
         ] {
             let mut buf = vec![];
             let len = variant.to_compact(&mut buf);

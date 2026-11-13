@@ -139,11 +139,11 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
+      bench-env:
+        description: Extra environment for the benchmark, such as TXGEN_* preset variables.
         type: string
         required: false
-        default: "feature-1"
+        default: ""
   workflow_call:
     inputs:
       pr:
@@ -534,7 +534,14 @@ jobs:
 
           echo "BENCH_TXGEN_SPEC_PATH=$spec_path" >> "$GITHUB_ENV"
           echo "::group::Rendered txgen spec ($BENCH_PRESET)"
-          cat "$spec_path"
+          # Per-user presets render hundreds of MiB at large account counts; print only the head.
+          spec_bytes="$(wc -c < "$spec_path")"
+          if [ "$spec_bytes" -gt 1048576 ]; then
+            echo "$spec_path is $spec_bytes bytes; first 500 lines:"
+            head -n 500 "$spec_path"
+          else
+            cat "$spec_path"
+          fi
           echo "::endgroup::"
 
       - name: Resolve Tracy capture offset
@@ -619,6 +626,18 @@ jobs:
           toolchain: 1.98.1
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         continue-on-error: true
+
+      # `--jit` needs a binary built with the `jit` feature; build both sides with it so that
+      # only the runtime flag differs.
+      - name: Enable JIT build support
+        if: contains(inputs.baseline-args, '--jit') || contains(inputs.feature-args, '--jit') || contains(inputs.baseline-features, 'jit') || contains(inputs.feature-features, 'jit')
+        env:
+          JIT_ARGS: ${{ contains(inputs.baseline-args, '--jit') || contains(inputs.feature-args, '--jit') }}
+        run: |
+          if [ "$JIT_ARGS" = "true" ]; then
+            echo "BENCH_FEATURES=$BENCH_FEATURES,jit" >> "$GITHUB_ENV"
+          fi
+          .github/scripts/install_llvm.sh
 
       - name: Install Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0

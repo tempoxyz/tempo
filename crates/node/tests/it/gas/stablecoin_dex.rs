@@ -3,20 +3,19 @@ use std::collections::BTreeMap;
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
-    sol_types::SolEvent,
 };
+use evm2::PrecompileError;
 use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    IRolesAuth, IStablecoinDEX, IStorageCredits,
+    IStablecoinDEX, IStorageCredits,
     ITIP20::{self, ITIP20Instance},
-    ITIP20Factory,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
     error::TempoPrecompileError,
     stablecoin_dex::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, RoundingDirection, base_to_quote},
-    tip20::ISSUER_ROLE,
+    test_util::TIP20Setup,
 };
 use test_case::test_case;
 
@@ -38,10 +37,10 @@ struct DexGasOutcome {
 }
 
 fn under_overflow_revert() -> Bytes {
-    TempoPrecompileError::under_overflow()
-        .into_precompile_result(0, 0)
-        .unwrap()
-        .bytes
+    match TempoPrecompileError::under_overflow().into_precompile_result() {
+        Err(PrecompileError::Revert(bytes)) => bytes,
+        result => panic!("expected precompile revert, got {result:?}"),
+    }
 }
 
 async fn approve<P: Provider + Clone>(
@@ -60,45 +59,21 @@ async fn approve<P: Provider + Clone>(
 async fn setup_test_token<P>(
     provider: P,
     caller: Address,
-    name: &str,
-    symbol: &str,
+    name: &'static str,
+    symbol: &'static str,
     quote_token: Address,
     salt: u8,
 ) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
 where
     P: Provider + Clone,
 {
-    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
-    let receipt = factory
-        .createToken_0(
-            name.to_string(),
-            symbol.to_string(),
-            "USD".to_string(),
-            quote_token,
-            caller,
-            B256::with_last_byte(salt),
-        )
-        .gas(5_000_000)
-        .send_sync()
+    let token = TIP20Setup::create(name, symbol, caller)
+        .quote_token(quote_token)
+        .with_salt(B256::with_last_byte(salt))
+        .with_issuer(caller)
+        .apply_rpc(&provider)
         .await?;
-    assert!(receipt.status(), "token creation failed");
-
-    let event = receipt
-        .logs()
-        .iter()
-        .find_map(|log| ITIP20Factory::TokenCreated::decode_log(&log.inner).ok())
-        .ok_or_else(|| eyre::eyre!("TokenCreated event not found"))?;
-    let token = ITIP20::new(event.token, provider.clone());
-
-    let roles = IRolesAuth::new(*token.address(), provider);
-    let receipt = roles
-        .grantRole(ISSUER_ROLE, caller)
-        .gas(1_000_000)
-        .send_sync()
-        .await?;
-    assert!(receipt.status(), "grant issuer role failed");
-
-    Ok(token)
+    Ok(ITIP20::new(token, provider))
 }
 
 async fn setup_deterministic_test_token<P>(

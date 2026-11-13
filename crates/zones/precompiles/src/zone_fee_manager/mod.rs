@@ -88,16 +88,16 @@ impl ZoneFeeManager {
 mod tests {
     use super::*;
     use alloy_sol_types::SolError;
+    use evm2::precompiles::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{TIP20Error, UnknownFunctionSelector};
     use tempo_precompiles::{
         Precompile as _, TIP_FEE_MANAGER_ADDRESS,
-        error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, TIP403Setup, with_storage},
         tip20::ITIP20,
-        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
+    use tempo_primitives::test_utils::actors;
 
     #[test]
     fn settles_fees_from_escrow_to_beneficiary() -> eyre::Result<()> {
@@ -177,39 +177,20 @@ mod tests {
 
     #[test]
     fn rejects_unauthorized_beneficiary_before_debit() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
-        StorageCtx::enter(&mut storage, || {
-            let admin = Address::random();
-            let payer = Address::random();
-            let beneficiary = Address::random();
+        with_storage(TempoHardfork::T9, || {
+            let [admin, payer, beneficiary] = actors();
             let balance = U256::from(10_000);
-            let mut token = TIP20Setup::create("USD", "USD", admin)
-                .with_issuer(admin)
+            let token = TIP20Setup::create("USD", "USD", admin)
                 .with_mint(payer, balance)
+                .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([payer]))
                 .apply()?;
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-            let policy = registry.create_policy_with_accounts(
-                admin,
-                ITIP403Registry::createPolicyWithAccountsCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    accounts: vec![payer],
-                },
-            )?;
-            token.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy,
-                },
-            )?;
 
             let mut manager = ZoneFeeManager::new();
             manager.initialize(token.address())?;
-            assert!(matches!(
+            assert_eq!(
                 manager.collect_fee_pre_tx(payer, token.address(), U256::from(5_000), beneficiary,),
-                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-            ));
+                Err(TIP20Error::policy_forbids().into())
+            );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
                 balance
@@ -230,9 +211,11 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut manager = ZoneFeeManager::new();
             let calldata = [0xde, 0xad, 0xbe, 0xef];
-            let output = manager.call(&calldata, Address::random())?;
-            assert!(output.is_revert());
-            let error = UnknownFunctionSelector::abi_decode(&output.bytes)?;
+            let Err(PrecompileError::Revert(output)) = manager.call(&calldata, Address::random())
+            else {
+                panic!("expected revert");
+            };
+            let error = UnknownFunctionSelector::abi_decode(&output)?;
             assert_eq!(error.selector.as_slice(), calldata);
 
             Ok(())
@@ -241,13 +224,13 @@ mod tests {
 
     #[test]
     fn short_calldata_reverts_without_panicking() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T9, || {
             let mut manager = ZoneFeeManager::new();
             for len in 0..4 {
-                let output = manager.call(&[0u8; 3][..len], Address::random())?;
-                assert!(output.is_revert());
-                assert!(output.bytes.is_empty());
+                assert!(matches!(
+                    manager.call(&[0u8; 3][..len], Address::random()),
+                    Err(PrecompileError::Revert(output)) if output.is_empty()
+                ));
             }
             Ok(())
         })

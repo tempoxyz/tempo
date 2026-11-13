@@ -98,6 +98,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Build time multiplier in use after the last paced build.
+    pub(crate) build_time_multiplier_last: Gauge,
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
@@ -182,7 +184,7 @@ reth_storage_api::delegate_impls_to_as_ref!(
 impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(
         &self,
-        bundle_state: &reth_revm::db::BundleState,
+        bundle_state: &reth_trie_common::bundle_state::BundleState,
     ) -> ProviderResult<HashedPostState> {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();

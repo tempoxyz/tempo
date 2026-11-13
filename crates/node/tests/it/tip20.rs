@@ -1,8 +1,8 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::TransactionReceipt,
     sol_types::SolEvent,
-    transports::http::reqwest::Url,
 };
 use eyre::WrapErr;
 use futures::future::try_join_all;
@@ -11,10 +11,13 @@ use reth_e2e_test_utils::{
     wallet::test_signer,
 };
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
+use tempo_contracts::precompiles::{
+    IAddressRegistry, IFeeManager, IRolesAuth, ITIP20, ITIP403Registry, ITIPFeeAMM, TIP20Error,
+};
 use tempo_precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
+    tip20::PAUSE_ROLE,
 };
 use tempo_primitives::TempoAddressExt;
 
@@ -300,7 +303,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
             .call()
             .await;
 
-        // TODO: update to expect the exact error once PrecompileError is propagated through revm
+        // TODO: update to expect the exact error once PrecompileError is propagated through EVM2
         assert!(
             excess_result.is_err(),
             "Transfer should fail when exceeding allowance"
@@ -468,7 +471,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         let token = ITIP20::new(*token.address(), provider);
 
         let transfer_result = token.transfer(Address::random(), U256::ONE).call().await;
-        // TODO: assert the actual error once PrecompileError is propagated through revm
+        // TODO: assert the actual error once PrecompileError is propagated through EVM2
         assert!(transfer_result.is_err(),);
     }
 
@@ -485,7 +488,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
                 .transfer(blacklisted.address(), U256::ONE)
                 .call()
                 .await;
-            // TODO: assert the actual error once PrecompileError is propagated through revm
+            // TODO: assert the actual error once PrecompileError is propagated through EVM2
             assert!(transfer_result.is_err(),);
 
             token
@@ -615,7 +618,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     // Ensure whitelisted accounts can't send to non-whitelisted receivers
     for sender in whitelisted_senders.iter() {
         let transfer_result = sender.transfer(Address::random(), U256::ONE).call().await;
-        // TODO: assert the actual error once PrecompileError is propagated through revm
+        // TODO: assert the actual error once PrecompileError is propagated through EVM2
         assert!(transfer_result.is_err());
     }
 
@@ -758,9 +761,6 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 /// and subsequent transactions fail at fee collection.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIPFeeAMM};
-    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::PAUSE_ROLE};
-
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
@@ -902,26 +902,24 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Deploys a token, registers a virtual master, and returns all handles.
-async fn setup_virtual_test() -> eyre::Result<(
-    crate::utils::HttpOnlySetup,
-    Url,
-    Address,
-    ITIP20::ITIP20Instance<impl Provider + Clone>,
-    Address,
-)> {
+/// Mints and transfers to a virtual address on one node: each case forwards the amount to the
+/// registered master with two `Transfer` events. The cases run sequentially because they share
+/// the master's and sender's balances, which their assertions check exactly.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_virtual_address() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
     let setup = TestNodeBuilder::new().build_http_only().await?;
-    let http_url = setup.http_url.clone();
 
     let admin_wallet = test_signer(0);
-    let admin = admin_wallet.address();
-    assert_eq!(admin, VIRTUAL_MASTER);
+    let master = admin_wallet.address();
+    assert_eq!(master, VIRTUAL_MASTER);
 
     let admin_provider = ProviderBuilder::new()
         .wallet(admin_wallet)
-        .connect_http(http_url.clone());
+        .connect_http(setup.http_url.clone());
 
-    let token = setup_test_token(admin_provider.clone(), admin).await?;
+    let token = setup_test_token(admin_provider.clone(), master).await?;
     let registry = IAddressRegistry::new(ADDRESS_REGISTRY_ADDRESS, admin_provider);
 
     let register_receipt = registry
@@ -940,15 +938,18 @@ async fn setup_virtual_test() -> eyre::Result<(
     assert_eq!(master_event.masterAddress, VIRTUAL_MASTER);
 
     let virtual_addr = Address::new_virtual(master_event.masterId, FixedBytes::random());
+    let token_addr = *token.address();
+    let transfers = |receipt: &TransactionReceipt| -> Vec<ITIP20::Transfer> {
+        receipt
+            .logs()
+            .iter()
+            .filter(|log| log.address() == token_addr)
+            .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
+            .map(|log| log.data)
+            .collect()
+    };
 
-    Ok((setup, http_url, admin, token, virtual_addr))
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_virtual_mint() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-    let (_setup, _http_url, admin, token, virtual_addr) = setup_virtual_test().await?;
-
+    // Runs first: it asserts the master's absolute balance on the fresh token.
     let mint_amount = U256::from(5000);
     let mint_receipt = token
         .mint(virtual_addr, mint_amount)
@@ -957,338 +958,146 @@ async fn test_tip20_virtual_mint() -> eyre::Result<()> {
         .successful_receipt()
         .await?;
 
-    assert_eq!(token.balanceOf(admin).call().await?, mint_amount);
+    assert_eq!(token.balanceOf(master).call().await?, mint_amount);
     assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
-
-    // Verify two-hop Transfer events: (0→virtual) then (virtual→master)
-    let token_addr = *token.address();
-    let transfers: Vec<_> = mint_receipt
-        .logs()
-        .iter()
-        .filter(|log| log.address() == token_addr)
-        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
-        .collect();
-    assert_eq!(transfers.len(), 2);
+    // Two-hop Transfer events: (0→virtual) then (virtual→master)
     assert_eq!(
-        transfers[0].data,
-        ITIP20::Transfer {
-            from: Address::ZERO,
-            to: virtual_addr,
-            amount: mint_amount
-        }
+        transfers(&mint_receipt),
+        [
+            ITIP20::Transfer {
+                from: Address::ZERO,
+                to: virtual_addr,
+                amount: mint_amount
+            },
+            ITIP20::Transfer {
+                from: virtual_addr,
+                to: master,
+                amount: mint_amount
+            },
+        ]
     );
-    assert_eq!(
-        transfers[1].data,
-        ITIP20::Transfer {
-            from: virtual_addr,
-            to: admin,
-            amount: mint_amount
-        }
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-    let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
     let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
-    let sender_provider = ProviderBuilder::new()
-        .wallet(sender_wallet)
-        .connect_http(http_url);
-
-    let amount = U256::from(1000);
-    token
-        .mint(sender, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let master_balance_before = token.balanceOf(master).call().await?;
-    let sender_token = ITIP20::new(*token.address(), sender_provider);
-    let receipt = sender_token
-        .transfer(virtual_addr, amount)
-        .send()
-        .await?
-        .successful_receipt()
-        .await?;
-
-    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
-    assert_eq!(
-        token.balanceOf(master).call().await?,
-        master_balance_before + amount
+    let sender_token = ITIP20::new(
+        token_addr,
+        ProviderBuilder::new()
+            .wallet(sender_wallet)
+            .connect_http(setup.http_url.clone()),
     );
-    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
 
-    let token_addr = *token.address();
-    let transfers: Vec<_> = receipt
-        .logs()
-        .iter()
-        .filter(|log| log.address() == token_addr)
-        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
-        .collect();
-    assert_eq!(transfers.len(), 2);
-    assert_eq!(
-        transfers[0].data,
-        ITIP20::Transfer {
-            from: sender,
-            to: virtual_addr,
-            amount
+    // Each case mints `amount` to the sender and moves all of it, so the sender starts at zero.
+    for (case, amount, memo, transfer_from) in [
+        ("transfer", 1000, None, false),
+        ("transferFrom", 500, None, true),
+        (
+            "transferWithMemo",
+            750,
+            Some(FixedBytes::from([7; 32])),
+            false,
+        ),
+        (
+            "transferFromWithMemo",
+            375,
+            Some(FixedBytes::from([9; 32])),
+            true,
+        ),
+    ] {
+        let amount = U256::from(amount);
+        token
+            .mint(sender, amount)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        if transfer_from {
+            sender_token
+                .approve(master, amount)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
         }
-    );
-    assert_eq!(
-        transfers[1].data,
-        ITIP20::Transfer {
-            from: virtual_addr,
-            to: master,
-            amount
+
+        let master_balance_before = token.balanceOf(master).call().await?;
+        let pending = match (memo, transfer_from) {
+            (None, false) => sender_token.transfer(virtual_addr, amount).send().await?,
+            (None, true) => {
+                token
+                    .transferFrom(sender, virtual_addr, amount)
+                    .send()
+                    .await?
+            }
+            (Some(memo), false) => {
+                sender_token
+                    .transferWithMemo(virtual_addr, amount, memo)
+                    .send()
+                    .await?
+            }
+            (Some(memo), true) => {
+                token
+                    .transferFromWithMemo(sender, virtual_addr, amount, memo)
+                    .send()
+                    .await?
+            }
+        };
+        let receipt = pending.successful_receipt().await?;
+
+        assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO, "{case}");
+        assert_eq!(
+            token.balanceOf(master).call().await?,
+            master_balance_before + amount,
+            "{case}"
+        );
+        assert_eq!(
+            token.balanceOf(virtual_addr).call().await?,
+            U256::ZERO,
+            "{case}"
+        );
+        if transfer_from {
+            assert_eq!(
+                token.allowance(sender, master).call().await?,
+                U256::ZERO,
+                "{case}"
+            );
         }
-    );
+        assert_eq!(
+            transfers(&receipt),
+            [
+                ITIP20::Transfer {
+                    from: sender,
+                    to: virtual_addr,
+                    amount
+                },
+                ITIP20::Transfer {
+                    from: virtual_addr,
+                    to: master,
+                    amount
+                },
+            ],
+            "{case}"
+        );
 
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-    let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
-
-    let sender_wallet = test_signer(1);
-    let sender = sender_wallet.address();
-    let sender_provider = ProviderBuilder::new()
-        .wallet(sender_wallet)
-        .connect_http(http_url);
-
-    let amount = U256::from(500);
-    token
-        .mint(sender, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let sender_token = ITIP20::new(*token.address(), sender_provider);
-    sender_token
-        .approve(master, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let master_balance_before = token.balanceOf(master).call().await?;
-    let receipt = token
-        .transferFrom(sender, virtual_addr, amount)
-        .send()
-        .await?
-        .successful_receipt()
-        .await?;
-
-    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
-    assert_eq!(
-        token.balanceOf(master).call().await?,
-        master_balance_before + amount
-    );
-    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
-    assert_eq!(token.allowance(sender, master).call().await?, U256::ZERO);
-
-    let token_addr = *token.address();
-    let transfers: Vec<_> = receipt
-        .logs()
-        .iter()
-        .filter(|log| log.address() == token_addr)
-        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
-        .collect();
-    assert_eq!(transfers.len(), 2);
-    assert_eq!(
-        transfers[0].data,
-        ITIP20::Transfer {
-            from: sender,
-            to: virtual_addr,
-            amount
+        if let Some(memo) = memo {
+            let memo_event = receipt
+                .logs()
+                .iter()
+                .filter(|log| log.address() == token_addr)
+                .filter_map(|log| ITIP20::TransferWithMemo::decode_log(&log.inner).ok())
+                .next()
+                .expect("TransferWithMemo event should be emitted");
+            assert_eq!(
+                memo_event.data,
+                ITIP20::TransferWithMemo {
+                    from: sender,
+                    to: virtual_addr,
+                    amount,
+                    memo,
+                },
+                "{case}"
+            );
         }
-    );
-    assert_eq!(
-        transfers[1].data,
-        ITIP20::Transfer {
-            from: virtual_addr,
-            to: master,
-            amount
-        }
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_virtual_transfer_with_memo() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-    let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
-
-    let sender_wallet = test_signer(1);
-    let sender = sender_wallet.address();
-    let sender_provider = ProviderBuilder::new()
-        .wallet(sender_wallet)
-        .connect_http(http_url);
-
-    let amount = U256::from(750);
-    let memo = FixedBytes::from([7; 32]);
-    token
-        .mint(sender, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let master_balance_before = token.balanceOf(master).call().await?;
-    let sender_token = ITIP20::new(*token.address(), sender_provider);
-    let receipt = sender_token
-        .transferWithMemo(virtual_addr, amount, memo)
-        .send()
-        .await?
-        .successful_receipt()
-        .await?;
-
-    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
-    assert_eq!(
-        token.balanceOf(master).call().await?,
-        master_balance_before + amount
-    );
-    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
-
-    let token_addr = *token.address();
-    let transfers: Vec<_> = receipt
-        .logs()
-        .iter()
-        .filter(|log| log.address() == token_addr)
-        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
-        .collect();
-    assert_eq!(transfers.len(), 2);
-    assert_eq!(
-        transfers[0].data,
-        ITIP20::Transfer {
-            from: sender,
-            to: virtual_addr,
-            amount
-        }
-    );
-    assert_eq!(
-        transfers[1].data,
-        ITIP20::Transfer {
-            from: virtual_addr,
-            to: master,
-            amount
-        }
-    );
-
-    let memo_event = receipt
-        .logs()
-        .iter()
-        .filter(|log| log.address() == token_addr)
-        .filter_map(|log| ITIP20::TransferWithMemo::decode_log(&log.inner).ok())
-        .next()
-        .expect("TransferWithMemo event should be emitted");
-    assert_eq!(
-        memo_event.data,
-        ITIP20::TransferWithMemo {
-            from: sender,
-            to: virtual_addr,
-            amount,
-            memo,
-        }
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_virtual_transfer_from_with_memo() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-    let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
-
-    let sender_wallet = test_signer(1);
-    let sender = sender_wallet.address();
-    let sender_provider = ProviderBuilder::new()
-        .wallet(sender_wallet)
-        .connect_http(http_url);
-
-    let amount = U256::from(375);
-    let memo = FixedBytes::from([9; 32]);
-    token
-        .mint(sender, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let sender_token = ITIP20::new(*token.address(), sender_provider);
-    sender_token
-        .approve(master, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let master_balance_before = token.balanceOf(master).call().await?;
-    let receipt = token
-        .transferFromWithMemo(sender, virtual_addr, amount, memo)
-        .send()
-        .await?
-        .successful_receipt()
-        .await?;
-
-    assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
-    assert_eq!(
-        token.balanceOf(master).call().await?,
-        master_balance_before + amount
-    );
-    assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
-    assert_eq!(token.allowance(sender, master).call().await?, U256::ZERO);
-
-    let token_addr = *token.address();
-    let transfers: Vec<_> = receipt
-        .logs()
-        .iter()
-        .filter(|log| log.address() == token_addr)
-        .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
-        .collect();
-    assert_eq!(transfers.len(), 2);
-    assert_eq!(
-        transfers[0].data,
-        ITIP20::Transfer {
-            from: sender,
-            to: virtual_addr,
-            amount
-        }
-    );
-    assert_eq!(
-        transfers[1].data,
-        ITIP20::Transfer {
-            from: virtual_addr,
-            to: master,
-            amount
-        }
-    );
-
-    let memo_event = receipt
-        .logs()
-        .iter()
-        .filter(|log| log.address() == token_addr)
-        .filter_map(|log| ITIP20::TransferWithMemo::decode_log(&log.inner).ok())
-        .next()
-        .expect("TransferWithMemo event should be emitted");
-    assert_eq!(
-        memo_event.data,
-        ITIP20::TransferWithMemo {
-            from: sender,
-            to: virtual_addr,
-            amount,
-            memo,
-        }
-    );
+    }
 
     Ok(())
 }

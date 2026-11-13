@@ -644,8 +644,7 @@ async fn find_submitted_batch(
         let lo = hi.saturating_sub(LOG_QUERY_BLOCK_CHUNK - 1);
         let mut events = portal
             .BatchSubmitted_1_filter()
-            .from_block(lo)
-            .to_block(hi)
+            .select(lo..=hi)
             .query()
             .await
             .wrap_err_with(|| format!("read submitted batches in Tempo blocks {lo}..={hi}"))?;
@@ -1153,7 +1152,7 @@ async fn withdrawal_batch_index_at(
         .get_storage_at(ZONE_OUTBOX_ADDRESS, outbox::slots::WITHDRAWAL_BATCH_INDEX)
         .number(block_number)
         .await?;
-    Ok(index.as_limbs()[0])
+    Ok(index.wrapping_to::<u64>())
 }
 
 async fn tempo_header(tempo: &DynProvider<TempoNetwork>, number: u64) -> Result<TempoHeader> {

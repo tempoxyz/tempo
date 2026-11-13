@@ -358,19 +358,24 @@ def main():
         # Remove publish.workspace = true
         text = re.sub(r'publish\.workspace = true\n', '', text)
 
+    elif action == "sanitize_hardfork":
+        text = strip_feature_blocks(text, ['evm'])
+        text = strip_dep_lines(text, lambda n: n == 'evm2')
+        text = strip_orphaned_feature_entries(text, {'evm2'})
+
     elif action == "sanitize_primitives":
         # Remove reth-related feature definitions (multi-line) FIRST,
         # before dependency removal which would strip the opening line
         # (e.g. "reth-codec = [") and orphan the block body.
-        text = strip_feature_blocks(text, ['reth', 'reth-codec', 'serde-bincode-compat', 'rpc'])
+        text = strip_feature_blocks(text, ['reth', 'reth-codec', 'serde-bincode-compat', 'rpc', 'evm'])
 
         # Track removed deps so we can auto-strip orphaned feature entries
         removed = set()
 
         # Remove reth dependency lines (single- and multi-line)
         text = strip_dep_lines(text, lambda n: n.startswith('reth-'), removed)
-        # Remove modular-bitfield
-        text = strip_dep_lines(text, lambda n: n == 'modular-bitfield', removed)
+        # Remove node-only dependencies
+        text = strip_dep_lines(text, lambda n: n in ('modular-bitfield', 'evm2'), removed)
         # Remove deps only used by the stripped rpc feature
         text = strip_dep_lines(text, lambda n: n in ('alloy-rpc-types-eth', 'alloy-network'), removed)
         # Remove # Reth comment
@@ -381,31 +386,37 @@ def main():
 
         # Remove stripped feature names and dev-dep-only entries from feature arrays
         text = strip_feature_array_entries(text, {
-            'reth', 'reth-codec', 'serde-bincode-compat', 'rpc',
+            'reth', 'reth-codec', 'serde-bincode-compat', 'rpc', 'evm',
             'rand/serde', 'tracing-subscriber/serde',
         })
 
     elif action == "sanitize_alloy":
+        # Track removed deps so we can auto-strip orphaned feature entries
+        removed = set()
+
         # Remove reth dependency lines
-        text = strip_dep_lines(text, lambda n: n.startswith('reth-'))
+        text = strip_dep_lines(text, lambda n: n.startswith('reth-'), removed)
         # Remove internal non-publishable deps (path-only workspace crates, except
         # the crates we're publishing: tempo-contracts and tempo-primitives)
         ws_toml_path = sys.argv[3]
         _, _, ws_path_deps, _, _ = parse_workspace_deps(ws_toml_path)
         publish_keep = {'tempo-hardfork', 'tempo-contracts', 'tempo-primitives', 'tempo-chainspec', 'tempo-alloy'}
         internal_deps = ws_path_deps - publish_keep
-        text = strip_dep_lines(text, lambda n: n in internal_deps)
+        text = strip_dep_lines(text, lambda n: n in internal_deps, removed)
 
         # Strip node-internal compatibility feature blocks
-        text = strip_feature_blocks(text, ['revm', 'reth'])
+        text = strip_feature_blocks(text, ['reth'])
+
+        # Auto-strip feature entries referencing removed deps
+        text = strip_orphaned_feature_entries(text, removed)
 
         # Strip "rpc" from tempo-primitives features (rpc feature is stripped during publish)
         text = re.sub(r', "rpc"', '', text)
         text = re.sub(r'"rpc", ', '', text)
 
     elif action == "sanitize_chainspec":
-        # Remove reth and cli feature blocks entirely
-        text = strip_feature_blocks(text, ['reth', 'cli'])
+        # Remove node-only feature blocks entirely
+        text = strip_feature_blocks(text, ['reth', 'cli', 'evm'])
 
         # Track removed deps so we can auto-strip orphaned feature entries
         removed = set()
@@ -417,6 +428,7 @@ def main():
             lambda n: n in (
                 'commonware-codec',
                 'commonware-cryptography',
+                'evm2',
                 'eyre',
                 'tempo-dkg-onchain-artifacts',
             ),
@@ -428,8 +440,8 @@ def main():
         # Auto-strip feature entries referencing removed deps
         text = strip_orphaned_feature_entries(text, removed)
 
-        # Remove "reth" and "cli" from the default feature array
-        text = strip_feature_array_entries(text, {'reth', 'cli'})
+        # Remove node-only features from the default feature array
+        text = strip_feature_array_entries(text, {'reth', 'cli', 'evm'})
 
         # The tempo_hardfork! macro generates #[cfg(feature = "reth")] blocks that remain in source.
         # Tell check-cfg that "reth" is an expected (but never enabled) feature to suppress warnings.
